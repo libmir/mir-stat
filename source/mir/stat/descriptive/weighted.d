@@ -195,6 +195,7 @@ version(mir_stat_test)
 unittest
 {
     import mir.ndslice.slice: sliced;
+    import mir.stat.descriptive.univariate: Summation;
 
     WMeanAccumulator!(double, Summation.pairwise, AssumeWeights.sumToOne) x;
     x.put([0.0, 1, 2, 3, 4].sliced, [0.2, 0.2, 0.2, 0.2, 0.2].sliced);
@@ -283,6 +284,7 @@ unittest
 {
     import mir.math.common: approxEqual;
     import mir.ndslice.slice: sliced;
+    import mir.stat.descriptive.univariate: Summation;
 
     WMeanAccumulator!(double, Summation.pairwise, AssumeWeights.primary) x;
     x.put([0.0, 1, 2, 3, 4].sliced, [1, 2, 3, 4, 5].sliced);
@@ -403,6 +405,7 @@ version(mir_stat_test)
 unittest
 {
     import mir.ndslice.slice: sliced;
+    import mir.stat.descriptive.univariate: Summation;
 
     WMeanAccumulator!(double, Summation.pairwise, AssumeWeights.primary) x;
     x.put([0.0, 1, 2, 3, 4].sliced);
