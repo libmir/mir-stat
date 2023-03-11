@@ -14,19 +14,8 @@ module mir.stat.distribution.categorical;
 import mir.algorithm.iteration: all;
 import mir.internal.utility: isFloatingPoint;
 import mir.math.common: approxEqual;
+import mir.math.sum: sum;
 import mir.ndslice.slice: Slice, SliceKind;
-
-private
-@safe pure nothrow @nogc
-T sum(T)(const Slice!(T*, 1) p) {
-    import std.traits: Unqual;
-
-    Unqual!T output = 0;
-    foreach (e; p) {
-        output += e;
-    }
-    return output;
-}
 
 /++
 Computes the Categorical probability mass function (PMF).
