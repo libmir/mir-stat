@@ -378,17 +378,13 @@ struct CovarianceAccumulator(T, CovarianceAlgo covarianceAlgo, Summation summati
 
     ///
     void put(RangeX, RangeY)(RangeX x, RangeY y)
-        if (isInputRange!RangeX && !isConvertibleToSlice!RangeX && is(elementType!RangeX : T) &&
-            isInputRange!RangeY && !isConvertibleToSlice!RangeY && is(elementType!RangeY : T))
+        if (isInputRange!RangeX && !isConvertibleToSlice!RangeX &&
+            isInputRange!RangeY && !isConvertibleToSlice!RangeY)
     {
-        do
-        {
-            assert(!(!x.empty && y.empty) && !(x.empty && !y.empty),
-                   "x and y must both be empty at the same time, one cannot be empty while the other has remaining items");
-            this.put(x.front, y.front);
-            x.popFront;
-            y.popFront;
-        } while(!x.empty || !y.empty); // Using an || instead of && so that the loop does not end early. mis-matched lengths of x and y sould be caught by above assert
+        import std.range: zip;
+        foreach(a, b; zip(x, y)) {
+            this.put(a, b);
+        }
     }
 
     ///
@@ -654,13 +650,16 @@ unittest
 {
     import mir.math.sum: Summation;
     import mir.test: should;
-    import std.range: iota;
+    import std.range: chunks, iota;
 
     auto x = iota(0, 5);
     auto y = iota(-3, 2);
     CovarianceAccumulator!(double, CovarianceAlgo.online, Summation.naive) v;
     v.put(x, y);
     v.covariance(true).should == 10 / 5;
+    CovarianceAccumulator!(double, CovarianceAlgo.hybrid, Summation.naive) v2;
+    v2.put(x.chunks(1), y.chunks(1));
+    v2.covariance(true).should == 10 / 5;
 }
 
 ///
@@ -1215,7 +1214,6 @@ struct CovarianceAccumulator(T, CovarianceAlgo covarianceAlgo, Summation summati
     import mir.math.sum: elementType, Summator;
     import mir.ndslice.slice: isConvertibleToSlice, isSlice, Slice, SliceKind;
     import mir.primitives: isInputRange, front, empty, popFront;
-    import std.traits: isIterable;
 
     ///
     private size_t _count;
@@ -1266,11 +1264,10 @@ struct CovarianceAccumulator(T, CovarianceAlgo covarianceAlgo, Summation summati
 
     ///
    this(RangeX, RangeY)(RangeX x, RangeY y)
-        if (isIterable!RangeX && !isConvertibleToSlice!RangeX &&
-            isIterable!RangeY && !isConvertibleToSlice!RangeY)
+        if (isInputRange!RangeX && !isConvertibleToSlice!RangeX &&
+            isInputRange!RangeY && !isConvertibleToSlice!RangeY)
     {
-        static if (isInputRange!RangeX && is(elementType!RangeX : T) && 
-                   isInputRange!RangeY && is(elementType!RangeY : T)) {
+        static if (is(elementType!RangeX : T) && is(elementType!RangeY : T)) {
             import mir.primitives: elementCount, hasShape;
 
             static if (hasShape!RangeX && hasShape!RangeY) {
@@ -1305,20 +1302,14 @@ struct CovarianceAccumulator(T, CovarianceAlgo covarianceAlgo, Summation summati
 
     ///
     void put(RangeX, RangeY)(RangeX x, RangeY y)
-        if (isIterable!RangeX && isIterable!RangeY)
+        if (isInputRange!RangeX && isInputRange!RangeY)
     {
-        static if (isInputRange!RangeX && is(elementType!RangeX : T) &&
-                   isInputRange!RangeY && is(elementType!RangeY : T)) {
+        static if (is(elementType!RangeX : T) && is(elementType!RangeY : T)) {
             auto v = typeof(this)(x, y);
             this.put(v);
-        } else static if (isInputRange!RangeX && isInputRange!RangeY) {
+        } else {
             import std.range: zip;
             foreach(a, b; zip(x, y)) {
-                this.put(a, b);
-            }
-        } else {
-            import std.range: lockstep;
-            foreach(a, b; lockstep(x, y)) {
                 this.put(a, b);
             }
         }
