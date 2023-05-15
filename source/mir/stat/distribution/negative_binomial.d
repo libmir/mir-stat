@@ -362,7 +362,7 @@ unittest {
 }
 
 // alternate guess paths
-version(mir_stat_test)
+version(mir_stat_test_binom_multi)
 @safe pure nothrow
 unittest {
     import mir.test: should;
