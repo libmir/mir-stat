@@ -752,6 +752,26 @@ unittest {
 }
 
 // test Binomial.direct, alternate guess paths
+version(mir_stat_test)
+@safe pure nothrow @nogc
+unittest {
+    import mir.math.common: approxEqual;
+
+    static immutable int[] ns =    [  25,  37,  34,    25,     25,   105];
+    static immutable double[] ps = [0.55, 0.2, 0.15, 0.05, 1.0e-8, 0.025];
+
+    size_t value;
+    for (size_t i; i < 6; i++) {
+        for (double x = 0.05; x < 1; x = x + 0.05) {
+            value = x.binomialInvCDF(ns[i], ps[i]);
+            assert(value.binomialCDF(ns[i], ps[i]) >= x);
+            if (value > 1)
+                assert((value - 1).binomialCDF(ns[i], ps[i]) < x);
+        }
+    }
+}
+
+// test Binomial.direct, detailed alternate guess paths
 version(mir_stat_test_binom_multi)
 @safe pure nothrow @nogc
 unittest {

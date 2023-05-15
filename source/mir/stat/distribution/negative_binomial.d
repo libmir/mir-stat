@@ -373,6 +373,27 @@ unittest {
 }
 
 // alternate guess paths
+version(mir_stat_test)
+@safe pure nothrow
+unittest {
+    import mir.test: should;
+
+    static immutable size_t[] ns = [  25,  37,  34,    25,     25,   105];
+    static immutable double[] ps = [0.55, 0.2, 0.15, 0.05, 1.0e-8, 0.025];
+
+    size_t value;
+    for (size_t i; i < 6; i++) {
+        for (double x = 0.05; x < 1; x = x + 0.05) {
+            value = x.negativeBinomialInvCDF(ns[i], ps[i]);
+            negativeBinomialCDF(value, ns[i], ps[i]).should!"a >= b"(x);
+            if (value > 0) {
+                negativeBinomialCDF(value - 1, ns[i], ps[i]).should!"a < b"(x);
+            }
+        }
+    }
+}
+
+// more detailed guess paths
 version(mir_stat_test_binom_multi)
 @safe pure nothrow
 unittest {
