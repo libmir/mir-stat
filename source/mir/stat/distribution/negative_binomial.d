@@ -103,6 +103,17 @@ unittest {
     import mir.bignum.fp: Fp, fp_log;
     import mir.test: shouldApprox;
 
+    1.fp_negativeBinomialPMF(1_000_000, Fp!128(0.75)).fp_log!double.shouldApprox == negativeBinomialLPMF(1, 1_000_000, 0.75);
+}
+
+
+// test more values
+version(mir_stat_test_fp)
+@safe pure nothrow @nogc
+unittest {
+    import mir.bignum.fp: Fp, fp_log;
+    import mir.test: shouldApprox;
+
     enum size_t val = 1_000_000;
 
     0.fp_negativeBinomialPMF(val + 5, Fp!128(0.75)).fp_log!double.shouldApprox == negativeBinomialLPMF(0, val + 5, 0.75);
@@ -430,6 +441,18 @@ unittest {
 }
 
 /// Accurate values for large values of `n`
+version(mir_stat_test_fp)
+@safe pure nothrow @nogc
+unittest {
+    import mir.bignum.fp: Fp, fp_log;
+    import mir.test: shouldApprox;
+
+    enum size_t val = 1_000_000;
+
+    1.negativeBinomialLPMF(1_000_000, 0.75).shouldApprox == fp_negativeBinomialPMF(1, 1_000_000, Fp!128(0.75)).fp_log!double;
+}
+
+// testing more values
 version(mir_stat_test_fp)
 @safe pure nothrow @nogc
 unittest {

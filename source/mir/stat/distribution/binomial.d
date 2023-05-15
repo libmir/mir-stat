@@ -222,8 +222,17 @@ version(mir_stat_test_fp)
 @safe pure nothrow @nogc
 unittest {
     import mir.bignum.fp: Fp, fp_log;
-    import mir.conv: to;
-    import mir.math.common: approxEqual, exp, log;
+    import mir.math.common: approxEqual;
+
+    assert(1.fp_binomialPMF(1_000_000, Fp!128(0.75)).fp_log!double.approxEqual(binomialLPMF(1, 1_000_000, 0.75)));
+}
+
+// more values to test
+version(mir_stat_test_fp)
+@safe pure nothrow @nogc
+unittest {
+    import mir.bignum.fp: Fp, fp_log;
+    import mir.math.common: approxEqual;
 
     enum size_t val = 1_000_000;
 
@@ -836,6 +845,16 @@ unittest {
     import mir.bignum.fp: Fp, fp_log;
     import mir.math.common: approxEqual;
 
+    assert(1.binomialLPMF(1_000_000, 0.75).approxEqual(fp_binomialPMF(1, 1_000_000, Fp!128(0.75)).fp_log!double));
+}
+
+// more values to test
+version(mir_stat_test_fp)
+@safe pure nothrow @nogc
+unittest {
+    import mir.bignum.fp: Fp, fp_log;
+    import mir.math.common: approxEqual;
+
     enum size_t val = 1_000_000;
 
     assert(0.binomialLPMF(val + 5, 0.75).approxEqual(fp_binomialPMF(0, val + 5, Fp!128(0.75)).fp_log!double));
@@ -847,5 +866,4 @@ unittest {
     assert((val - 2).binomialLPMF(val + 5, 0.75).approxEqual(fp_binomialPMF(val - 2, val + 5, Fp!128(0.75)).fp_log!double));
     assert((val - 1).binomialLPMF(val + 5, 0.75).approxEqual(fp_binomialPMF(val - 1, val + 5, Fp!128(0.75)).fp_log!double));
     assert((val - 0).binomialLPMF(val + 5, 0.75).approxEqual(fp_binomialPMF(val, val + 5, Fp!128(0.75)).fp_log!double));
-    
 }
