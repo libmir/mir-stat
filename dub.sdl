@@ -60,109 +60,90 @@ configuration "dips" {
 buildType "unittest-blas" {
     buildOptions "unittests" "debugMode" "debugInfo"
     versions "mir_stat_test_blas"
-    dflags "-lowmem"
+    dflags "-lowmem" "-preview=dip1000"
 }
 buildType "unittest-cov-blas" {
     buildOptions "unittests" "coverage" "debugMode" "debugInfo"
     versions "mir_stat_test_blas"
     dflags "-lowmem"
 }
+buildType "unittest-blas-perf" {
+    buildOptions "unittests" "releaseMode" "optimize" "inline"
+    dflags "-mcpu=native" "-preview=dip1000"
+    versions "mir_stat_test_blas_mahalanobis_performance"
+}
 configuration "openblas" {
-    dependency "mir-lapack" version=">=1.2.9"
+    dependency "mir-lapack" version=">=1.2.12"
     subConfiguration "mir-lapack" "openblas"
 }
 
 configuration "threelib" {
-    dependency "mir-lapack" version=">=1.2.9"
+    dependency "mir-lapack" version=">=1.2.12"
     subConfiguration "mir-lapack" "threelib"
 }
 
 configuration "cblas" {
-    dependency "mir-lapack" version=">=1.2.9"
+    dependency "mir-lapack" version=">=1.2.12"
     subConfiguration "mir-lapack" "cblas"
 }
 
 configuration "blas" {
-    dependency "mir-lapack" version=">=1.2.9"
+    dependency "mir-lapack" version=">=1.2.12"
     subConfiguration "mir-lapack" "blas"
 }
 
 configuration "lapack" {
-    dependency "mir-lapack" version=">=1.2.9"
+    dependency "mir-lapack" version=">=1.2.12"
     subConfiguration "mir-lapack" "lapack"
 }
 
 configuration "mkl-sequential" {
-    dependency "mir-lapack" version=">=1.2.9"
+    dependency "mir-lapack" version=">=1.2.12"
     subConfiguration "mir-lapack" "mkl-sequential"
 }
 
 configuration "mkl-sequential-ilp" {
-    dependency "mir-lapack" version=">=1.2.9"
+    dependency "mir-lapack" version=">=1.2.12"
     subConfiguration "mir-lapack" "mkl-sequential-ilp"
 }
 
 configuration "mkl-tbb-thread" {
-    dependency "mir-lapack" version=">=1.2.9"
+    dependency "mir-lapack" version=">=1.2.12"
     subConfiguration "mir-lapack" "mkl-tbb-thread"
 }
 
 configuration "mkl-tbb-thread-ilp" {
-    dependency "mir-lapack" version=">=1.2.9"
+    dependency "mir-lapack" version=">=1.2.12"
     subConfiguration "mir-lapack" "mkl-tbb-thread-ilp"
 }
 
 configuration "mkl-sequential-dll" {
-    dependency "mir-lapack" version=">=1.2.9"
+    dependency "mir-lapack" version=">=1.2.12"
     subConfiguration "mir-lapack" "mkl-sequential-dll"
 }
 
 configuration "mkl-sequential-ilp-dll" {
-    dependency "mir-lapack" version=">=1.2.9"
+    dependency "mir-lapack" version=">=1.2.12"
     subConfiguration "mir-lapack" "mkl-sequential-ilp-dll"
 }
 
 configuration "mkl-tbb-thread-dll" {
-    dependency "mir-lapack" version=">=1.2.9"
+    dependency "mir-lapack" version=">=1.2.12"
     subConfiguration "mir-lapack" "mkl-tbb-thread-dll"
 }
 
 configuration "mkl-tbb-thread-ilp-dll" {
-    dependency "mir-lapack" version=">=1.2.9"
+    dependency "mir-lapack" version=">=1.2.12"
     subConfiguration "mir-lapack" "mkl-tbb-thread-ilp-dll"
 }
 
 configuration "zerolib" {
-    dependency "mir-lapack" version=">=1.2.9"
+    dependency "mir-lapack" version=">=1.2.12"
     subConfiguration "mir-lapack" "zerolib"
 }
 
-configuration "unittest-openblas" {
-    dependency "mir-lapack" version=">=1.2.9"
-    subConfiguration "mir-lapack" "openblas"
-}
-
-configuration "unittest-threelib" {
-    dependency "mir-lapack" version=">=1.2.9"
-    subConfiguration "mir-lapack" "threelib"
-}
-
-configuration "unittest-cblas" {
-    dependency "mir-lapack" version=">=1.2.9"
-    subConfiguration "mir-lapack" "cblas"
-}
-
-configuration "unittest-blas" {
-    dependency "mir-lapack" version=">=1.2.9"
-    subConfiguration "mir-lapack" "blas"
-}
-
-configuration "unittest-lapack" {
-    dependency "mir-lapack" version=">=1.2.9"
-    subConfiguration "mir-lapack" "lapack"
-}
-
-configuration "unittest-mkl-sequential" {
-    dependency "mir-lapack" version=">=1.2.9"
+configuration "unittest-blas-perf-mkl-sequential" {
+    dependency "mir-random" version=">=2.2.19"
+    dependency "mir-lapack" version=">=1.2.12"
     subConfiguration "mir-lapack" "mkl-sequential"
 }

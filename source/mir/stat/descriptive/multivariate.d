@@ -22,7 +22,9 @@ module mir.stat.descriptive.multivariate;
 
 import mir.internal.utility: isFloatingPoint;
 import mir.math.sum: Summation, Summator;
-import std.traits: isMutable;
+import mir.ndslice.slice: Slice, SliceKind;
+import mir.rc.array: RCI;
+import std.traits: isMutable, Unqual;
 
 private void putter3(Slices, T, U, Summation summation1, Summation summation2, Summation summation3)
     (scope Slices slices, ref Summator!(T, summation1) seed1, ref Summator!(U, summation2) seed2, ref Summator!(U, summation3) seed3)
@@ -1882,12 +1884,6 @@ enum CorrelationAlgo
     Calculates correlation assuming the mean of the inputs is zero.
     +/
     assumeZeroMean,
-
-    /++
-    Calculates correlation assuming the mean of the inputs is zero and standard
-    deviation is one.
-    +/
-    assumeStandardized,
 
     /++
     When slices, slice-like objects, or ranges are the inputs, uses the two-pass
@@ -3924,4 +3920,3697 @@ unittest
         writeln("Function ", i + 1, ", Algo: ", e[i], ", Output: ", output[i], ", Elapsed time: ", time[i]);
     }
     writeln();
+}
+
+static if (is(typeof({ import mir.blas; import mir.lapack; }))) {
+
+import mir.blas: Uplo;
+
+/++
+For input `x`, computes the Mahalanobis distance, centered by vector `mu` and
+scaled with covariance matrix `sigma`.
+
+If `x` is a matrix, the Mahalanobis distance is calculated on a row-by-row basis.
+
+`sigma` is assumed to be symmetric (upper).
+
+Params:
+    x = n(rows) x 1 vector
+    mu = n(rows) x 1 vector
+    sigma = n(rows) x n(cols) matrix
+
+Result:
+    Mahalanobis distance
+
+See_also:
+    $(LINK2 https://en.wikipedia.org/wiki/Mahalanobis_distance, Mahalanobis distance)
++/
+@safe pure nothrow @nogc
+T mahalanobisDistance(T, SliceKind kindX, SliceKind kindMu, SliceKind kindSigma)(
+    Slice!(const(T)*, 1, kindX) x,
+    Slice!(const(T)*, 1, kindMu) mu,
+    Slice!(const(T)*, 2, kindSigma) sigma
+)
+    if (isFloatingPoint!T)
+in
+{
+    assert(x.length!0 == sigma.length!0, "The length of `x` must conform to the shape of `sigma`");
+    assert(mu.length!0 == sigma.length!0, "The length of `mu` must conform to the shape of `sigma`");
+    assert(sigma.length!0 == sigma.length!1, "`sigma` must be a square matrix");
+}
+do
+{
+    import mir.ndslice.topology: rcmap, zip;
+
+    auto xCenter = x.zip!true(mu).rcmap!("a[0] - a[1]").moveToSlice;
+    return .mahalanobisDistance(xCenter, sigma);
+}
+
+/// ditto
+@safe pure nothrow @nogc
+Unqual!X mahalanobisDistance(X, Mu, Sigma, SliceKind kindX, SliceKind kindMu, SliceKind kindSigma)(
+    auto ref const Slice!(RCI!X, 1, kindX) x,
+    auto ref const Slice!(RCI!Mu, 1, kindMu) mu,
+    auto ref const Slice!(RCI!Sigma, 2, kindSigma) sigma
+)
+    if (is(Unqual!X == Unqual!Mu) &&
+        is(Unqual!X == Unqual!Sigma))
+in
+{
+    assert(x.length!0 == sigma.length!0, "The length of `x` must conform to the shape of `sigma`");
+    assert(mu.length!0 == sigma.length!0, "The length of `mu` must conform to the shape of `sigma`");
+    assert(sigma.length!0 == sigma.length!1, "`sigma` must be a square matrix");
+}
+do
+{
+    auto scopeX = x.lightScope.lightConst;
+    auto scopeMu = mu.lightScope.lightConst;
+    auto scopeSigma = sigma.lightScope.lightConst;
+    return .mahalanobisDistance(scopeX, scopeMu, scopeSigma);
+}
+
+/// ditto
+@safe pure nothrow @nogc
+Unqual!X mahalanobisDistance(X, Mu, Sigma, SliceKind kindX, SliceKind kindMu, SliceKind kindSigma)(
+    Slice!(const(X)*, 1, kindX) x,
+    auto ref const Slice!(RCI!Mu, 1, kindMu) mu,
+    auto ref const Slice!(RCI!Sigma, 2, kindSigma) sigma
+)
+    if (is(Unqual!X == Unqual!Mu) &&
+        is(Unqual!X == Unqual!Sigma))
+in
+{
+    assert(x.length!0 == sigma.length!0, "The length of `x` must conform to the shape of `sigma`");
+    assert(mu.length!0 == sigma.length!0, "The length of `mu` must conform to the shape of `sigma`");
+    assert(sigma.length!0 == sigma.length!1, "`sigma` must be a square matrix");
+}
+do
+{
+    auto scopeMu = mu.lightScope.lightConst;
+    auto scopeSigma = sigma.lightScope.lightConst;
+    return .mahalanobisDistance(x, scopeMu, scopeSigma);
+}
+
+/// ditto
+@safe pure nothrow @nogc
+Unqual!X mahalanobisDistance(X, Mu, Sigma, SliceKind kindX, SliceKind kindMu, SliceKind kindSigma)(
+    auto ref const Slice!(RCI!X, 1, kindX) x,
+    Slice!(const(Mu)*, 1, kindMu) mu,
+    auto ref const Slice!(RCI!Sigma, 2, kindSigma) sigma
+)
+    if (is(Unqual!X == Unqual!Mu) &&
+        is(Unqual!X == Unqual!Sigma))
+in
+{
+    assert(x.length!0 == sigma.length!0, "The length of `x` must conform to the shape of `sigma`");
+    assert(mu.length!0 == sigma.length!0, "The length of `mu` must conform to the shape of `sigma`");
+    assert(sigma.length!0 == sigma.length!1, "`sigma` must be a square matrix");
+}
+do
+{
+    auto scopeX = x.lightScope.lightConst;
+    auto scopeSigma = sigma.lightScope.lightConst;
+    return .mahalanobisDistance(scopeX, mu, scopeSigma);
+}
+
+/// ditto
+@safe pure nothrow @nogc
+Unqual!X mahalanobisDistance(X, Mu, Sigma, SliceKind kindX, SliceKind kindMu, SliceKind kindSigma)(
+    auto ref const Slice!(RCI!X, 1, kindX) x,
+    auto ref const Slice!(RCI!Mu, 1, kindMu) mu,
+    Slice!(const(Sigma)*, 2, kindSigma) sigma
+)
+    if (is(Unqual!X == Unqual!Mu) &&
+        is(Unqual!X == Unqual!Sigma))
+in
+{
+    assert(x.length!0 == sigma.length!0, "The length of `x` must conform to the shape of `sigma`");
+    assert(mu.length!0 == sigma.length!0, "The length of `mu` must conform to the shape of `sigma`");
+    assert(sigma.length!0 == sigma.length!1, "`sigma` must be a square matrix");
+}
+do
+{
+    auto scopeX = x.lightScope.lightConst;
+    auto scopeMu = mu.lightScope.lightConst;
+    return .mahalanobisDistance(scopeX, scopeMu, sigma);
+}
+
+/// ditto
+@safe pure nothrow @nogc
+Unqual!X mahalanobisDistance(X, Mu, Sigma, SliceKind kindX, SliceKind kindMu, SliceKind kindSigma)(
+    Slice!(const(X)*, 1, kindX) x,
+    Slice!(const(Mu)*, 1, kindMu) mu,
+    auto ref const Slice!(RCI!Sigma, 2, kindSigma) sigma
+)
+    if (is(Unqual!X == Unqual!Mu) &&
+        is(Unqual!X == Unqual!Sigma))
+in
+{
+    assert(x.length!0 == sigma.length!0, "The length of `x` must conform to the shape of `sigma`");
+    assert(mu.length!0 == sigma.length!0, "The length of `mu` must conform to the shape of `sigma`");
+    assert(sigma.length!0 == sigma.length!1, "`sigma` must be a square matrix");
+}
+do
+{
+    auto scopeSigma = sigma.lightScope.lightConst;
+    return .mahalanobisDistance(x, mu, scopeSigma);
+}
+
+/// ditto
+@safe pure nothrow @nogc
+Unqual!X mahalanobisDistance(X, Mu, Sigma, SliceKind kindX, SliceKind kindMu, SliceKind kindSigma)(
+    Slice!(const(X)*, 1, kindX) x,
+    auto ref const Slice!(RCI!Mu, 1, kindMu) mu,
+    Slice!(const(Sigma)*, 2, kindSigma) sigma
+)
+    if (is(Unqual!X == Unqual!Mu) &&
+        is(Unqual!X == Unqual!Sigma))
+in
+{
+    assert(x.length!0 == sigma.length!0, "The length of `x` must conform to the shape of `sigma`");
+    assert(mu.length!0 == sigma.length!0, "The length of `mu` must conform to the shape of `sigma`");
+    assert(sigma.length!0 == sigma.length!1, "`sigma` must be a square matrix");
+}
+do
+{
+    auto scopeMu = mu.lightScope.lightConst;
+    return .mahalanobisDistance(x, scopeMu, sigma);
+}
+
+/// ditto
+@safe pure nothrow @nogc
+Unqual!X mahalanobisDistance(X, Mu, Sigma, SliceKind kindX, SliceKind kindMu, SliceKind kindSigma)(
+    auto ref const Slice!(RCI!X, 1, kindX) x,
+    Slice!(const(Mu)*, 1, kindMu) mu,
+    Slice!(const(Sigma)*, 2, kindSigma) sigma
+)
+    if (is(Unqual!X == Unqual!Mu) &&
+        is(Unqual!X == Unqual!Sigma))
+in
+{
+    assert(x.length!0 == sigma.length!0, "The length of `x` must conform to the shape of `sigma`");
+    assert(mu.length!0 == sigma.length!0, "The length of `mu` must conform to the shape of `sigma`");
+    assert(sigma.length!0 == sigma.length!1, "`sigma` must be a square matrix");
+}
+do
+{
+    auto scopeX = x.lightScope.lightConst;
+    return .mahalanobisDistance(scopeX, mu, sigma);
+}
+
+/++
+Params:
+    x = n(rows) x 1 vector
+    sigma = n(rows) x n(cols) matrix
++/
+@safe pure nothrow @nogc
+T mahalanobisDistance(T, SliceKind kindX, SliceKind kindSigma)(
+    Slice!(const(T)*, 1, kindX) x,
+    Slice!(const(T)*, 2, kindSigma) sigma
+)
+    if (isFloatingPoint!T)
+in
+{
+    assert(x.length!0 == sigma.length!0, "The length of `x` must conform to the shape of `sigma`");
+    assert(sigma.length!0 == sigma.length!1, "`sigma` must be a square matrix");
+}
+do
+{
+    import mir.math.internal.linearAlgebra: mldivideSymmetric;
+    import mir.math.internal.lubeck2: mtimes;
+
+    try {
+        auto temp = sigma.mldivideSymmetric(x);
+        return temp.mtimes(x);
+    } catch (Exception e) {
+        return T.init;
+    }
+}
+
+/// ditto
+@safe pure nothrow @nogc
+Unqual!X mahalanobisDistance(X, Sigma, SliceKind kindX, SliceKind kindSigma)(
+    auto ref const Slice!(RCI!X, 1, kindX) x,
+    auto ref const Slice!(RCI!Sigma, 2, kindSigma) sigma
+)
+    if (is(Unqual!X == Unqual!Sigma))
+in
+{
+    assert(x.length!0 == sigma.length!0, "The length of `x` must conform to the shape of `sigma`");
+    assert(sigma.length!0 == sigma.length!1, "`sigma` must be a square matrix");
+}
+do
+{
+    auto scopeX = x.lightScope.lightConst;
+    auto scopeSigma = sigma.lightScope.lightConst;
+    return .mahalanobisDistance(scopeX, scopeSigma);
+}
+
+/// ditto
+@safe pure nothrow @nogc
+Unqual!X mahalanobisDistance(X, Sigma, SliceKind kindX, SliceKind kindSigma)(
+    Slice!(const(X)*, 1, kindX) x,
+    auto ref const Slice!(RCI!Sigma, 2, kindSigma) sigma
+)
+    if (is(Unqual!X == Unqual!Sigma))
+in
+{
+    assert(x.length!0 == sigma.length!0, "The length of `x` must conform to the shape of `sigma`");
+    assert(sigma.length!0 == sigma.length!1, "`sigma` must be a square matrix");
+}
+do
+{
+    auto scopeSigma = sigma.lightScope.lightConst;
+    return .mahalanobisDistance(x, scopeSigma);
+}
+
+/// ditto
+@safe pure nothrow @nogc
+Unqual!X mahalanobisDistance(X, Sigma, SliceKind kindX, SliceKind kindSigma)(
+    auto ref const Slice!(RCI!X, 1, kindX) x,
+    Slice!(const(Sigma)*, 2, kindSigma) sigma
+)
+    if (is(Unqual!X == Unqual!Sigma))
+in
+{
+    assert(x.length!0 == sigma.length!0, "The length of `x` must conform to the shape of `sigma`");
+    assert(sigma.length!0 == sigma.length!1, "`sigma` must be a square matrix");
+}
+do
+{
+    auto scopeX = x.lightScope.lightConst;
+    return .mahalanobisDistance(scopeX, sigma);
+}
+
+/++
+Params:
+    x = m(rows) x n(cols) matrix
+    mu = n(rows) x 1 vector
+    sigma = n(rows) x n(cols) matrix
++/
+@safe pure nothrow @nogc
+Slice!(RCI!T, 1) mahalanobisDistance(T, SliceKind kindX, SliceKind kindMu, SliceKind kindSigma)(
+    Slice!(const(T)*, 2, kindX) x,
+    Slice!(const(T)*, 1, kindMu) mu,
+    Slice!(const(T)*, 2, kindSigma) sigma
+)
+    if (isFloatingPoint!T)
+in
+{
+    assert(x.length!1 == sigma.length!0, "The number of columns of `x` must conform to the shape of `sigma`");
+    assert(mu.length!0 == sigma.length!0, "The length of `mu` must conform to the shape of `sigma`");
+    assert(sigma.length!0 == sigma.length!1, "`sigma` must be a square matrix");
+}
+do
+{
+    import mir.ndslice.allocation: mininitRcslice;
+
+    auto xCenter = mininitRcslice!T(x.length!0, x.length!1);
+    foreach (size_t i; 0 .. x.length!0) {
+        foreach (size_t j; 0 .. x.length!1) {
+            xCenter[i, j] = x[i, j] - mu[j];
+        }
+    }
+    return .mahalanobisDistance(xCenter, sigma);
+}
+
+/// ditto
+@safe pure nothrow @nogc
+Slice!(RCI!(Unqual!X), 1) mahalanobisDistance(X, Mu, Sigma, SliceKind kindX, SliceKind kindMu, SliceKind kindSigma)(
+    auto ref const Slice!(RCI!X, 2, kindX) x,
+    auto ref const Slice!(RCI!Mu, 1, kindMu) mu,
+    auto ref const Slice!(RCI!Sigma, 2, kindSigma) sigma
+)
+    if (is(Unqual!X == Unqual!Mu) &&
+        is(Unqual!X == Unqual!Sigma))
+in
+{
+    assert(x.length!1 == sigma.length!0, "The number of columns of `x` must conform to the shape of `sigma`");
+    assert(mu.length!0 == sigma.length!0, "The length of `mu` must conform to the shape of `sigma`");
+    assert(sigma.length!0 == sigma.length!1, "`sigma` must be a square matrix");
+}
+do
+{
+    auto scopeX = x.lightScope.lightConst;
+    auto scopeMu = mu.lightScope.lightConst;
+    auto scopeSigma = sigma.lightScope.lightConst;
+    return .mahalanobisDistance(scopeX, scopeMu, scopeSigma);
+}
+
+/// ditto
+@safe pure nothrow @nogc
+Slice!(RCI!(Unqual!X), 1) mahalanobisDistance(X, Mu, Sigma, SliceKind kindX, SliceKind kindMu, SliceKind kindSigma)(
+    Slice!(const(X)*, 2, kindX) x,
+    auto ref const Slice!(RCI!Mu, 1, kindMu) mu,
+    auto ref const Slice!(RCI!Sigma, 2, kindSigma) sigma
+)
+    if (is(Unqual!X == Unqual!Mu) &&
+        is(Unqual!X == Unqual!Sigma))
+in
+{
+    assert(x.length!1 == sigma.length!0, "The number of columns of `x` must conform to the shape of `sigma`");
+    assert(mu.length!0 == sigma.length!0, "The length of `mu` must conform to the shape of `sigma`");
+    assert(sigma.length!0 == sigma.length!1, "`sigma` must be a square matrix");
+}
+do
+{
+    auto scopeMu = mu.lightScope.lightConst;
+    auto scopeSigma = sigma.lightScope.lightConst;
+    return .mahalanobisDistance(x, scopeMu, scopeSigma);
+}
+
+/// ditto
+@safe pure nothrow @nogc
+Slice!(RCI!(Unqual!X), 1) mahalanobisDistance(X, Mu, Sigma, SliceKind kindX, SliceKind kindMu, SliceKind kindSigma)(
+    auto ref const Slice!(RCI!X, 2, kindX) x,
+    Slice!(const(Mu)*, 1, kindMu) mu,
+    auto ref const Slice!(RCI!Sigma, 2, kindSigma) sigma
+)
+    if (is(Unqual!X == Unqual!Mu) &&
+        is(Unqual!X == Unqual!Sigma))
+in
+{
+    assert(x.length!1 == sigma.length!0, "The number of columns of `x` must conform to the shape of `sigma`");
+    assert(mu.length!0 == sigma.length!0, "The length of `mu` must conform to the shape of `sigma`");
+    assert(sigma.length!0 == sigma.length!1, "`sigma` must be a square matrix");
+}
+do
+{
+    auto scopeX = x.lightScope.lightConst;
+    auto scopeSigma = sigma.lightScope.lightConst;
+    return .mahalanobisDistance(scopeX, mu, scopeSigma);
+}
+
+/// ditto
+@safe pure nothrow @nogc
+Slice!(RCI!(Unqual!X), 1) mahalanobisDistance(X, Mu, Sigma, SliceKind kindX, SliceKind kindMu, SliceKind kindSigma)(
+    auto ref const Slice!(RCI!X, 2, kindX) x,
+    auto ref const Slice!(RCI!Mu, 1, kindMu) mu,
+    Slice!(const(Sigma)*, 2, kindSigma) sigma
+)
+    if (is(Unqual!X == Unqual!Mu) &&
+        is(Unqual!X == Unqual!Sigma))
+in
+{
+    assert(x.length!1 == sigma.length!0, "The number of columns of `x` must conform to the shape of `sigma`");
+    assert(mu.length!0 == sigma.length!0, "The length of `mu` must conform to the shape of `sigma`");
+    assert(sigma.length!0 == sigma.length!1, "`sigma` must be a square matrix");
+}
+do
+{
+    auto scopeX = x.lightScope.lightConst;
+    auto scopeMu = mu.lightScope.lightConst;
+    return .mahalanobisDistance(scopeX, scopeMu, sigma);
+}
+
+/// ditto
+@safe pure nothrow @nogc
+Slice!(RCI!(Unqual!X), 1) mahalanobisDistance(X, Mu, Sigma, SliceKind kindX, SliceKind kindMu, SliceKind kindSigma)(
+    Slice!(const(X)*, 2, kindX) x,
+    Slice!(const(Mu)*, 1, kindMu) mu,
+    auto ref const Slice!(RCI!Sigma, 2, kindSigma) sigma
+)
+    if (is(Unqual!X == Unqual!Mu) &&
+        is(Unqual!X == Unqual!Sigma))
+in
+{
+    assert(x.length!1 == sigma.length!0, "The number of columns of `x` must conform to the shape of `sigma`");
+    assert(mu.length!0 == sigma.length!0, "The length of `mu` must conform to the shape of `sigma`");
+    assert(sigma.length!0 == sigma.length!1, "`sigma` must be a square matrix");
+}
+do
+{
+    auto scopeSigma = sigma.lightScope.lightConst;
+    return .mahalanobisDistance(x, mu, scopeSigma);
+}
+
+/// ditto
+@safe pure nothrow @nogc
+Slice!(RCI!(Unqual!X), 1) mahalanobisDistance(X, Mu, Sigma, SliceKind kindX, SliceKind kindMu, SliceKind kindSigma)(
+    Slice!(const(X)*, 2, kindX) x,
+    auto ref const Slice!(RCI!Mu, 1, kindMu) mu,
+    Slice!(const(Sigma)*, 2, kindSigma) sigma
+)
+    if (is(Unqual!X == Unqual!Mu) &&
+        is(Unqual!X == Unqual!Sigma))
+in
+{
+    assert(x.length!1 == sigma.length!0, "The number of columns of `x` must conform to the shape of `sigma`");
+    assert(mu.length!0 == sigma.length!0, "The length of `mu` must conform to the shape of `sigma`");
+    assert(sigma.length!0 == sigma.length!1, "`sigma` must be a square matrix");
+}
+do
+{
+    auto scopeMu = mu.lightScope.lightConst;
+    return .mahalanobisDistance(x, scopeMu, sigma);
+}
+
+/// ditto
+@safe pure nothrow @nogc
+Slice!(RCI!(Unqual!X), 1) mahalanobisDistance(X, Mu, Sigma, SliceKind kindX, SliceKind kindMu, SliceKind kindSigma)(
+    auto ref const Slice!(RCI!X, 2, kindX) x,
+    Slice!(const(Mu)*, 1, kindMu) mu,
+    Slice!(const(Sigma)*, 2, kindSigma) sigma
+)
+    if (is(Unqual!X == Unqual!Mu) &&
+        is(Unqual!X == Unqual!Sigma))
+in
+{
+    assert(x.length!1 == sigma.length!0, "The number of columns of `x` must conform to the shape of `sigma`");
+    assert(mu.length!0 == sigma.length!0, "The length of `mu` must conform to the shape of `sigma`");
+    assert(sigma.length!0 == sigma.length!1, "`sigma` must be a square matrix");
+}
+do
+{
+    auto scopeX = x.lightScope.lightConst;
+    return .mahalanobisDistance(scopeX, mu, sigma);
+}
+
+/++
+Params:
+    x = m(rows) x n(cols) matrix
+    sigma = n(rows) x n(cols) matrix
++/
+@safe pure nothrow @nogc
+Slice!(RCI!T, 1) mahalanobisDistance(T, SliceKind kindX, SliceKind kindSigma)(
+    Slice!(const(T)*, 2, kindX) x,
+    Slice!(const(T)*, 2, kindSigma) sigma
+)
+    if (isFloatingPoint!T)
+in
+{
+    assert(x.length!1 == sigma.length!0, "The number of columns of `x` must conform to the shape of `sigma`");
+    assert(sigma.length!0 == sigma.length!1, "`sigma` must be a square matrix");
+}
+do
+{
+    import mir.math.internal.linearAlgebra: mldivideSymmetric, rowsDotProduct;
+    import mir.math.internal.lubeck2: mtimes;
+    import mir.ndslice.allocation: rcslice;
+    import mir.ndslice.dynamic: transposed;
+
+    try {
+        auto temp = sigma.mldivideSymmetric(x.transposed).transposed;
+        return temp.rowsDotProduct(x);
+    } catch (Exception e) {
+        return rcslice!T([x.length], T.init);
+    }
+}
+
+/// ditto
+@safe pure nothrow @nogc
+Slice!(RCI!(Unqual!X), 1) mahalanobisDistance(X, Sigma, SliceKind kindX, SliceKind kindSigma)(
+    auto ref const Slice!(RCI!X, 2, kindX) x,
+    auto ref const Slice!(RCI!Sigma, 2, kindSigma) sigma
+)
+    if (is(Unqual!X == Unqual!Sigma))
+in
+{
+    assert(x.length!1 == sigma.length!0, "The number of columns of `x` must conform to the shape of `sigma`");
+    assert(sigma.length!0 == sigma.length!1, "`sigma` must be a square matrix");
+}
+do
+{
+    auto scopeX = x.lightScope.lightConst;
+    auto scopeSigma = sigma.lightScope.lightConst;
+    return .mahalanobisDistance(scopeX, scopeSigma);
+}
+
+/// ditto
+@safe pure nothrow @nogc
+Slice!(RCI!(Unqual!X), 1) mahalanobisDistance(X, Sigma, SliceKind kindX, SliceKind kindSigma)(
+    Slice!(const(X)*, 2, kindX) x,
+    auto ref const Slice!(RCI!Sigma, 2, kindSigma) sigma
+)
+    if (is(Unqual!X == Unqual!Sigma))
+in
+{
+    assert(x.length!1 == sigma.length!0, "The number of columns of `x` must conform to the shape of `sigma`");
+    assert(sigma.length!0 == sigma.length!1, "`sigma` must be a square matrix");
+}
+do
+{
+    auto scopeSigma = sigma.lightScope.lightConst;
+    return .mahalanobisDistance(x, scopeSigma);
+}
+
+/// ditto
+@safe pure nothrow @nogc
+Slice!(RCI!(Unqual!X), 1) mahalanobisDistance(X, Sigma, SliceKind kindX, SliceKind kindSigma)(
+    auto ref const Slice!(RCI!X, 2, kindX) x,
+    Slice!(const(Sigma)*, 2, kindSigma) sigma
+)
+    if (is(Unqual!X == Unqual!Sigma))
+in
+{
+    assert(x.length!1 == sigma.length!0, "The number of columns of `x` must conform to the shape of `sigma`");
+    assert(sigma.length!0 == sigma.length!1, "`sigma` must be a square matrix");
+}
+do
+{
+    auto scopeX = x.lightScope.lightConst;
+    return .mahalanobisDistance(scopeX, sigma);
+}
+
+/// Vector example
+version(mir_stat_test_blas)
+@safe pure nothrow @nogc
+unittest
+{
+    import mir.ndslice.allocation: mininitRcslice;
+    import mir.test: shouldApprox;
+
+    static immutable a = [2.0, 1];
+    static immutable b = [1.0, 2];
+    static immutable c = [[2.0, 1],
+                          [1.0, 3]];
+
+    auto x = mininitRcslice!double(2);
+    auto mu = mininitRcslice!double(2);
+    auto sigma = mininitRcslice!double(2, 2);
+    auto xCenter = mininitRcslice!double(2);
+
+    x[] = a;
+    mu[] = b;
+    sigma[] = c;
+    xCenter[] = a;
+    xCenter[] -= b;
+
+    x.mahalanobisDistance(mu, sigma).shouldApprox == 1.4;
+    xCenter.mahalanobisDistance(sigma).shouldApprox == 1.4;
+}
+
+/// Matrix example
+version(mir_stat_test_blas)
+@safe pure nothrow @nogc
+unittest
+{
+    import mir.algorithm.iteration: all;
+    import mir.math.common: approxEqual;
+    import mir.ndslice.allocation: mininitRcslice;
+    import mir.test: shouldApprox;
+
+    static immutable a = [[2.0, 1],
+                          [2.0, 3]];
+    static immutable b = [1.0, 2];
+    static immutable c = [[2.0, 1],
+                          [1.0, 3]];
+    static immutable d = [1.4, 0.6];
+
+    auto x = mininitRcslice!double(2, 2);
+    auto mu = mininitRcslice!double(2);
+    auto sigma = mininitRcslice!double(2, 2);
+    auto xCenter = mininitRcslice!double(2, 2);
+    auto result = mininitRcslice!double(2);
+
+    x[] = a;
+    mu[] = b;
+    sigma[] = c;
+    xCenter[] = a;
+    xCenter[0][] -= b;
+    xCenter[1][] -= b;
+    result[] = d;
+
+    assert(x.mahalanobisDistance(mu, sigma).all!approxEqual(result));
+    assert(xCenter.mahalanobisDistance(sigma).all!approxEqual(result));
+}
+
+// Error check
+version(mir_stat_test_blas)
+@safe pure nothrow @nogc
+unittest
+{
+    import mir.algorithm.iteration: all;
+    import mir.ndslice.allocation: mininitRcslice, rcslice;
+    import mir.test: should;
+    import std.math.traits: isNaN;
+
+    static immutable a = [[1.0, -1],
+                          [1.0, 1]];
+    static immutable b = [[double.nan, 1],
+                          [1.0, 3]];
+
+    auto x = mininitRcslice!double(2, 2);
+    auto mu = mininitRcslice!double(2);
+    auto sigma = mininitRcslice!double(2, 2);
+
+    x[] = a;
+    sigma[] = b;
+
+    x[0].mahalanobisDistance(sigma).should == double.nan;
+    assert(x.mahalanobisDistance(sigma).all!isNaN);
+}
+
+// Vector example (GC)
+version(mir_stat_test_blas)
+@safe pure nothrow
+unittest
+{
+    import mir.ndslice.allocation: uninitSlice;
+    import mir.test: shouldApprox;
+
+    static immutable a = [2.0, 1];
+    static immutable b = [1.0, 2];
+    static immutable c = [[2.0, 1],
+                          [1.0, 3]];
+
+    auto x = uninitSlice!double(2);
+    auto mu = uninitSlice!double(2);
+    auto sigma = uninitSlice!double(2, 2);
+    auto xCenter = uninitSlice!double(2);
+
+    x[] = a;
+    mu[] = b;
+    sigma[] = c;
+    xCenter[] = a;
+    xCenter[] -= b;
+
+    x.mahalanobisDistance(mu, sigma).shouldApprox == 1.4;
+    xCenter.mahalanobisDistance(sigma).shouldApprox == 1.4;
+}
+
+// Matrix example (GC)
+version(mir_stat_test_blas)
+@safe pure nothrow
+unittest
+{
+    import mir.algorithm.iteration: all;
+    import mir.math.common: approxEqual;
+    import mir.ndslice.allocation: uninitSlice;
+    import mir.test: shouldApprox;
+
+    static immutable a = [[2.0, 1],
+                          [2.0, 3]];
+    static immutable b = [1.0, 2];
+    static immutable c = [[2.0, 1],
+                          [1.0, 3]];
+    static immutable d = [1.4, 0.6];
+
+    auto x = uninitSlice!double(2, 2);
+    auto mu = uninitSlice!double(2);
+    auto sigma = uninitSlice!double(2, 2);
+    auto xCenter = uninitSlice!double(2, 2);
+    auto result = uninitSlice!double(2);
+
+    x[] = a;
+    mu[] = b;
+    sigma[] = c;
+    xCenter[] = a;
+    xCenter[0][] -= b;
+    xCenter[1][] -= b;
+    result[] = d;
+
+    assert(x.mahalanobisDistance(mu, sigma).all!approxEqual(result));
+    assert(xCenter.mahalanobisDistance(sigma).all!approxEqual(result));
+}
+
+/++
+For input `x`, computes the Mahalanobis distance, centered by vector `mu` and
+scaled with inverse covariance matrix `invSigma`.
+
+If `x` is a matrix, the Mahalanobis distance is calculated on a row-by-row basis.
+
+`invSigma` is assumed to be symmetric (upper).
+
+Params:
+    x = n(rows) x 1 vector
+    mu = n(rows) x 1 vector
+    invSigma = n(rows) x n(cols) matrix
+
+Result:
+    Mahalanobis distance
+
+See_also:
+    $(LINK2 https://en.wikipedia.org/wiki/Mahalanobis_distance, Mahalanobis distance)
++/
+@safe pure nothrow @nogc
+T mahalanobisDistancePrecision(T, SliceKind kindX, SliceKind kindMu, SliceKind kindInvSigma)(
+    Slice!(const(T)*, 1, kindX) x,
+    Slice!(const(T)*, 1, kindMu) mu,
+    Slice!(const(T)*, 2, kindInvSigma) invSigma
+)
+    if (isFloatingPoint!T)
+in
+{
+    assert(x.length!0 == invSigma.length!0, "The length of `x` must conform to the shape of `invSigma`");
+    assert(mu.length!0 == invSigma.length!0, "The length of `mu` must conform to the shape of `invSigma`");
+    assert(invSigma.length!0 == invSigma.length!1, "`invSigma` must be a square matrix");
+}
+do
+{
+    import mir.ndslice.topology: rcmap, zip;
+
+    auto xCenter = x.zip!true(mu).rcmap!("a[0] - a[1]").moveToSlice;
+    return mahalanobisDistancePrecision(xCenter, invSigma);
+}
+
+/// ditto
+@safe pure nothrow @nogc
+Unqual!X mahalanobisDistancePrecision(X, Mu, InvSigma, SliceKind kindX, SliceKind kindMu, SliceKind kindInvSigma)(
+    auto ref const Slice!(RCI!X, 1, kindX) x,
+    auto ref const Slice!(RCI!Mu, 1, kindMu) mu,
+    auto ref const Slice!(RCI!InvSigma, 2, kindInvSigma) invSigma
+)
+    if (is(Unqual!X == Unqual!Mu) &&
+        is(Unqual!X == Unqual!InvSigma))
+in
+{
+    assert(x.length!0 == invSigma.length!0, "The length of `x` must conform to the shape of `invSigma`");
+    assert(mu.length!0 == invSigma.length!0, "The length of `mu` must conform to the shape of `invSigma`");
+    assert(invSigma.length!0 == invSigma.length!1, "`invSigma` must be a square matrix");
+}
+do
+{
+    auto scopeX = x.lightScope.lightConst;
+    auto scopeMu = mu.lightScope.lightConst;
+    auto scopeInvSigma = invSigma.lightScope.lightConst;
+    return .mahalanobisDistancePrecision(scopeX, scopeMu, scopeInvSigma);
+}
+
+/// ditto
+@safe pure nothrow @nogc
+Unqual!X mahalanobisDistancePrecision(X, Mu, InvSigma, SliceKind kindX, SliceKind kindMu, SliceKind kindInvSigma)(
+    Slice!(const(X)*, 1, kindX) x,
+    auto ref const Slice!(RCI!Mu, 1, kindMu) mu,
+    auto ref const Slice!(RCI!InvSigma, 2, kindInvSigma) invSigma
+)
+    if (is(Unqual!X == Unqual!Mu) &&
+        is(Unqual!X == Unqual!InvSigma))
+in
+{
+    assert(x.length!0 == invSigma.length!0, "The length of `x` must conform to the shape of `invSigma`");
+    assert(mu.length!0 == invSigma.length!0, "The length of `mu` must conform to the shape of `invSigma`");
+    assert(invSigma.length!0 == invSigma.length!1, "`invSigma` must be a square matrix");
+}
+do
+{
+    auto scopeMu = mu.lightScope.lightConst;
+    auto scopeInvSigma = invSigma.lightScope.lightConst;
+    return .mahalanobisDistancePrecision(x, scopeMu, scopeInvSigma);
+}
+
+/// ditto
+@safe pure nothrow @nogc
+Unqual!X mahalanobisDistancePrecision(X, Mu, InvSigma, SliceKind kindX, SliceKind kindMu, SliceKind kindInvSigma)(
+    auto ref const Slice!(RCI!X, 1, kindX) x,
+    Slice!(const(Mu)*, 1, kindMu) mu,
+    auto ref const Slice!(RCI!InvSigma, 2, kindInvSigma) invSigma
+)
+    if (is(Unqual!X == Unqual!Mu) &&
+        is(Unqual!X == Unqual!InvSigma))
+in
+{
+    assert(x.length!0 == invSigma.length!0, "The length of `x` must conform to the shape of `invSigma`");
+    assert(mu.length!0 == invSigma.length!0, "The length of `mu` must conform to the shape of `invSigma`");
+    assert(invSigma.length!0 == invSigma.length!1, "`invSigma` must be a square matrix");
+}
+do
+{
+    auto scopeX = x.lightScope.lightConst;
+    auto scopeInvSigma = invSigma.lightScope.lightConst;
+    return .mahalanobisDistancePrecision(scopeX, mu, scopeInvSigma);
+}
+
+/// ditto
+@safe pure nothrow @nogc
+Unqual!X mahalanobisDistancePrecision(X, Mu, InvSigma, SliceKind kindX, SliceKind kindMu, SliceKind kindInvSigma)(
+    auto ref const Slice!(RCI!X, 1, kindX) x,
+    auto ref const Slice!(RCI!Mu, 1, kindMu) mu,
+    Slice!(const(InvSigma)*, 2, kindInvSigma) invSigma
+)
+    if (is(Unqual!X == Unqual!Mu) &&
+        is(Unqual!X == Unqual!InvSigma))
+in
+{
+    assert(x.length!0 == invSigma.length!0, "The length of `x` must conform to the shape of `invSigma`");
+    assert(mu.length!0 == invSigma.length!0, "The length of `mu` must conform to the shape of `invSigma`");
+    assert(invSigma.length!0 == invSigma.length!1, "`invSigma` must be a square matrix");
+}
+do
+{
+    auto scopeX = x.lightScope.lightConst;
+    auto scopeMu = mu.lightScope.lightConst;
+    return .mahalanobisDistancePrecision(scopeX, scopeMu, invSigma);
+}
+
+/// ditto
+@safe pure nothrow @nogc
+Unqual!X mahalanobisDistancePrecision(X, Mu, InvSigma, SliceKind kindX, SliceKind kindMu, SliceKind kindInvSigma)(
+    Slice!(const(X)*, 1, kindX) x,
+    Slice!(const(Mu)*, 1, kindMu) mu,
+    auto ref const Slice!(RCI!InvSigma, 2, kindInvSigma) invSigma
+)
+    if (is(Unqual!X == Unqual!Mu) &&
+        is(Unqual!X == Unqual!InvSigma))
+in
+{
+    assert(x.length!0 == invSigma.length!0, "The length of `x` must conform to the shape of `invSigma`");
+    assert(mu.length!0 == invSigma.length!0, "The length of `mu` must conform to the shape of `invSigma`");
+    assert(invSigma.length!0 == invSigma.length!1, "`invSigma` must be a square matrix");
+}
+do
+{
+    auto scopeInvSigma = invSigma.lightScope.lightConst;
+    return .mahalanobisDistancePrecision(x, mu, scopeInvSigma);
+}
+
+/// ditto
+@safe pure nothrow @nogc
+Unqual!X mahalanobisDistancePrecision(X, Mu, InvSigma, SliceKind kindX, SliceKind kindMu, SliceKind kindInvSigma)(
+    Slice!(const(X)*, 1, kindX) x,
+    auto ref const Slice!(RCI!Mu, 1, kindMu) mu,
+    Slice!(const(InvSigma)*, 2, kindInvSigma) invSigma
+)
+    if (is(Unqual!X == Unqual!Mu) &&
+        is(Unqual!X == Unqual!InvSigma))
+in
+{
+    assert(x.length!0 == invSigma.length!0, "The length of `x` must conform to the shape of `invSigma`");
+    assert(mu.length!0 == invSigma.length!0, "The length of `mu` must conform to the shape of `invSigma`");
+    assert(invSigma.length!0 == invSigma.length!1, "`invSigma` must be a square matrix");
+}
+do
+{
+    auto scopeMu = mu.lightScope.lightConst;
+    return .mahalanobisDistancePrecision(x, scopeMu, invSigma);
+}
+
+/// ditto
+@safe pure nothrow @nogc
+Unqual!X mahalanobisDistancePrecision(X, Mu, InvSigma, SliceKind kindX, SliceKind kindMu, SliceKind kindInvSigma)(
+    auto ref const Slice!(RCI!X, 1, kindX) x,
+    Slice!(const(Mu)*, 1, kindMu) mu,
+    Slice!(const(InvSigma)*, 2, kindInvSigma) invSigma
+)
+    if (is(Unqual!X == Unqual!Mu) &&
+        is(Unqual!X == Unqual!InvSigma))
+in
+{
+    assert(x.length!0 == invSigma.length!0, "The length of `x` must conform to the shape of `invSigma`");
+    assert(mu.length!0 == invSigma.length!0, "The length of `mu` must conform to the shape of `invSigma`");
+    assert(invSigma.length!0 == invSigma.length!1, "`invSigma` must be a square matrix");
+}
+do
+{
+    auto scopeX = x.lightScope.lightConst;
+    return .mahalanobisDistancePrecision(scopeX, my, invSigma);
+}
+
+/++
+Params:
+    x = n(rows) x 1 vector
+    invSigma = n(rows) x n(cols) matrix
++/
+@safe pure nothrow @nogc
+T mahalanobisDistancePrecision(T, SliceKind kindX, SliceKind kindInvSigma)(
+    Slice!(const(T)*, 1, kindX) x,
+    Slice!(const(T)*, 2, kindInvSigma) invSigma
+)
+    if (isFloatingPoint!T)
+in
+{
+    assert(x.length!0 == invSigma.length!0, "The length of `x` must conform to the shape of `invSigma`");
+    assert(invSigma.length!0 == invSigma.length!1, "`invSigma` must be a square matrix");
+}
+do
+{
+    import mir.math.internal.linearAlgebra: quadraticFormSymmetric;
+
+    return quadraticFormSymmetric(invSigma, x);
+}
+
+/// ditto
+@safe pure nothrow @nogc
+Unqual!X mahalanobisDistancePrecision(X, InvSigma, SliceKind kindX, SliceKind kindInvSigma)(
+    auto ref const Slice!(RCI!X, 1, kindX) x,
+    auto ref const Slice!(RCI!InvSigma, 2, kindInvSigma) invSigma
+)
+    if (is(Unqual!X == Unqual!InvSigma))
+in
+{
+    assert(x.length!0 == invSigma.length!0, "The length of `x` must conform to the shape of `invSigma`");
+    assert(invSigma.length!0 == invSigma.length!1, "`invSigma` must be a square matrix");
+}
+do
+{
+    auto scopeX = x.lightScope.lightConst;
+    auto scopeInvSigma = invSigma.lightScope.lightConst;
+    return .mahalanobisDistancePrecision(scopeX, scopeInvSigma);
+}
+
+/// ditto
+@safe pure nothrow @nogc
+Unqual!X mahalanobisDistancePrecision(X, InvSigma, SliceKind kindX, SliceKind kindInvSigma)(
+    Slice!(const(X)*, 1, kindX) x,
+    auto ref const Slice!(RCI!InvSigma, 2, kindInvSigma) invSigma
+)
+    if (is(Unqual!X == Unqual!InvSigma))
+in
+{
+    assert(x.length!0 == invSigma.length!0, "The length of `x` must conform to the shape of `invSigma`");
+    assert(invSigma.length!0 == invSigma.length!1, "`invSigma` must be a square matrix");
+}
+do
+{
+    auto scopeInvSigma = invSigma.lightScope.lightConst;
+    return .mahalanobisDistancePrecision(x, scopeInvSigma);
+}
+
+/// ditto
+@safe pure nothrow @nogc
+Unqual!X mahalanobisDistancePrecision(X, InvSigma, SliceKind kindX, SliceKind kindInvSigma)(
+    auto ref const Slice!(RCI!X, 1, kindX) x,
+    Slice!(const(InvSigma)*, 2, kindInvSigma) invSigma
+)
+    if (is(Unqual!X == Unqual!InvSigma))
+in
+{
+    assert(x.length!0 == invSigma.length!0, "The length of `x` must conform to the shape of `invSigma`");
+    assert(invSigma.length!0 == invSigma.length!1, "`invSigma` must be a square matrix");
+}
+do
+{
+    auto scopeX = x.lightScope.lightConst;
+    return .mahalanobisDistancePrecision(scopeX, invSigma);
+}
+
+/++
+Params:
+    x = m(rows) x n(cols) matrix
+    mu = n(rows) x 1 vector
+    invSigma = n(rows) x n(cols) matrix
++/
+@safe pure nothrow @nogc
+Slice!(RCI!T, 1) mahalanobisDistancePrecision(T, SliceKind kindX, SliceKind kindMu, SliceKind kindInvSigma)(
+    Slice!(const(T)*, 2, kindX) x,
+    Slice!(const(T)*, 1, kindMu) mu,
+    Slice!(const(T)*, 2, kindInvSigma) invSigma
+)
+    if (isFloatingPoint!T)
+in
+{
+    assert(x.length!1 == invSigma.length!0, "The number of columns of `x` must conform to the shape of `invSigma`");
+    assert(mu.length!0 == invSigma.length!0, "The length of `mu` must conform to the shape of `invSigma`");
+    assert(invSigma.length!0 == invSigma.length!1, "`invSigma` must be a square matrix");
+}
+do
+{
+    import mir.ndslice.allocation: mininitRcslice;
+
+    auto xCenter = mininitRcslice!T(x.length!0, x.length!1);
+    foreach (size_t i; 0 .. x.length!0) {
+        foreach (size_t j; 0 .. x.length!1) {
+            xCenter[i, j] = x[i, j] - mu[j];
+        }
+    }
+    return .mahalanobisDistancePrecision(xCenter, invSigma);
+}
+
+/// ditto
+@safe pure nothrow @nogc
+Slice!(RCI!(Unqual!X), 1) mahalanobisDistancePrecision(X, Mu, InvSigma, SliceKind kindX, SliceKind kindMu, SliceKind kindInvSigma)(
+    auto ref const Slice!(RCI!X, 2, kindX) x,
+    auto ref const Slice!(RCI!Mu, 1, kindMu) mu,
+    auto ref const Slice!(RCI!InvSigma, 2, kindInvSigma) invSigma
+)
+    if (is(Unqual!X == Unqual!Mu) &&
+        is(Unqual!X == Unqual!InvSigma))
+in
+{
+    assert(x.length!1 == invSigma.length!0, "The number of columns of `x` must conform to the shape of `invSigma`");
+    assert(mu.length!0 == invSigma.length!0, "The length of `mu` must conform to the shape of `invSigma`");
+    assert(invSigma.length!0 == invSigma.length!1, "`invSigma` must be a square matrix");
+}
+do
+{
+    auto scopeX = x.lightScope.lightConst;
+    auto scopeMu = mu.lightScope.lightConst;
+    auto scopeSigma = invSigma.lightScope.lightConst;
+    return .mahalanobisDistancePrecision(scopeX, scopeMu, scopeSigma);
+}
+
+/// ditto
+@safe pure nothrow @nogc
+Slice!(RCI!(Unqual!X), 1) mahalanobisDistancePrecision(X, Mu, InvSigma, SliceKind kindX, SliceKind kindMu, SliceKind kindInvSigma)(
+    Slice!(const(X)*, 2, kindX) x,
+    auto ref const Slice!(RCI!Mu, 1, kindMu) mu,
+    auto ref const Slice!(RCI!InvSigma, 2, kindInvSigma) invSigma
+)
+    if (is(Unqual!X == Unqual!Mu) &&
+        is(Unqual!X == Unqual!InvSigma))
+in
+{
+    assert(x.length!1 == invSigma.length!0, "The number of columns of `x` must conform to the shape of `invSigma`");
+    assert(mu.length!0 == invSigma.length!0, "The length of `mu` must conform to the shape of `invSigma`");
+    assert(invSigma.length!0 == invSigma.length!1, "`invSigma` must be a square matrix");
+}
+do
+{
+    auto scopeMu = mu.lightScope.lightConst;
+    auto scopeSigma = invSigma.lightScope.lightConst;
+    return .mahalanobisDistancePrecision(x, scopeMu, scopeSigma);
+}
+
+/// ditto
+@safe pure nothrow @nogc
+Slice!(RCI!(Unqual!X), 1) mahalanobisDistancePrecision(X, Mu, InvSigma, SliceKind kindX, SliceKind kindMu, SliceKind kindInvSigma)(
+    auto ref const Slice!(RCI!X, 2, kindX) x,
+    Slice!(const(Mu)*, 1, kindMu) mu,
+    auto ref const Slice!(RCI!InvSigma, 2, kindInvSigma) invSigma
+)
+    if (is(Unqual!X == Unqual!Mu) &&
+        is(Unqual!X == Unqual!InvSigma))
+in
+{
+    assert(x.length!1 == invSigma.length!0, "The number of columns of `x` must conform to the shape of `invSigma`");
+    assert(mu.length!0 == invSigma.length!0, "The length of `mu` must conform to the shape of `invSigma`");
+    assert(invSigma.length!0 == invSigma.length!1, "`invSigma` must be a square matrix");
+}
+do
+{
+    auto scopeX = x.lightScope.lightConst;
+    auto scopeSigma = invSigma.lightScope.lightConst;
+    return .mahalanobisDistancePrecision(scopeX, mu, scopeSigma);
+}
+
+/// ditto
+@safe pure nothrow @nogc
+Slice!(RCI!(Unqual!X), 1) mahalanobisDistancePrecision(X, Mu, InvSigma, SliceKind kindX, SliceKind kindMu, SliceKind kindInvSigma)(
+    auto ref const Slice!(RCI!X, 2, kindX) x,
+    auto ref const Slice!(RCI!Mu, 1, kindMu) mu,
+    Slice!(const(InvSigma)*, 2, kindInvSigma) invSigma
+)
+    if (is(Unqual!X == Unqual!Mu) &&
+        is(Unqual!X == Unqual!InvSigma))
+in
+{
+    assert(x.length!1 == invSigma.length!0, "The number of columns of `x` must conform to the shape of `invSigma`");
+    assert(mu.length!0 == invSigma.length!0, "The length of `mu` must conform to the shape of `invSigma`");
+    assert(invSigma.length!0 == invSigma.length!1, "`invSigma` must be a square matrix");
+}
+do
+{
+    auto scopeX = x.lightScope.lightConst;
+    auto scopeMu = mu.lightScope.lightConst;
+    return .mahalanobisDistancePrecision(scopeX, scopeMu, invSigma);
+}
+
+/// ditto
+@safe pure nothrow @nogc
+Slice!(RCI!(Unqual!X), 1) mahalanobisDistancePrecision(X, Mu, InvSigma, SliceKind kindX, SliceKind kindMu, SliceKind kindInvSigma)(
+    Slice!(const(X)*, 2, kindX) x,
+    Slice!(const(Mu)*, 1, kindMu) mu,
+    auto ref const Slice!(RCI!InvSigma, 2, kindInvSigma) invSigma
+)
+    if (is(Unqual!X == Unqual!Mu) &&
+        is(Unqual!X == Unqual!InvSigma))
+in
+{
+    assert(x.length!1 == invSigma.length!0, "The number of columns of `x` must conform to the shape of `invSigma`");
+    assert(mu.length!0 == invSigma.length!0, "The length of `mu` must conform to the shape of `invSigma`");
+    assert(invSigma.length!0 == invSigma.length!1, "`invSigma` must be a square matrix");
+}
+do
+{
+    auto scopeSigma = invSigma.lightScope.lightConst;
+    return .mahalanobisDistancePrecision(x, mu, scopeSigma);
+}
+
+/// ditto
+@safe pure nothrow @nogc
+Slice!(RCI!(Unqual!X), 1) mahalanobisDistancePrecision(X, Mu, InvSigma, SliceKind kindX, SliceKind kindMu, SliceKind kindInvSigma)(
+    Slice!(const(X)*, 2, kindX) x,
+    auto ref const Slice!(RCI!Mu, 1, kindMu) mu,
+    Slice!(const(InvSigma)*, 2, kindInvSigma) invSigma
+)
+    if (is(Unqual!X == Unqual!Mu) &&
+        is(Unqual!X == Unqual!InvSigma))
+in
+{
+    assert(x.length!1 == invSigma.length!0, "The number of columns of `x` must conform to the shape of `invSigma`");
+    assert(mu.length!0 == invSigma.length!0, "The length of `mu` must conform to the shape of `invSigma`");
+    assert(invSigma.length!0 == invSigma.length!1, "`invSigma` must be a square matrix");
+}
+do
+{
+    auto scopeMu = mu.lightScope.lightConst;
+    return .mahalanobisDistancePrecision(x, scopeMu, invSigma);
+}
+
+/// ditto
+@safe pure nothrow @nogc
+Slice!(RCI!(Unqual!X), 1) mahalanobisDistancePrecision(X, Mu, InvSigma, SliceKind kindX, SliceKind kindMu, SliceKind kindInvSigma)(
+    auto ref const Slice!(RCI!X, 2, kindX) x,
+    Slice!(const(Mu)*, 1, kindMu) mu,
+    Slice!(const(InvSigma)*, 2, kindInvSigma) invSigma
+)
+    if (is(Unqual!X == Unqual!Mu) &&
+        is(Unqual!X == Unqual!InvSigma))
+in
+{
+    assert(x.length!1 == invSigma.length!0, "The number of columns of `x` must conform to the shape of `invSigma`");
+    assert(mu.length!0 == invSigma.length!0, "The length of `mu` must conform to the shape of `invSigma`");
+    assert(invSigma.length!0 == invSigma.length!1, "`invSigma` must be a square matrix");
+}
+do
+{
+    auto scopeX = x.lightScope.lightConst;
+    return .mahalanobisDistancePrecision(scopeX, mu, invSigma);
+}
+
+/++
+Params:
+    x = m(rows) x n(cols) matrix
+    invSigma = n(rows) x n(cols) matrix
++/
+@safe pure nothrow @nogc
+Slice!(RCI!T, 1) mahalanobisDistancePrecision(T, SliceKind kindX, SliceKind kindInvSigma)(
+    Slice!(const(T)*, 2, kindX) x,
+    Slice!(const(T)*, 2, kindInvSigma) invSigma
+)
+    if (isFloatingPoint!T)
+in
+{
+    assert(x.length!1 == invSigma.length!0, "The number of columns of `x` must conform to the shape of `invSigma`");
+    assert(invSigma.length!0 == invSigma.length!1, "`invSigma` must be a square matrix");
+}
+do
+{
+    import mir.math.internal.linearAlgebra: rowsDotProduct;
+    import mir.math.internal.lubeck2: mtimesSymmetricRight;
+    import mir.ndslice.allocation: mininitRcslice;
+
+    auto temp = x.mtimesSymmetricRight(invSigma);
+    return temp.rowsDotProduct(x);
+}
+
+/// ditto
+@safe pure nothrow @nogc
+Slice!(RCI!(Unqual!X), 1) mahalanobisDistancePrecision(X, InvSigma, SliceKind kindX, SliceKind kindInvSigma)(
+    auto ref const Slice!(RCI!X, 2, kindX) x,
+    auto ref const Slice!(RCI!InvSigma, 2, kindInvSigma) invSigma
+)
+    if (is(Unqual!X == Unqual!InvSigma))
+in
+{
+    assert(x.length!1 == invSigma.length!0, "The number of columns of `x` must conform to the shape of `invSigma`");
+    assert(invSigma.length!0 == invSigma.length!1, "`invSigma` must be a square matrix");
+}
+do
+{
+    auto scopeX = x.lightScope.lightConst;
+    auto scopeSigma = invSigma.lightScope.lightConst;
+    return .mahalanobisDistancePrecision(scopeX, scopeSigma);
+}
+
+/// ditto
+@safe pure nothrow @nogc
+Slice!(RCI!(Unqual!X), 1) mahalanobisDistancePrecision(X, InvSigma, SliceKind kindX, SliceKind kindInvSigma)(
+    Slice!(const(X)*, 2, kindX) x,
+    auto ref const Slice!(RCI!InvSigma, 2, kindInvSigma) invSigma
+)
+    if (is(Unqual!X == Unqual!InvSigma))
+in
+{
+    assert(x.length!1 == invSigma.length!0, "The number of columns of `x` must conform to the shape of `invSigma`");
+    assert(invSigma.length!0 == invSigma.length!1, "`invSigma` must be a square matrix");
+}
+do
+{
+    auto scopeSigma = invSigma.lightScope.lightConst;
+    return .mahalanobisDistancePrecision(x, scopeSigma);
+}
+
+/// ditto
+@safe pure nothrow @nogc
+Slice!(RCI!(Unqual!X), 1) mahalanobisDistancePrecision(X, InvSigma, SliceKind kindX, SliceKind kindInvSigma)(
+    auto ref const Slice!(RCI!X, 2, kindX) x,
+    Slice!(const(InvSigma)*, 2, kindInvSigma) invSigma
+)
+    if (is(Unqual!X == Unqual!InvSigma))
+in
+{
+    assert(x.length!1 == invSigma.length!0, "The number of columns of `x` must conform to the shape of `invSigma`");
+    assert(invSigma.length!0 == invSigma.length!1, "`invSigma` must be a square matrix");
+}
+do
+{
+    auto scopeX = x.lightScope.lightConst;
+    return .mahalanobisDistancePrecision(scopeX, invSigma);
+}
+
+/// Vector example
+version(mir_stat_test_blas)
+@safe pure nothrow @nogc
+unittest
+{
+    import mir.ndslice.allocation: mininitRcslice;
+    import mir.test: shouldApprox;
+
+    static immutable a = [2.0, 1];
+    static immutable b = [1.0, 2];
+    static immutable c = [[0.6, -0.2],
+                          [-0.2, 0.4]];
+
+    auto x = mininitRcslice!double(2);
+    auto mu = mininitRcslice!double(2);
+    auto invSigma = mininitRcslice!double(2, 2);
+    auto xCenter = mininitRcslice!double(2);
+
+    x[] = a;
+    mu[] = b;
+    invSigma[] = c;
+    xCenter[] = a;
+    xCenter[] -= b;
+
+    x.mahalanobisDistancePrecision(mu, invSigma).shouldApprox == 1.4;
+    xCenter.mahalanobisDistancePrecision(invSigma).shouldApprox == 1.4;
+}
+
+/// Matrix example
+version(mir_stat_test_blas)
+@safe pure nothrow @nogc
+unittest
+{
+    import mir.algorithm.iteration: all;
+    import mir.math.common: approxEqual;
+    import mir.ndslice.allocation: mininitRcslice;
+    import mir.test: shouldApprox;
+
+    static immutable a = [[2.0, 1],
+                          [2.0, 3]];
+    static immutable b = [1.0, 2];
+    static immutable c = [[0.6, -0.2],
+                          [-0.2, 0.4]];
+    static immutable d = [1.4, 0.6];
+
+    auto x = mininitRcslice!double(2, 2);
+    auto mu = mininitRcslice!double(2);
+    auto invSigma = mininitRcslice!double(2, 2);
+    auto xCenter = mininitRcslice!double(2, 2);
+    auto result = mininitRcslice!double(2);
+
+    x[] = a;
+    mu[] = b;
+    invSigma[] = c;
+    xCenter[] = a;
+    xCenter[0][] -= b;
+    xCenter[1][] -= b;
+    result[] = d;
+
+    assert(x.mahalanobisDistancePrecision(mu, invSigma).all!approxEqual(result));
+    assert(xCenter.mahalanobisDistancePrecision(invSigma).all!approxEqual(result));
+}
+
+// Vector example (GC)
+version(mir_stat_test_blas)
+@safe pure nothrow
+unittest
+{
+    import mir.ndslice.allocation: uninitSlice;
+    import mir.test: shouldApprox;
+
+    static immutable a = [2.0, 1];
+    static immutable b = [1.0, 2];
+    static immutable c = [[0.6, -0.2],
+                          [-0.2, 0.4]];
+
+    auto x = uninitSlice!double(2);
+    auto mu = uninitSlice!double(2);
+    auto invSigma = uninitSlice!double(2, 2);
+    auto xCenter = uninitSlice!double(2);
+
+    x[] = a;
+    mu[] = b;
+    invSigma[] = c;
+    xCenter[] = a;
+    xCenter[] -= b;
+
+    x.mahalanobisDistancePrecision(mu, invSigma).shouldApprox == 1.4;
+    xCenter.mahalanobisDistancePrecision(invSigma).shouldApprox == 1.4;
+}
+
+// Matrix example (GC)
+version(mir_stat_test_blas)
+@safe pure nothrow
+unittest
+{
+    import mir.algorithm.iteration: all;
+    import mir.math.common: approxEqual;
+    import mir.ndslice.allocation: uninitSlice;
+    import mir.test: shouldApprox;
+
+    static immutable a = [[2.0, 1],
+                          [2.0, 3]];
+    static immutable b = [1.0, 2];
+    static immutable c = [[0.6, -0.2],
+                          [-0.2, 0.4]];
+    static immutable d = [1.4, 0.6];
+
+    auto x = uninitSlice!double(2, 2);
+    auto mu = uninitSlice!double(2);
+    auto invSigma = uninitSlice!double(2, 2);
+    auto xCenter = uninitSlice!double(2, 2);
+    auto result = uninitSlice!double(2);
+
+    x[] = a;
+    mu[] = b;
+    invSigma[] = c;
+    xCenter[] = a;
+    xCenter[0][] -= b;
+    xCenter[1][] -= b;
+    result[] = d;
+
+    assert(x.mahalanobisDistancePrecision(mu, invSigma).all!approxEqual(result));
+    assert(xCenter.mahalanobisDistancePrecision(invSigma).all!approxEqual(result));
+}
+
+/++
+For input `x`, computes the Mahalanobis distance, centered by vector `mu` and
+scaled with covariance matrix `sigma`.
+
+If `x` is a matrix, the Mahalanobis distance is calculated on a row-by-row basis.
+
+`sigma` is assumed to be positive definite (upper).
+
+Params:
+    x = n(rows) x 1 vector
+    mu = n(rows) x 1 vector
+    sigma = n(rows) x n(cols) matrix
+
+Result:
+    Mahalanobis distance
+
+See_also:
+    $(LINK2 https://en.wikipedia.org/wiki/Mahalanobis_distance, Mahalanobis distance)
++/
+@safe pure nothrow @nogc
+T mahalanobisDistancePositiveDefinite(T, SliceKind kindX, SliceKind kindMu, SliceKind kindSigma)(
+    Slice!(const(T)*, 1, kindX) x,
+    Slice!(const(T)*, 1, kindMu) mu,
+    Slice!(const(T)*, 2, kindSigma) sigma
+)
+    if (isFloatingPoint!T)
+in
+{
+    assert(x.length!0 == sigma.length!0, "The length of `x` must conform to the shape of `sigma`");
+    assert(mu.length!0 == sigma.length!0, "The length of `mu` must conform to the shape of `sigma`");
+    assert(sigma.length!0 == sigma.length!1, "`sigma` must be a square matrix");
+}
+do
+{
+    import mir.ndslice.topology: rcmap, zip;
+
+    auto xCenter = x.zip!true(mu).rcmap!("a[0] - a[1]").moveToSlice;
+    return .mahalanobisDistancePositiveDefinite(xCenter, sigma);
+}
+
+/// ditto
+@safe pure nothrow @nogc
+Unqual!X mahalanobisDistancePositiveDefinite(X, Mu, Sigma, SliceKind kindX, SliceKind kindMu, SliceKind kindSigma)(
+    auto ref const Slice!(RCI!X, 1, kindX) x,
+    auto ref const Slice!(RCI!Mu, 1, kindMu) mu,
+    auto ref const Slice!(RCI!Sigma, 2, kindSigma) sigma
+)
+    if (is(Unqual!X == Unqual!Mu) &&
+        is(Unqual!X == Unqual!Sigma))
+in
+{
+    assert(x.length!0 == sigma.length!0, "The length of `x` must conform to the shape of `sigma`");
+    assert(mu.length!0 == sigma.length!0, "The length of `mu` must conform to the shape of `sigma`");
+    assert(sigma.length!0 == sigma.length!1, "`sigma` must be a square matrix");
+}
+do
+{
+    auto scopeX = x.lightScope.lightConst;
+    auto scopeMu = mu.lightScope.lightConst;
+    auto scopeSigma = sigma.lightScope.lightConst;
+    return .mahalanobisDistancePositiveDefinite(scopeX, scopeMu, scopeSigma);
+}
+
+/// ditto
+@safe pure nothrow @nogc
+Unqual!X mahalanobisDistancePositiveDefinite(X, Mu, Sigma, SliceKind kindX, SliceKind kindMu, SliceKind kindSigma)(
+    Slice!(const(X)*, 1, kindX) x,
+    auto ref const Slice!(RCI!Mu, 1, kindMu) mu,
+    auto ref const Slice!(RCI!Sigma, 2, kindSigma) sigma
+)
+    if (is(Unqual!X == Unqual!Mu) &&
+        is(Unqual!X == Unqual!Sigma))
+in
+{
+    assert(x.length!0 == sigma.length!0, "The length of `x` must conform to the shape of `sigma`");
+    assert(mu.length!0 == sigma.length!0, "The length of `mu` must conform to the shape of `sigma`");
+    assert(sigma.length!0 == sigma.length!1, "`sigma` must be a square matrix");
+}
+do
+{
+    auto scopeMu = mu.lightScope.lightConst;
+    auto scopeSigma = sigma.lightScope.lightConst;
+    return .mahalanobisDistancePositiveDefinite(x, scopeMu, scopeSigma);
+}
+
+/// ditto
+@safe pure nothrow @nogc
+Unqual!X mahalanobisDistancePositiveDefinite(X, Mu, Sigma, SliceKind kindX, SliceKind kindMu, SliceKind kindSigma)(
+    auto ref const Slice!(RCI!X, 1, kindX) x,
+    Slice!(const(Mu)*, 1, kindMu) mu,
+    auto ref const Slice!(RCI!Sigma, 2, kindSigma) sigma
+)
+    if (is(Unqual!X == Unqual!Mu) &&
+        is(Unqual!X == Unqual!Sigma))
+in
+{
+    assert(x.length!0 == sigma.length!0, "The length of `x` must conform to the shape of `sigma`");
+    assert(mu.length!0 == sigma.length!0, "The length of `mu` must conform to the shape of `sigma`");
+    assert(sigma.length!0 == sigma.length!1, "`sigma` must be a square matrix");
+}
+do
+{
+    auto scopeX = x.lightScope.lightConst;
+    auto scopeSigma = sigma.lightScope.lightConst;
+    return .mahalanobisDistancePositiveDefinite(scopeX, mu, scopeSigma);
+}
+
+/// ditto
+@safe pure nothrow @nogc
+Unqual!X mahalanobisDistancePositiveDefinite(X, Mu, Sigma, SliceKind kindX, SliceKind kindMu, SliceKind kindSigma)(
+    auto ref const Slice!(RCI!X, 1, kindX) x,
+    auto ref const Slice!(RCI!Mu, 1, kindMu) mu,
+    Slice!(const(Sigma)*, 2, kindSigma) sigma
+)
+    if (is(Unqual!X == Unqual!Mu) &&
+        is(Unqual!X == Unqual!Sigma))
+in
+{
+    assert(x.length!0 == sigma.length!0, "The length of `x` must conform to the shape of `sigma`");
+    assert(mu.length!0 == sigma.length!0, "The length of `mu` must conform to the shape of `sigma`");
+    assert(sigma.length!0 == sigma.length!1, "`sigma` must be a square matrix");
+}
+do
+{
+    auto scopeX = x.lightScope.lightConst;
+    auto scopeMu = mu.lightScope.lightConst;
+    return .mahalanobisDistancePositiveDefinite(scopeX, scopeMu, sigma);
+}
+
+/// ditto
+@safe pure nothrow @nogc
+Unqual!X mahalanobisDistancePositiveDefinite(X, Mu, Sigma, SliceKind kindX, SliceKind kindMu, SliceKind kindSigma)(
+    Slice!(const(X)*, 1, kindX) x,
+    Slice!(const(Mu)*, 1, kindMu) mu,
+    auto ref const Slice!(RCI!Sigma, 2, kindSigma) sigma
+)
+    if (is(Unqual!X == Unqual!Mu) &&
+        is(Unqual!X == Unqual!Sigma))
+in
+{
+    assert(x.length!0 == sigma.length!0, "The length of `x` must conform to the shape of `sigma`");
+    assert(mu.length!0 == sigma.length!0, "The length of `mu` must conform to the shape of `sigma`");
+    assert(sigma.length!0 == sigma.length!1, "`sigma` must be a square matrix");
+}
+do
+{
+    auto scopeSigma = sigma.lightScope.lightConst;
+    return .mahalanobisDistancePositiveDefinite(x, mu, scopeSigma);
+}
+
+/// ditto
+@safe pure nothrow @nogc
+Unqual!X mahalanobisDistancePositiveDefinite(X, Mu, Sigma, SliceKind kindX, SliceKind kindMu, SliceKind kindSigma)(
+    Slice!(const(X)*, 1, kindX) x,
+    auto ref const Slice!(RCI!Mu, 1, kindMu) mu,
+    Slice!(const(Sigma)*, 2, kindSigma) sigma
+)
+    if (is(Unqual!X == Unqual!Mu) &&
+        is(Unqual!X == Unqual!Sigma))
+in
+{
+    assert(x.length!0 == sigma.length!0, "The length of `x` must conform to the shape of `sigma`");
+    assert(mu.length!0 == sigma.length!0, "The length of `mu` must conform to the shape of `sigma`");
+    assert(sigma.length!0 == sigma.length!1, "`sigma` must be a square matrix");
+}
+do
+{
+    auto scopeMu = mu.lightScope.lightConst;
+    return .mahalanobisDistancePositiveDefinite(x, scopeMu, sigma);
+}
+
+/// ditto
+@safe pure nothrow @nogc
+Unqual!X mahalanobisDistancePositiveDefinite(X, Mu, Sigma, SliceKind kindX, SliceKind kindMu, SliceKind kindSigma)(
+    auto ref const Slice!(RCI!X, 1, kindX) x,
+    Slice!(const(Mu)*, 1, kindMu) mu,
+    Slice!(const(Sigma)*, 2, kindSigma) sigma
+)
+    if (is(Unqual!X == Unqual!Mu) &&
+        is(Unqual!X == Unqual!Sigma))
+in
+{
+    assert(x.length!0 == sigma.length!0, "The length of `x` must conform to the shape of `sigma`");
+    assert(mu.length!0 == sigma.length!0, "The length of `mu` must conform to the shape of `sigma`");
+    assert(sigma.length!0 == sigma.length!1, "`sigma` must be a square matrix");
+}
+do
+{
+    auto scopeX = x.lightScope.lightConst;
+    return .mahalanobisDistancePositiveDefinite(scopeX, mu, sigma);
+}
+
+/++
+Params:
+    x = n(rows) x 1 vector
+    sigma = n(rows) x n(cols) matrix
++/
+@safe pure nothrow @nogc
+T mahalanobisDistancePositiveDefinite(T, SliceKind kindX, SliceKind kindSigma)(
+    Slice!(const(T)*, 1, kindX) x,
+    Slice!(const(T)*, 2, kindSigma) sigma
+)
+    if (isFloatingPoint!T)
+in
+{
+    assert(x.length!0 == sigma.length!0, "The length of `x` must conform to the shape of `sigma`");
+    assert(sigma.length!0 == sigma.length!1, "`sigma` must be a square matrix");
+}
+do
+{
+    import mir.math.internal.linearAlgebra: mldividePositiveDefinite;
+    import mir.math.internal.lubeck2: mtimes;
+
+    try {
+        auto temp = sigma.mldividePositiveDefinite(x);
+        return temp.mtimes(x);
+    } catch (Exception e) {
+        return T.init;
+    }
+}
+
+/// ditto
+@safe pure nothrow @nogc
+Unqual!X mahalanobisDistancePositiveDefinite(X, Sigma, SliceKind kindX, SliceKind kindSigma)(
+    auto ref const Slice!(RCI!X, 1, kindX) x,
+    auto ref const Slice!(RCI!Sigma, 2, kindSigma) sigma
+)
+    if (is(Unqual!X == Unqual!Sigma))
+in
+{
+    assert(x.length!0 == sigma.length!0, "The length of `x` must conform to the shape of `sigma`");
+    assert(sigma.length!0 == sigma.length!1, "`sigma` must be a square matrix");
+}
+do
+{
+    auto scopeX = x.lightScope.lightConst;
+    auto scopeSigma = sigma.lightScope.lightConst;
+    return .mahalanobisDistancePositiveDefinite(scopeX, scopeSigma);
+}
+
+/// ditto
+@safe pure nothrow @nogc
+Unqual!X mahalanobisDistancePositiveDefinite(X, Sigma, SliceKind kindX, SliceKind kindSigma)(
+    Slice!(const(X)*, 1, kindX) x,
+    auto ref const Slice!(RCI!Sigma, 2, kindSigma) sigma
+)
+    if (is(Unqual!X == Unqual!Sigma))
+in
+{
+    assert(x.length!0 == sigma.length!0, "The length of `x` must conform to the shape of `sigma`");
+    assert(sigma.length!0 == sigma.length!1, "`sigma` must be a square matrix");
+}
+do
+{
+    auto scopeSigma = sigma.lightScope.lightConst;
+    return .mahalanobisDistancePositiveDefinite(x, scopeSigma);
+}
+
+/// ditto
+@safe pure nothrow @nogc
+Unqual!X mahalanobisDistancePositiveDefinite(X, Sigma, SliceKind kindX, SliceKind kindSigma)(
+    auto ref const Slice!(RCI!X, 1, kindX) x,
+    Slice!(const(Sigma)*, 2, kindSigma) sigma
+)
+    if (is(Unqual!X == Unqual!Sigma))
+in
+{
+    assert(x.length!0 == sigma.length!0, "The length of `x` must conform to the shape of `sigma`");
+    assert(sigma.length!0 == sigma.length!1, "`sigma` must be a square matrix");
+}
+do
+{
+    auto scopeX = x.lightScope.lightConst;
+    return .mahalanobisDistancePositiveDefinite(scopeX, sigma);
+}
+
+/++
+Params:
+    x = m(rows) x n(cols) matrix
+    mu = n(rows) x 1 vector
+    sigma = n(rows) x n(cols) matrix
++/
+@safe pure nothrow @nogc
+Slice!(RCI!T, 1) mahalanobisDistancePositiveDefinite(T, SliceKind kindX, SliceKind kindMu, SliceKind kindSigma)(
+    Slice!(const(T)*, 2, kindX) x,
+    Slice!(const(T)*, 1, kindMu) mu,
+    Slice!(const(T)*, 2, kindSigma) sigma
+)
+    if (isFloatingPoint!T)
+in
+{
+    assert(x.length!1 == sigma.length!0, "The number of columns of `x` must conform to the shape of `sigma`");
+    assert(mu.length!0 == sigma.length!0, "The length of `mu` must conform to the shape of `sigma`");
+    assert(sigma.length!0 == sigma.length!1, "`sigma` must be a square matrix");
+}
+do
+{
+    import mir.ndslice.allocation: mininitRcslice;
+
+    auto xCenter = mininitRcslice!T(x.length!0, x.length!1);
+    foreach (size_t i; 0 .. x.length!0) {
+        foreach (size_t j; 0 .. x.length!1) {
+            xCenter[i, j] = x[i, j] - mu[j];
+        }
+    }
+    return .mahalanobisDistancePositiveDefinite(xCenter, sigma);
+}
+
+/// ditto
+@safe pure nothrow @nogc
+Slice!(RCI!(Unqual!X), 1) mahalanobisDistancePositiveDefinite(X, Mu, Sigma, SliceKind kindX, SliceKind kindMu, SliceKind kindSigma)(
+    auto ref const Slice!(RCI!X, 2, kindX) x,
+    auto ref const Slice!(RCI!Mu, 1, kindMu) mu,
+    auto ref const Slice!(RCI!Sigma, 2, kindSigma) sigma
+)
+    if (is(Unqual!X == Unqual!Mu) &&
+        is(Unqual!X == Unqual!Sigma))
+in
+{
+    assert(x.length!1 == sigma.length!0, "The number of columns of `x` must conform to the shape of `sigma`");
+    assert(mu.length!0 == sigma.length!0, "The length of `mu` must conform to the shape of `sigma`");
+    assert(sigma.length!0 == sigma.length!1, "`sigma` must be a square matrix");
+}
+do
+{
+    auto scopeX = x.lightScope.lightConst;
+    auto scopeMu = mu.lightScope.lightConst;
+    auto scopeSigma = sigma.lightScope.lightConst;
+    return .mahalanobisDistancePositiveDefinite(scopeX, scopeMu, scopeSigma);
+}
+
+/// ditto
+@safe pure nothrow @nogc
+Slice!(RCI!(Unqual!X), 1) mahalanobisDistancePositiveDefinite(X, Mu, Sigma, SliceKind kindX, SliceKind kindMu, SliceKind kindSigma)(
+    Slice!(const(X)*, 2, kindX) x,
+    auto ref const Slice!(RCI!Mu, 1, kindMu) mu,
+    auto ref const Slice!(RCI!Sigma, 2, kindSigma) sigma
+)
+    if (is(Unqual!X == Unqual!Mu) &&
+        is(Unqual!X == Unqual!Sigma))
+in
+{
+    assert(x.length!1 == sigma.length!0, "The number of columns of `x` must conform to the shape of `sigma`");
+    assert(mu.length!0 == sigma.length!0, "The length of `mu` must conform to the shape of `sigma`");
+    assert(sigma.length!0 == sigma.length!1, "`sigma` must be a square matrix");
+}
+do
+{
+    auto scopeMu = mu.lightScope.lightConst;
+    auto scopeSigma = sigma.lightScope.lightConst;
+    return .mahalanobisDistancePositiveDefinite(x, scopeMu, scopeSigma);
+}
+
+/// ditto
+@safe pure nothrow @nogc
+Slice!(RCI!(Unqual!X), 1) mahalanobisDistancePositiveDefinite(X, Mu, Sigma, SliceKind kindX, SliceKind kindMu, SliceKind kindSigma)(
+    auto ref const Slice!(RCI!X, 2, kindX) x,
+    Slice!(const(Mu)*, 1, kindMu) mu,
+    auto ref const Slice!(RCI!Sigma, 2, kindSigma) sigma
+)
+    if (is(Unqual!X == Unqual!Mu) &&
+        is(Unqual!X == Unqual!Sigma))
+in
+{
+    assert(x.length!1 == sigma.length!0, "The number of columns of `x` must conform to the shape of `sigma`");
+    assert(mu.length!0 == sigma.length!0, "The length of `mu` must conform to the shape of `sigma`");
+    assert(sigma.length!0 == sigma.length!1, "`sigma` must be a square matrix");
+}
+do
+{
+    auto scopeX = x.lightScope.lightConst;
+    auto scopeSigma = sigma.lightScope.lightConst;
+    return .mahalanobisDistancePositiveDefinite(scopeX, mu, scopeSigma);
+}
+
+/// ditto
+@safe pure nothrow @nogc
+Slice!(RCI!(Unqual!X), 1) mahalanobisDistancePositiveDefinite(X, Mu, Sigma, SliceKind kindX, SliceKind kindMu, SliceKind kindSigma)(
+    auto ref const Slice!(RCI!X, 2, kindX) x,
+    auto ref const Slice!(RCI!Mu, 1, kindMu) mu,
+    Slice!(const(Sigma)*, 2, kindSigma) sigma
+)
+    if (is(Unqual!X == Unqual!Mu) &&
+        is(Unqual!X == Unqual!Sigma))
+in
+{
+    assert(x.length!1 == sigma.length!0, "The number of columns of `x` must conform to the shape of `sigma`");
+    assert(mu.length!0 == sigma.length!0, "The length of `mu` must conform to the shape of `sigma`");
+    assert(sigma.length!0 == sigma.length!1, "`sigma` must be a square matrix");
+}
+do
+{
+    auto scopeX = x.lightScope.lightConst;
+    auto scopeMu = mu.lightScope.lightConst;
+    return .mahalanobisDistancePositiveDefinite(scopeX, scopeMu, sigma);
+}
+
+/// ditto
+@safe pure nothrow @nogc
+Slice!(RCI!(Unqual!X), 1) mahalanobisDistancePositiveDefinite(X, Mu, Sigma, SliceKind kindX, SliceKind kindMu, SliceKind kindSigma)(
+    Slice!(const(X)*, 2, kindX) x,
+    Slice!(const(Mu)*, 1, kindMu) mu,
+    auto ref const Slice!(RCI!Sigma, 2, kindSigma) sigma
+)
+    if (is(Unqual!X == Unqual!Mu) &&
+        is(Unqual!X == Unqual!Sigma))
+in
+{
+    assert(x.length!1 == sigma.length!0, "The number of columns of `x` must conform to the shape of `sigma`");
+    assert(mu.length!0 == sigma.length!0, "The length of `mu` must conform to the shape of `sigma`");
+    assert(sigma.length!0 == sigma.length!1, "`sigma` must be a square matrix");
+}
+do
+{
+    auto scopeSigma = sigma.lightScope.lightConst;
+    return .mahalanobisDistancePositiveDefinite(x, mu, scopeSigma);
+}
+
+/// ditto
+@safe pure nothrow @nogc
+Slice!(RCI!(Unqual!X), 1) mahalanobisDistancePositiveDefinite(X, Mu, Sigma, SliceKind kindX, SliceKind kindMu, SliceKind kindSigma)(
+    Slice!(const(X)*, 2, kindX) x,
+    auto ref const Slice!(RCI!Mu, 1, kindMu) mu,
+    Slice!(const(Sigma)*, 2, kindSigma) sigma
+)
+    if (is(Unqual!X == Unqual!Mu) &&
+        is(Unqual!X == Unqual!Sigma))
+in
+{
+    assert(x.length!1 == sigma.length!0, "The number of columns of `x` must conform to the shape of `sigma`");
+    assert(mu.length!0 == sigma.length!0, "The length of `mu` must conform to the shape of `sigma`");
+    assert(sigma.length!0 == sigma.length!1, "`sigma` must be a square matrix");
+}
+do
+{
+    auto scopeMu = mu.lightScope.lightConst;
+    return .mahalanobisDistancePositiveDefinite(x, scopeMu, sigma);
+}
+
+/// ditto
+@safe pure nothrow @nogc
+Slice!(RCI!(Unqual!X), 1) mahalanobisDistancePositiveDefinite(X, Mu, Sigma, SliceKind kindX, SliceKind kindMu, SliceKind kindSigma)(
+    auto ref const Slice!(RCI!X, 2, kindX) x,
+    Slice!(const(Mu)*, 1, kindMu) mu,
+    Slice!(const(Sigma)*, 2, kindSigma) sigma
+)
+    if (is(Unqual!X == Unqual!Mu) &&
+        is(Unqual!X == Unqual!Sigma))
+in
+{
+    assert(x.length!1 == sigma.length!0, "The number of columns of `x` must conform to the shape of `sigma`");
+    assert(mu.length!0 == sigma.length!0, "The length of `mu` must conform to the shape of `sigma`");
+    assert(sigma.length!0 == sigma.length!1, "`sigma` must be a square matrix");
+}
+do
+{
+    auto scopeX = x.lightScope.lightConst;
+    return .mahalanobisDistancePositiveDefinite(scopeX, mu, sigma);
+}
+
+/++
+Params:
+    x = m(rows) x n(cols) matrix
+    sigma = n(rows) x n(cols) matrix
++/
+@safe pure nothrow @nogc
+Slice!(RCI!T, 1) mahalanobisDistancePositiveDefinite(T, SliceKind kindX, SliceKind kindSigma)(
+    Slice!(const(T)*, 2, kindX) x,
+    Slice!(const(T)*, 2, kindSigma) sigma
+)
+    if (isFloatingPoint!T)
+in
+{
+    assert(x.length!1 == sigma.length!0, "The number of columns of `x` must conform to the shape of `sigma`");
+    assert(sigma.length!0 == sigma.length!1, "`sigma` must be a square matrix");
+}
+do
+{
+    import mir.math.internal.linearAlgebra: mldividePositiveDefinite, rowsDotProduct;
+    import mir.math.internal.lubeck2: mtimes;
+    import mir.ndslice.allocation: rcslice;
+    import mir.ndslice.dynamic: transposed;
+
+    try {
+        auto temp = sigma.mldividePositiveDefinite(x.transposed).transposed;
+        return temp.rowsDotProduct(x);
+    } catch (Exception e) {
+        return rcslice!T([x.length], T.init);
+    }
+}
+
+/// ditto
+@safe pure nothrow @nogc
+Slice!(RCI!(Unqual!X), 1) mahalanobisDistancePositiveDefinite(X, Sigma, SliceKind kindX, SliceKind kindSigma)(
+    auto ref const Slice!(RCI!X, 2, kindX) x,
+    auto ref const Slice!(RCI!Sigma, 2, kindSigma) sigma
+)
+    if (is(Unqual!X == Unqual!Sigma))
+in
+{
+    assert(x.length!1 == sigma.length!0, "The number of columns of `x` must conform to the shape of `sigma`");
+    assert(sigma.length!0 == sigma.length!1, "`sigma` must be a square matrix");
+}
+do
+{
+    auto scopeX = x.lightScope.lightConst;
+    auto scopeSigma = sigma.lightScope.lightConst;
+    return .mahalanobisDistancePositiveDefinite(scopeX, scopeSigma);
+}
+
+/// ditto
+@safe pure nothrow @nogc
+Slice!(RCI!(Unqual!X), 1) mahalanobisDistancePositiveDefinite(X, Sigma, SliceKind kindX, SliceKind kindSigma)(
+    Slice!(const(X)*, 2, kindX) x,
+    auto ref const Slice!(RCI!Sigma, 2, kindSigma) sigma
+)
+    if (is(Unqual!X == Unqual!Sigma))
+in
+{
+    assert(x.length!1 == sigma.length!0, "The number of columns of `x` must conform to the shape of `sigma`");
+    assert(sigma.length!0 == sigma.length!1, "`sigma` must be a square matrix");
+}
+do
+{
+    auto scopeSigma = sigma.lightScope.lightConst;
+    return .mahalanobisDistancePositiveDefinite(x, scopeSigma);
+}
+
+/// ditto
+@safe pure nothrow @nogc
+Slice!(RCI!(Unqual!X), 1) mahalanobisDistancePositiveDefinite(X, Sigma, SliceKind kindX, SliceKind kindSigma)(
+    auto ref const Slice!(RCI!X, 2, kindX) x,
+    Slice!(const(Sigma)*, 2, kindSigma) sigma
+)
+    if (is(Unqual!X == Unqual!Sigma))
+in
+{
+    assert(x.length!1 == sigma.length!0, "The number of columns of `x` must conform to the shape of `sigma`");
+    assert(sigma.length!0 == sigma.length!1, "`sigma` must be a square matrix");
+}
+do
+{
+    auto scopeX = x.lightScope.lightConst;
+    return .mahalanobisDistancePositiveDefinite(scopeX, sigma);
+}
+
+/// Vector example
+version(mir_stat_test_blas)
+@safe pure nothrow @nogc
+unittest
+{
+    import mir.ndslice.allocation: mininitRcslice;
+    import mir.test: shouldApprox;
+
+    static immutable a = [2.0, 1];
+    static immutable b = [1.0, 2];
+    static immutable c = [[2.0, 1],
+                          [1.0, 3]];
+
+    auto x = mininitRcslice!double(2);
+    auto mu = mininitRcslice!double(2);
+    auto sigma = mininitRcslice!double(2, 2);
+    auto xCenter = mininitRcslice!double(2);
+
+    x[] = a;
+    mu[] = b;
+    sigma[] = c;
+    xCenter[] = a;
+    xCenter[] -= b;
+
+    x.mahalanobisDistancePositiveDefinite(mu, sigma).shouldApprox == 1.4;
+    xCenter.mahalanobisDistancePositiveDefinite(sigma).shouldApprox == 1.4;
+}
+
+/// Matrix example
+version(mir_stat_test_blas)
+@safe pure nothrow @nogc
+unittest
+{
+    import mir.algorithm.iteration: all;
+    import mir.math.common: approxEqual;
+    import mir.ndslice.allocation: mininitRcslice;
+    import mir.test: shouldApprox;
+
+    static immutable a = [[2.0, 1],
+                          [2.0, 3]];
+    static immutable b = [1.0, 2];
+    static immutable c = [[2.0, 1],
+                          [1.0, 3]];
+    static immutable d = [1.4, 0.6];
+
+    auto x = mininitRcslice!double(2, 2);
+    auto mu = mininitRcslice!double(2);
+    auto sigma = mininitRcslice!double(2, 2);
+    auto xCenter = mininitRcslice!double(2, 2);
+    auto result = mininitRcslice!double(2);
+
+    x[] = a;
+    mu[] = b;
+    sigma[] = c;
+    xCenter[] = a;
+    xCenter[0][] -= b;
+    xCenter[1][] -= b;
+    result[] = d;
+
+    assert(x.mahalanobisDistancePositiveDefinite(mu, sigma).all!approxEqual(result));
+    assert(xCenter.mahalanobisDistancePositiveDefinite(sigma).all!approxEqual(result));
+}
+
+// Error check
+version(mir_stat_test_blas)
+@safe pure nothrow @nogc
+unittest
+{
+    import mir.algorithm.iteration: all;
+    import mir.ndslice.allocation: mininitRcslice, rcslice;
+    import mir.test: should;
+    import std.math.traits: isNaN;
+
+    static immutable a = [[1.0, -1],
+                          [1.0, 1]];
+    static immutable b = [[double.nan, 1],
+                          [1.0, 3]];
+
+    auto x = mininitRcslice!double(2, 2);
+    auto mu = mininitRcslice!double(2);
+    auto sigma = mininitRcslice!double(2, 2);
+
+    x[] = a;
+    sigma[] = b;
+
+    x[0].mahalanobisDistancePositiveDefinite(sigma).should == double.nan;
+    assert(x.mahalanobisDistancePositiveDefinite(sigma).all!isNaN);
+}
+
+// Vector example (GC)
+version(mir_stat_test_blas)
+@safe pure nothrow
+unittest
+{
+    import mir.ndslice.allocation: uninitSlice;
+    import mir.test: shouldApprox;
+
+    static immutable a = [2.0, 1];
+    static immutable b = [1.0, 2];
+    static immutable c = [[2.0, 1],
+                          [1.0, 3]];
+
+    auto x = uninitSlice!double(2);
+    auto mu = uninitSlice!double(2);
+    auto sigma = uninitSlice!double(2, 2);
+    auto xCenter = uninitSlice!double(2);
+
+    x[] = a;
+    mu[] = b;
+    sigma[] = c;
+    xCenter[] = a;
+    xCenter[] -= b;
+
+    x.mahalanobisDistancePositiveDefinite(mu, sigma).shouldApprox == 1.4;
+    xCenter.mahalanobisDistancePositiveDefinite(sigma).shouldApprox == 1.4;
+}
+
+// Matrix example (GC)
+version(mir_stat_test_blas)
+@safe pure nothrow
+unittest
+{
+    import mir.algorithm.iteration: all;
+    import mir.math.common: approxEqual;
+    import mir.ndslice.allocation: uninitSlice;
+    import mir.test: shouldApprox;
+
+    static immutable a = [[2.0, 1],
+                          [2.0, 3]];
+    static immutable b = [1.0, 2];
+    static immutable c = [[2.0, 1],
+                          [1.0, 3]];
+    static immutable d = [1.4, 0.6];
+
+    auto x = uninitSlice!double(2, 2);
+    auto mu = uninitSlice!double(2);
+    auto sigma = uninitSlice!double(2, 2);
+    auto xCenter = uninitSlice!double(2, 2);
+    auto result = uninitSlice!double(2);
+
+    x[] = a;
+    mu[] = b;
+    sigma[] = c;
+    xCenter[] = a;
+    xCenter[0][] -= b;
+    xCenter[1][] -= b;
+    result[] = d;
+
+    assert(x.mahalanobisDistancePositiveDefinite(mu, sigma).all!approxEqual(result));
+    assert(xCenter.mahalanobisDistancePositiveDefinite(sigma).all!approxEqual(result));
+}
+
+/++
+For input `x`, computes the Mahalanobis distance, centered by vector `mu` and
+scaled with Cholesky matrix `sigmaCholesky`.
+
+If `x` is a matrix, the Mahalanobis distance is calculated on a row-by-row basis.
+
+`sigmaCholesky` is assumed to be the Cholesky decomposition of a positive definite covariance matrix.
+
+Params:
+    x = n(rows) x 1 vector
+    mu = n(rows) x 1 vector
+    sigmaCholesky = n(rows) x n(cols) matrix
+
+Result:
+    Mahalanobis distance
+
+See_also:
+    $(LINK2 https://en.wikipedia.org/wiki/Mahalanobis_distance, Mahalanobis distance)
++/
+@safe pure nothrow @nogc
+template mahalanobisDistanceCholesky(Uplo uplo = Uplo.Upper)
+{
+    T mahalanobisDistanceCholesky(T, SliceKind kindX, SliceKind kindMu, SliceKind kindSigmaCholesky)(
+        Slice!(const(T)*, 1, kindX) x,
+        Slice!(const(T)*, 1, kindMu) mu,
+        Slice!(const(T)*, 2, kindSigmaCholesky) sigmaCholesky
+    )
+        if (isFloatingPoint!T)
+    in
+    {
+        assert(x.length!0 == sigmaCholesky.length!0, "The length of `x` must conform to the shape of `sigmaCholesky`");
+        assert(mu.length!0 == sigmaCholesky.length!0, "The length of `mu` must conform to the shape of `sigmaCholesky`");
+        assert(sigmaCholesky.length!0 == sigmaCholesky.length!1, "`sigmaCholesky` must be a square matrix");
+    }
+    do
+    {
+        import mir.ndslice.topology: rcmap, zip;
+
+        auto xCenter = x.zip!true(mu).rcmap!("a[0] - a[1]").moveToSlice;
+        return .mahalanobisDistanceCholesky!uplo(xCenter, sigmaCholesky);
+    }
+
+    /// ditto
+    Unqual!X mahalanobisDistanceCholesky(X, Mu, SigmaCholesky, SliceKind kindX, SliceKind kindMu, SliceKind kindSigmaCholesky)(
+        auto ref const Slice!(RCI!X, 1, kindX) x,
+        auto ref const Slice!(RCI!Mu, 1, kindMu) mu,
+        auto ref const Slice!(RCI!SigmaCholesky, 2, kindSigmaCholesky) sigmaCholesky
+    )
+        if (is(Unqual!X == Unqual!Mu) &&
+            is(Unqual!X == Unqual!SigmaCholesky))
+    in
+    {
+        assert(x.length!0 == sigmaCholesky.length!0, "The length of `x` must conform to the shape of `sigmaCholesky`");
+        assert(mu.length!0 == sigmaCholesky.length!0, "The length of `mu` must conform to the shape of `sigmaCholesky`");
+        assert(sigmaCholesky.length!0 == sigmaCholesky.length!1, "`sigmaCholesky` must be a square matrix");
+    }
+    do
+    {
+        auto scopeX = x.lightScope.lightConst;
+        auto scopeMu = mu.lightScope.lightConst;
+        auto scopeSigmaCholesky = sigmaCholesky.lightScope.lightConst;
+        return .mahalanobisDistanceCholesky!uplo(scopeX, scopeMu, scopeSigmaCholesky);
+    }
+
+    /// ditto
+    Unqual!X mahalanobisDistanceCholesky(X, Mu, SigmaCholesky, SliceKind kindX, SliceKind kindMu, SliceKind kindSigmaCholesky)(
+        Slice!(const(X)*, 1, kindX) x,
+        auto ref const Slice!(RCI!Mu, 1, kindMu) mu,
+        auto ref const Slice!(RCI!SigmaCholesky, 2, kindSigmaCholesky) sigmaCholesky
+    )
+        if (is(Unqual!X == Unqual!Mu) &&
+            is(Unqual!X == Unqual!SigmaCholesky))
+    in
+    {
+        assert(x.length!0 == sigmaCholesky.length!0, "The length of `x` must conform to the shape of `sigmaCholesky`");
+        assert(mu.length!0 == sigmaCholesky.length!0, "The length of `mu` must conform to the shape of `sigmaCholesky`");
+        assert(sigmaCholesky.length!0 == sigmaCholesky.length!1, "`sigmaCholesky` must be a square matrix");
+    }
+    do
+    {
+        auto scopeMu = mu.lightScope.lightConst;
+        auto scopeSigmaCholesky = sigmaCholesky.lightScope.lightConst;
+        return .mahalanobisDistanceCholesky!uplo(x, scopeMu, scopeSigmaCholesky);
+    }
+
+    /// ditto
+    Unqual!X mahalanobisDistanceCholesky(X, Mu, SigmaCholesky, SliceKind kindX, SliceKind kindMu, SliceKind kindSigmaCholesky)(
+        auto ref const Slice!(RCI!X, 1, kindX) x,
+        Slice!(const(Mu)*, 1, kindMu) mu,
+        auto ref const Slice!(RCI!SigmaCholesky, 2, kindSigmaCholesky) sigmaCholesky
+    )
+        if (is(Unqual!X == Unqual!Mu) &&
+            is(Unqual!X == Unqual!SigmaCholesky))
+    in
+    {
+        assert(x.length!0 == sigmaCholesky.length!0, "The length of `x` must conform to the shape of `sigmaCholesky`");
+        assert(mu.length!0 == sigmaCholesky.length!0, "The length of `mu` must conform to the shape of `sigmaCholesky`");
+        assert(sigmaCholesky.length!0 == sigmaCholesky.length!1, "`sigmaCholesky` must be a square matrix");
+    }
+    do
+    {
+        auto scopeX = x.lightScope.lightConst;
+        auto scopeSigmaCholesky = sigmaCholesky.lightScope.lightConst;
+        return .mahalanobisDistanceCholesky!uplo(scopeX, mu, scopeSigmaCholesky);
+    }
+
+    /// ditto
+    Unqual!X mahalanobisDistanceCholesky(X, Mu, SigmaCholesky, SliceKind kindX, SliceKind kindMu, SliceKind kindSigmaCholesky)(
+        auto ref const Slice!(RCI!X, 1, kindX) x,
+        auto ref const Slice!(RCI!Mu, 1, kindMu) mu,
+        Slice!(const(SigmaCholesky)*, 2, kindSigmaCholesky) sigmaCholesky
+    )
+        if (is(Unqual!X == Unqual!Mu) &&
+            is(Unqual!X == Unqual!SigmaCholesky))
+    in
+    {
+        assert(x.length!0 == sigmaCholesky.length!0, "The length of `x` must conform to the shape of `sigmaCholesky`");
+        assert(mu.length!0 == sigmaCholesky.length!0, "The length of `mu` must conform to the shape of `sigmaCholesky`");
+        assert(sigmaCholesky.length!0 == sigmaCholesky.length!1, "`sigmaCholesky` must be a square matrix");
+    }
+    do
+    {
+        auto scopeX = x.lightScope.lightConst;
+        auto scopeMu = mu.lightScope.lightConst;
+        return .mahalanobisDistanceCholesky!uplo(scopeX, scopeMu, sigmaCholesky);
+    }
+
+    /// ditto
+    Unqual!X mahalanobisDistanceCholesky(X, Mu, SigmaCholesky, SliceKind kindX, SliceKind kindMu, SliceKind kindSigmaCholesky)(
+        Slice!(const(X)*, 1, kindX) x,
+        Slice!(const(Mu)*, 1, kindMu) mu,
+        auto ref const Slice!(RCI!SigmaCholesky, 2, kindSigmaCholesky) sigmaCholesky
+    )
+        if (is(Unqual!X == Unqual!Mu) &&
+            is(Unqual!X == Unqual!SigmaCholesky))
+    in
+    {
+        assert(x.length!0 == sigmaCholesky.length!0, "The length of `x` must conform to the shape of `sigmaCholesky`");
+        assert(mu.length!0 == sigmaCholesky.length!0, "The length of `mu` must conform to the shape of `sigmaCholesky`");
+        assert(sigmaCholesky.length!0 == sigmaCholesky.length!1, "`sigmaCholesky` must be a square matrix");
+    }
+    do
+    {
+        auto scopeSigmaCholesky = sigmaCholesky.lightScope.lightConst;
+        return .mahalanobisDistanceCholesky!uplo(x, mu, scopeSigmaCholesky);
+    }
+
+    /// ditto
+    Unqual!X mahalanobisDistanceCholesky(X, Mu, SigmaCholesky, SliceKind kindX, SliceKind kindMu, SliceKind kindSigmaCholesky)(
+        Slice!(const(X)*, 1, kindX) x,
+        auto ref const Slice!(RCI!Mu, 1, kindMu) mu,
+        Slice!(const(SigmaCholesky)*, 2, kindSigmaCholesky) sigmaCholesky
+    )
+        if (is(Unqual!X == Unqual!Mu) &&
+            is(Unqual!X == Unqual!SigmaCholesky))
+    in
+    {
+        assert(x.length!0 == sigmaCholesky.length!0, "The length of `x` must conform to the shape of `sigmaCholesky`");
+        assert(mu.length!0 == sigmaCholesky.length!0, "The length of `mu` must conform to the shape of `sigmaCholesky`");
+        assert(sigmaCholesky.length!0 == sigmaCholesky.length!1, "`sigmaCholesky` must be a square matrix");
+    }
+    do
+    {
+        auto scopeMu = mu.lightScope.lightConst;
+        return .mahalanobisDistanceCholesky!uplo(x, scopeMu, sigmaCholesky);
+    }
+
+    /// ditto
+    Unqual!X mahalanobisDistanceCholesky(X, Mu, SigmaCholesky, SliceKind kindX, SliceKind kindMu, SliceKind kindSigmaCholesky)(
+        auto ref const Slice!(RCI!X, 1, kindX) x,
+        Slice!(const(Mu)*, 1, kindMu) mu,
+        Slice!(const(SigmaCholesky)*, 2, kindSigmaCholesky) sigmaCholesky
+    )
+        if (is(Unqual!X == Unqual!Mu) &&
+            is(Unqual!X == Unqual!SigmaCholesky))
+    in
+    {
+        assert(x.length!0 == sigmaCholesky.length!0, "The length of `x` must conform to the shape of `sigmaCholesky`");
+        assert(mu.length!0 == sigmaCholesky.length!0, "The length of `mu` must conform to the shape of `sigmaCholesky`");
+        assert(sigmaCholesky.length!0 == sigmaCholesky.length!1, "`sigmaCholesky` must be a square matrix");
+    }
+    do
+    {
+        auto scopeX = x.lightScope.lightConst;
+        return .mahalanobisDistanceCholesky!uplo(scopeX, mu, sigmaCholesky);
+    }
+
+    /++
+    Params:
+        x = n(rows) x 1 vector
+        sigmaCholesky = n(rows) x n(cols) matrix
+    +/
+    T mahalanobisDistanceCholesky(T, SliceKind kindX, SliceKind kindSigmaCholesky)(
+        Slice!(const(T)*, 1, kindX) x,
+        Slice!(const(T)*, 2, kindSigmaCholesky) sigmaCholesky
+    )
+        if (isFloatingPoint!T)
+    in
+    {
+        assert(x.length!0 == sigmaCholesky.length!0, "The length of `x` must conform to the shape of `sigmaCholesky`");
+        assert(sigmaCholesky.length!0 == sigmaCholesky.length!1, "`sigmaCholesky` must be a square matrix");
+    }
+    do
+    {
+        import mir.math.internal.linearAlgebra: mldivideCholesky;
+        import mir.math.internal.lubeck2: mtimes;
+
+        auto temp = sigmaCholesky.mldivideCholesky!uplo(x);
+        return temp.mtimes(x);
+    }
+
+    /// ditto
+    Unqual!X mahalanobisDistanceCholesky(X, SigmaCholesky, SliceKind kindX, SliceKind kindSigmaCholesky)(
+        auto ref const Slice!(RCI!X, 1, kindX) x,
+        auto ref const Slice!(RCI!SigmaCholesky, 2, kindSigmaCholesky) sigmaCholesky
+    )
+        if (is(Unqual!X == Unqual!SigmaCholesky))
+    in
+    {
+        assert(x.length!0 == sigmaCholesky.length!0, "The length of `x` must conform to the shape of `sigmaCholesky`");
+        assert(sigmaCholesky.length!0 == sigmaCholesky.length!1, "`sigmaCholesky` must be a square matrix");
+    }
+    do
+    {
+        auto scopeX = x.lightScope.lightConst;
+        auto scopeSigmaCholesky = sigmaCholesky.lightScope.lightConst;
+        return .mahalanobisDistanceCholesky!uplo(scopeX, scopeSigmaCholesky);
+    }
+
+    /// ditto
+    Unqual!X mahalanobisDistanceCholesky(X, SigmaCholesky, SliceKind kindX, SliceKind kindSigmaCholesky)(
+        Slice!(const(X)*, 1, kindX) x,
+        auto ref const Slice!(RCI!SigmaCholesky, 2, kindSigmaCholesky) sigmaCholesky
+    )
+        if (is(Unqual!X == Unqual!SigmaCholesky))
+    in
+    {
+        assert(x.length!0 == sigmaCholesky.length!0, "The length of `x` must conform to the shape of `sigmaCholesky`");
+        assert(sigmaCholesky.length!0 == sigmaCholesky.length!1, "`sigmaCholesky` must be a square matrix");
+    }
+    do
+    {
+        auto scopeSigmaCholesky = sigmaCholesky.lightScope.lightConst;
+        return .mahalanobisDistanceCholesky!uplo(x, scopeSigmaCholesky);
+    }
+
+    /// ditto
+    Unqual!X mahalanobisDistanceCholesky(X, SigmaCholesky, SliceKind kindX, SliceKind kindSigmaCholesky)(
+        auto ref const Slice!(RCI!X, 1, kindX) x,
+        Slice!(const(SigmaCholesky)*, 2, kindSigmaCholesky) sigmaCholesky
+    )
+        if (is(Unqual!X == Unqual!SigmaCholesky))
+    in
+    {
+        assert(x.length!0 == sigmaCholesky.length!0, "The length of `x` must conform to the shape of `sigmaCholesky`");
+        assert(sigmaCholesky.length!0 == sigmaCholesky.length!1, "`sigmaCholesky` must be a square matrix");
+    }
+    do
+    {
+        auto scopeX = x.lightScope.lightConst;
+        return .mahalanobisDistanceCholesky!uplo(scopeX, sigmaCholesky);
+    }
+
+    /++
+    Params:
+        x = m(rows) x n(cols) matrix
+        mu = n(rows) x 1 vector
+        sigmaCholesky = n(rows) x n(cols) matrix
+    +/
+    Slice!(RCI!T, 1) mahalanobisDistanceCholesky(T, SliceKind kindX, SliceKind kindMu, SliceKind kindSigmaCholesky)(
+        Slice!(const(T)*, 2, kindX) x,
+        Slice!(const(T)*, 1, kindMu) mu,
+        Slice!(const(T)*, 2, kindSigmaCholesky) sigmaCholesky
+    )
+        if (isFloatingPoint!T)
+    in
+    {
+        assert(x.length!1 == sigmaCholesky.length!0, "The number of columns of `x` must conform to the shape of `sigmaCholesky`");
+        assert(mu.length!0 == sigmaCholesky.length!0, "The length of `mu` must conform to the shape of `sigmaCholesky`");
+        assert(sigmaCholesky.length!0 == sigmaCholesky.length!1, "`sigmaCholesky` must be a square matrix");
+    }
+    do
+    {
+        import mir.ndslice.allocation: mininitRcslice;
+
+        auto xCenter = mininitRcslice!T(x.length!0, x.length!1);
+        foreach (size_t i; 0 .. x.length!0) {
+            foreach (size_t j; 0 .. x.length!1) {
+                xCenter[i, j] = x[i, j] - mu[j];
+            }
+        }
+        return .mahalanobisDistanceCholesky!uplo(xCenter, sigmaCholesky);
+    }
+
+    /// ditto
+    Slice!(RCI!(Unqual!X), 1) mahalanobisDistanceCholesky(X, Mu, SigmaCholesky, SliceKind kindX, SliceKind kindMu, SliceKind kindSigmaCholesky)(
+        auto ref const Slice!(RCI!X, 2, kindX) x,
+        auto ref const Slice!(RCI!Mu, 1, kindMu) mu,
+        auto ref const Slice!(RCI!SigmaCholesky, 2, kindSigmaCholesky) sigmaCholesky
+    )
+        if (is(Unqual!X == Unqual!Mu) &&
+            is(Unqual!X == Unqual!SigmaCholesky))
+    in
+    {
+        assert(x.length!1 == sigmaCholesky.length!0, "The number of columns of `x` must conform to the shape of `sigmaCholesky`");
+        assert(mu.length!0 == sigmaCholesky.length!0, "The length of `mu` must conform to the shape of `sigmaCholesky`");
+        assert(sigmaCholesky.length!0 == sigmaCholesky.length!1, "`sigmaCholesky` must be a square matrix");
+    }
+    do
+    {
+        auto scopeX = x.lightScope.lightConst;
+        auto scopeMu = mu.lightScope.lightConst;
+        auto scopeSigmaCholesky = sigmaCholesky.lightScope.lightConst;
+        return .mahalanobisDistanceCholesky!uplo(scopeX, scopeMu, scopeSigmaCholesky);
+    }
+
+    /// ditto
+    Slice!(RCI!(Unqual!X), 1) mahalanobisDistanceCholesky(X, Mu, SigmaCholesky, SliceKind kindX, SliceKind kindMu, SliceKind kindSigmaCholesky)(
+        Slice!(const(X)*, 2, kindX) x,
+        auto ref const Slice!(RCI!Mu, 1, kindMu) mu,
+        auto ref const Slice!(RCI!SigmaCholesky, 2, kindSigmaCholesky) sigmaCholesky
+    )
+        if (is(Unqual!X == Unqual!Mu) &&
+            is(Unqual!X == Unqual!SigmaCholesky))
+    in
+    {
+        assert(x.length!1 == sigmaCholesky.length!0, "The number of columns of `x` must conform to the shape of `sigmaCholesky`");
+        assert(mu.length!0 == sigmaCholesky.length!0, "The length of `mu` must conform to the shape of `sigmaCholesky`");
+        assert(sigmaCholesky.length!0 == sigmaCholesky.length!1, "`sigmaCholesky` must be a square matrix");
+    }
+    do
+    {
+        auto scopeMu = mu.lightScope.lightConst;
+        auto scopeSigmaCholesky = sigmaCholesky.lightScope.lightConst;
+        return .mahalanobisDistanceCholesky!uplo(x, scopeMu, scopeSigmaCholesky);
+    }
+
+    /// ditto
+    @safe pure nothrow @nogc
+    Slice!(RCI!(Unqual!X), 1) mahalanobisDistanceCholesky(X, Mu, SigmaCholesky, SliceKind kindX, SliceKind kindMu, SliceKind kindSigmaCholesky)(
+        auto ref const Slice!(RCI!X, 2, kindX) x,
+        Slice!(const(Mu)*, 1, kindMu) mu,
+        auto ref const Slice!(RCI!SigmaCholesky, 2, kindSigmaCholesky) sigmaCholesky
+    )
+        if (is(Unqual!X == Unqual!Mu) &&
+            is(Unqual!X == Unqual!SigmaCholesky))
+    in
+    {
+        assert(x.length!1 == sigmaCholesky.length!0, "The number of columns of `x` must conform to the shape of `sigmaCholesky`");
+        assert(mu.length!0 == sigmaCholesky.length!0, "The length of `mu` must conform to the shape of `sigmaCholesky`");
+        assert(sigmaCholesky.length!0 == sigmaCholesky.length!1, "`sigmaCholesky` must be a square matrix");
+    }
+    do
+    {
+        auto scopeX = x.lightScope.lightConst;
+        auto scopeSigmaCholesky = sigmaCholesky.lightScope.lightConst;
+        return .mahalanobisDistanceCholesky!uplo(scopeX, mu, scopeSigmaCholesky);
+    }
+
+    /// ditto
+    Slice!(RCI!(Unqual!X), 1) mahalanobisDistanceCholesky(X, Mu, SigmaCholesky, SliceKind kindX, SliceKind kindMu, SliceKind kindSigmaCholesky)(
+        auto ref const Slice!(RCI!X, 2, kindX) x,
+        auto ref const Slice!(RCI!Mu, 1, kindMu) mu,
+        Slice!(const(SigmaCholesky)*, 2, kindSigmaCholesky) sigmaCholesky
+    )
+        if (is(Unqual!X == Unqual!Mu) &&
+            is(Unqual!X == Unqual!SigmaCholesky))
+    in
+    {
+        assert(x.length!1 == sigmaCholesky.length!0, "The number of columns of `x` must conform to the shape of `sigmaCholesky`");
+        assert(mu.length!0 == sigmaCholesky.length!0, "The length of `mu` must conform to the shape of `sigmaCholesky`");
+        assert(sigmaCholesky.length!0 == sigmaCholesky.length!1, "`sigmaCholesky` must be a square matrix");
+    }
+    do
+    {
+        auto scopeX = x.lightScope.lightConst;
+        auto scopeMu = mu.lightScope.lightConst;
+        return .mahalanobisDistanceCholesky!uplo(scopeX, scopeMu, sigmaCholesky);
+    }
+
+    /// ditto
+    Slice!(RCI!(Unqual!X), 1) mahalanobisDistanceCholesky(X, Mu, SigmaCholesky, SliceKind kindX, SliceKind kindMu, SliceKind kindSigmaCholesky)(
+        Slice!(const(X)*, 2, kindX) x,
+        Slice!(const(Mu)*, 1, kindMu) mu,
+        auto ref const Slice!(RCI!SigmaCholesky, 2, kindSigmaCholesky) sigmaCholesky
+    )
+        if (is(Unqual!X == Unqual!Mu) &&
+            is(Unqual!X == Unqual!SigmaCholesky))
+    in
+    {
+        assert(x.length!1 == sigmaCholesky.length!0, "The number of columns of `x` must conform to the shape of `sigmaCholesky`");
+        assert(mu.length!0 == sigmaCholesky.length!0, "The length of `mu` must conform to the shape of `sigmaCholesky`");
+        assert(sigmaCholesky.length!0 == sigmaCholesky.length!1, "`sigmaCholesky` must be a square matrix");
+    }
+    do
+    {
+        auto scopeSigmaCholesky = sigmaCholesky.lightScope.lightConst;
+        return .mahalanobisDistanceCholesky!uplo(x, mu, scopeSigmaCholesky);
+    }
+
+    /// ditto
+    Slice!(RCI!(Unqual!X), 1) mahalanobisDistanceCholesky(X, Mu, SigmaCholesky, SliceKind kindX, SliceKind kindMu, SliceKind kindSigmaCholesky)(
+        Slice!(const(X)*, 2, kindX) x,
+        auto ref const Slice!(RCI!Mu, 1, kindMu) mu,
+        Slice!(const(SigmaCholesky)*, 2, kindSigmaCholesky) sigmaCholesky
+    )
+        if (is(Unqual!X == Unqual!Mu) &&
+            is(Unqual!X == Unqual!SigmaCholesky))
+    in
+    {
+        assert(x.length!1 == sigmaCholesky.length!0, "The number of columns of `x` must conform to the shape of `sigmaCholesky`");
+        assert(mu.length!0 == sigmaCholesky.length!0, "The length of `mu` must conform to the shape of `sigmaCholesky`");
+        assert(sigmaCholesky.length!0 == sigmaCholesky.length!1, "`sigmaCholesky` must be a square matrix");
+    }
+    do
+    {
+        auto scopeMu = mu.lightScope.lightConst;
+        return .mahalanobisDistanceCholesky!uplo(x, scopeMu, sigmaCholesky);
+    }
+
+    /// ditto
+    Slice!(RCI!(Unqual!X), 1) mahalanobisDistanceCholesky(X, Mu, SigmaCholesky, SliceKind kindX, SliceKind kindMu, SliceKind kindSigmaCholesky)(
+        auto ref const Slice!(RCI!X, 2, kindX) x,
+        Slice!(const(Mu)*, 1, kindMu) mu,
+        Slice!(const(SigmaCholesky)*, 2, kindSigmaCholesky) sigmaCholesky
+    )
+        if (is(Unqual!X == Unqual!Mu) &&
+            is(Unqual!X == Unqual!SigmaCholesky))
+    in
+    {
+        assert(x.length!1 == sigmaCholesky.length!0, "The number of columns of `x` must conform to the shape of `sigmaCholesky`");
+        assert(mu.length!0 == sigmaCholesky.length!0, "The length of `mu` must conform to the shape of `sigmaCholesky`");
+        assert(sigmaCholesky.length!0 == sigmaCholesky.length!1, "`sigmaCholesky` must be a square matrix");
+    }
+    do
+    {
+        auto scopeX = x.lightScope.lightConst;
+        return .mahalanobisDistanceCholesky!uplo(scopeX, mu, sigmaCholesky);
+    }
+
+    /++
+    Params:
+        x = m(rows) x n(cols) matrix
+        sigmaCholesky = n(rows) x n(cols) matrix
+    +/
+    Slice!(RCI!T, 1) mahalanobisDistanceCholesky(T, SliceKind kindX, SliceKind kindSigmaCholesky)(
+        Slice!(const(T)*, 2, kindX) x,
+        Slice!(const(T)*, 2, kindSigmaCholesky) sigmaCholesky
+    )
+        if (isFloatingPoint!T)
+    in
+    {
+        assert(x.length!1 == sigmaCholesky.length!0, "The number of columns of `x` must conform to the shape of `sigmaCholesky`");
+        assert(sigmaCholesky.length!0 == sigmaCholesky.length!1, "`sigmaCholesky` must be a square matrix");
+    }
+    do
+    {
+        import mir.math.internal.linearAlgebra: mldivideCholesky, rowsDotProduct;
+        import mir.math.internal.lubeck2: mtimes;
+        import mir.ndslice.allocation: rcslice;
+        import mir.ndslice.dynamic: transposed;
+
+        auto temp = sigmaCholesky.mldivideCholesky!uplo(x.transposed).transposed;
+        return temp.rowsDotProduct(x);
+    }
+
+    /// ditto
+    Slice!(RCI!(Unqual!X), 1) mahalanobisDistanceCholesky(X, SigmaCholesky, SliceKind kindX, SliceKind kindSigmaCholesky)(
+        auto ref const Slice!(RCI!X, 2, kindX) x,
+        auto ref const Slice!(RCI!SigmaCholesky, 2, kindSigmaCholesky) sigmaCholesky
+    )
+        if (is(Unqual!X == Unqual!SigmaCholesky))
+    in
+    {
+        assert(x.length!1 == sigmaCholesky.length!0, "The number of columns of `x` must conform to the shape of `sigmaCholesky`");
+        assert(sigmaCholesky.length!0 == sigmaCholesky.length!1, "`sigmaCholesky` must be a square matrix");
+    }
+    do
+    {
+        auto scopeX = x.lightScope.lightConst;
+        auto scopeSigmaCholesky = sigmaCholesky.lightScope.lightConst;
+        return .mahalanobisDistanceCholesky!uplo(scopeX, scopeSigmaCholesky);
+    }
+
+    /// ditto
+    Slice!(RCI!(Unqual!X), 1) mahalanobisDistanceCholesky(X, SigmaCholesky, SliceKind kindX, SliceKind kindSigmaCholesky)(
+        Slice!(const(X)*, 2, kindX) x,
+        auto ref const Slice!(RCI!SigmaCholesky, 2, kindSigmaCholesky) sigmaCholesky
+    )
+        if (is(Unqual!X == Unqual!SigmaCholesky))
+    in
+    {
+        assert(x.length!1 == sigmaCholesky.length!0, "The number of columns of `x` must conform to the shape of `sigmaCholesky`");
+        assert(sigmaCholesky.length!0 == sigmaCholesky.length!1, "`sigmaCholesky` must be a square matrix");
+    }
+    do
+    {
+        auto scopeSigmaCholesky = sigmaCholesky.lightScope.lightConst;
+        return .mahalanobisDistanceCholesky!uplo(x, scopeSigmaCholesky);
+    }
+
+    /// ditto
+    Slice!(RCI!(Unqual!X), 1) mahalanobisDistanceCholesky(X, SigmaCholesky, SliceKind kindX, SliceKind kindSigmaCholesky)(
+        auto ref const Slice!(RCI!X, 2, kindX) x,
+        Slice!(const(SigmaCholesky)*, 2, kindSigmaCholesky) sigmaCholesky
+    )
+        if (is(Unqual!X == Unqual!SigmaCholesky))
+    in
+    {
+        assert(x.length!1 == sigmaCholesky.length!0, "The number of columns of `x` must conform to the shape of `sigmaCholesky`");
+        assert(sigmaCholesky.length!0 == sigmaCholesky.length!1, "`sigmaCholesky` must be a square matrix");
+    }
+    do
+    {
+        auto scopeX = x.lightScope.lightConst;
+        return .mahalanobisDistanceCholesky!uplo(scopeX, sigmaCholesky);
+    }
+}
+
+/// Vector example
+version(mir_stat_test_blas)
+@safe pure nothrow @nogc
+unittest
+{
+    import mir.math.common: sqrt;
+    import mir.ndslice.allocation: mininitRcslice;
+    import mir.test: shouldApprox;
+
+    static immutable a = [2.0, 1];
+    static immutable b = [1.0, 2];
+    static immutable c = [[sqrt(2.0), sqrt(2.0) / 2],
+                          [      0.0,     sqrt(2.5)]];
+
+    auto x = mininitRcslice!double(2);
+    auto mu = mininitRcslice!double(2);
+    auto sigmaCholesky = mininitRcslice!double(2, 2);
+    auto xCenter = mininitRcslice!double(2);
+
+    x[] = a;
+    mu[] = b;
+    sigmaCholesky[] = c;
+    xCenter[] = a;
+    xCenter[] -= b;
+
+    x.mahalanobisDistanceCholesky(mu, sigmaCholesky).shouldApprox == 1.4;
+    xCenter.mahalanobisDistanceCholesky(sigmaCholesky).shouldApprox == 1.4;
+}
+
+/// Matrix example
+version(mir_stat_test_blas)
+@safe pure nothrow @nogc
+unittest
+{
+    import mir.algorithm.iteration: all;
+    import mir.math.common: approxEqual, sqrt;
+    import mir.ndslice.allocation: mininitRcslice;
+    import mir.test: shouldApprox;
+
+    static immutable a = [[2.0, 1],
+                          [2.0, 3]];
+    static immutable b = [1.0, 2];
+    static immutable c = [[sqrt(2.0), sqrt(2.0) / 2],
+                          [      0.0,     sqrt(2.5)]];
+    static immutable d = [1.4, 0.6];
+
+    auto x = mininitRcslice!double(2, 2);
+    auto mu = mininitRcslice!double(2);
+    auto sigmaCholesky = mininitRcslice!double(2, 2);
+    auto xCenter = mininitRcslice!double(2, 2);
+    auto result = mininitRcslice!double(2);
+
+    x[] = a;
+    mu[] = b;
+    sigmaCholesky[] = c;
+    xCenter[] = a;
+    xCenter[0][] -= b;
+    xCenter[1][] -= b;
+    result[] = d;
+
+    assert(x.mahalanobisDistanceCholesky(mu, sigmaCholesky).all!approxEqual(result));
+    assert(xCenter.mahalanobisDistanceCholesky(sigmaCholesky).all!approxEqual(result));
+}
+
+// Vector example (lower triangular)
+version(mir_stat_test_blas)
+@safe pure nothrow @nogc
+unittest
+{
+    import mir.blas: Uplo;
+    import mir.math.common: sqrt;
+    import mir.ndslice.allocation: mininitRcslice;
+    import mir.test: shouldApprox;
+
+    static immutable a = [2.0, 1];
+    static immutable b = [1.0, 2];
+    static immutable c = [[sqrt(2.0),     0],
+                          [sqrt(2.0) / 2, sqrt(2.5)]];
+
+    auto x = mininitRcslice!double(2);
+    auto mu = mininitRcslice!double(2);
+    auto sigmaCholesky = mininitRcslice!double(2, 2);
+    auto xCenter = mininitRcslice!double(2);
+
+    x[] = a;
+    mu[] = b;
+    sigmaCholesky[] = c;
+    xCenter[] = a;
+    xCenter[] -= b;
+
+    x.mahalanobisDistanceCholesky!(Uplo.Lower)(mu, sigmaCholesky).shouldApprox == 1.4;
+    xCenter.mahalanobisDistanceCholesky!(Uplo.Lower)(sigmaCholesky).shouldApprox == 1.4;
+}
+
+// Matrix example (lower triangular)
+version(mir_stat_test_blas)
+@safe pure nothrow @nogc
+unittest
+{
+    import mir.algorithm.iteration: all;
+    import mir.blas: Uplo;
+    import mir.math.common: approxEqual, sqrt;
+    import mir.ndslice.allocation: mininitRcslice;
+    import mir.test: shouldApprox;
+
+    static immutable a = [[2.0, 1],
+                          [2.0, 3]];
+    static immutable b = [1.0, 2];
+    static immutable c = [[sqrt(2.0),     0],
+                          [sqrt(2.0) / 2, sqrt(2.5)]];
+    static immutable d = [1.4, 0.6];
+
+    auto x = mininitRcslice!double(2, 2);
+    auto mu = mininitRcslice!double(2);
+    auto sigmaCholesky = mininitRcslice!double(2, 2);
+    auto xCenter = mininitRcslice!double(2, 2);
+    auto result = mininitRcslice!double(2);
+
+    x[] = a;
+    mu[] = b;
+    sigmaCholesky[] = c;
+    xCenter[] = a;
+    xCenter[0][] -= b;
+    xCenter[1][] -= b;
+    result[] = d;
+
+    assert(x.mahalanobisDistanceCholesky!(Uplo.Lower)(mu, sigmaCholesky).all!approxEqual(result));
+    assert(xCenter.mahalanobisDistanceCholesky!(Uplo.Lower)(sigmaCholesky).all!approxEqual(result));
+}
+
+// Error check
+version(mir_stat_test_blas)
+@safe pure nothrow @nogc
+unittest
+{
+    import mir.algorithm.iteration: all;
+    import mir.ndslice.allocation: mininitRcslice, rcslice;
+    import mir.test: should;
+    import std.math.traits: isNaN;
+
+    static immutable a = [[1.0, -1],
+                          [1.0, 1]];
+
+    auto x = mininitRcslice!double(2, 2);
+    x[] = a;
+    auto sigma = rcslice!double([2, 2], 0.0);
+
+    x[0].mahalanobisDistanceCholesky(sigma).should == double.nan;
+    assert(x.mahalanobisDistanceCholesky(sigma).all!isNaN);
+}
+
+// Vector example (GC)
+version(mir_stat_test_blas)
+@safe pure nothrow
+unittest
+{
+    import mir.math.common: sqrt;
+    import mir.ndslice.allocation: uninitSlice;
+    import mir.test: shouldApprox;
+
+    static immutable a = [2.0, 1];
+    static immutable b = [1.0, 2];
+    static immutable c = [[sqrt(2.0), sqrt(2.0) / 2],
+                          [      0.0,     sqrt(2.5)]];
+
+    auto x = uninitSlice!double(2);
+    auto mu = uninitSlice!double(2);
+    auto sigmaCholesky = uninitSlice!double(2, 2);
+    auto xCenter = uninitSlice!double(2);
+
+    x[] = a;
+    mu[] = b;
+    sigmaCholesky[] = c;
+    xCenter[] = a;
+    xCenter[] -= b;
+
+    x.mahalanobisDistanceCholesky(mu, sigmaCholesky).shouldApprox == 1.4;
+    xCenter.mahalanobisDistanceCholesky(sigmaCholesky).shouldApprox == 1.4;
+}
+
+// Matrix example (GC)
+version(mir_stat_test_blas)
+@safe pure nothrow
+unittest
+{
+    import mir.algorithm.iteration: all;
+    import mir.math.common: approxEqual, sqrt;
+    import mir.ndslice.allocation: uninitSlice;
+    import mir.test: shouldApprox;
+
+    static immutable a = [[2.0, 1],
+                          [2.0, 3]];
+    static immutable b = [1.0, 2];
+    static immutable c = [[sqrt(2.0), sqrt(2.0) / 2],
+                          [      0.0,     sqrt(2.5)]];
+    static immutable d = [1.4, 0.6];
+
+    auto x = uninitSlice!double(2, 2);
+    auto mu = uninitSlice!double(2);
+    auto sigmaCholesky = uninitSlice!double(2, 2);
+    auto xCenter = uninitSlice!double(2, 2);
+    auto result = uninitSlice!double(2);
+
+    x[] = a;
+    mu[] = b;
+    sigmaCholesky[] = c;
+    xCenter[] = a;
+    xCenter[0][] -= b;
+    xCenter[1][] -= b;
+    result[] = d;
+
+    assert(x.mahalanobisDistanceCholesky(mu, sigmaCholesky).all!approxEqual(result));
+    assert(xCenter.mahalanobisDistanceCholesky(sigmaCholesky).all!approxEqual(result));
+}
+
+/++
+For input `x`, computes the Mahalanobis distance, centered by vector `mu` and
+scaled with inverse Cholesky matrix `invSigmaCholesky`.
+
+If `x` is a matrix, the Mahalanobis distance is calculated on a row-by-row basis.
+
+`invSigmaCholesky` is assumed to be the inverse of the Cholesky decomposition of a positive definite covariance matrix.
+
+Params:
+    uplo = controls whether the Cholesky is upper or lower triangular
+
+See_also:
+    $(LINK2 https://en.wikipedia.org/wiki/Mahalanobis_distance, Mahalanobis distance)
++/
+@safe pure nothrow @nogc
+template mahalanobisDistancePrecisionCholesky(Uplo uplo = Uplo.Upper)
+{
+    /++
+    Params:
+        x = n(rows) x 1 vector
+        mu = n(rows) x 1 vector
+        invSigmaCholesky = n(rows) x n(cols) matrix
+
+    Result:
+        Mahalanobis distance
+    +/
+    T mahalanobisDistancePrecisionCholesky(T, SliceKind kindX, SliceKind kindMu, SliceKind kindInvSigmaCholesky)(
+        Slice!(const(T)*, 1, kindX) x,
+        Slice!(const(T)*, 1, kindMu) mu,
+        Slice!(const(T)*, 2, kindInvSigmaCholesky) invSigmaCholesky
+    )
+        if (isFloatingPoint!T)
+    in
+    {
+        assert(x.length!0 == invSigmaCholesky.length!0, "The length of `x` must conform to the shape of `invSigmaCholesky`");
+        assert(mu.length!0 == invSigmaCholesky.length!0, "The length of `mu` must conform to the shape of `invSigmaCholesky`");
+        assert(invSigmaCholesky.length!0 == invSigmaCholesky.length!1, "`invSigmaCholesky` must be a square matrix");
+    }
+    do
+    {
+        import mir.ndslice.topology: rcmap, zip;
+
+        auto xCenter = x.zip!true(mu).rcmap!("a[0] - a[1]").moveToSlice;
+        return .mahalanobisDistancePrecisionCholesky!uplo(xCenter, invSigmaCholesky);
+    }
+
+    /// ditto
+    Unqual!X mahalanobisDistancePrecisionCholesky(X, Mu, InvSigmaCholesky, SliceKind kindX, SliceKind kindMu, SliceKind kindInvSigmaCholesky)(
+        auto ref const Slice!(RCI!X, 1, kindX) x,
+        auto ref const Slice!(RCI!Mu, 1, kindMu) mu,
+        auto ref const Slice!(RCI!InvSigmaCholesky, 2, kindInvSigmaCholesky) invSigmaCholesky
+    )
+        if (is(Unqual!X == Unqual!Mu) &&
+            is(Unqual!X == Unqual!InvSigmaCholesky))
+    in
+    {
+        assert(x.length!0 == invSigmaCholesky.length!0, "The length of `x` must conform to the shape of `invSigmaCholesky`");
+        assert(mu.length!0 == invSigmaCholesky.length!0, "The length of `mu` must conform to the shape of `invSigmaCholesky`");
+        assert(invSigmaCholesky.length!0 == invSigmaCholesky.length!1, "`invSigmaCholesky` must be a square matrix");
+    }
+    do
+    {
+        auto scopeX = x.lightScope.lightConst;
+        auto scopeMu = mu.lightScope.lightConst;
+        auto scopeInvSigmaCholesky = invSigmaCholesky.lightScope.lightConst;
+        return .mahalanobisDistancePrecisionCholesky!uplo(scopeX, scopeMu, scopeInvSigmaCholesky);
+    }
+
+    /// ditto
+    Unqual!X mahalanobisDistancePrecisionCholesky(X, Mu, InvSigmaCholesky, SliceKind kindX, SliceKind kindMu, SliceKind kindInvSigmaCholesky)(
+        Slice!(const(X)*, 1, kindX) x,
+        auto ref const Slice!(RCI!Mu, 1, kindMu) mu,
+        auto ref const Slice!(RCI!InvSigmaCholesky, 2, kindInvSigmaCholesky) invSigmaCholesky
+    )
+        if (is(Unqual!X == Unqual!Mu) &&
+            is(Unqual!X == Unqual!InvSigmaCholesky))
+    in
+    {
+        assert(x.length!0 == invSigmaCholesky.length!0, "The length of `x` must conform to the shape of `invSigmaCholesky`");
+        assert(mu.length!0 == invSigmaCholesky.length!0, "The length of `mu` must conform to the shape of `invSigmaCholesky`");
+        assert(invSigmaCholesky.length!0 == invSigmaCholesky.length!1, "`invSigmaCholesky` must be a square matrix");
+    }
+    do
+    {
+        auto scopeMu = mu.lightScope.lightConst;
+        auto scopeInvSigmaCholesky = invSigmaCholesky.lightScope.lightConst;
+        return .mahalanobisDistancePrecisionCholesky!uplo(x, scopeMu, scopeInvSigmaCholesky);
+    }
+
+    /// ditto
+    Unqual!X mahalanobisDistancePrecisionCholesky(X, Mu, InvSigmaCholesky, SliceKind kindX, SliceKind kindMu, SliceKind kindInvSigmaCholesky)(
+        auto ref const Slice!(RCI!X, 1, kindX) x,
+        Slice!(const(Mu)*, 1, kindMu) mu,
+        auto ref const Slice!(RCI!InvSigmaCholesky, 2, kindInvSigmaCholesky) invSigmaCholesky
+    )
+        if (is(Unqual!X == Unqual!Mu) &&
+            is(Unqual!X == Unqual!InvSigmaCholesky))
+    in
+    {
+        assert(x.length!0 == invSigmaCholesky.length!0, "The length of `x` must conform to the shape of `invSigmaCholesky`");
+        assert(mu.length!0 == invSigmaCholesky.length!0, "The length of `mu` must conform to the shape of `invSigmaCholesky`");
+        assert(invSigmaCholesky.length!0 == invSigmaCholesky.length!1, "`invSigmaCholesky` must be a square matrix");
+    }
+    do
+    {
+        auto scopeX = x.lightScope.lightConst;
+        auto scopeInvSigmaCholesky = invSigmaCholesky.lightScope.lightConst;
+        return .mahalanobisDistancePrecisionCholesky!uplo(scopeX, mu, scopeInvSigmaCholesky);
+    }
+
+    /// ditto
+    Unqual!X mahalanobisDistancePrecisionCholesky(X, Mu, InvSigmaCholesky, SliceKind kindX, SliceKind kindMu, SliceKind kindInvSigmaCholesky)(
+        auto ref const Slice!(RCI!X, 1, kindX) x,
+        auto ref const Slice!(RCI!Mu, 1, kindMu) mu,
+        Slice!(const(InvSigmaCholesky)*, 2, kindInvSigmaCholesky) invSigmaCholesky
+    )
+        if (is(Unqual!X == Unqual!Mu) &&
+            is(Unqual!X == Unqual!InvSigmaCholesky))
+    in
+    {
+        assert(x.length!0 == invSigmaCholesky.length!0, "The length of `x` must conform to the shape of `invSigmaCholesky`");
+        assert(mu.length!0 == invSigmaCholesky.length!0, "The length of `mu` must conform to the shape of `invSigmaCholesky`");
+        assert(invSigmaCholesky.length!0 == invSigmaCholesky.length!1, "`invSigmaCholesky` must be a square matrix");
+    }
+    do
+    {
+        auto scopeX = x.lightScope.lightConst;
+        auto scopeMu = mu.lightScope.lightConst;
+        return .mahalanobisDistancePrecisionCholesky!uplo(scopeX, scopeMu, invSigmaCholesky);
+    }
+
+    /// ditto
+    Unqual!X mahalanobisDistancePrecisionCholesky(X, Mu, InvSigmaCholesky, SliceKind kindX, SliceKind kindMu, SliceKind kindInvSigmaCholesky)(
+        Slice!(const(X)*, 1, kindX) x,
+        Slice!(const(Mu)*, 1, kindMu) mu,
+        auto ref const Slice!(RCI!InvSigmaCholesky, 2, kindInvSigmaCholesky) invSigmaCholesky
+    )
+        if (is(Unqual!X == Unqual!Mu) &&
+            is(Unqual!X == Unqual!InvSigmaCholesky))
+    in
+    {
+        assert(x.length!0 == invSigmaCholesky.length!0, "The length of `x` must conform to the shape of `invSigmaCholesky`");
+        assert(mu.length!0 == invSigmaCholesky.length!0, "The length of `mu` must conform to the shape of `invSigmaCholesky`");
+        assert(invSigmaCholesky.length!0 == invSigmaCholesky.length!1, "`invSigmaCholesky` must be a square matrix");
+    }
+    do
+    {
+        auto scopeInvSigmaCholesky = invSigmaCholesky.lightScope.lightConst;
+        return .mahalanobisDistancePrecisionCholesky!uplo(x, mu, scopeInvSigmaCholesky);
+    }
+
+    /// ditto
+    Unqual!X mahalanobisDistancePrecisionCholesky(X, Mu, InvSigmaCholesky, SliceKind kindX, SliceKind kindMu, SliceKind kindInvSigmaCholesky)(
+        Slice!(const(X)*, 1, kindX) x,
+        auto ref const Slice!(RCI!Mu, 1, kindMu) mu,
+        Slice!(const(InvSigmaCholesky)*, 2, kindInvSigmaCholesky) invSigmaCholesky
+    )
+        if (is(Unqual!X == Unqual!Mu) &&
+            is(Unqual!X == Unqual!InvSigmaCholesky))
+    in
+    {
+        assert(x.length!0 == invSigmaCholesky.length!0, "The length of `x` must conform to the shape of `invSigmaCholesky`");
+        assert(mu.length!0 == invSigmaCholesky.length!0, "The length of `mu` must conform to the shape of `invSigmaCholesky`");
+        assert(invSigmaCholesky.length!0 == invSigmaCholesky.length!1, "`invSigmaCholesky` must be a square matrix");
+    }
+    do
+    {
+        auto scopeMu = mu.lightScope.lightConst;
+        return .mahalanobisDistancePrecisionCholesky!uplo(x, scopeMu, invSigmaCholesky);
+    }
+
+    /// ditto
+    Unqual!X mahalanobisDistancePrecisionCholesky(X, Mu, InvSigmaCholesky, SliceKind kindX, SliceKind kindMu, SliceKind kindInvSigmaCholesky)(
+        auto ref const Slice!(RCI!X, 1, kindX) x,
+        Slice!(const(Mu)*, 1, kindMu) mu,
+        Slice!(const(InvSigmaCholesky)*, 2, kindInvSigmaCholesky) invSigmaCholesky
+    )
+        if (is(Unqual!X == Unqual!Mu) &&
+            is(Unqual!X == Unqual!InvSigmaCholesky))
+    in
+    {
+        assert(x.length!0 == invSigmaCholesky.length!0, "The length of `x` must conform to the shape of `invSigmaCholesky`");
+        assert(mu.length!0 == invSigmaCholesky.length!0, "The length of `mu` must conform to the shape of `invSigmaCholesky`");
+        assert(invSigmaCholesky.length!0 == invSigmaCholesky.length!1, "`invSigmaCholesky` must be a square matrix");
+    }
+    do
+    {
+        auto scopeX = x.lightScope.lightConst;
+        return .mahalanobisDistancePrecisionCholesky!uplo(scopeX, my, invSigmaCholesky);
+    }
+
+    /++
+    Params:
+        x = n(rows) x 1 vector
+        invSigmaCholesky = n(rows) x n(cols) matrix
+    +/
+    T mahalanobisDistancePrecisionCholesky(T, SliceKind kindX, SliceKind kindInvSigmaCholesky)(
+        Slice!(const(T)*, 1, kindX) x,
+        Slice!(const(T)*, 2, kindInvSigmaCholesky) invSigmaCholesky
+    )
+        if (isFloatingPoint!T)
+    in
+    {
+        assert(x.length!0 == invSigmaCholesky.length!0, "The length of `x` must conform to the shape of `invSigmaCholesky`");
+        assert(invSigmaCholesky.length!0 == invSigmaCholesky.length!1, "`invSigmaCholesky` must be a square matrix");
+    }
+    do
+    {
+        import mir.math.internal.linearAlgebra: mtimesTriangular, mtimesTriangularRight, tcrossprod;
+
+        static if (uplo == Uplo.Upper) {
+            return invSigmaCholesky.mtimesTriangular!uplo(x).tcrossprod;
+        } else {
+            return x.mtimesTriangularRight!uplo(invSigmaCholesky).tcrossprod;
+        }
+    }
+
+    /// ditto
+    Unqual!X mahalanobisDistancePrecisionCholesky(X, InvSigmaCholesky, SliceKind kindX, SliceKind kindInvSigmaCholesky)(
+        auto ref const Slice!(RCI!X, 1, kindX) x,
+        auto ref const Slice!(RCI!InvSigmaCholesky, 2, kindInvSigmaCholesky) invSigmaCholesky
+    )
+        if (is(Unqual!X == Unqual!InvSigmaCholesky))
+    in
+    {
+        assert(x.length!0 == invSigmaCholesky.length!0, "The length of `x` must conform to the shape of `invSigmaCholesky`");
+        assert(invSigmaCholesky.length!0 == invSigmaCholesky.length!1, "`invSigmaCholesky` must be a square matrix");
+    }
+    do
+    {
+        auto scopeX = x.lightScope.lightConst;
+        auto scopeInvSigmaCholesky = invSigmaCholesky.lightScope.lightConst;
+        return .mahalanobisDistancePrecisionCholesky!uplo(scopeX, scopeInvSigmaCholesky);
+    }
+
+    /// ditto
+    Unqual!X mahalanobisDistancePrecisionCholesky(X, InvSigmaCholesky, SliceKind kindX, SliceKind kindInvSigmaCholesky)(
+        Slice!(const(X)*, 1, kindX) x,
+        auto ref const Slice!(RCI!InvSigmaCholesky, 2, kindInvSigmaCholesky) invSigmaCholesky
+    )
+        if (is(Unqual!X == Unqual!InvSigmaCholesky))
+    in
+    {
+        assert(x.length!0 == invSigmaCholesky.length!0, "The length of `x` must conform to the shape of `invSigmaCholesky`");
+        assert(invSigmaCholesky.length!0 == invSigmaCholesky.length!1, "`invSigmaCholesky` must be a square matrix");
+    }
+    do
+    {
+        auto scopeInvSigmaCholesky = invSigmaCholesky.lightScope.lightConst;
+        return .mahalanobisDistancePrecisionCholesky!uplo(x, scopeInvSigmaCholesky);
+    }
+
+    /// ditto
+    @safe pure nothrow @nogc
+    Unqual!X mahalanobisDistancePrecisionCholesky(X, InvSigmaCholesky, SliceKind kindX, SliceKind kindInvSigmaCholesky)(
+        auto ref const Slice!(RCI!X, 1, kindX) x,
+        Slice!(const(InvSigmaCholesky)*, 2, kindInvSigmaCholesky) invSigmaCholesky
+    )
+        if (is(Unqual!X == Unqual!InvSigmaCholesky))
+    in
+    {
+        assert(x.length!0 == invSigmaCholesky.length!0, "The length of `x` must conform to the shape of `invSigmaCholesky`");
+        assert(invSigmaCholesky.length!0 == invSigmaCholesky.length!1, "`invSigmaCholesky` must be a square matrix");
+    }
+    do
+    {
+        auto scopeX = x.lightScope.lightConst;
+        return .mahalanobisDistancePrecisionCholesky!uplo(scopeX, invSigmaCholesky);
+    }
+
+    /++
+    Params:
+        x = m(rows) x n(cols) matrix
+        mu = n(rows) x 1 vector
+        invSigmaCholesky = n(rows) x n(cols) matrix
+    +/
+    Slice!(RCI!T, 1) mahalanobisDistancePrecisionCholesky(T, SliceKind kindX, SliceKind kindMu, SliceKind kindInvSigmaCholesky)(
+        Slice!(const(T)*, 2, kindX) x,
+        Slice!(const(T)*, 1, kindMu) mu,
+        Slice!(const(T)*, 2, kindInvSigmaCholesky) invSigmaCholesky
+    )
+        if (isFloatingPoint!T)
+    in
+    {
+        assert(x.length!1 == invSigmaCholesky.length!0, "The number of columns of `x` must conform to the shape of `invSigmaCholesky`");
+        assert(mu.length!0 == invSigmaCholesky.length!0, "The length of `mu` must conform to the shape of `invSigmaCholesky`");
+        assert(invSigmaCholesky.length!0 == invSigmaCholesky.length!1, "`invSigmaCholesky` must be a square matrix");
+    }
+    do
+    {
+        import mir.ndslice.allocation: mininitRcslice;
+
+        auto xCenter = mininitRcslice!T(x.length!0, x.length!1);
+        foreach (size_t i; 0 .. x.length!0) {
+            foreach (size_t j; 0 .. x.length!1) {
+                xCenter[i, j] = x[i, j] - mu[j];
+            }
+        }
+        return .mahalanobisDistancePrecisionCholesky!uplo(xCenter, invSigmaCholesky);
+    }
+
+    /// ditto
+    Slice!(RCI!(Unqual!X), 1) mahalanobisDistancePrecisionCholesky(X, Mu, InvSigmaCholesky, SliceKind kindX, SliceKind kindMu, SliceKind kindInvSigmaCholesky)(
+        auto ref const Slice!(RCI!X, 2, kindX) x,
+        auto ref const Slice!(RCI!Mu, 1, kindMu) mu,
+        auto ref const Slice!(RCI!InvSigmaCholesky, 2, kindInvSigmaCholesky) invSigmaCholesky
+    )
+        if (is(Unqual!X == Unqual!Mu) &&
+            is(Unqual!X == Unqual!InvSigmaCholesky))
+    in
+    {
+        assert(x.length!1 == invSigmaCholesky.length!0, "The number of columns of `x` must conform to the shape of `invSigmaCholesky`");
+        assert(mu.length!0 == invSigmaCholesky.length!0, "The length of `mu` must conform to the shape of `invSigmaCholesky`");
+        assert(invSigmaCholesky.length!0 == invSigmaCholesky.length!1, "`invSigmaCholesky` must be a square matrix");
+    }
+    do
+    {
+        auto scopeX = x.lightScope.lightConst;
+        auto scopeMu = mu.lightScope.lightConst;
+        auto scopeSigma = invSigmaCholesky.lightScope.lightConst;
+        return .mahalanobisDistancePrecisionCholesky!uplo(scopeX, scopeMu, scopeSigma);
+    }
+
+    /// ditto
+    Slice!(RCI!(Unqual!X), 1) mahalanobisDistancePrecisionCholesky(X, Mu, InvSigmaCholesky, SliceKind kindX, SliceKind kindMu, SliceKind kindInvSigmaCholesky)(
+        Slice!(const(X)*, 2, kindX) x,
+        auto ref const Slice!(RCI!Mu, 1, kindMu) mu,
+        auto ref const Slice!(RCI!InvSigmaCholesky, 2, kindInvSigmaCholesky) invSigmaCholesky
+    )
+        if (is(Unqual!X == Unqual!Mu) &&
+            is(Unqual!X == Unqual!InvSigmaCholesky))
+    in
+    {
+        assert(x.length!1 == invSigmaCholesky.length!0, "The number of columns of `x` must conform to the shape of `invSigmaCholesky`");
+        assert(mu.length!0 == invSigmaCholesky.length!0, "The length of `mu` must conform to the shape of `invSigmaCholesky`");
+        assert(invSigmaCholesky.length!0 == invSigmaCholesky.length!1, "`invSigmaCholesky` must be a square matrix");
+    }
+    do
+    {
+        auto scopeMu = mu.lightScope.lightConst;
+        auto scopeSigma = invSigmaCholesky.lightScope.lightConst;
+        return .mahalanobisDistancePrecisionCholesky!uplo(x, scopeMu, scopeSigma);
+    }
+
+    /// ditto
+    Slice!(RCI!(Unqual!X), 1) mahalanobisDistancePrecisionCholesky(X, Mu, InvSigmaCholesky, SliceKind kindX, SliceKind kindMu, SliceKind kindInvSigmaCholesky)(
+        auto ref const Slice!(RCI!X, 2, kindX) x,
+        Slice!(const(Mu)*, 1, kindMu) mu,
+        auto ref const Slice!(RCI!InvSigmaCholesky, 2, kindInvSigmaCholesky) invSigmaCholesky
+    )
+        if (is(Unqual!X == Unqual!Mu) &&
+            is(Unqual!X == Unqual!InvSigmaCholesky))
+    in
+    {
+        assert(x.length!1 == invSigmaCholesky.length!0, "The number of columns of `x` must conform to the shape of `invSigmaCholesky`");
+        assert(mu.length!0 == invSigmaCholesky.length!0, "The length of `mu` must conform to the shape of `invSigmaCholesky`");
+        assert(invSigmaCholesky.length!0 == invSigmaCholesky.length!1, "`invSigmaCholesky` must be a square matrix");
+    }
+    do
+    {
+        auto scopeX = x.lightScope.lightConst;
+        auto scopeSigma = invSigmaCholesky.lightScope.lightConst;
+        return .mahalanobisDistancePrecisionCholesky!uplo(scopeX, mu, scopeSigma);
+    }
+
+    /// ditto
+    Slice!(RCI!(Unqual!X), 1) mahalanobisDistancePrecisionCholesky(X, Mu, InvSigmaCholesky, SliceKind kindX, SliceKind kindMu, SliceKind kindInvSigmaCholesky)(
+        auto ref const Slice!(RCI!X, 2, kindX) x,
+        auto ref const Slice!(RCI!Mu, 1, kindMu) mu,
+        Slice!(const(InvSigmaCholesky)*, 2, kindInvSigmaCholesky) invSigmaCholesky
+    )
+        if (is(Unqual!X == Unqual!Mu) &&
+            is(Unqual!X == Unqual!InvSigmaCholesky))
+    in
+    {
+        assert(x.length!1 == invSigmaCholesky.length!0, "The number of columns of `x` must conform to the shape of `invSigmaCholesky`");
+        assert(mu.length!0 == invSigmaCholesky.length!0, "The length of `mu` must conform to the shape of `invSigmaCholesky`");
+        assert(invSigmaCholesky.length!0 == invSigmaCholesky.length!1, "`invSigmaCholesky` must be a square matrix");
+    }
+    do
+    {
+        auto scopeX = x.lightScope.lightConst;
+        auto scopeMu = mu.lightScope.lightConst;
+        return .mahalanobisDistancePrecisionCholesky!uplo(scopeX, scopeMu, invSigmaCholesky);
+    }
+
+    /// ditto
+    Slice!(RCI!(Unqual!X), 1) mahalanobisDistancePrecisionCholesky(X, Mu, InvSigmaCholesky, SliceKind kindX, SliceKind kindMu, SliceKind kindInvSigmaCholesky)(
+        Slice!(const(X)*, 2, kindX) x,
+        Slice!(const(Mu)*, 1, kindMu) mu,
+        auto ref const Slice!(RCI!InvSigmaCholesky, 2, kindInvSigmaCholesky) invSigmaCholesky
+    )
+        if (is(Unqual!X == Unqual!Mu) &&
+            is(Unqual!X == Unqual!InvSigmaCholesky))
+    in
+    {
+        assert(x.length!1 == invSigmaCholesky.length!0, "The number of columns of `x` must conform to the shape of `invSigmaCholesky`");
+        assert(mu.length!0 == invSigmaCholesky.length!0, "The length of `mu` must conform to the shape of `invSigmaCholesky`");
+        assert(invSigmaCholesky.length!0 == invSigmaCholesky.length!1, "`invSigmaCholesky` must be a square matrix");
+    }
+    do
+    {
+        auto scopeSigma = invSigmaCholesky.lightScope.lightConst;
+        return .mahalanobisDistancePrecisionCholesky!uplo(x, mu, scopeSigma);
+    }
+
+    /// ditto
+    Slice!(RCI!(Unqual!X), 1) mahalanobisDistancePrecisionCholesky(X, Mu, InvSigmaCholesky, SliceKind kindX, SliceKind kindMu, SliceKind kindInvSigmaCholesky)(
+        Slice!(const(X)*, 2, kindX) x,
+        auto ref const Slice!(RCI!Mu, 1, kindMu) mu,
+        Slice!(const(InvSigmaCholesky)*, 2, kindInvSigmaCholesky) invSigmaCholesky
+    )
+        if (is(Unqual!X == Unqual!Mu) &&
+            is(Unqual!X == Unqual!InvSigmaCholesky))
+    in
+    {
+        assert(x.length!1 == invSigmaCholesky.length!0, "The number of columns of `x` must conform to the shape of `invSigmaCholesky`");
+        assert(mu.length!0 == invSigmaCholesky.length!0, "The length of `mu` must conform to the shape of `invSigmaCholesky`");
+        assert(invSigmaCholesky.length!0 == invSigmaCholesky.length!1, "`invSigmaCholesky` must be a square matrix");
+    }
+    do
+    {
+        auto scopeMu = mu.lightScope.lightConst;
+        return .mahalanobisDistancePrecisionCholesky!uplo(x, scopeMu, invSigmaCholesky);
+    }
+
+    /// ditto
+    Slice!(RCI!(Unqual!X), 1) mahalanobisDistancePrecisionCholesky(X, Mu, InvSigmaCholesky, SliceKind kindX, SliceKind kindMu, SliceKind kindInvSigmaCholesky)(
+        auto ref const Slice!(RCI!X, 2, kindX) x,
+        Slice!(const(Mu)*, 1, kindMu) mu,
+        Slice!(const(InvSigmaCholesky)*, 2, kindInvSigmaCholesky) invSigmaCholesky
+    )
+        if (is(Unqual!X == Unqual!Mu) &&
+            is(Unqual!X == Unqual!InvSigmaCholesky))
+    in
+    {
+        assert(x.length!1 == invSigmaCholesky.length!0, "The number of columns of `x` must conform to the shape of `invSigmaCholesky`");
+        assert(mu.length!0 == invSigmaCholesky.length!0, "The length of `mu` must conform to the shape of `invSigmaCholesky`");
+        assert(invSigmaCholesky.length!0 == invSigmaCholesky.length!1, "`invSigmaCholesky` must be a square matrix");
+    }
+    do
+    {
+        auto scopeX = x.lightScope.lightConst;
+        return .mahalanobisDistancePrecisionCholesky!uplo(scopeX, mu, invSigmaCholesky);
+    }
+
+    /++
+    Params:
+        x = m(rows) x n(cols) matrix
+        invSigmaCholesky = n(rows) x n(cols) matrix
+    +/
+    Slice!(RCI!T, 1) mahalanobisDistancePrecisionCholesky(T, SliceKind kindX, SliceKind kindInvSigmaCholesky)(
+        Slice!(const(T)*, 2, kindX) x,
+        Slice!(const(T)*, 2, kindInvSigmaCholesky) invSigmaCholesky
+    )
+        if (isFloatingPoint!T)
+    in
+    {
+        assert(x.length!1 == invSigmaCholesky.length!0, "The number of columns of `x` must conform to the shape of `invSigmaCholesky`");
+        assert(invSigmaCholesky.length!0 == invSigmaCholesky.length!1, "`invSigmaCholesky` must be a square matrix");
+    }
+    do
+    {
+        import mir.math.internal.linearAlgebra: mtimesTriangular, mtimesTriangularRight, rowsDotProduct;
+        import mir.ndslice.allocation: mininitRcslice;
+        import mir.ndslice.dynamic: transposed;
+        import mir.ndslice.topology: universal;
+
+        static if (uplo == Uplo.Upper) {
+            auto temp = x.mtimesTriangularRight!(uplo)(invSigmaCholesky.universal.transposed);
+        } else {
+            auto temp = x.mtimesTriangularRight!(uplo)(invSigmaCholesky);
+        }
+        return temp.rowsDotProduct(temp);
+    }
+
+    /// ditto
+    Slice!(RCI!(Unqual!X), 1) mahalanobisDistancePrecisionCholesky(X, InvSigmaCholesky, SliceKind kindX, SliceKind kindInvSigmaCholesky)(
+        auto ref const Slice!(RCI!X, 2, kindX) x,
+        auto ref const Slice!(RCI!InvSigmaCholesky, 2, kindInvSigmaCholesky) invSigmaCholesky
+    )
+        if (is(Unqual!X == Unqual!InvSigmaCholesky))
+    in
+    {
+        assert(x.length!1 == invSigmaCholesky.length!0, "The number of columns of `x` must conform to the shape of `invSigmaCholesky`");
+        assert(invSigmaCholesky.length!0 == invSigmaCholesky.length!1, "`invSigmaCholesky` must be a square matrix");
+    }
+    do
+    {
+        auto scopeX = x.lightScope.lightConst;
+        auto scopeSigma = invSigmaCholesky.lightScope.lightConst;
+        return .mahalanobisDistancePrecisionCholesky!uplo(scopeX, scopeSigma);
+    }
+
+    /// ditto
+    Slice!(RCI!(Unqual!X), 1) mahalanobisDistancePrecisionCholesky(X, InvSigmaCholesky, SliceKind kindX, SliceKind kindInvSigmaCholesky)(
+        Slice!(const(X)*, 2, kindX) x,
+        auto ref const Slice!(RCI!InvSigmaCholesky, 2, kindInvSigmaCholesky) invSigmaCholesky
+    )
+        if (is(Unqual!X == Unqual!InvSigmaCholesky))
+    in
+    {
+        assert(x.length!1 == invSigmaCholesky.length!0, "The number of columns of `x` must conform to the shape of `invSigmaCholesky`");
+        assert(invSigmaCholesky.length!0 == invSigmaCholesky.length!1, "`invSigmaCholesky` must be a square matrix");
+    }
+    do
+    {
+        auto scopeSigma = invSigmaCholesky.lightScope.lightConst;
+        return .mahalanobisDistancePrecisionCholesky!uplo(x, scopeSigma);
+    }
+
+    /// ditto
+    Slice!(RCI!(Unqual!X), 1) mahalanobisDistancePrecisionCholesky(X, InvSigmaCholesky, SliceKind kindX, SliceKind kindInvSigmaCholesky)(
+        auto ref const Slice!(RCI!X, 2, kindX) x,
+        Slice!(const(InvSigmaCholesky)*, 2, kindInvSigmaCholesky) invSigmaCholesky
+    )
+        if (is(Unqual!X == Unqual!InvSigmaCholesky))
+    in
+    {
+        assert(x.length!1 == invSigmaCholesky.length!0, "The number of columns of `x` must conform to the shape of `invSigmaCholesky`");
+        assert(invSigmaCholesky.length!0 == invSigmaCholesky.length!1, "`invSigmaCholesky` must be a square matrix");
+    }
+    do
+    {
+        auto scopeX = x.lightScope.lightConst;
+        return .mahalanobisDistancePrecisionCholesky!uplo(scopeX, invSigmaCholesky);
+    }
+}
+
+/// Vector example
+version(mir_stat_test_blas)
+@safe pure nothrow @nogc
+unittest
+{
+    import mir.math.common: sqrt;
+    import mir.ndslice.allocation: mininitRcslice;
+    import mir.test: shouldApprox;
+
+    static immutable a = [2.0, 1];
+    static immutable b = [1.0, 2];
+    static immutable c = [[sqrt(0.6), -0.2 / sqrt(0.6)],
+                          [            0.0,  sqrt(3.0) / 3]];
+
+    auto x = mininitRcslice!double(2);
+    auto mu = mininitRcslice!double(2);
+    auto invSigmaCholesky = mininitRcslice!double(2, 2);
+    auto xCenter = mininitRcslice!double(2);
+
+    x[] = a;
+    mu[] = b;
+    invSigmaCholesky[] = c;
+    xCenter[] = a;
+    xCenter[] -= b;
+
+    x.mahalanobisDistancePrecisionCholesky(mu, invSigmaCholesky).shouldApprox == 1.4;
+    xCenter.mahalanobisDistancePrecisionCholesky(invSigmaCholesky).shouldApprox == 1.4;
+}
+
+/// Matrix example
+version(mir_stat_test_blas)
+@safe pure nothrow @nogc
+unittest
+{
+    import mir.algorithm.iteration: all;
+    import mir.math.common: approxEqual, sqrt;
+    import mir.ndslice.allocation: mininitRcslice;
+    import mir.test: shouldApprox;
+
+    static immutable a = [[2.0, 1],
+                          [2.0, 3]];
+    static immutable b = [1.0, 2];
+    static immutable c = [[sqrt(0.6), -0.2 / sqrt(0.6)],
+                          [            0.0,  sqrt(3.0) / 3]];
+    static immutable d = [1.4, 0.6];
+
+    auto x = mininitRcslice!double(2, 2);
+    auto mu = mininitRcslice!double(2);
+    auto invSigmaCholesky = mininitRcslice!double(2, 2);
+    auto xCenter = mininitRcslice!double(2, 2);
+    auto result = mininitRcslice!double(2);
+
+    x[] = a;
+    mu[] = b;
+    invSigmaCholesky[] = c;
+    xCenter[] = a;
+    xCenter[0][] -= b;
+    xCenter[1][] -= b;
+    result[] = d;
+
+    assert(x.mahalanobisDistancePrecisionCholesky(mu, invSigmaCholesky).all!approxEqual(result));
+    assert(xCenter.mahalanobisDistancePrecisionCholesky(invSigmaCholesky).all!approxEqual(result));
+}
+
+// Vector example (lower triangular)
+version(mir_stat_test_blas)
+@safe pure nothrow @nogc
+unittest
+{
+    import mir.blas: Uplo;
+    import mir.math.common: sqrt;
+    import mir.ndslice.allocation: mininitRcslice;
+    import mir.test: shouldApprox;
+
+    static immutable a = [2.0, 1];
+    static immutable b = [1.0, 2];
+    static immutable c = [[    sqrt(0.6),    0],
+                          [-0.2 / sqrt(0.6), sqrt(3.0) / 3]];
+
+    auto x = mininitRcslice!double(2);
+    auto mu = mininitRcslice!double(2);
+    auto invSigmaCholesky = mininitRcslice!double(2, 2);
+    auto xCenter = mininitRcslice!double(2);
+
+    x[] = a;
+    mu[] = b;
+    invSigmaCholesky[] = c;
+    xCenter[] = a;
+    xCenter[] -= b;
+
+    x.mahalanobisDistancePrecisionCholesky!(Uplo.Lower)(mu, invSigmaCholesky).shouldApprox == 1.4;
+    xCenter.mahalanobisDistancePrecisionCholesky!(Uplo.Lower)(invSigmaCholesky).shouldApprox == 1.4;
+}
+
+// Matrix example (lower triangular)
+version(mir_stat_test_blas)
+@safe pure nothrow @nogc
+unittest
+{
+    import mir.algorithm.iteration: all;
+    import mir.blas: Uplo;
+    import mir.math.common: approxEqual, sqrt;
+    import mir.ndslice.allocation: mininitRcslice;
+    import mir.test: shouldApprox;
+
+    static immutable a = [[2.0, 1],
+                          [2.0, 3]];
+    static immutable b = [1.0, 2];
+    static immutable c = [[       sqrt(0.6), 0],
+                          [-0.2 / sqrt(0.6), sqrt(3.0) / 3]];
+    static immutable d = [1.4, 0.6];
+
+    auto x = mininitRcslice!double(2, 2);
+    auto mu = mininitRcslice!double(2);
+    auto invSigmaCholesky = mininitRcslice!double(2, 2);
+    auto xCenter = mininitRcslice!double(2, 2);
+    auto result = mininitRcslice!double(2);
+
+    x[] = a;
+    mu[] = b;
+    invSigmaCholesky[] = c;
+    xCenter[] = a;
+    xCenter[0][] -= b;
+    xCenter[1][] -= b;
+    result[] = d;
+
+    assert(x.mahalanobisDistancePrecisionCholesky!(Uplo.Lower)(mu, invSigmaCholesky).all!approxEqual(result));
+    assert(xCenter.mahalanobisDistancePrecisionCholesky!(Uplo.Lower)(invSigmaCholesky).all!approxEqual(result));
+}
+
+// Vector example (GC)
+version(mir_stat_test_blas)
+@safe pure nothrow
+unittest
+{
+    import mir.math.common: sqrt;
+    import mir.ndslice.allocation: uninitSlice;
+    import mir.test: shouldApprox;
+
+    static immutable a = [2.0, 1];
+    static immutable b = [1.0, 2];
+    static immutable c = [[sqrt(0.6), -0.2 / sqrt(0.6)],
+                          [            0.0,  sqrt(3.0) / 3]];
+
+    auto x = uninitSlice!double(2);
+    auto mu = uninitSlice!double(2);
+    auto invSigmaCholesky = uninitSlice!double(2, 2);
+    auto xCenter = uninitSlice!double(2);
+
+    x[] = a;
+    mu[] = b;
+    invSigmaCholesky[] = c;
+    xCenter[] = a;
+    xCenter[] -= b;
+
+    x.mahalanobisDistancePrecisionCholesky(mu, invSigmaCholesky).shouldApprox == 1.4;
+    xCenter.mahalanobisDistancePrecisionCholesky(invSigmaCholesky).shouldApprox == 1.4;
+}
+
+// Matrix example (GC)
+version(mir_stat_test_blas)
+@safe pure nothrow
+unittest
+{
+    import mir.algorithm.iteration: all;
+    import mir.math.common: approxEqual, sqrt;
+    import mir.ndslice.allocation: uninitSlice;
+    import mir.test: shouldApprox;
+
+    static immutable a = [[2.0, 1],
+                          [2.0, 3]];
+    static immutable b = [1.0, 2];
+    static immutable c = [[sqrt(0.6), -0.2 / sqrt(0.6)],
+                          [            0.0,  sqrt(3.0) / 3]];
+    static immutable d = [1.4, 0.6];
+
+    auto x = uninitSlice!double(2, 2);
+    auto mu = uninitSlice!double(2);
+    auto invSigmaCholesky = uninitSlice!double(2, 2);
+    auto xCenter = uninitSlice!double(2, 2);
+    auto result = uninitSlice!double(2);
+
+    x[] = a;
+    mu[] = b;
+    invSigmaCholesky[] = c;
+    xCenter[] = a;
+    xCenter[0][] -= b;
+    xCenter[1][] -= b;
+    result[] = d;
+
+    assert(x.mahalanobisDistancePrecisionCholesky(mu, invSigmaCholesky).all!approxEqual(result));
+    assert(xCenter.mahalanobisDistancePrecisionCholesky(invSigmaCholesky).all!approxEqual(result));
+}
+
+private
+@safe pure nothrow @nogc
+Slice!(RCI!T, 1) mahalanobisDistancePrecision_alt(T, SliceKind kindX, SliceKind kindInvSigma)(
+    Slice!(const(T)*, 2, kindX) x,
+    Slice!(const(T)*, 2, kindInvSigma) invSigma
+)
+    if (isFloatingPoint!T)
+in
+{
+    assert(x.length!1 == invSigma.length!0, "The number of columns of `x` must conform to the shape of `invSigma`");
+    assert(invSigma.length!0 == invSigma.length!1, "`invSigma` must be a square matrix");
+}
+do
+{
+    auto result = mininitRcslice!T(x.length!0);
+    foreach (size_t i; 0 .. x.length) {
+        result[i] = mahalanobisDistancePrecision(x[i], invSigma);
+    }
+    return result;
+}
+
+private
+@safe pure nothrow @nogc
+Slice!(RCI!T, 1) mahalanobisDistance_alt1(T, SliceKind kindX, SliceKind kindSigma)(
+    Slice!(const(T)*, 2, kindX) x,
+    Slice!(const(T)*, 2, kindSigma) sigma
+)
+    if (isFloatingPoint!T)
+in
+{
+    assert(x.length!1 == sigma.length!0, "The number of columns of `x` must conform to the shape of `sigma`");
+    assert(sigma.length!0 == sigma.length!1, "`sigma` must be a square matrix");
+}
+do
+{
+    import mir.math.internal.lubeck2: mlinverse;
+    import mir.ndslice.allocation: mininitRcslice, rcslice;
+
+    try {
+        auto invSigma = mlinverse(sigma);
+        auto result = mininitRcslice!T(x.length!0);
+        foreach (size_t i; 0 .. x.length) {
+            result[i] = mahalanobisDistancePrecision(x[i], invSigma);
+        }
+        return result;
+    } catch (Exception e) {
+        return rcslice!T([x.length!0], T.init);
+    }
+}
+
+private
+@safe pure nothrow @nogc
+Slice!(RCI!T, 1) mahalanobisDistance_alt2(T, SliceKind kindX, SliceKind kindSigma)(
+    Slice!(const(T)*, 2, kindX) x,
+    Slice!(const(T)*, 2, kindSigma) sigma
+)
+    if (isFloatingPoint!T)
+in
+{
+    assert(x.length!1 == sigma.length!0, "The number of columns of `x` must conform to the shape of `sigma`");
+    assert(sigma.length!0 == sigma.length!1, "`sigma` must be a square matrix");
+}
+do
+{
+    import mir.ndslice.allocation: mininitRcslice;
+
+    auto result = mininitRcslice!T(x.length!0);
+    foreach (size_t i; 0 .. x.length) {
+        result[i] = mahalanobisDistance(x[i], sigma);
+    }
+    return result;
+}
+
+private
+@safe pure nothrow @nogc
+Slice!(RCI!T, 1) mahalanobisDistancePrecision_alt1(T, SliceKind kindX, SliceKind kindInvSigma)(
+    Slice!(const(T)*, 2, kindX) x,
+    Slice!(const(T)*, 2, kindInvSigma) invSigma
+)
+    if (isFloatingPoint!T)
+in
+{
+    assert(x.length!1 == invSigma.length!0, "The number of columns of `x` must conform to the shape of `invSigma`");
+    assert(invSigma.length!0 == invSigma.length!1, "`invSigma` must be a square matrix");
+}
+do
+{
+    import mir.ndslice.allocation: mininitRcslice;
+
+    auto result = mininitRcslice!T(x.length!0);
+    foreach (size_t i; 0 .. x.length) {
+        result[i] = mahalanobisDistancePrecision(x[i], invSigma);
+    }
+    return result;
+}
+
+// compile with dub test --build=unittest-blas-perf --config=unittest-blas-perf-mkl-sequential --compiler=ldc2
+version(mir_stat_test_blas_mahalanobis_performance)
+unittest
+{
+    // Only two-paramter version of mahalanobisDistance is benchmarked
+    import mir.math.internal.benchmark;
+    import mir.math.sum: Summation;
+    import mir.ndslice.allocation: mininitRcslice;
+    import mir.random.engine: Random, threadLocalPtr;
+    import mir.random.variable: NormalVariable;
+    import mir.stat.descriptive.univariate: mean;
+    import std.stdio: writeln;
+    import std.meta: AliasSeq, staticMap;
+
+    template identifierOf(alias T) {
+        enum identifierOf = __traits(identifier, T);
+    }
+
+    size_t numberSimulations = 10_000;
+    size_t m = 100;
+    size_t n = 10;
+
+    double mu_F = 0.1;
+    double sd_F = 0.2;
+    double mu_B = 1;
+    double sd_B = 0.15;
+    double mu_idio = 0;
+    double sd_idio = 0.05;
+
+    // Initialize mu/sigma based on a random simulation
+    Random* gen = threadLocalPtr!Random;
+    auto rv_F = NormalVariable!double(mu_F, sd_F);
+    auto F = mininitRcslice!double(m);
+    foreach (ref e; F) {
+        e = rv_F(gen);
+    }
+    auto rv_B = NormalVariable!double(mu_B, sd_B);
+    auto B = mininitRcslice!double(n);
+    foreach (ref e; B) {
+        e = rv_B(gen);
+    }
+    auto rv_idio = NormalVariable!double(mu_idio, sd_idio);
+    auto X = mininitRcslice!double(m, n);
+    foreach (size_t i; 0 .. m) {
+        foreach (size_t j; 0 .. n) {
+            X[i, j] = F[i] * B[j] + rv_idio(gen);
+        }
+    }
+    auto mu = mininitRcslice!double(n);
+    auto sigma = mininitRcslice!double(n, n);
+    foreach (size_t i; 0 .. n) {
+        mu[i] = mean(X[0 .. $, i]);
+        foreach (size_t j; i .. n) {
+            sigma[i, j] = covariance(X[0 .. $, i], X[0 .. $, j]);
+            if (i != j) {
+                sigma[j, i] = sigma[i, j];
+            }
+        }
+    }
+
+    // Handle benchmark
+    alias fs = AliasSeq!(mahalanobisDistance, mahalanobisDistance_alt1, mahalanobisDistance_alt2, mahalanobisDistancePositiveDefinite, mahalanobisDistanceCholesky,
+                         mahalanobisDistancePrecision, mahalanobisDistancePrecision_alt1, mahalanobisDistancePrecisionCholesky);
+    auto fs_identifier = staticMap!(identifierOf, fs);
+    static immutable bool[fs.length] usePrecision = [false, false, false, false, false,
+                                                     true, true, true];
+    static immutable bool[fs.length] useCholesky = [false, false, false, false, true,
+                                                    false, false, true];
+    auto output = mininitRcslice!double(fs.length, m);
+    auto time = benchmarkRandomN_mahal!(usePrecision[], useCholesky[], fs)(numberSimulations, m, n, mu, sigma, output);
+    writeln("Mahalanobis Distance performance test");
+    static foreach (size_t i; 0 .. fs.length) {
+        writeln("Function ", i + 1, ": ", fs_identifier[i], ", Output (first 3): ", output[i, 0 .. 3], ", Elapsed time: ", time[i]);
+    }
+    writeln();
+}
+
 }
