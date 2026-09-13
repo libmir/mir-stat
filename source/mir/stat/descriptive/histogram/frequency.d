@@ -1385,8 +1385,10 @@ unittest
     });
     static assert(safeBorrowCompiles == hasBorrowEscapeChecking);
 
-    // The return annotation catches this direct escape even in @system code.
-    static assert(!__traits(compiles, () @system {
+    // Safe code must never return a view of a local accumulator. Without escape
+    // checking, borrowing itself is @system; with it, the return is rejected.
+    // Older compilers may permit this escape in @system code.
+    static assert(!__traits(compiles, () @safe {
         auto f = F([1u, 1u], Axis(2, 0.0));
         return f.frequencyBins();
     }));

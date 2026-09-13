@@ -220,10 +220,10 @@ public:
                 return false;
             else
             {
+                bool accepts = true;
                 static foreach (i; 0 .. T.length)
-                    static if (!acceptsAxisValue!(Axis[N == 1 ? 0 : i], T[i]))
-                        return false;
-                return true;
+                    accepts = accepts && acceptsAxisValue!(Axis[N == 1 ? 0 : i], T[i]);
+                return accepts;
             }
         }();
     }
