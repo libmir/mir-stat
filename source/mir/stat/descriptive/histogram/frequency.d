@@ -584,8 +584,12 @@ unittest
         auto axis = Axis(3, 0.0);
         auto f = F(counts, axis);
         static assert(is(f.CountType == uint));
-        static assert(!__traits(compiles, f.counts[0] = 9));
-        static assert(!__traits(compiles, f.count = 9));
+        static assert(!__traits(compiles, {
+            f.counts[0] = 9;
+        }));
+        static assert(!__traits(compiles, {
+            f.count = 9;
+        }));
         assert(f.count == 3);
         assert(f.counts == [1u, 2u, 0u]);
         assert(f.axis.N_bin == 3);
@@ -1250,7 +1254,9 @@ unittest
         static assert(isRandomAccessRange!View && hasSlicing!View);
         static assert(!hasAssignableElements!View);
         static assert(is(typeof(bins.front.frequency) == T));
-        static assert(!__traits(compiles, bins._source.counts[0] = 10u));
+        static assert(!__traits(compiles, {
+            bins._source.counts[0] = 10u;
+        }));
         assert(isNaN(bins[0].frequency));
         f.put([-1.0, 0.5, 0.75, 2.5, 4.0]);
         assert(bins.length == 3 && f.count == 5);

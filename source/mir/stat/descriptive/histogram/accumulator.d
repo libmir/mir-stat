@@ -1211,7 +1211,9 @@ unittest
     auto description = owned[1].bin;
     owned = typeof(owned).init;
     assert(description.low == 2.0 && description.high == 5.0);
-    static assert(!__traits(compiles, description.low = 100.0));
+    static assert(!__traits(compiles, {
+        description.low = 100.0;
+    }));
 }
 
 // Invalid access and incompatible input are rejected.
@@ -1274,8 +1276,12 @@ unittest
         static assert(isRandomAccessRange!(typeof(cursor)));
         static assert(!__traits(compiles, fixed.popFront()));
         static assert(!__traits(compiles, fixed.popBack()));
-        static assert(!__traits(compiles, cursor._counts[0] = 10u));
-        static assert(!__traits(compiles, fixed._counts[0] = 10u));
+        static assert(!__traits(compiles, {
+            cursor._counts[0] = 10u;
+        }));
+        static assert(!__traits(compiles, {
+            fixed._counts[0] = 10u;
+        }));
 
         auto previous = fixed.front;
         h.put(0.5);
