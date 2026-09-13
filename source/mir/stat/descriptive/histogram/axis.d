@@ -746,6 +746,8 @@ version(mir_stat_test)
 @safe pure nothrow @nogc
 unittest
 {
+    import mir.stat.descriptive.histogram.traits: DefaultCountType;
+
     auto x0 = integralAxis!(size_t, double, AxisOptions())(10, 2.0);
     auto x1 = integralAxis!(size_t, double)(10, 2.0);
     auto x2 = integralAxis!double(10, 2.0);
@@ -762,6 +764,8 @@ version(mir_stat_test)
 @safe pure nothrow
 unittest
 {
+    import mir.stat.descriptive.histogram.traits: DefaultCountType;
+
     import mir.ndslice.slice: sliced;
     import mir.stat.descriptive.histogram.breaks: sturges;
 
@@ -1278,6 +1282,8 @@ version(mir_stat_test)
 @safe pure nothrow @nogc
 unittest
 {
+    import mir.stat.descriptive.histogram.traits: DefaultCountType;
+
     auto x0 = regularAxis!(size_t, double, AxisOptions())(10, 2.0, 12.0);
     auto x1 = regularAxis!(size_t, double)(10, 2.0, 12.0);
     auto x2 = regularAxis!double(10, 2.0, 12.0);
@@ -1294,6 +1300,8 @@ version(mir_stat_test)
 @safe pure nothrow
 unittest
 {
+    import mir.stat.descriptive.histogram.traits: DefaultCountType;
+
     import mir.ndslice.slice: sliced;
     import mir.stat.descriptive.histogram.breaks: sturges;
 
@@ -2166,6 +2174,8 @@ version(mir_stat_test)
 @safe pure nothrow @nogc
 unittest
 {
+    import mir.stat.descriptive.histogram.traits: DefaultCountType;
+
     import mir.math.common: exp, log;
 
     auto x0 = transformAxis!(size_t, double, exp, log, AxisOptions())(10, 2.0, 12.0);
@@ -2190,6 +2200,8 @@ version(mir_stat_test)
 @safe pure nothrow
 unittest
 {
+    import mir.stat.descriptive.histogram.traits: DefaultCountType;
+
     import mir.math.common: exp, log;
     import mir.ndslice.slice: sliced;
     import mir.stat.descriptive.histogram.breaks;
@@ -2614,6 +2626,8 @@ version(mir_stat_test)
 @safe pure nothrow @nogc
 unittest
 {
+    import mir.stat.descriptive.histogram.traits: DefaultCountType;
+
     enum Foo
     {
         A,
@@ -2821,6 +2835,8 @@ version(mir_stat_test)
 @safe pure nothrow @nogc
 unittest
 {
+    import mir.stat.descriptive.histogram.traits: DefaultCountType;
+
     enum Foo
     {
         A,
@@ -3266,6 +3282,8 @@ version(mir_stat_test)
 @safe pure nothrow @nogc
 unittest
 {
+    import mir.stat.descriptive.histogram.traits: DefaultCountType;
+
     import mir.rc.array;
 
     size_t len = 11;
