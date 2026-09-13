@@ -176,6 +176,7 @@ template rchistogramImpl(CountType, BinType, alias Axis, alias transform, alias 
     /++
     Params:
         slice = slice
+        N_bin = number of bins
         low = the value of the smallest bin
         high = the value of the largest bin
     +/
@@ -212,6 +213,7 @@ template rchistogramImpl(CountType, BinType, alias Axis, alias transform, AxisOp
     /++
     Params:
         slice = slice
+        N_bin = number of bins
         low = the value of the smallest bin
         high = the value of the largest bin
     +/
@@ -445,6 +447,7 @@ Params:
     BinType = the type of the values that are compared in histogram bins
     Axis = type of axis
     transform = function to transform axis
+    inverseTransform = function to undo transform
     axisOptions = options
 +/
 template rchistogram(CountType, BinType, alias Axis, alias transform, alias inverseTransform, AxisOptions axisOptions = AxisOptions())
@@ -457,6 +460,7 @@ template rchistogram(CountType, BinType, alias Axis, alias transform, alias inve
     /++
     Params:
         slice = slice
+        N_bin = number of bins
         low = the value of the smallest bin
         high = the value of the largest bin
     +/
@@ -491,6 +495,7 @@ template rchistogram(CountType, BinType, alias Axis, alias transform, AxisOption
     /++
     Params:
         slice = slice
+        N_bin = number of bins
         low = the value of the smallest bin
         high = the value of the largest bin
     +/
@@ -604,7 +609,6 @@ template rchistogram(BinType, alias Axis, AxisOptions axisOptions = AxisOptions(
 
 /++
 Params:
-    CountType = the type that is used to count in histogram bins
     BinType = the type of the values that are compared in histogram bins
     Axis = type of axis
     transform = function to transform axis
@@ -623,6 +627,7 @@ template rchistogram(BinType, alias Axis, alias transform, alias inverseTransfor
     /++
     Params:
         slice = slice
+        N_bin = number of bins
         low = the value of the smallest bin
         high = the value of the largest bin
     +/
@@ -642,11 +647,9 @@ template rchistogram(BinType, alias Axis, alias transform, alias inverseTransfor
 
 /++
 Params:
-    CountType = the type that is used to count in histogram bins
     BinType = the type of the values that are compared in histogram bins
     Axis = type of axis
     transform = function to transform axis
-    inverseTransform = function to undo transform
     axisOptions = options
 +/
 template rchistogram(BinType, alias Axis, alias transform, AxisOptions axisOptions = AxisOptions())
@@ -660,6 +663,7 @@ template rchistogram(BinType, alias Axis, alias transform, AxisOptions axisOptio
     /++
     Params:
         slice = slice
+        N_bin = number of bins
         low = the value of the smallest bin
         high = the value of the largest bin
     +/

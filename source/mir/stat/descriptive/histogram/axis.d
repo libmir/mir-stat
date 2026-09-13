@@ -661,6 +661,8 @@ IntegralAxis!(CountType, BinType, axisOptions)
 Params:
     BinType = the type of the values that are compared in histogram bins
     axisOptions = options
+    N_bin = number of bins
+    low = value of smallest bin
 +/
 IntegralAxis!(DefaultCountType, BinType, axisOptions)
     integralAxis(BinType, AxisOptions axisOptions = AxisOptions())(DefaultCountType N_bin, BinType low)
@@ -1194,6 +1196,9 @@ RegularAxis!(CountType, BinType, axisOptions)
 Params:
     BinType = the type of the values that are compared in histogram bins
     axisOptions = options
+    N_bin = number of bins
+    low = value of smallest bin
+    high = value of the largest bin
 +/
 RegularAxis!(DefaultCountType, BinType, axisOptions)
     regularAxis(BinType, AxisOptions axisOptions = AxisOptions())(DefaultCountType N_bin, BinType low, BinType high)
@@ -1912,8 +1917,10 @@ Params:
     CountType = the type that is used to count in histogram bins
     BinType = the type of the values that are compared in histogram bins
     transform = function to transform axis
-    inverseTransform = function to undo transform
     axisOptions = options
+    N_bin = number of bins
+    low = value of smallest bin
+    high = value of the largest bin
 +/
 TransformAxis!(CountType, BinType, transform, inverseTransformMapping!transform, axisOptions)
     transformAxis(CountType, BinType, alias transform, AxisOptions axisOptions = AxisOptions())(CountType N_bin, BinType low, BinType high)
@@ -1929,6 +1936,9 @@ Params:
     transform = function to transform axis
     inverseTransform = function to undo transform
     axisOptions = options
+    N_bin = number of bins
+    low = value of smallest bin
+    high = value of the largest bin
 +/
 TransformAxis!(DefaultCountType, BinType, transform, inverseTransform, axisOptions)
     transformAxis(BinType, alias transform, alias inverseTransform, AxisOptions axisOptions = AxisOptions())(DefaultCountType N_bin, BinType low, BinType high)
@@ -1943,6 +1953,9 @@ Params:
     BinType = the type of the values that are compared in histogram bins
     transform = function to transform axis
     axisOptions = options
+    N_bin = number of bins
+    low = value of smallest bin
+    high = value of the largest bin
 +/
 TransformAxis!(DefaultCountType, BinType, transform, inverseTransformMapping!transform, axisOptions)
     transformAxis(BinType, alias transform, AxisOptions axisOptions = AxisOptions())(DefaultCountType N_bin, BinType low, BinType high)
@@ -2858,7 +2871,7 @@ Axis for non-equidistant data.
 
 Params:
     CountT = the type that is used to count in histogram bins
-    BinT = the type of the values that are compared in histogram bins
+    Iterator = iterator type for the bin boundaries
     axisOptions = options
 
 See_also:
@@ -3213,7 +3226,7 @@ unittest
 Factory function to produce $(LREF VariableAxis) object
 
 Params:
-    CountT = the type that is used to count in histogram bins
+    CountType = the type that is used to count in histogram bins
     Iterator = the type of the values that are compared in histogram bins
     axisOptions = options
 
