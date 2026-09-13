@@ -29,7 +29,7 @@ $(BOOKTABLE ,
     $(TR $(TDNW $(MREF mir,stat,distribution,invcdf)) $(TD Inverse Cumulative Distribution Functions ))
 )
 
-Copyright: 2022-3 Mir Stat Authors.
+Copyright: 2026 Mir Stat Authors.
 
 Macros:
         TITLE=Mir Stat

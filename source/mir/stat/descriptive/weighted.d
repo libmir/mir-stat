@@ -760,7 +760,10 @@ unittest
 
     wmean([1.0, 2, 3], [1, 2, 3]).shouldApprox == (1.0 + 4.0 + 9.0) / 6;
     wmean!true([1.0, 2, 3], [1.0 / 6, 2.0 / 6, 3.0 / 6]).shouldApprox == (1.0 + 4.0 + 9.0) / 6;
-    wmean([C(1, 3), C(2), C(3)], [1, 2, 3]).should == C(14.0 / 6, 3.0 / 6);
+    // Optimization can change the last rounding bit of this fractional mean.
+    auto complexMean = wmean([C(1, 3), C(2), C(3)], [1, 2, 3]);
+    complexMean.re.shouldApprox(1e-14, 1e-14) == 14.0 / 6;
+    complexMean.im.shouldApprox(1e-14, 1e-14) == 3.0 / 6;
 
     wmean!float([0, 1, 2, 3, 4, 5].sliced(3, 2), [1, 2, 3, 4, 5, 6].sliced(3, 2)).shouldApprox == 70.0 / 21;
 

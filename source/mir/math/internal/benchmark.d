@@ -1,3 +1,12 @@
+/++
+License: $(HTTP www.apache.org/licenses/LICENSE-2.0, Apache-2.0)
+
+Authors: John Michael Hall
+
+Copyright: 2026 Mir Stat Authors.
+
++/
+
 module mir.math.internal.benchmark;
 
 import core.time;

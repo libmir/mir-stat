@@ -6,6 +6,7 @@ $(BOOKTABLE ,
         $(TH Modules)
         $(TH Description)
     )
+    $(TR $(TDNW $(MREF mir,stat,descriptive,histogram)) $(TD Histograms ))
     $(TR $(TDNW $(MREF mir,stat,descriptive,aliases)) $(TD Aliases for common functions ))
     $(TR $(TDNW $(MREF mir,stat,descriptive,multivariate)) $(TD Multivariate Descriptive statistics ))
     $(TR $(TDNW $(MREF mir,stat,descriptive,univariate)) $(TD Univariate Descriptive statistics ))
@@ -16,7 +17,7 @@ License: $(HTTP www.apache.org/licenses/LICENSE-2.0, Apache-2.0)
 
 Authors: John Michael Hall, Ilya Yaroshenko
 
-Copyright: 2022-3 Mir Stat Authors.
+Copyright: 2026 Mir Stat Authors.
 
 Macros:
 SUBREF = $(REF_ALTTEXT $(TT $2), $2, mir, stat, $1)$(NBSP)
@@ -37,3 +38,5 @@ public import mir.stat.descriptive.multivariate;
 public import mir.stat.descriptive.univariate;
 ///
 public import mir.stat.descriptive.weighted;
+///
+public import mir.stat.descriptive.histogram;

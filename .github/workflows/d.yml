@@ -26,6 +26,12 @@ jobs:
     - name: Run tests with coverage
       run: dub -q test --build=unittest-cov
 
+    - name: Run DIP1000 lifetime tests
+      run: dub -q test --build=unittest-dip1000
+
+    - name: Run optimized release tests
+      run: dub -q test --build=unittest-release
+
     - name: Install Lapack
       if: contains( matrix.os, 'ubuntu')
       run: |
