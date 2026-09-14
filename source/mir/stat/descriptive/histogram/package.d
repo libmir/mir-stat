@@ -28,10 +28,9 @@ public import mir.stat.descriptive.histogram.api;
 // - Add factories for GC-backed storage and caller-selected allocation strategies.
 //
 // TODO: Multidimensional histograms
-// - Define joint-bin storage and indexing. The current multiple-axis path records
-//   separate marginal counts for each axis.
-// - Validate joint storage shape against the axes and support joint flow bins
-//   and merging. Marginal count storage already has shape validation.
+// - Add joint flow bins and merging to two-axis histograms.
+// - Generalize joint-bin storage and indexing beyond two axes.
+// - Add joint-bin views and projections to lower-dimensional histograms.
 //
 // Possible later extensions
 // - Support per-bin accumulators, such as MeanAccumulator.
