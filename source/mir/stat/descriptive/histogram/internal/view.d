@@ -11,26 +11,48 @@ import mir.ndslice.slice: isSlice;
 import mir.primitives: DeepElementType;
 import mir.qualifier: lightConst;
 import mir.stat.descriptive.histogram.traits: isAxis;
-import std.traits: isDynamicArray, isNumeric;
+import std.traits: isArray, isDynamicArray, isNumeric;
+import std.meta: allSatisfy;
 
-package(mir.stat.descriptive.histogram) template supportsBinView(Storage, Axis)
+package(mir.stat.descriptive.histogram) template JointArrayInfo(Storage)
+{
+    static if (isArray!Storage)
+    {
+        alias Child = JointArrayInfo!(typeof(Storage.init[0]));
+        enum rank = 1 + Child.rank;
+        alias Element = Child.Element;
+    }
+    else
+    {
+        enum rank = 0;
+        alias Element = Storage;
+    }
+}
+
+private template supportsAxisBin(Axis)
+{
+    enum supportsAxisBin = __traits(compiles, {
+        const Axis axis;
+        auto readOnlyAxis = lightConst(axis);
+        auto description = (const typeof(readOnlyAxis)).init.bin(size_t.init);
+    });
+}
+
+package(mir.stat.descriptive.histogram) template supportsBinView(Storage, Axis...)
 {
     static if (isDynamicArray!Storage)
-        private enum supportedStorage = true;
+        private enum supportedStorage = JointArrayInfo!Storage.rank == Axis.length &&
+            isNumeric!(JointArrayInfo!Storage.Element);
     else static if (isSlice!Storage)
-        private enum supportedStorage = Storage.N == 1;
+        private enum supportedStorage = Storage.N == Axis.length &&
+            isNumeric!(DeepElementType!Storage);
     else
         private enum supportedStorage = false;
 
-    static if (supportedStorage && isAxis!Axis)
-        enum supportsBinView = __traits(compiles, {
+    static if (supportedStorage && Axis.length > 0 && allSatisfy!(isAxis, Axis))
+        enum supportsBinView = allSatisfy!(supportsAxisBin, Axis) && __traits(compiles, {
             const Storage storage;
-            const Axis axis;
             auto readOnlyCounts = lightConst(storage);
-            auto readOnlyAxis = lightConst(axis);
-            auto description = (const typeof(readOnlyAxis)).init.bin(size_t.init);
-            auto count = (const typeof(readOnlyCounts)).init[size_t.init];
-            static assert(isNumeric!(DeepElementType!Storage));
         });
     else
         enum supportsBinView = false;

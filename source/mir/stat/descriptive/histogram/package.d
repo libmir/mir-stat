@@ -28,7 +28,7 @@ public import mir.stat.descriptive.histogram.api;
 // - Add factories for GC-backed storage and caller-selected allocation strategies.
 //
 // TODO: Multidimensional histograms
-// - Add joint-bin views and projections to lower-dimensional histograms.
+// - Add explicit underflow/overflow-bin views and projections to lower-dimensional histograms.
 //
 // Possible later extensions
 // - Support per-bin accumulators, such as MeanAccumulator.
