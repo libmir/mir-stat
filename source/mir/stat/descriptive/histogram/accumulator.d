@@ -1317,24 +1317,34 @@ struct HistogramBinView(Storage, Axis...)
     Element opIndex(size_t index) const
     {
         assert(index < length, "HistogramBinView: index is out of range");
-        auto flat = _begin + index;
+        return readElement(_counts, _begin + index, _shape, _axes);
+    }
+
+    // Shared with frequency views without retaining handles inside their
+    // scope-bound cursors. Callers validate shape at view construction.
+    package(mir.stat.descriptive.histogram)
+    static Element readElement(S, A...)(const S counts, size_t flat,
+        const ref size_t[N] shape, const A axes)
+        if (A.length == N)
+    {
         Element result;
         size_t[N] storageIndices;
         static foreach (reverse; 0 .. N)
         {{
             enum dimension = N - 1 - reverse;
-            auto originalIndex = flat % _shape[dimension];
-            flat /= _shape[dimension];
+            auto originalIndex = flat % shape[dimension];
+            flat /= shape[dimension];
             result._indices[dimension] = originalIndex;
-            result._bins[dimension] = _axes[dimension].bin(originalIndex);
+            const readOnlyAxis = lightConst(axes[dimension]);
+            result._bins[dimension] = readOnlyAxis.bin(originalIndex);
             storageIndices[dimension] = originalIndex;
             static if (N > 1 && includeUnderflow!(Axis[dimension]))
                 ++storageIndices[dimension];
         }}
-        static if (isSlice!ReadOnlyStorage)
-            result.count = _counts[storageIndices];
+        static if (isSlice!S)
+            result.count = counts[storageIndices];
         else
-            result.count = readArrayCount(_counts, storageIndices);
+            result.count = readArrayCount(counts, storageIndices);
         return result;
     }
 
