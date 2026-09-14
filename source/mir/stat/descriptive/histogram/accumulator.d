@@ -25,15 +25,29 @@ import std.meta: allSatisfy;
 import std.traits: isNumeric, Unqual;
 import mir.ndslice.slice: isSlice;
 
-private template isJointStorage(Storage)
+private template JointArrayInfo(Storage)
 {
     import std.traits: isArray;
-    static if (isSlice!Storage)
-        enum isJointStorage = Storage.N == 2 && isNumeric!(DeepElementType!Storage);
-    else static if (isArray!Storage && isArray!(typeof(Storage.init[0])))
-        enum isJointStorage = isNumeric!(typeof(Storage.init[0][0]));
+    static if (isArray!Storage)
+    {
+        alias Child = JointArrayInfo!(typeof(Storage.init[0]));
+        enum rank = 1 + Child.rank;
+        alias Element = Child.Element;
+    }
     else
-        enum isJointStorage = false;
+    {
+        enum rank = 0;
+        alias Element = Storage;
+    }
+}
+
+private template isJointStorage(Storage, size_t rank)
+{
+    static if (isSlice!Storage)
+        enum isJointStorage = Storage.N == rank && isNumeric!(DeepElementType!Storage);
+    else
+        enum isJointStorage = JointArrayInfo!Storage.rank == rank &&
+            isNumeric!(JointArrayInfo!Storage.Element);
 }
 
 struct DenseStorage(Storage)
@@ -83,21 +97,20 @@ template put(size_t i)
 /++
 Accumulator used to generate histogram.
 
-With one axis, storage contains one count per ordinary bin. With two axes,
-put(x, y) increments one joint bin. Storage must be a rank-2 ndslice or a
-rectangular two-dimensional built-in array, with one dimension per axis.
+With one axis, storage contains one count per ordinary bin. With multiple
+axes, put(x, y, ...) increments one joint bin. Storage must be an ndslice or
+rectangular nested built-in array, with one dimension per axis.
 Nested static arrays are copied into the accumulator; dynamic arrays and
 ndslices share their backing counts. Keep axis definitions and storage shape
 unchanged while using the accumulator.
 
-For two axes, each storage dimension contains enabled underflow, ordinary
+For multiple axes, each storage dimension contains enabled underflow, ordinary
 bins, and enabled overflow, in that order. Its length is the ordinary bin
 count plus one for each enabled end bin. Axis indices still number ordinary
 bins from zero; storage indices are shifted by one when underflow is enabled.
 One-axis histograms keep their flow counts separately from ordinary storage.
 
-Two-axis merging and bin views are not yet supported. More than two axes
-are also not yet supported.
+Joint histogram merging and bin views are not yet supported.
 
 If the `Axis` has an `options` member, the histogram may optionally allow
 for overflow and underflow members.
@@ -121,17 +134,16 @@ struct HistogramAccumulator(Storage, Axis...)
     import std.traits: isIterable, isSomeString;
     import mir.stat.descriptive.histogram.traits: includeOverflow, includeUnderflow,
         BinTypeOf, isCategoryAxis, acceptsAxisValue;
-    static if (Axis.length == 2 && !isSlice!Storage)
+    static if (Axis.length > 1 && !isSlice!Storage)
         /// Type of one joint-bin counter.
-        alias CountType = typeof(Storage.init[0][0]);
+        alias CountType = JointArrayInfo!Storage.Element;
     else
         /// Type of one bin counter.
         alias CountType = DeepElementType!Storage;
-    static assert(Axis.length <= 2, "HistogramAccumulator: at most two axes are supported");
-    static if (Axis.length == 2)
+    static if (Axis.length > 1)
     {
-        static assert(isJointStorage!Storage,
-            "HistogramAccumulator: two axes require rank-2 ndslice or two-dimensional numeric array storage");
+        static assert(isJointStorage!(Storage, Axis.length),
+            "HistogramAccumulator: joint storage must be a numeric ndslice or nested array with one dimension per axis");
     }
 private:
     static if (N == 1 && includeOverflow!(Axis[0]))
@@ -164,28 +176,43 @@ private:
         return cast(size_t) index + includeUnderflow!(Axis[i]);
     }
 
-    // Sum a row or column without allocating, including strided ndslices.
-    CountType jointFlowTotal(size_t dimension)(size_t position) const
+    // Validate every branch: checking only the first row would miss ragged arrays.
+    static void validateJointArray(size_t depth = 0, S)(auto ref const S storage,
+        const ref size_t[N] shape)
     {
-        CountType result = 0;
-        foreach (other; 0 .. jointExtent(axis[1 - dimension]))
+        assert(storage.length == shape[depth],
+            "HistogramAccumulator.this: every storage dimension must match its axis");
+        static if (depth + 1 < N)
+            foreach (ref child; storage)
+                validateJointArray!(depth + 1)(child, shape);
+    }
+
+    // Recurse by reference so nested static arrays are updated in place.
+    static void incrementJointArray(size_t depth = 0, S)(ref S storage,
+        const ref size_t[N] indices)
+    {
+        static if (depth + 1 == N)
+            storage[indices[depth]]++;
+        else
+            incrementJointArray!(depth + 1)(storage[indices[depth]], indices);
+    }
+
+    // Fix one coordinate and sum the remaining dimensions. Indexed traversal
+    // works for both nested arrays and ndslices, preserving their strides.
+    static CountType jointFlowTotal(size_t dimension, size_t depth = 0, S)(
+        auto ref const S storage, size_t position)
+    {
+        static if (depth == N)
+            return storage;
+        else static if (depth == dimension)
+            return jointFlowTotal!(dimension, depth + 1)(storage[position], position);
+        else
         {
-            static if (dimension == 0)
-            {
-                static if (isSlice!Storage)
-                    result += counts[position, other];
-                else
-                    result += counts[position][other];
-            }
-            else
-            {
-                static if (isSlice!Storage)
-                    result += counts[other, position];
-                else
-                    result += counts[other][position];
-            }
+            CountType result = 0;
+            foreach (i; 0 .. storage.length)
+                result += jointFlowTotal!(dimension, depth + 1)(storage[i], position);
+            return result;
         }
-        return result;
     }
 
 public:
@@ -235,7 +262,7 @@ public:
     /++
     Construct an accumulator with storage matching the axes.
     Params:
-        x = ordinary counts for one axis; for two axes, a grid including enabled flow bins
+        x = ordinary counts for one axis; for multiple axes, a grid including enabled flow bins
         y = axes defining the bins
     +/
     this(Storage x, Axis y)
@@ -243,18 +270,16 @@ public:
         static if (N == 1)
             assert(x.length == y[0].N_bin,
                 "HistogramAccumulator.this: storage length must match axis");
-        else static if (isSlice!Storage)
-        {
-            assert(x.shape[0] == jointExtent(y[0]) && x.shape[1] == jointExtent(y[1]),
-                "HistogramAccumulator.this: storage shape must match both axes");
-        }
         else
         {
-            assert(x.length == jointExtent(y[0]),
-                "HistogramAccumulator.this: row count must match first axis");
-            foreach (ref row; x)
-                assert(row.length == jointExtent(y[1]),
-                    "HistogramAccumulator.this: every row must match second axis");
+            size_t[N] shape;
+            static foreach (i; 0 .. N)
+                shape[i] = jointExtent(y[i]);
+            static if (isSlice!Storage)
+                assert(x.shape == shape,
+                    "HistogramAccumulator.this: storage shape must match all axes");
+            else
+                validateJointArray(x, shape);
         }
         counts = x;
         axis = y;
@@ -302,14 +327,15 @@ public:
         }
         else
         {
-            // Resolve both coordinates before changing counts, including when
+            // Resolve all coordinates before changing counts, including when
             // an axis rejects an observation or returns an invalid index.
-            auto row = jointStorageIndex!0(x[0]);
-            auto column = jointStorageIndex!1(x[1]);
+            size_t[N] indices;
+            static foreach (i; 0 .. N)
+                indices[i] = jointStorageIndex!i(x[i]);
             static if (isSlice!Storage)
-                counts[row, column]++;
+                counts[indices]++;
             else
-                counts[row][column]++;
+                incrementJointArray(counts, indices);
         }
     }
 
@@ -375,32 +401,36 @@ public:
 
     /++
     Sum current joint counts overflowing the selected axis.
-    Includes every bin of the other axis, including its enabled flow bins.
-    Corner counts can contribute to totals for both axes, so these totals
+    Includes every combination of bins on the other axes, including enabled
+    underflow and overflow bins.
+    Corner counts can contribute to totals for multiple axes, so these totals
     must not be added together to count distinct out-of-range observations.
-    Takes time proportional to the other storage dimension; does not allocate.
+    Takes time proportional to the product of the other storage dimensions;
+    does not allocate.
     Params:
         dimension = zero-based axis number; overflow must be enabled on this axis
     +/
     CountType overflow(size_t dimension)() const
-        if (N == 2 && dimension < N && includeOverflow!(Axis[dimension]))
+        if (N > 1 && dimension < N && includeOverflow!(Axis[dimension]))
     {
-        return jointFlowTotal!dimension(jointExtent(axis[dimension]) - 1);
+        return jointFlowTotal!dimension(counts, jointExtent(axis[dimension]) - 1);
     }
 
     /++
     Sum current joint counts underflowing the selected axis.
-    Includes every bin of the other axis, including its enabled flow bins.
-    Corner counts can contribute to totals for both axes, so these totals
+    Includes every combination of bins on the other axes, including enabled
+    underflow and overflow bins.
+    Corner counts can contribute to totals for multiple axes, so these totals
     must not be added together to count distinct out-of-range observations.
-    Takes time proportional to the other storage dimension; does not allocate.
+    Takes time proportional to the product of the other storage dimensions;
+    does not allocate.
     Params:
         dimension = zero-based axis number; underflow must be enabled on this axis
     +/
     CountType underflow(size_t dimension)() const
-        if (N == 2 && dimension < N && includeUnderflow!(Axis[dimension]))
+        if (N > 1 && dimension < N && includeUnderflow!(Axis[dimension]))
     {
-        return jointFlowTotal!dimension(0);
+        return jointFlowTotal!dimension(counts, 0);
     }
 
 }
@@ -867,6 +897,30 @@ unittest
     assert(buffer == [0u, 1u, 0u, 0u, 0u, 1u]);
 }
 
+/// Count triples with one storage dimension per axis.
+version(mir_stat_test)
+@safe pure nothrow @nogc
+unittest
+{
+    import mir.stat.descriptive.histogram.axis: IntegralAxis, AxisOptions;
+    alias A = IntegralAxis!(uint, double, AxisOptions());
+
+    // In D, the rightmost static-array dimension is the outermost: this
+    // storage has two planes, three rows per plane, and four counts per row.
+    uint[4][3][2] storage;
+    auto h = HistogramAccumulator!(typeof(storage), A, A, A)(
+        storage, A(2, 0.0), A(3, 0.0), A(4, 0.0));
+    h.put(0.5, 1.5, 2.5);
+    h.put(0.75, 1.25, 2.75);
+    h.put(1.5, 2.5, 3.5);
+
+    // Each triple increments exactly one joint bin. Fully static storage
+    // is copied into the accumulator, so read the accumulated counts from h.
+    assert(h.counts[0][1][2] == 2);
+    assert(h.counts[1][2][3] == 1);
+    assert(storage[0][1][2] == 0);
+}
+
 /// Joint flow bins retain both coordinates; member functions sum along one axis.
 version(mir_stat_test)
 @safe pure nothrow @nogc
@@ -903,6 +957,42 @@ unittest
     // Reading totals is also supported on a const histogram.
     const reader = h;
     assert(reader.underflow!0() == 2);
+}
+
+/// Three-dimensional ndslices retain joint underflow/overflow combinations.
+version(mir_stat_test)
+@safe pure nothrow @nogc
+unittest
+{
+    import mir.ndslice.slice: sliced;
+    import mir.stat.descriptive.histogram.axis: IntegralAxis, AxisOptions,
+        EnableUnderflow, EnableOverflow;
+    alias X = IntegralAxis!(uint, double, AxisOptions(EnableUnderflow(true)));
+    alias Y = IntegralAxis!(uint, double, AxisOptions());
+    alias Z = IntegralAxis!(uint, double, AxisOptions(EnableOverflow(true)));
+
+    // Two ordinary bins per axis, plus x underflow and z overflow, require
+    // a 3-by-2-by-3 grid. The ndslice shares the caller's buffer.
+    uint[18] buffer;
+    auto counts = buffer[].sliced(3, 2, 3);
+    auto h = HistogramAccumulator!(typeof(counts), X, Y, Z)(
+        counts, X(2, 0.0), Y(2, 0.0), Z(2, 0.0));
+    h.put(-1.0, 0.5, 2.0);
+    h.put(-1.0, 1.5, 0.5);
+    h.put(0.5, 1.5, 2.0);
+
+    // Underflow occupies x storage index zero; z overflow occupies its last
+    // index. The first observation is retained at their intersection.
+    assert(counts[0, 0, 2] == 1);
+    assert(counts[0, 1, 0] == 1);
+    assert(counts[1, 1, 2] == 1);
+
+    // Each member now sums a plane across the other two dimensions.
+    // Their intersection contributes to both totals, but is stored only once.
+    assert(h.underflow!0() == 2);
+    assert(h.overflow!2() == 2);
+    const reader = h;
+    assert(reader.overflow!2() == 2);
 }
 
 // Circular endpoints must reach indexing even when flow counters are enabled.
@@ -1738,7 +1828,7 @@ unittest
     static assert(!__traits(compiles, HistogramAccumulator!(uint[][][], A, A).init));
     static assert(!__traits(compiles, HistogramAccumulator!(Slice!(uint*, 1), A, A).init));
     static assert(!__traits(compiles, HistogramAccumulator!(Slice!(uint*, 3), A, A).init));
-    static assert(!__traits(compiles, HistogramAccumulator!(uint[][][], A, A, A).init));
+    static assert(!__traits(compiles, HistogramAccumulator!(uint[][], A, A, A).init));
 }
 
 // Every combination of independently enabled ends uses the same storage mapping.
@@ -1927,4 +2017,166 @@ unittest
     }
     alias H = HistogramAccumulator!(uint[1][1], HugeAxis, HugeAxis);
     assertThrown!AssertError(H(uint[1][1].init, HugeAxis(), HugeAxis()));
+}
+
+// Three-dimensional traversal preserves associations and strides at all boundaries.
+version(mir_stat_test)
+@safe pure nothrow @nogc
+unittest
+{
+    import mir.ndslice.slice: sliced;
+    import mir.ndslice.dynamic: transposed;
+    import mir.stat.descriptive.histogram.axis: IntegralAxis, AxisOptions,
+        EnableUnderflow, EnableOverflow;
+    alias X = IntegralAxis!(uint, double,
+        AxisOptions(EnableUnderflow(true), EnableOverflow(true)));
+    alias Y = IntegralAxis!(uint, double, AxisOptions(EnableUnderflow(true)));
+    alias Z = IntegralAxis!(uint, double, AxisOptions(EnableOverflow(true)));
+    uint[5][4][4] storage;
+    auto a = HistogramAccumulator!(typeof(storage), X, Y, Z)(
+        storage, X(2, 0.0), Y(3, 0.0), Z(4, 0.0));
+    uint[80] buffer;
+    auto counts = buffer[].sliced(5, 4, 4).transposed!(2, 1, 0);
+    auto b = HistogramAccumulator!(typeof(counts), X, Y, Z)(
+        counts, X(2, 0.0), Y(3, 0.0), Z(4, 0.0));
+    uint expectedUnderX, expectedOverX, expectedUnderY, expectedOverZ;
+    foreach (i; 0 .. 4)
+        foreach (j; 0 .. 4)
+            foreach (k; 0 .. 5)
+            {
+                // Distinct counts make swapped dimensions visible in totals.
+                uint repeats = 1 + i + 2 * j + 3 * k;
+                foreach (_; 0 .. repeats)
+                {
+                    a.put(i - 0.5, j - 0.5, k + 0.5);
+                    b.put(i - 0.5, j - 0.5, k + 0.5);
+                }
+                assert(a.counts[i][j][k] == repeats);
+                assert(b.counts[i, j, k] == repeats);
+                assert(buffer[(k * 4 + j) * 4 + i] == repeats);
+                if (i == 0) expectedUnderX += repeats;
+                if (i == 3) expectedOverX += repeats;
+                if (j == 0) expectedUnderY += repeats;
+                if (k == 4) expectedOverZ += repeats;
+            }
+    assert(a.underflow!0() == expectedUnderX && b.underflow!0() == expectedUnderX);
+    assert(a.overflow!0() == expectedOverX && b.overflow!0() == expectedOverX);
+    assert(a.underflow!1() == expectedUnderY && b.underflow!1() == expectedUnderY);
+    assert(a.overflow!2() == expectedOverZ && b.overflow!2() == expectedOverZ);
+    const reader = b;
+    buffer[0] += 7;
+    assert(reader.underflow!0() == expectedUnderX + 7);
+    static assert(!__traits(compiles, b.overflow!1()));
+    static assert(!__traits(compiles, b.underflow!2()));
+    static assert(!__traits(compiles, b.overflow!3()));
+}
+
+// Higher ranks use the same insertion and total paths, with no special 3-D case.
+version(mir_stat_test)
+@safe pure nothrow @nogc
+unittest
+{
+    import mir.ndslice.slice: sliced;
+    import mir.stat.descriptive.histogram.axis: IntegralAxis, AxisOptions,
+        EnableOverflow;
+    alias A = IntegralAxis!(uint, int, AxisOptions(EnableOverflow(true)));
+    ulong[2][2][2][2] storage;
+    auto a = HistogramAccumulator!(typeof(storage), A, A, A, A)(
+        storage, A(1, 0), A(1, 0), A(1, 0), A(1, 0));
+    ulong[16] buffer;
+    auto counts = buffer[].sliced(2, 2, 2, 2);
+    auto b = HistogramAccumulator!(typeof(counts), A, A, A, A)(
+        counts, A(1, 0), A(1, 0), A(1, 0), A(1, 0));
+    a.put(1, 0, 1, 1);
+    b.put(1, 0, 1, 1);
+    assert(a.counts[1][0][1][1] == 1 && b.counts[1, 0, 1, 1] == 1);
+    static foreach (dimension; 0 .. 4)
+    {
+        assert(a.overflow!dimension() == (dimension == 1 ? 0 : 1));
+        assert(b.overflow!dimension() == (dimension == 1 ? 0 : 1));
+    }
+    static assert(is(typeof(a).CountType == ulong));
+    static assert(!__traits(compiles, a.put(0, 0, 0)));
+    static assert(!__traits(compiles, a.put(0, 0, 0, 0, 0)));
+}
+
+// Validate every nested branch and every ndslice dimension before accepting storage.
+version(mir_stat_test)
+unittest
+{
+    import core.exception: AssertError;
+    import std.exception: assertThrown;
+    import mir.ndslice.slice: sliced, Slice;
+    import mir.stat.descriptive.histogram.axis: IntegralAxis, AxisOptions;
+    alias A = IntegralAxis!(uint, double, AxisOptions());
+    alias H = HistogramAccumulator!(uint[][][], A, A, A);
+    auto axis = A(2, 0.0);
+    uint[][][] counts = [[[0u, 0u], [0u, 0u]], [[0u, 0u], [0u]]];
+    assertThrown!AssertError(H(counts, axis, axis, axis));
+    counts[1][1] = [0u, 0u, 0u];
+    assertThrown!AssertError(H(counts, axis, axis, axis));
+    counts[1] = [[0u, 0u]];
+    assertThrown!AssertError(H(counts, axis, axis, axis));
+    counts = [[[0u, 0u], [0u, 0u]]];
+    assertThrown!AssertError(H(counts, axis, axis, axis));
+    uint[8] buffer;
+    alias S = HistogramAccumulator!(Slice!(uint*, 3), A, A, A);
+    assertThrown!AssertError(S(buffer[].sliced(1, 2, 4), axis, axis, axis));
+    assertThrown!AssertError(S(buffer[].sliced(2, 1, 4), axis, axis, axis));
+    assertThrown!AssertError(S(buffer[].sliced(2, 4, 1), axis, axis, axis));
+    static assert(!__traits(compiles, HistogramAccumulator!(Slice!(uint*, 2), A, A, A).init));
+    static assert(!__traits(compiles, HistogramAccumulator!(Slice!(uint*, 4), A, A, A).init));
+    static assert(!__traits(compiles, HistogramAccumulator!(uint[][][][], A, A, A).init));
+    static assert(!__traits(compiles, HistogramAccumulator!(Slice!(uint*, 2)[], A, A, A).init));
+}
+
+// Resolve mixed coordinate types completely before recording a joint observation.
+version(mir_stat_test)
+unittest
+{
+    import core.exception: AssertError;
+    import std.exception: assertThrown;
+    import mir.stat.descriptive.histogram.axis: IntegralAxis, CategoryAxis,
+        AxisOptions, EnableUnderflow, EnableOverflow;
+    alias X = IntegralAxis!(uint, int, AxisOptions(EnableUnderflow(true)));
+    enum Label { first, second }
+    alias Y = CategoryAxis!(uint, Label, AxisOptions(EnableOverflow(true)));
+    alias Z = IntegralAxis!(uint, double, AxisOptions());
+    uint[2][3][3] counts;
+    auto h = HistogramAccumulator!(typeof(counts), X, Y, Z)(
+        counts, X(2, 0), Y(), Z(2, 0.0));
+    assertThrown!AssertError(h.put(-1, "unknown", 2.0));
+    assertThrown!AssertError(h.put(-1, "unknown", double.nan));
+    assertThrown!AssertError(h.put(2, Label.first, 0.5));
+    assert(h.underflow!0() == 0 && h.overflow!1() == 0);
+    h.put(-1, "unknown", 1.5);
+    h.put(1, Label.second, 0.5);
+    assert(h.counts[0][2][1] == 1 && h.counts[2][1][0] == 1);
+    assert(h.underflow!0() == 1 && h.overflow!1() == 1);
+    static assert(!__traits(compiles, h.put("invalid", Label.first, 0.5)));
+    static assert(!__traits(compiles, h.put(0, Label.first, "invalid")));
+}
+
+// Mixed static/dynamic nesting preserves caller ownership at three dimensions.
+version(mir_stat_test)
+@safe pure nothrow @nogc
+unittest
+{
+    import mir.stat.descriptive.histogram.axis: IntegralAxis, AxisOptions;
+    alias A = IntegralAxis!(uint, int, AxisOptions());
+    uint[2][2][2] buffer;
+    auto planes = buffer[];
+    auto h = HistogramAccumulator!(typeof(planes), A, A, A)(
+        planes, A(2, 0), A(2, 0), A(2, 0));
+    h.put(1, 0, 1);
+    assert(buffer[1][0][1] == 1);
+    uint[][2][2] rows;
+    foreach (i; 0 .. 2)
+        foreach (j; 0 .. 2)
+            rows[i][j] = buffer[i][j][];
+    auto other = HistogramAccumulator!(typeof(rows), A, A, A)(
+        rows, A(2, 0), A(2, 0), A(2, 0));
+    other.put(0, 1, 0);
+    assert(buffer[0][1][0] == 1 && buffer[1][0][1] == 1);
+    static assert(is(typeof(other).CountType == uint));
 }

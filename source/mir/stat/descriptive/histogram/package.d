@@ -28,8 +28,7 @@ public import mir.stat.descriptive.histogram.api;
 // - Add factories for GC-backed storage and caller-selected allocation strategies.
 //
 // TODO: Multidimensional histograms
-// - Add merging to two-axis histograms.
-// - Generalize joint-bin storage and indexing beyond two axes.
+// - Add merging to joint histograms.
 // - Add joint-bin views and projections to lower-dimensional histograms.
 //
 // Possible later extensions
