@@ -90,8 +90,14 @@ Nested static arrays are copied into the accumulator; dynamic arrays and
 ndslices share their backing counts. Keep axis definitions and storage shape
 unchanged while using the accumulator.
 
-Two-axis underflow, overflow, merging, and bin views are not yet supported.
-More than two axes are also not yet supported.
+For two axes, each storage dimension contains enabled underflow, ordinary
+bins, and enabled overflow, in that order. Its length is the ordinary bin
+count plus one for each enabled end bin. Axis indices still number ordinary
+bins from zero; storage indices are shifted by one when underflow is enabled.
+One-axis histograms keep their flow counts separately from ordinary storage.
+
+Two-axis merging and bin views are not yet supported. More than two axes
+are also not yet supported.
 
 If the `Axis` has an `options` member, the histogram may optionally allow
 for overflow and underflow members.
@@ -112,9 +118,7 @@ struct HistogramAccumulator(Storage, Axis...)
     if (Axis.length > 0 &&
         allSatisfy!(isAxis, Axis))
 {
-    import std.meta: allSatisfy, anySatisfy, staticMap;
-    import std.traits: hasMember, isIterable, isSomeString;
-    import mir.primitives: hasShape, DeepElementType;
+    import std.traits: isIterable, isSomeString;
     import mir.stat.descriptive.histogram.traits: includeOverflow, includeUnderflow,
         BinTypeOf, isCategoryAxis, acceptsAxisValue;
     static if (Axis.length == 2 && !isSlice!Storage)
@@ -128,31 +132,60 @@ struct HistogramAccumulator(Storage, Axis...)
     {
         static assert(isJointStorage!Storage,
             "HistogramAccumulator: two axes require rank-2 ndslice or two-dimensional numeric array storage");
-        static assert(!anySatisfy!(includeOverflow, Axis) &&
-                      !anySatisfy!(includeUnderflow, Axis),
-            "HistogramAccumulator: two-axis flow bins are not yet supported");
     }
 private:
-    static if (anySatisfy!(includeOverflow, Axis))
+    static if (N == 1 && includeOverflow!(Axis[0]))
+        DenseStorage!CountType overflowStorage;
+
+    static if (N == 1 && includeUnderflow!(Axis[0]))
+        DenseStorage!CountType underflowStorage;
+
+    // The expanded extent must fit storage indexing even for custom axes.
+    static size_t jointExtent(A)(auto ref const A a)
     {
-        static if (N == 1) {
-            ///
-            DenseStorage!CountType overflowStorage;
-        } else {
-            ///
-            DenseStorage!(CountType[N]) overflowStorage;
-        }
+        enum size_t extra = includeUnderflow!A + includeOverflow!A;
+        assert(a.N_bin > 0 && a.N_bin <= size_t.max - extra,
+            "HistogramAccumulator: joint extent is out of range");
+        return cast(size_t) a.N_bin + extra;
     }
 
-    static if (anySatisfy!(includeUnderflow, Axis))
+    size_t jointStorageIndex(size_t i, T)(T value)
     {
-        static if (N == 1) {
-            ///
-            DenseStorage!CountType underflowStorage;
-        } else {
-            ///
-            DenseStorage!(CountType[N]) underflowStorage;
+        // Match one-axis classification precedence and circular endpoints.
+        static if (includeOverflow!(Axis[i]))
+            if (axis[i].isOverflow(value))
+                return jointExtent(axis[i]) - 1;
+        static if (includeUnderflow!(Axis[i]))
+            if (axis[i].isUnderflow(value))
+                return 0;
+        auto index = axis[i].index(value);
+        assert(index >= 0 && index < axis[i].N_bin,
+            "HistogramAccumulator.put: joint bin index is out of range");
+        return cast(size_t) index + includeUnderflow!(Axis[i]);
+    }
+
+    // Sum a row or column without allocating, including strided ndslices.
+    CountType jointFlowTotal(size_t dimension)(size_t position) const
+    {
+        CountType result = 0;
+        foreach (other; 0 .. jointExtent(axis[1 - dimension]))
+        {
+            static if (dimension == 0)
+            {
+                static if (isSlice!Storage)
+                    result += counts[position, other];
+                else
+                    result += counts[position][other];
+            }
+            else
+            {
+                static if (isSlice!Storage)
+                    result += counts[other, position];
+                else
+                    result += counts[other][position];
+            }
         }
+        return result;
     }
 
 public:
@@ -187,13 +220,13 @@ public:
     //
     enum N = Axis.length;
 
-    static if (anySatisfy!(includeOverflow, Axis))
+    static if (N == 1 && includeOverflow!(Axis[0]))
     {
         ///
         alias OverflowType = typeof(overflowStorage.storage);
     }
 
-    static if (anySatisfy!(includeUnderflow, Axis))
+    static if (N == 1 && includeUnderflow!(Axis[0]))
     {
         ///
         alias UnderflowType = typeof(underflowStorage.storage);
@@ -202,7 +235,7 @@ public:
     /++
     Construct an accumulator with storage matching the axes.
     Params:
-        x = ordinary counts; one element per bin, or a grid matching both axes
+        x = ordinary counts for one axis; for two axes, a grid including enabled flow bins
         y = axes defining the bins
     +/
     this(Storage x, Axis y)
@@ -212,15 +245,15 @@ public:
                 "HistogramAccumulator.this: storage length must match axis");
         else static if (isSlice!Storage)
         {
-            assert(x.shape[0] == y[0].N_bin && x.shape[1] == y[1].N_bin,
+            assert(x.shape[0] == jointExtent(y[0]) && x.shape[1] == jointExtent(y[1]),
                 "HistogramAccumulator.this: storage shape must match both axes");
         }
         else
         {
-            assert(x.length == y[0].N_bin,
+            assert(x.length == jointExtent(y[0]),
                 "HistogramAccumulator.this: row count must match first axis");
             foreach (ref row; x)
-                assert(row.length == y[1].N_bin,
+                assert(row.length == jointExtent(y[1]),
                     "HistogramAccumulator.this: every row must match second axis");
         }
         counts = x;
@@ -271,11 +304,8 @@ public:
         {
             // Resolve both coordinates before changing counts, including when
             // an axis rejects an observation or returns an invalid index.
-            auto row = axis[0].index(x[0]);
-            auto column = axis[1].index(x[1]);
-            assert(row >= 0 && row < axis[0].N_bin &&
-                   column >= 0 && column < axis[1].N_bin,
-                "HistogramAccumulator.put: joint bin index is out of range");
+            auto row = jointStorageIndex!0(x[0]);
+            auto column = jointStorageIndex!1(x[1]);
             static if (isSlice!Storage)
                 counts[row, column]++;
             else
@@ -325,7 +355,7 @@ public:
         }
     }
 
-    static if (anySatisfy!(includeOverflow, Axis))
+    static if (N == 1 && includeOverflow!(Axis[0]))
     {
         ///
         OverflowType overflow()() const
@@ -334,7 +364,7 @@ public:
         }
     }
 
-    static if (anySatisfy!(includeUnderflow, Axis))
+    static if (N == 1 && includeUnderflow!(Axis[0]))
     {
         ///
         UnderflowType underflow()() const
@@ -342,6 +372,37 @@ public:
             return underflowStorage.storage;
         }
     }
+
+    /++
+    Sum current joint counts overflowing the selected axis.
+    Includes every bin of the other axis, including its enabled flow bins.
+    Corner counts can contribute to totals for both axes, so these totals
+    must not be added together to count distinct out-of-range observations.
+    Takes time proportional to the other storage dimension; does not allocate.
+    Params:
+        dimension = zero-based axis number; overflow must be enabled on this axis
+    +/
+    CountType overflow(size_t dimension)() const
+        if (N == 2 && dimension < N && includeOverflow!(Axis[dimension]))
+    {
+        return jointFlowTotal!dimension(jointExtent(axis[dimension]) - 1);
+    }
+
+    /++
+    Sum current joint counts underflowing the selected axis.
+    Includes every bin of the other axis, including its enabled flow bins.
+    Corner counts can contribute to totals for both axes, so these totals
+    must not be added together to count distinct out-of-range observations.
+    Takes time proportional to the other storage dimension; does not allocate.
+    Params:
+        dimension = zero-based axis number; underflow must be enabled on this axis
+    +/
+    CountType underflow(size_t dimension)() const
+        if (N == 2 && dimension < N && includeUnderflow!(Axis[dimension]))
+    {
+        return jointFlowTotal!dimension(0);
+    }
+
 }
 
 // Check IntegralAxis
@@ -804,6 +865,44 @@ unittest
     // shares the buffer, so updates are visible through either representation.
     assert(counts[0, 1] == 1 && counts[1, 2] == 1);
     assert(buffer == [0u, 1u, 0u, 0u, 0u, 1u]);
+}
+
+/// Joint flow bins retain both coordinates; member functions sum along one axis.
+version(mir_stat_test)
+@safe pure nothrow @nogc
+unittest
+{
+    import mir.stat.descriptive.histogram.axis: IntegralAxis, AxisOptions,
+        EnableUnderflow, EnableOverflow;
+    alias A = IntegralAxis!(uint, double,
+        AxisOptions(EnableUnderflow(true), EnableOverflow(true)));
+
+    // Two ordinary x bins and three ordinary y bins, with an extra bin at
+    // each end of both axes, require a four-row, five-column grid.
+    uint[5][4] storage;
+    auto h = HistogramAccumulator!(typeof(storage), A, A)(
+        storage, A(2, 0.0), A(3, 0.0));
+    h.put(-1.0, 1.5); // x underflow, ordinary y bin 1
+    h.put(-1.0, 3.0); // x underflow, y overflow: a corner bin
+    h.put(0.5, 3.0);  // ordinary x bin 0, y overflow
+
+    // Storage index zero is underflow; ordinary indices are shifted by one.
+    // The last index is overflow. The corner retains the association between
+    // the two out-of-range coordinates, separately from either ordinary bin.
+    assert(h.counts[0][2] == 1);
+    assert(h.counts[0][4] == 1);
+    assert(h.counts[1][4] == 1);
+
+    // Choose the axis at compile time. These totals are calculated from the
+    // current grid, including the other axis's underflow and overflow bins.
+    // The corner contributes to both totals; adding them would count it twice.
+    assert(h.underflow!0() == 2);
+    assert(h.overflow!1() == 2);
+    assert(h.overflow!0() == 0 && h.underflow!1() == 0);
+
+    // Reading totals is also supported on a const histogram.
+    const reader = h;
+    assert(reader.underflow!0() == 2);
 }
 
 // Circular endpoints must reach indexing even when flow counters are enabled.
@@ -1628,23 +1727,204 @@ unittest
     assert(h.counts[0] == [0u, 0u, 0u] && h.counts[1] == [0u, 0u, 0u]);
 }
 
-// Reject unsupported ranks and joint flow bins explicitly.
+// Reject unsupported storage ranks explicitly.
 version(mir_stat_test)
 unittest
 {
     import mir.ndslice.slice: Slice;
-    import mir.stat.descriptive.histogram.axis: IntegralAxis, AxisOptions,
-        EnableUnderflow, EnableOverflow;
+    import mir.stat.descriptive.histogram.axis: IntegralAxis, AxisOptions;
     alias A = IntegralAxis!(uint, double, AxisOptions());
-    alias U = IntegralAxis!(uint, double, AxisOptions(EnableUnderflow(true)));
-    alias O = IntegralAxis!(uint, double, AxisOptions(EnableOverflow(true)));
     static assert(!__traits(compiles, HistogramAccumulator!(uint[], A, A).init));
     static assert(!__traits(compiles, HistogramAccumulator!(uint[][][], A, A).init));
     static assert(!__traits(compiles, HistogramAccumulator!(Slice!(uint*, 1), A, A).init));
     static assert(!__traits(compiles, HistogramAccumulator!(Slice!(uint*, 3), A, A).init));
-    static assert(!__traits(compiles, HistogramAccumulator!(uint[][], U, A).init));
-    static assert(!__traits(compiles, HistogramAccumulator!(uint[][], A, U).init));
-    static assert(!__traits(compiles, HistogramAccumulator!(uint[][], O, A).init));
-    static assert(!__traits(compiles, HistogramAccumulator!(uint[][], A, O).init));
     static assert(!__traits(compiles, HistogramAccumulator!(uint[][][], A, A, A).init));
+}
+
+// Every combination of independently enabled ends uses the same storage mapping.
+version(mir_stat_test)
+@safe pure nothrow @nogc
+unittest
+{
+    import mir.ndslice.slice: sliced;
+    import mir.ndslice.dynamic: transposed;
+    import mir.stat.descriptive.histogram.axis: IntegralAxis, AxisOptions,
+        EnableUnderflow, EnableOverflow;
+    static foreach (flags; 0 .. 16)
+    {{
+        enum ux = (flags & 1) != 0;
+        enum ox = (flags & 2) != 0;
+        enum uy = (flags & 4) != 0;
+        enum oy = (flags & 8) != 0;
+        alias X = IntegralAxis!(uint, double,
+            AxisOptions(EnableUnderflow(ux), EnableOverflow(ox)));
+        alias Y = IntegralAxis!(uint, double,
+            AxisOptions(EnableUnderflow(uy), EnableOverflow(oy)));
+        enum rows = 2 + ux + ox;
+        enum columns = 3 + uy + oy;
+        uint[columns][rows] storage;
+        auto arrayHist = HistogramAccumulator!(typeof(storage), X, Y)(
+            storage, X(2, 0.0), Y(3, 0.0));
+        uint[rows * columns] buffer;
+        auto slice = buffer[].sliced(columns, rows).transposed;
+        auto sliceHist = HistogramAccumulator!(typeof(slice), X, Y)(
+            slice, X(2, 0.0), Y(3, 0.0));
+        // Fill every ordinary, edge and corner cell once.
+        foreach (r; 0 .. rows)
+            foreach (c; 0 .. columns)
+            {
+                double x = cast(int) r - ux + 0.5;
+                double y = cast(int) c - uy + 0.5;
+                arrayHist.put(x, y);
+                sliceHist.put(x, y);
+            }
+        foreach (r; 0 .. rows)
+            foreach (c; 0 .. columns)
+            {
+                assert(arrayHist.counts[r][c] == 1);
+                assert(sliceHist.counts[r, c] == 1);
+            }
+        static if (ux)
+        {
+            assert(arrayHist.underflow!0() == columns);
+            assert(sliceHist.underflow!0() == columns);
+        }
+        else
+            static assert(!__traits(compiles, arrayHist.underflow!0()));
+        static if (ox)
+        {
+            assert(arrayHist.overflow!0() == columns);
+            assert(sliceHist.overflow!0() == columns);
+        }
+        else
+            static assert(!__traits(compiles, arrayHist.overflow!0()));
+        static if (uy)
+        {
+            assert(arrayHist.underflow!1() == rows);
+            assert(sliceHist.underflow!1() == rows);
+        }
+        else
+            static assert(!__traits(compiles, arrayHist.underflow!1()));
+        static if (oy)
+        {
+            assert(arrayHist.overflow!1() == rows);
+            assert(sliceHist.overflow!1() == rows);
+            // Flow totals reflect direct changes to shared caller storage.
+            sliceHist.counts[0, columns - 1] += 2;
+            const reader = sliceHist;
+            assert(reader.overflow!1() == rows + 2);
+        }
+        else
+            static assert(!__traits(compiles, arrayHist.overflow!1()));
+        static assert(!__traits(compiles, arrayHist.overflow!2()));
+        static assert(!__traits(compiles, arrayHist.underflow()));
+    }}
+}
+
+// Failed classification or malformed flow storage must not partially record a pair.
+version(mir_stat_test)
+unittest
+{
+    import core.exception: AssertError;
+    import std.exception: assertThrown;
+    import mir.ndslice.slice: sliced;
+    import mir.stat.descriptive.histogram.axis: IntegralAxis, AxisOptions,
+        EnableUnderflow, EnableOverflow;
+    alias F = IntegralAxis!(uint, double,
+        AxisOptions(EnableUnderflow(true), EnableOverflow(true)));
+    alias A = IntegralAxis!(uint, double, AxisOptions());
+    alias H = HistogramAccumulator!(uint[][], F, A);
+    auto x = F(2, 0.0);
+    auto y = A(3, 0.0);
+    assertThrown!AssertError(H([[0u, 0u, 0u], [0u, 0u, 0u]], x, y));
+    assertThrown!AssertError(H([[0u, 0u, 0u], [0u, 0u, 0u],
+        [0u, 0u, 0u], [0u, 0u]], x, y));
+    uint[12] buffer;
+    auto wrong = buffer[].sliced(3, 4);
+    alias S = HistogramAccumulator!(typeof(wrong), F, A);
+    assertThrown!AssertError(S(wrong, x, y));
+    auto h = S(buffer[].sliced(4, 3), x, y);
+    assertThrown!AssertError(h.put(-1.0, 3.0));
+    assertThrown!AssertError(h.put(2.0, -1.0));
+    assertThrown!AssertError(h.put(-1.0, double.nan));
+    assertThrown!AssertError(h.put(double.nan, 0.5));
+    foreach (count; buffer)
+        assert(count == 0);
+    assert(h.underflow!0() == 0 && h.overflow!0() == 0);
+
+    // An enabled end on the second coordinate must not conceal an invalid first.
+    auto reversed = HistogramAccumulator!(uint[4][3], A, F)(
+        uint[4][3].init, y, x);
+    assertThrown!AssertError(reversed.put(-1.0, 2.0));
+    assert(reversed.overflow!1() == 0);
+}
+
+// Preserve circular/right-closed endpoints, infinities, and unknown categories.
+version(mir_stat_test)
+@safe pure nothrow @nogc
+unittest
+{
+    import mir.stat.descriptive.histogram.axis: IntegralAxis, CategoryAxis,
+        AxisOptions, EnableUnderflow, EnableOverflow, IsCircular, IsRightClosed;
+    static foreach (rightClosed; [false, true])
+    {{
+        alias X = IntegralAxis!(uint, double, AxisOptions(
+            EnableUnderflow(true), EnableOverflow(true),
+            IsCircular(true), IsRightClosed(rightClosed)));
+        enum Label { first, second }
+        alias Y = CategoryAxis!(uint, Label, AxisOptions(EnableOverflow(true)));
+        auto h = HistogramAccumulator!(uint[3][4], X, Y)(
+            uint[3][4].init, X(2, 0.0), Y());
+        h.put(0.0, Label.first);
+        h.put(2.0, Label.first);
+        assert(h.counts[rightClosed ? 2 : 1][0] == 2);
+        assert(h.underflow!0() == 0 && h.overflow!0() == 0);
+        h.put(-double.infinity, "unknown");
+        h.put(double.infinity, "second");
+        assert(h.counts[0][2] == 1 && h.counts[3][1] == 1);
+        assert(h.underflow!0() == 1 && h.overflow!0() == 1);
+        assert(h.overflow!1() == 1);
+    }}
+}
+
+// Dynamic storage shares preexisting counts; totals use the storage's counter type.
+version(mir_stat_test)
+@safe pure nothrow
+unittest
+{
+    import mir.stat.descriptive.histogram.axis: IntegralAxis, AxisOptions,
+        EnableUnderflow, EnableOverflow, IsRightClosed;
+    alias A = IntegralAxis!(uint, double, AxisOptions(
+        EnableUnderflow(true), EnableOverflow(true), IsRightClosed(true)));
+    ulong[][] counts = [[0UL, 0UL, 0UL], [0UL, 0UL, 0UL], [0UL, 0UL, 0UL]];
+    counts[0][0] = cast(ulong) uint.max + 1;
+    auto h = HistogramAccumulator!(ulong[][], A, A)(counts, A(1, 0.0), A(1, 0.0));
+    static assert(is(typeof(h.underflow!0()) == ulong));
+    static assert(is(typeof(h.overflow!1()) == ulong));
+    h.put(0.0, 0.0); // Right-closed lower endpoints underflow.
+    h.put(1.0, 1.0); // Right-closed upper endpoints remain ordinary.
+    assert(counts[0][0] == cast(ulong) uint.max + 2);
+    assert(counts[1][1] == 1);
+    assert(h.underflow!0() == cast(ulong) uint.max + 2);
+    assert(h.overflow!1() == 0);
+    counts[2][2] = 7;
+    assert(h.overflow!0() == 7 && h.overflow!1() == 7);
+}
+
+// Adding enabled flow bins cannot wrap an axis extent before shape validation.
+version(mir_stat_test)
+unittest
+{
+    import core.exception: AssertError;
+    import std.exception: assertThrown;
+    struct HugeAxis
+    {
+        alias CountType = size_t;
+        alias BinType = int;
+        size_t N_bin = size_t.max;
+        size_t index(int value) const { return 0; }
+        bool isOverflow(int value) const { return value > 0; }
+    }
+    alias H = HistogramAccumulator!(uint[1][1], HugeAxis, HugeAxis);
+    assertThrown!AssertError(H(uint[1][1].init, HugeAxis(), HugeAxis()));
 }
