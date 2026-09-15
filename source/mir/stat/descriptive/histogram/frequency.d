@@ -53,9 +53,8 @@ private template isFrequencyDestination(Destination)
 /++
 Histogram wrapper that also maintains the total recorded count.
 The total includes ordinary bins and enabled underflow and overflow counters.
-Storage supplied to the constructor may already contain counts. With one axis,
-separate underflow/overflow counters start at zero. With multiple axes, storage
-includes enabled underflow/overflow bins on every dimension, as in
+Storage supplied to the constructor may already contain counts, including
+enabled underflow/overflow bins on every dimension, as in
 $(LREF HistogramAccumulator). The total is calculated once from all storage at
 construction.
 
@@ -168,7 +167,7 @@ struct FrequencyAccumulator(Storage, Axis...)
         return total;
     }
 
-    /// Read-only access to count storage, including joint underflow/overflow bins.
+    /// Read-only access to count storage, including enabled underflow/overflow bins.
     ref const(Storage) counts() const @property
     {
         return histogramAccumulator.counts;
@@ -177,7 +176,7 @@ struct FrequencyAccumulator(Storage, Axis...)
     /++
     Relative frequency of an ordinary bin.
 
-    Supply one ordinary bin index per axis. Joint storage offsets for enabled
+    Supply one ordinary bin index per axis. Storage offsets for enabled
     underflow bins are applied automatically. The denominator includes all
     enabled underflow and overflow counts.
     Returns `FrequencyType.nan` when the total count is zero.
@@ -196,8 +195,7 @@ struct FrequencyAccumulator(Storage, Axis...)
             assert(index[i] >= 0 && index[i] < histogramAccumulator.axis[i].N_bin,
                 "FrequencyAccumulator.frequency: index is out of range");
             indices[i] = cast(size_t) index[i];
-            static if (N > 1)
-                indices[i] += includeUnderflow!(Axis[i]);
+            indices[i] += includeUnderflow!(Axis[i]);
         }
         return relativeFrequency!FrequencyType(storageCount(counts, indices));
     }
@@ -220,18 +218,18 @@ struct FrequencyAccumulator(Storage, Axis...)
 
     Params:
         FrequencyType = floating-point output type; defaults to double
-        index = ordinary bin index, less than counts.length
+        index = ordinary bin index, less than axis.N_bin
     +/
     FrequencyType cumulativeFrequency(FrequencyType = double)(size_t index) const
         if (N == 1 && isFloatingPoint!FrequencyType)
     {
-        assert(index < histogramAccumulator.counts.length,
+        assert(index < axis.N_bin,
             "FrequencyAccumulator.cumulativeFrequency: index is out of range");
         CountType cumulative = 0;
         static if (includeUnderflow!AxisType)
             cumulative = histogramAccumulator.underflow;
         foreach (i; 0 .. index + 1)
-            cumulative += histogramAccumulator.counts[i];
+            cumulative += histogramAccumulator.counts[i + includeUnderflow!AxisType];
         return relativeFrequency!FrequencyType(cumulative);
     }
 
@@ -257,7 +255,7 @@ struct FrequencyAccumulator(Storage, Axis...)
     {
         import mir.ndslice.allocation: mininitRcslice;
 
-        auto result = mininitRcslice!FrequencyType(counts.length);
+        auto result = mininitRcslice!FrequencyType(axis.N_bin);
         cumulativeFrequencies(result);
         return result;
     }
@@ -276,7 +274,7 @@ struct FrequencyAccumulator(Storage, Axis...)
     destination is retained; its values are independent of later source updates.
 
     Params:
-        destination = output storage, with length equal to counts.length
+        destination = output storage, with length equal to axis.N_bin
     +/
     void cumulativeFrequencies(Destination)(scope Destination destination) const
         if (N == 1 && isFrequencyDestination!Destination)
@@ -285,14 +283,14 @@ struct FrequencyAccumulator(Storage, Axis...)
         import std.traits: Unqual;
 
         alias FrequencyType = Unqual!(DeepElementType!Destination);
-        assert(destination.length == counts.length,
-            "FrequencyAccumulator.cumulativeFrequencies: destination length must match counts");
+        assert(destination.length == axis.N_bin,
+            "FrequencyAccumulator.cumulativeFrequencies: destination length must match ordinary bin count");
         CountType cumulative = 0;
         static if (includeUnderflow!AxisType)
             cumulative = histogramAccumulator.underflow;
-        foreach (i; 0 .. counts.length)
+        foreach (i; 0 .. axis.N_bin)
         {
-            cumulative += histogramAccumulator.counts[i];
+            cumulative += histogramAccumulator.counts[i + includeUnderflow!AxisType];
             destination[i] = relativeFrequency!FrequencyType(cumulative);
         }
     }
@@ -303,6 +301,13 @@ struct FrequencyAccumulator(Storage, Axis...)
         if (total == 0)
             return FrequencyType.nan;
         return cast(FrequencyType) value / cast(FrequencyType) total;
+    }
+
+    /// Required storage length on an axis, including enabled underflow/overflow.
+    size_t storageExtent(size_t dimension = 0)() const
+        if (dimension < N)
+    {
+        return histogramAccumulator.storageExtent!dimension();
     }
 
     /// Read-only access to an axis; defaults to dimension zero.
@@ -407,32 +412,24 @@ struct FrequencyAccumulator(Storage, Axis...)
         }
     }
 
-    /// Merge another one-dimensional accumulator with a compatible axis.
-    void put()(ref FrequencyAccumulator f) if (N == 1)
-    {
-        auto addedCount = f.count;
-        histogramAccumulator.put(f.histogramAccumulator);
-        total += addedCount;
-    }
-
-    private template acceptsJointMerge(F)
+    private template acceptsMerge(F)
     {
         import std.traits: Unqual;
         static if (is(Unqual!F == FrequencyAccumulator!Args, Args...))
-            enum acceptsJointMerge = N > 1 &&
+            enum acceptsMerge =
                 is(Unqual!F == FrequencyAccumulator!(Args[0], Axis)) &&
                 is(Unqual!(F.CountType) == Unqual!CountType);
         else
-            enum acceptsJointMerge = false;
+            enum acceptsMerge = false;
     }
 
     /++
-    Merge a joint accumulator with matching axes and counter type.
+    Merge an accumulator with matching axes and counter type.
     Storage layouts may differ. Self-merging doubles counts and the total.
     Other wrappers must not share destination storage, since their totals would
     become stale.
     +/
-    void put(F)(auto ref const F f) if (acceptsJointMerge!F)
+    void put(F)(auto ref const F f) if (acceptsMerge!F)
     {
         auto addedCount = f.count;
         histogramAccumulator.put(f.histogramAccumulator);
@@ -563,14 +560,14 @@ unittest
 
     alias Axis = IntegralAxis!(uint, double,
         AxisOptions(EnableOverflow(true), EnableUnderflow(true)));
-    auto f = FrequencyAccumulator!(uint[], Axis)([0u, 0u], Axis(2, 0.0));
+    auto f = FrequencyAccumulator!(uint[], Axis)([0u, 0u, 0u, 0u], Axis(2, 0.0));
     f.put([-1.0, 0.5, 1.5, 3.0]);
 
     auto cumulative = f.cumulativeFrequencies!float();
     // Underflow contributes to both prefixes. Overflow stays in the total,
     // so the last ordinary bin ends at 3/4. There are no extra flow entries.
     assert(cumulative == [0.5f, 0.75f]);
-    assert(cumulative.length == f.counts.length);
+    assert(cumulative.length == f.axis.N_bin);
 
     // Result storage is independent: editing it leaves source counts intact.
     cumulative[0] = 0;
@@ -587,7 +584,7 @@ unittest
 
     alias Axis = IntegralAxis!(uint, double,
         AxisOptions(EnableOverflow(true), EnableUnderflow(true)));
-    auto f = FrequencyAccumulator!(uint[], Axis)([0u, 0u], Axis(2, 0.0));
+    auto f = FrequencyAccumulator!(uint[], Axis)([0u, 0u, 0u, 0u], Axis(2, 0.0));
     f.put([-1.0, 0.5, 1.5, 3.0]);
 
     // The first numerator includes one underflow and one ordinary observation.
@@ -607,9 +604,9 @@ unittest
 
     alias Axis = IntegralAxis!(uint, double,
         AxisOptions(EnableOverflow(true), EnableUnderflow(true)));
-    auto f = FrequencyAccumulator!(uint[], Axis)([0u, 0u], Axis(2, 0.0));
+    auto f = FrequencyAccumulator!(uint[], Axis)([0u, 0u, 0u, 0u], Axis(2, 0.0));
     f.put([-1.0, 0.5, 1.5, 3.0]);
-    assert(f.counts == [1u, 1u]);
+    assert(f.counts == [1u, 1u, 1u, 1u]);
     assert(f.underflow == 1);
     assert(f.overflow == 1);
     assert(f.count == 4);
@@ -719,13 +716,13 @@ unittest
             f.count = 9;
         }));
         assert(f.count == 3);
-        assert(f.counts == [1u, 2u, 0u]);
+        assert(f.counts == [0u, 1u, 2u, 0u, 0u]);
         assert(f.axis.N_bin == 3);
         assert(f.underflow == 0 && f.overflow == 0);
 
         void checkTotal()
         {
-            uint sum = f.underflow + f.overflow;
+            uint sum = 0;
             foreach (value; f.counts)
                 sum += value;
             assert(f.count == sum);
@@ -738,7 +735,7 @@ unittest
         assert(f.count == 7);
         checkTotal();
         f.put([2.0, 2.5].sliced);
-        assert(f.counts == [2u, 3u, 2u]);
+        assert(f.counts == [1u, 2u, 3u, 2u, 1u]);
         assert(f.underflow == 1 && f.overflow == 1);
         checkTotal();
         f.put((double[]).init);
@@ -749,15 +746,15 @@ unittest
         assert(other.count == 0);
         other.put([-2.0, 0.5, 4.0, 5.0]);
         f.put(other);
-        assert(f.counts == [3u, 3u, 2u]);
+        assert(f.counts == [2u, 3u, 3u, 2u, 3u]);
         assert(f.underflow == 2 && f.overflow == 3);
         assert(f.count == 13);
         assert(other.count == 4);
         checkTotal();
     }
 
-    check([1u, 2u, 0u], [0u, 0u, 0u]);
-    check(rcslice!uint([1u, 2u, 0u]), rcslice!uint([0u, 0u, 0u]));
+    check([0u, 1u, 2u, 0u, 0u], [0u, 0u, 0u, 0u, 0u]);
+    check(rcslice!uint([0u, 1u, 2u, 0u, 0u]), rcslice!uint([0u, 0u, 0u, 0u, 0u]));
 }
 
 // No-flow axes and category strings use the same counting paths.
@@ -778,11 +775,11 @@ unittest
 
     enum Label { first, second }
     alias Categories = CategoryAxis!(uint, Label, AxisOptions(EnableOverflow(true)));
-    auto c = FrequencyAccumulator!(uint[], Categories)([0u, 0u], Categories());
+    auto c = FrequencyAccumulator!(uint[], Categories)([0u, 0u, 0u], Categories());
     c.put("first");
     c.put(["second", "unknown"]);
     c.put(Label.second);
-    assert(c.counts == [1u, 2u]);
+    assert(c.counts == [1u, 2u, 1u]);
     assert(c.overflow == 1 && c.count == 4);
 }
 
@@ -823,17 +820,17 @@ unittest
         bool isOverflow(int x) const { return x > 0; }
     }
     alias F = FrequencyAccumulator!(uint[], Axis);
-    auto f = F([0u], Axis());
-    auto other = F([0u], Axis());
+    auto f = F([0u, 0u, 0u], Axis());
+    auto other = F([0u, 0u, 0u], Axis());
     f.put([0, -1]);
     other.put([0, 1, 2]);
     f.put(other);
-    assert(f.counts == [2u]);
+    assert(f.counts == [1u, 2u, 2u]);
     assert(f.underflow == 1 && f.overflow == 2);
     assert(f.count == 5);
 
     f.put(f);
-    assert(f.counts == [4u]);
+    assert(f.counts == [2u, 4u, 4u]);
     assert(f.underflow == 2 && f.overflow == 4);
     assert(f.count == 10);
 }
@@ -896,11 +893,11 @@ unittest
             assert(f.underflowFrequency!T().approxEqual(cast(T) 1 / 6));
         }
         // Reading frequencies does not mutate either counts or the total.
-        assert(f.count == 6 && f.counts == [2u, 2u, 0u]);
+        assert(f.count == 6 && f.counts == [1u, 2u, 2u, 0u, 1u]);
         assert(f.underflow == 1 && f.overflow == 1);
     }
-    check([0u, 0u, 0u], [0u, 2u, 0u]);
-    check(rcslice!uint([0u, 0u, 0u]), rcslice!uint([0u, 2u, 0u]));
+    check([0u, 0u, 0u, 0u, 0u], [0u, 0u, 2u, 0u, 0u]);
+    check(rcslice!uint([0u, 0u, 0u, 0u, 0u]), rcslice!uint([0u, 0u, 2u, 0u, 0u]));
 }
 
 // Cumulative reads cover all flow options, storage types, and floating outputs.
@@ -956,11 +953,11 @@ unittest
             static if (hasOverflow) other.put(3.0);
             f.put(other);
             assert(read(f) == cast(double)(2 + 2 * low) / (3 + 2 * low + 2 * high));
-            assert(f.counts == [1u, 1u, 1u]);
+            assert(f.counts[hasUnderflow .. $ - hasOverflow] == [1u, 1u, 1u]);
             assert(f.count == 3 + 2 * low + 2 * high);
         }
-        check([0u, 0u, 0u], [0u, 0u, 0u]);
-        check(rcslice!uint([0u, 0u, 0u]), rcslice!uint([0u, 0u, 0u]));
+        check(new uint[3 + hasUnderflow + hasOverflow], new uint[3 + hasUnderflow + hasOverflow]);
+        check(rcslice!uint(3 + hasUnderflow + hasOverflow), rcslice!uint(3 + hasUnderflow + hasOverflow));
     }}
 }
 
@@ -993,7 +990,7 @@ unittest
             {
                 auto values = source.cumulativeFrequencies!T();
                 static assert(is(typeof(values) == Slice!(RCI!T)));
-                assert(values.length == source.counts.length);
+                assert(values.length == source.axis.N_bin);
                 foreach (i; 0 .. values.length)
                 {
                     if (source.count == 0)
@@ -1028,11 +1025,11 @@ unittest
             auto fresh = f.cumulativeFrequencies();
             fresh[0] = -1;
             assert(snapshot[0] == first);
-            assert(f.counts == [2u, 1u, 2u]);
+            assert(f.counts[hasUnderflow .. $ - hasOverflow] == [2u, 1u, 2u]);
             assert(f.cumulativeFrequency(0) >= 0);
         }
-        check([0u, 0u, 0u], [0u, 0u, 0u]);
-        check(rcslice!uint([0u, 0u, 0u]), rcslice!uint([0u, 0u, 0u]));
+        check(new uint[3 + hasUnderflow + hasOverflow], new uint[3 + hasUnderflow + hasOverflow]);
+        check(rcslice!uint(3 + hasUnderflow + hasOverflow), rcslice!uint(3 + hasUnderflow + hasOverflow));
     }}
 }
 
@@ -1479,7 +1476,7 @@ unittest
         assert(f.count == 7 && bins.front.frequency.approxEqual(cast(T) 2 / 7));
         assert(previous.frequency == cast(T) 2 / 5);
         previous.count = 100;
-        assert(f.counts[0] == 2);
+        assert(f.counts[1] == 2);
         assert(bins.map!(e => e.count).equal([2u, 1u, 1u]));
         assert(bins.retro.map!(e => e.index).equal([2UL, 1UL, 0UL]));
         assert(bins.take(2).length == 2);
@@ -1503,8 +1500,8 @@ unittest
     }
     static foreach (T; AliasSeq!(float, double, real))
     {
-        check!T([0u, 0u, 0u], [0u, 0u, 0u]);
-        check!T(rcslice!uint([0u, 0u, 0u]), rcslice!uint([0u, 0u, 0u]));
+        check!T([0u, 0u, 0u, 0u, 0u], [0u, 0u, 0u, 0u, 0u]);
+        check!T(rcslice!uint([0u, 0u, 0u, 0u, 0u]), rcslice!uint([0u, 0u, 0u, 0u, 0u]));
     }
 }
 
@@ -1724,7 +1721,7 @@ unittest
 {
     import mir.ndslice.allocation: rcslice;
     import mir.stat.descriptive.histogram.axis: IntegralAxis, AxisOptions;
-    static immutable uint[2] zero = [0, 0];
+    static immutable uint[4] zero = [0, 0, 0, 0];
     static immutable double[4] samples = [-1.0, 0.5, 1.5, 3.0];
     alias A = IntegralAxis!(uint, double, AxisOptions(false, true, true));
     auto counts = rcslice!uint(zero[]);
@@ -1790,13 +1787,13 @@ unittest
 {
     import mir.stat.descriptive.histogram.axis: IntegralAxis, CategoryAxis, AxisOptions;
     alias A = IntegralAxis!(uint, double, AxisOptions(false, true, true));
-    auto f = FrequencyAccumulator!(uint[], A)([0u, 0u], A(2, 0.0));
+    auto f = FrequencyAccumulator!(uint[], A)([0u, 0u, 0u, 0u], A(2, 0.0));
     static assert(__traits(compiles, f.put(0.5, 1.5)));
     static assert(!__traits(compiles, f.put()));
     static assert(!__traits(compiles, f.put(0.5, "invalid")));
     static assert(!__traits(compiles, f.put("invalid", 0.5)));
     f.put(-1.0, 0.5, 1.5, 3.0);
-    assert(f.count == 4 && f.counts == [1u, 1u]);
+    assert(f.count == 4 && f.counts == [1u, 1u, 1u, 1u]);
     assert(f.underflow == 1 && f.overflow == 1);
     const double first = 0.5;
     immutable double second = 1.5;
@@ -1806,15 +1803,15 @@ unittest
     immutable double[] frozen = [0.5, 1.5];
     f.put(readOnly);
     f.put(frozen);
-    assert(f.count == 10 && f.counts == [4u, 4u]);
+    assert(f.count == 10 && f.counts == [1u, 4u, 4u, 1u]);
     enum Label { first, second }
     alias C = CategoryAxis!(uint, Label, AxisOptions(false, true));
-    auto categories = FrequencyAccumulator!(uint[], C)([0u, 0u], C());
+    auto categories = FrequencyAccumulator!(uint[], C)([0u, 0u, 0u], C());
     static assert(__traits(compiles, categories.put(Label.first, "second")));
     static assert(!__traits(compiles, categories.put(Label.first, 0.5)));
     categories.put(Label.first, "second", "unknown");
     assert(categories.count == 3 && categories.overflow == 1);
-    assert(categories.counts == [1u, 1u]);
+    assert(categories.counts == [1u, 1u, 1u]);
 }
 
 // A rejected batch element preserves the counts and total of earlier insertions.
@@ -2082,4 +2079,42 @@ unittest
         auto view = local.frequencyBins();
         auto entry = view.front;
     }) == hasBorrowEscapeChecking);
+}
+
+
+// Prepopulated end bins contribute once to totals and cumulative frequencies.
+version(mir_stat_test)
+@safe pure nothrow @nogc
+unittest
+{
+    import mir.stat.descriptive.histogram.axis: IntegralAxis, AxisOptions;
+    static foreach (u; [false, true])
+    static foreach (o; [false, true])
+    {{
+        alias A = IntegralAxis!(uint, double, AxisOptions(false, o, u));
+        uint[2 + u + o] initial;
+        initial[u] = 3;
+        initial[u + 1] = 5;
+        static if (u) initial[0] = 7;
+        static if (o) initial[$ - 1] = 11;
+        alias F = FrequencyAccumulator!(typeof(initial), A);
+        auto f = F(initial, A(2, 0.0));
+        enum total = 8 + 7 * u + 11 * o;
+        assert(f.count == total && f.storageExtent() == initial.length);
+        assert(f.frequency(0) == 3.0 / total);
+        assert(f.frequency(1) == 5.0 / total);
+        double[2] result;
+        f.cumulativeFrequencies(result[]);
+        assert(result[0] == (3.0 + 7 * u) / total);
+        assert(result[1] == (8.0 + 7 * u) / total);
+        assert(f.cumulativeFrequency(1) == result[1]);
+        auto snapshot = f.cumulativeFrequencies();
+        assert(snapshot.length == 2 && snapshot == result[]);
+        const source = f;
+        f.put(source);
+        assert(f.count == 2 * total);
+        assert(f.frequency(0) == 3.0 / total);
+        static if (u) assert(f.underflow == 14);
+        static if (o) assert(f.overflow == 22);
+    }}
 }

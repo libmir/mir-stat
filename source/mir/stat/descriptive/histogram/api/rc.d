@@ -22,7 +22,7 @@ import mir.rc.array: RCI;
 import mir.stat.descriptive.histogram.accumulator: HistogramAccumulator;
 import mir.stat.descriptive.histogram.axis: AxisOptions,
     inverseTransformMapping, hasInverseTransformMapping, isTransformFunction;
-import mir.stat.descriptive.histogram.traits: isAxis;
+import mir.stat.descriptive.histogram.traits: isAxis, storageExtent;
 
 /++
 Params:
@@ -36,7 +36,7 @@ HistogramAccumulator!(Slice!(RCI!(Axis.CountType)), Axis)
 {
     import mir.ndslice.allocation: mininitRcslice;
 
-    auto counts = mininitRcslice!(Axis.CountType)(axis.N_bin);
+    auto counts = mininitRcslice!(Axis.CountType)(storageExtent(axis));
     foreach(ref e; counts) {
         e = 0;
     }
@@ -265,6 +265,8 @@ template rchistogramImpl(CountType, Iterator, alias Axis, AxisOptions axisOption
 
 /++
 Computes a reference-counted histogram of the inputs.
+The allocated counts include enabled underflow/overflow bins, before and after
+the ordinary bins respectively. Ordinary bin views exclude those end bins.
 
 If the `Axis` has an `options` member, the histogram may optionally allow
 for overflow and underflow members.
@@ -1364,7 +1366,7 @@ unittest
     alias OverflowAxis = RegularAxis!(uint, double, AxisOptions(EnableOverflow(true)));
     auto withOverflow = [1.0, 6.0, 11.0, 20.0].sliced;
     auto flow = withOverflow.rchistogram!OverflowAxis(3u, 0.0, 15.0);
-    assert(flow.counts == [1u, 1u, 1u]);
+    assert(flow.counts == [1u, 1u, 1u, 1u]);
     assert(flow.overflow == 1);
     static assert(is(flow.CountType == uint));
 }
@@ -1485,5 +1487,26 @@ unittest
         static assert(!__traits(compiles,
             rchistogram!(uint, TransformAxis, log10, 42, options)(
                 data, 2u, T(1), T(10000))));
+    }}
+}
+
+
+// Factory storage includes exactly the enabled underflow/overflow positions.
+version(mir_stat_test)
+@safe pure nothrow
+unittest
+{
+    import mir.stat.descriptive.histogram.axis: IntegralAxis;
+    import mir.ndslice.slice: sliced;
+    static foreach (u; [false, true])
+    static foreach (o; [false, true])
+    {{
+        alias A = IntegralAxis!(uint, double, AxisOptions(false, o, u));
+        auto h = [0.5, 1.5].sliced.rchistogram(A(2, 0.0));
+        assert(h.counts.length == 2 + u + o);
+        assert(h.counts[u] == 1 && h.counts[u + 1] == 1);
+        static if (u) { h.put(-1.0); assert(h.counts[0] == 1); }
+        static if (o) { h.put(2.0); assert(h.counts[$ - 1] == 1); }
+        assert(h.bins.length == 2);
     }}
 }

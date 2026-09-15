@@ -3376,12 +3376,12 @@ unittest
         assert(axis.index(0x1.fffffffffffffp-1) == 1);
         assert(axis.index(-0x1.fffffffffffffp-1) == 0);
         assert(axis.index(0.0) == (rightClosed ? 0 : 1));
-        static immutable uint[2] zero = [0, 0];
+        static immutable uint[4] zero = [0, 0, 0, 0];
         auto counts = rcslice!uint(zero[]);
         auto h = HistogramAccumulator!(typeof(counts), A)(counts, axis);
         h.put(0x1.fffffffffffffp-1);
         h.put(-0x1.fffffffffffffp-1);
-        assert(h.counts[0] == 1 && h.counts[1] == 1);
+        assert(h.counts[1] == 1 && h.counts[2] == 1);
         assert(h.underflow == 0 && h.overflow == 0);
         if (circular)
         {
@@ -3507,11 +3507,11 @@ unittest
                     assert(axis.index(interval[0]) == 0);
                     assert(axis.isOverflow(interval[1]));
                 }
-                static immutable uint[2] zero = [0, 0];
+                static immutable uint[4] zero = [0, 0, 0, 0];
                 auto counts = rcslice!uint(zero[]);
                 auto h = HistogramAccumulator!(typeof(counts), A)(counts, axis);
                 h.put(insideLow, insideHigh, -T.infinity, T.infinity);
-                assert(h.counts[0] == 1 && h.counts[1] == 1);
+                assert(h.counts[1] == 1 && h.counts[2] == 1);
                 assert(h.underflow == 1 && h.overflow == 1);
             }}
         }
@@ -3547,9 +3547,9 @@ unittest
         assertThrown!AssertError(A(2, T.nan, T(1)));
         auto axis = A(2, T(-1), T(1));
         assertThrown!AssertError(axis.index(T.nan));
-        auto h = HistogramAccumulator!(uint[], A)([0u, 0u], axis);
+        auto h = HistogramAccumulator!(uint[], A)([0u, 0u, 0u, 0u], axis);
         assertThrown!AssertError(h.put(T.nan));
-        assert(h.counts == [0u, 0u]);
+        assert(h.counts == [0u, 0u, 0u, 0u]);
         assert(h.underflow == 0 && h.overflow == 0);
     }}
 }
@@ -3564,9 +3564,11 @@ private void checkBoundaryMembership(Axis)(ref Axis axis) @safe pure nothrow @no
     import mir.stat.descriptive.histogram.accumulator: HistogramAccumulator;
     alias T = Axis.BinType;
     const n = cast(size_t) axis.N_bin;
-    auto counts = mininitRcslice!uint(n);
-    auto expectedCounts = mininitRcslice!uint(n);
-    foreach (i; 0 .. n) { counts[i] = 0; expectedCounts[i] = 0; }
+    import mir.stat.descriptive.histogram.traits: storageExtent, includeUnderflow;
+    const extent = storageExtent(axis);
+    auto counts = mininitRcslice!uint(extent);
+    auto expectedCounts = mininitRcslice!uint(extent);
+    foreach (i; 0 .. extent) { counts[i] = 0; expectedCounts[i] = 0; }
     auto histogram = HistogramAccumulator!(typeof(counts), Axis)(counts, axis);
     assert(axis.bin(0).low == axis.low);
     assert(axis.bin(n - 1).high == axis.high);
@@ -3603,7 +3605,7 @@ private void checkBoundaryMembership(Axis)(ref Axis axis) @safe pure nothrow @no
             assert(expected < n);
             assert(axis.index(x) == expected);
             histogram.put(x);
-            ++expectedCounts[expected];
+            ++expectedCounts[expected + includeUnderflow!Axis];
         }
     }
     assert(counts == expectedCounts);
