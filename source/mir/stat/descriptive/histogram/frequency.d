@@ -2521,3 +2521,69 @@ unittest
     m.put(20, 0);
     assert(m.count == 301 && f.count == 300);
 }
+
+
+// Read-only storage permits frequency reductions without permitting count mutation.
+version(mir_stat_test)
+@safe pure nothrow @nogc
+unittest
+{
+    import mir.stat.descriptive.histogram.axis: IntegralAxis, AxisOptions;
+    import mir.ndslice.slice: sliced;
+    import mir.ndslice.dynamic: transposed;
+    alias A = IntegralAxis!(uint, int, AxisOptions(false, true, true));
+    void check(S)(S storage)
+    {
+        auto f = FrequencyAccumulator!(S, A, A)(storage, A(1, 0), A(1, 0));
+        static assert(is(typeof(f).CountType == uint));
+        assert(f.count == 45 && f.frequency(0, 0) == 5.0 / 45);
+        assert(f.underflow == 6 && f.overflow == 24);
+        assert(f.underflow!1 == 12 && f.overflow!1 == 18);
+        assert(f.underflowFrequency!(double, 1) == 12.0 / 45);
+        const frozen = f;
+        assert(frozen.count == 45 && frozen.frequency(0, 0) == 5.0 / 45);
+        auto marginal = f.marginal!0();
+        assert(marginal.count == 45 && marginal.counts == [6u, 15u, 24u]);
+        marginal.put(0);
+        assert(marginal.count == 46 && f.count == 45);
+        static assert(!__traits(compiles, f.put(0, 0)));
+        static assert(!__traits(compiles, f.put(f)));
+        static assert(!__traits(compiles, f.counts[0][0] = 0));
+    }
+    static immutable uint[3][3] data = [[1u, 2u, 3u], [4u, 5u, 6u], [7u, 8u, 9u]];
+    check(cast(const) data);
+    check(data);
+    // Static backing avoids borrowing an array of stack-bound row pointers.
+    static immutable rows = [data[0][], data[1][], data[2][]];
+    check(cast(const) rows);
+    check(rows);
+    const uint[9] backing = [1u, 4u, 7u, 2u, 5u, 8u, 3u, 6u, 9u];
+    check(backing[].sliced(3, 3).transposed);
+}
+
+// The same value-type rule applies to one-dimensional cumulative sums.
+version(mir_stat_test)
+@safe pure nothrow @nogc
+unittest
+{
+    import mir.stat.descriptive.histogram.axis: IntegralAxis, AxisOptions;
+    import mir.ndslice.slice: sliced;
+    alias A = IntegralAxis!(uint, int, AxisOptions(false, true, true));
+    void check(S)(S storage)
+    {
+        auto f = FrequencyAccumulator!(S, A)(storage, A(2, 0));
+        static assert(is(typeof(f).CountType == uint));
+        assert(f.count == 10 && f.underflow == 1 && f.overflow == 4);
+        assert(f.frequency(0) == 0.2 && f.cumulativeFrequency(1) == 0.6);
+        double[2] output;
+        f.cumulativeFrequencies(output[]);
+        assert(output == [0.3, 0.6]);
+        assert(f.cumulativeFrequencies!double() == output[]);
+        static assert(!__traits(compiles, f.put(0)));
+    }
+    const uint[4] data = [1u, 2u, 3u, 4u];
+    immutable uint[4] fixedData = data;
+    check(data[]);
+    check(fixedData[]);
+    check(data[].sliced);
+}

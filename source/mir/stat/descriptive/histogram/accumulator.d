@@ -76,11 +76,12 @@ struct HistogramAccumulator(Storage, Axis...)
     import mir.stat.descriptive.histogram.traits: includeOverflow, includeUnderflow,
         BinTypeOf, isCategoryAxis, acceptsAxisValue;
     static if (Axis.length > 1 && !isSlice!Storage)
-        /// Type of one joint-bin counter.
-        alias CountType = JointArrayInfo!Storage.Element;
+        private alias StoredCountType = JointArrayInfo!Storage.Element;
     else
-        /// Type of one bin counter.
-        alias CountType = DeepElementType!Storage;
+        private alias StoredCountType = DeepElementType!Storage;
+
+    /// Type of one count value, independently of storage mutability.
+    alias CountType = Unqual!StoredCountType;
     static if (Axis.length > 1)
     {
         static assert(isJointStorage!(Storage, Axis.length),
@@ -3201,4 +3202,41 @@ unittest
     assert(category.counts == [5u, 7u, 9u]);
     assert(category.bins.front.bin.slot == Label.first);
     assert(category.overflow == 9);
+}
+
+
+// Read-only counter storage still supports sums and remains non-writable.
+version(mir_stat_test)
+@safe pure nothrow @nogc
+unittest
+{
+    import mir.stat.descriptive.histogram.axis: IntegralAxis, AxisOptions;
+    import mir.ndslice.slice: sliced;
+    import mir.ndslice.dynamic: transposed;
+    alias A = IntegralAxis!(uint, int, AxisOptions(false, true, true));
+    void check(S)(S storage)
+    {
+        auto h = HistogramAccumulator!(S, A, A)(storage, A(1, 0), A(1, 0));
+        static assert(is(typeof(h).CountType == uint));
+        assert(h.underflow == 6 && h.overflow == 24);
+        assert(h.underflow!1 == 12 && h.overflow!1 == 18);
+        const frozen = h;
+        assert(frozen.underflow == 6 && frozen.overflow!1 == 18);
+        auto marginal = h.marginal!0();
+        assert(marginal.counts == [6u, 15u, 24u]);
+        marginal.put(0);
+        assert(marginal.counts[1] == 16);
+        static assert(!__traits(compiles, h.put(0, 0)));
+        static assert(!__traits(compiles, h.put(h)));
+        static assert(!__traits(compiles, h.counts[0][0] = 0));
+    }
+    static immutable uint[3][3] data = [[1u, 2u, 3u], [4u, 5u, 6u], [7u, 8u, 9u]];
+    check(cast(const) data);
+    check(data);
+    // Static backing avoids borrowing an array of stack-bound row pointers.
+    static immutable rows = [data[0][], data[1][], data[2][]];
+    check(cast(const) rows);
+    check(rows);
+    const uint[9] backing = [1u, 4u, 7u, 2u, 5u, 8u, 3u, 6u, 9u];
+    check(backing[].sliced(3, 3).transposed);
 }
