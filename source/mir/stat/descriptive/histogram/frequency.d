@@ -24,6 +24,7 @@ import mir.stat.descriptive.histogram.accumulator: HistogramAccumulator;
 public import mir.stat.descriptive.histogram.accumulator: BinCoverage;
 import mir.stat.descriptive.histogram.traits: isAxis;
 import mir.stat.descriptive.histogram.internal.view: supportsBinView;
+import mir.stat.descriptive.histogram.internal.projection: validMarginalAxes;
 import mir.stat.internal.borrow: hasBorrowEscapeChecking, uncheckedBorrow;
 
 // Limit destinations to writable floating-point arrays and one-dimensional slices.
@@ -130,6 +131,29 @@ struct FrequencyAccumulator(Storage, Axis...)
             return storage[indices[depth]];
         else
             return storageCount!(depth + 1)(storage[indices[depth]], indices);
+    }
+
+    /++
+    Sum over discarded axes to create a marginal frequency accumulator.
+
+    Uses HistogramAccumulator.marginal's axis selection and ownership rules.
+    All stored counts contribute, including underflow/overflow bins. Fresh
+    reference-counted storage holds the resulting counts, and the result's
+    maintained total is calculated from those counts. Subsequent source and
+    result updates are independent. Borrowed axis boundaries remain borrowed;
+    scope-bound sources with borrowed axis data are rejected in @safe code.
+    The counter type is preserved and must accommodate the sums and total.
+
+    Params:
+        dimensions = zero-based source axes to retain, in result order;
+            select at least one and fewer than N axes, without duplicates
+    +/
+    auto marginal(dimensions...)() const
+        if (validMarginalAxes!(N, dimensions))
+    {
+        auto projected = histogramAccumulator.marginal!dimensions();
+        static if (is(typeof(projected) == HistogramAccumulator!Args, Args...))
+            return FrequencyAccumulator!Args(projected.counts, projected.axis);
     }
 
     /++
@@ -2391,4 +2415,109 @@ version(mir_stat_test_lifetime)
         auto local = F(buffer, A(2, 0));
         return local.bins!(BinCoverage.all)()[0 .. 2];
     }));
+}
+
+
+/// Marginal frequencies use all recorded counts, including underflow/overflow.
+version(mir_stat_test)
+@safe pure nothrow
+unittest
+{
+    import mir.stat.descriptive.histogram.axis: IntegralAxis, AxisOptions;
+    alias X = IntegralAxis!(uint, int, AxisOptions());
+    alias Y = IntegralAxis!(uint, int, AxisOptions(false, true, true));
+    auto joint = FrequencyAccumulator!(uint[][], X, Y)(
+        [[1u, 4u, 2u], [0u, 3u, 1u]], X(2, 0), Y(1, 0));
+    const source = joint;
+    auto marginal = source.marginal!0();
+
+    // Sum over every position of axis one. The two retained bins represent
+    // all eleven observations, including those outside axis one's interval.
+    assert(marginal.counts == [7u, 4u]);
+    assert(marginal.count == 11 && marginal.count == joint.count);
+    assert(marginal.frequency(0) == 7.0 / 11);
+    assert(marginal.frequency!float(1) == 4.0f / 11);
+
+    // The marginal maintains its own counts and total after construction.
+    marginal.put(1);
+    assert(marginal.count == 12 && joint.count == 11);
+    joint.put(0, -1);
+    assert(marginal.counts == [7u, 5u]);
+}
+
+
+// Fractional counters start at zero, preserve precision, and keep empty frequencies NaN.
+version(mir_stat_test)
+@safe pure nothrow @nogc
+unittest
+{
+    import std.meta: AliasSeq;
+    import std.math: isNaN;
+    import mir.stat.descriptive.histogram.axis: IntegralAxis, AxisOptions;
+    alias A = IntegralAxis!(uint, int, AxisOptions(false, true, true));
+    static foreach (T; AliasSeq!(float, double, real))
+    {{
+        T[3][3] data;
+        foreach (ref row; data) row[] = 0;
+        auto f = FrequencyAccumulator!(typeof(data), A, A)(data, A(1, 0), A(1, 0));
+        auto empty = f.marginal!1();
+        static assert(is(typeof(empty).CountType == T));
+        assert(empty.count == 0 && empty.counts == [T(0), T(0), T(0)]);
+        assert(isNaN(empty.frequency!T(0)));
+        data[0][2] = T(0.25);
+        data[1][1] = T(0.5);
+        data[2][0] = T(0.25);
+        auto filled = FrequencyAccumulator!(typeof(data), A, A)(data, A(1, 0), A(1, 0));
+        auto m = filled.marginal!1();
+        assert(m.count == 1 && m.count == filled.count);
+        assert(m.underflow == T(0.25) && m.overflow == T(0.25));
+        assert(m.frequency!T(0) == T(0.5));
+        static assert(!__traits(compiles, filled.marginal!(0, 0)()));
+        static assert(!__traits(compiles, filled.marginal!2()));
+    }}
+}
+
+// A marginal frequency accumulator owns its counts and maintained total.
+version(mir_stat_test_lifetime)
+@safe @nogc unittest
+{
+    import mir.stat.descriptive.histogram.axis: IntegralAxis, AxisOptions;
+    alias A = IntegralAxis!(uint, int, AxisOptions());
+    auto makeMarginal()
+    {
+        uint[2][2] data = [[1u, 2u], [3u, 4u]];
+        auto f = FrequencyAccumulator!(typeof(data), A, A)(data, A(2, 0), A(2, 0));
+        return f.marginal!0();
+    }
+    auto m = makeMarginal();
+    assert(m.count == 10 && m.counts == [3u, 7u]);
+    m.put(1);
+    assert(m.count == 11 && m.frequency(1) == 8.0 / 11);
+}
+
+
+// Multiple retained axes preserve their requested order and the maintained total.
+version(mir_stat_test)
+@safe pure nothrow @nogc
+unittest
+{
+    import mir.ndslice.slice: sliced;
+    import mir.ndslice.dynamic: transposed;
+    import mir.stat.descriptive.histogram.axis: IntegralAxis, AxisOptions;
+    alias A = IntegralAxis!(uint, int, AxisOptions());
+    uint[24] data;
+    auto storage = data[].sliced(4, 3, 2).transposed!(2, 1, 0);
+    foreach (i; 0 .. 2)
+        foreach (j; 0 .. 3)
+            foreach (k; 0 .. 4)
+                storage[i,j,k] = cast(uint)(1 + i*12 + j*4 + k);
+    const f = FrequencyAccumulator!(typeof(storage), A, A, A)(
+        storage, A(2, 0), A(3, 10), A(4, 20));
+    auto m = f.marginal!(2, 0)();
+    assert(m.count == 300 && m.count == f.count);
+    assert(m.counts.shape == [4, 2]);
+    assert(m.axis!0.bin(0).low == 20 && m.axis!1.bin(0).low == 0);
+    assert(m.frequency(0, 0) == 15.0 / 300);
+    m.put(20, 0);
+    assert(m.count == 301 && f.count == 300);
 }

@@ -27,9 +27,6 @@ public import mir.stat.descriptive.histogram.api;
 //   an axis with the break function and pass that axis to rchistogram.
 // - Add factories for GC-backed storage and caller-selected allocation strategies.
 //
-// TODO: Multidimensional histograms
-// - Add projections to lower-dimensional histograms.
-//
 // Possible later extensions
 // - Support per-bin accumulators, such as MeanAccumulator.
 // - Add weighted histograms and frequencies.

@@ -20,6 +20,7 @@ module mir.stat.descriptive.histogram.accumulator;
 import mir.primitives: DeepElementType;
 import mir.stat.descriptive.histogram.traits: isAxis;
 import mir.stat.descriptive.histogram.internal.view: supportsBinView, JointArrayInfo;
+import mir.stat.descriptive.histogram.internal.projection: validMarginalAxes;
 import mir.qualifier: lightConst;
 import std.meta: allSatisfy;
 import std.traits: isNumeric, Unqual, isStaticArray;
@@ -182,6 +183,60 @@ public:
 
     /// All stored counts, including enabled underflow/overflow bins.
     Storage counts;
+
+    /++
+    Sum over discarded axes to create a marginal histogram.
+
+    Retain at least one axis and fewer than N axes, without duplicates. The
+    template argument order becomes the result's axis order. All stored bins
+    on discarded axes contribute, including underflow/overflow bins; retained
+    axes keep their existing definitions and enabled underflow/overflow bins.
+
+    The result owns fresh reference-counted count storage, independent of later
+    source updates. The counter type is preserved and must accommodate the sums.
+    Axes are copied with mir.qualifier.lightConst: owning boundary handles are
+    retained, but borrowed boundaries must remain alive and unchanged. As with
+    bin views, scope-bound sources with borrowed axis data are rejected in @safe
+    code; use owning axes when such a source must support marginalization.
+
+    Params:
+        dimensions = zero-based source axes to retain, in result order
+    +/
+    auto marginal(dimensions...)() const
+        if (validMarginalAxes!(N, dimensions))
+    {
+        import std.meta: staticMap;
+        import mir.ndslice.allocation: rcslice;
+        import mir.stat.descriptive.histogram.internal.projection: projectCounts;
+
+        template SelectedAxis(size_t dimension)
+        {
+            alias SelectedAxis = typeof(lightConst(axis[dimension]));
+        }
+        alias SelectedAxes = staticMap!(SelectedAxis, dimensions);
+        SelectedAxes selected;
+        size_t[N] sourceShape;
+        static foreach (i; 0 .. N)
+            sourceShape[i] = axisStorageExtent(axis[i]);
+        validateStorageShape(counts, sourceShape);
+
+        size_t[dimensions.length] shape;
+        size_t length = 1;
+        static foreach (i, dimension; dimensions)
+        {
+            shape[i] = sourceShape[dimension];
+            assert(length <= size_t.max / shape[i],
+                "HistogramAccumulator.marginal: result size overflows size_t");
+            length *= shape[i];
+            selected[i] = lightConst(axis[dimension]);
+        }
+        // Explicit zero initialization also supports floating-point counters,
+        // whose default initialization is NaN.
+        auto result = rcslice!(Unqual!CountType)(shape, 0);
+        enum selectedDimensions = [dimensions];
+        projectCounts!(N, selectedDimensions)(result, counts);
+        return HistogramAccumulator!(typeof(result), SelectedAxes)(result, selected);
+    }
 
     /++
     Read-only random-access view of bins and their counts.
@@ -2930,4 +2985,220 @@ unittest
         static if (!u && !o)
             assert(all.front == h.bins.front && all.back == h.bins.back);
     }}
+}
+
+
+/// Obtain a one-dimensional marginal by summing over the other axis.
+version(mir_stat_test)
+@safe pure nothrow
+unittest
+{
+    import mir.stat.descriptive.histogram.axis: IntegralAxis, AxisOptions;
+    alias A = IntegralAxis!(uint, int, AxisOptions());
+    auto joint = HistogramAccumulator!(uint[][], A, A)(
+        [[1u, 4u, 2u], [0u, 3u, 1u]], A(2, 0), A(3, 10));
+
+    // Keep axis zero: each result count is the sum of one source row.
+    auto first = joint.marginal!0();
+    assert(first.counts == [7u, 4u]);
+    assert(first.bins.front.bin.low == 0);
+
+    // Keep axis one instead: sum down each column, preserving that axis.
+    auto second = joint.marginal!1();
+    assert(second.counts == [1u, 7u, 3u]);
+    assert(second.bins.front.bin.low == 10);
+
+    // Counts are an independent snapshot. Both histograms remain usable.
+    joint.put(0, 10);
+    assert(first.counts == [7u, 4u]);
+    first.put(1);
+    assert(first.counts == [7u, 5u] && joint.counts[1][0] == 0);
+}
+
+/// Discarded underflow/overflow bins still contribute to the marginal.
+version(mir_stat_test)
+@safe pure nothrow
+unittest
+{
+    import mir.stat.descriptive.histogram.axis: IntegralAxis, AxisOptions;
+    alias A = IntegralAxis!(uint, int, AxisOptions(false, true, true));
+    auto joint = HistogramAccumulator!(uint[][], A, A)(
+        [[1u, 2u, 3u], [4u, 5u, 6u], [7u, 8u, 9u]], A(1, 0), A(1, 0));
+    auto marginal = joint.marginal!0();
+
+    // Each row includes underflow, ordinary, and overflow on the discarded axis.
+    // Retained-axis end bins remain distinct, so the corner counts are not lost.
+    assert(marginal.underflow == 6);
+    assert(marginal.bins.front.count == 15);
+    assert(marginal.overflow == 24);
+    uint total;
+    foreach (entry; marginal.bins!(BinCoverage.all)()) total += entry.count;
+    assert(total == 45);
+}
+
+// Axis order, rectangular built-in arrays, and strided ndslices agree.
+version(mir_stat_test)
+@safe pure nothrow @nogc
+unittest
+{
+    import mir.stat.descriptive.histogram.axis: IntegralAxis, AxisOptions;
+    import mir.ndslice.slice: sliced;
+    import mir.ndslice.dynamic: transposed;
+    alias A = IntegralAxis!(uint, int, AxisOptions());
+    uint[4][3][2] data;
+    uint[24] backing;
+    // A transposed [4,3,2] slice has logical shape [2,3,4].
+    auto strided = backing[].sliced(4, 3, 2).transposed!(2, 1, 0);
+    foreach (i; 0 .. 2)
+        foreach (j; 0 .. 3)
+            foreach (k; 0 .. 4)
+                data[i][j][k] = strided[i,j,k] = cast(uint)(1 + i*12 + j*4 + k);
+    const arrays = HistogramAccumulator!(typeof(data), A, A, A)(
+        data, A(2, 0), A(3, 10), A(4, 20));
+    const slices = HistogramAccumulator!(typeof(strided), A, A, A)(
+        strided, A(2, 0), A(3, 10), A(4, 20));
+    auto a = arrays.marginal!(2, 0)();
+    auto b = slices.marginal!(2, 0)();
+    assert(a.counts.shape == [4, 2]);
+    assert(a.axis[0].bin(0).low == 20 && a.axis[1].bin(0).low == 0);
+    uint sum;
+    foreach (k; 0 .. 4)
+        foreach (i; 0 .. 2)
+        {
+            uint expected;
+            foreach (j; 0 .. 3) expected += data[i][j][k];
+            assert(a.counts[k,i] == expected && b.counts[k,i] == expected);
+            sum += expected;
+        }
+    assert(sum == 300);
+    static assert(!__traits(compiles, arrays.marginal!()()));
+    static assert(!__traits(compiles, arrays.marginal!(0, 0)()));
+    static assert(!__traits(compiles, arrays.marginal!(0, 1, 2)()));
+    static assert(!__traits(compiles, arrays.marginal!3()));
+    static assert(!__traits(compiles, arrays.marginal!(-1)()));
+    static assert(!__traits(compiles, arrays.marginal!double()));
+    static assert(!__traits(compiles, arrays.marginal!(0.5)()));
+    static assert(!__traits(compiles, a.marginal!(0, 1)()));
+    static assert(!__traits(compiles, a.marginal!0().marginal!0()));
+}
+
+
+// Copied RC boundaries survive their original owner; marginal counts are writable.
+version(mir_stat_test)
+@safe pure nothrow @nogc
+unittest
+{
+    import mir.ndslice.allocation: rcslice;
+    import mir.rc.array: RCI;
+    import mir.stat.descriptive.histogram.axis: VariableAxis, IntegralAxis, AxisOptions;
+    alias X = VariableAxis!(uint, RCI!double, AxisOptions());
+    alias Y = IntegralAxis!(uint, int, AxisOptions());
+    auto makeMarginal()
+    {
+        double[3] values = [0.0, 1.0, 4.0];
+        auto boundaries = rcslice!double(values[]);
+        uint[2][2] data = [[1u, 2u], [3u, 4u]];
+        const h = HistogramAccumulator!(typeof(data), X, Y)(data, X(boundaries), Y(2, 0));
+        return h.marginal!0();
+    }
+    auto result = makeMarginal();
+    assert(result.counts == [3u, 7u]);
+    assert(result.axis[0].bin(1).high == 4);
+    result.put(2.0);
+    assert(result.counts == [3u, 8u]);
+}
+
+// Borrowed variable-axis boundaries remain borrowed, with read-only access.
+version(mir_stat_test)
+@safe unittest
+{
+    import mir.ndslice.slice: sliced;
+    import mir.stat.descriptive.histogram.axis: VariableAxis, IntegralAxis, AxisOptions;
+    double[] boundaries = [0, 1, 4];
+    alias X = VariableAxis!(uint, double*, AxisOptions());
+    alias Y = IntegralAxis!(uint, int, AxisOptions());
+    uint[2][2] data = [[1u, 2u], [3u, 4u]];
+    const h = HistogramAccumulator!(typeof(data), X, Y)(
+        data, X(boundaries[].sliced), Y(2, 0));
+    auto result = h.marginal!0();
+    static assert(is(typeof(result.axis[0]) == VariableAxis!(uint, const(double)*, AxisOptions())));
+    assert(result.axis[0].bin(1).low == 1 && result.axis[0].bin(1).high == 4);
+    result.put(2.0);
+    assert(result.counts == [3u, 8u]);
+}
+
+// Owning counts can escape stack-backed sources; scope-bound borrowed axes are rejected.
+version(mir_stat_test_lifetime)
+@safe @nogc unittest
+{
+    import mir.ndslice.slice: sliced;
+    import mir.stat.descriptive.histogram.axis: VariableAxis, IntegralAxis, AxisOptions;
+    alias A = IntegralAxis!(uint, int, AxisOptions());
+    auto makeMarginal()
+    {
+        uint[2][2] data = [[1u, 2u], [3u, 4u]];
+        auto h = HistogramAccumulator!(typeof(data), A, A)(data, A(2, 0), A(2, 0));
+        return h.marginal!0();
+    }
+    assert(makeMarginal().counts == [3u, 7u]);
+    // A borrowed count slice is consumed during the call, not retained.
+    auto fromSlice()
+    {
+        uint[4] data = [1u, 2u, 3u, 4u];
+        auto storage = data[].sliced(2, 2);
+        auto h = HistogramAccumulator!(typeof(storage), A, A)(storage, A(2, 0), A(2, 0));
+        return h.marginal!1();
+    }
+    assert(fromSlice().counts == [4u, 6u]);
+
+    static assert(!__traits(compiles, () @safe {
+        double[3] boundaries = [0, 1, 4];
+        alias X = VariableAxis!(uint, double*, AxisOptions());
+        uint[2][2] data;
+        auto h = HistogramAccumulator!(typeof(data), X, A)(
+            data, X(boundaries[].sliced), A(2, 0));
+        // Rejection occurs at the call: marginal does not permit a scope-bound
+        // source with borrowed axis data to escape through its result.
+        auto marginal = h.marginal!0();
+    }));
+}
+
+// Validate the full source shape again before projecting externally shared arrays.
+version(mir_stat_test)
+unittest
+{
+    import core.exception: AssertError;
+    import std.exception: assertThrown;
+    import mir.stat.descriptive.histogram.axis: IntegralAxis, AxisOptions;
+    alias A = IntegralAxis!(uint, int, AxisOptions());
+    auto data = [[1u, 2u], [3u, 4u]];
+    auto h = HistogramAccumulator!(typeof(data), A, A)(data, A(2, 0), A(2, 0));
+    data[1] = [3u];
+    assertThrown!AssertError(h.marginal!0());
+}
+
+
+// Marginalization depends on stored counts and axes, not bin-description support.
+version(mir_stat_test)
+@safe pure nothrow @nogc
+unittest
+{
+    import mir.stat.descriptive.histogram.axis: CategoryAxis, AxisOptions;
+    static struct CountOnlyAxis
+    {
+        alias CountType = uint;
+        alias BinType = int;
+        uint N_bin = 2;
+        uint index(int value) const { return cast(uint) value; }
+    }
+    enum Label { first, second }
+    alias C = CategoryAxis!(uint, Label, AxisOptions(false, true));
+    uint[3][2] data = [[1u, 2u, 3u], [4u, 5u, 6u]];
+    auto h = HistogramAccumulator!(typeof(data), CountOnlyAxis, C)(data, CountOnlyAxis(), C());
+    auto numeric = h.marginal!0();
+    assert(numeric.counts == [6u, 15u]);
+    auto category = h.marginal!1();
+    assert(category.counts == [5u, 7u, 9u]);
+    assert(category.bins.front.bin.slot == Label.first);
+    assert(category.overflow == 9);
 }
