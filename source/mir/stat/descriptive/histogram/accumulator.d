@@ -2243,8 +2243,9 @@ unittest
     assert(h.underflow!0() == 0 && h.overflow!0() == 0);
 
     // An enabled end on the second coordinate must not conceal an invalid first.
-    auto reversed = HistogramAccumulator!(uint[4][3], A, F)(
-        uint[4][3].init, y, x);
+    alias ReversedStorage = uint[4][3];
+    auto reversed = HistogramAccumulator!(ReversedStorage, A, F)(
+        ReversedStorage.init, y, x);
     assertThrown!AssertError(reversed.put(-1.0, 2.0));
     assert(reversed.overflow!1() == 0);
 }
@@ -2263,8 +2264,9 @@ unittest
             IsCircular(true), IsRightClosed(rightClosed)));
         enum Label { first, second }
         alias Y = CategoryAxis!(uint, Label, AxisOptions(EnableOverflow(true)));
-        auto h = HistogramAccumulator!(uint[3][4], X, Y)(
-            uint[3][4].init, X(2, 0.0), Y());
+        alias Storage = uint[3][4];
+        auto h = HistogramAccumulator!(Storage, X, Y)(
+            Storage.init, X(2, 0.0), Y());
         h.put(0.0, Label.first);
         h.put(2.0, Label.first);
         assert(h.counts[rightClosed ? 2 : 1][0] == 2);
@@ -2315,8 +2317,9 @@ unittest
         size_t index(int value) const { return 0; }
         bool isOverflow(int value) const { return value > 0; }
     }
-    alias H = HistogramAccumulator!(uint[1][1], HugeAxis, HugeAxis);
-    assertThrown!AssertError(H(uint[1][1].init, HugeAxis(), HugeAxis()));
+    alias Storage = uint[1][1];
+    alias H = HistogramAccumulator!(Storage, HugeAxis, HugeAxis);
+    assertThrown!AssertError(H(Storage.init, HugeAxis(), HugeAxis()));
 }
 
 // Three-dimensional traversal preserves associations and strides at all boundaries.
@@ -2714,34 +2717,36 @@ unittest
     import mir.stat.descriptive.histogram.axis: IntegralAxis, AxisOptions;
     import mir.stat.internal.borrow: hasBorrowEscapeChecking;
     alias A = IntegralAxis!(uint, int, AxisOptions());
-    alias H = HistogramAccumulator!(uint[2][2], A, A);
+    alias Storage = uint[2][2];
+    alias H = HistogramAccumulator!(Storage, A, A);
     void check() @nogc
     {
-        auto h = H(uint[2][2].init, A(2, 0), A(2, 0));
+        auto h = H(Storage.init, A(2, 0), A(2, 0));
         auto view = h.bins;
         h.put(1, 1);
         assert(view[3].count == 1);
         const reader = view;
         assert(reader.back.bin!1.low == 1);
-        auto one = HistogramAccumulator!(uint[2], A)(uint[2].init, A(2, 0));
+        alias OneStorage = uint[2];
+        auto one = HistogramAccumulator!(OneStorage, A)(OneStorage.init, A(2, 0));
         auto oneView = one.bins;
         one.put(1);
         assert(oneView.back.index == 1 && oneView.back.count == 1);
     }
     check();
     enum safeBorrow = __traits(compiles, () @safe {
-        auto h = H(uint[2][2].init, A(2, 0), A(2, 0));
+        auto h = H(Storage.init, A(2, 0), A(2, 0));
         auto view = h.bins;
         h.put(1, 1);
         return view[3].count;
     });
     static assert(safeBorrow == hasBorrowEscapeChecking);
     static assert(!__traits(compiles, () @safe {
-        auto h = H(uint[2][2].init, A(2, 0), A(2, 0));
+        auto h = H(Storage.init, A(2, 0), A(2, 0));
         return h.bins;
     }));
     static assert(!__traits(compiles, () @safe {
-        auto h = H(uint[2][2].init, A(2, 0), A(2, 0));
+        auto h = H(Storage.init, A(2, 0), A(2, 0));
         return h.bins.save[1 .. $];
     }));
 }
@@ -3227,7 +3232,7 @@ unittest
         assert(marginal.counts[1] == 16);
         static assert(!__traits(compiles, h.put(0, 0)));
         static assert(!__traits(compiles, h.put(h)));
-        static assert(!__traits(compiles, h.counts[0][0] = 0));
+        static assert(!__traits(compiles, { h.counts[0][0] = 0; }));
     }
     static immutable uint[3][3] data = [[1u, 2u, 3u], [4u, 5u, 6u], [7u, 8u, 9u]];
     check(cast(const) data);

@@ -2026,7 +2026,7 @@ unittest
     static assert(!__traits(compiles, f.cumulativeFrequencies()));
     static assert(!__traits(compiles, f.frequencyBins()));
     static assert(!__traits(compiles, f.underflow!2()));
-    static assert(!__traits(compiles, f.counts[0][0] = 1));
+    static assert(!__traits(compiles, { f.counts[0][0] = 1; }));
 
     uint[16] buffer;
     auto storage = buffer[].sliced(4, 4).transposed;
@@ -2546,7 +2546,7 @@ unittest
         assert(marginal.count == 46 && f.count == 45);
         static assert(!__traits(compiles, f.put(0, 0)));
         static assert(!__traits(compiles, f.put(f)));
-        static assert(!__traits(compiles, f.counts[0][0] = 0));
+        static assert(!__traits(compiles, { f.counts[0][0] = 0; }));
     }
     static immutable uint[3][3] data = [[1u, 2u, 3u], [4u, 5u, 6u], [7u, 8u, 9u]];
     check(cast(const) data);
