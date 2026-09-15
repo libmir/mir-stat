@@ -779,6 +779,33 @@ unittest
     assert(f.underflowFrequency!(float, 1)() == 0.0f);
 }
 
+/// Marginal frequencies use all recorded counts, including underflow/overflow.
+version(mir_stat_test)
+@safe pure nothrow
+unittest
+{
+    import mir.stat.descriptive.histogram.axis: IntegralAxis, AxisOptions;
+    alias X = IntegralAxis!(uint, int, AxisOptions());
+    alias Y = IntegralAxis!(uint, int, AxisOptions(false, true, true));
+    auto joint = FrequencyAccumulator!(uint[][], X, Y)(
+        [[1u, 4u, 2u], [0u, 3u, 1u]], X(2, 0), Y(1, 0));
+    const source = joint;
+    auto marginal = source.marginal!0();
+
+    // Sum over every position of axis one. The two retained bins represent
+    // all eleven observations, including those outside axis one's interval.
+    assert(marginal.counts == [7u, 4u]);
+    assert(marginal.count == 11 && marginal.count == joint.count);
+    assert(marginal.frequency(0) == 7.0 / 11);
+    assert(marginal.frequency!float(1) == 4.0f / 11);
+
+    // The marginal maintains its own counts and total after construction.
+    marginal.put(1);
+    assert(marginal.count == 12 && joint.count == 11);
+    joint.put(0, -1);
+    assert(marginal.counts == [7u, 5u]);
+}
+
 // Construction, insertion, and merging with array and reference-counted storage.
 version(mir_stat_test)
 @safe pure nothrow
@@ -2416,35 +2443,6 @@ version(mir_stat_test_lifetime)
         return local.bins!(BinCoverage.all)()[0 .. 2];
     }));
 }
-
-
-/// Marginal frequencies use all recorded counts, including underflow/overflow.
-version(mir_stat_test)
-@safe pure nothrow
-unittest
-{
-    import mir.stat.descriptive.histogram.axis: IntegralAxis, AxisOptions;
-    alias X = IntegralAxis!(uint, int, AxisOptions());
-    alias Y = IntegralAxis!(uint, int, AxisOptions(false, true, true));
-    auto joint = FrequencyAccumulator!(uint[][], X, Y)(
-        [[1u, 4u, 2u], [0u, 3u, 1u]], X(2, 0), Y(1, 0));
-    const source = joint;
-    auto marginal = source.marginal!0();
-
-    // Sum over every position of axis one. The two retained bins represent
-    // all eleven observations, including those outside axis one's interval.
-    assert(marginal.counts == [7u, 4u]);
-    assert(marginal.count == 11 && marginal.count == joint.count);
-    assert(marginal.frequency(0) == 7.0 / 11);
-    assert(marginal.frequency!float(1) == 4.0f / 11);
-
-    // The marginal maintains its own counts and total after construction.
-    marginal.put(1);
-    assert(marginal.count == 12 && joint.count == 11);
-    joint.put(0, -1);
-    assert(marginal.counts == [7u, 5u]);
-}
-
 
 // Fractional counters start at zero, preserve precision, and keep empty frequencies NaN.
 version(mir_stat_test)

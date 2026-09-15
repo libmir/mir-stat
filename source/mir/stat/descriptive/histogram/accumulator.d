@@ -1045,6 +1045,54 @@ unittest
     assert(source.counts[1][0] == 1 && source.counts[0][2] == 1);
 }
 
+/// Obtain a one-dimensional marginal by summing over the other axis.
+version(mir_stat_test)
+@safe pure nothrow
+unittest
+{
+    import mir.stat.descriptive.histogram.axis: IntegralAxis, AxisOptions;
+    alias A = IntegralAxis!(uint, int, AxisOptions());
+    auto joint = HistogramAccumulator!(uint[][], A, A)(
+        [[1u, 4u, 2u], [0u, 3u, 1u]], A(2, 0), A(3, 10));
+
+    // Keep axis zero: each result count is the sum of one source row.
+    auto first = joint.marginal!0();
+    assert(first.counts == [7u, 4u]);
+    assert(first.bins.front.bin.low == 0);
+
+    // Keep axis one instead: sum down each column, preserving that axis.
+    auto second = joint.marginal!1();
+    assert(second.counts == [1u, 7u, 3u]);
+    assert(second.bins.front.bin.low == 10);
+
+    // Counts are an independent snapshot. Both histograms remain usable.
+    joint.put(0, 10);
+    assert(first.counts == [7u, 4u]);
+    first.put(1);
+    assert(first.counts == [7u, 5u] && joint.counts[1][0] == 0);
+}
+
+/// Discarded underflow/overflow bins still contribute to the marginal.
+version(mir_stat_test)
+@safe pure nothrow
+unittest
+{
+    import mir.stat.descriptive.histogram.axis: IntegralAxis, AxisOptions;
+    alias A = IntegralAxis!(uint, int, AxisOptions(false, true, true));
+    auto joint = HistogramAccumulator!(uint[][], A, A)(
+        [[1u, 2u, 3u], [4u, 5u, 6u], [7u, 8u, 9u]], A(1, 0), A(1, 0));
+    auto marginal = joint.marginal!0();
+
+    // Each row includes underflow, ordinary, and overflow on the discarded axis.
+    // Retained-axis end bins remain distinct, so the corner counts are not lost.
+    assert(marginal.underflow == 6);
+    assert(marginal.bins.front.count == 15);
+    assert(marginal.overflow == 24);
+    uint total;
+    foreach (entry; marginal.bins!(BinCoverage.all)()) total += entry.count;
+    assert(total == 45);
+}
+
 // Circular endpoints must reach indexing even when flow counters are enabled.
 version(mir_stat_test)
 @safe pure nothrow
@@ -2986,55 +3034,6 @@ unittest
         static if (!u && !o)
             assert(all.front == h.bins.front && all.back == h.bins.back);
     }}
-}
-
-
-/// Obtain a one-dimensional marginal by summing over the other axis.
-version(mir_stat_test)
-@safe pure nothrow
-unittest
-{
-    import mir.stat.descriptive.histogram.axis: IntegralAxis, AxisOptions;
-    alias A = IntegralAxis!(uint, int, AxisOptions());
-    auto joint = HistogramAccumulator!(uint[][], A, A)(
-        [[1u, 4u, 2u], [0u, 3u, 1u]], A(2, 0), A(3, 10));
-
-    // Keep axis zero: each result count is the sum of one source row.
-    auto first = joint.marginal!0();
-    assert(first.counts == [7u, 4u]);
-    assert(first.bins.front.bin.low == 0);
-
-    // Keep axis one instead: sum down each column, preserving that axis.
-    auto second = joint.marginal!1();
-    assert(second.counts == [1u, 7u, 3u]);
-    assert(second.bins.front.bin.low == 10);
-
-    // Counts are an independent snapshot. Both histograms remain usable.
-    joint.put(0, 10);
-    assert(first.counts == [7u, 4u]);
-    first.put(1);
-    assert(first.counts == [7u, 5u] && joint.counts[1][0] == 0);
-}
-
-/// Discarded underflow/overflow bins still contribute to the marginal.
-version(mir_stat_test)
-@safe pure nothrow
-unittest
-{
-    import mir.stat.descriptive.histogram.axis: IntegralAxis, AxisOptions;
-    alias A = IntegralAxis!(uint, int, AxisOptions(false, true, true));
-    auto joint = HistogramAccumulator!(uint[][], A, A)(
-        [[1u, 2u, 3u], [4u, 5u, 6u], [7u, 8u, 9u]], A(1, 0), A(1, 0));
-    auto marginal = joint.marginal!0();
-
-    // Each row includes underflow, ordinary, and overflow on the discarded axis.
-    // Retained-axis end bins remain distinct, so the corner counts are not lost.
-    assert(marginal.underflow == 6);
-    assert(marginal.bins.front.count == 15);
-    assert(marginal.overflow == 24);
-    uint total;
-    foreach (entry; marginal.bins!(BinCoverage.all)()) total += entry.count;
-    assert(total == 45);
 }
 
 // Axis order, rectangular built-in arrays, and strided ndslices agree.
