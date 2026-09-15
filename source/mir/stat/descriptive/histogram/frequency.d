@@ -21,6 +21,7 @@ module mir.stat.descriptive.histogram.frequency;
 import mir.internal.utility: isFloatingPoint;
 import std.meta: allSatisfy;
 import mir.stat.descriptive.histogram.accumulator: HistogramAccumulator;
+public import mir.stat.descriptive.histogram.accumulator: BinCoverage;
 import mir.stat.descriptive.histogram.traits: isAxis;
 import mir.stat.descriptive.histogram.internal.view: supportsBinView;
 import mir.stat.internal.borrow: hasBorrowEscapeChecking, uncheckedBorrow;
@@ -84,7 +85,7 @@ See_also:
 struct FrequencyAccumulator(Storage, Axis...)
     if (Axis.length > 0 && allSatisfy!(isAxis, Axis))
 {
-    import std.traits: isIterable, isSomeString;
+    import std.traits: isIterable, isSomeString, isStaticArray;
     import mir.stat.descriptive.histogram.traits: includeOverflow, includeUnderflow,
         BinTypeOf, isCategoryAxis, acceptsAxisValue;
 
@@ -132,8 +133,43 @@ struct FrequencyAccumulator(Storage, Axis...)
     }
 
     /++
-    Borrow a read-only random-access view of ordinary bins and frequencies.
-    The last axis advances fastest; underflow/overflow bins are excluded.
+    Read-only bin descriptions and counts, without per-entry frequencies.
+    Uses the same coverage options and element type as HistogramAccumulator.bins.
+    Owning storage handles keep counts alive independently of this accumulator;
+    borrowed storage and axis boundaries must remain alive. Keep shared storage
+    shape and axis boundaries unchanged. Use frequencyBins to also read frequencies.
+
+    Params:
+        coverage = ordinary bins by default, or all enabled stored bins
+    +/
+    auto bins(BinCoverage coverage = BinCoverage.ordinary)() const
+        if (supportsBinView!(Storage, Axis) &&
+            (coverage == BinCoverage.ordinary || coverage == BinCoverage.all))
+    {
+        return histogramAccumulator.bins!coverage();
+    }
+
+    /++
+    Borrow descriptions and counts from static-array storage without copying.
+    The accumulator must stay alive and in place. Safety is inferred as @safe
+    when borrow escape checking is enabled, otherwise @system.
+    Moving or replacing the source while borrowed is prohibited by contract.
+
+    Params:
+        coverage = ordinary bins by default, or all enabled stored bins
+    +/
+    auto bins(BinCoverage coverage = BinCoverage.ordinary)() return const
+        if (isStaticArray!Storage &&
+            supportsBinView!(typeof(histogramAccumulator.counts[]), Axis) &&
+            (coverage == BinCoverage.ordinary || coverage == BinCoverage.all))
+    {
+        return histogramAccumulator.bins!coverage();
+    }
+
+    /++
+    Borrow a read-only random-access view of bins and frequencies.
+    Coverage defaults to ordinary bins; BinCoverage.all includes enabled
+    underflow/overflow bins. The last axis advances fastest.
 
     Each element reads its count and frequency from this accumulator. The
     denominator includes enabled flow bins. FrequencyType defaults to double;
@@ -152,13 +188,15 @@ struct FrequencyAccumulator(Storage, Axis...)
 
     Params:
         FrequencyType = floating-point output type
+        coverage = ordinary bins or all enabled stored bins
     +/
-    auto frequencyBins(FrequencyType = double)() return const
-        if (isFloatingPoint!FrequencyType && supportsBinView!(Storage, Axis))
+    auto frequencyBins(FrequencyType = double, BinCoverage coverage = BinCoverage.ordinary)() return const
+        if (isFloatingPoint!FrequencyType && supportsBinView!(Storage, Axis) &&
+            (coverage == BinCoverage.ordinary || coverage == BinCoverage.all))
     {
         static if (!hasBorrowEscapeChecking)
             uncheckedBorrow();
-        return FrequencyBinView!(Storage, FrequencyType, Axis)(&this);
+        return FrequencyBinView!(Storage, FrequencyType, coverage, Axis)(&this);
     }
 
     /// Total recorded observations, including flow bins.
@@ -476,6 +514,31 @@ unittest
     float floatFrequency = f.frequency!float(0);
     assert(frequency == 0.5);
     assert(floatFrequency == 0.5f);
+}
+
+/// Read counts without borrowing the running total.
+version(mir_stat_test)
+@safe pure nothrow
+unittest
+{
+    import mir.stat.descriptive.histogram.axis: IntegralAxis, AxisOptions;
+    alias A = IntegralAxis!(uint, double, AxisOptions(false, true, true));
+    auto f = FrequencyAccumulator!(uint[], A)([1u, 2u, 3u, 0u], A(2, 0.0));
+
+    // bins has the same meaning as on HistogramAccumulator: descriptions
+    // and counts, with ordinary-only coverage by default.
+    const counts = f.bins();
+    assert(counts.length == 2 && counts.front.count == 2);
+    static assert(!__traits(hasMember, typeof(counts.front), "frequency"));
+
+    // Request end bins explicitly. All cursors see shared count updates.
+    auto all = f.bins!(BinCoverage.all)();
+    f.put(2.5);
+    assert(all.back.isOverflow && all.back.count == 1);
+    assert(counts.front.index == 0 && counts.front.bin.low == 0);
+
+    // frequencyBins is the separate accessor for per-entry relative frequencies.
+    // Its views also borrow f's running total; bins does not.
 }
 
 /// Read cumulative frequencies in bin order and choose the output type.
@@ -1155,7 +1218,9 @@ unittest
 /++
 A bin description, count, and relative frequency read from an accumulator.
 Values are returned by value; changing an entry does not update the accumulator.
-Bin descriptions follow the axis's existing bin API.
+Bin descriptions follow the axis's existing bin API. Check the per-axis
+classification before accessing index or bin: both assert for an
+underflow/overflow coordinate.
 
 Params:
     HistogramElement = element type of the underlying histogram bin view
@@ -1169,6 +1234,27 @@ struct FrequencyBin(HistogramElement, FrequencyType)
     else
         static assert(false, "FrequencyBin requires a HistogramBin element");
     private HistogramElement _entry;
+
+    /// Whether this coordinate is ordinary; dimension defaults to zero.
+    bool isOrdinary(size_t dimension = 0)() const @property
+        if (dimension < N)
+    {
+        return _entry.isOrdinary!dimension;
+    }
+
+    /// Whether this coordinate is underflow; dimension defaults to zero.
+    bool isUnderflow(size_t dimension = 0)() const @property
+        if (dimension < N)
+    {
+        return _entry.isUnderflow!dimension;
+    }
+
+    /// Whether this coordinate is overflow; dimension defaults to zero.
+    bool isOverflow(size_t dimension = 0)() const @property
+        if (dimension < N)
+    {
+        return _entry.isOverflow!dimension;
+    }
 
     /// Original ordinary-bin index along an axis; defaults to axis zero.
     auto index(size_t dimension = 0)() const @property
@@ -1205,8 +1291,9 @@ It does not copy the total or retain separate count storage. Updates through
 that accumulator are visible on later reads. Each returned count and frequency
 is a value; a bin description may still borrow axis storage.
 
-Ordinary bins, including zero-count bins, are included; underflow/overflow bins
-are excluded. The last axis advances fastest, independent of storage strides.
+Zero-count bins are included. Coverage selects ordinary bins or all enabled
+underflow/overflow combinations, each visited once. The last axis advances
+fastest, independent of storage strides.
 The denominator includes underflow/overflow counts. Slicing preserves original
 per-axis bin indices.
 A const view supports indexing, save, and slicing; derived cursors are mutable.
@@ -1219,14 +1306,16 @@ the bin count; they cannot detect a destroyed source or every replacement.
 Params:
     Storage = source count storage
     FrequencyType = floating-point output type
+    coverage = ordinary bins or all enabled stored bins
     Axis = source axis types
 +/
-struct FrequencyBinView(Storage, FrequencyType, Axis...)
-    if (isFloatingPoint!FrequencyType && supportsBinView!(Storage, Axis))
+struct FrequencyBinView(Storage, FrequencyType, BinCoverage coverage, Axis...)
+    if (isFloatingPoint!FrequencyType && supportsBinView!(Storage, Axis) &&
+        (coverage == BinCoverage.ordinary || coverage == BinCoverage.all))
 {
     import mir.stat.descriptive.histogram.accumulator: HistogramBinView;
     private alias Accumulator = FrequencyAccumulator!(Storage, Axis);
-    private alias BinView = HistogramBinView!(Storage, Axis);
+    private alias BinView = HistogramBinView!(Storage, coverage, Axis);
     private const(Accumulator)* _source;
     private size_t[Axis.length] _shape;
     private size_t _begin, _end, _outerLength;
@@ -1237,7 +1326,7 @@ struct FrequencyBinView(Storage, FrequencyType, Axis...)
     private this(const(Accumulator)* source)
     {
         _source = source;
-        auto bins = source.histogramAccumulator.bins();
+        auto bins = source.histogramAccumulator.bins!coverage();
         static foreach (i; 0 .. Axis.length)
             _shape[i] = source.axis!i.N_bin;
         _outerLength = source.counts.length;
@@ -1264,7 +1353,7 @@ struct FrequencyBinView(Storage, FrequencyType, Axis...)
                 "FrequencyBinView: source bin count changed while borrowed");
     }
 
-    /// Number of remaining ordinary bins.
+    /// Number of remaining bins in the selected coverage.
     size_t length() const @property { return _end - _begin; }
 
     /// Whether the cursor is exhausted.
@@ -1435,6 +1524,34 @@ unittest
     tail.popFront();
     assert(tail.front.index == 1 && tail.front.index!1 == 0);
     assert(bins.front.index == 0 && bins.front.index!1 == 0);
+}
+
+/// Count out-of-range observations once, including joint corner bins.
+version(mir_stat_test)
+unittest
+{
+    import mir.stat.descriptive.histogram.axis: IntegralAxis, AxisOptions;
+    alias A = IntegralAxis!(uint, double, AxisOptions(false, true, true));
+    auto f = FrequencyAccumulator!(uint[][], A, A)(
+        [[0u, 3u, 0u, 2u], [0u, 0u, 0u, 0u],
+         [0u, 5u, 0u, 4u], [0u, 0u, 0u, 0u]],
+        A(2, 0.0), A(2, 0.0));
+
+    // Axis totals overlap: the two observations at (underflow, overflow)
+    // contribute to both totals.
+    assert(f.underflow == 5 && f.overflow!1 == 6);
+    uint outside;
+    double sum = 0;
+    foreach (entry; f.frequencyBins!(double, BinCoverage.all)())
+    {
+        if (!entry.isOrdinary || !entry.isOrdinary!1)
+            outside += entry.count;
+        sum += entry.frequency;
+    }
+    // Every stored joint bin appears once, so the corner is counted once.
+    assert(outside == 9 && f.count == 14);
+    import mir.math.common: approxEqual;
+    assert(sum.approxEqual(1.0));
 }
 
 // Runtime behavior is identical with and without escape checking.
@@ -1666,7 +1783,7 @@ version(mir_stat_test_lifetime)
         import mir.stat.descriptive.histogram.axis: IntegralAxis, AxisOptions;
         alias Axis = IntegralAxis!(uint, double, AxisOptions());
         alias F = FrequencyAccumulator!(uint[], Axis);
-        alias View = FrequencyBinView!(uint[], double, Axis);
+        alias View = FrequencyBinView!(uint[], double, BinCoverage.ordinary, Axis);
         static assert(!__traits(compiles, () @safe {
             auto bins = F([1u, 1u], Axis(2, 0.0)).frequencyBins();
             auto value = bins.front;
@@ -2117,4 +2234,161 @@ unittest
         static if (u) assert(f.underflow == 14);
         static if (o) assert(f.overflow == 22);
     }}
+}
+
+
+// All-bin frequency views retain live totals, precision selection, and independent cursors.
+version(mir_stat_test)
+unittest
+{
+    import std.meta: AliasSeq;
+    import std.math: isNaN;
+    import core.exception: AssertError;
+    import std.exception: assertThrown;
+    import mir.stat.descriptive.histogram.axis: IntegralAxis, AxisOptions;
+    alias A = IntegralAxis!(uint, double, AxisOptions(false, true, true));
+    alias F = FrequencyAccumulator!(uint[], A);
+    auto f = F([0u, 0u, 0u, 0u], A(2, 0.0));
+    static foreach (T; AliasSeq!(float, double, real))
+    {{
+        const empty = f.frequencyBins!(T, BinCoverage.all)();
+        foreach (entry; empty.save) assert(isNaN(entry.frequency));
+    }}
+    f.put(-1.0, 0.5, 1.5, 2.0);
+    static foreach (T; AliasSeq!(float, double, real))
+    {{
+        const all = f.frequencyBins!(T, BinCoverage.all)();
+        static assert(is(typeof(all.front.frequency) == T));
+        auto before = all.back;
+        auto tail = all[1 .. $];
+        auto saved = all.save;
+        saved.popFront();
+        saved.popBack();
+        assert(all.front.isUnderflow && all.back.isOverflow);
+        assert(saved.front.isOrdinary && saved.front.index == 0);
+        assert(saved.back.index == 1);
+        assertThrown!AssertError(all.front.index);
+        assertThrown!AssertError(all.back.bin);
+        auto other = F([0u, 0u, 0u, 1u], A(2, 0.0));
+        const oldTotal = f.count;
+        f.put(other);
+        assert(all.back.count == before.count + 1);
+        assert(all.back.frequency == cast(T)(before.count + 1) / (oldTotal + 1));
+        assert(tail.back.frequency == all.back.frequency);
+        assert(all.front.frequency == cast(T) 1 / f.count);
+    }}
+    static assert(!__traits(compiles, f.frequencyBins!(double, cast(BinCoverage) 99)()));
+}
+
+// Enabling all-bin coverage does not weaken borrowing or introduce GC allocation.
+version(mir_stat_test_lifetime)
+@safe @nogc unittest
+{
+    import mir.ndslice.allocation: rcslice;
+    import mir.stat.descriptive.histogram.axis: IntegralAxis, AxisOptions;
+    alias A = IntegralAxis!(uint, int, AxisOptions(false, true, true));
+    auto counts = rcslice!uint(4, 4);
+    alias F = FrequencyAccumulator!(typeof(counts), A, A);
+    auto f = F(counts, A(2, 0), A(2, 0));
+    auto borrow(return ref const F source) { return source.frequencyBins!(real, BinCoverage.all)(); }
+    const bins = borrow(f);
+    auto part = bins[0 .. 4];
+    f.put(-1, 2);
+    assert(part.back.isUnderflow && part.back.isOverflow!1);
+    assert(part.back.count == 1 && part.back.frequency == 1);
+    static assert(!__traits(compiles, () @safe {
+        auto local = F(counts, A(2, 0), A(2, 0));
+        return local.frequencyBins!(real, BinCoverage.all)();
+    }));
+    static assert(!__traits(compiles, () @safe {
+        auto local = F(counts, A(2, 0), A(2, 0));
+        return local.frequencyBins!(real, BinCoverage.all)().save;
+    }));
+    static assert(!__traits(compiles, () @safe {
+        auto local = F(counts, A(2, 0), A(2, 0));
+        return local.frequencyBins!(real, BinCoverage.all)()[0 .. 2];
+    }));
+}
+
+
+// Both accessors use the same coordinates and count values in every coverage.
+version(mir_stat_test)
+unittest
+{
+    import mir.stat.descriptive.histogram.axis: IntegralAxis, AxisOptions;
+    import mir.stat.descriptive.histogram.accumulator: HistogramAccumulator;
+    alias A = IntegralAxis!(uint, double, AxisOptions(false, true, true));
+    auto f = FrequencyAccumulator!(uint[][], A, A)(
+        [[0u, 0u, 0u, 0u], [0u, 0u, 0u, 0u],
+         [0u, 0u, 0u, 0u], [0u, 0u, 0u, 0u]],
+        A(2, 0.0), A(2, 0.0));
+    static foreach (coverage; [BinCoverage.ordinary, BinCoverage.all])
+    {{
+        const counts = f.bins!coverage();
+        const frequencies = f.frequencyBins!(real, coverage)();
+        alias H = HistogramAccumulator!(uint[][], A, A);
+        static assert(is(typeof(counts.save) == typeof(H.init.bins!coverage())));
+        auto saved = counts.save;
+        auto slice = counts[0 .. $];
+        f.put(-1.0, 2.0);
+        f.put(0.5, 1.5);
+        foreach (i; 0 .. counts.length)
+        {
+            auto c = counts[i];
+            auto v = frequencies[i];
+            assert(c.count == v.count && saved[i].count == c.count && slice[i].count == c.count);
+            static foreach (dimension; 0 .. 2)
+            {
+                assert(c.isOrdinary!dimension == v.isOrdinary!dimension);
+                assert(c.isUnderflow!dimension == v.isUnderflow!dimension);
+                assert(c.isOverflow!dimension == v.isOverflow!dimension);
+                if (c.isOrdinary!dimension)
+                    assert(c.index!dimension == v.index!dimension);
+            }
+        }
+    }}
+    static assert(!__traits(compiles, f.bins!double()));
+    static assert(!__traits(compiles, f.bins!(cast(BinCoverage) 99)()));
+}
+
+// Count-only views can retain owning storage; static-array storage is still borrowed.
+version(mir_stat_test_lifetime)
+@safe @nogc unittest
+{
+    import mir.ndslice.allocation: rcslice;
+    import mir.stat.descriptive.histogram.axis: IntegralAxis, AxisOptions;
+    alias A = IntegralAxis!(uint, int, AxisOptions(false, true, true));
+    auto owning()
+    {
+        auto storage = rcslice!uint(4);
+        auto f = FrequencyAccumulator!(typeof(storage), A)(storage, A(2, 0));
+        f.put(-1, 0, 2);
+        return f.bins!(BinCoverage.all)();
+    }
+    auto retained = owning();
+    assert(retained.front.isUnderflow && retained.front.count == 1);
+    assert(retained.back.isOverflow && retained.back.count == 1);
+
+    uint[4] storage;
+    alias F = FrequencyAccumulator!(typeof(storage), A);
+    auto f = F(storage, A(2, 0));
+    const counts = f.bins!(BinCoverage.all)();
+    auto saved = counts.save;
+    f.put(-1, 1);
+    assert(counts.front.count == 1 && saved[2].count == 1);
+    static assert(!__traits(compiles, () @safe {
+        uint[4] buffer;
+        auto local = F(buffer, A(2, 0));
+        return local.bins!(BinCoverage.all)();
+    }));
+    static assert(!__traits(compiles, () @safe {
+        uint[4] buffer;
+        auto local = F(buffer, A(2, 0));
+        return local.bins!(BinCoverage.all)().save;
+    }));
+    static assert(!__traits(compiles, () @safe {
+        uint[4] buffer;
+        auto local = F(buffer, A(2, 0));
+        return local.bins!(BinCoverage.all)()[0 .. 2];
+    }));
 }

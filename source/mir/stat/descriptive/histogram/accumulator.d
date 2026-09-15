@@ -184,7 +184,7 @@ public:
     Storage counts;
 
     /++
-    Read-only random-access view of the ordinary bins and their counts.
+    Read-only random-access view of bins and their counts.
 
     The view copies the axis and storage handles, sharing the count buffer.
     Subsequent count updates are visible when an element is read. Replacing
@@ -192,31 +192,36 @@ public:
     Keep shared axis boundaries and the storage shape unchanged while using it.
 
     Available for axes with const bin-description access and supported storage.
-    Underflow and overflow are excluded; the last axis advances fastest.
+    Coverage defaults to ordinary bins. BinCoverage.all also includes enabled
+    underflow/overflow bins. The last axis advances fastest.
     Mutable and const histograms both return a view with a mutable cursor over
     read-only data. Custom axes must support mir.qualifier.lightConst.
 
+    Params:
+        coverage = ordinary bins by default, or all enabled stored bins
     See_also: $(LREF HistogramBinView)
     +/
-    auto bins()() const
-        if (supportsBinView!(Storage, Axis))
+    auto bins(BinCoverage coverage = BinCoverage.ordinary)() const
+        if (supportsBinView!(Storage, Axis) &&
+            (coverage == BinCoverage.ordinary || coverage == BinCoverage.all))
     {
-        return HistogramBinView!(Storage, Axis)(counts, axis);
+        return HistogramBinView!(Storage, coverage, Axis)(counts, axis);
     }
 
     /++
-    Borrow ordinary bins from static-array storage without copying its counts.
+    Borrow bins from static-array storage without copying its counts.
     Keep the accumulator alive and in place while using the view. Safety is
     inferred as @safe when borrow escape checking is enabled, otherwise @system.
     Moving or replacing the source while borrowed is prohibited by contract.
     +/
-    auto bins()() return const
-        if (isStaticArray!Storage && supportsBinView!(typeof(counts[]), Axis))
+    auto bins(BinCoverage coverage = BinCoverage.ordinary)() return const
+        if (isStaticArray!Storage && supportsBinView!(typeof(counts[]), Axis) &&
+            (coverage == BinCoverage.ordinary || coverage == BinCoverage.all))
     {
         import mir.stat.internal.borrow: hasBorrowEscapeChecking, uncheckedBorrow;
         static if (!hasBorrowEscapeChecking)
             uncheckedBorrow();
-        return HistogramBinView!(typeof(counts[]), Axis)(counts[], axis);
+        return HistogramBinView!(typeof(counts[]), coverage, Axis)(counts[], axis);
     }
 
     //
@@ -1032,10 +1037,21 @@ unittest
     }}
 }
 
+/// Select the bins included in a histogram or frequency view.
+enum BinCoverage
+{
+    /// Visit only ordinary bins.
+    ordinary,
+    /// Visit all stored bins, including enabled underflow/overflow bins.
+    all,
+}
+
 /++
 Axis-specific descriptions and the count read when a bin was accessed.
 
-Indices always refer to the original ordinary bins, including after slicing.
+Indices refer to the original ordinary bins, including after slicing.
+For underflow/overflow coordinates, index and bin assert; inspect isOrdinary,
+isUnderflow, or isOverflow before accessing ordinary-bin metadata.
 Elements are returned by value; assigning count does not change the histogram.
 Select an axis with index!dimension or bin!dimension; dimension defaults to zero.
 
@@ -1046,11 +1062,34 @@ Params:
 struct HistogramBin(Count, BinDescriptions...)
 {
     import mir.functional: Tuple;
+    private enum Kind { ordinary, underflow, overflow }
+    private Kind[BinDescriptions.length] _kinds;
     private size_t[BinDescriptions.length] _indices;
     private Tuple!BinDescriptions _bins;
 
     /// Count at the time this element was read.
     Count count;
+
+    /// Whether this coordinate is an ordinary bin; dimension defaults to zero.
+    bool isOrdinary(size_t dimension = 0)() const @property
+        if (dimension < BinDescriptions.length)
+    {
+        return _kinds[dimension] == Kind.ordinary;
+    }
+
+    /// Whether this coordinate is underflow; dimension defaults to zero.
+    bool isUnderflow(size_t dimension = 0)() const @property
+        if (dimension < BinDescriptions.length)
+    {
+        return _kinds[dimension] == Kind.underflow;
+    }
+
+    /// Whether this coordinate is overflow; dimension defaults to zero.
+    bool isOverflow(size_t dimension = 0)() const @property
+        if (dimension < BinDescriptions.length)
+    {
+        return _kinds[dimension] == Kind.overflow;
+    }
 
     /++
     Original ordinary-bin index along one axis.
@@ -1060,6 +1099,7 @@ struct HistogramBin(Count, BinDescriptions...)
     size_t index(size_t dimension = 0)() const @property
         if (dimension < BinDescriptions.length)
     {
+        assert(isOrdinary!dimension, "HistogramBin.index: coordinate is not an ordinary bin");
         return _indices[dimension];
     }
 
@@ -1071,6 +1111,7 @@ struct HistogramBin(Count, BinDescriptions...)
     auto bin(size_t dimension = 0)() @property
         if (dimension < BinDescriptions.length)
     {
+        assert(isOrdinary!dimension, "HistogramBin.bin: coordinate is not an ordinary bin");
         return _bins[dimension];
     }
 
@@ -1078,15 +1119,17 @@ struct HistogramBin(Count, BinDescriptions...)
     auto bin(size_t dimension = 0)() const @property
         if (dimension < BinDescriptions.length)
     {
+        assert(isOrdinary!dimension, "HistogramBin.bin: coordinate is not an ordinary bin");
         return _bins[dimension];
     }
 }
 
 /++
-Read-only random-access range of ordinary bins and counts in any dimension.
+Read-only random-access range of bins and counts in any dimension.
 
 Usually obtained from a histogram's bins accessor. Includes zero-count bins;
-underflow and overflow are excluded. The last axis advances fastest, regardless
+coverage selects ordinary bins or all enabled underflow/overflow bins.
+Every selected combination is visited once. The last axis advances fastest, regardless
 of storage strides. Element indices retain their original per-axis coordinates.
 Numeric descriptions expose low and high; category descriptions expose slot.
 
@@ -1107,13 +1150,15 @@ indexed, saved, and sliced; save and slicing return independent mutable cursors.
 
 Params:
     Storage = nested array with dynamic outer dimension or Mir ndslice of counts
+    coverage = ordinary bins or all enabled stored bins
     Axis = axis types with const runtime bin-description access
 +/
-struct HistogramBinView(Storage, Axis...)
-    if (supportsBinView!(Storage, Axis))
+struct HistogramBinView(Storage, BinCoverage coverage, Axis...)
+    if (supportsBinView!(Storage, Axis) &&
+        (coverage == BinCoverage.ordinary || coverage == BinCoverage.all))
 {
     import std.meta: staticMap;
-    import mir.stat.descriptive.histogram.traits: includeUnderflow;
+    import mir.stat.descriptive.histogram.traits: includeUnderflow, includeOverflow;
     enum N = Axis.length;
     private alias ReadOnlyStorage = typeof(lightConst((const Storage).init));
     private template ReadOnlyAxisOf(A) { alias ReadOnlyAxisOf = typeof(lightConst((const A).init)); }
@@ -1140,14 +1185,15 @@ struct HistogramBinView(Storage, Axis...)
         size_t[N] storageShape;
         size_t length = 1;
         static foreach (i; 0 .. N)
-        {
+        {{
             _shape[i] = axes[i].N_bin;
-            assert(_shape[i] == 0 || length <= size_t.max / _shape[i],
-                "HistogramBinView: ordinary bin count overflows size_t");
-            length *= _shape[i];
             storageShape[i] = H.axisStorageExtent(axes[i]);
+            const extent = coverage == BinCoverage.all ? storageShape[i] : _shape[i];
+            assert(extent == 0 || length <= size_t.max / extent,
+                "HistogramBinView: traversal length overflows size_t");
+            length *= extent;
             _axes[i] = lightConst(axes[i]);
-        }
+        }}
         H.validateStorageShape(counts, storageShape);
         _counts = lightConst(counts);
         _end = length;
@@ -1172,7 +1218,7 @@ struct HistogramBinView(Storage, Axis...)
             return readArrayCount!(depth + 1)(counts[indices[depth]], indices);
     }
 
-    /// Number of remaining ordinary bins.
+    /// Number of remaining bins in the selected coverage.
     size_t length() const @property { return _end - _begin; }
 
     /// Whether all bins in this range have been consumed.
@@ -1231,14 +1277,33 @@ struct HistogramBinView(Storage, Axis...)
         static foreach (reverse; 0 .. N)
         {{
             enum dimension = N - 1 - reverse;
-            auto originalIndex = flat % shape[dimension];
-            flat /= shape[dimension];
-            result._indices[dimension] = originalIndex;
-            const readOnlyAxis = lightConst(axes[dimension]);
-            result._bins[dimension] = readOnlyAxis.bin(originalIndex);
-            storageIndices[dimension] = originalIndex;
-            static if (includeUnderflow!(Axis[dimension]))
-                ++storageIndices[dimension];
+            enum hasUnderflow = includeUnderflow!(Axis[dimension]);
+            enum hasOverflow = includeOverflow!(Axis[dimension]);
+            const extent = shape[dimension] +
+                (coverage == BinCoverage.all ? hasUnderflow + hasOverflow : 0);
+            const position = flat % extent;
+            flat /= extent;
+            static if (coverage == BinCoverage.all)
+            {
+                storageIndices[dimension] = position;
+                if (hasUnderflow && position == 0)
+                    result._kinds[dimension] = Element.Kind.underflow;
+                else if (hasOverflow && position == shape[dimension] + hasUnderflow)
+                    result._kinds[dimension] = Element.Kind.overflow;
+                else
+                    result._indices[dimension] = position - hasUnderflow;
+            }
+            else
+            {
+                result._indices[dimension] = position;
+                storageIndices[dimension] = position + hasUnderflow;
+            }
+            // End bins have no ordinary interval or category description.
+            if (result.isOrdinary!dimension)
+            {
+                const readOnlyAxis = lightConst(axes[dimension]);
+                result._bins[dimension] = readOnlyAxis.bin(result._indices[dimension]);
+            }
         }}
         static if (isSlice!S)
             result.count = counts[storageIndices];
@@ -1690,13 +1755,13 @@ unittest
     alias Axis = IntegralAxis!(uint, double, AxisOptions());
     uint[] backing = [1u, 99u, 2u, 99u, 3u, 99u];
     auto strided = Slice!(uint*, 1, SliceKind.universal)([3], [2], backing.ptr);
-    const view = HistogramBinView!(typeof(strided), Axis)(strided, Axis(3, 0.0));
+    const view = HistogramBinView!(typeof(strided), BinCoverage.ordinary, Axis)(strided, Axis(3, 0.0));
     assert(view.save.map!(e => e.count).equal([1u, 2u, 3u]));
     backing[2] = 4;
     assert(view[1].count == 4);
 
     const(uint)[] counts = [1u, 2u, 3u];
-    const readOnly = HistogramBinView!(typeof(counts), Axis)(counts, Axis(3, 0.0));
+    const readOnly = HistogramBinView!(typeof(counts), BinCoverage.ordinary, Axis)(counts, Axis(3, 0.0));
     auto cursor = readOnly.save;
     assert(cursor.map!(e => e.count).equal([1u, 2u, 3u]));
     static assert(is(typeof(cursor.front.count) == uint));
@@ -1731,7 +1796,7 @@ unittest
         Bin!double bin(size_t i) const { return Bin!double(breaks[0], breaks[1]); }
     }
     static assert(supportsBinView!(uint[], ReadOnlyAxis));
-    const view = HistogramBinView!(uint[], ReadOnlyAxis)(
+    const view = HistogramBinView!(uint[], BinCoverage.ordinary, ReadOnlyAxis)(
         [2u], ReadOnlyAxis([0.0, 1.0]));
     assert(view.save.front.bin.high == 1.0 && view.front.count == 2);
 }
@@ -2586,7 +2651,7 @@ unittest
     import mir.ndslice.slice: Slice, SliceKind;
     import mir.stat.descriptive.histogram.axis: IntegralAxis, AxisOptions, Bin;
     alias A = IntegralAxis!(uint, int, AxisOptions());
-    alias V = HistogramBinView!(uint[][], A, A);
+    alias V = HistogramBinView!(uint[][], BinCoverage.ordinary, A, A);
     assertThrown!AssertError(V([[0u, 0u], [0u]], A(2, 0), A(2, 0)));
     auto view = V([[0u, 0u], [0u, 0u]], A(2, 0), A(2, 0));
     assertThrown!AssertError(view[4]);
@@ -2602,7 +2667,7 @@ unittest
     }
     alias S = Slice!(uint*, 2, SliceKind.universal);
     // Product validation must fail before inspecting any count buffer.
-    assertThrown!AssertError(HistogramBinView!(S, HugeAxis, HugeAxis)(
+    assertThrown!AssertError(HistogramBinView!(S, BinCoverage.ordinary, HugeAxis, HugeAxis)(
         S.init, HugeAxis(size_t.max), HugeAxis(2)));
 }
 
@@ -2681,4 +2746,188 @@ unittest
         bool isOverflow(int) const { return false; }
     }
     assertThrown!AssertError(storageExtent(HugeAxis()));
+}
+
+
+/// Include underflow and overflow while keeping ordinary indices unchanged.
+version(mir_stat_test)
+@safe pure nothrow
+unittest
+{
+    import mir.stat.descriptive.histogram.axis: IntegralAxis, AxisOptions;
+    alias A = IntegralAxis!(uint, double, AxisOptions(false, true, true));
+    auto h = HistogramAccumulator!(uint[], A)([2u, 3u, 4u, 1u], A(2, 0.0));
+
+    // Default traversal still returns only the two ordinary bins.
+    assert(h.bins.length == 2);
+    auto all = h.bins!(BinCoverage.all)();
+    assert(all.length == 4);
+    assert(all.front.isUnderflow && all.front.count == 2);
+    assert(all.back.isOverflow && all.back.count == 1);
+
+    // End bins have counts but no ordinary index or interval.
+    // Check classification before requesting ordinary-bin metadata.
+    auto firstOrdinary = all[1];
+    assert(firstOrdinary.isOrdinary);
+    assert(firstOrdinary.index == 0 && firstOrdinary.bin.low == 0.0);
+
+    // Saved and sliced cursors preserve classification and share live counts.
+    auto tail = all[1 .. $];
+    h.put(2.5);
+    assert(tail.back.isOverflow && tail.back.count == 2);
+    assert(all.front.isUnderflow);
+}
+
+// Every enabled joint coordinate is visited once, independent of strides.
+version(mir_stat_test)
+@safe pure nothrow @nogc
+unittest
+{
+    import mir.stat.descriptive.histogram.axis: IntegralAxis, AxisOptions;
+    import mir.ndslice.slice: sliced;
+    import mir.ndslice.dynamic: transposed;
+    import std.range.primitives: isRandomAccessRange, hasSlicing;
+
+    static foreach (u; [false, true])
+    static foreach (o; [false, true])
+    {{
+        alias X = IntegralAxis!(uint, int, AxisOptions(false, o, u));
+        alias Y = IntegralAxis!(uint, double, AxisOptions(false, true, true));
+        enum rows = 2 + u + o;
+        enum columns = 5;
+        uint[rows * columns] buffer;
+        auto storage = buffer[].sliced(columns, rows).transposed;
+        foreach (i; 0 .. rows)
+            foreach (j; 0 .. columns)
+                storage[i, j] = cast(uint)(1 + i * columns + j);
+        auto h = HistogramAccumulator!(typeof(storage), X, Y)(
+            storage, X(2, 0), Y(3, 0.0));
+        const all = h.bins!(BinCoverage.all)();
+        static assert(isRandomAccessRange!(typeof(all.save)) && hasSlicing!(typeof(all.save)));
+        assert(all.length == rows * columns);
+        uint sum;
+        foreach (i; 0 .. all.length)
+        {
+            const entry = all[i];
+            const row = i / columns;
+            const column = i % columns;
+            assert(entry.count == i + 1);
+            sum += entry.count;
+            assert(entry.isUnderflow == (u && row == 0));
+            assert(entry.isOverflow == (o && row == rows - 1));
+            assert(entry.isOrdinary == !(entry.isUnderflow || entry.isOverflow));
+            assert(entry.isUnderflow!1 == (column == 0));
+            assert(entry.isOverflow!1 == (column == columns - 1));
+            assert(entry.isOrdinary!1 == (column > 0 && column < columns - 1));
+            if (entry.isOrdinary) assert(entry.index == row - u);
+            if (entry.isOrdinary!1)
+            {
+                assert(entry.index!1 == column - 1);
+                assert(entry.bin!1.low == column - 1);
+            }
+        }
+        assert(sum == all.length * (all.length + 1) / 2);
+        auto saved = all.save;
+        saved.popFront();
+        saved.popBack();
+        assert(saved.length == all.length - 2);
+        assert(all[1 .. $][1 .. $].front.count == 3);
+        assert(all[$ .. $].empty);
+        assert(h.bins.length == 6);
+        foreach (entry; h.bins)
+            assert(entry.isOrdinary && entry.isOrdinary!1);
+        static assert(!__traits(compiles, all.front.isOverflow!2));
+        static assert(!__traits(compiles, h.bins!(cast(BinCoverage) 99)()));
+    }}
+}
+
+// Categorical and variable end bins cannot expose invalid ordinary descriptions.
+version(mir_stat_test)
+unittest
+{
+    import core.exception: AssertError;
+    import std.exception: assertThrown;
+    import mir.stat.descriptive.histogram.axis: CategoryAxis, VariableAxis, AxisOptions;
+    import mir.ndslice.slice: sliced;
+    enum Label { first, second }
+    alias X = CategoryAxis!(uint, Label, AxisOptions(false, true));
+    alias Y = VariableAxis!(uint, double*, AxisOptions(false, true, true));
+    auto y = Y([0.0, 1.0, 3.0].sliced);
+    auto h = HistogramAccumulator!(uint[][], X, Y)(
+        [[0u, 0u, 0u, 0u], [0u, 0u, 0u, 0u], [0u, 0u, 0u, 0u]], X(), y);
+    h.put("unknown", -1.0);
+    const all = h.bins!(BinCoverage.all)();
+    const corner = all[8];
+    assert(corner.isOverflow && corner.isUnderflow!1 && corner.count == 1);
+    assertThrown!AssertError(corner.index);
+    assertThrown!AssertError(corner.bin);
+    assertThrown!AssertError(corner.index!1);
+    assertThrown!AssertError(corner.bin!1);
+    auto mixed = all[9];
+    assert(mixed.isOverflow && mixed.isOrdinary!1);
+    assert(mixed.bin!1.low == 0 && mixed.bin!1.high == 1);
+    assertThrown!AssertError(mixed.bin);
+    assert(all[1].bin.slot == Label.first);
+    assert(all[1].bin!1.high == 1);
+}
+
+// Owning all-bin views outlive an accumulator; static-array views remain borrowed.
+version(mir_stat_test_lifetime)
+@safe unittest
+{
+    import mir.ndslice.allocation: rcslice;
+    import mir.stat.descriptive.histogram.axis: IntegralAxis, AxisOptions;
+    alias A = IntegralAxis!(uint, int, AxisOptions(false, true, true));
+    auto owning()
+    {
+        auto counts = rcslice!uint([2u, 3u, 4u, 1u]);
+        auto h = HistogramAccumulator!(typeof(counts), A)(counts, A(2, 0));
+        return h.bins!(BinCoverage.all)();
+    }
+    auto view = owning();
+    assert(view.front.isUnderflow && view.front.count == 2);
+    assert(view.back.isOverflow && view.back.count == 1);
+
+    uint[4] buffer;
+    auto local = HistogramAccumulator!(typeof(buffer), A)(buffer, A(2, 0));
+    auto borrowed = local.bins!(BinCoverage.all)();
+    local.put(-1);
+    assert(borrowed.front.count == 1);
+    static assert(!__traits(compiles, () @safe {
+        uint[4] storage;
+        auto h = HistogramAccumulator!(typeof(storage), A)(storage, A(2, 0));
+        return h.bins!(BinCoverage.all)();
+    }));
+    static assert(!__traits(compiles, () @safe {
+        uint[4] storage;
+        auto h = HistogramAccumulator!(typeof(storage), A)(storage, A(2, 0));
+        return h.bins!(BinCoverage.all)().save;
+    }));
+}
+
+
+// In one dimension, disabled end bins are never synthesized.
+version(mir_stat_test)
+@safe pure nothrow @nogc
+unittest
+{
+    import mir.stat.descriptive.histogram.axis: IntegralAxis, AxisOptions;
+    import mir.ndslice.slice: sliced;
+    static foreach (u; [false, true])
+    static foreach (o; [false, true])
+    {{
+        alias A = IntegralAxis!(uint, int, AxisOptions(false, o, u));
+        uint[2 + u + o] buffer;
+        auto storage = buffer[].sliced;
+        auto h = HistogramAccumulator!(typeof(storage), A)(storage, A(2, 0));
+        auto all = h.bins!(BinCoverage.all)();
+        assert(all.length == buffer.length);
+        assert(all.front.isUnderflow == u && all.back.isOverflow == o);
+        assert(all[u].isOrdinary && all[u].index == 0);
+        assert(all[u + 1].index == 1);
+        h.put(0, 1);
+        assert(all[u].count == 1 && all[u + 1].count == 1);
+        static if (!u && !o)
+            assert(all.front == h.bins.front && all.back == h.bins.back);
+    }}
 }
