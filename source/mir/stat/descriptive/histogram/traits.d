@@ -82,6 +82,21 @@ template includeUnderflow(AxisType)
     }
 }
 
+/++
+Number of storage positions required by an axis, including enabled
+underflow and overflow bins. N_bin continues to count only ordinary bins.
+Params:
+    axis = axis defining the ordinary bins and enabled underflow/overflow bins
++/
+size_t storageExtent(A)(auto ref const A axis)
+    if (isAxis!A)
+{
+    enum size_t extra = includeUnderflow!A + includeOverflow!A;
+    assert(axis.N_bin > 0 && axis.N_bin <= size_t.max - extra,
+        "Histogram: storage extent is out of range");
+    return cast(size_t) axis.N_bin + extra;
+}
+
 // Checks whether type `T` can be used in a switch statement. This is useful for
 // compile-time generation of switch case statements.
 package

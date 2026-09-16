@@ -51,6 +51,8 @@ Fast paths may require contiguous/layout-specific preconditions, but keep a corr
 
 ## Verification
 
-Use the repository's actual commands/configurations. Start with the smallest relevant unittest/compile test, then broaden checks according to the change and explicit user requirements. Test the affected compiler/configuration and another supported compiler for template, attribute, safety, or frontend-sensitive changes. Reuse completed checks unless subsequent changes invalidate them; do not mechanically run every configuration.
+Use the repository's actual commands/configurations. Use a fast feedback loop during development: normally start with DMD and the smallest relevant unittest/compile test. For compiler-, optimization-, or configuration-specific issues, start with the affected configuration.
+
+Once the implementation and tests stabilize, run the required compiler and build matrix according to the change, repository requirements, and explicit user instructions. Test the affected compiler/configuration and another supported compiler for template, attribute, safety, or frontend-sensitive changes. Reuse completed checks unless later changes invalidate them; avoid rerunning the full matrix after every intermediate edit.
 
 For a suspected compiler regression, ICE, context-dependent diagnostic, DMD/LDC disagreement, or optimization miscompile, capture the exact compiler version and failing command, then reduce the case while preserving the specific failure. Distinguish invalid source from a compiler fault before adding a workaround.

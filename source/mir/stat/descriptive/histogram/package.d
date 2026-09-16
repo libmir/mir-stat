@@ -19,19 +19,13 @@ public import mir.stat.descriptive.histogram.traits;
 public import mir.stat.descriptive.histogram.api;
 
 // TODO: Histogram result access
-// - Add a cumulative frequency range with explicit flow entries.
+// - Add a cumulative frequency range with explicit underflow/overflow entries.
 // - Add histogram formatting.
 //
 // TODO: Construction conveniences
 // - Accept break functions directly in rchistogram; currently callers construct
 //   an axis with the break function and pass that axis to rchistogram.
 // - Add factories for GC-backed storage and caller-selected allocation strategies.
-//
-// TODO: Multidimensional histograms
-// - Define joint-bin storage and indexing. The current multiple-axis path records
-//   separate marginal counts for each axis.
-// - Validate joint storage shape against the axes and support joint flow bins
-//   and merging. Marginal count storage already has shape validation.
 //
 // Possible later extensions
 // - Support per-bin accumulators, such as MeanAccumulator.

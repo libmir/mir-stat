@@ -18,6 +18,10 @@ buildType "unittest" {
     versions "mir_stat_test" "mir_stat_test_bultincomplex"
     dflags "-lowmem"
 }
+buildType "docs-check" {
+    buildOptions "syntaxOnly" "warningsAsErrors"
+    dflags "-Dddocs"
+}
 configuration "unittest-perf" {
     dependency "mir-random" version=">=2.2.19"
 }
