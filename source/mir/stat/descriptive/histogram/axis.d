@@ -18,7 +18,7 @@ T4=$(TR $(TDNW $(LREF $1)) $(TD $2) $(TD $3) $(TD $4))
 module mir.stat.descriptive.histogram.axis;
 
 import mir.functional: naryFun;
-import mir.stat.descriptive.histogram.traits: DefaultCountType, isBreakFunction;
+import mir.stat.descriptive.histogram.traits: DefaultCountType, isBreakFunction, acceptsBreakFunction, checkedBreakCount;
 import mir.ndslice.slice: isSlice;
 import mir.ndslice.traits: isContiguousVector;
 import std.meta: NoDuplicates;
@@ -671,6 +671,10 @@ IntegralAxis!(DefaultCountType, BinType, axisOptions)
 }
 
 /++
+Choose the number of bins with a callable on a light-scope observation view.
+The rule must not mutate or retain the view. Its result must be a positive integer
+representable by CountType; assertions check the value before conversion.
+
 Params:
     CountType = the type that is used to count in histogram bins
     BinType = the type of the values that are compared in histogram bins
@@ -678,7 +682,6 @@ Params:
     axisOptions = options
 +/
 template integralAxis(CountType, BinType, alias breakFunction, AxisOptions axisOptions = AxisOptions())
-    if (isBreakFunction!breakFunction)
 {
     import mir.ndslice.slice: Slice, SliceKind;
 
@@ -689,8 +692,9 @@ template integralAxis(CountType, BinType, alias breakFunction, AxisOptions axisO
     +/
     IntegralAxis!(CountType, BinType, axisOptions)
         integralAxis(Iterator, size_t N, SliceKind kind)(Slice!(Iterator, N, kind) slice, BinType low)
+        if (acceptsBreakFunction!(breakFunction, Slice!(Iterator, N, kind)))
     {
-        return .integralAxis!(CountType, BinType, axisOptions)(cast(CountType) breakFunction(slice.lightScope), low);
+        return .integralAxis!(CountType, BinType, axisOptions)(checkedBreakCount!(CountType, breakFunction)(slice), low);
     }
 }
 
@@ -701,7 +705,6 @@ Params:
     axisOptions = options
 +/
 template integralAxis(BinType, alias breakFunction, AxisOptions axisOptions = AxisOptions())
-    if (isBreakFunction!breakFunction)
 {
     import mir.ndslice.slice: Slice, SliceKind;
 
@@ -712,6 +715,7 @@ template integralAxis(BinType, alias breakFunction, AxisOptions axisOptions = Ax
     +/
     IntegralAxis!(DefaultCountType, BinType, axisOptions)
         integralAxis(Iterator, size_t N, SliceKind kind)(Slice!(Iterator, N, kind) slice, BinType low)
+        if (acceptsBreakFunction!(breakFunction, Slice!(Iterator, N, kind)))
     {
         import core.lifetime: move;
         return .integralAxis!(DefaultCountType, BinType, breakFunction, axisOptions)(slice.move, low);
@@ -724,7 +728,6 @@ Params:
     axisOptions = options
 +/
 template integralAxis(alias breakFunction, AxisOptions axisOptions = AxisOptions())
-    if (isBreakFunction!breakFunction)
 {
     import mir.ndslice.slice: Slice, SliceKind;
     import mir.primitives: DeepElementType;
@@ -736,7 +739,8 @@ template integralAxis(alias breakFunction, AxisOptions axisOptions = AxisOptions
     +/
     IntegralAxis!(DefaultCountType, DeepElementType!(Slice!(Iterator, N, kind)), axisOptions)
         integralAxis(Iterator, size_t N, SliceKind kind, BinType)(Slice!(Iterator, N, kind) slice, BinType low)
-            if (is(BinType : DeepElementType!(Slice!(Iterator, N, kind))))
+            if (is(BinType : DeepElementType!(Slice!(Iterator, N, kind))) &&
+                acceptsBreakFunction!(breakFunction, Slice!(Iterator, N, kind)))
     {
         import core.lifetime: move;
         return .integralAxis!(DefaultCountType, DeepElementType!(Slice!(Iterator, N, kind)), breakFunction, axisOptions)(slice.move, low);
@@ -1207,6 +1211,10 @@ RegularAxis!(DefaultCountType, BinType, axisOptions)
 }
 
 /++
+Choose the number of bins with a callable on a light-scope observation view.
+The rule must not mutate or retain the view. Its result must be a positive integer
+representable by CountType; assertions check the value before conversion.
+
 Params:
     CountType = the type that is used to count in histogram bins
     BinType = the type of the values that are compared in histogram bins
@@ -1214,7 +1222,6 @@ Params:
     axisOptions = options
 +/
 template regularAxis(CountType, BinType, alias breakFunction, AxisOptions axisOptions = AxisOptions())
-    if (isBreakFunction!breakFunction)
 {
     import mir.ndslice.slice: Slice, SliceKind;
 
@@ -1226,8 +1233,9 @@ template regularAxis(CountType, BinType, alias breakFunction, AxisOptions axisOp
     +/
     RegularAxis!(CountType, BinType, axisOptions)
         regularAxis(Iterator, size_t N, SliceKind kind)(Slice!(Iterator, N, kind) slice, BinType low, BinType high)
+        if (acceptsBreakFunction!(breakFunction, Slice!(Iterator, N, kind)))
     {
-        return .regularAxis!(CountType, BinType, axisOptions)(cast(CountType) breakFunction(slice.lightScope), low, high);
+        return .regularAxis!(CountType, BinType, axisOptions)(checkedBreakCount!(CountType, breakFunction)(slice), low, high);
     }
 }
 
@@ -1238,7 +1246,6 @@ Params:
     axisOptions = options
 +/
 template regularAxis(BinType, alias breakFunction, AxisOptions axisOptions = AxisOptions())
-    if (isBreakFunction!breakFunction)
 {
     import mir.ndslice.slice: Slice, SliceKind;
 
@@ -1250,6 +1257,7 @@ template regularAxis(BinType, alias breakFunction, AxisOptions axisOptions = Axi
     +/
     RegularAxis!(DefaultCountType, BinType, axisOptions)
         regularAxis(Iterator, size_t N, SliceKind kind)(Slice!(Iterator, N, kind) slice, BinType low, BinType high)
+        if (acceptsBreakFunction!(breakFunction, Slice!(Iterator, N, kind)))
     {
         import core.lifetime: move;
         return .regularAxis!(DefaultCountType, BinType, breakFunction, axisOptions)(slice.move, low, high);
@@ -1262,7 +1270,6 @@ Params:
     axisOptions = options
 +/
 template regularAxis(alias breakFunction, AxisOptions axisOptions = AxisOptions())
-    if (isBreakFunction!breakFunction)
 {
     import mir.ndslice.slice: Slice, SliceKind;
     import mir.primitives: DeepElementType;
@@ -1275,7 +1282,8 @@ template regularAxis(alias breakFunction, AxisOptions axisOptions = AxisOptions(
     +/
     RegularAxis!(DefaultCountType, DeepElementType!(Slice!(Iterator, N, kind)), axisOptions)
         regularAxis(Iterator, size_t N, SliceKind kind, BinType)(Slice!(Iterator, N, kind) slice, BinType low, BinType high)
-            if (is(BinType : DeepElementType!(Slice!(Iterator, N, kind))))
+            if (is(BinType : DeepElementType!(Slice!(Iterator, N, kind))) &&
+                acceptsBreakFunction!(breakFunction, Slice!(Iterator, N, kind)))
     {
         import core.lifetime: move;
         return .regularAxis!(DefaultCountType, DeepElementType!(Slice!(Iterator, N, kind)), breakFunction, axisOptions)(slice.move, low, high);

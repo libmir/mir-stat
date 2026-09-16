@@ -22,8 +22,8 @@ public import mir.stat.descriptive.histogram.api;
 // - Add histogram formatting.
 //
 // TODO: Construction conveniences
-// - Accept break functions directly in rchistogram; currently callers construct
-//   an axis with the break function and pass that axis to rchistogram.
+// - Accept break functions directly in rchistogram for TransformAxis; currently
+//   callers construct that axis with the break function first.
 // - Add factories for GC-backed storage and caller-selected allocation strategies.
 //
 // Possible later extensions

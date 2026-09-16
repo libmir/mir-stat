@@ -22,7 +22,7 @@ import mir.rc.array: RCI;
 import mir.stat.descriptive.histogram.accumulator: HistogramAccumulator;
 import mir.stat.descriptive.histogram.axis: AxisOptions,
     inverseTransformMapping, hasInverseTransformMapping, isTransformFunction;
-import mir.stat.descriptive.histogram.traits: isAxis, storageExtent;
+import mir.stat.descriptive.histogram.traits: isAxis, storageExtent, acceptsBreakFunction;
 
 /++
 Params:
@@ -291,6 +291,108 @@ HistogramAccumulator!(Slice!(RCI!(Axis.CountType)), Axis)
 {
     import core.lifetime: move;
     return .rchistogramImplBasic(slice.move, axis);
+}
+
+/++
+Choose the number of integral or regular bins using a rule on the observations.
+The rule is called once with a light-scope view and must return a positive integer
+representable by CountType. It must not mutate or retain the observation view.
+Bounds remain explicit. The resulting histogram owns its count storage.
+
+Params:
+    CountType = count type
+    BinType = axis value type
+    Axis = IntegralAxis or RegularAxis
+    breakFunction = callable returning the number of bins
+    axisOptions = axis options
++/
+template rchistogram(CountType, BinType, alias Axis, alias breakFunction,
+    AxisOptions axisOptions = AxisOptions())
+    if (isRuleAxis!Axis)
+{
+    /++
+    Params:
+        slice = input observations
+        bounds = low for IntegralAxis; low and high for RegularAxis
+    +/
+    auto rchistogram(Iterator, size_t N, SliceKind kind, Bounds...)(
+        Slice!(Iterator, N, kind) slice, Bounds bounds)
+        if (acceptsBreakFunction!(breakFunction, typeof(slice)) &&
+            validRuleBounds!(Axis, BinType, Bounds))
+    {
+        import mir.stat.descriptive.histogram.axis: integralAxis, regularAxis, IntegralAxis;
+        static if (__traits(isSame, Axis, IntegralAxis))
+            auto axis = integralAxis!(CountType, BinType, breakFunction, axisOptions)(slice, bounds);
+        else
+            auto axis = regularAxis!(CountType, BinType, breakFunction, axisOptions)(slice, bounds);
+        return .rchistogramImplBasic(slice, axis);
+    }
+}
+
+/++
+Infer the axis value type from the bounds while specifying the count type.
+Params:
+    CountType = count type
+    Axis = IntegralAxis or RegularAxis
+    breakFunction = callable returning the number of bins
+    axisOptions = axis options
++/
+template rchistogram(CountType, alias Axis, alias breakFunction,
+    AxisOptions axisOptions = AxisOptions())
+    if (isRuleAxis!Axis)
+{
+    /// ditto
+    auto rchistogram(Iterator, size_t N, SliceKind kind, BinType, Bounds...)(
+        Slice!(Iterator, N, kind) slice, BinType low, Bounds rest)
+        if (acceptsBreakFunction!(breakFunction, typeof(slice)) &&
+            validRuleBounds!(Axis, BinType, BinType, Bounds))
+    {
+        return .rchistogram!(CountType, BinType, Axis, breakFunction, axisOptions)(slice, low, rest);
+    }
+}
+
+/++
+Use the default count type and infer the axis value type from the observations.
+Params:
+    Axis = IntegralAxis or RegularAxis
+    breakFunction = callable returning the number of bins
+    axisOptions = axis options
++/
+template rchistogram(alias Axis, alias breakFunction, AxisOptions axisOptions = AxisOptions())
+    if (isRuleAxis!Axis)
+{
+    /// ditto
+    auto rchistogram(Iterator, size_t N, SliceKind kind, Bounds...)(
+        Slice!(Iterator, N, kind) slice, Bounds bounds)
+        if (acceptsBreakFunction!(breakFunction, typeof(slice)) &&
+            validRuleBounds!(Axis, typeof(slice).DeepElement, Bounds))
+    {
+        import mir.stat.descriptive.histogram.traits: DefaultCountType;
+        import std.traits: Unqual;
+        return .rchistogram!(DefaultCountType, Unqual!(typeof(slice).DeepElement),
+            Axis, breakFunction, axisOptions)(slice, bounds);
+    }
+}
+
+private template isRuleAxis(alias Axis)
+{
+    import mir.stat.descriptive.histogram.axis: IntegralAxis, RegularAxis;
+    enum isRuleAxis = __traits(isSame, Axis, IntegralAxis) || __traits(isSame, Axis, RegularAxis);
+}
+
+private template validRuleBounds(alias Axis, BinType, Bounds...)
+{
+    import mir.stat.descriptive.histogram.axis: IntegralAxis;
+    static if (__traits(isSame, Axis, IntegralAxis))
+        enum expected = 1;
+    else
+        enum expected = 2;
+    static if (Bounds.length != expected)
+        enum validRuleBounds = false;
+    else static if (expected == 1)
+        enum validRuleBounds = is(Bounds[0] : BinType);
+    else
+        enum validRuleBounds = is(Bounds[0] : BinType) && is(Bounds[1] : BinType);
 }
 
 /++
@@ -1131,6 +1233,43 @@ template rchistogram(CountType, alias Axis, AxisOptions axisOptions = AxisOption
     }
 }
 
+/// Choose a regular-bin count using Sturges, retaining explicit bounds.
+version(mir_stat_test)
+@safe pure nothrow @nogc unittest
+{
+    import mir.ndslice.slice: sliced;
+    import mir.stat.descriptive.histogram.axis: RegularAxis;
+    import mir.stat.descriptive.histogram.breaks: sturges;
+    static immutable values = [0.0, 1, 4, 5, 6, 9, 10, 13, 14];
+    auto data = values[].sliced;
+    auto h = data.rchistogram!(RegularAxis, sturges)(0.0, 15.0);
+    // Sturges selects five bins, each of width three.
+    assert(h.axis[0].N_bin == 5);
+    assert(h.counts == [2, 2, 1, 2, 2]);
+}
+
+/// Supply a custom rule and override count types and axis options.
+version(mir_stat_test)
+unittest
+{
+    import mir.ndslice.slice: sliced;
+    import mir.stat.descriptive.histogram.axis: RegularAxis, AxisOptions;
+    static size_t threePerBin(S)(S data)
+    {
+        import mir.primitives: elementCount;
+        const n = data.elementCount;
+        return n / 3 + (n % 3 != 0);
+    }
+    static immutable values = [0.0, 1, 4, 5, 6, 9, 10, 13, 14];
+    auto data = values[].sliced;
+    enum options = AxisOptions(false, true, true);
+    auto h = data.rchistogram!(ulong, double, RegularAxis, threePerBin, options)(0.0, 15.0);
+    // Nine observations give three ordinary bins. End bins are stored too.
+    static assert(is(h.CountType == ulong));
+    assert(h.counts == [0, 3, 3, 3, 0]);
+    assert(h.underflow == 0 && h.overflow == 0);
+}
+
 /// Integral Axis example
 version(mir_stat_test)
 @safe pure nothrow @nogc
@@ -1509,4 +1648,65 @@ unittest
         static if (o) { h.put(2.0); assert(h.counts[$ - 1] == 1); }
         assert(h.bins.length == 2);
     }}
+}
+
+// Rules are invoked once; explicit axis construction gives identical results.
+version(mir_stat_test)
+unittest
+{
+    import mir.ndslice.slice: sliced;
+    import mir.stat.descriptive.histogram.axis: IntegralAxis, RegularAxis,
+        integralAxis, regularAxis, AxisOptions;
+    import mir.stat.descriptive.histogram.breaks: sturges, scott, freedmanDiaconis;
+    auto data = [0.0, 1, 2, 3, 4, 5].sliced;
+    import std.meta: AliasSeq;
+    static int calls;
+    calls = 0;
+    static size_t rule(S)(S values) { ++calls; return 3; }
+    auto h = data.rchistogram!(RegularAxis, rule)(0.0, 6.0);
+    assert(calls == 1 && h.counts == [2, 2, 2]);
+    auto explicitAxis = data.regularAxis!rule(0.0, 6.0);
+    assert(calls == 2 && data.rchistogram(explicitAxis).counts == h.counts);
+    auto integral = data[0 .. 3].rchistogram!(uint, IntegralAxis, rule)(0.0);
+    assert(calls == 3);
+    static assert(is(integral.CountType == uint));
+    auto expected = data[0 .. 3].rchistogram(data.integralAxis!(uint, double, rule)(0.0));
+    assert(integral.counts == expected.counts);
+    static foreach (builtin; AliasSeq!(sturges, scott, freedmanDiaconis, sturges!uint))
+    {{
+        auto result = data.rchistogram!(RegularAxis, builtin)(0.0, 6.0);
+        auto axis = data.regularAxis!builtin(0.0, 6.0);
+        assert(result.counts == data.rchistogram(axis).counts);
+    }}
+}
+
+// Reject non-integer results and check narrowing before constructing the axis.
+version(mir_stat_test)
+unittest
+{
+    import mir.ndslice.slice: sliced;
+    import mir.stat.descriptive.histogram.axis: RegularAxis, IntegralAxis, regularAxis;
+    import std.exception: assertThrown;
+    import std.meta: AliasSeq;
+    import core.exception: AssertError;
+    auto data = [0.0, 1].sliced;
+    static foreach (value; AliasSeq!(0, -1, 256UL, ulong.max))
+    {{
+        static auto invalid(S)(S values) { return value; }
+        assertThrown!AssertError(data.rchistogram!(ubyte, double, RegularAxis, invalid)(0.0, 2.0));
+        assertThrown!AssertError(data.regularAxis!(ubyte, double, invalid)(0.0, 2.0));
+    }}
+    static double fractional(S)(S values) { return 2.5; }
+    static bool boolean(S)(S values) { return true; }
+    static uint wrongArgument(string value) { return 2; }
+    static foreach (rule; AliasSeq!(fractional, boolean, wrongArgument, 42))
+    {{
+        static assert(!__traits(compiles, data.rchistogram!(RegularAxis, rule)(0.0, 2.0)));
+    }}
+    static uint two(S)(S values) { return 2; }
+    static assert(!__traits(compiles, data.rchistogram!(IntegralAxis, two)(0.0, 2.0)));
+    static assert(!__traits(compiles, data.rchistogram!(RegularAxis, two)(0.0)));
+    static auto boundary(S)(S values) { return 255UL; }
+    auto h = data.rchistogram!(ubyte, double, RegularAxis, boundary)(0.0, 255.0);
+    assert(h.axis[0].N_bin == 255);
 }

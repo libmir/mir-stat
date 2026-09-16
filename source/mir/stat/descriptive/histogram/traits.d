@@ -367,3 +367,48 @@ package template acceptsAxisValue(Axis, T)
     enum acceptsAxisValue = is(Unqual!T == Unqual!(BinTypeOf!Axis)) ||
         (isCategoryAxis!Axis && isSomeString!T);
 }
+
+// Test the rule against the actual observation view, rather than its name.
+package template acceptsBreakFunction(alias rule, S)
+{
+    import std.traits: isIntegral, Unqual;
+    static if (is(typeof(rule(S.init.lightScope)) Result))
+        enum acceptsBreakFunction = isIntegral!Result && !is(Unqual!Result == bool);
+    else
+        enum acceptsBreakFunction = false;
+}
+
+// Validate before narrowing so a large rule result cannot wrap into a valid count.
+package CountType checkedBreakCount(CountType, alias rule, S)(S observations)
+    if (acceptsBreakFunction!(rule, S))
+{
+    import std.traits: isIntegral, isFloatingPoint;
+    const count = rule(observations.lightScope);
+    assert(count > 0, "histogram break rule must return a positive bin count");
+    static if (isIntegral!CountType)
+        assert(cast(ulong) count <= cast(ulong) CountType.max,
+            "histogram break count must fit CountType");
+    const converted = cast(CountType) count;
+    // Require a safe integer round trip; 2^64 itself cannot be cast to ulong.
+    static if (isFloatingPoint!CountType)
+        assert(converted < 18446744073709551616.0L &&
+            cast(ulong) converted == cast(ulong) count,
+            "histogram break count must be exactly representable by CountType");
+    return converted;
+}
+
+// Floating counters must represent a rule's integer result exactly.
+version(mir_stat_test)
+unittest
+{
+    import mir.ndslice.slice: sliced;
+    import std.exception: assertThrown;
+    import core.exception: AssertError;
+    static uint exact(S)(S data) { return 1u << 24; }
+    static uint rounded(S)(S data) { return (1u << 24) + 1; }
+    static ulong tooLarge(S)(S data) { return ulong.max; }
+    auto data = [1.0].sliced;
+    assert(checkedBreakCount!(float, exact)(data) == 16777216.0f);
+    assertThrown!AssertError(checkedBreakCount!(float, rounded)(data));
+    assertThrown!AssertError(checkedBreakCount!(double, tooLarge)(data));
+}
