@@ -1164,6 +1164,7 @@ Params:
 template rchistogram(alias Axis, AxisOptions axisOptions = AxisOptions())
     if (__traits(isTemplate, Axis))
 {
+    import std.traits: Unqual;
     import mir.primitives: DeepElementType;
     import mir.stat.descriptive.histogram.axis: CategoryAxis, IntegralAxis, RegularAxis;
     import mir.stat.descriptive.histogram.traits: DefaultCountType;
@@ -1174,7 +1175,7 @@ template rchistogram(alias Axis, AxisOptions axisOptions = AxisOptions())
         N_bin = number of bins
         low = the value of the smallest bin
     +/
-    HistogramAccumulator!(Slice!(RCI!(CountType)), IntegralAxis!(CountType, BinType, axisOptions))
+    HistogramAccumulator!(Slice!(RCI!(Unqual!CountType)), IntegralAxis!(Unqual!CountType, BinType, axisOptions))
         rchistogram(Iterator, size_t N, SliceKind kind, CountType, BinType)(
                    Slice!(Iterator, N, kind) slice,
                    CountType N_bin,
@@ -1183,7 +1184,7 @@ template rchistogram(alias Axis, AxisOptions axisOptions = AxisOptions())
     {
         import core.lifetime: move;
 
-        return .rchistogramImpl!(CountType, BinType, Axis, axisOptions)(slice.move, N_bin, low);
+        return .rchistogramImpl!(Unqual!CountType, BinType, Axis, axisOptions)(slice.move, N_bin, low);
     }
 
     /++
@@ -1193,7 +1194,7 @@ template rchistogram(alias Axis, AxisOptions axisOptions = AxisOptions())
         low = the value of the smallest bin
         high = the value of the largest bin
     +/
-    HistogramAccumulator!(Slice!(RCI!(CountType)), RegularAxis!(CountType, BinType, axisOptions))
+    HistogramAccumulator!(Slice!(RCI!(Unqual!CountType)), RegularAxis!(Unqual!CountType, BinType, axisOptions))
         rchistogram(Iterator, size_t N, SliceKind kind, CountType, BinType)(
             Slice!(Iterator, N, kind) slice,
             CountType N_bin,
@@ -1203,7 +1204,7 @@ template rchistogram(alias Axis, AxisOptions axisOptions = AxisOptions())
     {
         import core.lifetime: move;
 
-        return .rchistogramImpl!(CountType, BinType, Axis, axisOptions)(slice.move, N_bin, low, high);
+        return .rchistogramImpl!(Unqual!CountType, BinType, Axis, axisOptions)(slice.move, N_bin, low, high);
     }
 
     /++
@@ -1258,6 +1259,7 @@ Params:
 template rchistogram(alias Axis, alias transform, alias inverseTransform, AxisOptions axisOptions = AxisOptions())
     if (__traits(isTemplate, Axis))
 {
+    import std.traits: Unqual;
     import mir.stat.descriptive.histogram.axis: TransformAxis;
 
     /++
@@ -1267,7 +1269,7 @@ template rchistogram(alias Axis, alias transform, alias inverseTransform, AxisOp
         low = the value of the smallest bin
         high = the value of the largest bin
     +/
-    HistogramAccumulator!(Slice!(RCI!(CountType)), TransformAxis!(CountType, BinType, transform, inverseTransform, axisOptions))
+    HistogramAccumulator!(Slice!(RCI!(Unqual!CountType)), TransformAxis!(Unqual!CountType, BinType, transform, inverseTransform, axisOptions))
         rchistogram(Iterator, size_t N, SliceKind kind, CountType, BinType)(
             Slice!(Iterator, N, kind) slice,
             CountType N_bin,
@@ -1279,7 +1281,7 @@ template rchistogram(alias Axis, alias transform, alias inverseTransform, AxisOp
     {
         import core.lifetime: move;
 
-        return .rchistogramImpl!(CountType, BinType, Axis, transform, inverseTransform, axisOptions)(slice.move, N_bin, low, high);
+        return .rchistogramImpl!(Unqual!CountType, BinType, Axis, transform, inverseTransform, axisOptions)(slice.move, N_bin, low, high);
     }
 }
 
@@ -1293,6 +1295,7 @@ template rchistogram(alias Axis, alias transform, AxisOptions axisOptions = Axis
     if (__traits(isTemplate, Axis) &&
         hasInverseTransformMapping!transform)
 {
+    import std.traits: Unqual;
     import mir.stat.descriptive.histogram.axis: TransformAxis;
 
     /++
@@ -1302,7 +1305,7 @@ template rchistogram(alias Axis, alias transform, AxisOptions axisOptions = Axis
         low = the value of the smallest bin
         high = the value of the largest bin
     +/
-    HistogramAccumulator!(Slice!(RCI!(CountType)), TransformAxis!(CountType, BinType, transform, inverseTransformMapping!transform, axisOptions))
+    HistogramAccumulator!(Slice!(RCI!(Unqual!CountType)), TransformAxis!(Unqual!CountType, BinType, transform, inverseTransformMapping!transform, axisOptions))
         rchistogram(Iterator, size_t N, SliceKind kind, CountType, BinType)(
             Slice!(Iterator, N, kind) slice,
             CountType N_bin,
@@ -1312,7 +1315,7 @@ template rchistogram(alias Axis, alias transform, AxisOptions axisOptions = Axis
     {
         import core.lifetime: move;
 
-        return .rchistogramImpl!(CountType, BinType, Axis, transform, inverseTransformMapping!transform, axisOptions)(slice.move, N_bin, low, high);
+        return .rchistogramImpl!(Unqual!CountType, BinType, Axis, transform, inverseTransformMapping!transform, axisOptions)(slice.move, N_bin, low, high);
     }
 }
 
@@ -1496,7 +1499,7 @@ unittest
         (values.length % observationsPerBin != 0);
 
     // Evaluate the capturing rule ourselves, then pass its result as a count.
-    auto n = rule(data);
+    const n = rule(data);
     auto h = data.rchistogram!RegularAxis(n, 0.0, 12.0);
     assert(h.axis[0].N_bin == 3);
     // The rule selects the number of equal-width bins, not their occupancy.
@@ -2090,4 +2093,42 @@ unittest
     auto explicitType = data.transformAxis!(uint, float, log2, floatRule)(1.0f, 16.0f);
     static assert(is(explicitType.BinType == float));
     assert(explicitType.N_bin == 2);
+}
+
+// Qualifiers on a bin-count value must not make newly allocated counters read-only.
+version(mir_stat_test)
+@safe pure nothrow unittest
+{
+    import mir.ndslice.slice: sliced;
+    import mir.stat.descriptive.histogram.axis: IntegralAxis, RegularAxis;
+    import mir.math.common: log2, exp2;
+
+    auto data = [1.0, 2, 2.5].sliced;
+    import std.meta: AliasSeq;
+    static foreach (CountArgument; AliasSeq!(uint, const(uint), immutable(uint)))
+    {
+        {
+            CountArgument n = 2;
+            auto integral = data.rchistogram!IntegralAxis(n, 1.0);
+            auto regular = data.rchistogram!RegularAxis(n, 1.0, 3.0);
+            auto transformed = data.rchistogram!(TransformAxis, log2, exp2)(n, 1.0, 16.0);
+            auto mapped = data.rchistogram!(TransformAxis, log2)(n, 1.0, 16.0);
+            static foreach (h; AliasSeq!(integral, regular, transformed, mapped))
+            {
+                static assert(is(h.CountType == uint));
+                static assert(is(h.axis[0].CountType == uint));
+                h.put(1.5);
+            }
+            assert(integral.counts == [2, 2]);
+            assert(regular.counts == [2, 2]);
+            assert(transformed.counts == [4, 0]);
+            assert(mapped.counts == [4, 0]);
+            assert(n == 2);
+            // An explicit counter override still takes precedence over the argument.
+            auto overridden = data.rchistogram!(ulong, double, RegularAxis)(n, 1.0, 3.0);
+            static assert(is(overridden.CountType == ulong));
+            overridden.put(1.5);
+            assert(overridden.counts == [2, 2]);
+        }
+    }
 }
