@@ -569,6 +569,66 @@ unittest
     assert(floatFrequency == 0.5f);
 }
 
+/// Evaluate a runtime rule before constructing a frequency accumulator.
+version(mir_stat_test)
+unittest
+{
+    import mir.ndslice.slice: sliced;
+    import mir.stat.descriptive.histogram.axis: RegularAxis, AxisOptions;
+
+    auto data = [1.0, 2, 3, 4, 5, 6, 7, 8, 9].sliced;
+    size_t observationsPerBin = 3; // A positive runtime setting.
+    auto rule = (typeof(data) values) => values.length / observationsPerBin +
+        (values.length % observationsPerBin != 0);
+    auto n = rule(data);
+
+    // Only the resulting count is needed to construct the axis and storage.
+    alias Axis = RegularAxis!(size_t, double, AxisOptions());
+    auto f = FrequencyAccumulator!(size_t[], Axis)(new size_t[n], Axis(n, 0.0, 12.0));
+    f.put(data);
+    assert(f.counts == [3, 4, 2]);
+    assert(f.frequency(0) == 3.0 / 9);
+    // The callback is never passed to or retained by the accumulator.
+}
+
+/// Use quantile boundaries and relative frequencies to prepare a percentogram.
+version(mir_stat_test)
+unittest
+{
+    import mir.ndslice.slice: sliced;
+    import mir.stat.descriptive.univariate: quantile;
+    import mir.stat.descriptive.histogram.axis: variableAxis;
+    import std.math: nextUp, fabs;
+
+    auto data = [0.0, 1, 2, 3, 4, 8, 12, 16].sliced;
+    auto probabilities = [0.0, 0.25, 0.5, 0.75, 1.0].sliced;
+    // First compute the data-dependent boundaries; then build the accumulator.
+    // Keep the boundaries in caller-owned storage.
+    auto boundaries = (new double[probabilities.length]).sliced;
+    foreach (i; 0 .. probabilities.length)
+        boundaries[i] = data.quantile(probabilities[i]);
+    // Include the sample maximum in the final left-closed, right-open bin.
+    boundaries[$ - 1] = nextUp(boundaries[$ - 1]);
+    auto axis = variableAxis(boundaries);
+    auto f = FrequencyAccumulator!(size_t[], typeof(axis))(
+        new size_t[boundaries.length - 1], axis);
+    f.put(data);
+    assert(f.count == 8 && f.counts == [2, 2, 2, 2]);
+
+    foreach (i; 0 .. boundaries.length - 1)
+    {
+        const probability = f.frequency(i);
+        const width = boundaries[i + 1] - boundaries[i];
+        const height = probability / width;
+        assert(probability == 0.25);
+        // Plot this density as bar height: area, not height, represents 25%.
+        assert(fabs(height * width - 0.25) < 1e-14);
+    }
+    // Repeated quantiles from tied data must be combined before constructing
+    // the axis. Equal observed counts are not guaranteed for arbitrary data.
+    // Additional observations update frequencies but do not recompute edges.
+}
+
 /// Read counts without borrowing the running total.
 version(mir_stat_test)
 @safe pure nothrow

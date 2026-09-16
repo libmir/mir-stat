@@ -1483,6 +1483,26 @@ unittest
     assert(h.underflow == 0 && h.overflow == 0);
 }
 
+/// Evaluate a rule using runtime settings before constructing the histogram.
+version(mir_stat_test)
+unittest
+{
+    import mir.ndslice.slice: sliced;
+    import mir.stat.descriptive.histogram.axis: RegularAxis;
+
+    auto data = [1.0, 2, 3, 4, 5, 6, 7, 8, 9].sliced;
+    size_t observationsPerBin = 3; // A positive runtime setting.
+    auto rule = (typeof(data) values) => values.length / observationsPerBin +
+        (values.length % observationsPerBin != 0);
+
+    // Evaluate the capturing rule ourselves, then pass its result as a count.
+    auto n = rule(data);
+    auto h = data.rchistogram!RegularAxis(n, 0.0, 12.0);
+    assert(h.axis[0].N_bin == 3);
+    // The rule selects the number of equal-width bins, not their occupancy.
+    assert(h.counts == [3, 4, 2]);
+}
+
 /// Integral Axis example
 version(mir_stat_test)
 @safe pure nothrow @nogc
@@ -1699,6 +1719,38 @@ unittest
     auto vAxis = variableAxis(breaks);
     auto h2 = x.rchistogram(vAxis);
     assert(h2.counts == result);
+}
+
+/// Compute quantile boundaries first to construct a percentogram's counts.
+version(mir_stat_test)
+unittest
+{
+    import mir.ndslice.slice: sliced;
+    import mir.stat.descriptive.univariate: quantile;
+    import mir.stat.descriptive.histogram.axis: VariableAxis;
+    import std.math: nextUp;
+
+    auto data = [0.0, 1, 2, 3, 4, 8, 12, 16].sliced;
+    // Probabilities can be selected at runtime; here each interval spans 25%.
+    auto probabilities = [0.0, 0.25, 0.5, 0.75, 1.0].sliced;
+    // Keep the boundaries in caller-owned storage.
+    auto boundaries = (new double[probabilities.length]).sliced;
+    foreach (i; 0 .. probabilities.length)
+        boundaries[i] = data.quantile(probabilities[i]);
+    assert(boundaries == [0.0, 1.75, 3.5, 9.0, 16.0]);
+
+    // VariableAxis uses [low, high) bins by default. Extend the last boundary
+    // by one representable step so the sample maximum belongs to the last bin.
+    boundaries[$ - 1] = nextUp(boundaries[$ - 1]);
+    auto h = data.rchistogram!VariableAxis(boundaries);
+    assert(h.counts == [2, 2, 2, 2]);
+
+    // These bins have unequal widths. For a percentogram, plot probability
+    // divided by width as height, so each bar's AREA represents probability.
+    // Ties can produce repeated quantiles: combine those boundaries before
+    // constructing VariableAxis, which requires strictly increasing edges.
+    // With ties or other sample sizes, equal probabilities need not yield
+    // exactly equal observed counts.
 }
 
 // Explicit regular-axis types preserve their counter type and flow options.
