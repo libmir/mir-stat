@@ -19,7 +19,6 @@ public import mir.stat.descriptive.histogram.traits;
 public import mir.stat.descriptive.histogram.api;
 
 // TODO: Histogram result access
-// - Add a cumulative frequency range with explicit underflow/overflow entries.
 // - Add histogram formatting.
 //
 // TODO: Construction conveniences
