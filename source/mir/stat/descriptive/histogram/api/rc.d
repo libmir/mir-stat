@@ -21,7 +21,8 @@ import mir.ndslice.slice: Slice, SliceKind;
 import mir.rc.array: RCI;
 import mir.stat.descriptive.histogram.accumulator: HistogramAccumulator;
 import mir.stat.descriptive.histogram.axis: AxisOptions,
-    inverseTransformMapping, hasInverseTransformMapping, isTransformFunction;
+    inverseTransformMapping, hasInverseTransformMapping, isTransformFunction,
+    TransformAxis, acceptsTransformedBreakFunction;
 import mir.stat.descriptive.histogram.traits: isAxis, storageExtent, acceptsBreakFunction;
 
 /++
@@ -371,6 +372,192 @@ template rchistogram(alias Axis, alias breakFunction, AxisOptions axisOptions = 
         import std.traits: Unqual;
         return .rchistogram!(DefaultCountType, Unqual!(typeof(slice).DeepElement),
             Axis, breakFunction, axisOptions)(slice, bounds);
+    }
+}
+
+/++
+Choose transformed-axis bin counts from transformed observations.
+Bounds remain in original units. The rule must return a positive integer count.
+Params:
+    CountType = count type
+    BinType = axis value type
+    Axis = TransformAxis
+    transform = forward transform
+    inverseTransform = inverse transform
+    breakFunction = rule applied to transformed observations
+    axisOptions = axis options
++/
+template rchistogram(CountType, BinType, alias Axis, alias transform, alias inverseTransform, alias breakFunction,
+    AxisOptions axisOptions = AxisOptions())
+    if (__traits(isSame, Axis, TransformAxis))
+{
+    /++
+    Params:
+        slice = input observations in original units
+        low = lower bound in original units
+        high = upper bound in original units
+    +/
+    auto rchistogram(Iterator, size_t N, SliceKind kind)(
+        Slice!(Iterator, N, kind) slice, BinType low, BinType high)
+        if (acceptsTransformedBreakFunction!(breakFunction, transform, BinType, typeof(slice)) &&
+            isTransformFunction!(inverseTransform, BinType))
+    {
+        import mir.stat.descriptive.histogram.axis: transformAxis;
+        auto axis = transformAxis!(CountType, BinType, transform, inverseTransform,
+            breakFunction, axisOptions)(slice, low, high);
+        return .rchistogramImplBasic(slice, axis);
+    }
+}
+
+/++
+Choose transformed-axis bin counts from transformed observations.
+Bounds remain in original units. The rule must return a positive integer count.
+Params:
+    CountType = count type
+    Axis = TransformAxis
+    transform = forward transform
+    inverseTransform = inverse transform
+    breakFunction = rule applied to transformed observations
+    axisOptions = axis options
++/
+template rchistogram(CountType, alias Axis, alias transform, alias inverseTransform, alias breakFunction,
+    AxisOptions axisOptions = AxisOptions())
+    if (__traits(isSame, Axis, TransformAxis))
+{
+    /++
+    Params:
+        slice = input observations in original units
+        low = lower bound in original units
+        high = upper bound in original units
+    +/
+    auto rchistogram(Iterator, size_t N, SliceKind kind, BinType)(
+        Slice!(Iterator, N, kind) slice, BinType low, BinType high)
+        if (acceptsTransformedBreakFunction!(breakFunction, transform, BinType, typeof(slice)) &&
+            isTransformFunction!(inverseTransform, BinType))
+    {
+        return .rchistogram!(CountType, BinType, Axis, transform,
+            inverseTransform, breakFunction, axisOptions)(slice, low, high);
+    }
+}
+
+/++
+Choose transformed-axis bin counts from transformed observations.
+Bounds remain in original units. The rule must return a positive integer count.
+Params:
+    Axis = TransformAxis
+    transform = forward transform
+    inverseTransform = inverse transform
+    breakFunction = rule applied to transformed observations
+    axisOptions = axis options
++/
+template rchistogram(alias Axis, alias transform, alias inverseTransform, alias breakFunction,
+    AxisOptions axisOptions = AxisOptions())
+    if (__traits(isSame, Axis, TransformAxis))
+{
+    /++
+    Params:
+        slice = input observations in original units
+        low = lower bound in original units
+        high = upper bound in original units
+    +/
+    auto rchistogram(Iterator, size_t N, SliceKind kind, BinType)(
+        Slice!(Iterator, N, kind) slice, BinType low, BinType high)
+        if (acceptsTransformedBreakFunction!(breakFunction, transform, BinType, typeof(slice)) &&
+            isTransformFunction!(inverseTransform, BinType) && is(BinType : typeof(slice).DeepElement))
+    {
+        import mir.stat.descriptive.histogram.traits: DefaultCountType;
+        import std.traits: Unqual;
+        return .rchistogram!(DefaultCountType, Unqual!(typeof(slice).DeepElement), Axis, transform,
+            inverseTransform, breakFunction, axisOptions)(slice, low, high);
+    }
+}
+
+/++
+Choose transformed-axis bin counts from transformed observations.
+Bounds remain in original units. The rule must return a positive integer count.
+Params:
+    CountType = count type
+    BinType = axis value type
+    Axis = TransformAxis
+    transform = forward transform
+    breakFunction = rule applied to transformed observations
+    axisOptions = axis options
++/
+template rchistogram(CountType, BinType, alias Axis, alias transform, alias breakFunction,
+    AxisOptions axisOptions = AxisOptions())
+    if (__traits(isSame, Axis, TransformAxis) && hasInverseTransformMapping!transform)
+{
+    /++
+    Params:
+        slice = input observations in original units
+        low = lower bound in original units
+        high = upper bound in original units
+    +/
+    auto rchistogram(Iterator, size_t N, SliceKind kind)(
+        Slice!(Iterator, N, kind) slice, BinType low, BinType high)
+        if (acceptsTransformedBreakFunction!(breakFunction, transform, BinType, typeof(slice)))
+    {
+        return .rchistogram!(CountType, BinType, Axis, transform,
+            inverseTransformMapping!transform, breakFunction, axisOptions)(slice, low, high);
+    }
+}
+
+/++
+Choose transformed-axis bin counts from transformed observations.
+Bounds remain in original units. The rule must return a positive integer count.
+Params:
+    CountType = count type
+    Axis = TransformAxis
+    transform = forward transform
+    breakFunction = rule applied to transformed observations
+    axisOptions = axis options
++/
+template rchistogram(CountType, alias Axis, alias transform, alias breakFunction,
+    AxisOptions axisOptions = AxisOptions())
+    if (__traits(isSame, Axis, TransformAxis) && hasInverseTransformMapping!transform)
+{
+    /++
+    Params:
+        slice = input observations in original units
+        low = lower bound in original units
+        high = upper bound in original units
+    +/
+    auto rchistogram(Iterator, size_t N, SliceKind kind, BinType)(
+        Slice!(Iterator, N, kind) slice, BinType low, BinType high)
+        if (acceptsTransformedBreakFunction!(breakFunction, transform, BinType, typeof(slice)))
+    {
+        return .rchistogram!(CountType, BinType, Axis, transform,
+            inverseTransformMapping!transform, breakFunction, axisOptions)(slice, low, high);
+    }
+}
+
+/++
+Choose transformed-axis bin counts from transformed observations.
+Bounds remain in original units. The rule must return a positive integer count.
+Params:
+    Axis = TransformAxis
+    transform = forward transform
+    breakFunction = rule applied to transformed observations
+    axisOptions = axis options
++/
+template rchistogram(alias Axis, alias transform, alias breakFunction,
+    AxisOptions axisOptions = AxisOptions())
+    if (__traits(isSame, Axis, TransformAxis) && hasInverseTransformMapping!transform)
+{
+    /++
+    Params:
+        slice = input observations in original units
+        low = lower bound in original units
+        high = upper bound in original units
+    +/
+    auto rchistogram(Iterator, size_t N, SliceKind kind, BinType)(
+        Slice!(Iterator, N, kind) slice, BinType low, BinType high)
+        if (acceptsTransformedBreakFunction!(breakFunction, transform, BinType, typeof(slice)) && is(BinType : typeof(slice).DeepElement))
+    {
+        import mir.stat.descriptive.histogram.traits: DefaultCountType;
+        import std.traits: Unqual;
+        return .rchistogram!(DefaultCountType, Unqual!(typeof(slice).DeepElement), Axis, transform,
+            inverseTransformMapping!transform, breakFunction, axisOptions)(slice, low, high);
     }
 }
 
@@ -1233,6 +1420,27 @@ template rchistogram(CountType, alias Axis, AxisOptions axisOptions = AxisOption
     }
 }
 
+/// Choose logarithmic bins using a rule evaluated in logarithmic coordinates.
+version(mir_stat_test)
+unittest
+{
+    import mir.ndslice.slice: sliced;
+    import mir.math.common: log2, exp2;
+    import mir.stat.descriptive.histogram.breaks: freedmanDiaconis;
+    auto data = [1.0, 2, 4, 8, 16, 32, 64, 128, 256].sliced;
+
+    // The rule sees [0, 1, ..., 8], choosing three bins in log2 space.
+    // Bounds and inserted values are still in the original units.
+    auto h = data.rchistogram!(TransformAxis, log2, freedmanDiaconis)(1.0, 512.0);
+    assert(h.counts == [3, 3, 3]);
+    assert(h.axis[0].bin(0).low == 1 && h.axis[0].bin(0).high == 8);
+
+    // An explicit inverse produces the same histogram.
+    auto explicitInverse = data.rchistogram!(TransformAxis, log2, exp2,
+        freedmanDiaconis)(1.0, 512.0);
+    assert(explicitInverse.counts == h.counts);
+}
+
 /// Choose a regular-bin count using Sturges, retaining explicit bounds.
 version(mir_stat_test)
 @safe pure nothrow @nogc unittest
@@ -1709,4 +1917,77 @@ unittest
     static auto boundary(S)(S values) { return 255UL; }
     auto h = data.rchistogram!(ubyte, double, RegularAxis, boundary)(0.0, 255.0);
     assert(h.axis[0].N_bin == 255);
+}
+
+// Cover custom rules, precision/options overrides, and scalar/rule disambiguation.
+version(mir_stat_test)
+unittest
+{
+    import mir.ndslice.slice: sliced, Slice;
+    import mir.math.common: log2, exp2;
+    import mir.stat.descriptive.histogram.axis: transformAxis;
+    import mir.stat.descriptive.histogram.breaks: freedmanDiaconis, sturges;
+    import std.exception: assertThrown;
+    import core.exception: AssertError;
+    static int calls;
+    calls = 0;
+    static uint rule(S)(S values)
+    {
+        ++calls;
+        assert(values[0] == 0 && values[8] == 8);
+        return 3;
+    }
+    auto data = [1.0, 2, 4, 8, 16, 32, 64, 128, 256].sliced;
+    enum options = AxisOptions(false, true, true);
+    auto a = data.rchistogram!(uint, double, TransformAxis, log2, exp2, rule, options)(1.0, 512.0);
+    assert(calls == 1 && a.counts == [0, 3, 3, 3, 0]);
+    auto b = data.rchistogram!(uint, double, TransformAxis, log2, rule, options)(1.0, 512.0);
+    auto c = data.rchistogram!(uint, TransformAxis, log2, exp2, rule, options)(1.0, 512.0);
+    auto d = data.rchistogram!(uint, TransformAxis, log2, rule, options)(1.0, 512.0);
+    auto e = data.rchistogram!(TransformAxis, log2, exp2, rule, options)(1.0, 512.0);
+    auto f = data.rchistogram!(TransformAxis, log2, rule, options)(1.0, 512.0);
+    assert(calls == 6);
+    assert(a.counts == b.counts && b.counts == c.counts && c.counts == d.counts);
+    assert(d.counts == e.counts && e.counts == f.counts);
+    static assert(is(a.CountType == uint));
+    // Underflow/overflow still compare observations in original units.
+    a.put(0.5); a.put(512.0);
+    assert(a.underflow == 1 && a.overflow == 1);
+    // Direct axis construction agrees with the factory and explicit mapping.
+    import mir.ndslice.topology: map;
+    auto direct = transformAxis!(log2, freedmanDiaconis)(data, 1.0, 512.0);
+    assert(direct.N_bin == freedmanDiaconis(data.map!log2));
+    assert(direct.N_bin == 3);
+    // An ordinary function taking a slice is a rule, not a scalar transform.
+    import mir.stat.descriptive.histogram.axis: transformedBreakData;
+    alias Mapped = typeof(transformedBreakData!(double, log2)(data).lightScope);
+    static uint typedRule(Mapped values) { return 3; }
+    static assert(!isTransformFunction!(typedRule, double));
+    auto typed = data.rchistogram!(TransformAxis, log2, exp2, typedRule)(1.0, 512.0);
+    assert(typed.counts == [3, 3, 3]);
+    static uint invalid(S)(S values) { return 0; }
+    assertThrown!AssertError(data.rchistogram!(TransformAxis, log2, invalid)(1.0, 512.0));
+    static double fractional(S)(S values) { return 3.5; }
+    static assert(!__traits(compiles,
+        data.rchistogram!(TransformAxis, log2, fractional)(1.0, 512.0)));
+    // Explicit-count overloads still provide the original-data policy.
+    auto originalCount = freedmanDiaconis(data);
+    auto oldPolicy = data.rchistogram!(TransformAxis, log2)(originalCount, 1.0, 512.0);
+    assert(originalCount == 5 && oldPolicy.counts == [2, 2, 2, 2, 1]);
+}
+
+// Lazy transformed rules preserve attribute inference and string transforms.
+version(mir_stat_test)
+@safe pure nothrow @nogc unittest
+{
+    import mir.ndslice.slice: sliced;
+    import mir.math.common: log2;
+    import mir.stat.descriptive.histogram.breaks: sturges;
+    static immutable data = [1.0f, 2, 4, 8];
+    auto h = data[].sliced.rchistogram!(uint, float, TransformAxis,
+        "log2(a)", "exp2(a)", sturges)(1.0f, 16.0f);
+    auto inferred = data[].sliced.rchistogram!(TransformAxis, log2, sturges)(1.0f, 16.0f);
+    assert(h.counts == inferred.counts);
+    static assert(is(h.CountType == uint));
+    static assert(is(h.axis[0].BinType == float));
 }
