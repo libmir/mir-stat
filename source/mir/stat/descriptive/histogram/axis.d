@@ -1,6 +1,9 @@
 /++
 This module contains algorithms for histogram axes.
 
+Bin-count rules are supplied as template aliases, such as functions or function
+templates. Runtime callbacks that capture local variables are not supported.
+
 License: $(HTTP www.apache.org/licenses/LICENSE-2.0, Apache-2.0)
 
 Authors: John Michael Hall
@@ -2176,10 +2179,10 @@ template transformAxis(alias transform, alias inverseTransform, alias breakFunct
     +/
     TransformAxis!(DefaultCountType, DeepElementType!(Slice!(Iterator, N, kind)), transform, inverseTransform, axisOptions)
         transformAxis(Iterator, size_t N, SliceKind kind, BinType)(Slice!(Iterator, N, kind) slice, BinType low, BinType high)
-            if (isTransformFunction!(transform, BinType) &&
-                isTransformFunction!(inverseTransform, BinType) &&
+            if (isTransformFunction!(transform, DeepElementType!(Slice!(Iterator, N, kind))) &&
+                isTransformFunction!(inverseTransform, DeepElementType!(Slice!(Iterator, N, kind))) &&
                 is(BinType : DeepElementType!(Slice!(Iterator, N, kind))) &&
-                acceptsTransformedBreakFunction!(breakFunction, transform, BinType, Slice!(Iterator, N, kind)))
+                acceptsTransformedBreakFunction!(breakFunction, transform, DeepElementType!(Slice!(Iterator, N, kind)), Slice!(Iterator, N, kind)))
     {
         import core.lifetime: move;
         return .transformAxis!(DefaultCountType, DeepElementType!(Slice!(Iterator, N, kind)), transform, inverseTransform, breakFunction, axisOptions)(slice.move, low, high);
@@ -2207,7 +2210,7 @@ template transformAxis(alias transform, alias breakFunction, AxisOptions axisOpt
     TransformAxis!(DefaultCountType, DeepElementType!(Slice!(Iterator, N, kind)), transform, inverseTransformMapping!transform, axisOptions)
         transformAxis(Iterator, size_t N, SliceKind kind, BinType)(Slice!(Iterator, N, kind) slice, BinType low, BinType high)
             if (is(BinType : DeepElementType!(Slice!(Iterator, N, kind))) &&
-                acceptsTransformedBreakFunction!(breakFunction, transform, BinType, Slice!(Iterator, N, kind)))
+                acceptsTransformedBreakFunction!(breakFunction, transform, DeepElementType!(Slice!(Iterator, N, kind)), Slice!(Iterator, N, kind)))
     {
         import core.lifetime: move;
 

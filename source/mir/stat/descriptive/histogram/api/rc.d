@@ -1,6 +1,9 @@
 /++
 This module contains an API for creating reference-counted histograms.
 
+Bin-count rules are supplied as template aliases, such as functions or function
+templates. Runtime callbacks that capture local variables are not supported.
+
 License: $(HTTP www.apache.org/licenses/LICENSE-2.0, Apache-2.0)
 
 Authors: John Michael Hall
@@ -454,6 +457,8 @@ template rchistogram(alias Axis, alias transform, alias inverseTransform, alias 
     AxisOptions axisOptions = AxisOptions())
     if (__traits(isSame, Axis, TransformAxis))
 {
+    import std.traits: Unqual;
+
     /++
     Params:
         slice = input observations in original units
@@ -462,11 +467,10 @@ template rchistogram(alias Axis, alias transform, alias inverseTransform, alias 
     +/
     auto rchistogram(Iterator, size_t N, SliceKind kind, BinType)(
         Slice!(Iterator, N, kind) slice, BinType low, BinType high)
-        if (acceptsTransformedBreakFunction!(breakFunction, transform, BinType, typeof(slice)) &&
-            isTransformFunction!(inverseTransform, BinType) && is(BinType : typeof(slice).DeepElement))
+        if (acceptsTransformedBreakFunction!(breakFunction, transform, Unqual!(typeof(slice).DeepElement), typeof(slice)) &&
+            isTransformFunction!(inverseTransform, Unqual!(typeof(slice).DeepElement)) && is(BinType : typeof(slice).DeepElement))
     {
         import mir.stat.descriptive.histogram.traits: DefaultCountType;
-        import std.traits: Unqual;
         return .rchistogram!(DefaultCountType, Unqual!(typeof(slice).DeepElement), Axis, transform,
             inverseTransform, breakFunction, axisOptions)(slice, low, high);
     }
@@ -544,6 +548,8 @@ template rchistogram(alias Axis, alias transform, alias breakFunction,
     AxisOptions axisOptions = AxisOptions())
     if (__traits(isSame, Axis, TransformAxis) && hasInverseTransformMapping!transform)
 {
+    import std.traits: Unqual;
+
     /++
     Params:
         slice = input observations in original units
@@ -552,10 +558,9 @@ template rchistogram(alias Axis, alias transform, alias breakFunction,
     +/
     auto rchistogram(Iterator, size_t N, SliceKind kind, BinType)(
         Slice!(Iterator, N, kind) slice, BinType low, BinType high)
-        if (acceptsTransformedBreakFunction!(breakFunction, transform, BinType, typeof(slice)) && is(BinType : typeof(slice).DeepElement))
+        if (acceptsTransformedBreakFunction!(breakFunction, transform, Unqual!(typeof(slice).DeepElement), typeof(slice)) && is(BinType : typeof(slice).DeepElement))
     {
         import mir.stat.descriptive.histogram.traits: DefaultCountType;
-        import std.traits: Unqual;
         return .rchistogram!(DefaultCountType, Unqual!(typeof(slice).DeepElement), Axis, transform,
             inverseTransformMapping!transform, breakFunction, axisOptions)(slice, low, high);
     }
@@ -1990,4 +1995,47 @@ version(mir_stat_test)
     assert(h.counts == inferred.counts);
     static assert(is(h.CountType == uint));
     static assert(is(h.axis[0].BinType == float));
+}
+
+// Inferred axis coordinates follow observations, even when bounds use another type.
+version(mir_stat_test)
+unittest
+{
+    import mir.ndslice.slice: sliced;
+    import mir.math.common: log2, exp2;
+    import mir.stat.descriptive.histogram.axis: transformAxis;
+    import std.traits: Unqual;
+
+    static uint doubleRule(S)(S values)
+        if (is(Unqual!(S.DeepElement) == double))
+    {
+        assert(values[0] == 0 && values[3] == 3);
+        return 2;
+    }
+    static uint floatRule(S)(S values)
+        if (is(Unqual!(S.DeepElement) == float))
+    { return 2; }
+    // These transforms also accept only the selected coordinate type.
+    static T forward(T)(T value) if (is(T == double)) { return log2(value); }
+    static T inverse(T)(T value) if (is(T == double)) { return exp2(value); }
+
+    auto data = [1.0, 2, 4, 8].sliced;
+    auto a = data.rchistogram!(TransformAxis, log2, doubleRule)(1.0f, 16.0f);
+    auto b = data.rchistogram!(TransformAxis, forward, inverse, doubleRule)(1.0f, 16.0f);
+    static assert(is(a.axis[0].BinType == double));
+    assert(a.counts == [2, 2] && b.counts == a.counts);
+    auto c = data.transformAxis!(log2, doubleRule)(1.0f, 16.0f);
+    auto d = data.transformAxis!(forward, inverse, doubleRule)(1.0f, 16.0f);
+    static assert(is(c.BinType == double));
+    assert(c.N_bin == 2 && d.N_bin == 2);
+
+    // A rule accepting only the bounds' type must still be rejected.
+    static assert(!__traits(compiles,
+        data.rchistogram!(TransformAxis, log2, floatRule)(1.0f, 16.0f)));
+    static assert(!__traits(compiles,
+        data.transformAxis!(log2, exp2, floatRule)(1.0f, 16.0f)));
+    // Explicit coordinate overrides continue to select float for the rule.
+    auto explicitType = data.transformAxis!(uint, float, log2, floatRule)(1.0f, 16.0f);
+    static assert(is(explicitType.BinType == float));
+    assert(explicitType.N_bin == 2);
 }
