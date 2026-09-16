@@ -1303,7 +1303,9 @@ struct HistogramBinView(Storage, BinCoverage coverage, Axis...)
         _end = length;
     }
 
-    private this(const HistogramBinView source, size_t begin, size_t end)
+    // Passing by value recurses in constructor resolution on LDC 1.28.1
+    // when storage has a copy constructor. Copy the owning handles below.
+    private this(ref const HistogramBinView source, size_t begin, size_t end)
     {
         _counts = lightConst(source._counts);
         static foreach (i; 0 .. N)
@@ -1837,6 +1839,10 @@ unittest
         return fixed.save[1 .. $];
     }
     auto view = makeView();
+    auto saved = view.save;
+    auto sliced = view[1 .. $];
+    saved.popFront();
+    assert(view.length == 2 && saved.length == 1 && sliced.length == 1);
     assert(view.front.count == 2 && view.back.count == 3);
     assert(view.front.bin.low == 1.0 && view.back.bin.high == 6.0);
     static assert(is(typeof(view._counts) == Slice!(RCI!(const uint))));
@@ -1845,6 +1851,11 @@ unittest
     auto bin = view.front.bin;
     static assert(is(typeof(bin) == Bin!(Slice!(RCI!(const double)))));
     view = typeof(view).init;
+    // Each copy retains both buffers after the source view is released.
+    assert(saved.front.count == 3 && sliced.front.count == 3);
+    assert(saved.front.bin.low == 3.0 && sliced.front.bin.high == 6.0);
+    saved = typeof(saved).init;
+    sliced = typeof(sliced).init;
     assert(bin.low == 1.0 && bin.high == 3.0);
 }
 
