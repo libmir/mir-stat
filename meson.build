@@ -19,10 +19,14 @@ endif
 has_cpp_headers = false
 
 sources_list = [
+    'mir/math/internal/benchmark',
     'mir/math/internal/fp_powi',
-    'mir/math/internal/powi',
+    'mir/math/internal/linearAlgebra',
     'mir/math/internal/log_beta',
     'mir/math/internal/log_binomial',
+    'mir/math/internal/log1p',
+    'mir/math/internal/lubeck2',
+    'mir/math/internal/powi',
     'mir/math/internal/xlogy',
     'mir/stat/descriptive/multivariate',
     'mir/stat/descriptive/univariate',
