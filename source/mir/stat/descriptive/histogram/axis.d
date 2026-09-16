@@ -1,6 +1,9 @@
 /++
 This module contains algorithms for histogram axes.
 
+Bin-count rules are supplied as template aliases, such as functions or function
+templates. Runtime callbacks that capture local variables are not supported.
+
 License: $(HTTP www.apache.org/licenses/LICENSE-2.0, Apache-2.0)
 
 Authors: John Michael Hall
@@ -18,7 +21,7 @@ T4=$(TR $(TDNW $(LREF $1)) $(TD $2) $(TD $3) $(TD $4))
 module mir.stat.descriptive.histogram.axis;
 
 import mir.functional: naryFun;
-import mir.stat.descriptive.histogram.traits: DefaultCountType, isBreakFunction;
+import mir.stat.descriptive.histogram.traits: DefaultCountType, isBreakFunction, acceptsBreakFunction, checkedBreakCount;
 import mir.ndslice.slice: isSlice;
 import mir.ndslice.traits: isContiguousVector;
 import std.meta: NoDuplicates;
@@ -671,6 +674,10 @@ IntegralAxis!(DefaultCountType, BinType, axisOptions)
 }
 
 /++
+Choose the number of bins with a callable on a light-scope observation view.
+The rule must not mutate or retain the view. Its result must be a positive integer
+representable by CountType; assertions check the value before conversion.
+
 Params:
     CountType = the type that is used to count in histogram bins
     BinType = the type of the values that are compared in histogram bins
@@ -678,7 +685,6 @@ Params:
     axisOptions = options
 +/
 template integralAxis(CountType, BinType, alias breakFunction, AxisOptions axisOptions = AxisOptions())
-    if (isBreakFunction!breakFunction)
 {
     import mir.ndslice.slice: Slice, SliceKind;
 
@@ -689,8 +695,9 @@ template integralAxis(CountType, BinType, alias breakFunction, AxisOptions axisO
     +/
     IntegralAxis!(CountType, BinType, axisOptions)
         integralAxis(Iterator, size_t N, SliceKind kind)(Slice!(Iterator, N, kind) slice, BinType low)
+        if (acceptsBreakFunction!(breakFunction, Slice!(Iterator, N, kind)))
     {
-        return .integralAxis!(CountType, BinType, axisOptions)(cast(CountType) breakFunction(slice.lightScope), low);
+        return .integralAxis!(CountType, BinType, axisOptions)(checkedBreakCount!(CountType, breakFunction)(slice), low);
     }
 }
 
@@ -701,7 +708,6 @@ Params:
     axisOptions = options
 +/
 template integralAxis(BinType, alias breakFunction, AxisOptions axisOptions = AxisOptions())
-    if (isBreakFunction!breakFunction)
 {
     import mir.ndslice.slice: Slice, SliceKind;
 
@@ -712,6 +718,7 @@ template integralAxis(BinType, alias breakFunction, AxisOptions axisOptions = Ax
     +/
     IntegralAxis!(DefaultCountType, BinType, axisOptions)
         integralAxis(Iterator, size_t N, SliceKind kind)(Slice!(Iterator, N, kind) slice, BinType low)
+        if (acceptsBreakFunction!(breakFunction, Slice!(Iterator, N, kind)))
     {
         import core.lifetime: move;
         return .integralAxis!(DefaultCountType, BinType, breakFunction, axisOptions)(slice.move, low);
@@ -724,7 +731,6 @@ Params:
     axisOptions = options
 +/
 template integralAxis(alias breakFunction, AxisOptions axisOptions = AxisOptions())
-    if (isBreakFunction!breakFunction)
 {
     import mir.ndslice.slice: Slice, SliceKind;
     import mir.primitives: DeepElementType;
@@ -736,7 +742,8 @@ template integralAxis(alias breakFunction, AxisOptions axisOptions = AxisOptions
     +/
     IntegralAxis!(DefaultCountType, DeepElementType!(Slice!(Iterator, N, kind)), axisOptions)
         integralAxis(Iterator, size_t N, SliceKind kind, BinType)(Slice!(Iterator, N, kind) slice, BinType low)
-            if (is(BinType : DeepElementType!(Slice!(Iterator, N, kind))))
+            if (is(BinType : DeepElementType!(Slice!(Iterator, N, kind))) &&
+                acceptsBreakFunction!(breakFunction, Slice!(Iterator, N, kind)))
     {
         import core.lifetime: move;
         return .integralAxis!(DefaultCountType, DeepElementType!(Slice!(Iterator, N, kind)), breakFunction, axisOptions)(slice.move, low);
@@ -1207,6 +1214,10 @@ RegularAxis!(DefaultCountType, BinType, axisOptions)
 }
 
 /++
+Choose the number of bins with a callable on a light-scope observation view.
+The rule must not mutate or retain the view. Its result must be a positive integer
+representable by CountType; assertions check the value before conversion.
+
 Params:
     CountType = the type that is used to count in histogram bins
     BinType = the type of the values that are compared in histogram bins
@@ -1214,7 +1225,6 @@ Params:
     axisOptions = options
 +/
 template regularAxis(CountType, BinType, alias breakFunction, AxisOptions axisOptions = AxisOptions())
-    if (isBreakFunction!breakFunction)
 {
     import mir.ndslice.slice: Slice, SliceKind;
 
@@ -1226,8 +1236,9 @@ template regularAxis(CountType, BinType, alias breakFunction, AxisOptions axisOp
     +/
     RegularAxis!(CountType, BinType, axisOptions)
         regularAxis(Iterator, size_t N, SliceKind kind)(Slice!(Iterator, N, kind) slice, BinType low, BinType high)
+        if (acceptsBreakFunction!(breakFunction, Slice!(Iterator, N, kind)))
     {
-        return .regularAxis!(CountType, BinType, axisOptions)(cast(CountType) breakFunction(slice.lightScope), low, high);
+        return .regularAxis!(CountType, BinType, axisOptions)(checkedBreakCount!(CountType, breakFunction)(slice), low, high);
     }
 }
 
@@ -1238,7 +1249,6 @@ Params:
     axisOptions = options
 +/
 template regularAxis(BinType, alias breakFunction, AxisOptions axisOptions = AxisOptions())
-    if (isBreakFunction!breakFunction)
 {
     import mir.ndslice.slice: Slice, SliceKind;
 
@@ -1250,6 +1260,7 @@ template regularAxis(BinType, alias breakFunction, AxisOptions axisOptions = Axi
     +/
     RegularAxis!(DefaultCountType, BinType, axisOptions)
         regularAxis(Iterator, size_t N, SliceKind kind)(Slice!(Iterator, N, kind) slice, BinType low, BinType high)
+        if (acceptsBreakFunction!(breakFunction, Slice!(Iterator, N, kind)))
     {
         import core.lifetime: move;
         return .regularAxis!(DefaultCountType, BinType, breakFunction, axisOptions)(slice.move, low, high);
@@ -1262,7 +1273,6 @@ Params:
     axisOptions = options
 +/
 template regularAxis(alias breakFunction, AxisOptions axisOptions = AxisOptions())
-    if (isBreakFunction!breakFunction)
 {
     import mir.ndslice.slice: Slice, SliceKind;
     import mir.primitives: DeepElementType;
@@ -1275,7 +1285,8 @@ template regularAxis(alias breakFunction, AxisOptions axisOptions = AxisOptions(
     +/
     RegularAxis!(DefaultCountType, DeepElementType!(Slice!(Iterator, N, kind)), axisOptions)
         regularAxis(Iterator, size_t N, SliceKind kind, BinType)(Slice!(Iterator, N, kind) slice, BinType low, BinType high)
-            if (is(BinType : DeepElementType!(Slice!(Iterator, N, kind))))
+            if (is(BinType : DeepElementType!(Slice!(Iterator, N, kind))) &&
+                acceptsBreakFunction!(breakFunction, Slice!(Iterator, N, kind)))
     {
         import core.lifetime: move;
         return .regularAxis!(DefaultCountType, DeepElementType!(Slice!(Iterator, N, kind)), breakFunction, axisOptions)(slice.move, low, high);
@@ -1874,23 +1885,36 @@ template isTransformFunction(alias T, BinT)
     static if (!isBreakFunction!T) {
         import std.traits: isSomeFunction;
         static if (isSomeFunction!T) {
-            enum bool isTransformFunction = true;
+            enum bool isTransformFunction = is(typeof(naryFun!T(BinT.init)));
         } else static if (__traits(isTemplate, T)) {
             // Probe the invocation used by the axis, so incompatible template
             // constraints reject the candidate without a hard error.
-            enum bool isTransformFunction = __traits(compiles, naryFun!T(BinT.init));
+            enum bool isTransformFunction = is(typeof(naryFun!T(BinT.init)));
         } else static if (is(typeof(T) : string)) {
-            static if (__traits(compiles, naryFun!T(cast(BinT) 0.5f))) {
-                enum bool isTransformFunction = true;
-            } else {
-                enum bool isTransformFunction = false;
-            }
+            enum bool isTransformFunction = is(typeof(naryFun!T(cast(BinT) 0.5f)));
         } else {
             enum bool isTransformFunction = false;
         }
     } else {
         enum bool isTransformFunction = false;
     }
+}
+
+// Match the coordinate type used by the transformed axis's regular bins.
+package auto transformedBreakData(BinType, alias transform, S)(S observations)
+{
+    import mir.ndslice.topology: map;
+    return observations.lightScope.map!((value) =>
+        cast(BinType) naryFun!transform(cast(BinType) value));
+}
+
+package template acceptsTransformedBreakFunction(alias rule, alias transform, BinType, S)
+{
+    static if (isTransformFunction!(transform, BinType) &&
+        is(typeof(transformedBreakData!(BinType, transform)(S.init)) Mapped))
+        enum acceptsTransformedBreakFunction = acceptsBreakFunction!(rule, Mapped);
+    else
+        enum acceptsTransformedBreakFunction = false;
 }
 
 /++
@@ -2011,6 +2035,14 @@ template transformAxis(alias transform, AxisOptions axisOptions = AxisOptions())
 }
 
 /++
+Choose the bin count by applying the rule to transformed observations.
+The rule receives a lazy, light-scope view in the same coordinate type used by
+this axis's regular bins. It must not mutate or retain that view. The result
+must be a positive integer representable by CountType.
+Bounds and the observations later inserted into the histogram remain in original
+units. To choose a count from original data instead, calculate it separately and
+use the overload taking an explicit N_bin.
+
 Params:
     CountType = the type that is used to count in histogram bins
     BinType = the type of the values that are compared in histogram bins
@@ -2021,8 +2053,7 @@ Params:
 +/
 template transformAxis(CountType, BinType, alias transform, alias inverseTransform, alias breakFunction, AxisOptions axisOptions = AxisOptions())
     if (isTransformFunction!(transform, BinType) &&
-        isTransformFunction!(inverseTransform, BinType) &&
-        isBreakFunction!breakFunction)
+        isTransformFunction!(inverseTransform, BinType))
 {
     import mir.ndslice.slice: Slice, SliceKind;
 
@@ -2034,8 +2065,11 @@ template transformAxis(CountType, BinType, alias transform, alias inverseTransfo
     +/
     TransformAxis!(CountType, BinType, transform, inverseTransform, axisOptions)
         transformAxis(Iterator, size_t N, SliceKind kind)(Slice!(Iterator, N, kind) slice, BinType low, BinType high)
+        if (acceptsTransformedBreakFunction!(breakFunction, transform, BinType, Slice!(Iterator, N, kind)))
     {
-        return .transformAxis!(CountType, BinType, transform, inverseTransform, axisOptions)(cast(CountType) breakFunction(slice.lightScope), low, high);
+        auto transformed = transformedBreakData!(BinType, transform)(slice);
+        const count = checkedBreakCount!(CountType, breakFunction)(transformed);
+        return .transformAxis!(CountType, BinType, transform, inverseTransform, axisOptions)(count, low, high);
     }
 }
 
@@ -2048,7 +2082,7 @@ Params:
     axisOptions = options
 +/
 template transformAxis(CountType, BinType, alias transform, alias breakFunction, AxisOptions axisOptions = AxisOptions())
-    if (hasInverseTransformMapping!transform && isBreakFunction!breakFunction)
+    if (hasInverseTransformMapping!transform)
 {
     import mir.ndslice.slice: Slice, SliceKind;
 
@@ -2060,6 +2094,7 @@ template transformAxis(CountType, BinType, alias transform, alias breakFunction,
     +/
     TransformAxis!(CountType, BinType, transform, inverseTransformMapping!transform, axisOptions)
         transformAxis(Iterator, size_t N, SliceKind kind)(Slice!(Iterator, N, kind) slice, BinType low, BinType high)
+        if (acceptsTransformedBreakFunction!(breakFunction, transform, BinType, Slice!(Iterator, N, kind)))
     {
         import core.lifetime: move;
         alias inverseTransform = inverseTransformMapping!transform;
@@ -2077,8 +2112,7 @@ Params:
 +/
 template transformAxis(BinType, alias transform, alias inverseTransform, alias breakFunction, AxisOptions axisOptions = AxisOptions())
     if (isTransformFunction!(transform, BinType) &&
-        isTransformFunction!(inverseTransform, BinType) &&
-        isBreakFunction!breakFunction)
+        isTransformFunction!(inverseTransform, BinType))
 {
     import mir.ndslice.slice: Slice, SliceKind;
 
@@ -2090,6 +2124,7 @@ template transformAxis(BinType, alias transform, alias inverseTransform, alias b
     +/
     TransformAxis!(DefaultCountType, BinType, transform, inverseTransform, axisOptions)
         transformAxis(Iterator, size_t N, SliceKind kind)(Slice!(Iterator, N, kind) slice, BinType low, BinType high)
+        if (acceptsTransformedBreakFunction!(breakFunction, transform, BinType, Slice!(Iterator, N, kind)))
     {
         import core.lifetime: move;
         return .transformAxis!(DefaultCountType, BinType, transform, inverseTransform, breakFunction, axisOptions)(slice.move, low, high);
@@ -2104,7 +2139,7 @@ Params:
     axisOptions = options
 +/
 template transformAxis(BinType, alias transform, alias breakFunction, AxisOptions axisOptions = AxisOptions())
-    if (hasInverseTransformMapping!transform && isBreakFunction!breakFunction)
+    if (hasInverseTransformMapping!transform)
 {
     import mir.ndslice.slice: Slice, SliceKind;
 
@@ -2116,6 +2151,7 @@ template transformAxis(BinType, alias transform, alias breakFunction, AxisOption
     +/
     TransformAxis!(DefaultCountType, BinType, transform, inverseTransformMapping!transform, axisOptions)
         transformAxis(Iterator, size_t N, SliceKind kind)(Slice!(Iterator, N, kind) slice, BinType low, BinType high)
+        if (acceptsTransformedBreakFunction!(breakFunction, transform, BinType, Slice!(Iterator, N, kind)))
     {
         import core.lifetime: move;
         alias inverseTransform = inverseTransformMapping!transform;
@@ -2131,7 +2167,6 @@ Params:
     axisOptions = options
 +/
 template transformAxis(alias transform, alias inverseTransform, alias breakFunction, AxisOptions axisOptions = AxisOptions())
-    if (isBreakFunction!breakFunction)
 {
     import mir.ndslice.slice: Slice, SliceKind;
     import mir.primitives: DeepElementType;
@@ -2144,9 +2179,10 @@ template transformAxis(alias transform, alias inverseTransform, alias breakFunct
     +/
     TransformAxis!(DefaultCountType, DeepElementType!(Slice!(Iterator, N, kind)), transform, inverseTransform, axisOptions)
         transformAxis(Iterator, size_t N, SliceKind kind, BinType)(Slice!(Iterator, N, kind) slice, BinType low, BinType high)
-            if (isTransformFunction!(transform, BinType) &&
-                isTransformFunction!(inverseTransform, BinType) &&
-                is(BinType : DeepElementType!(Slice!(Iterator, N, kind))))
+            if (isTransformFunction!(transform, DeepElementType!(Slice!(Iterator, N, kind))) &&
+                isTransformFunction!(inverseTransform, DeepElementType!(Slice!(Iterator, N, kind))) &&
+                is(BinType : DeepElementType!(Slice!(Iterator, N, kind))) &&
+                acceptsTransformedBreakFunction!(breakFunction, transform, DeepElementType!(Slice!(Iterator, N, kind)), Slice!(Iterator, N, kind)))
     {
         import core.lifetime: move;
         return .transformAxis!(DefaultCountType, DeepElementType!(Slice!(Iterator, N, kind)), transform, inverseTransform, breakFunction, axisOptions)(slice.move, low, high);
@@ -2160,7 +2196,7 @@ Params:
     axisOptions = options
 +/
 template transformAxis(alias transform, alias breakFunction, AxisOptions axisOptions = AxisOptions())
-    if (hasInverseTransformMapping!transform && isBreakFunction!breakFunction)
+    if (hasInverseTransformMapping!transform)
 {
     import mir.ndslice.slice: Slice, SliceKind;
     import mir.primitives: DeepElementType;
@@ -2173,7 +2209,8 @@ template transformAxis(alias transform, alias breakFunction, AxisOptions axisOpt
     +/
     TransformAxis!(DefaultCountType, DeepElementType!(Slice!(Iterator, N, kind)), transform, inverseTransformMapping!transform, axisOptions)
         transformAxis(Iterator, size_t N, SliceKind kind, BinType)(Slice!(Iterator, N, kind) slice, BinType low, BinType high)
-            if (is(BinType : DeepElementType!(Slice!(Iterator, N, kind))))
+            if (is(BinType : DeepElementType!(Slice!(Iterator, N, kind))) &&
+                acceptsTransformedBreakFunction!(breakFunction, transform, DeepElementType!(Slice!(Iterator, N, kind)), Slice!(Iterator, N, kind)))
     {
         import core.lifetime: move;
 

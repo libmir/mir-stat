@@ -22,7 +22,7 @@ import mir.internal.utility: isFloatingPoint;
 import std.meta: allSatisfy;
 import mir.stat.descriptive.histogram.accumulator: HistogramAccumulator;
 public import mir.stat.descriptive.histogram.accumulator: BinCoverage;
-import mir.stat.descriptive.histogram.traits: isAxis;
+import mir.stat.descriptive.histogram.traits: isAxis, includeUnderflow;
 import mir.stat.descriptive.histogram.internal.view: supportsBinView;
 import mir.stat.descriptive.histogram.internal.projection: validMarginalAxes;
 import mir.stat.internal.borrow: hasBorrowEscapeChecking, uncheckedBorrow;
@@ -221,6 +221,35 @@ struct FrequencyAccumulator(Storage, Axis...)
         static if (!hasBorrowEscapeChecking)
             uncheckedBorrow();
         return FrequencyBinView!(Storage, FrequencyType, coverage, Axis)(&this);
+    }
+
+    /++
+    Borrow a one-dimensional forward range of cumulative frequencies.
+
+    Entries expose count, cumulativeCount, cumulativeFrequency, and the usual
+    bin description and classification. Coverage defaults to ordinary bins;
+    enabled underflow always contributes to cumulative counts. BinCoverage.all
+    also emits enabled underflow/overflow entries. The denominator includes all
+    recorded counts; a zero total produces NaNs. Categorical axes follow bin order.
+
+    Traversal takes linear time and constant auxiliary storage, without allocating.
+    Reading front does not advance accumulation. Saved cursors move independently.
+    The accumulator must remain alive, in place, and unchanged until all cursors
+    are finished. Returned descriptions may borrow axis storage. The borrowing
+    and @safe restrictions of $(LREF frequencyBins) also apply here.
+
+    Params:
+        FrequencyType = floating-point output type; defaults to double
+        coverage = ordinary bins or all enabled stored bins
+    +/
+    auto cumulativeFrequencyBins(FrequencyType = double,
+        BinCoverage coverage = BinCoverage.ordinary)() return const
+        if (N == 1 && isFloatingPoint!FrequencyType && supportsBinView!(Storage, Axis) &&
+            (coverage == BinCoverage.ordinary || coverage == BinCoverage.all))
+    {
+        static if (!hasBorrowEscapeChecking)
+            uncheckedBorrow();
+        return CumulativeFrequencyBinView!(Storage, FrequencyType, coverage, Axis)(&this);
     }
 
     /// Total recorded observations, including flow bins.
@@ -540,6 +569,66 @@ unittest
     assert(floatFrequency == 0.5f);
 }
 
+/// Evaluate a runtime rule before constructing a frequency accumulator.
+version(mir_stat_test)
+unittest
+{
+    import mir.ndslice.slice: sliced;
+    import mir.stat.descriptive.histogram.axis: RegularAxis, AxisOptions;
+
+    auto data = [1.0, 2, 3, 4, 5, 6, 7, 8, 9].sliced;
+    size_t observationsPerBin = 3; // A positive runtime setting.
+    auto rule = (typeof(data) values) => values.length / observationsPerBin +
+        (values.length % observationsPerBin != 0);
+    auto n = rule(data);
+
+    // Only the resulting count is needed to construct the axis and storage.
+    alias Axis = RegularAxis!(size_t, double, AxisOptions());
+    auto f = FrequencyAccumulator!(size_t[], Axis)(new size_t[n], Axis(n, 0.0, 12.0));
+    f.put(data);
+    assert(f.counts == [3, 4, 2]);
+    assert(f.frequency(0) == 3.0 / 9);
+    // The callback is never passed to or retained by the accumulator.
+}
+
+/// Use quantile boundaries and relative frequencies to prepare a percentogram.
+version(mir_stat_test)
+unittest
+{
+    import mir.ndslice.slice: sliced;
+    import mir.stat.descriptive.univariate: quantile;
+    import mir.stat.descriptive.histogram.axis: variableAxis;
+    import std.math: nextUp, fabs;
+
+    auto data = [0.0, 1, 2, 3, 4, 8, 12, 16].sliced;
+    auto probabilities = [0.0, 0.25, 0.5, 0.75, 1.0].sliced;
+    // First compute the data-dependent boundaries; then build the accumulator.
+    // Keep the boundaries in caller-owned storage.
+    auto boundaries = (new double[probabilities.length]).sliced;
+    foreach (i; 0 .. probabilities.length)
+        boundaries[i] = data.quantile(probabilities[i]);
+    // Include the sample maximum in the final left-closed, right-open bin.
+    boundaries[$ - 1] = nextUp(boundaries[$ - 1]);
+    auto axis = variableAxis(boundaries);
+    auto f = FrequencyAccumulator!(size_t[], typeof(axis))(
+        new size_t[boundaries.length - 1], axis);
+    f.put(data);
+    assert(f.count == 8 && f.counts == [2, 2, 2, 2]);
+
+    foreach (i; 0 .. boundaries.length - 1)
+    {
+        const probability = f.frequency(i);
+        const width = boundaries[i + 1] - boundaries[i];
+        const height = probability / width;
+        assert(probability == 0.25);
+        // Plot this density as bar height: area, not height, represents 25%.
+        assert(fabs(height * width - 0.25) < 1e-14);
+    }
+    // Repeated quantiles from tied data must be combined before constructing
+    // the axis. Equal observed counts are not guaranteed for arbitrary data.
+    // Additional observations update frequencies but do not recompute edges.
+}
+
 /// Read counts without borrowing the running total.
 version(mir_stat_test)
 @safe pure nothrow
@@ -587,6 +676,54 @@ unittest
     // Recompute from current counts and total after recording another value.
     f.put(0.5);
     assert(f.cumulativeFrequency(1) == 6.0 / 11.0);
+}
+
+/// Traverse cumulative frequencies without allocating a snapshot.
+version(mir_stat_test)
+unittest
+{
+    import mir.stat.descriptive.histogram.axis: IntegralAxis, AxisOptions;
+    alias A = IntegralAxis!(uint, int, AxisOptions());
+    auto f = FrequencyAccumulator!(uint[], A)([1u, 2u, 1u], A(3, 0));
+    auto bins = f.cumulativeFrequencyBins();
+    assert(bins.front.count == 1 && bins.front.cumulativeFrequency == 0.25);
+
+    // Reading front twice leaves the running count and position unchanged.
+    assert(bins.front.cumulativeCount == 1);
+    bins.popFront();
+    assert(bins.front.index == 1 && bins.front.bin.low == 1);
+    assert(bins.front.count == 2 && bins.front.cumulativeCount == 3);
+
+    // A saved cursor starts here, then advances independently of bins.
+    auto saved = bins.save;
+    saved.popFront();
+    assert(saved.front.cumulativeFrequency == 1.0);
+    assert(bins.front.cumulativeFrequency == 0.75);
+    // Keep f alive and unchanged until both cursors are finished.
+}
+
+/// Include underflow/overflow entries and select the output precision.
+version(mir_stat_test)
+unittest
+{
+    import mir.stat.descriptive.histogram.axis: IntegralAxis, AxisOptions;
+    alias A = IntegralAxis!(uint, int, AxisOptions(false, true, true));
+    auto f = FrequencyAccumulator!(uint[], A)([1u, 2u, 3u, 4u], A(2, 0));
+    auto all = f.cumulativeFrequencyBins!(float, BinCoverage.all)();
+    static assert(is(typeof(all.front.cumulativeFrequency) == float));
+    assert(all.front.isUnderflow && all.front.cumulativeFrequency == 0.1f);
+
+    // Underflow contributes even when only ordinary entries are requested.
+    auto ordinary = f.cumulativeFrequencyBins();
+    assert(ordinary.front.cumulativeCount == 3);
+    assert(ordinary.front.cumulativeFrequency == 0.3);
+
+    // Advance past underflow and both ordinary bins to reach overflow.
+    all.popFront(); all.popFront(); all.popFront();
+    assert(all.front.isOverflow && all.front.cumulativeCount == 10);
+    assert(all.front.cumulativeFrequency == 1.0f);
+    all.popFront();
+    assert(all.empty);
 }
 
 /// Collect all cumulative frequencies in an independent snapshot.
@@ -1265,6 +1402,142 @@ unittest
     assert(f.count == 1);
 }
 
+
+/++
+A bin's count and cumulative statistics, returned by value.
+Check classification before accessing index or bin for underflow/overflow entries.
+Changing returned values does not update the accumulator.
+
+Params:
+    HistogramElement = underlying one-dimensional histogram bin element
+    FrequencyType = floating-point output type
++/
+struct CumulativeFrequencyBin(HistogramElement, FrequencyType)
+{
+    import mir.stat.descriptive.histogram.accumulator: HistogramBin;
+    static if (is(HistogramElement == HistogramBin!Args, Args...))
+        private enum N = Args.length - 1;
+    else
+        static assert(false, "CumulativeFrequencyBin requires a HistogramBin element");
+    static assert(N == 1, "CumulativeFrequencyBin requires one axis");
+    private HistogramElement _entry;
+
+    /// Whether this coordinate is ordinary; dimension defaults to zero.
+    bool isOrdinary(size_t dimension = 0)() const @property
+        if (dimension < N)
+    {
+        return _entry.isOrdinary!dimension;
+    }
+
+    /// Whether this coordinate is underflow; dimension defaults to zero.
+    bool isUnderflow(size_t dimension = 0)() const @property
+        if (dimension < N)
+    {
+        return _entry.isUnderflow!dimension;
+    }
+
+    /// Whether this coordinate is overflow; dimension defaults to zero.
+    bool isOverflow(size_t dimension = 0)() const @property
+        if (dimension < N)
+    {
+        return _entry.isOverflow!dimension;
+    }
+
+    /// Original ordinary-bin index along an axis; defaults to axis zero.
+    auto index(size_t dimension = 0)() const @property
+        if (dimension < N)
+    {
+        return _entry.index!dimension;
+    }
+
+    /// Bin description along an axis; defaults to axis zero.
+    auto bin(size_t dimension = 0)() @property
+        if (dimension < N)
+    {
+        return _entry.bin!dimension;
+    }
+
+    /// ditto
+    auto bin(size_t dimension = 0)() const @property
+        if (dimension < N)
+    {
+        return _entry.bin!dimension;
+    }
+
+    /// Count in this bin.
+    typeof(HistogramElement.init.count) count;
+    /// Count through this bin, including enabled underflow.
+    typeof(HistogramElement.init.count) cumulativeCount;
+    /// Cumulative count divided by the total, or NaN for a zero total.
+    FrequencyType cumulativeFrequency;
+}
+
+/++
+Borrowed forward range created by FrequencyAccumulator.cumulativeFrequencyBins.
+The source must stay alive, in place, and unchanged throughout traversal.
+Saved cursors share the source but keep independent running counts and positions.
+A const cursor supports front and save; save returns a mutable cursor.
+
+Params:
+    Storage = source count storage
+    FrequencyType = floating-point output type
+    coverage = ordinary bins or all enabled stored bins
+    Axis = the single source axis type
++/
+struct CumulativeFrequencyBinView(Storage, FrequencyType, BinCoverage coverage, Axis)
+    if (isFloatingPoint!FrequencyType && supportsBinView!(Storage, Axis) &&
+        (coverage == BinCoverage.ordinary || coverage == BinCoverage.all))
+{
+    private alias Accumulator = FrequencyAccumulator!(Storage, Axis);
+    private alias Cursor = FrequencyBinView!(Storage, FrequencyType, coverage, Axis);
+    private Cursor _bins;
+    private Accumulator.CountType _preceding = 0;
+
+    /// Type returned by front.
+    alias Element = CumulativeFrequencyBin!(Cursor.BinView.Element, FrequencyType);
+
+    private this(const(Accumulator)* source)
+    {
+        _bins = Cursor(source);
+        static if (coverage == BinCoverage.ordinary && includeUnderflow!Axis)
+            _preceding = source.histogramAccumulator.underflow;
+    }
+
+    private this(Cursor bins, Accumulator.CountType preceding)
+    {
+        _bins = bins;
+        _preceding = preceding;
+    }
+
+    /// Number of remaining entries.
+    size_t length() const @property { return _bins.length; }
+
+    /// Whether traversal is exhausted.
+    bool empty() const @property { return _bins.empty; }
+
+    /// Current entry; repeated reads do not advance accumulation.
+    Element front() const @property
+    {
+        auto entry = _bins.front;
+        Accumulator.CountType cumulative = _preceding;
+        cumulative += entry.count;
+        return Element(entry._entry, entry.count, cumulative,
+            _bins._source.relativeFrequency!FrequencyType(cumulative));
+    }
+
+    /// Advance once, retaining the count of the bin just visited.
+    void popFront()
+    {
+        _preceding += _bins.front.count;
+        _bins.popFront();
+    }
+
+    /// Copy the position and running count, borrowing the same accumulator.
+    auto save() const @property
+    {
+        return CumulativeFrequencyBinView(_bins.save, _preceding);
+    }
+}
 
 /++
 A bin description, count, and relative frequency read from an accumulator.
@@ -2584,4 +2857,149 @@ unittest
     check(data[]);
     check(fixedData[]);
     check(data[].sliced);
+}
+
+// Coverage, output types, const cursors, and empty-total behavior.
+version(mir_stat_test)
+unittest
+{
+    import mir.stat.descriptive.histogram.axis: IntegralAxis, AxisOptions;
+    import std.range.primitives: isForwardRange, isRandomAccessRange;
+    import std.meta: AliasSeq;
+    import std.math: isNaN;
+    import std.exception: assertThrown;
+    import core.exception: AssertError;
+    static foreach (under; [false, true])
+    static foreach (over; [false, true])
+    {{
+        alias A = IntegralAxis!(uint, int, AxisOptions(false, over, under));
+        uint[] counts = new uint[2 + under + over];
+        counts[] = 1;
+        const f = FrequencyAccumulator!(uint[], A)(counts, A(2, 0));
+        static foreach (F; AliasSeq!(float, double, real))
+        {{
+            const fixed = f.cumulativeFrequencyBins!F();
+            auto cursor = fixed.save;
+            static assert(isForwardRange!(typeof(cursor)));
+            static assert(!isRandomAccessRange!(typeof(cursor)));
+            assert(cursor.length == 2);
+            assert(cursor.front.cumulativeCount == 1 + under);
+            cursor.popFront();
+            assert(cursor.front.cumulativeFrequency == f.cumulativeFrequency!F(1));
+            assert(fixed.front.index == 0);
+            cursor.popFront();
+            assert(cursor.empty);
+            assertThrown!AssertError(cursor.front);
+            assertThrown!AssertError(cursor.popFront());
+        }}
+        auto all = f.cumulativeFrequencyBins!(double, BinCoverage.all)();
+        uint sum;
+        foreach (entry; all)
+        {
+            ++sum;
+            assert(entry.cumulativeCount == sum);
+            assert(entry.cumulativeFrequency == cast(double) sum / counts.length);
+        }
+        counts[] = 0;
+        auto zero = FrequencyAccumulator!(uint[], A)(counts, A(2, 0));
+        foreach (entry; zero.cumulativeFrequencyBins!(double, BinCoverage.all)())
+            assert(entry.cumulativeCount == 0 && isNaN(entry.cumulativeFrequency));
+    }}
+    alias A = IntegralAxis!(uint, int, AxisOptions());
+    alias Joint = FrequencyAccumulator!(uint[][], A, A);
+    static assert(!__traits(compiles, Joint.init.cumulativeFrequencyBins()));
+    alias F = FrequencyAccumulator!(uint[], A);
+    static assert(!__traits(compiles, F.init.cumulativeFrequencyBins!int()));
+}
+
+// No GC allocations during traversal, including owning and strided storage.
+version(mir_stat_test)
+@nogc unittest
+{
+    import mir.ndslice.allocation: rcslice;
+    import mir.ndslice.slice: Slice, SliceKind;
+    import mir.stat.descriptive.histogram.axis: IntegralAxis, AxisOptions;
+    static immutable uint[3] initial = [1, 2, 1];
+    auto exercise = () @nogc {
+        alias A = IntegralAxis!(uint, int, AxisOptions());
+        auto counts = rcslice!uint(initial[]);
+        auto f = FrequencyAccumulator!(typeof(counts), A)(counts, A(3, 0));
+        auto cursor = f.cumulativeFrequencyBins();
+        auto saved = cursor.save;
+        cursor.popFront();
+        assert(cursor.front.cumulativeCount == 3 && saved.front.cumulativeCount == 1);
+        cursor.popFront();
+        assert(cursor.front.cumulativeFrequency == 1);
+    };
+    static if (hasBorrowEscapeChecking)
+    {
+        scope auto safeExercise = () @safe @nogc { exercise(); };
+        safeExercise();
+    }
+    else
+        exercise();
+
+    uint[5] data = [1, 99, 2, 99, 1];
+    auto strided = Slice!(uint*, 1, SliceKind.universal)([3], [2], data.ptr);
+    alias A = IntegralAxis!(uint, int, AxisOptions());
+    auto f = FrequencyAccumulator!(typeof(strided), A)(strided, A(3, 0));
+    auto cursor = f.cumulativeFrequencyBins();
+    cursor.popFront(); cursor.popFront();
+    assert(cursor.front.cumulativeCount == 4);
+}
+
+version(mir_stat_test_lifetime)
+unittest
+{
+    import mir.stat.descriptive.histogram.axis: IntegralAxis, AxisOptions;
+    alias A = IntegralAxis!(uint, int, AxisOptions());
+    alias F = FrequencyAccumulator!(uint[], A);
+    static assert(!__traits(compiles, () @safe {
+        auto f = F([1u, 2u], A(2, 0));
+        return f.cumulativeFrequencyBins();
+    }));
+    static assert(!__traits(compiles, () @safe {
+        auto f = F([1u, 2u], A(2, 0));
+        return f.cumulativeFrequencyBins().save;
+    }));
+    static assert(!__traits(compiles, () @safe {
+        auto cursor = F([1u, 2u], A(2, 0)).cumulativeFrequencyBins();
+        auto entry = cursor.front;
+    }));
+    static assert(!__traits(compiles, () @safe {
+        uint[2] data = [1, 2];
+        auto f = F(data[], A(2, 0));
+        auto cursor = f.cumulativeFrequencyBins();
+        auto entry = cursor.front;
+    }));
+}
+
+// Small count types retain their type instead of exposing integer promotion.
+version(mir_stat_test)
+unittest
+{
+    import mir.stat.descriptive.histogram.axis: IntegralAxis, AxisOptions;
+    alias A = IntegralAxis!(ubyte, int, AxisOptions());
+    auto f = FrequencyAccumulator!(ubyte[], A)([cast(ubyte) 1, 2], A(2, 0));
+    auto cursor = f.cumulativeFrequencyBins();
+    static assert(is(typeof(cursor.front.cumulativeCount) == ubyte));
+    cursor.popFront();
+    assert(cursor.front.cumulativeCount == 3 && cursor.front.cumulativeFrequency == 1);
+    typeof(cursor) empty;
+    assert(empty.empty && empty.length == 0);
+}
+
+// Floating-point count storage starts accumulation at zero, not its NaN init.
+version(mir_stat_test)
+unittest
+{
+    import mir.stat.descriptive.histogram.axis: IntegralAxis, AxisOptions;
+    alias A = IntegralAxis!(uint, int, AxisOptions());
+    auto f = FrequencyAccumulator!(double[], A)([0.5, 1.5], A(2, 0));
+    auto cursor = f.cumulativeFrequencyBins();
+    assert(cursor.front.cumulativeCount == 0.5);
+    assert(cursor.front.cumulativeFrequency == 0.25);
+    cursor.popFront();
+    assert(cursor.front.cumulativeCount == 2);
+    assert(cursor.front.cumulativeFrequency == 1);
 }

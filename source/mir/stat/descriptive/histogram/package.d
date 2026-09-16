@@ -19,12 +19,9 @@ public import mir.stat.descriptive.histogram.traits;
 public import mir.stat.descriptive.histogram.api;
 
 // TODO: Histogram result access
-// - Add a cumulative frequency range with explicit underflow/overflow entries.
 // - Add histogram formatting.
 //
 // TODO: Construction conveniences
-// - Accept break functions directly in rchistogram; currently callers construct
-//   an axis with the break function and pass that axis to rchistogram.
 // - Add factories for GC-backed storage and caller-selected allocation strategies.
 //
 // Possible later extensions
