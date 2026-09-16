@@ -1434,6 +1434,7 @@ unittest
 {
     import mir.ndslice.slice: sliced;
     import mir.math.common: log2, exp2;
+    import mir.stat.descriptive.histogram.axis: TransformAxis;
     import mir.stat.descriptive.histogram.breaks: freedmanDiaconis;
     auto data = [1.0, 2, 4, 8, 16, 32, 64, 128, 256].sliced;
 
