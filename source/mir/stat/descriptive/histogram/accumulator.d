@@ -1402,6 +1402,33 @@ unittest
     assert(writer.buffer[0 .. writer.length] == "bin(slot=red): count=1");
 }
 
+// Category lookup and joint entry formatting preserve the complete attribute
+// set when counts and the output writer use reference-counted or scoped storage.
+version(mir_stat_test)
+@safe pure nothrow @nogc
+unittest
+{
+    import mir.appender: scopedBuffer;
+    import mir.format: print;
+    import mir.ndslice.allocation: rcslice;
+    import mir.stat.descriptive.histogram.axis: CategoryAxis, IntegralAxis, AxisOptions;
+
+    enum Label { first, second }
+    alias C = CategoryAxis!(uint, Label, AxisOptions());
+    alias A = IntegralAxis!(uint, int, AxisOptions());
+    auto counts = rcslice!uint(2, 2);
+    auto h = HistogramAccumulator!(typeof(counts), C, A)(counts, C(), A(2, 0));
+    // Both enum values and their string names use the same category.
+    h.put(Label.first, 0);
+    h.put("first", 0);
+    h.put(Label.second, 1);
+
+    auto writer = scopedBuffer!(char, 256);
+    print(writer, h.bins().front);
+    assert(writer.data == "bin(axis0=slot=first, axis1=(low=0, high=1)): count=2");
+    assert(h.bins().back.count == 1);
+}
+
 // Numeric formatting into caller-provided storage is GC-free.
 version(mir_stat_test)
 @safe pure nothrow @nogc

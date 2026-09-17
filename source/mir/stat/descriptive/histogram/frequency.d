@@ -3137,6 +3137,95 @@ unittest
     }));
 }
 
+// Borrowed frequency reads, snapshots, and formatting preserve all four
+// attributes when escape checking is enabled. Owning count storage keeps
+// construction independent of the lifetime of a caller's stack buffer.
+version(mir_stat_test_lifetime)
+@safe pure nothrow @nogc
+unittest
+{
+    import mir.appender: scopedBuffer;
+    import mir.format: print;
+    import mir.ndslice.allocation: rcslice;
+    import mir.stat.descriptive.histogram.axis: IntegralAxis, AxisOptions;
+
+    alias A = IntegralAxis!(uint, int, AxisOptions(false, true, true));
+    static immutable uint[4] initial = [1, 2, 3, 2];
+    auto counts = rcslice!uint(initial[]);
+    auto f = FrequencyAccumulator!(typeof(counts), A)(counts, A(2, 0));
+
+    assert(f.count == 8 && f.frequency!float(0) == 0.25f);
+    assert(f.underflowFrequency() == 0.125 && f.overflowFrequency() == 0.25);
+
+    // Snapshot allocation uses reference-counted storage, not the GC.
+    auto snapshot = f.cumulativeFrequencies!float();
+    double[2] destination;
+    f.cumulativeFrequencies(destination[]);
+    assert(snapshot[0] == 0.375f && snapshot[1] == 0.75f);
+    assert(destination[0] == snapshot[0] && destination[1] == snapshot[1]);
+
+    {
+        auto bins = f.frequencyBins!float();
+        auto writer = scopedBuffer!(char, 256);
+        print(writer, bins.front);
+        assert(writer.data == "bin(low=0, high=1): count=2, frequency=0.25");
+
+        auto cumulative = f.cumulativeFrequencyBins!(double, BinCoverage.all)();
+        assert(cumulative.front.isUnderflow);
+        cumulative.popFront();
+        auto cumulativeWriter = scopedBuffer!(char, 256);
+        print(cumulativeWriter, cumulative.front);
+        assert(cumulativeWriter.data ==
+            "bin(low=0, high=1): count=2, cumulativeCount=3, cumulativeFrequency=0.375");
+        cumulative.popFront();
+        cumulative.popFront();
+        assert(cumulative.front.isOverflow && cumulative.front.cumulativeFrequency == 1);
+    }
+
+    // Finish cumulative traversal before changing the source. Saved snapshots
+    // remain independent, while a newly borrowed range sees the updated counts.
+    f.put(0);
+    assert(snapshot[0] == 0.375f && snapshot[1] == 0.75f);
+    assert(f.frequencyBins().front.count == 3 && f.count == 9);
+}
+
+// Joint traversal and marginalization also preserve the complete attribute set;
+// the marginal owns independent counts, while views read the original source.
+version(mir_stat_test_lifetime)
+@safe pure nothrow @nogc
+unittest
+{
+    import mir.ndslice.allocation: rcslice;
+    import mir.stat.descriptive.histogram.axis: IntegralAxis, AxisOptions;
+
+    alias A = IntegralAxis!(uint, int, AxisOptions(false, true, true));
+    auto counts = rcslice!uint(4, 4);
+    auto f = FrequencyAccumulator!(typeof(counts), A, A)(counts, A(2, 0), A(2, 0));
+    f.put(-1, -1);
+    f.put(0, 1);
+    f.put(1, 0);
+    f.put(2, 2);
+    assert(f.count == 4 && f.frequency!float(0, 1) == 0.25f);
+    assert(f.underflow!0() == 1 && f.overflow!1() == 1);
+
+    auto bins = f.frequencyBins!(float, BinCoverage.all)();
+    auto saved = bins.save;
+    auto middle = bins[5 .. 11];
+    assert(bins.length == 16 && bins.front.frequency == 0.25f);
+    assert(bins.front.isUnderflow!0 && bins.front.isUnderflow!1);
+    assert(bins.back.isOverflow!0 && bins.back.isOverflow!1);
+    bins.popFront();
+    saved.popBack();
+    assert(bins.length == 15 && saved.length == 15 && middle.length == 6);
+    assert(f.bins!(BinCoverage.all)()[6].count == 1);
+
+    auto marginal = f.marginal!0();
+    assert(marginal.count == 4 && marginal.frequency(0) == 0.25);
+    marginal.put(0);
+    assert(marginal.count == 5 && f.count == 4);
+    assert(f.frequency(0, 1) == 0.25);
+}
+
 // Small count types retain their type instead of exposing integer promotion.
 version(mir_stat_test)
 pure nothrow
