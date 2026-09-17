@@ -9939,7 +9939,7 @@ struct EntropyAccumulator(T, Summation summation)
 }
 
 /// test basic functionality
-version(mir_stat_test_uni)
+version(mir_stat_test)
 @safe pure nothrow
 unittest
 {
@@ -9954,7 +9954,7 @@ unittest
 }
 
 // test floats
-version(mir_stat_test_uni)
+version(mir_stat_test)
 @safe pure nothrow
 unittest
 {
@@ -9969,7 +9969,7 @@ unittest
 }
 
 // test put EntropyAccumulator
-version(mir_stat_test_uni)
+version(mir_stat_test)
 @safe pure nothrow
 unittest
 {
@@ -10090,7 +10090,7 @@ template entropy(string summation)
 }
 
 ///
-version(mir_stat_test_uni)
+version(mir_stat_test)
 @safe pure nothrow
 unittest
 {
@@ -10105,7 +10105,7 @@ unittest
 }
 
 /// Entropy of vector
-version(mir_stat_test_uni)
+version(mir_stat_test)
 @safe pure nothrow
 unittest
 {
@@ -10120,7 +10120,7 @@ unittest
 }
 
 /// Entropy of matrix
-version(mir_stat_test_uni)
+version(mir_stat_test)
 @safe pure
 unittest
 {
@@ -10135,7 +10135,7 @@ unittest
 }
 
 /// Column entropy of matrix
-version(mir_stat_test_uni)
+version(mir_stat_test)
 @safe pure
 unittest
 {
@@ -10165,7 +10165,7 @@ unittest
 }
 
 /// Can also set algorithm or output type
-version(mir_stat_test_uni)
+version(mir_stat_test)
 @safe pure nothrow
 unittest
 {
@@ -10187,7 +10187,7 @@ unittest
 For integral slices, pass output type as template parameter to ensure output
 type is correct.
 +/
-version(mir_stat_test_uni)
+version(mir_stat_test)
 @safe pure nothrow
 unittest
 {
@@ -10205,7 +10205,7 @@ unittest
 }
 
 /// Arbitrary entropy
-version(mir_stat_test_uni)
+version(mir_stat_test)
 @safe pure nothrow @nogc
 unittest
 {
@@ -10216,7 +10216,7 @@ unittest
 }
 
 // Dynamic array / UFCS
-version(mir_stat_test_uni)
+version(mir_stat_test)
 @safe pure nothrow
 unittest
 {
@@ -10227,7 +10227,7 @@ unittest
 }
 
 // Check type of alongDim result
-version(mir_stat_test_uni)
+version(mir_stat_test)
 @safe pure nothrow
 unittest
 {
@@ -10242,7 +10242,7 @@ unittest
 }
 
 // @nogc test
-version(mir_stat_test_uni)
+version(mir_stat_test)
 @safe pure @nogc nothrow
 unittest
 {

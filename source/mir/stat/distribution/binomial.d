@@ -221,7 +221,7 @@ T fp_binomialPMF(T)(const size_t k, const size_t n, const T p)
 }
 
 /// fp_binomialPMF provides accurate values for large values of `n`
-version(mir_stat_test_fp)
+version(mir_stat_test_slow_numerics)
 @safe pure nothrow @nogc
 unittest
 {
@@ -232,7 +232,7 @@ unittest
 }
 
 // more values to test
-version(mir_stat_test_fp)
+version(mir_stat_test_slow_numerics)
 @safe pure nothrow @nogc
 unittest
 {
@@ -787,7 +787,7 @@ unittest
 }
 
 // test Binomial.direct, detailed alternate guess paths
-version(mir_stat_test_binom_multi)
+version(mir_stat_test)
 @safe pure nothrow @nogc
 unittest
 {
@@ -878,7 +878,7 @@ unittest
 }
 
 /// Accurate values for large values of `n`
-version(mir_stat_test_fp)
+version(mir_stat_test_slow_numerics)
 @safe pure nothrow @nogc
 unittest
 {
@@ -889,7 +889,7 @@ unittest
 }
 
 // more values to test
-version(mir_stat_test_fp)
+version(mir_stat_test_slow_numerics)
 @safe pure nothrow @nogc
 unittest
 {

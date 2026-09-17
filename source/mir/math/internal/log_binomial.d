@@ -36,7 +36,7 @@ T logFactorial(T = double)(ulong count, ulong start = 1)
 }
 
 ///
-version(mir_stat_test_logBinomial)
+version(mir_stat_test)
 @safe pure nothrow @nogc
 unittest
 {
@@ -50,7 +50,7 @@ unittest
 }
 
 // test starting points
-version(mir_stat_test_logBinomial)
+version(mir_stat_test)
 @safe pure nothrow @nogc
 unittest
 {
@@ -67,7 +67,7 @@ unittest
 }
 
 // test larger value
-version(mir_stat_test_logBinomial)
+version(mir_stat_test)
 @safe pure nothrow @nogc
 unittest
 {

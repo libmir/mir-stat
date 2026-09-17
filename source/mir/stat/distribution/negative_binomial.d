@@ -99,7 +99,7 @@ T fp_negativeBinomialPMF(T)(const size_t k, const size_t r, const T p)
 }
 
 /// fp_binomialPMF provides accurate values for large values of `n`
-version(mir_stat_test_fp)
+version(mir_stat_test_slow_numerics)
 @safe pure nothrow @nogc
 unittest
 {
@@ -111,7 +111,7 @@ unittest
 
 
 // test more values
-version(mir_stat_test_fp)
+version(mir_stat_test_slow_numerics)
 @safe pure nothrow @nogc
 unittest
 {
@@ -406,7 +406,7 @@ unittest
 }
 
 // more detailed guess paths
-version(mir_stat_test_binom_multi)
+version(mir_stat_test)
 @safe pure nothrow
 unittest
 {
@@ -477,7 +477,7 @@ unittest
 }
 
 /// Accurate values for large values of `n`
-version(mir_stat_test_fp)
+version(mir_stat_test_slow_numerics)
 @safe pure nothrow @nogc
 unittest
 {
@@ -490,7 +490,7 @@ unittest
 }
 
 // testing more values
-version(mir_stat_test_fp)
+version(mir_stat_test_slow_numerics)
 @safe pure nothrow @nogc
 unittest
 {

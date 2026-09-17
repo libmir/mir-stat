@@ -913,7 +913,7 @@ unittest
 Mean works for complex numbers and other user-defined types (provided they
 can be converted to a floating point or complex type)
 +/
-version(mir_test_weighted)
+version(mir_stat_test)
 @safe pure nothrow
 unittest
 {
@@ -1566,7 +1566,7 @@ unittest
 /++
 wsum works for complex numbers and other user-defined types
 +/
-version(mir_test_weighted)
+version(mir_stat_test)
 @safe pure nothrow
 unittest
 {
