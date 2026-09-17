@@ -45,7 +45,8 @@ T negativeBinomialPMF(T)(const size_t k, const size_t r, const T p)
 ///
 version(mir_stat_test)
 @safe pure nothrow @nogc
-unittest {
+unittest
+{
     import mir.test: shouldApprox;
 
     4.negativeBinomialPMF(6, 3.0 / 4).shouldApprox == 0.0875988;
@@ -54,7 +55,8 @@ unittest {
 //
 version(mir_stat_test)
 @safe pure nothrow @nogc
-unittest {
+unittest
+{
     import mir.test: shouldApprox;
 
     0.negativeBinomialPMF(6, 2.0 / 3).shouldApprox == 0.0877915;
@@ -97,9 +99,10 @@ T fp_negativeBinomialPMF(T)(const size_t k, const size_t r, const T p)
 }
 
 /// fp_binomialPMF provides accurate values for large values of `n`
-version(mir_stat_test_fp)
+version(mir_stat_test_slow_numerics)
 @safe pure nothrow @nogc
-unittest {
+unittest
+{
     import mir.bignum.fp: Fp, fp_log;
     import mir.test: shouldApprox;
 
@@ -108,9 +111,10 @@ unittest {
 
 
 // test more values
-version(mir_stat_test_fp)
+version(mir_stat_test_slow_numerics)
 @safe pure nothrow @nogc
-unittest {
+unittest
+{
     import mir.bignum.fp: Fp, fp_log;
     import mir.test: shouldApprox;
 
@@ -130,7 +134,8 @@ unittest {
 // using Fp!128
 version(mir_stat_test)
 @safe pure nothrow @nogc
-unittest {
+unittest
+{
     import mir.conv: to;
     import mir.test: shouldApprox;
 
@@ -170,7 +175,8 @@ T negativeBinomialCDF(T)(const size_t k, const size_t r, const T p)
 ///
 version(mir_stat_test)
 @safe pure nothrow @nogc
-unittest {
+unittest
+{
     import mir.test: shouldApprox;
 
     4.negativeBinomialCDF(6, 3.0 / 4).shouldApprox == 0.9218731;
@@ -179,7 +185,8 @@ unittest {
 // test multiple
 version(mir_stat_test)
 @safe pure nothrow @nogc
-unittest {
+unittest
+{
     import mir.test: shouldApprox;
     
     static double sumOfnegativeBinomialPMFs(T)(size_t k, size_t r, T p) {
@@ -231,7 +238,8 @@ T negativeBinomialCCDF(T)(const size_t k, const size_t r, const T p)
 ///
 version(mir_stat_test)
 @safe pure nothrow @nogc
-unittest {
+unittest
+{
     import mir.test: shouldApprox;
 
     4.negativeBinomialCCDF(6, 3.0 / 4).shouldApprox == 0.07812691;
@@ -240,7 +248,8 @@ unittest {
 // test multiple
 version(mir_stat_test)
 @safe pure nothrow @nogc
-unittest {
+unittest
+{
     import mir.test: shouldApprox;
 
     for (size_t i; i <= 10; i++) {
@@ -349,7 +358,8 @@ size_t negativeBinomialInvCDF(T)(const T q, const size_t r, const T p)
 ///
 version(mir_stat_test)
 @safe pure nothrow @nogc
-unittest {
+unittest
+{
     import mir.test: should;
     0.9.negativeBinomialInvCDF(6, 3.0 / 4).should == 4;
 }
@@ -357,7 +367,8 @@ unittest {
 //
 version(mir_stat_test)
 @safe pure nothrow
-unittest {
+unittest
+{
     import mir.test: should;
 
     0.negativeBinomialInvCDF(5, 0.6).should == 0;
@@ -375,7 +386,8 @@ unittest {
 // alternate guess paths
 version(mir_stat_test)
 @safe pure nothrow
-unittest {
+unittest
+{
     import mir.test: should;
 
     static immutable size_t[] ns = [  25,  37,  34,    25,     25,   105];
@@ -394,9 +406,10 @@ unittest {
 }
 
 // more detailed guess paths
-version(mir_stat_test_binom_multi)
+version(mir_stat_test)
 @safe pure nothrow
-unittest {
+unittest
+{
     import mir.test: should;
 
     static immutable size_t[] ns = [  25,  37,  34,    25,     25,   105];
@@ -441,7 +454,8 @@ T negativeBinomialLPMF(T)(const size_t k, const size_t r, const T p)
 ///
 version(mir_stat_test)
 @safe pure nothrow @nogc
-unittest {
+unittest
+{
     import mir.math.common: exp;
     import mir.test: shouldApprox;
 
@@ -451,7 +465,8 @@ unittest {
 //
 version(mir_stat_test)
 @safe pure nothrow @nogc
-unittest {
+unittest
+{
     import mir.math.common: exp;
     import mir.test: shouldApprox;
 
@@ -462,9 +477,10 @@ unittest {
 }
 
 /// Accurate values for large values of `n`
-version(mir_stat_test_fp)
+version(mir_stat_test_slow_numerics)
 @safe pure nothrow @nogc
-unittest {
+unittest
+{
     import mir.bignum.fp: Fp, fp_log;
     import mir.test: shouldApprox;
 
@@ -474,9 +490,10 @@ unittest {
 }
 
 // testing more values
-version(mir_stat_test_fp)
+version(mir_stat_test_slow_numerics)
 @safe pure nothrow @nogc
-unittest {
+unittest
+{
     import mir.bignum.fp: Fp, fp_log;
     import mir.test: shouldApprox;
 

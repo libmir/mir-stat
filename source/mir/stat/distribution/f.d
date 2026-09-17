@@ -42,7 +42,8 @@ T fPDF(T)(const T x, const T df1, const T df2)
 ///
 version(mir_stat_test)
 @safe pure nothrow @nogc
-unittest {
+unittest
+{
     import mir.test: shouldApprox;
 
     0.50.fPDF(1, 1).shouldApprox == 0.3001054;
@@ -78,7 +79,8 @@ T fCDF(T)(const T x, const T df1, const T df2)
 ///
 version(mir_stat_test)
 @safe pure nothrow @nogc
-unittest {
+unittest
+{
     import mir.test: shouldApprox;
 
     0.50.fCDF(1, 1).shouldApprox == 0.3918266;
@@ -113,7 +115,8 @@ T fCCDF(T)(const T x, const T df1, const T df2)
 ///
 version(mir_stat_test)
 @safe pure nothrow @nogc
-unittest {
+unittest
+{
     import mir.test: shouldApprox;
 
     0.50.fCCDF(1, 1).shouldApprox == 0.6081734;
@@ -154,7 +157,8 @@ T fInvCDF(T)(const T p, const T df1, const T df2)
 ///
 version(mir_stat_test)
 @safe pure nothrow @nogc
-unittest {
+unittest
+{
     import mir.test: shouldApprox;
 
     0.3918266.fInvCDF(1, 1).shouldApprox == 0.50; 
@@ -194,7 +198,8 @@ T fLPDF(T)(const T x, const T df1, const T df2)
 ///
 version(mir_stat_test)
 @safe pure nothrow @nogc
-unittest {
+unittest
+{
     import mir.math.common: log;
     import mir.test: shouldApprox;
 

@@ -837,7 +837,7 @@ unittest
 
 // Check custom CircleAxis
 version(mir_stat_test)
-@safe pure nothrow
+@safe pure nothrow @nogc
 unittest
 {
     import mir.stat.descriptive.histogram.axis: AxisOptions;
@@ -1289,6 +1289,7 @@ struct HistogramBin(Count, BinDescriptions...)
 
 /// Format one bin or a range of bins using standard D formatting.
 version(mir_stat_test)
+@safe pure
 unittest
 {
     import std.format: format;
@@ -1308,6 +1309,7 @@ unittest
 
 /// Print a histogram with writeln or writefln, or choose precision per field.
 version(mir_stat_test)
+@safe
 unittest
 {
     import std.stdio: writeln, writefln;
@@ -1345,6 +1347,7 @@ unittest
 
 // Joint coordinates and end-bin labels do not require ordinary-bin metadata.
 version(mir_stat_test)
+@safe pure
 unittest
 {
     import std.format: format;
@@ -1360,6 +1363,7 @@ unittest
 
 // Category labels, custom descriptions, and output-range writers.
 version(mir_stat_test)
+@safe pure
 unittest
 {
     import std.format: format;
@@ -1398,9 +1402,37 @@ unittest
     assert(writer.buffer[0 .. writer.length] == "bin(slot=red): count=1");
 }
 
+// Category lookup and joint entry formatting preserve the complete attribute
+// set when counts and the output writer use reference-counted or scoped storage.
+version(mir_stat_test)
+@safe pure nothrow @nogc
+unittest
+{
+    import mir.appender: scopedBuffer;
+    import mir.format: print;
+    import mir.ndslice.allocation: rcslice;
+    import mir.stat.descriptive.histogram.axis: CategoryAxis, IntegralAxis, AxisOptions;
+
+    enum Label { first, second }
+    alias C = CategoryAxis!(uint, Label, AxisOptions());
+    alias A = IntegralAxis!(uint, int, AxisOptions());
+    auto counts = rcslice!uint(2, 2);
+    auto h = HistogramAccumulator!(typeof(counts), C, A)(counts, C(), A(2, 0));
+    // Both enum values and their string names use the same category.
+    h.put(Label.first, 0);
+    h.put("first", 0);
+    h.put(Label.second, 1);
+
+    auto writer = scopedBuffer!(char, 256);
+    print(writer, h.bins().front);
+    assert(writer.data == "bin(axis0=slot=first, axis1=(low=0, high=1)): count=2");
+    assert(h.bins().back.count == 1);
+}
+
 // Numeric formatting into caller-provided storage is GC-free.
 version(mir_stat_test)
-@safe pure nothrow @nogc unittest
+@safe pure nothrow @nogc
+unittest
 {
     import mir.stat.descriptive.histogram.axis: IntegralAxis, AxisOptions;
     static struct Writer
@@ -2061,6 +2093,7 @@ unittest
 
 // Additional storage forms keep const data readable and traversal independent.
 version(mir_stat_test)
+pure nothrow
 unittest
 {
     import mir.ndslice.slice: Slice, SliceKind;
@@ -2153,6 +2186,7 @@ unittest
 
 // Validate storage shape before accepting an accumulator.
 version(mir_stat_test)
+pure
 unittest
 {
     import core.exception: AssertError;
@@ -2288,6 +2322,7 @@ unittest
 
 // Validate every dimension and leave all counts unchanged on invalid input.
 version(mir_stat_test)
+pure
 unittest
 {
     import core.exception: AssertError;
@@ -2424,6 +2459,7 @@ unittest
 
 // Failed classification or malformed flow storage must not partially record a pair.
 version(mir_stat_test)
+pure
 unittest
 {
     import core.exception: AssertError;
@@ -2516,6 +2552,7 @@ unittest
 
 // Adding enabled flow bins cannot wrap an axis extent before shape validation.
 version(mir_stat_test)
+pure
 unittest
 {
     import core.exception: AssertError;
@@ -2964,6 +3001,7 @@ unittest
 
 // Reject malformed joint view shapes and overflowing ordinary-bin products.
 version(mir_stat_test)
+pure
 unittest
 {
     import core.exception: AssertError;
@@ -3047,6 +3085,7 @@ unittest
 
 // Expanded storage is mandatory, and extent arithmetic cannot wrap.
 version(mir_stat_test)
+pure
 unittest
 {
     import core.exception: AssertError;
@@ -3163,6 +3202,7 @@ unittest
 
 // Categorical and variable end bins cannot expose invalid ordinary descriptions.
 version(mir_stat_test)
+pure
 unittest
 {
     import core.exception: AssertError;
@@ -3193,7 +3233,8 @@ unittest
 
 // Owning all-bin views outlive an accumulator; static-array views remain borrowed.
 version(mir_stat_test_lifetime)
-@safe unittest
+@safe
+unittest
 {
     import mir.ndslice.allocation: rcslice;
     import mir.stat.descriptive.histogram.axis: IntegralAxis, AxisOptions;
@@ -3326,7 +3367,8 @@ unittest
 
 // Borrowed variable-axis boundaries remain borrowed, with read-only access.
 version(mir_stat_test)
-@safe unittest
+@safe pure nothrow
+unittest
 {
     import mir.ndslice.slice: sliced;
     import mir.stat.descriptive.histogram.axis: VariableAxis, IntegralAxis, AxisOptions;
@@ -3345,7 +3387,8 @@ version(mir_stat_test)
 
 // Owning counts can escape stack-backed sources; scope-bound borrowed axes are rejected.
 version(mir_stat_test_lifetime)
-@safe @nogc unittest
+@safe @nogc
+unittest
 {
     import mir.ndslice.slice: sliced;
     import mir.stat.descriptive.histogram.axis: VariableAxis, IntegralAxis, AxisOptions;
@@ -3381,6 +3424,7 @@ version(mir_stat_test_lifetime)
 
 // Validate the full source shape again before projecting externally shared arrays.
 version(mir_stat_test)
+pure
 unittest
 {
     import core.exception: AssertError;

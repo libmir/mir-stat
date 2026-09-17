@@ -61,6 +61,7 @@ template dAgostinoPearsonTest(string kurtosisAlgo, string summation = "appropria
 }
 
 ///
+@safe pure nothrow
 unittest
 {
     import mir.math.common: approxEqual, pow;

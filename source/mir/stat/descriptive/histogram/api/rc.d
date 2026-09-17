@@ -1430,6 +1430,7 @@ template rchistogram(CountType, alias Axis, AxisOptions axisOptions = AxisOption
 
 /// Choose logarithmic bins using a rule evaluated in logarithmic coordinates.
 version(mir_stat_test)
+@safe pure nothrow
 unittest
 {
     import mir.ndslice.slice: sliced;
@@ -1452,7 +1453,8 @@ unittest
 
 /// Choose a regular-bin count using Sturges, retaining explicit bounds.
 version(mir_stat_test)
-@safe pure nothrow @nogc unittest
+@safe pure nothrow @nogc
+unittest
 {
     import mir.ndslice.slice: sliced;
     import mir.stat.descriptive.histogram.axis: RegularAxis;
@@ -1467,6 +1469,7 @@ version(mir_stat_test)
 
 /// Supply a custom rule and override count types and axis options.
 version(mir_stat_test)
+@safe pure nothrow @nogc
 unittest
 {
     import mir.ndslice.slice: sliced;
@@ -1489,6 +1492,7 @@ unittest
 
 /// Evaluate a rule using runtime settings before constructing the histogram.
 version(mir_stat_test)
+@safe pure nothrow
 unittest
 {
     import mir.ndslice.slice: sliced;
@@ -1505,6 +1509,34 @@ unittest
     assert(h.axis[0].N_bin == 3);
     // The rule selects the number of equal-width bins, not their occupancy.
     assert(h.counts == [3, 4, 2]);
+}
+
+// A locally evaluated capturing rule need not allocate a GC closure. Keep
+// observations in static storage to test the factory rather than array setup.
+version(mir_stat_test)
+@safe pure nothrow @nogc
+unittest
+{
+    import mir.ndslice.slice: sliced;
+    import mir.stat.descriptive.histogram.axis: RegularAxis;
+
+    static immutable double[8] values = [0, 1, 2, 3, 4, 5, 6, 7];
+    auto data = values[].sliced;
+    size_t observationsPerBin = 2;
+    // scope prevents the captured setting from requiring a GC closure.
+    scope auto rule = (typeof(data) observations) => observations.length / observationsPerBin;
+    auto first = data.rchistogram!RegularAxis(rule(data), 0.0, 8.0);
+    assert(first.axis[0].N_bin == 4);
+    foreach (i; 0 .. 4)
+        assert(first.counts[i] == 2);
+
+    // Changing the captured setting affects the next evaluation, not the
+    // histogram already built from the previous result.
+    observationsPerBin = 4;
+    auto second = data.rchistogram!RegularAxis(rule(data), 0.0, 8.0);
+    assert(second.axis[0].N_bin == 2);
+    assert(second.counts[0] == 4 && second.counts[1] == 4);
+    assert(first.axis[0].N_bin == 4 && first.counts[0] == 2);
 }
 
 /// Integral Axis example
@@ -1727,6 +1759,7 @@ unittest
 
 /// Compute quantile boundaries first to construct a percentogram's counts.
 version(mir_stat_test)
+@safe pure nothrow
 unittest
 {
     import mir.ndslice.slice: sliced;
@@ -1919,6 +1952,7 @@ unittest
 
 // Rules are invoked once; explicit axis construction gives identical results.
 version(mir_stat_test)
+@safe nothrow
 unittest
 {
     import mir.ndslice.slice: sliced;
@@ -2037,7 +2071,8 @@ unittest
 
 // Lazy transformed rules preserve attribute inference and string transforms.
 version(mir_stat_test)
-@safe pure nothrow @nogc unittest
+@safe pure nothrow @nogc
+unittest
 {
     import mir.ndslice.slice: sliced;
     import mir.math.common: log2;
@@ -2096,7 +2131,8 @@ unittest
 
 // Qualifiers on a bin-count value must not make newly allocated counters read-only.
 version(mir_stat_test)
-@safe pure nothrow unittest
+@safe pure nothrow
+unittest
 {
     import mir.ndslice.slice: sliced;
     import mir.stat.descriptive.histogram.axis: IntegralAxis, RegularAxis;
@@ -2134,7 +2170,8 @@ version(mir_stat_test)
 
 // Observation and boundary iterators need not match; ownership follows the boundaries.
 version(mir_stat_test)
-@safe pure nothrow @nogc unittest
+@safe pure nothrow @nogc
+unittest
 {
     import mir.ndslice.slice: sliced;
     import mir.ndslice.allocation: rcslice;

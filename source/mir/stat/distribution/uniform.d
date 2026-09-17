@@ -37,7 +37,8 @@ T uniformPDF(T)(const T x, const T lower = 0, const T upper = 1)
 ///
 version(mir_stat_test)
 @safe pure nothrow @nogc
-unittest {
+unittest
+{
     import mir.math.common: approxEqual;
     assert(0.5.uniformPDF == 1);
     assert(0.5.uniformPDF(0.0, 1.5).approxEqual(2.0 / 3));
@@ -68,7 +69,8 @@ T uniformCDF(T)(const T x, const T lower = 0, const T upper = 1)
 ///
 version(mir_stat_test)
 @safe pure nothrow @nogc
-unittest {
+unittest
+{
     import mir.math.common: approxEqual;
     assert(0.5.uniformCDF == 0.5);
     assert(0.5.uniformCDF(0.0, 1.5).approxEqual(1.0 / 3));
@@ -99,7 +101,8 @@ T uniformCCDF(T)(const T x, const T lower = 0, const T upper = 1)
 ///
 version(mir_stat_test)
 @safe pure nothrow @nogc
-unittest {
+unittest
+{
     import mir.math.common: approxEqual;
     assert(0.5.uniformCCDF == 0.5);
     assert(0.5.uniformCCDF(0.0, 1.5).approxEqual(2.0 / 3));
@@ -130,7 +133,8 @@ T uniformInvCDF(T)(const T p, const T lower = 0, const T upper = 1)
 ///
 version(mir_stat_test)
 @safe pure nothrow @nogc
-unittest {
+unittest
+{
     import mir.math.common: approxEqual;
     assert(0.5.uniformInvCDF == 0.5);
     assert((1.0 / 3).uniformInvCDF(0.0, 1.5).approxEqual(0.5));
@@ -163,7 +167,8 @@ T uniformLPDF(T)(const T x, const T lower = 0, const T upper = 1)
 ///
 version(mir_stat_test)
 @safe pure nothrow @nogc
-unittest {
+unittest
+{
     import mir.math.common: approxEqual, log;
     assert(0.5.uniformLPDF == 0);
     assert(0.5.uniformLPDF(0.0, 1.5).approxEqual(-log(1.5)));

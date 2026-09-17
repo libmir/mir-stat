@@ -149,7 +149,8 @@ template binomialPMF(string binomialAlgo, string poissonAlgo = "gamma")
 ///
 version(mir_stat_test)
 @safe pure nothrow @nogc
-unittest {
+unittest
+{
     import mir.math.common: approxEqual, pow;
 
     assert(4.binomialPMF(6, 2.0 / 3).approxEqual(15.0 * pow(2.0 / 3, 4) * pow(1.0 / 3, 2)));
@@ -164,7 +165,8 @@ unittest {
 // test multiple
 version(mir_stat_test)
 @safe pure nothrow @nogc
-unittest {
+unittest
+{
     import mir.math.common: approxEqual, pow;
     import mir.combinatorics: binomial;
 
@@ -178,7 +180,8 @@ unittest {
 // test BinomialAlgo.approxNormal / approxNormalContinuityCorrection / approxPoisson
 version(mir_stat_test)
 @safe pure nothrow @nogc
-unittest {
+unittest
+{
     import mir.math.common: approxEqual, sqrt;
     import mir.stat.distribution.normal: normalCDF, normalPDF;
     import mir.stat.distribution.poisson: poissonPMF;
@@ -218,9 +221,10 @@ T fp_binomialPMF(T)(const size_t k, const size_t n, const T p)
 }
 
 /// fp_binomialPMF provides accurate values for large values of `n`
-version(mir_stat_test_fp)
+version(mir_stat_test_slow_numerics)
 @safe pure nothrow @nogc
-unittest {
+unittest
+{
     import mir.bignum.fp: Fp, fp_log;
     import mir.math.common: approxEqual;
 
@@ -228,9 +232,10 @@ unittest {
 }
 
 // more values to test
-version(mir_stat_test_fp)
+version(mir_stat_test_slow_numerics)
 @safe pure nothrow @nogc
-unittest {
+unittest
+{
     import mir.bignum.fp: Fp, fp_log;
     import mir.math.common: approxEqual;
 
@@ -250,7 +255,8 @@ unittest {
 // using Fp!128
 version(mir_stat_test)
 @safe pure nothrow @nogc
-unittest {
+unittest
+{
     import mir.conv: to;
     import mir.math.common: approxEqual;
 
@@ -366,7 +372,8 @@ template binomialCDF(string binomialAlgo, string poissonAlgo = "gamma")
 ///
 version(mir_stat_test)
 @safe pure nothrow @nogc
-unittest {
+unittest
+{
     import mir.math.common: approxEqual, pow;
 
     assert(4.binomialCDF(6, 2.0 / 3).approxEqual(binomialPMF(0, 6, 2.0 / 3) + binomialPMF(1, 6, 2.0 / 3) + binomialPMF(2, 6, 2.0 / 3) + binomialPMF(3, 6, 2.0 / 3) + binomialPMF(4, 6, 2.0 / 3)));
@@ -381,7 +388,8 @@ unittest {
 // test multiple direct
 version(mir_stat_test)
 @safe pure nothrow @nogc
-unittest {
+unittest
+{
     import mir.math.common: approxEqual;
     
     static double sumOfbinomialPMFs(T)(size_t k, size_t n, T p) {
@@ -410,7 +418,8 @@ unittest {
 // test BinomialAlgo.approxNormal / approxNormalContinuityCorrection / approxPoisson
 version(mir_stat_test)
 @safe pure nothrow @nogc
-unittest {
+unittest
+{
     import mir.math.common: approxEqual, sqrt;
     import mir.stat.distribution.normal: normalCDF;
     import mir.stat.distribution.poisson: poissonCDF;
@@ -529,7 +538,8 @@ template binomialCCDF(string binomialAlgo, string poissonAlgo = "gamma")
 ///
 version(mir_stat_test)
 @safe pure nothrow @nogc
-unittest {
+unittest
+{
     import mir.math.common: approxEqual, pow;
 
     assert(4.binomialCCDF(6, 2.0 / 3).approxEqual(binomialPMF(5, 6, 2.0 / 3) + binomialPMF(6, 6, 2.0 / 3)));
@@ -544,7 +554,8 @@ unittest {
 // test multiple
 version(mir_stat_test)
 @safe pure nothrow @nogc
-unittest {
+unittest
+{
     import mir.math.common: approxEqual;
 
     // n = 5
@@ -565,7 +576,8 @@ unittest {
 // test approxNormal / approxNormalContinuityCorrection / approxPoisson
 version(mir_stat_test)
 @safe pure nothrow @nogc
-unittest {
+unittest
+{
     import mir.math.common: approxEqual;
 
     for (size_t i; i <= 5; i++) {
@@ -728,7 +740,8 @@ template binomialInvCDF(string binomialAlgo, string poissonAlgo = "direct")
 ///
 version(mir_stat_test)
 @safe pure nothrow @nogc
-unittest {
+unittest
+{
     assert(0.15.binomialInvCDF(6, 2.0 / 3) == 3);
     // For large values of `n` with `p` not too extreme, can approximate with normal distribution
     assert(0.5.binomialInvCDF!"approxNormal"(1_000_000, 0.55) == 550_000);
@@ -741,7 +754,8 @@ unittest {
 // test BinomialAlgo.direct
 version(mir_stat_test)
 @safe pure nothrow @nogc
-unittest {
+unittest
+{
     assert(0.binomialInvCDF(5, 0.6) == 0);
     assert(1.binomialInvCDF(5, 0.6) == 5);
     for (double x = 0.05; x < 1; x = x + 0.05) {
@@ -754,7 +768,8 @@ unittest {
 // test Binomial.direct, alternate guess paths
 version(mir_stat_test)
 @safe pure nothrow @nogc
-unittest {
+unittest
+{
     import mir.math.common: approxEqual;
 
     static immutable int[] ns =    [  25,  37,  34,    25,     25,   105];
@@ -772,9 +787,10 @@ unittest {
 }
 
 // test Binomial.direct, detailed alternate guess paths
-version(mir_stat_test_binom_multi)
+version(mir_stat_test)
 @safe pure nothrow @nogc
-unittest {
+unittest
+{
     import mir.math.common: approxEqual;
 
     static immutable int[] ns =    [  25,  37,  34,    25,     25,   105];
@@ -794,7 +810,8 @@ unittest {
 // test Binomial.approxNormal / approxNormalContinuityCorrection
 version(mir_stat_test)
 @safe pure nothrow @nogc
-unittest {
+unittest
+{
     import mir.math.common: floor, sqrt;
     import mir.stat.distribution.normal: normalInvCDF;
 
@@ -813,7 +830,8 @@ unittest {
 // test Binomial.approxPoisson
 version(mir_stat_test)
 @safe pure nothrow @nogc
-unittest {
+unittest
+{
     import mir.stat.distribution.poisson: poissonInvCDF;
 
     assert(0.binomialInvCDF!"approxPoisson"(20, 0.25) == 0);
@@ -849,7 +867,8 @@ T binomialLPMF(T)(const size_t k, const size_t n, const T p)
 ///
 version(mir_stat_test)
 @safe pure nothrow @nogc
-unittest {
+unittest
+{
     import mir.math.common: approxEqual, exp;
 
     for (size_t i; i <= 5; i++) {
@@ -859,9 +878,10 @@ unittest {
 }
 
 /// Accurate values for large values of `n`
-version(mir_stat_test_fp)
+version(mir_stat_test_slow_numerics)
 @safe pure nothrow @nogc
-unittest {
+unittest
+{
     import mir.bignum.fp: Fp, fp_log;
     import mir.math.common: approxEqual;
 
@@ -869,9 +889,10 @@ unittest {
 }
 
 // more values to test
-version(mir_stat_test_fp)
+version(mir_stat_test_slow_numerics)
 @safe pure nothrow @nogc
-unittest {
+unittest
+{
     import mir.bignum.fp: Fp, fp_log;
     import mir.math.common: approxEqual;
 

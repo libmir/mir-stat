@@ -36,7 +36,8 @@ double uniformDiscretePMF(const size_t x, const size_t lower = 0, const size_t u
 ///
 version(mir_stat_test)
 @safe pure nothrow @nogc
-unittest {
+unittest
+{
     import mir.test: shouldApprox;
 
     1.uniformDiscretePMF.shouldApprox == 0.5;
@@ -66,7 +67,8 @@ double uniformDiscreteCDF(const size_t x, const size_t lower = 0, const size_t u
 ///
 version(mir_stat_test)
 @safe pure nothrow @nogc
-unittest {
+unittest
+{
     import mir.test: shouldApprox;
 
     0.uniformDiscreteCDF.shouldApprox == 0.5;
@@ -100,7 +102,8 @@ double uniformDiscreteCCDF(const size_t x, const size_t lower = 0, const size_t 
 ///
 version(mir_stat_test)
 @safe pure nothrow @nogc
-unittest {
+unittest
+{
     import mir.test: shouldApprox;
 
     0.uniformDiscreteCCDF.shouldApprox == 0.5;
@@ -139,7 +142,8 @@ size_t uniformDiscreteInvCDF(T)(const T p, const size_t lower = 0, const size_t 
 ///.
 version(mir_stat_test)
 @safe pure nothrow @nogc
-unittest {
+unittest
+{
     import mir.test: should;
 
     0.0.uniformDiscreteInvCDF.should == 0;
@@ -179,7 +183,8 @@ double uniformDiscreteLPMF(const size_t x, const size_t lower = 0, const size_t 
 ///
 version(mir_stat_test)
 @safe pure nothrow @nogc
-unittest {
+unittest
+{
     import mir.math.common: log;
     import mir.test: shouldApprox;
 

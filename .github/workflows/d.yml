@@ -41,6 +41,10 @@ jobs:
     - name: Run tests with coverage
       run: dub -q test --build=unittest-cov
 
+    - name: Run slow numerical tests
+      if: matrix.dc == 'dmd-latest' || matrix.dc == 'ldc-latest'
+      run: dub -q test --build=unittest-slow-numerics
+
     - name: Run DIP1000 lifetime tests
       run: dub -q test --build=unittest-dip1000
 

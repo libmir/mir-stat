@@ -37,7 +37,8 @@ T exponentialPDF(T)(const T x, const T lambda)
 ///
 version(mir_stat_test)
 @safe pure nothrow @nogc
-unittest {
+unittest
+{
     import mir.math.common: approxEqual;
 
     assert(0.5.exponentialPDF(2.0).approxEqual(0.7357589));
@@ -69,7 +70,8 @@ T exponentialCDF(T)(const T x, const T lambda)
 ///
 version(mir_stat_test)
 @safe pure nothrow @nogc
-unittest {
+unittest
+{
     import mir.math.common: approxEqual;
 
     assert(0.5.exponentialCDF(2.0).approxEqual(0.6321206));
@@ -101,7 +103,8 @@ T exponentialCCDF(T)(const T x, const T lambda)
 ///
 version(mir_stat_test)
 @safe pure nothrow @nogc
-unittest {
+unittest
+{
     import mir.math.common: approxEqual;
 
     assert(0.5.exponentialCCDF(2.0).approxEqual(1 - exponentialCDF(0.5, 2.0)));
@@ -135,7 +138,8 @@ T exponentialInvCDF(T)(const T p, const T lambda)
 ///
 version(mir_stat_test)
 @safe pure nothrow @nogc
-unittest {
+unittest
+{
     import mir.math.common: approxEqual;
 
     assert(0.6321206.exponentialInvCDF(2.0).approxEqual(0.5));
@@ -167,7 +171,8 @@ T exponentialLPDF(T)(const T x, const T lambda)
 ///
 version(mir_stat_test)
 @safe pure nothrow @nogc
-unittest {
+unittest
+{
     import mir.math.common: approxEqual, log;
 
     assert(0.5.exponentialLPDF(2.0).approxEqual(log(exponentialPDF(0.5, 2.0))));

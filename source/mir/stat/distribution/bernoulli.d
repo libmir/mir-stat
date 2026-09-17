@@ -35,7 +35,8 @@ T bernoulliPMF(T)(const bool x, const T p)
 ///
 version(mir_stat_test)
 @safe pure nothrow @nogc
-unittest {
+unittest
+{
     import mir.math.common: approxEqual;
 
     assert(true.bernoulliPMF(0.5) == 0.5);
@@ -67,7 +68,8 @@ T bernoulliCDF(T)(const bool x, const T p)
 ///
 version(mir_stat_test)
 @safe pure nothrow @nogc
-unittest {
+unittest
+{
     import mir.math.common: approxEqual;
 
     assert(true.bernoulliCDF(0.5) == 1);
@@ -99,7 +101,8 @@ T bernoulliCCDF(T)(const bool x, const T p)
 ///
 version(mir_stat_test)
 @safe pure nothrow @nogc
-unittest {
+unittest
+{
     import mir.math.common: approxEqual;
 
     assert(true.bernoulliCCDF(0.5) == 0);
@@ -133,7 +136,8 @@ bool bernoulliInvCDF(T)(const T q, const T p)
 ///
 version(mir_stat_test)
 @safe pure nothrow @nogc
-unittest {
+unittest
+{
     assert(0.25.bernoulliInvCDF(0.5) == false);
     assert(0.5.bernoulliInvCDF(0.5) == false);
     assert(0.75.bernoulliInvCDF(0.5) == true);
@@ -145,7 +149,8 @@ unittest {
 
 version(mir_stat_test)
 @safe pure nothrow @nogc
-unittest {
+unittest
+{
     assert(0.0.bernoulliInvCDF(0.5) == false);
     assert(1.0.bernoulliInvCDF(0.5) == true);
     assert(0.0.bernoulliInvCDF(0.7) == false);
@@ -176,7 +181,8 @@ T bernoulliLPMF(T)(const bool x, const T p)
 ///
 version(mir_stat_test)
 @safe pure nothrow @nogc
-unittest {
+unittest
+{
     import mir.math.common: approxEqual, log;
 
     assert(true.bernoulliLPMF(0.5).approxEqual(log(bernoulliPMF(true, 0.5))));

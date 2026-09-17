@@ -23,7 +23,7 @@ T logBeta(T)(const T alpha, const T beta)
 }
 
 version(mir_stat_test)
-@safe pure nothrow
+@safe pure nothrow @nogc
 unittest
 {
     import mir.math.common: approxEqual, log;

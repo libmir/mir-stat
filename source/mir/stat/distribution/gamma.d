@@ -383,7 +383,8 @@ unittest
 // test floating point version
 version(mir_stat_test)
 @safe pure nothrow @nogc
-unittest {
+unittest
+{
     import mir.math.common: exp;
     import mir.test: shouldApprox;
 
@@ -400,7 +401,8 @@ unittest {
 // test size_t version
 version(mir_stat_test)
 @safe pure nothrow @nogc
-unittest {
+unittest
+{
     import mir.math.common: exp;
     import mir.test: shouldApprox;
 

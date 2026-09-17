@@ -33,8 +33,8 @@ T geometricPMF(T)(const size_t k, const T p)
 }
 
 ///
-@safe pure @nogc nothrow
 version(mir_stat_test)
+@safe pure nothrow @nogc
 unittest
 {
     import mir.test: shouldApprox;
@@ -77,8 +77,8 @@ T geometricCDF(T)(const T x, const T p)
 }
 
 ///
-@safe pure @nogc nothrow
 version(mir_stat_test)
+@safe pure nothrow @nogc
 unittest
 {
     import mir.test: shouldApprox;
@@ -128,8 +128,8 @@ T geometricCCDF(T)(const T x, const T p)
 }
 
 ///
-@safe pure @nogc nothrow
 version(mir_stat_test)
+@safe pure nothrow @nogc
 unittest
 {
     import mir.test: shouldApprox;
@@ -180,8 +180,8 @@ T geometricInvCDF(T)(const T q, const T p)
 }
 
 ///
-@safe pure @nogc nothrow
 version(mir_stat_test)
+@safe pure nothrow @nogc
 unittest
 {
     import mir.test: should;
@@ -223,8 +223,8 @@ T geometricLPMF(T)(const size_t k, const T p)
 }
 
 ///
-@safe pure @nogc nothrow
 version(mir_stat_test)
+@safe pure nothrow @nogc
 unittest
 {
     import mir.math.common: exp;

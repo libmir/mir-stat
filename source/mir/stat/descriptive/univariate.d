@@ -1592,7 +1592,7 @@ unittest
 
 /// Arbitrary median
 version(mir_stat_test)
-@safe pure nothrow
+@safe pure nothrow @nogc
 unittest
 {
     assert(median(0, 1, 2, 3, 4) == 2);
@@ -1721,8 +1721,9 @@ unittest
 
 // Check issue #328 fixed
 version(mir_stat_test)
-@safe pure nothrow
-unittest {
+@safe pure nothrow @nogc
+unittest
+{
     import mir.ndslice.topology: iota;
 
     auto x = iota(18);
@@ -2078,7 +2079,7 @@ unittest
 
 // Test input range
 version(mir_stat_test)
-@safe pure nothrow
+@safe pure nothrow @nogc
 unittest
 {
     import mir.math.sum: Summation;
@@ -2313,7 +2314,7 @@ unittest
 
 // Test input range
 version(mir_stat_test)
-@safe pure nothrow
+@safe pure nothrow @nogc
 unittest
 {
     import mir.math.sum: Summation;
@@ -4228,7 +4229,7 @@ template quantile(string quantileAlgo,
 /// Simple example
 version(mir_stat_test)
 @safe pure nothrow
-unittest 
+unittest
 {
     import mir.algorithm.iteration: all;
     import mir.math.common: approxEqual;
@@ -4247,7 +4248,7 @@ unittest
 //no change in x by default
 version(mir_stat_test)
 @safe pure nothrow
-unittest 
+unittest
 {
     import mir.algorithm.iteration: all;
     import mir.math.common: approxEqual;
@@ -4264,7 +4265,7 @@ unittest
 /// Modify probability in place
 version(mir_stat_test)
 @safe pure nothrow
-unittest 
+unittest
 {
     import mir.algorithm.iteration: all;
     import mir.math.common: approxEqual;
@@ -4283,7 +4284,7 @@ unittest
 /// Quantile of vector
 version(mir_stat_test)
 @safe pure nothrow
-unittest 
+unittest
 {
     import mir.algorithm.iteration: all;
     import mir.math.common: approxEqual;
@@ -4302,7 +4303,7 @@ unittest
 /// Quantile of matrix
 version(mir_stat_test)
 @safe pure
-unittest 
+unittest
 {
     import mir.algorithm.iteration: all;
     import mir.math.common: approxEqual;
@@ -4352,7 +4353,7 @@ unittest
 /// Allow modification of input
 version(mir_stat_test)
 @safe pure nothrow
-unittest 
+unittest
 {
     import mir.algorithm.iteration: all;
     import mir.math.common: approxEqual;
@@ -4368,7 +4369,7 @@ unittest
 /// Double-check probability is not modified
 version(mir_stat_test)
 @safe pure nothrow
-unittest 
+unittest
 {
     import mir.algorithm.iteration: all;
     import mir.math.common: approxEqual;
@@ -4386,7 +4387,8 @@ unittest
 
 // Multi-probability results own their storage after the inputs go out of scope.
 version(mir_stat_test)
-@safe pure nothrow @nogc unittest
+@safe pure nothrow @nogc
+unittest
 {
     import mir.ndslice.slice: sliced, IteratorOf;
     import mir.rc.array: RCI;
@@ -4533,7 +4535,7 @@ unittest
 /// Support for array
 version(mir_stat_test)
 @safe pure nothrow
-unittest 
+unittest
 {
     import mir.algorithm.iteration: all;
     import mir.math.common: approxEqual;
@@ -4550,7 +4552,7 @@ unittest
 //@nogc test
 version(mir_stat_test)
 @safe pure nothrow @nogc
-unittest 
+unittest
 {
     import mir.algorithm.iteration: all;
     import mir.math.common: approxEqual;
@@ -4596,7 +4598,7 @@ unittest
 //x.length = 20, qtile at tenths
 version(mir_stat_test)
 @safe pure nothrow
-unittest 
+unittest
 {
     import mir.algorithm.iteration: all;
     import mir.math.common: approxEqual;
@@ -4620,7 +4622,7 @@ unittest
 //x.length = 20, qtile at 5s
 version(mir_stat_test)
 @safe pure nothrow
-unittest 
+unittest
 {
     import mir.algorithm.iteration: all;
     import mir.math.common: approxEqual;
@@ -4644,7 +4646,7 @@ unittest
 //x.length = 21, qtile at tenths
 version(mir_stat_test)
 @safe pure nothrow
-unittest 
+unittest
 {
     import mir.algorithm.iteration: all;
     import mir.math.common: approxEqual;
@@ -4669,7 +4671,7 @@ unittest
 //x.length = 21, qtile at 5s
 version(mir_stat_test)
 @safe pure nothrow
-unittest 
+unittest
 {
     import mir.algorithm.iteration: all;
     import mir.math.common: approxEqual;
@@ -4872,7 +4874,7 @@ template interquartileRange(string quantileAlgo, bool allowModifySlice = false)
 /// Simple example
 version(mir_stat_test)
 @safe pure nothrow
-unittest 
+unittest
 {
     import mir.math.common: approxEqual;
     import mir.ndslice.slice: sliced;
@@ -4887,7 +4889,7 @@ unittest
 //no change in x by default
 version(mir_stat_test)
 @safe pure nothrow
-unittest 
+unittest
 {
     import mir.algorithm.iteration: all;
     import mir.math.common: approxEqual;
@@ -4903,7 +4905,7 @@ unittest
 /// Interquartile Range of vector
 version(mir_stat_test)
 @safe pure nothrow
-unittest 
+unittest
 {
     import mir.math.common: approxEqual;
     import mir.ndslice.slice: sliced;
@@ -4917,7 +4919,7 @@ unittest
 /// Interquartile Range of matrix
 version(mir_stat_test)
 @safe pure
-unittest 
+unittest
 {
     import mir.math.common: approxEqual;
     import mir.ndslice.fuse: fuse;
@@ -4934,7 +4936,7 @@ unittest
 /// Allow modification of input
 version(mir_stat_test)
 @safe pure nothrow
-unittest 
+unittest
 {
     import mir.algorithm.iteration: all;
     import mir.math.common: approxEqual;
@@ -4993,7 +4995,7 @@ unittest
 /// Support for array
 version(mir_stat_test)
 @safe pure nothrow
-unittest 
+unittest
 {
     import mir.math.common: approxEqual;
 
@@ -5024,8 +5026,8 @@ unittest
 
 // Arbitrary test
 version(mir_stat_test)
-@safe pure nothrow
-unittest 
+@safe pure nothrow @nogc
+unittest
 {
     import mir.math.common: approxEqual;
 
@@ -5035,7 +5037,7 @@ unittest
 // @nogc test
 version(mir_stat_test)
 @safe pure nothrow @nogc
-unittest 
+unittest
 {
     import mir.math.common: approxEqual;
     import mir.ndslice.slice: sliced;
@@ -5337,7 +5339,7 @@ unittest
 
 /// Can also set functions to change type of dispersion that is used
 version(mir_stat_test)
-@safe
+@safe pure nothrow
 unittest
 {
     import mir.functional: naryFun;
@@ -5778,7 +5780,7 @@ unittest
 
 // Test input range
 version(mir_stat_test)
-@safe pure nothrow
+@safe pure nothrow @nogc
 unittest
 {
     import mir.math.sum: Summation;
@@ -6209,7 +6211,7 @@ unittest
 
 // check withAsSlice
 version(mir_stat_test)
-@safe pure nothrow
+@safe pure nothrow @nogc
 unittest
 {
     import mir.math.sum: Summation;
@@ -6398,7 +6400,7 @@ unittest
 
 // check withAsSlice
 version(mir_stat_test)
-@safe pure nothrow
+@safe pure nothrow @nogc
 unittest
 {
     import mir.math.common: approxEqual;
@@ -6861,7 +6863,7 @@ unittest
 
 // check withAsSlice
 version(mir_stat_test)
-@safe pure nothrow
+@safe pure nothrow @nogc
 unittest
 {
     import mir.math.sum: Summation;
@@ -7232,7 +7234,7 @@ unittest
 
 /// Can also set algorithm type
 version(mir_stat_test)
-@safe pure
+@safe pure nothrow
 unittest
 {
     import mir.math.common: approxEqual, pow, sqrt;
@@ -7267,7 +7269,7 @@ unittest
 
 // Alt version with x a tenth of above's value
 version(mir_stat_test)
-@safe pure
+@safe pure nothrow
 unittest
 {
     import mir.math.common: approxEqual, pow, sqrt;
@@ -7809,7 +7811,7 @@ unittest
 
 // Test input range
 version(mir_stat_test)
-@safe pure nothrow
+@safe pure nothrow @nogc
 unittest
 {
     import mir.math.sum: Summation;
@@ -9937,7 +9939,7 @@ struct EntropyAccumulator(T, Summation summation)
 }
 
 /// test basic functionality
-version(mir_stat_test_uni)
+version(mir_stat_test)
 @safe pure nothrow
 unittest
 {
@@ -9952,7 +9954,7 @@ unittest
 }
 
 // test floats
-version(mir_stat_test_uni)
+version(mir_stat_test)
 @safe pure nothrow
 unittest
 {
@@ -9967,7 +9969,7 @@ unittest
 }
 
 // test put EntropyAccumulator
-version(mir_stat_test_uni)
+version(mir_stat_test)
 @safe pure nothrow
 unittest
 {
@@ -10088,7 +10090,7 @@ template entropy(string summation)
 }
 
 ///
-version(mir_stat_test_uni)
+version(mir_stat_test)
 @safe pure nothrow
 unittest
 {
@@ -10103,7 +10105,7 @@ unittest
 }
 
 /// Entropy of vector
-version(mir_stat_test_uni)
+version(mir_stat_test)
 @safe pure nothrow
 unittest
 {
@@ -10118,7 +10120,7 @@ unittest
 }
 
 /// Entropy of matrix
-version(mir_stat_test_uni)
+version(mir_stat_test)
 @safe pure
 unittest
 {
@@ -10133,7 +10135,7 @@ unittest
 }
 
 /// Column entropy of matrix
-version(mir_stat_test_uni)
+version(mir_stat_test)
 @safe pure
 unittest
 {
@@ -10163,7 +10165,7 @@ unittest
 }
 
 /// Can also set algorithm or output type
-version(mir_stat_test_uni)
+version(mir_stat_test)
 @safe pure nothrow
 unittest
 {
@@ -10185,7 +10187,7 @@ unittest
 For integral slices, pass output type as template parameter to ensure output
 type is correct.
 +/
-version(mir_stat_test_uni)
+version(mir_stat_test)
 @safe pure nothrow
 unittest
 {
@@ -10203,7 +10205,7 @@ unittest
 }
 
 /// Arbitrary entropy
-version(mir_stat_test_uni)
+version(mir_stat_test)
 @safe pure nothrow @nogc
 unittest
 {
@@ -10214,7 +10216,7 @@ unittest
 }
 
 // Dynamic array / UFCS
-version(mir_stat_test_uni)
+version(mir_stat_test)
 @safe pure nothrow
 unittest
 {
@@ -10225,7 +10227,7 @@ unittest
 }
 
 // Check type of alongDim result
-version(mir_stat_test_uni)
+version(mir_stat_test)
 @safe pure nothrow
 unittest
 {
@@ -10240,7 +10242,7 @@ unittest
 }
 
 // @nogc test
-version(mir_stat_test_uni)
+version(mir_stat_test)
 @safe pure @nogc nothrow
 unittest
 {
@@ -10436,7 +10438,7 @@ unittest
 
 /// Can also set algorithm or output type
 version(mir_stat_test)
-//@safe pure nothrow
+@safe pure nothrow
 unittest
 {
     import mir.math.common: approxEqual;
@@ -11695,7 +11697,7 @@ unittest
 
 /// Can also set algorithm type
 version(mir_stat_test)
-@safe pure
+@safe pure nothrow
 unittest
 {
     import mir.math.common: approxEqual;

@@ -50,7 +50,8 @@ T cauchyPDF(T)(const T x, const T location, const T scale)
 ///
 version(mir_stat_test)
 @safe pure nothrow @nogc
-unittest {
+unittest
+{
     import mir.test: shouldApprox;
 
     cauchyPDF(-3.0).shouldApprox == 0.03183099;
@@ -109,7 +110,8 @@ T cauchyCDF(T)(const T x, const T location, const T scale)
 ///
 version(mir_stat_test)
 @safe pure nothrow @nogc
-unittest {
+unittest
+{
     import mir.test: shouldApprox;
 
     cauchyCDF(-3.0).shouldApprox == 0.1024164;
@@ -165,7 +167,8 @@ T cauchyCCDF(T)(const T x, const T location, const T scale)
 ///
 version(mir_stat_test)
 @safe pure nothrow @nogc
-unittest {
+unittest
+{
     import mir.test: shouldApprox;
 
     cauchyCCDF(-3.0).shouldApprox == 0.8975836;
@@ -235,7 +238,8 @@ T cauchyInvCDF(T)(const T p, const T location, const T scale)
 ///
 version(mir_stat_test)
 @safe pure nothrow @nogc
-unittest {
+unittest
+{
     import mir.test: shouldApprox;
 
     cauchyInvCDF(0.0).shouldApprox == -double.infinity;
@@ -297,7 +301,8 @@ T cauchyLPDF(T)(const T x, const T location, const T scale)
 ///
 version(mir_stat_test)
 @safe pure nothrow @nogc
-unittest {
+unittest
+{
     import mir.math.common: log;
     import mir.test: shouldApprox;
 

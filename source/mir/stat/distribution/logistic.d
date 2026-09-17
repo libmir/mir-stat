@@ -224,7 +224,8 @@ T logisticInvCDF(T)(const T p, const T location, const T scale)
 ///
 version(mir_stat_test)
 @safe pure nothrow @nogc
-unittest {
+unittest
+{
     import mir.test: shouldApprox;
 
     logisticInvCDF(0.0).shouldApprox == -double.infinity;

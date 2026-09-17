@@ -45,7 +45,8 @@ T generalizedParetoPDF(T)(const T x, const T mu, const T sigma, const T xi)
 ///
 version(mir_stat_test)
 @safe pure nothrow @nogc
-unittest {
+unittest
+{
     import mir.test: shouldApprox;
 
     1.0.generalizedParetoPDF(1, 1, 0.5).shouldApprox == 1;
@@ -86,7 +87,8 @@ T generalizedParetoCDF(T)(const T x, const T mu, const T sigma, const T xi)
 ///
 version(mir_stat_test)
 @safe pure nothrow @nogc
-unittest {
+unittest
+{
     import mir.test: shouldApprox;
 
     1.0.generalizedParetoCDF(1, 1, 0.5).shouldApprox == 0;
@@ -127,7 +129,8 @@ T generalizedParetoCCDF(T)(const T x, const T mu, const T sigma, const T xi)
 ///
 version(mir_stat_test)
 @safe pure nothrow @nogc
-unittest {
+unittest
+{
     import mir.test: shouldApprox;
 
     1.0.generalizedParetoCCDF(1, 1, 0.5).shouldApprox == 1;
@@ -170,7 +173,8 @@ T generalizedParetoInvCDF(T)(const T p, const T mu, const T sigma, const T xi)
 ///
 version(mir_stat_test)
 @safe pure nothrow @nogc
-unittest {
+unittest
+{
     import mir.test: shouldApprox;
 
     0.0.generalizedParetoInvCDF(1, 1, 0.5).shouldApprox == 1;
@@ -212,7 +216,8 @@ T generalizedParetoLPDF(T)(const T x, const T mu, const T sigma, const T xi)
 ///
 version(mir_stat_test)
 @safe pure nothrow @nogc
-unittest {
+unittest
+{
     import mir.math.common: log;
     import mir.test: shouldApprox;
 

@@ -39,7 +39,8 @@ T paretoPDF(T)(const T x, const T xMin, const T alpha)
 ///
 version(mir_stat_test)
 @safe pure nothrow @nogc
-unittest {
+unittest
+{
     import mir.test: shouldApprox;
 
     1.0.paretoPDF(1, 3).shouldApprox == 3;
@@ -73,7 +74,8 @@ T paretoCDF(T)(const T x, const T xMin, const T alpha)
 ///
 version(mir_stat_test)
 @safe pure nothrow @nogc
-unittest {
+unittest
+{
     import mir.test: shouldApprox;
 
     1.0.paretoCDF(1, 3).shouldApprox == 0;
@@ -107,7 +109,8 @@ T paretoCCDF(T)(const T x, const T xMin, const T alpha)
 ///
 version(mir_stat_test)
 @safe pure nothrow @nogc
-unittest {
+unittest
+{
     import mir.test: shouldApprox;
 
     1.0.paretoCCDF(1, 3).shouldApprox == 1;
@@ -142,7 +145,8 @@ T paretoInvCDF(T)(const T p, const T xMin, const T alpha)
 ///
 version(mir_stat_test)
 @safe pure nothrow @nogc
-unittest {
+unittest
+{
     import mir.test: shouldApprox;
 
     0.0.paretoInvCDF(1, 3).shouldApprox == 1;
@@ -177,7 +181,8 @@ T paretoLPDF(T)(const T x, const T xMin, const T alpha)
 ///
 version(mir_stat_test)
 @safe pure nothrow @nogc
-unittest {
+unittest
+{
     import mir.math.common: log;
     import mir.test: shouldApprox;
 

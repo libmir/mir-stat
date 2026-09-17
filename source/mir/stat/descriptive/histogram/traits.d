@@ -399,6 +399,7 @@ package CountType checkedBreakCount(CountType, alias rule, S)(S observations)
 
 // Floating counters must represent a rule's integer result exactly.
 version(mir_stat_test)
+pure
 unittest
 {
     import mir.ndslice.slice: sliced;

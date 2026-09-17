@@ -2840,6 +2840,7 @@ unittest
 
 // Check that assert thrown when string input does not match enum
 version(mir_stat_test)
+pure
 unittest
 {
     import core.exception: AssertError;
@@ -3437,6 +3438,7 @@ unittest
 
 // Integral endpoints must not truncate the count or overflow during addition.
 version(mir_stat_test)
+pure
 unittest
 {
     import core.exception: AssertError;
@@ -3466,6 +3468,7 @@ unittest
 
 // Reject malformed axes at construction, before indexing or allocation.
 version(mir_stat_test)
+pure
 unittest
 {
     import core.exception: AssertError;
@@ -3569,6 +3572,7 @@ unittest
 
 // Reject invalid extreme configurations and NaN observations before updating counts.
 version(mir_stat_test)
+pure
 unittest
 {
     import std.meta: AliasSeq;
@@ -3710,6 +3714,7 @@ unittest
 
 // Reject collapsed rounded grids, including collapse caused by the inverse transform.
 version(mir_stat_test)
+pure
 unittest
 {
     import core.exception: AssertError;
@@ -3740,6 +3745,7 @@ unittest
 
 // Unit-width grids must reject rounded-away steps in every floating-point type.
 version(mir_stat_test)
+pure
 unittest
 {
     import core.exception: AssertError;

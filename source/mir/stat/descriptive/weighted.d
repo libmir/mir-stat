@@ -259,7 +259,7 @@ unittest
 
 // universal 2-d slice test, assume weights sum to 1, using map
 version(mir_stat_test)
-@safe pure nothrow
+@safe pure nothrow @nogc
 unittest
 {
     import mir.math.sum: Summation;
@@ -275,7 +275,7 @@ unittest
 
 // 2-d canonical slice test, assume weights sum to 1, using map
 version(mir_stat_test)
-@safe pure nothrow
+@safe pure nothrow @nogc
 unittest
 {
     import mir.math.sum: Summation;
@@ -357,7 +357,7 @@ unittest
 
 // universal slice test, do not assume weights sum to 1
 version(mir_stat_test)
-@safe pure nothrow
+@safe pure nothrow @nogc
 unittest
 {
     import mir.math.sum: Summation;
@@ -373,7 +373,7 @@ unittest
 
 // canonical slice test, do not assume weights sum to 1
 version(mir_stat_test)
-@safe pure nothrow
+@safe pure nothrow @nogc
 unittest
 {
     import mir.math.sum: Summation;
@@ -389,7 +389,7 @@ unittest
 
 // 2-d universal slice test, do not assume weights sum to 1
 version(mir_stat_test)
-@safe pure nothrow
+@safe pure nothrow @nogc
 unittest
 {
     import mir.math.sum: Summation;
@@ -405,7 +405,7 @@ unittest
 
 // 2-d canonical slice test, do not assume weights sum to 1
 version(mir_stat_test)
-@safe pure nothrow
+@safe pure nothrow @nogc
 unittest
 {
     import mir.math.sum: Summation;
@@ -484,7 +484,7 @@ unittest
 
 // repeat test, assume weights sum to 1
 version(mir_stat_test)
-@safe pure nothrow
+@safe pure nothrow @nogc
 unittest
 {
     import mir.math.sum: Summation;
@@ -501,7 +501,7 @@ unittest
 
 // repeat test, do not assume weights sum to 1
 version(mir_stat_test)
-@safe pure nothrow
+@safe pure nothrow @nogc
 unittest
 {
     import mir.math.sum: Summation;
@@ -518,7 +518,7 @@ unittest
 
 // range test without shape, assume weights sum to 1
 version(mir_stat_test)
-@safe pure nothrow
+@safe pure nothrow @nogc
 unittest
 {
     import mir.math.sum: Summation;
@@ -535,7 +535,7 @@ unittest
 
 // range test without shape, do not assume weights sum to 1
 version(mir_stat_test)
-@safe pure nothrow
+@safe pure nothrow @nogc
 unittest
 {
     import mir.math.sum: Summation;
@@ -913,7 +913,7 @@ unittest
 Mean works for complex numbers and other user-defined types (provided they
 can be converted to a floating point or complex type)
 +/
-version(mir_test_weighted)
+version(mir_stat_test)
 @safe pure nothrow
 unittest
 {
@@ -1163,7 +1163,7 @@ unittest
 
 // universal slice test
 version(mir_stat_test)
-@safe pure nothrow
+@safe pure nothrow @nogc
 unittest
 {
     import mir.math.sum: Summation;
@@ -1179,7 +1179,7 @@ unittest
 
 // canonical slice test
 version(mir_stat_test)
-@safe pure nothrow
+@safe pure nothrow @nogc
 unittest
 {
     import mir.math.sum: Summation;
@@ -1195,7 +1195,7 @@ unittest
 
 // 2-d universal slice test
 version(mir_stat_test)
-@safe pure nothrow
+@safe pure nothrow @nogc
 unittest
 {
     import mir.math.sum: Summation;
@@ -1211,7 +1211,7 @@ unittest
 
 // 2-d canonical slice test
 version(mir_stat_test)
-@safe pure nothrow
+@safe pure nothrow @nogc
 unittest
 {
     import mir.math.sum: Summation;
@@ -1289,7 +1289,7 @@ unittest
 
 // repeat test
 version(mir_stat_test)
-@safe pure nothrow
+@safe pure nothrow @nogc
 unittest
 {
     import mir.math.sum: Summation;
@@ -1306,7 +1306,7 @@ unittest
 
 // range test without shape
 version(mir_stat_test)
-@safe pure nothrow
+@safe pure nothrow @nogc
 unittest
 {
     import mir.math.sum: Summation;
@@ -1566,7 +1566,7 @@ unittest
 /++
 wsum works for complex numbers and other user-defined types
 +/
-version(mir_test_weighted)
+version(mir_stat_test)
 @safe pure nothrow
 unittest
 {

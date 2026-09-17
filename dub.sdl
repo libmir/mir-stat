@@ -15,7 +15,13 @@ configuration "library" {
 }
 buildType "unittest" {
     buildOptions "unittests" "debugMode" "debugInfo"
-    versions "mir_stat_test" "mir_stat_test_bultincomplex"
+    versions "mir_stat_test"
+    dflags "-lowmem"
+}
+// Include the slower higher-precision probability tests.
+buildType "unittest-slow-numerics" {
+    buildOptions "unittests" "debugMode" "debugInfo"
+    versions "mir_stat_test" "mir_stat_test_slow_numerics"
     dflags "-lowmem"
 }
 buildType "docs-check" {
@@ -45,7 +51,7 @@ buildType "unittest-dip1000" {
 }
 buildType "unittest-cov" {
     buildOptions "unittests" "coverage" "debugMode" "debugInfo"
-    versions "mir_stat_test" "mir_stat_test_bultincomplex"
+    versions "mir_stat_test"
     dflags "-lowmem"
 }
 buildType "unittest-release" {

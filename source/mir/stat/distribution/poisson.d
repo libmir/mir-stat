@@ -127,7 +127,8 @@ template poissonPMF(string poissonAlgo)
 ///
 version(mir_stat_test)
 @safe pure nothrow @nogc
-unittest {
+unittest
+{
     import mir.math.common: approxEqual, exp;
     
     assert(3.poissonPMF(6.0).approxEqual(exp(-6.0) * 216 / 6));
@@ -142,7 +143,8 @@ unittest {
 // test PoissonAlgo.direct
 version(mir_stat_test)
 @safe pure nothrow @nogc
-unittest {
+unittest
+{
     import mir.math.common: approxEqual, exp;
 
     assert(0.poissonPMF(5.0).approxEqual(exp(-5.0)));
@@ -161,7 +163,8 @@ unittest {
 // test PoissonAlgo.gamma
 version(mir_stat_test)
 @safe pure nothrow @nogc
-unittest {
+unittest
+{
     import mir.math.common: approxEqual;
     for (size_t i; i < 20; i++) {
         assert(i.poissonPMF!"gamma"(5.0).approxEqual(poissonPMF(i, 5.0)));
@@ -171,7 +174,8 @@ unittest {
 // test PoissonAlgo.approxNormal / approxNormalContinuityCorrection
 version(mir_stat_test)
 @safe pure nothrow @nogc
-unittest {
+unittest
+{
     import mir.math.common: approxEqual, sqrt;
     import mir.stat.distribution.normal: normalCDF, normalPDF;
     for (size_t i; i < 20; i++) {
@@ -207,7 +211,8 @@ T fp_poissonPMF(T)(const size_t k, const T lambda)
 ///
 version(mir_stat_test)
 @safe pure nothrow @nogc
-unittest {
+unittest
+{
     import mir.bignum.fp: Fp;
     import mir.conv: to;
     import mir.math.common: approxEqual, exp;
@@ -300,7 +305,8 @@ template poissonCDF(string poissonAlgo)
 ///
 version(mir_stat_test)
 @safe pure nothrow @nogc
-unittest {
+unittest
+{
     import mir.math.common: approxEqual;
     
     assert(3.poissonCDF(6.0).approxEqual(poissonPMF(0, 6.0) + poissonPMF(1, 6.0) + poissonPMF(2, 6.0) + poissonPMF(3, 6.0)));
@@ -315,7 +321,8 @@ unittest {
 // test PoissonAlgo.direct
 version(mir_stat_test)
 @safe pure nothrow @nogc
-unittest {
+unittest
+{
     import mir.math.common: approxEqual;
     
     static double sumOfPoissonPMFs(size_t k, double lambda) {
@@ -334,7 +341,8 @@ unittest {
 // test PoissonAlgo.gamma
 version(mir_stat_test)
 @safe pure nothrow @nogc
-unittest {
+unittest
+{
     import mir.math.common: approxEqual;
     for (size_t i; i < 20; i++) {
         assert(i.poissonCDF!"gamma"(5.0).approxEqual(poissonCDF(i, 5.0)));
@@ -344,7 +352,8 @@ unittest {
 // test PoissonAlgo.approxNormal / approxNormalContinuityCorrection
 version(mir_stat_test)
 @safe pure nothrow @nogc
-unittest {
+unittest
+{
     import mir.math.common: approxEqual, sqrt;
     import mir.stat.distribution.normal: normalCDF;
     for (size_t i; i < 20; i++) {
@@ -425,7 +434,8 @@ template poissonCCDF(string poissonAlgo)
 ///
 version(mir_stat_test)
 @safe pure nothrow @nogc
-unittest {
+unittest
+{
     import mir.math.common: approxEqual;
 
     assert(3.poissonCCDF(6.0).approxEqual(1.0 - (poissonPMF(0, 6.0) + poissonPMF(1, 6.0) + poissonPMF(2, 6.0) + poissonPMF(3, 6.0))));
@@ -440,7 +450,8 @@ unittest {
 // test PoissonAlgo.direct
 version(mir_stat_test)
 @safe pure nothrow @nogc
-unittest {
+unittest
+{
     import mir.math.common: approxEqual;
 
     for (size_t i; i < 20; i++) {
@@ -451,7 +462,8 @@ unittest {
 // test PoissonAlgo.gamma
 version(mir_stat_test)
 @safe pure nothrow @nogc
-unittest {
+unittest
+{
     import mir.math.common: approxEqual;
     for (size_t i; i < 20; i++) {
         assert(i.poissonCCDF!"gamma"(5.0).approxEqual(poissonCCDF(i, 5.0)));
@@ -461,7 +473,8 @@ unittest {
 // test PoissonAlgo.approxNormal / approxNormalContinuityCorrection
 version(mir_stat_test)
 @safe pure nothrow @nogc
-unittest {
+unittest
+{
     import mir.math.common: approxEqual, sqrt;
     import mir.stat.distribution.normal: normalCCDF;
     for (size_t i; i < 20; i++) {
@@ -623,7 +636,8 @@ template poissonInvCDF(string poissonAlgo)
 ///
 version(mir_stat_test)
 @safe pure nothrow @nogc
-unittest {
+unittest
+{
     import mir.math.common: approxEqual;
     
     assert(0.15.poissonInvCDF(6.0) == 3);
@@ -638,7 +652,8 @@ unittest {
 // test PoissonAlgo.direct
 version(mir_stat_test)
 @safe pure nothrow @nogc
-unittest {
+unittest
+{
     assert(0.poissonInvCDF(5.0) == 0);
     for (double x = 0.05; x < 1; x = x + 0.05) {
         size_t value = x.poissonInvCDF(5.0);
@@ -650,7 +665,8 @@ unittest {
 // test PoissonAlgo.direct, large lambda branch, check small p
 version(mir_stat_test)
 @safe pure nothrow @nogc
-unittest {
+unittest
+{
     double x = 1.0e-9;
     assert(x.poissonInvCDF(20.0) == 0);
 }
@@ -658,7 +674,8 @@ unittest {
 // test PoissonAlgo.direct, large lambda branch
 version(mir_stat_test)
 @safe pure nothrow @nogc
-unittest {
+unittest
+{
     assert(0.poissonInvCDF(25.0) == 0);
     for (double x = 0.01; x < 1; x = x + 0.01) {
         size_t value = x.poissonInvCDF(25.0);
@@ -670,7 +687,8 @@ unittest {
 // test PoissonAlgo.gamma (note the difference in how it is tested)
 version(mir_stat_test)
 @safe pure nothrow @nogc
-unittest {
+unittest
+{
     import mir.math.common: approxEqual;
 
     assert(0.0.poissonInvCDF!"gamma"(5) == double.infinity);
@@ -684,7 +702,8 @@ unittest {
 // test PoissonAlgo.approxNormal / approxNormalContinuityCorrection
 version(mir_stat_test)
 @safe pure nothrow @nogc
-unittest {
+unittest
+{
     import mir.math.common: floor, sqrt;
     import mir.stat.distribution.normal: normalInvCDF;
 
@@ -722,7 +741,8 @@ T poissonLPMF(T)(const size_t k, const T lambda)
 ///
 version(mir_stat_test)
 @safe pure nothrow @nogc
-unittest {
+unittest
+{
     import mir.math.common: approxEqual, exp;
 
     for (size_t i; i <= 10; i++) {

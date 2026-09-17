@@ -39,7 +39,8 @@ T cornishFisherInvCDF(T)(const T p, const T mu, const T std, const T skewness, c
 ///
 version(mir_stat_test)
 @safe pure @nogc nothrow
-unittest {
+unittest
+{
     import mir.test: shouldApprox;
 
     0.99.cornishFisherInvCDF(0, 1, 0.1, 1).shouldApprox == 2.629904;
@@ -66,7 +67,8 @@ T cornishFisherInvCDF(T)(const T p, const T skewness = 0, const T excessKurtosis
 ///
 version(mir_stat_test)
 @safe pure @nogc nothrow
-unittest {
+unittest
+{
     import mir.test: shouldApprox;
 
     0.5.cornishFisherInvCDF.shouldApprox == 0;
@@ -100,7 +102,8 @@ T cornishFisherInvCDFImpl(T)(const T x, const T skewness, const T excessKurtosis
 //
 version(mir_stat_test)
 @safe pure @nogc nothrow
-unittest {
+unittest
+{
     import mir.test: shouldApprox;
 
     0.0.cornishFisherInvCDFImpl(0, 0).shouldApprox == 0;

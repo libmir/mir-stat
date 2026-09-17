@@ -36,7 +36,8 @@ static if (__VERSION__ != 2102) {
     
     version(mir_stat_test)
     @safe pure nothrow @nogc
-    unittest {
+    unittest
+    {
         import std.math.exponential: log;
         import mir.test: shouldApprox;
         float x1 = -0.0125;
