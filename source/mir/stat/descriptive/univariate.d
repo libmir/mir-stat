@@ -3986,9 +3986,12 @@ auto quantileImpl(F, QuantileAlgo quantileAlgo, Iterator, G)(Slice!Iterator slic
 /++
 Computes the quantile(s) of the input, given one or more probabilities `p`.
 
-By default, if `p` is a $(NDSLICEREF slice, Slice), built-in dynamic array, or type
-with `asSlice`, then the output type is a reference-counted copy of the input. A
-compile-time parameter is provided to instead overwrite the input in-place.
+By default, multiple probabilities produce a reference-counted result that owns
+its storage independently of the observations and probabilities. This also
+applies when probabilities are passed as variadic arguments.
+The probability-slice overload can instead overwrite the probability storage
+when `allowModifyProbability` is true. It returns that slice, preserving its
+ownership semantics. The variadic overload always returns a new owning result.
 
 For all $(LREF QuantileAlgo) except $(LREF QuantileAlgo.type1) and $(LREF QuantileAlgo.type3),
 by default, if `F` is not floating point type or complex type, then the result
@@ -4002,6 +4005,7 @@ Params:
     F = controls type of output
     quantileAlgo = algorithm for calculating quantile (default: $(LREF QuantileAlgo.type7))
     allowModifySlice = controls whether the input is modified in place, default is false
+    allowModifyProbability = controls whether probability storage is overwritten, default is false
 
 Returns:
     The quantile of all the elements in the input at probability `p`.
@@ -4087,7 +4091,8 @@ template quantile(F,
             foreach(ref e; temp_p) {
                 e = quantileImpl!(FF, quantileAlgo, IteratorOf!(typeof(temp)), G)(temp, e);
             }
-            return temp_p;
+            // Return the owning slice, not its temporary borrowed view.
+            return val_p;
         }
     }
 
@@ -4118,7 +4123,8 @@ template quantile(F,
         foreach(ref e; temp_p) {
             e = quantileImpl!(FF, quantileAlgo, IteratorOf!(typeof(temp)), G)(temp, e);
         }
-        return temp_p;
+        // Return the owning slice, not its temporary borrowed view.
+        return val_p;
     }
 
     /// ditto
@@ -4376,6 +4382,61 @@ unittest
     auto result = x.quantile!("type7", false, false)(qtile);
     assert(result.all!approxEqual([1.0, 3.0]));
     assert(qtile.all!approxEqual(qtile_copy));
+}
+
+// Multi-probability results own their storage after the inputs go out of scope.
+version(mir_stat_test)
+@safe pure nothrow @nogc unittest
+{
+    import mir.ndslice.slice: sliced, IteratorOf;
+    import mir.rc.array: RCI;
+
+    static auto fromLocalInputs(bool variadic, bool modifyInput)()
+    {
+        import mir.ndslice.allocation: rcslice;
+        static immutable samples = [4.0, 0, 3, 1, 2];
+        static immutable levels = [0.25, 0.5, 0.75];
+        auto values = rcslice!double(samples);
+        auto probabilities = rcslice!double(levels);
+        static if (variadic)
+            auto result = values.quantile!(double, QuantileAlgo.type7, modifyInput)(
+                probabilities[0], probabilities[1], probabilities[2]);
+        else
+            auto result = values.quantile!(double, QuantileAlgo.type7, modifyInput)(
+                probabilities);
+
+        // This also catches the old borrowed return type deterministically,
+        // without depending on whether an allocator reuses the freed block.
+        static assert(is(IteratorOf!(typeof(result)) == RCI!double));
+        values[] = -1;
+        probabilities[] = 0;
+        return result;
+    }
+
+    static foreach (variadic; [false, true])
+    {
+        static foreach (modifyInput; [false, true])
+        {
+            {
+                auto result = fromLocalInputs!(variadic, modifyInput)();
+                assert(result == [1.0, 2.0, 3.0]);
+                // Copies must retain ownership when the original is released.
+                auto retained = result;
+                result = typeof(result).init;
+                assert(retained == [1.0, 2.0, 3.0]);
+            }
+        }
+    }
+
+    // In-place probability updates intentionally keep the caller's storage.
+    double[5] values = [4, 0, 3, 1, 2];
+    double[3] probabilities = [0.25, 0.5, 0.75];
+    auto inPlace = values[].sliced.quantile!(QuantileAlgo.type7, false, true)(
+        probabilities[].sliced);
+    static assert(is(IteratorOf!(typeof(inPlace)) == double*));
+    inPlace[0] = 9;
+    assert(probabilities[] == [9.0, 2.0, 3.0]);
+    assert(values[] == [4.0, 0.0, 3.0, 1.0, 2.0]);
 }
 
 /// Can also set algorithm type
