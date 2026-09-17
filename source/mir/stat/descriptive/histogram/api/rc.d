@@ -255,8 +255,8 @@ template rchistogramImpl(CountType, Iterator, alias Axis, AxisOptions axisOption
     +/
 
     HistogramAccumulator!(Slice!(RCI!(CountType)), VariableAxis!(CountType, Iterator, axisOptions))
-        rchistogramImpl(size_t N, SliceKind kindA, SliceKind kindB)(
-                   Slice!(Iterator, N, kindA) dataSlice,
+        rchistogramImpl(DataIterator, size_t N, SliceKind kindA, SliceKind kindB)(
+                   Slice!(DataIterator, N, kindA) dataSlice,
                    Slice!(Iterator, 1, kindB) axisSlice)
         if (__traits(isSame, Axis, VariableAxis))
     {
@@ -1737,10 +1737,8 @@ unittest
     auto data = [0.0, 1, 2, 3, 4, 8, 12, 16].sliced;
     // Probabilities can be selected at runtime; here each interval spans 25%.
     auto probabilities = [0.0, 0.25, 0.5, 0.75, 1.0].sliced;
-    // Keep the boundaries in caller-owned storage.
-    auto boundaries = (new double[probabilities.length]).sliced;
-    foreach (i; 0 .. probabilities.length)
-        boundaries[i] = data.quantile(probabilities[i]);
+    // Quantile returns owning boundaries; the histogram retains that ownership.
+    auto boundaries = data.quantile(probabilities);
     assert(boundaries == [0.0, 1.75, 3.5, 9.0, 16.0]);
 
     // VariableAxis uses [low, high) bins by default. Extend the last boundary
@@ -2132,4 +2130,40 @@ version(mir_stat_test)
             assert(overridden.counts == [2, 2]);
         }
     }
+}
+
+// Observation and boundary iterators need not match; ownership follows the boundaries.
+version(mir_stat_test)
+@safe pure nothrow @nogc unittest
+{
+    import mir.ndslice.slice: sliced;
+    import mir.ndslice.allocation: rcslice;
+    import mir.stat.descriptive.histogram.axis: VariableAxis;
+
+    static immutable samples = [0.5, 1.5, 2.5];
+    static immutable edges = [0.0, 1.0, 3.0];
+    auto boundaries = rcslice!double(edges);
+    auto h = samples[].sliced.rchistogram!VariableAxis(boundaries);
+    static assert(is(typeof(h.axis[0]) == VariableAxis!(size_t, RCI!double, AxisOptions())));
+    assert(h.counts == [1, 2]);
+    // Release the caller's reference. The histogram must retain the boundaries.
+    boundaries = typeof(boundaries).init;
+    assert(h.axis[0].bin(1).high == 3.0);
+    h.put(2.0);
+    assert(h.counts == [1, 3]);
+
+    // The reverse combination retains borrowed boundary semantics.
+    auto observations = rcslice!double(samples);
+    auto borrowed = observations.rchistogram!VariableAxis(edges[].sliced);
+    assert(borrowed.counts == [1, 2]);
+    static assert(is(typeof(borrowed.axis[0]) ==
+        VariableAxis!(size_t, immutable(double)*, AxisOptions())));
+
+    // Counter overrides and underflow/overflow options use the same helper.
+    enum options = AxisOptions(false, true, true);
+    auto customized = samples[].sliced.rchistogram!(uint, VariableAxis, options)(rcslice!double(edges));
+    static assert(is(customized.CountType == uint));
+    customized.put(-1.0);
+    customized.put(3.0);
+    assert(customized.counts == [1, 1, 2, 1]);
 }
