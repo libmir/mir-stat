@@ -571,6 +571,7 @@ unittest
 
 /// Evaluate a runtime rule before constructing a frequency accumulator.
 version(mir_stat_test)
+@safe pure nothrow
 unittest
 {
     import mir.ndslice.slice: sliced;
@@ -593,6 +594,7 @@ unittest
 
 /// Use quantile boundaries and relative frequencies to prepare a percentogram.
 version(mir_stat_test)
+@safe pure nothrow
 unittest
 {
     import mir.ndslice.slice: sliced;
@@ -680,6 +682,7 @@ unittest
 
 /// Traverse cumulative frequencies without allocating a snapshot.
 version(mir_stat_test)
+pure nothrow
 unittest
 {
     import mir.stat.descriptive.histogram.axis: IntegralAxis, AxisOptions;
@@ -704,6 +707,7 @@ unittest
 
 /// Include underflow/overflow entries and select the output precision.
 version(mir_stat_test)
+pure nothrow
 unittest
 {
     import mir.stat.descriptive.histogram.axis: IntegralAxis, AxisOptions;
@@ -1036,6 +1040,7 @@ unittest
 
 // Rejected input must not inflate the total; a partially accepted range stays consistent.
 version(mir_stat_test)
+pure
 unittest
 {
     import core.exception: AssertError;
@@ -1492,6 +1497,7 @@ struct CumulativeFrequencyBin(HistogramElement, FrequencyType)
 
 /// Format cumulative entries with both the bin count and running statistics.
 version(mir_stat_test)
+pure
 unittest
 {
     import std.format: format;
@@ -1658,6 +1664,7 @@ struct FrequencyBin(HistogramElement, FrequencyType)
 
 /// Format frequencies with the count and bin coordinates.
 version(mir_stat_test)
+pure
 unittest
 {
     import std.format: format;
@@ -1722,7 +1729,8 @@ unittest
 
 // Mir formatting preserves GC-free output for all frequency precisions.
 version(mir_stat_test)
-@nogc unittest
+pure nothrow @nogc
+unittest
 {
     import mir.appender: scopedBuffer;
     import std.meta: AliasSeq;
@@ -1886,6 +1894,7 @@ struct FrequencyBinView(Storage, FrequencyType, BinCoverage coverage, Axis...)
 
 /// Iterate over ordinary bins with their counts and relative frequencies.
 version(mir_stat_test)
+pure nothrow
 unittest
 {
     import mir.stat.descriptive.histogram.axis: IntegralAxis, AxisOptions;
@@ -1904,6 +1913,7 @@ unittest
 
 /// Select an output type independently of the accumulator.
 version(mir_stat_test)
+pure nothrow
 unittest
 {
     import mir.stat.descriptive.histogram.axis: IntegralAxis, AxisOptions;
@@ -1917,6 +1927,7 @@ unittest
 
 /// Const views share live counts and totals while cursors move independently.
 version(mir_stat_test)
+pure nothrow
 unittest
 {
     import mir.stat.descriptive.histogram.axis: IntegralAxis, AxisOptions;
@@ -1954,6 +1965,7 @@ unittest
 
 /// Traverse joint bins, keeping per-axis coordinates and a live denominator.
 version(mir_stat_test)
+pure nothrow
 unittest
 {
     import mir.stat.descriptive.histogram.axis: IntegralAxis, AxisOptions;
@@ -1993,6 +2005,7 @@ unittest
 
 /// Count out-of-range observations once, including joint corner bins.
 version(mir_stat_test)
+pure nothrow
 unittest
 {
     import mir.stat.descriptive.histogram.axis: IntegralAxis, AxisOptions;
@@ -2089,6 +2102,7 @@ unittest
 
 // Bin descriptions work across all built-in axis types.
 version(mir_stat_test)
+pure nothrow
 unittest
 {
     import mir.stat.descriptive.histogram.axis: IntegralAxis, RegularAxis,
@@ -2188,7 +2202,8 @@ version(mir_stat_test_lifetime)
     static assert(hasBorrowEscapeChecking,
         "Histogram lifetime tests require -preview=dip1000 escape checking");
 
-    @safe unittest
+    @safe pure nothrow
+    unittest
     {
         import mir.stat.descriptive.histogram.axis: IntegralAxis, AxisOptions;
         import mir.ndslice.allocation: rcslice;
@@ -2332,7 +2347,8 @@ unittest
 
 // Borrowed-view traversal is @nogc with either compiler escape-checking mode.
 version(mir_stat_test)
-@nogc unittest
+pure nothrow @nogc
+unittest
 {
     import mir.ndslice.allocation: rcslice;
     import mir.stat.descriptive.histogram.axis: IntegralAxis, AxisOptions;
@@ -2398,6 +2414,7 @@ unittest
 
 // A rejected batch element preserves the counts and total of earlier insertions.
 version(mir_stat_test)
+pure
 unittest
 {
     import core.exception: AssertError;
@@ -2475,7 +2492,7 @@ unittest
 // Three dimensions, mixed axis options, empty totals, and rejected observations.
 // Catching assertion failures requires @system.
 version(mir_stat_test)
-@system
+@system pure
 unittest
 {
     import std.meta: AliasSeq;
@@ -2891,7 +2908,8 @@ unittest
 
 // A marginal frequency accumulator owns its counts and maintained total.
 version(mir_stat_test_lifetime)
-@safe @nogc unittest
+@safe pure nothrow @nogc
+unittest
 {
     import mir.stat.descriptive.histogram.axis: IntegralAxis, AxisOptions;
     alias A = IntegralAxis!(uint, int, AxisOptions());
@@ -3055,7 +3073,8 @@ unittest
 
 // No GC allocations during traversal, including owning and strided storage.
 version(mir_stat_test)
-@nogc unittest
+pure nothrow @nogc
+unittest
 {
     import mir.ndslice.allocation: rcslice;
     import mir.ndslice.slice: Slice, SliceKind;
@@ -3117,6 +3136,7 @@ unittest
 
 // Small count types retain their type instead of exposing integer promotion.
 version(mir_stat_test)
+pure nothrow
 unittest
 {
     import mir.stat.descriptive.histogram.axis: IntegralAxis, AxisOptions;
@@ -3132,6 +3152,7 @@ unittest
 
 // Floating-point count storage starts accumulation at zero, not its NaN init.
 version(mir_stat_test)
+pure nothrow
 unittest
 {
     import mir.stat.descriptive.histogram.axis: IntegralAxis, AxisOptions;

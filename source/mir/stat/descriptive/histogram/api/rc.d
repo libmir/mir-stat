@@ -1430,6 +1430,7 @@ template rchistogram(CountType, alias Axis, AxisOptions axisOptions = AxisOption
 
 /// Choose logarithmic bins using a rule evaluated in logarithmic coordinates.
 version(mir_stat_test)
+@safe pure nothrow
 unittest
 {
     import mir.ndslice.slice: sliced;
@@ -1467,6 +1468,7 @@ version(mir_stat_test)
 
 /// Supply a custom rule and override count types and axis options.
 version(mir_stat_test)
+@safe pure nothrow @nogc
 unittest
 {
     import mir.ndslice.slice: sliced;
@@ -1489,6 +1491,7 @@ unittest
 
 /// Evaluate a rule using runtime settings before constructing the histogram.
 version(mir_stat_test)
+@safe pure nothrow
 unittest
 {
     import mir.ndslice.slice: sliced;
@@ -1727,6 +1730,7 @@ unittest
 
 /// Compute quantile boundaries first to construct a percentogram's counts.
 version(mir_stat_test)
+@safe pure nothrow
 unittest
 {
     import mir.ndslice.slice: sliced;
@@ -1919,6 +1923,7 @@ unittest
 
 // Rules are invoked once; explicit axis construction gives identical results.
 version(mir_stat_test)
+@safe nothrow
 unittest
 {
     import mir.ndslice.slice: sliced;

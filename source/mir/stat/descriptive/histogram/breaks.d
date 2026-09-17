@@ -236,7 +236,7 @@ unittest
 
 // withAsSlice test
 version(mir_stat_test)
-@safe pure nothrow
+@safe pure nothrow @nogc
 unittest
 {
     import mir.rc.array: RCArray;
@@ -357,7 +357,7 @@ unittest
 
 // withAsSlice test
 version(mir_stat_test)
-@safe pure nothrow
+@safe pure nothrow @nogc
 unittest
 {
     import mir.rc.array: RCArray;
@@ -566,7 +566,7 @@ unittest
 
 // withAsSlice test
 version(mir_stat_test)
-@safe pure nothrow
+@safe pure nothrow @nogc
 unittest
 {
     import mir.rc.array: RCArray;
@@ -659,6 +659,7 @@ unittest
 
 // Invalid inputs and counts must be rejected before conversion to CountType.
 version(mir_stat_test)
+pure
 unittest
 {
     import core.exception: AssertError;

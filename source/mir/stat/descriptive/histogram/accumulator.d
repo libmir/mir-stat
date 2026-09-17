@@ -837,7 +837,7 @@ unittest
 
 // Check custom CircleAxis
 version(mir_stat_test)
-@safe pure nothrow
+@safe pure nothrow @nogc
 unittest
 {
     import mir.stat.descriptive.histogram.axis: AxisOptions;
@@ -1289,6 +1289,7 @@ struct HistogramBin(Count, BinDescriptions...)
 
 /// Format one bin or a range of bins using standard D formatting.
 version(mir_stat_test)
+@safe pure
 unittest
 {
     import std.format: format;
@@ -1308,6 +1309,7 @@ unittest
 
 /// Print a histogram with writeln or writefln, or choose precision per field.
 version(mir_stat_test)
+@safe
 unittest
 {
     import std.stdio: writeln, writefln;
@@ -1345,6 +1347,7 @@ unittest
 
 // Joint coordinates and end-bin labels do not require ordinary-bin metadata.
 version(mir_stat_test)
+@safe pure
 unittest
 {
     import std.format: format;
@@ -1360,6 +1363,7 @@ unittest
 
 // Category labels, custom descriptions, and output-range writers.
 version(mir_stat_test)
+@safe pure
 unittest
 {
     import std.format: format;
@@ -2061,6 +2065,7 @@ unittest
 
 // Additional storage forms keep const data readable and traversal independent.
 version(mir_stat_test)
+pure nothrow
 unittest
 {
     import mir.ndslice.slice: Slice, SliceKind;
@@ -2153,6 +2158,7 @@ unittest
 
 // Validate storage shape before accepting an accumulator.
 version(mir_stat_test)
+pure
 unittest
 {
     import core.exception: AssertError;
@@ -2288,6 +2294,7 @@ unittest
 
 // Validate every dimension and leave all counts unchanged on invalid input.
 version(mir_stat_test)
+pure
 unittest
 {
     import core.exception: AssertError;
@@ -2424,6 +2431,7 @@ unittest
 
 // Failed classification or malformed flow storage must not partially record a pair.
 version(mir_stat_test)
+pure
 unittest
 {
     import core.exception: AssertError;
@@ -2516,6 +2524,7 @@ unittest
 
 // Adding enabled flow bins cannot wrap an axis extent before shape validation.
 version(mir_stat_test)
+pure
 unittest
 {
     import core.exception: AssertError;
@@ -2964,6 +2973,7 @@ unittest
 
 // Reject malformed joint view shapes and overflowing ordinary-bin products.
 version(mir_stat_test)
+pure
 unittest
 {
     import core.exception: AssertError;
@@ -3047,6 +3057,7 @@ unittest
 
 // Expanded storage is mandatory, and extent arithmetic cannot wrap.
 version(mir_stat_test)
+pure
 unittest
 {
     import core.exception: AssertError;
@@ -3163,6 +3174,7 @@ unittest
 
 // Categorical and variable end bins cannot expose invalid ordinary descriptions.
 version(mir_stat_test)
+pure
 unittest
 {
     import core.exception: AssertError;
@@ -3326,7 +3338,8 @@ unittest
 
 // Borrowed variable-axis boundaries remain borrowed, with read-only access.
 version(mir_stat_test)
-@safe unittest
+@safe pure nothrow
+unittest
 {
     import mir.ndslice.slice: sliced;
     import mir.stat.descriptive.histogram.axis: VariableAxis, IntegralAxis, AxisOptions;
@@ -3381,6 +3394,7 @@ version(mir_stat_test_lifetime)
 
 // Validate the full source shape again before projecting externally shared arrays.
 version(mir_stat_test)
+pure
 unittest
 {
     import core.exception: AssertError;
