@@ -3061,7 +3061,7 @@ unittest
     {
         alias CountType = size_t;
         alias BinType = int;
-        enum N_bin = size_t.max;
+        size_t N_bin = size_t.max;
         size_t index(int) const { return 0; }
         bool isOverflow(int) const { return false; }
     }
