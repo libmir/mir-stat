@@ -1422,6 +1422,24 @@ struct CumulativeFrequencyBin(HistogramElement, FrequencyType)
     static assert(N == 1, "CumulativeFrequencyBin requires one axis");
     private HistogramElement _entry;
 
+    /++
+    Write coordinates and the recorded statistics to an output range.
+    Uses the same coordinate notation as HistogramBin.
+    +/
+    void toString(Writer)(ref Writer writer) const
+    {
+        import mir.format: print;
+        import mir.appender: scopedBuffer;
+        import std.range.primitives: put;
+        // Mir printers need both character and string put overloads. Buffering
+        // also supports the character-only writer used by std.format.
+        auto buffer = scopedBuffer!(char, 256);
+        _entry.formatCoordinates(buffer);
+        print(buffer, ": count=", count, ", cumulativeCount=", cumulativeCount,
+            ", cumulativeFrequency=", cumulativeFrequency);
+        put(writer, buffer.data);
+    }
+
     /// Whether this coordinate is ordinary; dimension defaults to zero.
     bool isOrdinary(size_t dimension = 0)() const @property
         if (dimension < N)
@@ -1470,6 +1488,20 @@ struct CumulativeFrequencyBin(HistogramElement, FrequencyType)
     typeof(HistogramElement.init.count) cumulativeCount;
     /// Cumulative count divided by the total, or NaN for a zero total.
     FrequencyType cumulativeFrequency;
+}
+
+/// Format cumulative entries with both the bin count and running statistics.
+version(mir_stat_test)
+unittest
+{
+    import std.format: format;
+    import mir.stat.descriptive.histogram.axis: IntegralAxis, AxisOptions;
+    alias A = IntegralAxis!(uint, double, AxisOptions());
+    auto f = FrequencyAccumulator!(uint[], A)([1u, 3u], A(2, 0.0));
+    auto entries = f.cumulativeFrequencyBins;
+    entries.popFront();
+    assert(format("%s", entries.front) ==
+        "bin(low=1.0, high=2.0): count=3, cumulativeCount=4, cumulativeFrequency=1.0");
 }
 
 /++
@@ -1559,6 +1591,23 @@ struct FrequencyBin(HistogramElement, FrequencyType)
         static assert(false, "FrequencyBin requires a HistogramBin element");
     private HistogramElement _entry;
 
+    /++
+    Write coordinates and the recorded statistics to an output range.
+    Uses the same coordinate notation as HistogramBin.
+    +/
+    void toString(Writer)(ref Writer writer) const
+    {
+        import mir.format: print;
+        import mir.appender: scopedBuffer;
+        import std.range.primitives: put;
+        // Mir printers need both character and string put overloads. Buffering
+        // also supports the character-only writer used by std.format.
+        auto buffer = scopedBuffer!(char, 256);
+        _entry.formatCoordinates(buffer);
+        print(buffer, ": count=", count, ", frequency=", frequency);
+        put(writer, buffer.data);
+    }
+
     /// Whether this coordinate is ordinary; dimension defaults to zero.
     bool isOrdinary(size_t dimension = 0)() const @property
         if (dimension < N)
@@ -1605,6 +1654,98 @@ struct FrequencyBin(HistogramElement, FrequencyType)
     typeof(HistogramElement.init.count) count;
     /// Relative frequency when the entry was read.
     FrequencyType frequency;
+}
+
+/// Format frequencies with the count and bin coordinates.
+version(mir_stat_test)
+unittest
+{
+    import std.format: format;
+    import mir.stat.descriptive.histogram.axis: IntegralAxis, AxisOptions;
+    alias A = IntegralAxis!(uint, double, AxisOptions());
+    auto f = FrequencyAccumulator!(uint[], A)([1u, 3u], A(2, 0.0));
+    const entry = f.frequencyBins.front;
+    assert(format("%s", entry) == "bin(low=0.0, high=1.0): count=1, frequency=0.25");
+    // Formatting a saved entry reads its recorded values, not live counts.
+    f.put(0.5);
+    assert(format("%s", entry) == "bin(low=0.0, high=1.0): count=1, frequency=0.25");
+}
+
+/// Print frequency entries with writeln or writefln, or choose precision per field.
+version(mir_stat_test)
+unittest
+{
+    import std.stdio: writeln, writefln;
+    import std.format: format;
+    import mir.stat.descriptive.histogram.axis: IntegralAxis, AxisOptions;
+
+    alias A = IntegralAxis!(uint, double, AxisOptions());
+    auto f = FrequencyAccumulator!(uint[], A)([1u, 3u], A(2, 0.0));
+
+    // Call printFrequencies(f) to write to stdout. The helper is compiled but
+    // deliberately not called here, keeping documentation tests silent.
+    void printFrequencies(typeof(f) frequencies)
+    {
+        // bins() exposes the underlying counts without frequency statistics.
+        writeln(frequencies.bins());
+        writefln("Histogram: %s", frequencies.bins());
+        writeln(frequencies.frequencyBins());
+        writefln("Frequencies: %s", frequencies.frequencyBins());
+        foreach (entry; frequencies.frequencyBins())
+        {
+            writeln(entry);
+            // Format fields individually to control their numeric precision.
+            writefln("low=%.2f, high=%.2f: count=%s, frequency=%.2f",
+                entry.bin.low, entry.bin.high, entry.count, entry.frequency);
+        }
+        // Cumulative entries also include running counts and frequencies.
+        writefln("Cumulative frequencies: %s", frequencies.cumulativeFrequencyBins());
+    }
+
+    // Check the corresponding text without performing console I/O.
+    enum expectedHistogram = "[bin(low=0.0, high=1.0): count=1, " ~
+        "bin(low=1.0, high=2.0): count=3]";
+    assert(format("%s", f.bins()) == expectedHistogram);
+    assert(format("Histogram: %s", f.bins()) == "Histogram: " ~ expectedHistogram);
+    enum expected = "[bin(low=0.0, high=1.0): count=1, frequency=0.25, " ~
+        "bin(low=1.0, high=2.0): count=3, frequency=0.75]";
+    assert(format("%s", f.frequencyBins()) == expected);
+    assert(format("Frequencies: %s", f.frequencyBins()) == "Frequencies: " ~ expected);
+    auto entry = f.frequencyBins().front;
+    assert(format("low=%.2f, high=%.2f: count=%s, frequency=%.2f",
+        entry.bin.low, entry.bin.high, entry.count, entry.frequency) ==
+        "low=0.00, high=1.00: count=1, frequency=0.25");
+    assert(format("Cumulative frequencies: %s", f.cumulativeFrequencyBins()) ==
+        "Cumulative frequencies: [bin(low=0.0, high=1.0): count=1, cumulativeCount=1, cumulativeFrequency=0.25, " ~
+        "bin(low=1.0, high=2.0): count=3, cumulativeCount=4, cumulativeFrequency=1.0]");
+}
+
+// Mir formatting preserves GC-free output for all frequency precisions.
+version(mir_stat_test)
+@nogc unittest
+{
+    import mir.appender: scopedBuffer;
+    import std.meta: AliasSeq;
+    import mir.stat.descriptive.histogram.axis: IntegralAxis, AxisOptions;
+
+    static void checkEntry(E)(E entry, string expected) @safe pure nothrow @nogc
+    {
+        import mir.format: print;
+        auto writer = scopedBuffer!(char, 256);
+        print(writer, entry);
+        assert(writer.data == expected);
+    }
+
+    alias A = IntegralAxis!(uint, double, AxisOptions());
+    uint[2] storage = [1, 3];
+    auto f = FrequencyAccumulator!(uint[], A)(storage[], A(2, 0.0));
+    static foreach (T; AliasSeq!(float, double, real))
+    {
+        checkEntry(f.frequencyBins!T.front,
+            "bin(low=0.0, high=1.0): count=1, frequency=0.25");
+        checkEntry(f.cumulativeFrequencyBins!T.front,
+            "bin(low=0.0, high=1.0): count=1, cumulativeCount=1, cumulativeFrequency=0.25");
+    }
 }
 
 /++

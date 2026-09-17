@@ -1171,6 +1171,65 @@ struct HistogramBin(Count, BinDescriptions...)
     private size_t[BinDescriptions.length] _indices;
     private Tuple!BinDescriptions _bins;
 
+    /++
+    Write bin coordinates and the recorded count to an output range.
+    Numeric coordinates use labeled bounds because descriptions do not retain
+    endpoint-closure options. Joint coordinates appear in axis order.
+    Underflow/overflow coordinates use their names instead of ordinary bounds.
+    Use standard range formatting on bins() to format multiple entries.
+    Mir formatting uses a small expandable buffer without GC allocation.
+    Attributes depend on the output writer and the values being formatted.
+    +/
+    void toString(Writer)(ref Writer writer) const
+    {
+        import mir.format: print;
+        import mir.appender: scopedBuffer;
+        import std.range.primitives: put;
+        // Mir printers need both character and string put overloads. Buffering
+        // also supports the character-only writer used by std.format.
+        auto buffer = scopedBuffer!(char, 256);
+        formatCoordinates(buffer);
+        print(buffer, ": count=", count);
+        put(writer, buffer.data);
+    }
+
+    package(mir.stat.descriptive.histogram)
+    void formatCoordinates(Writer)(ref Writer writer) const
+    {
+        import mir.format: print;
+        import std.range.primitives: put;
+        import std.traits: hasMember;
+
+        put(writer, "bin(");
+        static foreach (dimension; 0 .. BinDescriptions.length)
+        {
+            static if (dimension != 0)
+                put(writer, ", ");
+            static if (BinDescriptions.length > 1)
+                print(writer, "axis", dimension, "=");
+            if (isUnderflow!dimension)
+                put(writer, "underflow");
+            else if (isOverflow!dimension)
+                put(writer, "overflow");
+            else
+            {
+                static if (hasMember!(BinDescriptions[dimension], "low") &&
+                    hasMember!(BinDescriptions[dimension], "high"))
+                {
+                    static if (BinDescriptions.length > 1) put(writer, "(");
+                    print(writer, "low=",
+                        _bins[dimension].low, ", high=", _bins[dimension].high);
+                    static if (BinDescriptions.length > 1) put(writer, ")");
+                }
+                else static if (hasMember!(BinDescriptions[dimension], "slot"))
+                    print(writer, "slot=", _bins[dimension].slot);
+                else
+                    print(writer, _bins[dimension]);
+            }
+        }
+        put(writer, ")");
+    }
+
     /// Count at the time this element was read.
     Count count;
 
@@ -1226,6 +1285,147 @@ struct HistogramBin(Count, BinDescriptions...)
         assert(isOrdinary!dimension, "HistogramBin.bin: coordinate is not an ordinary bin");
         return _bins[dimension];
     }
+}
+
+/// Format one bin or a range of bins using standard D formatting.
+version(mir_stat_test)
+unittest
+{
+    import std.format: format;
+    import mir.format: text;
+    import mir.stat.descriptive.histogram.axis: IntegralAxis, AxisOptions;
+
+    alias A = IntegralAxis!(uint, double, AxisOptions());
+    auto h = HistogramAccumulator!(uint[], A)([2u, 1u], A(2, 0.0));
+    const entry = h.bins.front;
+    assert(format("%s", entry) == "bin(low=0.0, high=1.0): count=2");
+    assert(text(entry) == "bin(low=0.0, high=1.0): count=2");
+    // Standard range formatting supplies the brackets and separators.
+    assert(format("%s", h.bins) ==
+        "[bin(low=0.0, high=1.0): count=2, bin(low=1.0, high=2.0): count=1]");
+    // Bounds are labeled; they do not imply an endpoint-closure convention.
+}
+
+/// Print a histogram with writeln or writefln, or choose precision per field.
+version(mir_stat_test)
+unittest
+{
+    import std.stdio: writeln, writefln;
+    import std.format: format;
+    import mir.stat.descriptive.histogram.axis: IntegralAxis, AxisOptions;
+
+    alias A = IntegralAxis!(uint, double, AxisOptions());
+    auto h = HistogramAccumulator!(uint[], A)([2u, 1u], A(2, 0.0));
+
+    // Call printHistogram(h) to write to stdout. The helper is compiled but
+    // deliberately not called here, keeping documentation tests silent.
+    void printHistogram(typeof(h) histogram)
+    {
+        writeln(histogram.bins());
+        writefln("Histogram: %s", histogram.bins());
+        foreach (entry; histogram.bins())
+        {
+            writeln(entry);
+            // Format fields individually to control their numeric precision.
+            writefln("low=%.2f, high=%.2f: count=%s",
+                entry.bin.low, entry.bin.high, entry.count);
+        }
+    }
+
+    // Check the corresponding text without performing console I/O.
+    assert(format("%s", h.bins()) ==
+        "[bin(low=0.0, high=1.0): count=2, bin(low=1.0, high=2.0): count=1]");
+    assert(format("Histogram: %s", h.bins()) ==
+        "Histogram: [bin(low=0.0, high=1.0): count=2, bin(low=1.0, high=2.0): count=1]");
+    auto entry = h.bins().front;
+    assert(format("low=%.2f, high=%.2f: count=%s",
+        entry.bin.low, entry.bin.high, entry.count) ==
+        "low=0.00, high=1.00: count=2");
+}
+
+// Joint coordinates and end-bin labels do not require ordinary-bin metadata.
+version(mir_stat_test)
+unittest
+{
+    import std.format: format;
+    import mir.stat.descriptive.histogram.axis: IntegralAxis, AxisOptions;
+    alias A = IntegralAxis!(uint, double, AxisOptions(false, true, true));
+    auto h = HistogramAccumulator!(uint[][], A, A)(
+        [[0u, 1u, 0u], [0u, 2u, 0u], [0u, 0u, 3u]], A(1, 0.0), A(1, 0.0));
+    auto entries = h.bins!(BinCoverage.all);
+    assert(format("%s", entries[1]) == "bin(axis0=underflow, axis1=(low=0.0, high=1.0)): count=1");
+    assert(format("%s", entries[8]) == "bin(axis0=overflow, axis1=overflow): count=3");
+    assert(format("%s", entries[4]) == "bin(axis0=(low=0.0, high=1.0), axis1=(low=0.0, high=1.0)): count=2");
+}
+
+// Category labels, custom descriptions, and output-range writers.
+version(mir_stat_test)
+unittest
+{
+    import std.format: format;
+    import mir.stat.descriptive.histogram.axis: EnumAxis;
+    enum Color { red, blue }
+    auto h = HistogramAccumulator!(uint[], EnumAxis!(uint, Color))([1u, 2u], EnumAxis!(uint, Color)());
+    assert(format("%s", h.bins[1]) == "bin(slot=blue): count=2");
+
+    static struct Description
+    {
+        string toString() const { return "custom"; }
+    }
+    HistogramBin!(uint, Description) custom;
+    custom.count = 7;
+    assert(format("%s", custom) == "bin(custom): count=7");
+
+    static struct Writer
+    {
+        char[128] buffer;
+        size_t length;
+        void put(scope const(char)[] text) @safe pure nothrow @nogc
+        {
+            assert(length + text.length <= buffer.length);
+            buffer[length .. length + text.length] = text;
+            length += text.length;
+        }
+        void put(char value) @safe pure nothrow @nogc
+        {
+            assert(length < buffer.length);
+            buffer[length++] = value;
+        }
+    }
+    Writer writer;
+    const entry = h.bins[0];
+    entry.toString(writer);
+    assert(writer.buffer[0 .. writer.length] == "bin(slot=red): count=1");
+}
+
+// Numeric formatting into caller-provided storage is GC-free.
+version(mir_stat_test)
+@safe pure nothrow @nogc unittest
+{
+    import mir.stat.descriptive.histogram.axis: IntegralAxis, AxisOptions;
+    static struct Writer
+    {
+        char[128] buffer;
+        size_t length;
+        void put(scope const(char)[] text) @safe pure nothrow @nogc
+        {
+            assert(length + text.length <= buffer.length);
+            buffer[length .. length + text.length] = text;
+            length += text.length;
+        }
+        void put(char value) @safe pure nothrow @nogc
+        {
+            assert(length < buffer.length);
+            buffer[length++] = value;
+        }
+    }
+    alias A = IntegralAxis!(uint, double, AxisOptions());
+    uint[2] counts = [2, 1];
+    auto h = HistogramAccumulator!(uint[], A)(counts[], A(2, 0.0));
+    const entry = h.bins.front;
+    Writer writer;
+    entry.toString(writer);
+    assert(writer.buffer[0 .. writer.length] == "bin(low=0.0, high=1.0): count=2");
 }
 
 /++

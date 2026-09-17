@@ -18,9 +18,6 @@ public import mir.stat.descriptive.histogram.axis;
 public import mir.stat.descriptive.histogram.traits;
 public import mir.stat.descriptive.histogram.api;
 
-// TODO: Histogram result access
-// - Add histogram formatting.
-//
 // TODO: Construction conveniences
 // - Add factories for GC-backed storage and caller-selected allocation strategies.
 //
