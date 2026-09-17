@@ -322,7 +322,7 @@ unittest
 
 // Test input range
 version(mir_stat_test)
-@safe pure nothrow
+@safe pure nothrow @nogc
 unittest
 {
     import mir.math.sum: Summation;
@@ -627,7 +627,7 @@ unittest
 
 // Initializing with one point
 version(mir_stat_test)
-@safe pure nothrow
+@safe pure nothrow @nogc
 unittest
 {
     import mir.math.sum: Summation;
@@ -639,7 +639,7 @@ unittest
 
 // Test input range
 version(mir_stat_test)
-@safe pure nothrow
+@safe pure nothrow @nogc
 unittest
 {
     import mir.math.sum: Summation;
@@ -878,7 +878,7 @@ unittest
 
 // Initializing with one point
 version(mir_stat_test)
-@safe pure nothrow
+@safe pure nothrow @nogc
 unittest
 {
     import mir.math.sum: Summation;
@@ -915,7 +915,7 @@ unittest
 
 // Test input range
 version(mir_stat_test)
-@safe pure nothrow
+@safe pure nothrow @nogc
 unittest
 {
     import mir.math.sum: Summation;
@@ -1178,7 +1178,7 @@ unittest
 
 // Initializing with one point
 version(mir_stat_test)
-@safe pure nothrow
+@safe pure nothrow @nogc
 unittest
 {
     import mir.math.sum: Summation;
@@ -1190,7 +1190,7 @@ unittest
 
 // Test input range
 version(mir_stat_test)
-@safe pure nothrow
+@safe pure nothrow @nogc
 unittest
 {
     import mir.math.sum: Summation;
@@ -1558,7 +1558,7 @@ unittest
 
 // Initializing with one point
 version(mir_stat_test)
-@safe pure nothrow
+@safe pure nothrow @nogc
 unittest
 {
     import mir.math.sum: Summation;
@@ -1570,7 +1570,7 @@ unittest
 
 // Test input range
 version(mir_stat_test)
-@safe pure nothrow
+@safe pure nothrow @nogc
 unittest
 {
     import mir.math.sum: Summation;
@@ -2184,7 +2184,7 @@ unittest
 
 // Test input range
 version(mir_stat_test)
-@safe pure nothrow
+@safe pure nothrow @nogc
 unittest
 {
     import mir.math.sum: Summation;
@@ -2563,7 +2563,7 @@ unittest
 
 // Initializing with one point
 version(mir_stat_test)
-@safe pure nothrow
+@safe pure nothrow @nogc
 unittest
 {
     import mir.math.sum: Summation;
@@ -2575,7 +2575,7 @@ unittest
 
 // Test input range
 version(mir_stat_test)
-@safe pure nothrow
+@safe pure nothrow @nogc
 unittest
 {
     import mir.math.sum: Summation;
@@ -2857,7 +2857,7 @@ unittest
 
 // Initializing with one point
 version(mir_stat_test)
-@safe pure nothrow
+@safe pure nothrow @nogc
 unittest
 {
     import mir.math.sum: Summation;
@@ -2896,7 +2896,7 @@ unittest
 
 // Test input range
 version(mir_stat_test)
-@safe pure nothrow
+@safe pure nothrow @nogc
 unittest
 {
     import mir.math.sum: Summation;
@@ -3202,7 +3202,7 @@ unittest
 
 // Initializing with one point
 version(mir_stat_test)
-@safe pure nothrow
+@safe pure nothrow @nogc
 unittest
 {
     import mir.math.sum: Summation;
@@ -3215,7 +3215,7 @@ unittest
 
 // Test input range
 version(mir_stat_test)
-@safe pure nothrow
+@safe pure nothrow @nogc
 unittest
 {
     import mir.math.sum: Summation;
@@ -3637,7 +3637,7 @@ unittest
 
 // Initializing with one point
 version(mir_stat_test)
-@safe pure nothrow
+@safe pure nothrow @nogc
 unittest
 {
     import mir.math.sum: Summation;
@@ -3649,7 +3649,7 @@ unittest
 
 // Test input range
 version(mir_stat_test)
-@safe pure nothrow
+@safe pure nothrow @nogc
 unittest
 {
     import mir.math.sum: Summation;

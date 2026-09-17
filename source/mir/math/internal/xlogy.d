@@ -43,7 +43,7 @@ T xlogy(T)(const T x, const T y)
 }
 
 version(mir_stat_test)
-@safe pure nothrow
+@safe pure nothrow @nogc
 unittest
 {
     import mir.math.common: approxEqual, log;
@@ -67,7 +67,7 @@ T xlog1py(T)(const T x, const T y)
 }
 
 version(mir_stat_test)
-@safe pure nothrow
+@safe pure nothrow @nogc
 unittest
 {
     import mir.math.common: approxEqual, log;

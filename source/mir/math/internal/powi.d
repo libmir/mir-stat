@@ -69,7 +69,7 @@ Unqual!T powi(T)(T x, size_t i)
 }
 
 version(mir_stat_test)
-@safe pure nothrow
+@safe pure nothrow @nogc
 unittest
 {
     import mir.complex;
@@ -80,7 +80,7 @@ unittest
 }
 
 version(mir_stat_test)
-@safe pure nothrow
+@safe pure nothrow @nogc
 unittest
 {
     import std.complex: Complex;

@@ -1592,7 +1592,7 @@ unittest
 
 /// Arbitrary median
 version(mir_stat_test)
-@safe pure nothrow
+@safe pure nothrow @nogc
 unittest
 {
     assert(median(0, 1, 2, 3, 4) == 2);
@@ -1721,8 +1721,9 @@ unittest
 
 // Check issue #328 fixed
 version(mir_stat_test)
-@safe pure nothrow
-unittest {
+@safe pure nothrow @nogc
+unittest
+{
     import mir.ndslice.topology: iota;
 
     auto x = iota(18);
@@ -2078,7 +2079,7 @@ unittest
 
 // Test input range
 version(mir_stat_test)
-@safe pure nothrow
+@safe pure nothrow @nogc
 unittest
 {
     import mir.math.sum: Summation;
@@ -2313,7 +2314,7 @@ unittest
 
 // Test input range
 version(mir_stat_test)
-@safe pure nothrow
+@safe pure nothrow @nogc
 unittest
 {
     import mir.math.sum: Summation;
@@ -5024,8 +5025,8 @@ unittest
 
 // Arbitrary test
 version(mir_stat_test)
-@safe pure nothrow
-unittest 
+@safe pure nothrow @nogc
+unittest
 {
     import mir.math.common: approxEqual;
 
@@ -5337,7 +5338,7 @@ unittest
 
 /// Can also set functions to change type of dispersion that is used
 version(mir_stat_test)
-@safe
+@safe pure nothrow
 unittest
 {
     import mir.functional: naryFun;
@@ -5778,7 +5779,7 @@ unittest
 
 // Test input range
 version(mir_stat_test)
-@safe pure nothrow
+@safe pure nothrow @nogc
 unittest
 {
     import mir.math.sum: Summation;
@@ -6209,7 +6210,7 @@ unittest
 
 // check withAsSlice
 version(mir_stat_test)
-@safe pure nothrow
+@safe pure nothrow @nogc
 unittest
 {
     import mir.math.sum: Summation;
@@ -6398,7 +6399,7 @@ unittest
 
 // check withAsSlice
 version(mir_stat_test)
-@safe pure nothrow
+@safe pure nothrow @nogc
 unittest
 {
     import mir.math.common: approxEqual;
@@ -6861,7 +6862,7 @@ unittest
 
 // check withAsSlice
 version(mir_stat_test)
-@safe pure nothrow
+@safe pure nothrow @nogc
 unittest
 {
     import mir.math.sum: Summation;
@@ -7232,7 +7233,7 @@ unittest
 
 /// Can also set algorithm type
 version(mir_stat_test)
-@safe pure
+@safe pure nothrow
 unittest
 {
     import mir.math.common: approxEqual, pow, sqrt;
@@ -7267,7 +7268,7 @@ unittest
 
 // Alt version with x a tenth of above's value
 version(mir_stat_test)
-@safe pure
+@safe pure nothrow
 unittest
 {
     import mir.math.common: approxEqual, pow, sqrt;
@@ -7809,7 +7810,7 @@ unittest
 
 // Test input range
 version(mir_stat_test)
-@safe pure nothrow
+@safe pure nothrow @nogc
 unittest
 {
     import mir.math.sum: Summation;
@@ -10436,7 +10437,7 @@ unittest
 
 /// Can also set algorithm or output type
 version(mir_stat_test)
-//@safe pure nothrow
+@safe pure nothrow
 unittest
 {
     import mir.math.common: approxEqual;
@@ -11695,7 +11696,7 @@ unittest
 
 /// Can also set algorithm type
 version(mir_stat_test)
-@safe pure
+@safe pure nothrow
 unittest
 {
     import mir.math.common: approxEqual;
