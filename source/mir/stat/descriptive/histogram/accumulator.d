@@ -1404,7 +1404,8 @@ unittest
 
 // Numeric formatting into caller-provided storage is GC-free.
 version(mir_stat_test)
-@safe pure nothrow @nogc unittest
+@safe pure nothrow @nogc
+unittest
 {
     import mir.stat.descriptive.histogram.axis: IntegralAxis, AxisOptions;
     static struct Writer
@@ -3205,7 +3206,8 @@ unittest
 
 // Owning all-bin views outlive an accumulator; static-array views remain borrowed.
 version(mir_stat_test_lifetime)
-@safe unittest
+@safe
+unittest
 {
     import mir.ndslice.allocation: rcslice;
     import mir.stat.descriptive.histogram.axis: IntegralAxis, AxisOptions;
@@ -3358,7 +3360,8 @@ unittest
 
 // Owning counts can escape stack-backed sources; scope-bound borrowed axes are rejected.
 version(mir_stat_test_lifetime)
-@safe @nogc unittest
+@safe @nogc
+unittest
 {
     import mir.ndslice.slice: sliced;
     import mir.stat.descriptive.histogram.axis: VariableAxis, IntegralAxis, AxisOptions;

@@ -61,7 +61,8 @@ T studentsTPDF(T)(const T x, const T nu, const T mean, const T stdDev)
 ///
 version(mir_stat_test)
 @safe pure nothrow @nogc
-unittest {
+unittest
+{
     import mir.test: shouldApprox;
 
     studentsTPDF(-3.0, 5).shouldApprox == 0.01729258;
@@ -85,7 +86,8 @@ unittest {
 // Checking other DoF
 version(mir_stat_test)
 @safe pure nothrow @nogc
-unittest {
+unittest
+{
     import mir.test: shouldApprox;
 
     studentsTPDF(-3.0, 25).shouldApprox == 0.007253748;
@@ -108,7 +110,8 @@ unittest {
 // Checking negative location parameter
 version(mir_stat_test)
 @safe pure nothrow @nogc
-unittest {
+unittest
+{
     import mir.test: shouldApprox;
 
     studentsTPDF(-3.0, 5, -1, 2).shouldApprox == 0.2196798;
@@ -176,7 +179,8 @@ T studentsTCDF(T)(const T x, const T nu, const T mean, const T stdDev)
 ///
 version(mir_stat_test)
 @safe pure nothrow @nogc
-unittest {
+unittest
+{
     import mir.test: shouldApprox;
 
     studentsTCDF(-3.0, 5).shouldApprox == 0.01504962;
@@ -200,7 +204,8 @@ unittest {
 // Checking other DoF
 version(mir_stat_test)
 @safe pure nothrow @nogc
-unittest {
+unittest
+{
     import mir.test: shouldApprox;
 
     studentsTCDF(-3.0, 25).shouldApprox == 0.00301909;
@@ -223,7 +228,8 @@ unittest {
 // Checking negative location parameter
 version(mir_stat_test)
 @safe pure nothrow @nogc
-unittest {
+unittest
+{
     import mir.test: shouldApprox;
 
     studentsTCDF(-3.0, 5, -1, 2).shouldApprox == 0.1816087;
@@ -276,7 +282,8 @@ T studentsTCCDF(T)(const T x, const T nu, const T mean, const T stdDev)
 ///
 version(mir_stat_test)
 @safe pure nothrow @nogc
-unittest {
+unittest
+{
     import mir.test: shouldApprox;
 
     studentsTCCDF(-3.0, 5).shouldApprox == 0.9849504;
@@ -300,7 +307,8 @@ unittest {
 // Checking other DoF
 version(mir_stat_test)
 @safe pure nothrow @nogc
-unittest {
+unittest
+{
     import mir.test: shouldApprox;
 
     studentsTCCDF(-3.0, 25).shouldApprox == 0.9969809;
@@ -323,7 +331,8 @@ unittest {
 // Checking negative location parameter
 version(mir_stat_test)
 @safe pure nothrow @nogc
-unittest {
+unittest
+{
     import mir.test: shouldApprox;
 
     studentsTCCDF(-3.0, 5, -1, 2).shouldApprox == 0.8183913;
@@ -416,7 +425,8 @@ T studentsTInvCDF(T)(const T p, const T nu, const T mean, const T stdDev)
 ///
 version(mir_stat_test)
 @safe pure nothrow @nogc
-unittest {
+unittest
+{
     import mir.test: shouldApprox;
 
     studentsTInvCDF(0.0, 5).shouldApprox == -double.infinity;
@@ -441,7 +451,8 @@ unittest {
 // Checking other DoF
 version(mir_stat_test)
 @safe pure nothrow @nogc
-unittest {
+unittest
+{
     import mir.test: shouldApprox;
 
     studentsTInvCDF(0.1, 25).shouldApprox == -1.316345;
@@ -460,7 +471,8 @@ unittest {
 // Checking negative location parameter
 version(mir_stat_test)
 @safe pure nothrow @nogc
-unittest {
+unittest
+{
     import mir.test: shouldApprox;
 
     studentsTInvCDF(0.2, 5, -1, 2).shouldApprox == -2.839088;
@@ -519,7 +531,8 @@ T studentsTLPDF(T)(const T x, const T nu, const T mean, const T stdDev)
 ///
 version(mir_stat_test)
 @safe pure nothrow @nogc
-unittest {
+unittest
+{
     import mir.test: shouldApprox;
     import mir.math.common: log;
 
@@ -544,7 +557,8 @@ unittest {
 // Checking other DoF
 version(mir_stat_test)
 @safe pure nothrow @nogc
-unittest {
+unittest
+{
     import mir.test: shouldApprox;
     import mir.math.common: log;
 
@@ -568,7 +582,8 @@ unittest {
 // Checking negative location parameter
 version(mir_stat_test)
 @safe pure nothrow @nogc
-unittest {
+unittest
+{
     import mir.test: shouldApprox;
     import mir.math.common: log;
 

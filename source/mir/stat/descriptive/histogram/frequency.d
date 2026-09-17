@@ -2625,7 +2625,8 @@ unittest
 
 // Owning storage still yields borrowed frequency views: only the source owns the total.
 version(mir_stat_test_lifetime)
-@safe @nogc unittest
+@safe @nogc
+unittest
 {
     import mir.ndslice.allocation: rcslice;
     import mir.stat.descriptive.histogram.axis: IntegralAxis, AxisOptions;
@@ -2764,7 +2765,8 @@ unittest
 
 // Enabling all-bin coverage does not weaken borrowing or introduce GC allocation.
 version(mir_stat_test_lifetime)
-@safe @nogc unittest
+@safe @nogc
+unittest
 {
     import mir.ndslice.allocation: rcslice;
     import mir.stat.descriptive.histogram.axis: IntegralAxis, AxisOptions;
@@ -2835,7 +2837,8 @@ unittest
 
 // Count-only views can retain owning storage; static-array storage is still borrowed.
 version(mir_stat_test_lifetime)
-@safe @nogc unittest
+@safe @nogc
+unittest
 {
     import mir.ndslice.allocation: rcslice;
     import mir.stat.descriptive.histogram.axis: IntegralAxis, AxisOptions;

@@ -174,7 +174,8 @@ T weibullInvCDF(T)(const T p, const T shape, const T scale = 1)
 ///
 version(mir_stat_test)
 @safe pure nothrow @nogc
-unittest {
+unittest
+{
     import mir.test: shouldApprox;
 
     weibullInvCDF(0.0, 3).shouldApprox == 0.0;

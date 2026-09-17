@@ -36,9 +36,10 @@ T logFactorial(T = double)(ulong count, ulong start = 1)
 }
 
 ///
-@safe pure nothrow @nogc
 version(mir_stat_test_logBinomial)
-unittest {
+@safe pure nothrow @nogc
+unittest
+{
     import mir.math.common: approxEqual, log;
     assert(logFactorial(0) == 0);
     assert(logFactorial(1) == 0);
@@ -49,9 +50,10 @@ unittest {
 }
 
 // test starting points
-@safe pure nothrow @nogc
 version(mir_stat_test_logBinomial)
-unittest {
+@safe pure nothrow @nogc
+unittest
+{
     import mir.math.common: approxEqual, log;
     assert(logFactorial(2, 2).approxEqual(log(2.0 * 3)));
     assert(logFactorial(3, 2).approxEqual(log(2.0 * 3 * 4)));
@@ -65,9 +67,10 @@ unittest {
 }
 
 // test larger value
-@safe pure nothrow @nogc
 version(mir_stat_test_logBinomial)
-unittest {
+@safe pure nothrow @nogc
+unittest
+{
     import mir.bignum.fp: fp_log;
     import mir.math.common: approxEqual, log;
     import mir.math.numeric: factorial;
@@ -108,9 +111,10 @@ T logBinomialCoefficient(T = double)(ulong n, uint k)
 }
 
 ///
-@safe pure nothrow @nogc
 version(mir_stat_test)
-unittest {
+@safe pure nothrow @nogc
+unittest
+{
     import mir.bignum.fp: Fp, fp_log;
     import mir.math.numeric: binomialCoefficient;
     import mir.math.common: approxEqual, log;
@@ -122,9 +126,10 @@ unittest {
 }
 
 // test n = 6
-@safe pure nothrow @nogc
 version(mir_stat_test)
-unittest {
+@safe pure nothrow @nogc
+unittest
+{
     import mir.bignum.fp: fp_log;
     import mir.math.numeric: binomialCoefficient;
     import mir.math.common: approxEqual;
@@ -137,9 +142,10 @@ unittest {
 }
 
 // test n = 7
-@safe pure nothrow @nogc
 version(mir_stat_test)
-unittest {
+@safe pure nothrow @nogc
+unittest
+{
     import mir.bignum.fp: fp_log;
     import mir.math.numeric: binomialCoefficient;
     import mir.math.common: approxEqual;
@@ -153,9 +159,10 @@ unittest {
 }
 
 // test n = 8
-@safe pure nothrow @nogc
 version(mir_stat_test)
-unittest {
+@safe pure nothrow @nogc
+unittest
+{
     import mir.bignum.fp: fp_log;
     import mir.math.numeric: binomialCoefficient;
     import mir.math.common: approxEqual;
@@ -170,9 +177,10 @@ unittest {
 }
 
 // test k = 0, n = k
-@safe pure nothrow @nogc
 version(mir_stat_test)
-unittest {
+@safe pure nothrow @nogc
+unittest
+{
     assert(logBinomialCoefficient(5, 0) == 0);
     assert(logBinomialCoefficient(5, 5) == 0);
     assert(logBinomialCoefficient(1, 1) == 0);
@@ -180,9 +188,10 @@ unittest {
 }
 
 // Test large values
-@safe pure nothrow @nogc
 version(mir_stat_test)
-unittest {
+@safe pure nothrow @nogc
+unittest
+{
     import mir.bignum.fp: fp_log;
     import mir.math.numeric: binomialCoefficient;
     import mir.math.common: approxEqual, log;

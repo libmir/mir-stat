@@ -51,7 +51,8 @@ T betaProportionPDF(T)(const T x, const T mu, const T kappa)
 ///
 version(mir_stat_test)
 @safe pure nothrow @nogc
-unittest {
+unittest
+{
     import mir.math.common: approxEqual;
 
     assert(0.5.betaProportionPDF(0.5, 2) == 1);
@@ -90,7 +91,8 @@ T betaProportionCDF(T)(const T x, const T mu, const T kappa)
 ///
 version(mir_stat_test)
 @safe pure nothrow @nogc
-unittest {
+unittest
+{
     import mir.math.common: approxEqual;
 
     assert(0.5.betaProportionCDF(0.5, 2).approxEqual(0.5));
@@ -129,7 +131,8 @@ T betaProportionCCDF(T)(const T x, const T mu, const T kappa)
 ///
 version(mir_stat_test)
 @safe pure nothrow @nogc
-unittest {
+unittest
+{
     import mir.math.common: approxEqual;
 
     assert(0.5.betaProportionCCDF(0.5, 2).approxEqual(0.5));
@@ -168,7 +171,8 @@ T betaProportionInvCDF(T)(const T p, const T mu, const T kappa)
 ///
 version(mir_stat_test)
 @safe pure nothrow @nogc
-unittest {
+unittest
+{
     import mir.math.common: approxEqual;
 
     assert(0.5.betaProportionInvCDF(0.5, 2).approxEqual(0.5));
@@ -207,7 +211,8 @@ T betaProportionLPDF(T)(const T x, const T mu, const T kappa)
 ///
 version(mir_stat_test)
 @safe pure nothrow @nogc
-unittest {
+unittest
+{
     import mir.math.common: approxEqual, log;
 
     assert(0.5.betaProportionLPDF(0.5, 2).approxEqual(log(betaProportionPDF(0.5, 0.5, 2))));

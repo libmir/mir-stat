@@ -190,8 +190,8 @@ template hypergeometricPMF(string hypergeometricAlgo)
 }
 
 ///
-@safe pure @nogc nothrow
 version(mir_stat_test)
+@safe pure nothrow @nogc
 unittest
 {
     import mir.test: shouldApprox;
@@ -206,8 +206,8 @@ unittest
 }
 
 // Check n=0 condition
-@safe pure @nogc nothrow
 version(mir_stat_test)
+@safe pure nothrow @nogc
 unittest
 {
     import mir.test: shouldApprox;
@@ -216,8 +216,8 @@ unittest
 }
 
 /// Alternate algorithms
-@safe pure @nogc nothrow
 version(mir_stat_test)
+@safe pure nothrow @nogc
 unittest
 {
     import mir.test: shouldApprox;
@@ -262,8 +262,8 @@ T fp_hypergeometricPMF(T = Fp!128)(const size_t k, const size_t N, const size_t 
 }
 
 ///
-@safe pure @nogc nothrow
 version(mir_stat_test)
+@safe pure nothrow @nogc
 unittest
 {
     import mir.bignum.fp: Fp, fp_log;
@@ -418,8 +418,8 @@ template hypergeometricCDF(string hypergeometricAlgo)
 }
 
 ///
-@safe pure @nogc nothrow
 version(mir_stat_test)
+@safe pure nothrow @nogc
 unittest
 {
     import mir.test: shouldApprox;
@@ -434,8 +434,8 @@ unittest
 }
 
 // Check n=0 condition
-@safe pure @nogc nothrow
 version(mir_stat_test)
+@safe pure nothrow @nogc
 unittest
 {
     import mir.test: shouldApprox;
@@ -444,8 +444,8 @@ unittest
 }
 
 /// Alternate algorithms
-@safe pure @nogc nothrow
 version(mir_stat_test)
+@safe pure nothrow @nogc
 unittest
 {
     import mir.test: shouldApprox;
@@ -594,8 +594,8 @@ template hypergeometricCCDF(string hypergeometricAlgo)
 }
 
 ///
-@safe pure @nogc nothrow
 version(mir_stat_test)
+@safe pure nothrow @nogc
 unittest
 {
     import mir.test: shouldApprox;
@@ -610,8 +610,8 @@ unittest
 }
 
 // Check n=0 condition
-@safe pure @nogc nothrow
 version(mir_stat_test)
+@safe pure nothrow @nogc
 unittest
 {
     import mir.test: shouldApprox;
@@ -620,8 +620,8 @@ unittest
 }
 
 /// Alternate algorithms
-@safe pure @nogc nothrow
 version(mir_stat_test)
+@safe pure nothrow @nogc
 unittest
 {
     import mir.test: shouldApprox;
@@ -806,8 +806,8 @@ template hypergeometricInvCDF(string hypergeometricAlgo)
 }
 
 ///
-@safe pure @nogc nothrow
 version(mir_stat_test)
+@safe pure nothrow @nogc
 unittest
 {
     import mir.test: should;
@@ -826,8 +826,8 @@ unittest
 }
 
 // Check n=0 condition
-@safe pure @nogc nothrow
 version(mir_stat_test)
+@safe pure nothrow @nogc
 unittest
 {
     import mir.test: should;
@@ -838,8 +838,8 @@ unittest
 }
 
 /// Alternate algorithms
-@safe pure @nogc nothrow
 version(mir_stat_test)
+@safe pure nothrow @nogc
 unittest
 {
     import mir.test: shouldApprox;
@@ -858,7 +858,8 @@ unittest
 // test approxNormal / approxNormalContinuityCorrection
 version(mir_stat_test)
 @safe pure nothrow @nogc
-unittest {
+unittest
+{
     import mir.math.common: floor, sqrt;
     import mir.stat.distribution.normal: normalInvCDF;
     import mir.test: should;
@@ -883,7 +884,8 @@ unittest {
 // test alternate direct guess paths
 version(mir_stat_test)
 @safe pure nothrow @nogc
-unittest {
+unittest
+{
     import mir.math.common: approxEqual;
 
     static immutable size_t[] Ns = [120, 100, 200];
@@ -929,8 +931,8 @@ T hypergeometricLPMF(T = double)(const size_t k, const size_t N, const size_t K,
 }
 
 ///
-@safe pure @nogc nothrow
 version(mir_stat_test)
+@safe pure nothrow @nogc
 unittest
 {
     import mir.math.common: log;

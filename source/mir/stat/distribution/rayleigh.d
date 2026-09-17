@@ -211,7 +211,8 @@ T rayleighInvCDF(T)(const T p, const T scale)
 ///
 version(mir_stat_test)
 @safe pure nothrow @nogc
-unittest {
+unittest
+{
     import mir.test: shouldApprox;
 
     rayleighInvCDF(0.0).shouldApprox == 0.0;

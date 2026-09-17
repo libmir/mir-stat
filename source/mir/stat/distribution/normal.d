@@ -52,7 +52,8 @@ T normalCCDF(T)(const T a)
 ///
 version(mir_stat_test)
 @safe pure nothrow @nogc
-unittest {
+unittest
+{
     import mir.math.common: approxEqual;
 
     assert(0.5.normalCCDF.approxEqual(1 - normalCDF(0.5)));
@@ -62,7 +63,8 @@ unittest {
 
 version(mir_stat_test)
 @safe pure nothrow @nogc
-unittest {
+unittest
+{
     import mir.math.common: approxEqual;
 
     assert((-3.0).normalCCDF.approxEqual(1 - normalCDF(-3.0)));
@@ -73,7 +75,8 @@ unittest {
 
 version(mir_stat_test)
 @safe pure nothrow @nogc
-unittest {
+unittest
+{
     import mir.math.common: approxEqual;
     assert(normalCCDF(double.infinity).approxEqual(1 - normalCDF(double.infinity)));
     assert(normalCCDF(-double.infinity).approxEqual(1 - normalCDF(-double.infinity)));
@@ -112,7 +115,8 @@ T normalLPDF(T)(const T x)
 ///
 version(mir_stat_test)
 @safe pure nothrow @nogc
-unittest {
+unittest
+{
     import mir.math.common: approxEqual, log;
     assert(0.5.normalLPDF.approxEqual(log(normalPDF(0.5))));
     assert(0.5.normalLPDF(0, 1.5).approxEqual(log(normalPDF(0.5, 0, 1.5))));

@@ -4229,7 +4229,7 @@ template quantile(string quantileAlgo,
 /// Simple example
 version(mir_stat_test)
 @safe pure nothrow
-unittest 
+unittest
 {
     import mir.algorithm.iteration: all;
     import mir.math.common: approxEqual;
@@ -4248,7 +4248,7 @@ unittest
 //no change in x by default
 version(mir_stat_test)
 @safe pure nothrow
-unittest 
+unittest
 {
     import mir.algorithm.iteration: all;
     import mir.math.common: approxEqual;
@@ -4265,7 +4265,7 @@ unittest
 /// Modify probability in place
 version(mir_stat_test)
 @safe pure nothrow
-unittest 
+unittest
 {
     import mir.algorithm.iteration: all;
     import mir.math.common: approxEqual;
@@ -4284,7 +4284,7 @@ unittest
 /// Quantile of vector
 version(mir_stat_test)
 @safe pure nothrow
-unittest 
+unittest
 {
     import mir.algorithm.iteration: all;
     import mir.math.common: approxEqual;
@@ -4303,7 +4303,7 @@ unittest
 /// Quantile of matrix
 version(mir_stat_test)
 @safe pure
-unittest 
+unittest
 {
     import mir.algorithm.iteration: all;
     import mir.math.common: approxEqual;
@@ -4353,7 +4353,7 @@ unittest
 /// Allow modification of input
 version(mir_stat_test)
 @safe pure nothrow
-unittest 
+unittest
 {
     import mir.algorithm.iteration: all;
     import mir.math.common: approxEqual;
@@ -4369,7 +4369,7 @@ unittest
 /// Double-check probability is not modified
 version(mir_stat_test)
 @safe pure nothrow
-unittest 
+unittest
 {
     import mir.algorithm.iteration: all;
     import mir.math.common: approxEqual;
@@ -4387,7 +4387,8 @@ unittest
 
 // Multi-probability results own their storage after the inputs go out of scope.
 version(mir_stat_test)
-@safe pure nothrow @nogc unittest
+@safe pure nothrow @nogc
+unittest
 {
     import mir.ndslice.slice: sliced, IteratorOf;
     import mir.rc.array: RCI;
@@ -4534,7 +4535,7 @@ unittest
 /// Support for array
 version(mir_stat_test)
 @safe pure nothrow
-unittest 
+unittest
 {
     import mir.algorithm.iteration: all;
     import mir.math.common: approxEqual;
@@ -4551,7 +4552,7 @@ unittest
 //@nogc test
 version(mir_stat_test)
 @safe pure nothrow @nogc
-unittest 
+unittest
 {
     import mir.algorithm.iteration: all;
     import mir.math.common: approxEqual;
@@ -4597,7 +4598,7 @@ unittest
 //x.length = 20, qtile at tenths
 version(mir_stat_test)
 @safe pure nothrow
-unittest 
+unittest
 {
     import mir.algorithm.iteration: all;
     import mir.math.common: approxEqual;
@@ -4621,7 +4622,7 @@ unittest
 //x.length = 20, qtile at 5s
 version(mir_stat_test)
 @safe pure nothrow
-unittest 
+unittest
 {
     import mir.algorithm.iteration: all;
     import mir.math.common: approxEqual;
@@ -4645,7 +4646,7 @@ unittest
 //x.length = 21, qtile at tenths
 version(mir_stat_test)
 @safe pure nothrow
-unittest 
+unittest
 {
     import mir.algorithm.iteration: all;
     import mir.math.common: approxEqual;
@@ -4670,7 +4671,7 @@ unittest
 //x.length = 21, qtile at 5s
 version(mir_stat_test)
 @safe pure nothrow
-unittest 
+unittest
 {
     import mir.algorithm.iteration: all;
     import mir.math.common: approxEqual;
@@ -4873,7 +4874,7 @@ template interquartileRange(string quantileAlgo, bool allowModifySlice = false)
 /// Simple example
 version(mir_stat_test)
 @safe pure nothrow
-unittest 
+unittest
 {
     import mir.math.common: approxEqual;
     import mir.ndslice.slice: sliced;
@@ -4888,7 +4889,7 @@ unittest
 //no change in x by default
 version(mir_stat_test)
 @safe pure nothrow
-unittest 
+unittest
 {
     import mir.algorithm.iteration: all;
     import mir.math.common: approxEqual;
@@ -4904,7 +4905,7 @@ unittest
 /// Interquartile Range of vector
 version(mir_stat_test)
 @safe pure nothrow
-unittest 
+unittest
 {
     import mir.math.common: approxEqual;
     import mir.ndslice.slice: sliced;
@@ -4918,7 +4919,7 @@ unittest
 /// Interquartile Range of matrix
 version(mir_stat_test)
 @safe pure
-unittest 
+unittest
 {
     import mir.math.common: approxEqual;
     import mir.ndslice.fuse: fuse;
@@ -4935,7 +4936,7 @@ unittest
 /// Allow modification of input
 version(mir_stat_test)
 @safe pure nothrow
-unittest 
+unittest
 {
     import mir.algorithm.iteration: all;
     import mir.math.common: approxEqual;
@@ -4994,7 +4995,7 @@ unittest
 /// Support for array
 version(mir_stat_test)
 @safe pure nothrow
-unittest 
+unittest
 {
     import mir.math.common: approxEqual;
 
@@ -5036,7 +5037,7 @@ unittest
 // @nogc test
 version(mir_stat_test)
 @safe pure nothrow @nogc
-unittest 
+unittest
 {
     import mir.math.common: approxEqual;
     import mir.ndslice.slice: sliced;

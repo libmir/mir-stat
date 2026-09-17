@@ -56,7 +56,8 @@ T logNormalPDF(T)(const T x, const T mean, const T stdDev)
 ///
 version(mir_stat_test)
 @safe pure nothrow @nogc
-unittest {
+unittest
+{
     import mir.test: shouldApprox;
 
     logNormalPDF(1.0).shouldApprox == 0.3989423;
@@ -72,7 +73,8 @@ unittest {
 // check zero or near zero
 version(mir_stat_test)
 @safe pure nothrow @nogc
-unittest {
+unittest
+{
     import mir.test: shouldApprox;
 
     logNormalPDF(0.0).shouldApprox == 0.0;
@@ -125,7 +127,8 @@ T logNormalCDF(T)(const T x, const T mean, const T stdDev)
 ///
 version(mir_stat_test)
 @safe pure nothrow @nogc
-unittest {
+unittest
+{
     import mir.test: shouldApprox;
 
     logNormalCDF(0.0).shouldApprox == 0;
@@ -181,7 +184,8 @@ T logNormalCCDF(T)(const T x, const T mean, const T stdDev)
 ///
 version(mir_stat_test)
 @safe pure nothrow @nogc
-unittest {
+unittest
+{
     import mir.test: shouldApprox;
 
     logNormalCCDF(0.0).shouldApprox == 1;
@@ -241,7 +245,8 @@ T logNormalInvCDF(T)(const T p, const T mean, const T stdDev)
 ///
 version(mir_stat_test)
 @safe pure nothrow @nogc
-unittest {
+unittest
+{
     import mir.test: shouldApprox;
 
     logNormalInvCDF(0.00).shouldApprox == 0;
@@ -301,7 +306,8 @@ T logNormalLPDF(T)(const T x, const T mean, const T stdDev)
 ///
 version(mir_stat_test)
 @safe pure nothrow @nogc
-unittest {
+unittest
+{
     import mir.math.common: log;
     import mir.test: shouldApprox;
 
@@ -319,7 +325,8 @@ unittest {
 // check zero
 version(mir_stat_test)
 @safe pure nothrow @nogc
-unittest {
+unittest
+{
     import mir.test: shouldApprox;
 
     logNormalLPDF(0.0).shouldApprox == -double.infinity;

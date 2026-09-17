@@ -1453,7 +1453,8 @@ unittest
 
 /// Choose a regular-bin count using Sturges, retaining explicit bounds.
 version(mir_stat_test)
-@safe pure nothrow @nogc unittest
+@safe pure nothrow @nogc
+unittest
 {
     import mir.ndslice.slice: sliced;
     import mir.stat.descriptive.histogram.axis: RegularAxis;
@@ -2042,7 +2043,8 @@ unittest
 
 // Lazy transformed rules preserve attribute inference and string transforms.
 version(mir_stat_test)
-@safe pure nothrow @nogc unittest
+@safe pure nothrow @nogc
+unittest
 {
     import mir.ndslice.slice: sliced;
     import mir.math.common: log2;
@@ -2101,7 +2103,8 @@ unittest
 
 // Qualifiers on a bin-count value must not make newly allocated counters read-only.
 version(mir_stat_test)
-@safe pure nothrow unittest
+@safe pure nothrow
+unittest
 {
     import mir.ndslice.slice: sliced;
     import mir.stat.descriptive.histogram.axis: IntegralAxis, RegularAxis;
@@ -2139,7 +2142,8 @@ version(mir_stat_test)
 
 // Observation and boundary iterators need not match; ownership follows the boundaries.
 version(mir_stat_test)
-@safe pure nothrow @nogc unittest
+@safe pure nothrow @nogc
+unittest
 {
     import mir.ndslice.slice: sliced;
     import mir.ndslice.allocation: rcslice;
