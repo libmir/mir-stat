@@ -30,7 +30,7 @@ sources_list = [
     'mir/stat/descriptive/histogram/axis',
     'mir/stat/descriptive/histogram/traits',
     'mir/stat/descriptive/histogram/accumulator',
-    'mir/stat/descriptive/histogram/frequency',
+    'mir/stat/descriptive/histogram/relative_frequency',
     'mir/stat/descriptive/histogram/internal/view',
     'mir/stat/descriptive/histogram/internal/projection',
     'mir/stat/internal/borrow',

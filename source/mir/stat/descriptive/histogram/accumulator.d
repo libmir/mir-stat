@@ -66,7 +66,7 @@ See_also:
     $(LREF EnumAxis),
     $(LREF CategoryAxis),
     $(LREF VariableAxis),
-    $(LREF FrequencyAccumulator)
+    $(LREF RelativeFrequencyAccumulator)
 +/
 struct HistogramAccumulator(Storage, Axis...)
     if (Axis.length > 0 &&
@@ -1141,7 +1141,7 @@ unittest
     }}
 }
 
-/// Select the bins included in a histogram or frequency view.
+/// Select the bins included in a histogram or relative frequency view.
 enum BinCoverage
 {
     /// Visit only ordinary bins.
@@ -1603,7 +1603,7 @@ struct HistogramBinView(Storage, BinCoverage coverage, Axis...)
         return readElement(_counts, _begin + index, _shape, _axes);
     }
 
-    // Shared with frequency views without retaining handles inside their
+    // Shared with relative frequency views without retaining handles inside their
     // scope-bound cursors. Callers validate shape at view construction.
     package(mir.stat.descriptive.histogram)
     static Element readElement(S, A...)(const S counts, size_t flat,
