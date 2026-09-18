@@ -29,12 +29,21 @@ import mir.stat.descriptive.histogram.axis: AxisOptions,
 import mir.stat.descriptive.histogram.traits: isAxis, storageExtent, acceptsBreakFunction;
 
 import mir.ndslice.allocation: mininitRcslice;
-import mir.stat.descriptive.histogram.api.factory: HistogramFactory;
+import mir.stat.descriptive.histogram.api.factory: HistogramFactory, NoAllocationContext;
 
-private mixin HistogramFactory!mininitRcslice implementation;
+private auto allocateRC(T)(ref NoAllocationContext context, size_t length)
+{
+    return mininitRcslice!T(length);
+}
+
+private mixin HistogramFactory!allocateRC implementation;
 
 // Retain the existing construction entry point.
-alias rchistogramImplBasic = implementation.factoryImplBasic;
+auto rchistogramImplBasic(Data, Axis)(Data data, Axis axis)
+{
+    NoAllocationContext context;
+    return implementation.factoryImplBasic(context, data, axis);
+}
 
 // Check rchistogramImplBasic
 version(mir_stat_test)
@@ -72,7 +81,19 @@ when supplied). A supported transform may omit its inverse. A bin-count rule
 can replace the explicit bin count; see the examples below. Data may be an
 ndslice of any rank; its elements are counted as one-dimensional observations.
 +/
-alias rchistogram = implementation.factory;
+template rchistogram(Options...)
+{
+    // Borrow lvalue handles without an extra RC copy. Pass arguments directly:
+    // core.lifetime.forward can hide borrowed-memory escapes from DIP1000.
+    auto rchistogram(Args...)(auto ref Args args)
+    {
+        NoAllocationContext context;
+        static if (Options.length)
+            return implementation.factory!Options(context, args);
+        else
+            return implementation.factory(context, args);
+    }
+}
 
 /// Construct two equal-width bins from observations.
 version(mir_stat_test)

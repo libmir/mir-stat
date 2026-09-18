@@ -7,9 +7,9 @@ Copyright: 2026 Mir Stat Authors.
 +/
 module mir.stat.descriptive.histogram.api.gc;
 
-import mir.stat.descriptive.histogram.api.factory: HistogramFactory;
+import mir.stat.descriptive.histogram.api.factory: HistogramFactory, NoAllocationContext;
 
-private auto allocateCounts(T)(size_t length) @safe pure nothrow
+private auto allocateCounts(T)(ref NoAllocationContext context, size_t length) @safe pure nothrow
 {
     import mir.ndslice.slice: sliced;
     return (new T[length]).sliced;
@@ -27,7 +27,19 @@ Count allocation does not change axis boundary ownership: borrowed variable-axis
 boundaries must still outlive the histogram. Construction allocates GC memory;
 subsequent counting can be `@nogc`.
 +/
-alias histogram = implementation.factory;
+template histogram(Options...)
+{
+    // Borrow lvalue handles without an extra RC copy. Pass arguments directly:
+    // core.lifetime.forward can hide borrowed-memory escapes from DIP1000.
+    auto histogram(Args...)(auto ref Args args)
+    {
+        NoAllocationContext context;
+        static if (Options.length)
+            return implementation.factory!Options(context, args);
+        else
+            return implementation.factory(context, args);
+    }
+}
 
 /// Construct two equal-width bins from observations.
 version(mir_stat_test)
