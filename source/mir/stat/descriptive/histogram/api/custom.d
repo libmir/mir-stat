@@ -382,6 +382,11 @@ unittest
         allocator, values[].sliced, 2u, 1.0, 16.0);
     assert(allocator.backing.allocations == 1);
     assert(h.counts == [2, 2]);
+    // Cleanup must also use the original noncopyable allocator instance.
+    import std.experimental.allocator: dispose;
+    assert(allocator.backing.releases == 0);
+    allocator.dispose(h.counts.field);
+    assert(allocator.backing.releases == 1);
 }
 
 // Convenience construction borrows stack boundaries for the result's lifetime.
