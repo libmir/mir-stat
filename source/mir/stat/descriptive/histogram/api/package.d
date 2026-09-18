@@ -12,3 +12,4 @@ Copyright: 2026 Mir Stat Authors.
 module mir.stat.descriptive.histogram.api;
 
 public import mir.stat.descriptive.histogram.api.rc;
+public import mir.stat.descriptive.histogram.api.gc;

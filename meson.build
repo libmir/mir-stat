@@ -36,6 +36,8 @@ sources_list = [
     'mir/stat/internal/borrow',
     'mir/stat/descriptive/histogram/package',
     'mir/stat/descriptive/histogram/api/rc',
+    'mir/stat/descriptive/histogram/api/gc',
+    'mir/stat/descriptive/histogram/api/factory',
     'mir/stat/descriptive/histogram/api/package',
     'mir/stat/descriptive/weighted',
     'mir/stat/descriptive/aliases',
