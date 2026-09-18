@@ -112,3 +112,40 @@ unittest
     update(h);
     assert(h.counts == [3, 2]);
 }
+
+/++
+Construct a relative-frequency accumulator with garbage-collected count storage.
+Accepts the same arguments and axis options as $(LREF histogram).
+The total is calculated from the stored counts, including enabled underflow
+and overflow bins. Out-of-range observations follow the underlying histogram
+factory's axis rules. This scans the bins once without allocating another count
+buffer. Axis ownership is unchanged.
+Counter types must accommodate both each bin and the total.
++/
+template relativeFrequencyHistogram(Options...)
+{
+    auto relativeFrequencyHistogram(Args...)(auto ref Args args)
+    {
+        import mir.stat.descriptive.histogram.accumulator: HistogramAccumulator;
+        import mir.stat.descriptive.histogram.relative_frequency: RelativeFrequencyAccumulator;
+        auto h = histogram!Options(args);
+        static if (is(typeof(h) == HistogramAccumulator!Types, Types...))
+            return RelativeFrequencyAccumulator!Types(h.counts, h.axis);
+    }
+}
+
+/// Construct relative frequencies directly and keep the total updated.
+version(mir_stat_test)
+@safe pure nothrow
+unittest
+{
+    import mir.ndslice.slice: sliced;
+    import mir.stat.descriptive.histogram.axis: RegularAxis;
+    double[4] values = [0, 1, 1, 3];
+    auto f = relativeFrequencyHistogram!RegularAxis(values[].sliced, 2u, 0.0, 4.0);
+    assert(f.count == 4);
+    assert(f.relativeFrequency(0) == 0.75);
+    f.put(3.5);
+    assert(f.count == 5);
+    assert(f.relativeFrequency(1) == 0.4);
+}

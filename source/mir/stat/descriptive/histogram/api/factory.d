@@ -1457,6 +1457,7 @@ version(mir_stat_test)
 version(mir_stat_test)
 private mixin template FactoryTests(alias makeHistogram, bool gcCounts)
 {
+    mixin ConstFactoryTests!(makeHistogram, false);
     import mir.ndslice.slice: Slice;
     import mir.rc.array: RCI;
     import mir.stat.descriptive.histogram.accumulator: HistogramAccumulator;
@@ -1994,4 +1995,155 @@ unittest
     auto axis = RegularAxis!(uint, double, AxisOptions())(2u, 0.0, 2.0);
     assertThrown!AssertError(initializeHistogram(counts[].sliced, axis, observations[]));
     assert(counts == [7, 8, 9]);
+}
+
+// Exercise normalization and boundary ownership through every allocation policy.
+version(mir_stat_test)
+{
+    import mir.stat.descriptive.histogram.api.gc: relativeFrequencyHistogram;
+    import mir.stat.descriptive.histogram.api.rc: rcRelativeFrequencyHistogram;
+    import mir.stat.descriptive.histogram.api.custom: customRelativeFrequencyForTests;
+    mixin RelativeFrequencyFactoryTests!relativeFrequencyHistogram relativeGC;
+    mixin RelativeFrequencyFactoryTests!rcRelativeFrequencyHistogram relativeRC;
+    mixin RelativeFrequencyFactoryTests!customRelativeFrequencyForTests relativeCustom;
+}
+
+version(mir_stat_test)
+private mixin template RelativeFrequencyFactoryTests(alias make)
+{
+    mixin ConstFactoryTests!(make, true);
+    @safe pure nothrow
+    unittest
+    {
+        import mir.ndslice.slice: sliced;
+        import mir.ndslice.dynamic: transposed;
+        import mir.stat.descriptive.histogram.axis: RegularAxis, AxisOptions, TransformAxis;
+        import mir.math.common: log2, exp2;
+        import std.math: isNaN;
+
+        double[5] values = [-1, 0, 1, 2, 4];
+        auto ordinary = make!RegularAxis(values[1 .. 4].sliced, 2u, 0.0, 4.0);
+        assert(ordinary.count == 3);
+        assert(ordinary.relativeFrequency(0) == 2.0 / 3);
+        enum options = AxisOptions(false, true, true);
+        auto all = make!(ulong, double, RegularAxis, options)(
+            values[].sliced, 2u, 0.0, 4.0);
+        static assert(is(all.CountType == ulong));
+        assert(all.count == 5);
+        assert(all.underflowRelativeFrequency() == 0.2);
+        assert(all.overflowRelativeFrequency() == 0.2);
+        assert(all.cumulativeRelativeFrequency(1) == 0.8);
+        all.put(3.0);
+        assert(all.count == 6 && all.relativeFrequency(1) == 2.0 / 6);
+
+        alias A = RegularAxis!(uint, double, AxisOptions());
+        double[0] empty;
+        auto explicitAxis = make(empty[].sliced, A(2, 0, 4));
+        assert(explicitAxis.count == 0 && isNaN(explicitAxis.relativeFrequency(0)));
+        static uint two(S)(S data) { return 2; }
+        double[4] powers = [1, 2, 4, 8];
+        auto transformed = make!(TransformAxis, log2, exp2, two)(
+            powers[].sliced(2, 2).transposed, 1.0, 16.0);
+        assert(transformed.count == 4 && transformed.relativeFrequency(0) == 0.5);
+    }
+
+    @safe pure nothrow
+    unittest
+    {
+        import mir.ndslice.slice: sliced;
+        import mir.ndslice.allocation: rcslice;
+        import mir.stat.descriptive.histogram.axis: VariableAxis;
+        static auto owned() @safe pure nothrow
+        {
+            double[2] values = [0.5, 2.0];
+            auto edges = rcslice!double([0.0, 1, 3]);
+            auto f = make!(uint, VariableAxis)(values[].sliced, edges);
+            assert(edges.length == 3 && edges[2] == 3);
+            edges = typeof(edges).init;
+            return f;
+        }
+        auto f = owned();
+        f.put(2.5);
+        assert(f.count == 3 && f.relativeFrequency(1) == 2.0 / 3);
+        auto saved = f.cumulativeRelativeFrequencies();
+        assert(saved == [1.0 / 3, 1]);
+    }
+
+    version(mir_stat_test_lifetime)
+    @safe pure nothrow
+    unittest
+    {
+        import mir.ndslice.slice: sliced;
+        import mir.stat.descriptive.histogram.axis: VariableAxis;
+        double[3] edges = [0, 1, 3];
+        double[2] values = [0.5, 2.0];
+        auto f = make!(uint, VariableAxis)(values[].sliced, edges[].sliced);
+        assert(f.count == 2 && f.relativeFrequency(1) == 0.5);
+        static assert(!__traits(compiles, () @safe {
+            double[3] localEdges = [0, 1, 3];
+            double[1] localValues = [0.5];
+            auto boundaries = localEdges[].sliced;
+            return make!(uint, VariableAxis)(localValues[].sliced, boundaries);
+        }));
+    }
+}
+
+// Const observations/boundaries do not make newly allocated counters const.
+// Run through GC, RC, and caller-selected factories for both accumulator types.
+version(mir_stat_test)
+private mixin template ConstFactoryTests(alias make, bool relative)
+{
+    @safe pure nothrow
+    unittest
+    {
+        import mir.ndslice.slice: sliced;
+        import mir.stat.descriptive.histogram.axis: RegularAxis, VariableAxis;
+
+        const double[4] values = [0.5, 0.5, 1.5, 2.5];
+        const observations = values[].sliced;
+        const uint n = 3;
+        auto mutableResult = make!RegularAxis(observations, n, 0.0, 3.0);
+        static assert(is(mutableResult.CountType == uint));
+        mutableResult.put(2.5);
+        assert(mutableResult.counts == [2u, 1, 2]);
+        static if (relative)
+            assert(mutableResult.count == 5 && mutableResult.relativeFrequency(2) == 0.4);
+
+        // Static storage lets this test cover const semantics without borrowing
+        // local boundaries in builds that do not enable DIP1000.
+        static const double[3] edges = [0, 1, 3];
+        const boundaries = edges[].sliced;
+        auto variable = make!(uint, VariableAxis)(observations, boundaries);
+        variable.put(2.0);
+        assert(variable.counts == [2u, 3]);
+
+        const frozen = make!(uint, VariableAxis)(observations, boundaries);
+        assert(frozen.counts == [2u, 2]);
+        static assert(!__traits(compiles, frozen.put(0.5)));
+        static assert(!__traits(compiles, { frozen.counts[0] = 0; }));
+        static if (relative)
+        {
+            assert(frozen.count == 4 && frozen.relativeFrequency!float(0) == 0.5f);
+            assert(frozen.cumulativeRelativeFrequency(1) == 1);
+            assert(frozen.cumulativeRelativeFrequencies() == [0.5, 1]);
+            double[2] destination;
+            frozen.cumulativeRelativeFrequencies(destination[]);
+            assert(destination[] == [0.5, 1]);
+        }
+        version(mir_stat_test_lifetime)
+        {
+            auto bins = frozen.bins();
+            assert(bins.front.count == 2);
+            bins.popFront();
+            assert(bins.front.count == 2);
+            static if (relative)
+            {
+                auto frequencies = frozen.relativeFrequencyBins();
+                assert(frequencies.front.relativeFrequency == 0.5);
+                auto cumulative = frozen.cumulativeRelativeFrequencyBins();
+                cumulative.popFront();
+                assert(cumulative.front.cumulativeRelativeFrequency == 1);
+            }
+        }
+    }
 }

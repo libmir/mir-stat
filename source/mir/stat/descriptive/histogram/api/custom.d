@@ -450,3 +450,82 @@ unittest
     assert(h.counts == [1u, 1]);
     assert(temporary.counts == [1u, 1]);
 }
+
+/++
+Construct a relative-frequency accumulator with caller-allocated count storage.
+Accepts the same arguments and axis options as $(LREF makeHistogram).
+The total is calculated from the stored counts, including enabled underflow
+and overflow bins. Out-of-range observations follow the underlying histogram
+factory's axis rules. This scans the bins once without allocating another count
+buffer. Axis ownership is unchanged.
+Counter types must accommodate both each bin and the total.
+
+The caller owns the count allocation and must release it through the same
+allocator after all uses of the accumulator and its views. The allocator is
+not retained. Construction failure releases allocated counts.
++/
+template makeRelativeFrequencyHistogram(Options...)
+{
+    auto makeRelativeFrequencyHistogram(Allocator, Args...)(ref Allocator allocator, auto ref Args args)
+    {
+        import mir.stat.descriptive.histogram.accumulator: HistogramAccumulator;
+        import mir.stat.descriptive.histogram.relative_frequency: RelativeFrequencyAccumulator;
+        auto h = makeHistogram!Options(allocator, args);
+        scope(failure) releaseCounts(allocator, h.counts);
+        static if (is(typeof(h) == HistogramAccumulator!Types, Types...))
+            return RelativeFrequencyAccumulator!Types(h.counts, h.axis);
+    }
+}
+
+/// Construct relative frequencies directly and keep the total updated.
+version(mir_stat_test)
+@system pure nothrow @nogc
+unittest
+{
+    import mir.ndslice.slice: sliced;
+    import mir.stat.descriptive.histogram.axis: RegularAxis;
+    import std.experimental.allocator.mallocator: Mallocator;
+    double[4] values = [0, 1, 1, 3];
+    auto f = makeRelativeFrequencyHistogram!RegularAxis(Mallocator.instance, values[].sliced, 2u, 0.0, 4.0);
+    // Counts are read-only; the cast is solely for final manual deallocation.
+    scope(exit) Mallocator.instance.deallocate(cast(void[]) f.counts.field);
+    assert(f.count == 4);
+    assert(f.relativeFrequency(0) == 0.75);
+    f.put(3.5);
+    assert(f.count == 5);
+    assert(f.relativeFrequency(1) == 0.4);
+}
+
+version(mir_stat_test)
+package template customRelativeFrequencyForTests(Options...)
+{
+    auto customRelativeFrequencyForTests(Args...)(auto ref Args args)
+    {
+        SafeAllocator allocator;
+        return makeRelativeFrequencyHistogram!Options(allocator, args);
+    }
+}
+
+// Custom construction retains allocator identity and releases on insertion failure.
+version(mir_stat_test)
+@system pure
+unittest
+{
+    import mir.ndslice.slice: sliced;
+    import mir.ndslice.topology: map;
+    import mir.stat.descriptive.histogram.axis: RegularAxis;
+    import std.exception: assertThrown;
+
+    static double fail(double value) @safe pure { throw new Exception("insertion"); }
+    CountingAllocator allocator;
+    double[2] values = [0.5, 1.5];
+    assertThrown!Exception(makeRelativeFrequencyHistogram!RegularAxis(
+        allocator, values[].sliced.map!fail, 2u, 0.0, 2.0));
+    assert(allocator.allocations == 1 && allocator.releases == 1);
+    auto f = makeRelativeFrequencyHistogram!RegularAxis(
+        allocator, values[].sliced, 2u, 0.0, 2.0);
+    assert(allocator.allocations == 2 && allocator.releases == 1);
+    assert(f.count == 2 && f.relativeFrequency(0) == 0.5);
+    allocator.deallocate(cast(void[]) f.counts.field);
+    assert(allocator.releases == 2);
+}
