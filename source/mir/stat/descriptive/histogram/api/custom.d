@@ -42,9 +42,7 @@ counts. Attributes are inferred from allocation, cleanup, and insertion;
 allocators with `@system` deallocation make this factory `@system` as well.
 
 Params:
-    allocator = allocator instance providing allocation and deallocation
     Options = axis template/type, counter/coordinate types, transforms, rules, and options
-    args = observation slice followed by an axis instance or axis construction arguments
 +/
 template makeHistogram(Options...)
 {
@@ -53,6 +51,12 @@ template makeHistogram(Options...)
 
     // Preserve the direct construction path for an explicitly supplied axis.
     // Shared overload dispatch is only needed when the axis must be deduced.
+    /++
+    Params:
+        allocator = allocator instance providing allocation and deallocation
+        observations = observations to count
+        axis = axis defining the bins and counter type
+    +/
     auto makeHistogram(Allocator, Iterator, size_t N, SliceKind kind, Axis)(
         ref Allocator allocator, Slice!(Iterator, N, kind) observations, Axis axis)
         if (!Options.length && isAxis!Axis)
@@ -70,6 +74,11 @@ template makeHistogram(Options...)
     // Borrow lvalue handles without an extra RC copy. Pass arguments directly:
     // core.lifetime.forward can hide borrowed-memory escapes from DIP1000.
     // Value arguments match the shared overloads and preserve escape inference.
+    /++
+    Params:
+        allocator = allocator instance providing allocation and deallocation
+        args = observation slice followed by axis construction arguments
+    +/
     auto makeHistogram(Allocator, Args...)(ref Allocator allocator, auto ref Args args)
         if (Options.length || Args.length != 2 || !isAxis!(Args[1]))
     {
