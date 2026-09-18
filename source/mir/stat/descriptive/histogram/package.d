@@ -19,7 +19,7 @@ public import mir.stat.descriptive.histogram.traits;
 public import mir.stat.descriptive.histogram.api;
 
 // TODO: Construction conveniences
-// - Add factories for caller-selected allocation strategies.
+// - Extend caller-selected allocation to the axis convenience overloads.
 //
 // Possible later extensions
 // - Support per-bin accumulators, such as MeanAccumulator.

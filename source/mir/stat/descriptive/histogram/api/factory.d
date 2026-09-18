@@ -1,5 +1,5 @@
 /++
-Shared implementation of the GC and reference-counted histogram factories.
+Shared histogram initialization and GC/reference-counted factory overloads.
 
 Bin-count rules are supplied as template aliases, such as functions or function
 templates. Runtime callbacks that capture local variables are not supported.
@@ -19,6 +19,19 @@ T4=$(TR $(TDNW $(LREF $1)) $(TD $2) $(TD $3) $(TD $4))
 +/
 
 module mir.stat.descriptive.histogram.api.factory;
+
+// Storage ownership stays with the caller. Validate before writing so a bad
+// extent cannot clear unrelated storage before the constructor rejects it.
+package auto initializeHistogram(Storage, Axis, Data)(Storage counts, Axis axis, Data data)
+{
+    import mir.stat.descriptive.histogram.accumulator: HistogramAccumulator;
+    auto h = HistogramAccumulator!(Storage, Axis)(counts, axis);
+    // Floating-point .init is NaN; every counter must instead start at zero.
+    foreach (ref count; h.counts)
+        count = 0;
+    h.put(data);
+    return h;
+}
 
 // Shared overloads keep allocation policy independent of axis construction.
 package mixin template HistogramFactory(alias allocate)
@@ -47,14 +60,8 @@ package mixin template HistogramFactory(alias allocate)
         if (isAxis!Axis)
     {
         auto counts = allocate!(Axis.CountType)(storageExtent(axis));
-        // Floating-point .init is NaN; every counter must instead start at zero.
-        foreach (ref e; counts)
-        {
-            e = 0;
-        }
-        auto h = HistogramAccumulator!(typeof(counts), Axis)(counts, axis);
-        h.put(x);
-        return h;
+        import mir.stat.descriptive.histogram.api.factory: initializeHistogram;
+        return initializeHistogram(counts, axis, x);
     }
 
     /++
@@ -1946,4 +1953,21 @@ private mixin template FactoryTests(alias makeHistogram, bool gcCounts)
         assert(owned.counts == [1, 0]);
         assert(owned.axis[0].bin(1).high == 3.0);
     }
+}
+
+// Invalid storage is rejected before initialization can overwrite its contents.
+version(mir_stat_test)
+@system pure
+unittest
+{
+    import mir.ndslice.slice: sliced;
+    import mir.stat.descriptive.histogram.axis: RegularAxis, AxisOptions;
+    import std.exception: assertThrown;
+    import core.exception: AssertError;
+
+    uint[3] counts = [7, 8, 9];
+    double[0] observations;
+    auto axis = RegularAxis!(uint, double, AxisOptions())(2u, 0.0, 2.0);
+    assertThrown!AssertError(initializeHistogram(counts[].sliced, axis, observations[]));
+    assert(counts == [7, 8, 9]);
 }
