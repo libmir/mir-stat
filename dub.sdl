@@ -29,6 +29,7 @@ buildType "docs-check" {
     dflags "-Dddocs"
 }
 configuration "unittest-perf" {
+    versions "mir_stat_test_benchmark"
     dependency "mir-random" version=">=2.2.19"
 }
 buildType "unittest-perf" {

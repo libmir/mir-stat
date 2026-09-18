@@ -1,5 +1,5 @@
 /++
-Shared implementation of the GC and reference-counted histogram factories.
+Shared initialization and axis overloads for histogram factories.
 
 Bin-count rules are supplied as template aliases, such as functions or function
 templates. Runtime callbacks that capture local variables are not supported.
@@ -20,8 +20,24 @@ T4=$(TR $(TDNW $(LREF $1)) $(TD $2) $(TD $3) $(TD $4))
 
 module mir.stat.descriptive.histogram.api.factory;
 
+// Storage ownership stays with the caller. Validate before writing so a bad
+// extent cannot clear unrelated storage before the constructor rejects it.
+package auto initializeHistogram(Storage, Axis, Data)(Storage counts, Axis axis, Data data)
+{
+    import mir.stat.descriptive.histogram.accumulator: HistogramAccumulator;
+    auto h = HistogramAccumulator!(Storage, Axis)(counts, axis);
+    // Floating-point .init is NaN; every counter must instead start at zero.
+    foreach (ref count; h.counts)
+        count = 0;
+    h.put(data);
+    return h;
+}
+
+// GC/RC storage already carries its own lifetime policy.
+package struct NoAllocationContext {}
+
 // Shared overloads keep allocation policy independent of axis construction.
-package mixin template HistogramFactory(alias allocate)
+package mixin template HistogramFactory(alias allocate, alias release = null)
 {
     import mir.ndslice.slice: Slice, SliceKind;
     import mir.stat.descriptive.histogram.accumulator: HistogramAccumulator;
@@ -34,27 +50,31 @@ package mixin template HistogramFactory(alias allocate)
     private alias buildHistogram = factoryImplBasic;
     private alias buildAxisHistogram = factoryImpl;
     private alias dispatchHistogram = factory;
-    private alias Storage(T) = typeof(allocate!T(size_t.init));
+    import std.traits: ReturnType;
+    // Infer storage without constructing or copying a stateful allocator.
+    private auto allocationType(T, Context)(ref Context context)
+    {
+        return allocate!T(context, size_t.init);
+    }
+    private alias Storage(Context, T) = ReturnType!(allocationType!(T, Context));
 
     /++
     Params:
         x = input observations
         axis = axis defining the bins
     +/
-    HistogramAccumulator!(Storage!(Axis.CountType), Axis)
-        factoryImplBasic(Iterator, size_t N, SliceKind kind, Axis)(
-                   Slice!(Iterator, N, kind) x, Axis axis)
+    HistogramAccumulator!(Storage!(Context, Axis.CountType), Axis)
+        factoryImplBasic(Context, Iterator, size_t N, SliceKind kind, Axis)(
+                   ref Context context, Slice!(Iterator, N, kind) x, Axis axis)
         if (isAxis!Axis)
     {
-        auto counts = allocate!(Axis.CountType)(storageExtent(axis));
-        // Floating-point .init is NaN; every counter must instead start at zero.
-        foreach (ref e; counts)
-        {
-            e = 0;
-        }
-        auto h = HistogramAccumulator!(typeof(counts), Axis)(counts, axis);
-        h.put(x);
-        return h;
+        auto counts = allocate!(Axis.CountType)(context, storageExtent(axis));
+        // GC/RC storage manages its own lifetime; only caller allocation
+        // needs an explicit failure handler.
+        static if (!is(typeof(release) == typeof(null)))
+            scope(failure) release(context, counts);
+        import mir.stat.descriptive.histogram.api.factory: initializeHistogram;
+        return initializeHistogram(counts, axis, x);
     }
 
     /++
@@ -76,9 +96,9 @@ package mixin template HistogramFactory(alias allocate)
             N_bin = number of bins
             low = the value of the smallest bin
         +/
-        HistogramAccumulator!(Storage!CountType, IntegralAxis!(CountType, BinType, axisOptions))
-            factoryImpl(Iterator, size_t N, SliceKind kind)(
-                       Slice!(Iterator, N, kind) slice,
+        HistogramAccumulator!(Storage!(Context, CountType), IntegralAxis!(CountType, BinType, axisOptions))
+            factoryImpl(Context, Iterator, size_t N, SliceKind kind)(
+                       ref Context context, Slice!(Iterator, N, kind) slice,
                        CountType N_bin,
                        BinType low)
             if (__traits(isSame, Axis, IntegralAxis))
@@ -86,7 +106,7 @@ package mixin template HistogramFactory(alias allocate)
             import core.lifetime: move;
 
             auto integralAxis = IntegralAxis!(CountType, BinType, axisOptions)(N_bin, low);
-            return buildHistogram(slice.move, integralAxis);
+            return buildHistogram(context, slice.move, integralAxis);
         }
 
         /++
@@ -96,9 +116,9 @@ package mixin template HistogramFactory(alias allocate)
             low = the value of the smallest bin
             high = the value of the largest bin
         +/
-        HistogramAccumulator!(Storage!CountType, RegularAxis!(CountType, BinType, axisOptions))
-            factoryImpl(Iterator, size_t N, SliceKind kind)(
-                       Slice!(Iterator, N, kind) slice,
+        HistogramAccumulator!(Storage!(Context, CountType), RegularAxis!(CountType, BinType, axisOptions))
+            factoryImpl(Context, Iterator, size_t N, SliceKind kind)(
+                       ref Context context, Slice!(Iterator, N, kind) slice,
                        CountType N_bin,
                        BinType low,
                        BinType high)
@@ -107,22 +127,22 @@ package mixin template HistogramFactory(alias allocate)
             import core.lifetime: move;
 
             auto regularAxis = RegularAxis!(CountType, BinType, axisOptions)(N_bin, low, high);
-            return buildHistogram(slice.move, regularAxis);
+            return buildHistogram(context, slice.move, regularAxis);
         }
 
         /++
         Params:
             slice = slice
         +/
-        HistogramAccumulator!(Storage!CountType, CategoryAxis!(CountType, BinType, axisOptions))
-            factoryImpl(Iterator, size_t N, SliceKind kind)(
-                       Slice!(Iterator, N, kind) slice)
+        HistogramAccumulator!(Storage!(Context, CountType), CategoryAxis!(CountType, BinType, axisOptions))
+            factoryImpl(Context, Iterator, size_t N, SliceKind kind)(
+                       ref Context context, Slice!(Iterator, N, kind) slice)
             if (__traits(isSame, Axis, CategoryAxis))
         {
             import core.lifetime: move;
 
             CategoryAxis!(CountType, BinType, axisOptions) categoryAxis;
-            return buildHistogram(slice.move, categoryAxis);
+            return buildHistogram(context, slice.move, categoryAxis);
         }
     }
 
@@ -139,15 +159,15 @@ package mixin template HistogramFactory(alias allocate)
         import mir.stat.descriptive.histogram.axis: EnumAxis;
 
         ///
-        HistogramAccumulator!(Storage!CountType, EnumAxis!(CountType, BinType))
-            factoryImpl(Iterator, size_t N, SliceKind kind)(
-                       Slice!(Iterator, N, kind) slice)
+        HistogramAccumulator!(Storage!(Context, CountType), EnumAxis!(CountType, BinType))
+            factoryImpl(Context, Iterator, size_t N, SliceKind kind)(
+                       ref Context context, Slice!(Iterator, N, kind) slice)
             if (__traits(isSame, Axis, EnumAxis))
         {
             import core.lifetime: move;
 
             EnumAxis!(CountType, BinType) enumAxis;
-            return buildHistogram(slice.move, enumAxis);
+            return buildHistogram(context, slice.move, enumAxis);
         }
     }
 
@@ -175,9 +195,9 @@ package mixin template HistogramFactory(alias allocate)
             low = the value of the smallest bin
             high = the value of the largest bin
         +/
-        HistogramAccumulator!(Storage!CountType, TransformAxis!(CountType, BinType, transform, inverseTransform, axisOptions))
-            factoryImpl(Iterator, size_t N, SliceKind kind)(
-                       Slice!(Iterator, N, kind) slice,
+        HistogramAccumulator!(Storage!(Context, CountType), TransformAxis!(CountType, BinType, transform, inverseTransform, axisOptions))
+            factoryImpl(Context, Iterator, size_t N, SliceKind kind)(
+                       ref Context context, Slice!(Iterator, N, kind) slice,
                        CountType N_bin,
                        BinType low,
                        BinType high)
@@ -186,7 +206,7 @@ package mixin template HistogramFactory(alias allocate)
             import core.lifetime: move;
 
             auto transformAxis = TransformAxis!(CountType, BinType, transform, inverseTransform, axisOptions)(N_bin, low, high);
-            return buildHistogram(slice.move, transformAxis);
+            return buildHistogram(context, slice.move, transformAxis);
         }
     }
 
@@ -212,9 +232,9 @@ package mixin template HistogramFactory(alias allocate)
             low = the value of the smallest bin
             high = the value of the largest bin
         +/
-        HistogramAccumulator!(Storage!CountType, TransformAxis!(CountType, BinType, transform, inverseTransformMapping!transform, axisOptions))
-            factoryImpl(Iterator, size_t N, SliceKind kind)(
-                       Slice!(Iterator, N, kind) slice,
+        HistogramAccumulator!(Storage!(Context, CountType), TransformAxis!(CountType, BinType, transform, inverseTransformMapping!transform, axisOptions))
+            factoryImpl(Context, Iterator, size_t N, SliceKind kind)(
+                       ref Context context, Slice!(Iterator, N, kind) slice,
                        CountType N_bin,
                        BinType low,
                        BinType high)
@@ -223,7 +243,7 @@ package mixin template HistogramFactory(alias allocate)
             import core.lifetime: move;
 
             auto transformAxis = TransformAxis!(CountType, BinType, transform, inverseTransformMapping!transform, axisOptions)(N_bin, low, high);
-            return buildHistogram(slice.move, transformAxis);
+            return buildHistogram(context, slice.move, transformAxis);
         }
     }
 
@@ -245,16 +265,17 @@ package mixin template HistogramFactory(alias allocate)
             axisSlice = slice of axis breaks
         +/
 
-        HistogramAccumulator!(Storage!CountType, VariableAxis!(CountType, Iterator, axisOptions))
-            factoryImpl(DataIterator, size_t N, SliceKind kindA, SliceKind kindB)(
-                       Slice!(DataIterator, N, kindA) dataSlice,
-                       Slice!(Iterator, 1, kindB) axisSlice)
+        HistogramAccumulator!(Storage!(Context, CountType), VariableAxis!(CountType, Iterator, axisOptions))
+            factoryImpl(Context, DataIterator, size_t N, SliceKind kindA, SliceKind kindB)(
+                       ref Context context, Slice!(DataIterator, N, kindA) dataSlice,
+                       // The returned axis may borrow these boundaries.
+                       return scope Slice!(Iterator, 1, kindB) axisSlice)
             if (__traits(isSame, Axis, VariableAxis))
         {
             import core.lifetime: move;
 
             auto variableAxis = VariableAxis!(CountType, Iterator, axisOptions)(axisSlice.move);
-            return buildHistogram(dataSlice.move, variableAxis.move);
+            return buildHistogram(context, dataSlice.move, variableAxis.move);
         }
     }
 
@@ -279,13 +300,13 @@ package mixin template HistogramFactory(alias allocate)
         $(LREF CategoryAxis),
         $(LREF VariableAxis)
     +/
-    HistogramAccumulator!(Storage!(Axis.CountType), Axis)
-        factory(Iterator, size_t N, SliceKind kind, Axis)(
-                   Slice!(Iterator, N, kind) slice, Axis axis)
+    HistogramAccumulator!(Storage!(Context, Axis.CountType), Axis)
+        factory(Context, Iterator, size_t N, SliceKind kind, Axis)(
+                   ref Context context, Slice!(Iterator, N, kind) slice, Axis axis)
         if (isAxis!Axis)
     {
         import core.lifetime: move;
-        return buildHistogram(slice.move, axis);
+        return buildHistogram(context, slice.move, axis);
     }
 
     /++
@@ -310,8 +331,8 @@ package mixin template HistogramFactory(alias allocate)
             slice = input observations
             bounds = low for IntegralAxis; low and high for RegularAxis
         +/
-        auto factory(Iterator, size_t N, SliceKind kind, Bounds...)(
-            Slice!(Iterator, N, kind) slice, Bounds bounds)
+        auto factory(Context, Iterator, size_t N, SliceKind kind, Bounds...)(
+            ref Context context, Slice!(Iterator, N, kind) slice, Bounds bounds)
             if (acceptsBreakFunction!(breakFunction, typeof(slice)) &&
                 validRuleBounds!(Axis, BinType, Bounds))
         {
@@ -320,7 +341,7 @@ package mixin template HistogramFactory(alias allocate)
                 auto axis = integralAxis!(CountType, BinType, breakFunction, axisOptions)(slice, bounds);
             else
                 auto axis = regularAxis!(CountType, BinType, breakFunction, axisOptions)(slice, bounds);
-            return buildHistogram(slice, axis);
+            return buildHistogram(context, slice, axis);
         }
     }
 
@@ -337,12 +358,12 @@ package mixin template HistogramFactory(alias allocate)
         if (isRuleAxis!Axis)
     {
         /// ditto
-        auto factory(Iterator, size_t N, SliceKind kind, BinType, Bounds...)(
-            Slice!(Iterator, N, kind) slice, BinType low, Bounds rest)
+        auto factory(Context, Iterator, size_t N, SliceKind kind, BinType, Bounds...)(
+            ref Context context, Slice!(Iterator, N, kind) slice, BinType low, Bounds rest)
             if (acceptsBreakFunction!(breakFunction, typeof(slice)) &&
                 validRuleBounds!(Axis, BinType, BinType, Bounds))
         {
-            return dispatchHistogram!(CountType, BinType, Axis, breakFunction, axisOptions)(slice, low, rest);
+            return dispatchHistogram!(CountType, BinType, Axis, breakFunction, axisOptions)(context, slice, low, rest);
         }
     }
 
@@ -357,15 +378,15 @@ package mixin template HistogramFactory(alias allocate)
         if (isRuleAxis!Axis)
     {
         /// ditto
-        auto factory(Iterator, size_t N, SliceKind kind, Bounds...)(
-            Slice!(Iterator, N, kind) slice, Bounds bounds)
+        auto factory(Context, Iterator, size_t N, SliceKind kind, Bounds...)(
+            ref Context context, Slice!(Iterator, N, kind) slice, Bounds bounds)
             if (acceptsBreakFunction!(breakFunction, typeof(slice)) &&
                 validRuleBounds!(Axis, typeof(slice).DeepElement, Bounds))
         {
             import mir.stat.descriptive.histogram.traits: DefaultCountType;
             import std.traits: Unqual;
             return dispatchHistogram!(DefaultCountType, Unqual!(typeof(slice).DeepElement),
-                Axis, breakFunction, axisOptions)(slice, bounds);
+                Axis, breakFunction, axisOptions)(context, slice, bounds);
         }
     }
 
@@ -391,15 +412,15 @@ package mixin template HistogramFactory(alias allocate)
             low = lower bound in original units
             high = upper bound in original units
         +/
-        auto factory(Iterator, size_t N, SliceKind kind)(
-            Slice!(Iterator, N, kind) slice, BinType low, BinType high)
+        auto factory(Context, Iterator, size_t N, SliceKind kind)(
+            ref Context context, Slice!(Iterator, N, kind) slice, BinType low, BinType high)
             if (acceptsTransformedBreakFunction!(breakFunction, transform, BinType, typeof(slice)) &&
                 isTransformFunction!(inverseTransform, BinType))
         {
             import mir.stat.descriptive.histogram.axis: transformAxis;
             auto axis = transformAxis!(CountType, BinType, transform, inverseTransform,
                 breakFunction, axisOptions)(slice, low, high);
-            return buildHistogram(slice, axis);
+            return buildHistogram(context, slice, axis);
         }
     }
 
@@ -424,13 +445,13 @@ package mixin template HistogramFactory(alias allocate)
             low = lower bound in original units
             high = upper bound in original units
         +/
-        auto factory(Iterator, size_t N, SliceKind kind, BinType)(
-            Slice!(Iterator, N, kind) slice, BinType low, BinType high)
+        auto factory(Context, Iterator, size_t N, SliceKind kind, BinType)(
+            ref Context context, Slice!(Iterator, N, kind) slice, BinType low, BinType high)
             if (acceptsTransformedBreakFunction!(breakFunction, transform, BinType, typeof(slice)) &&
                 isTransformFunction!(inverseTransform, BinType))
         {
             return dispatchHistogram!(CountType, BinType, Axis, transform,
-                inverseTransform, breakFunction, axisOptions)(slice, low, high);
+                inverseTransform, breakFunction, axisOptions)(context, slice, low, high);
         }
     }
 
@@ -456,14 +477,14 @@ package mixin template HistogramFactory(alias allocate)
             low = lower bound in original units
             high = upper bound in original units
         +/
-        auto factory(Iterator, size_t N, SliceKind kind, BinType)(
-            Slice!(Iterator, N, kind) slice, BinType low, BinType high)
+        auto factory(Context, Iterator, size_t N, SliceKind kind, BinType)(
+            ref Context context, Slice!(Iterator, N, kind) slice, BinType low, BinType high)
             if (acceptsTransformedBreakFunction!(breakFunction, transform, Unqual!(typeof(slice).DeepElement), typeof(slice)) &&
                 isTransformFunction!(inverseTransform, Unqual!(typeof(slice).DeepElement)) && is(BinType : typeof(slice).DeepElement))
         {
             import mir.stat.descriptive.histogram.traits: DefaultCountType;
             return dispatchHistogram!(DefaultCountType, Unqual!(typeof(slice).DeepElement), Axis, transform,
-                inverseTransform, breakFunction, axisOptions)(slice, low, high);
+                inverseTransform, breakFunction, axisOptions)(context, slice, low, high);
         }
     }
 
@@ -488,12 +509,12 @@ package mixin template HistogramFactory(alias allocate)
             low = lower bound in original units
             high = upper bound in original units
         +/
-        auto factory(Iterator, size_t N, SliceKind kind)(
-            Slice!(Iterator, N, kind) slice, BinType low, BinType high)
+        auto factory(Context, Iterator, size_t N, SliceKind kind)(
+            ref Context context, Slice!(Iterator, N, kind) slice, BinType low, BinType high)
             if (acceptsTransformedBreakFunction!(breakFunction, transform, BinType, typeof(slice)))
         {
             return dispatchHistogram!(CountType, BinType, Axis, transform,
-                inverseTransformMapping!transform, breakFunction, axisOptions)(slice, low, high);
+                inverseTransformMapping!transform, breakFunction, axisOptions)(context, slice, low, high);
         }
     }
 
@@ -517,12 +538,12 @@ package mixin template HistogramFactory(alias allocate)
             low = lower bound in original units
             high = upper bound in original units
         +/
-        auto factory(Iterator, size_t N, SliceKind kind, BinType)(
-            Slice!(Iterator, N, kind) slice, BinType low, BinType high)
+        auto factory(Context, Iterator, size_t N, SliceKind kind, BinType)(
+            ref Context context, Slice!(Iterator, N, kind) slice, BinType low, BinType high)
             if (acceptsTransformedBreakFunction!(breakFunction, transform, BinType, typeof(slice)))
         {
             return dispatchHistogram!(CountType, BinType, Axis, transform,
-                inverseTransformMapping!transform, breakFunction, axisOptions)(slice, low, high);
+                inverseTransformMapping!transform, breakFunction, axisOptions)(context, slice, low, high);
         }
     }
 
@@ -547,13 +568,13 @@ package mixin template HistogramFactory(alias allocate)
             low = lower bound in original units
             high = upper bound in original units
         +/
-        auto factory(Iterator, size_t N, SliceKind kind, BinType)(
-            Slice!(Iterator, N, kind) slice, BinType low, BinType high)
+        auto factory(Context, Iterator, size_t N, SliceKind kind, BinType)(
+            ref Context context, Slice!(Iterator, N, kind) slice, BinType low, BinType high)
             if (acceptsTransformedBreakFunction!(breakFunction, transform, Unqual!(typeof(slice).DeepElement), typeof(slice)) && is(BinType : typeof(slice).DeepElement))
         {
             import mir.stat.descriptive.histogram.traits: DefaultCountType;
             return dispatchHistogram!(DefaultCountType, Unqual!(typeof(slice).DeepElement), Axis, transform,
-                inverseTransformMapping!transform, breakFunction, axisOptions)(slice, low, high);
+                inverseTransformMapping!transform, breakFunction, axisOptions)(context, slice, low, high);
         }
     }
 
@@ -595,9 +616,9 @@ package mixin template HistogramFactory(alias allocate)
             N_bin = number of bins
             low = the value of the smallest bin
         +/
-        HistogramAccumulator!(Storage!(Axis.CountType), Axis)
-            factory(Iterator, size_t N, SliceKind kind, CountType, BinType)(
-                       Slice!(Iterator, N, kind) slice,
+        HistogramAccumulator!(Storage!(Context, Axis.CountType), Axis)
+            factory(Context, Iterator, size_t N, SliceKind kind, CountType, BinType)(
+                       ref Context context, Slice!(Iterator, N, kind) slice,
                        CountType N_bin,
                        BinType low)
             if (isInstanceOf!(IntegralAxis, Axis))
@@ -605,7 +626,7 @@ package mixin template HistogramFactory(alias allocate)
             import core.lifetime: move;
 
             auto integralAxis = Axis(N_bin, low);
-            return buildHistogram(slice.move, integralAxis);
+            return buildHistogram(context, slice.move, integralAxis);
         }
 
         /++
@@ -615,9 +636,9 @@ package mixin template HistogramFactory(alias allocate)
             low = the value of the smallest bin
             high = the value of the largest bin
         +/
-        HistogramAccumulator!(Storage!(Axis.CountType), Axis)
-            factory(Iterator, size_t N, SliceKind kind, CountType, BinType)(
-                        Slice!(Iterator, N, kind) slice,
+        HistogramAccumulator!(Storage!(Context, Axis.CountType), Axis)
+            factory(Context, Iterator, size_t N, SliceKind kind, CountType, BinType)(
+                        ref Context context, Slice!(Iterator, N, kind) slice,
                         CountType N_bin,
                         BinType low,
                         BinType high)
@@ -626,22 +647,22 @@ package mixin template HistogramFactory(alias allocate)
             import core.lifetime: move;
 
             auto axis = Axis(N_bin, low, high);
-            return buildHistogram(slice.move, axis);
+            return buildHistogram(context, slice.move, axis);
         }
 
         /++
         Params:
             slice = slice
         +/
-        HistogramAccumulator!(Storage!(Axis.CountType), Axis)
-            factory(Iterator, size_t N, SliceKind kind)(
-                        Slice!(Iterator, N, kind) slice)
+        HistogramAccumulator!(Storage!(Context, Axis.CountType), Axis)
+            factory(Context, Iterator, size_t N, SliceKind kind)(
+                        ref Context context, Slice!(Iterator, N, kind) slice)
             if (isInstanceOf!(EnumAxis, Axis) || isInstanceOf!(CategoryAxis, Axis))
         {
             import core.lifetime: move;
 
             auto axis = Axis();
-            return buildHistogram(slice.move, axis);
+            return buildHistogram(context, slice.move, axis);
         }
 
         /++
@@ -649,17 +670,17 @@ package mixin template HistogramFactory(alias allocate)
             dataSlice = slice of data
             axisSlice = slice of axis breaks
         +/
-        HistogramAccumulator!(Storage!(Axis.CountType), Axis)
-            factory(DataIterator, AxisIterator, size_t N,
+        HistogramAccumulator!(Storage!(Context, Axis.CountType), Axis)
+            factory(Context, DataIterator, AxisIterator, size_t N,
                         SliceKind kindA, SliceKind kindB)(
-                        Slice!(DataIterator, N, kindA) dataSlice,
+                        ref Context context, Slice!(DataIterator, N, kindA) dataSlice,
                         Slice!(AxisIterator, 1, kindB) axisSlice)
             if (isInstanceOf!(VariableAxis, Axis))
         {
             import core.lifetime: move;
 
             auto axis = Axis(axisSlice.move);
-            return buildHistogram(dataSlice.move, axis.move);
+            return buildHistogram(context, dataSlice.move, axis.move);
         }
     }
 
@@ -681,16 +702,16 @@ package mixin template HistogramFactory(alias allocate)
             N_bin = number of bins
             low = the value of the smallest bin
         +/
-        HistogramAccumulator!(Storage!CountType, IntegralAxis!(CountType, BinType, axisOptions))
-            factory(Iterator, size_t N, SliceKind kind)(
-                       Slice!(Iterator, N, kind) slice,
+        HistogramAccumulator!(Storage!(Context, CountType), IntegralAxis!(CountType, BinType, axisOptions))
+            factory(Context, Iterator, size_t N, SliceKind kind)(
+                       ref Context context, Slice!(Iterator, N, kind) slice,
                        CountType N_bin,
                        BinType low)
             if (__traits(isSame, Axis, IntegralAxis))
         {
             import core.lifetime: move;
 
-            return buildAxisHistogram!(CountType, BinType, Axis, axisOptions)(slice.move, N_bin, low);
+            return buildAxisHistogram!(CountType, BinType, Axis, axisOptions)(context, slice.move, N_bin, low);
         }
 
         /++
@@ -700,9 +721,9 @@ package mixin template HistogramFactory(alias allocate)
             low = the value of the smallest bin
             high = the value of the largest bin
         +/
-        HistogramAccumulator!(Storage!CountType, RegularAxis!(CountType, BinType, axisOptions))
-            factory(Iterator, size_t N, SliceKind kind)(
-                       Slice!(Iterator, N, kind) slice,
+        HistogramAccumulator!(Storage!(Context, CountType), RegularAxis!(CountType, BinType, axisOptions))
+            factory(Context, Iterator, size_t N, SliceKind kind)(
+                       ref Context context, Slice!(Iterator, N, kind) slice,
                        CountType N_bin,
                        BinType low,
                        BinType high)
@@ -710,21 +731,21 @@ package mixin template HistogramFactory(alias allocate)
         {
             import core.lifetime: move;
 
-            return buildAxisHistogram!(CountType, BinType, Axis, axisOptions)(slice.move, N_bin, low, high);
+            return buildAxisHistogram!(CountType, BinType, Axis, axisOptions)(context, slice.move, N_bin, low, high);
         }
 
         /++
         Params:
             slice = slice
         +/
-        HistogramAccumulator!(Storage!CountType, CategoryAxis!(CountType, BinType, axisOptions))
-            factory(Iterator, size_t N, SliceKind kind)(
-                       Slice!(Iterator, N, kind) slice)
+        HistogramAccumulator!(Storage!(Context, CountType), CategoryAxis!(CountType, BinType, axisOptions))
+            factory(Context, Iterator, size_t N, SliceKind kind)(
+                       ref Context context, Slice!(Iterator, N, kind) slice)
             if (__traits(isSame, Axis, CategoryAxis) && is(BinType == enum))
         {
             import core.lifetime: move;
 
-            return buildAxisHistogram!(CountType, BinType, Axis, axisOptions)(slice.move);
+            return buildAxisHistogram!(CountType, BinType, Axis, axisOptions)(context, slice.move);
         }
     }
 
@@ -751,9 +772,9 @@ package mixin template HistogramFactory(alias allocate)
             low = the value of the smallest bin
             high = the value of the largest bin
         +/
-        HistogramAccumulator!(Storage!CountType, TransformAxis!(CountType, BinType, transform, inverseTransform, axisOptions))
-            factory(Iterator, size_t N, SliceKind kind)(
-                       Slice!(Iterator, N, kind) slice,
+        HistogramAccumulator!(Storage!(Context, CountType), TransformAxis!(CountType, BinType, transform, inverseTransform, axisOptions))
+            factory(Context, Iterator, size_t N, SliceKind kind)(
+                       ref Context context, Slice!(Iterator, N, kind) slice,
                        CountType N_bin,
                        BinType low,
                        BinType high)
@@ -761,7 +782,7 @@ package mixin template HistogramFactory(alias allocate)
         {
             import core.lifetime: move;
 
-            return buildAxisHistogram!(CountType, BinType, Axis, transform, inverseTransform, axisOptions)(slice.move, N_bin, low, high);
+            return buildAxisHistogram!(CountType, BinType, Axis, transform, inverseTransform, axisOptions)(context, slice.move, N_bin, low, high);
         }
     }
 
@@ -786,9 +807,9 @@ package mixin template HistogramFactory(alias allocate)
             low = the value of the smallest bin
             high = the value of the largest bin
         +/
-        HistogramAccumulator!(Storage!CountType, TransformAxis!(CountType, BinType, transform, inverseTransformMapping!transform, axisOptions))
-            factory(Iterator, size_t N, SliceKind kind)(
-                       Slice!(Iterator, N, kind) slice,
+        HistogramAccumulator!(Storage!(Context, CountType), TransformAxis!(CountType, BinType, transform, inverseTransformMapping!transform, axisOptions))
+            factory(Context, Iterator, size_t N, SliceKind kind)(
+                       ref Context context, Slice!(Iterator, N, kind) slice,
                        CountType N_bin,
                        BinType low,
                        BinType high)
@@ -796,7 +817,7 @@ package mixin template HistogramFactory(alias allocate)
         {
             import core.lifetime: move;
 
-            return buildAxisHistogram!(CountType, BinType, Axis, transform, inverseTransformMapping!transform, axisOptions)(slice.move, N_bin, low, high);
+            return buildAxisHistogram!(CountType, BinType, Axis, transform, inverseTransformMapping!transform, axisOptions)(context, slice.move, N_bin, low, high);
         }
     }
 
@@ -817,15 +838,15 @@ package mixin template HistogramFactory(alias allocate)
             dataSlice = slice of data
             axisSlice = slice of axis breaks
         +/
-        HistogramAccumulator!(Storage!CountType, VariableAxis!(CountType, Iterator, axisOptions))
-            factory(size_t N, SliceKind kindA, SliceKind kindB)(
-                       Slice!(Iterator, N, kindA) dataSlice,
+        HistogramAccumulator!(Storage!(Context, CountType), VariableAxis!(CountType, Iterator, axisOptions))
+            factory(Context, size_t N, SliceKind kindA, SliceKind kindB)(
+                       ref Context context, Slice!(Iterator, N, kindA) dataSlice,
                        Slice!(Iterator, 1, kindB) axisSlice)
             if (__traits(isSame, Axis, VariableAxis))
         {
             import core.lifetime: move;
 
-            return buildAxisHistogram!(CountType, Iterator, Axis, axisOptions)(dataSlice.move, axisSlice.move);
+            return buildAxisHistogram!(CountType, Iterator, Axis, axisOptions)(context, dataSlice.move, axisSlice.move);
         }
     }
 
@@ -847,16 +868,16 @@ package mixin template HistogramFactory(alias allocate)
             N_bin = number of bins
             low = the value of the smallest bin
         +/
-        HistogramAccumulator!(Storage!DefaultCountType, IntegralAxis!(DefaultCountType, BinType, axisOptions))
-            factory(Iterator, size_t N, SliceKind kind)(
-                       Slice!(Iterator, N, kind) slice,
+        HistogramAccumulator!(Storage!(Context, DefaultCountType), IntegralAxis!(DefaultCountType, BinType, axisOptions))
+            factory(Context, Iterator, size_t N, SliceKind kind)(
+                       ref Context context, Slice!(Iterator, N, kind) slice,
                        DefaultCountType N_bin,
                        BinType low)
             if (__traits(isSame, Axis, IntegralAxis))
         {
             import core.lifetime: move;
 
-            return buildAxisHistogram!(DefaultCountType, BinType, Axis, axisOptions)(slice.move, N_bin, low);
+            return buildAxisHistogram!(DefaultCountType, BinType, Axis, axisOptions)(context, slice.move, N_bin, low);
         }
 
         /++
@@ -866,9 +887,9 @@ package mixin template HistogramFactory(alias allocate)
             low = the value of the smallest bin
             high = the value of the largest bin
         +/
-        HistogramAccumulator!(Storage!DefaultCountType, RegularAxis!(DefaultCountType, BinType, axisOptions))
-            factory(Iterator, size_t N, SliceKind kind)(
-                       Slice!(Iterator, N, kind) slice,
+        HistogramAccumulator!(Storage!(Context, DefaultCountType), RegularAxis!(DefaultCountType, BinType, axisOptions))
+            factory(Context, Iterator, size_t N, SliceKind kind)(
+                       ref Context context, Slice!(Iterator, N, kind) slice,
                        DefaultCountType N_bin,
                        BinType low,
                        BinType high)
@@ -876,21 +897,21 @@ package mixin template HistogramFactory(alias allocate)
         {
             import core.lifetime: move;
 
-            return buildAxisHistogram!(DefaultCountType, BinType, Axis, axisOptions)(slice.move, N_bin, low, high);
+            return buildAxisHistogram!(DefaultCountType, BinType, Axis, axisOptions)(context, slice.move, N_bin, low, high);
         }
 
         /++
         Params:
             slice = slice
         +/
-        HistogramAccumulator!(Storage!DefaultCountType, CategoryAxis!(DefaultCountType, BinType, axisOptions))
-            factory(Iterator, size_t N, SliceKind kind)(
-                       Slice!(Iterator, N, kind) slice)
+        HistogramAccumulator!(Storage!(Context, DefaultCountType), CategoryAxis!(DefaultCountType, BinType, axisOptions))
+            factory(Context, Iterator, size_t N, SliceKind kind)(
+                       ref Context context, Slice!(Iterator, N, kind) slice)
             if (__traits(isSame, Axis, CategoryAxis) && is(BinType == enum))
         {
             import core.lifetime: move;
 
-            return buildAxisHistogram!(DefaultCountType, BinType, Axis, axisOptions)(slice.move);
+            return buildAxisHistogram!(DefaultCountType, BinType, Axis, axisOptions)(context, slice.move);
         }
     }
 
@@ -918,9 +939,9 @@ package mixin template HistogramFactory(alias allocate)
             low = the value of the smallest bin
             high = the value of the largest bin
         +/
-        HistogramAccumulator!(Storage!DefaultCountType, TransformAxis!(DefaultCountType, BinType, transform, inverseTransform, axisOptions))
-            factory(Iterator, size_t N, SliceKind kind)(
-                       Slice!(Iterator, N, kind) slice,
+        HistogramAccumulator!(Storage!(Context, DefaultCountType), TransformAxis!(DefaultCountType, BinType, transform, inverseTransform, axisOptions))
+            factory(Context, Iterator, size_t N, SliceKind kind)(
+                       ref Context context, Slice!(Iterator, N, kind) slice,
                        DefaultCountType N_bin,
                        BinType low,
                        BinType high)
@@ -928,7 +949,7 @@ package mixin template HistogramFactory(alias allocate)
         {
             import core.lifetime: move;
 
-            return buildAxisHistogram!(DefaultCountType, BinType, Axis, transform, inverseTransform, axisOptions)(slice.move, N_bin, low, high);
+            return buildAxisHistogram!(DefaultCountType, BinType, Axis, transform, inverseTransform, axisOptions)(context, slice.move, N_bin, low, high);
         }
     }
 
@@ -954,9 +975,9 @@ package mixin template HistogramFactory(alias allocate)
             low = the value of the smallest bin
             high = the value of the largest bin
         +/
-        HistogramAccumulator!(Storage!DefaultCountType, TransformAxis!(DefaultCountType, BinType, transform, inverseTransformMapping!transform, axisOptions))
-            factory(Iterator, size_t N, SliceKind kind)(
-                       Slice!(Iterator, N, kind) slice,
+        HistogramAccumulator!(Storage!(Context, DefaultCountType), TransformAxis!(DefaultCountType, BinType, transform, inverseTransformMapping!transform, axisOptions))
+            factory(Context, Iterator, size_t N, SliceKind kind)(
+                       ref Context context, Slice!(Iterator, N, kind) slice,
                        DefaultCountType N_bin,
                        BinType low,
                        BinType high)
@@ -964,7 +985,7 @@ package mixin template HistogramFactory(alias allocate)
         {
             import core.lifetime: move;
 
-            return buildAxisHistogram!(DefaultCountType, BinType, Axis, transform, inverseTransformMapping!transform, axisOptions)(slice.move, N_bin, low, high);
+            return buildAxisHistogram!(DefaultCountType, BinType, Axis, transform, inverseTransformMapping!transform, axisOptions)(context, slice.move, N_bin, low, high);
         }
     }
 
@@ -985,15 +1006,15 @@ package mixin template HistogramFactory(alias allocate)
             dataSlice = slice of data
             axisSlice = slice of axis breaks
         +/
-        HistogramAccumulator!(Storage!DefaultCountType, VariableAxis!(DefaultCountType, Iterator, axisOptions))
-            factory(size_t N, SliceKind kindA, SliceKind kindB)(
-                       Slice!(Iterator, N, kindA) dataSlice,
+        HistogramAccumulator!(Storage!(Context, DefaultCountType), VariableAxis!(DefaultCountType, Iterator, axisOptions))
+            factory(Context, size_t N, SliceKind kindA, SliceKind kindB)(
+                       ref Context context, Slice!(Iterator, N, kindA) dataSlice,
                        Slice!(Iterator, 1, kindB) axisSlice)
             if (__traits(isSame, Axis, VariableAxis))
         {
             import core.lifetime: move;
 
-            return buildAxisHistogram!(DefaultCountType, Iterator, Axis, axisOptions)(dataSlice.move, axisSlice.move);
+            return buildAxisHistogram!(DefaultCountType, Iterator, Axis, axisOptions)(context, dataSlice.move, axisSlice.move);
         }
     }
 
@@ -1014,16 +1035,16 @@ package mixin template HistogramFactory(alias allocate)
             N_bin = number of bins
             low = the value of the smallest bin
         +/
-        HistogramAccumulator!(Storage!CountType, IntegralAxis!(CountType, BinType, axisOptions))
-            factory(Iterator, size_t N, SliceKind kind, BinType)(
-                       Slice!(Iterator, N, kind) slice,
+        HistogramAccumulator!(Storage!(Context, CountType), IntegralAxis!(CountType, BinType, axisOptions))
+            factory(Context, Iterator, size_t N, SliceKind kind, BinType)(
+                       ref Context context, Slice!(Iterator, N, kind) slice,
                        CountType N_bin,
                        BinType low)
             if (__traits(isSame, Axis, IntegralAxis))
         {
             import core.lifetime: move;
 
-            return buildAxisHistogram!(CountType, BinType, Axis, axisOptions)(slice.move, N_bin, low);
+            return buildAxisHistogram!(CountType, BinType, Axis, axisOptions)(context, slice.move, N_bin, low);
         }
 
         /++
@@ -1033,9 +1054,9 @@ package mixin template HistogramFactory(alias allocate)
             low = the value of the smallest bin
             high = the value of the largest bin
         +/
-        HistogramAccumulator!(Storage!CountType, RegularAxis!(CountType, BinType, axisOptions))
-            factory(Iterator, size_t N, SliceKind kind, BinType)(
-                Slice!(Iterator, N, kind) slice,
+        HistogramAccumulator!(Storage!(Context, CountType), RegularAxis!(CountType, BinType, axisOptions))
+            factory(Context, Iterator, size_t N, SliceKind kind, BinType)(
+                ref Context context, Slice!(Iterator, N, kind) slice,
                 CountType N_bin,
                 BinType low,
                 BinType high)
@@ -1043,7 +1064,7 @@ package mixin template HistogramFactory(alias allocate)
         {
             import core.lifetime: move;
 
-            return buildAxisHistogram!(CountType, BinType, Axis, axisOptions)(slice.move, N_bin, low, high);
+            return buildAxisHistogram!(CountType, BinType, Axis, axisOptions)(context, slice.move, N_bin, low, high);
         }
     }
 
@@ -1067,9 +1088,9 @@ package mixin template HistogramFactory(alias allocate)
             low = the value of the smallest bin
             high = the value of the largest bin
         +/
-        HistogramAccumulator!(Storage!CountType, TransformAxis!(CountType, BinType, transform, inverseTransform, axisOptions))
-            factory(Iterator, size_t N, SliceKind kind, BinType)(
-                Slice!(Iterator, N, kind) slice,
+        HistogramAccumulator!(Storage!(Context, CountType), TransformAxis!(CountType, BinType, transform, inverseTransform, axisOptions))
+            factory(Context, Iterator, size_t N, SliceKind kind, BinType)(
+                ref Context context, Slice!(Iterator, N, kind) slice,
                 CountType N_bin,
                 BinType low,
                 BinType high)
@@ -1079,7 +1100,7 @@ package mixin template HistogramFactory(alias allocate)
         {
             import core.lifetime: move;
 
-            return buildAxisHistogram!(CountType, BinType, Axis, transform, inverseTransform, axisOptions)(slice.move, N_bin, low, high);
+            return buildAxisHistogram!(CountType, BinType, Axis, transform, inverseTransform, axisOptions)(context, slice.move, N_bin, low, high);
         }
     }
 
@@ -1103,9 +1124,9 @@ package mixin template HistogramFactory(alias allocate)
             low = the value of the smallest bin
             high = the value of the largest bin
         +/
-        HistogramAccumulator!(Storage!CountType, TransformAxis!(CountType, BinType, transform, inverseTransformMapping!transform, axisOptions))
-            factory(Iterator, size_t N, SliceKind kind, BinType)(
-                Slice!(Iterator, N, kind) slice,
+        HistogramAccumulator!(Storage!(Context, CountType), TransformAxis!(CountType, BinType, transform, inverseTransformMapping!transform, axisOptions))
+            factory(Context, Iterator, size_t N, SliceKind kind, BinType)(
+                ref Context context, Slice!(Iterator, N, kind) slice,
                 CountType N_bin,
                 BinType low,
                 BinType high)
@@ -1113,7 +1134,7 @@ package mixin template HistogramFactory(alias allocate)
         {
             import core.lifetime: move;
 
-            return buildAxisHistogram!(CountType, BinType, Axis, transform, inverseTransformMapping!transform, axisOptions)(slice.move, N_bin, low, high);
+            return buildAxisHistogram!(CountType, BinType, Axis, transform, inverseTransformMapping!transform, axisOptions)(context, slice.move, N_bin, low, high);
         }
     }
 
@@ -1134,16 +1155,16 @@ package mixin template HistogramFactory(alias allocate)
             dataSlice = slice of data
             axisSlice = slice of axis breaks
         +/
-        HistogramAccumulator!(Storage!CountType, VariableAxis!(CountType, IteratorB, axisOptions))
-            factory(IteratorA, size_t N, SliceKind kindA, IteratorB, SliceKind kindB)(
-                       Slice!(IteratorA, N, kindA) dataSlice,
+        HistogramAccumulator!(Storage!(Context, CountType), VariableAxis!(CountType, IteratorB, axisOptions))
+            factory(Context, IteratorA, size_t N, SliceKind kindA, IteratorB, SliceKind kindB)(
+                       ref Context context, Slice!(IteratorA, N, kindA) dataSlice,
                        Slice!(IteratorB, 1, kindB) axisSlice)
             if (__traits(isSame, Axis, VariableAxis) &&
                 is(DeepElementType!(Slice!(IteratorA, N, kindA)) : DeepElementType!(Slice!(IteratorB, 1, kindB))))
         {
             import core.lifetime: move;
 
-            return buildAxisHistogram!(CountType, IteratorB, Axis, axisOptions)(dataSlice.move, axisSlice.move);
+            return buildAxisHistogram!(CountType, IteratorB, Axis, axisOptions)(context, dataSlice.move, axisSlice.move);
         }
     }
 
@@ -1166,16 +1187,16 @@ package mixin template HistogramFactory(alias allocate)
             N_bin = number of bins
             low = the value of the smallest bin
         +/
-        HistogramAccumulator!(Storage!(Unqual!CountType), IntegralAxis!(Unqual!CountType, BinType, axisOptions))
-            factory(Iterator, size_t N, SliceKind kind, CountType, BinType)(
-                       Slice!(Iterator, N, kind) slice,
+        HistogramAccumulator!(Storage!(Context, Unqual!CountType), IntegralAxis!(Unqual!CountType, BinType, axisOptions))
+            factory(Context, Iterator, size_t N, SliceKind kind, CountType, BinType)(
+                       ref Context context, Slice!(Iterator, N, kind) slice,
                        CountType N_bin,
                        BinType low)
             if (__traits(isSame, Axis, IntegralAxis))
         {
             import core.lifetime: move;
 
-            return buildAxisHistogram!(Unqual!CountType, BinType, Axis, axisOptions)(slice.move, N_bin, low);
+            return buildAxisHistogram!(Unqual!CountType, BinType, Axis, axisOptions)(context, slice.move, N_bin, low);
         }
 
         /++
@@ -1185,9 +1206,9 @@ package mixin template HistogramFactory(alias allocate)
             low = the value of the smallest bin
             high = the value of the largest bin
         +/
-        HistogramAccumulator!(Storage!(Unqual!CountType), RegularAxis!(Unqual!CountType, BinType, axisOptions))
-            factory(Iterator, size_t N, SliceKind kind, CountType, BinType)(
-                Slice!(Iterator, N, kind) slice,
+        HistogramAccumulator!(Storage!(Context, Unqual!CountType), RegularAxis!(Unqual!CountType, BinType, axisOptions))
+            factory(Context, Iterator, size_t N, SliceKind kind, CountType, BinType)(
+                ref Context context, Slice!(Iterator, N, kind) slice,
                 CountType N_bin,
                 BinType low,
                 BinType high)
@@ -1195,21 +1216,21 @@ package mixin template HistogramFactory(alias allocate)
         {
             import core.lifetime: move;
 
-            return buildAxisHistogram!(Unqual!CountType, BinType, Axis, axisOptions)(slice.move, N_bin, low, high);
+            return buildAxisHistogram!(Unqual!CountType, BinType, Axis, axisOptions)(context, slice.move, N_bin, low, high);
         }
 
         /++
         Params:
             slice = slice
         +/
-        HistogramAccumulator!(Storage!DefaultCountType, CategoryAxis!(DefaultCountType, DeepElementType!(Slice!(Iterator, N, kind)), axisOptions))
-            factory(Iterator, size_t N, SliceKind kind)(
-                       Slice!(Iterator, N, kind) slice)
+        HistogramAccumulator!(Storage!(Context, DefaultCountType), CategoryAxis!(DefaultCountType, DeepElementType!(Slice!(Iterator, N, kind)), axisOptions))
+            factory(Context, Iterator, size_t N, SliceKind kind)(
+                       ref Context context, Slice!(Iterator, N, kind) slice)
             if (__traits(isSame, Axis, CategoryAxis) && is(DeepElementType!(typeof(slice)) == enum))
         {
             import core.lifetime: move;
 
-            return buildAxisHistogram!(DefaultCountType, DeepElementType!(typeof(slice)), Axis, axisOptions)(slice.move);
+            return buildAxisHistogram!(DefaultCountType, DeepElementType!(typeof(slice)), Axis, axisOptions)(context, slice.move);
         }
     }
 
@@ -1228,15 +1249,15 @@ package mixin template HistogramFactory(alias allocate)
         Params:
             slice = slice
         +/
-        HistogramAccumulator!(Storage!DefaultCountType, EnumAxis!(DefaultCountType, DeepElementType!(Slice!(Iterator, N, kind))))
-            factory(Iterator, size_t N, SliceKind kind)(
-                       Slice!(Iterator, N, kind) slice)
+        HistogramAccumulator!(Storage!(Context, DefaultCountType), EnumAxis!(DefaultCountType, DeepElementType!(Slice!(Iterator, N, kind))))
+            factory(Context, Iterator, size_t N, SliceKind kind)(
+                       ref Context context, Slice!(Iterator, N, kind) slice)
             if (__traits(isSame, Axis, EnumAxis) && is(DeepElementType!(typeof(slice)) == enum))
         {
             import core.lifetime: move;
             import mir.stat.descriptive.histogram.traits: DefaultCountType;
 
-            return buildAxisHistogram!(DefaultCountType, DeepElementType!(typeof(slice)), Axis)(slice.move);
+            return buildAxisHistogram!(DefaultCountType, DeepElementType!(typeof(slice)), Axis)(context, slice.move);
         }
     }
 
@@ -1260,9 +1281,9 @@ package mixin template HistogramFactory(alias allocate)
             low = the value of the smallest bin
             high = the value of the largest bin
         +/
-        HistogramAccumulator!(Storage!(Unqual!CountType), TransformAxis!(Unqual!CountType, BinType, transform, inverseTransform, axisOptions))
-            factory(Iterator, size_t N, SliceKind kind, CountType, BinType)(
-                Slice!(Iterator, N, kind) slice,
+        HistogramAccumulator!(Storage!(Context, Unqual!CountType), TransformAxis!(Unqual!CountType, BinType, transform, inverseTransform, axisOptions))
+            factory(Context, Iterator, size_t N, SliceKind kind, CountType, BinType)(
+                ref Context context, Slice!(Iterator, N, kind) slice,
                 CountType N_bin,
                 BinType low,
                 BinType high)
@@ -1272,7 +1293,7 @@ package mixin template HistogramFactory(alias allocate)
         {
             import core.lifetime: move;
 
-            return buildAxisHistogram!(Unqual!CountType, BinType, Axis, transform, inverseTransform, axisOptions)(slice.move, N_bin, low, high);
+            return buildAxisHistogram!(Unqual!CountType, BinType, Axis, transform, inverseTransform, axisOptions)(context, slice.move, N_bin, low, high);
         }
     }
 
@@ -1296,9 +1317,9 @@ package mixin template HistogramFactory(alias allocate)
             low = the value of the smallest bin
             high = the value of the largest bin
         +/
-        HistogramAccumulator!(Storage!(Unqual!CountType), TransformAxis!(Unqual!CountType, BinType, transform, inverseTransformMapping!transform, axisOptions))
-            factory(Iterator, size_t N, SliceKind kind, CountType, BinType)(
-                Slice!(Iterator, N, kind) slice,
+        HistogramAccumulator!(Storage!(Context, Unqual!CountType), TransformAxis!(Unqual!CountType, BinType, transform, inverseTransformMapping!transform, axisOptions))
+            factory(Context, Iterator, size_t N, SliceKind kind, CountType, BinType)(
+                ref Context context, Slice!(Iterator, N, kind) slice,
                 CountType N_bin,
                 BinType low,
                 BinType high)
@@ -1306,7 +1327,7 @@ package mixin template HistogramFactory(alias allocate)
         {
             import core.lifetime: move;
 
-            return buildAxisHistogram!(Unqual!CountType, BinType, Axis, transform, inverseTransformMapping!transform, axisOptions)(slice.move, N_bin, low, high);
+            return buildAxisHistogram!(Unqual!CountType, BinType, Axis, transform, inverseTransformMapping!transform, axisOptions)(context, slice.move, N_bin, low, high);
         }
     }
 
@@ -1327,16 +1348,16 @@ package mixin template HistogramFactory(alias allocate)
             dataSlice = slice of data
             axisSlice = slice of axis breaks
         +/
-        HistogramAccumulator!(Storage!DefaultCountType, VariableAxis!(DefaultCountType, IteratorB, axisOptions))
-            factory(IteratorA, size_t N, SliceKind kindA, IteratorB, SliceKind kindB)(
-                       Slice!(IteratorA, N, kindA) dataSlice,
+        HistogramAccumulator!(Storage!(Context, DefaultCountType), VariableAxis!(DefaultCountType, IteratorB, axisOptions))
+            factory(Context, IteratorA, size_t N, SliceKind kindA, IteratorB, SliceKind kindB)(
+                       ref Context context, Slice!(IteratorA, N, kindA) dataSlice,
                        Slice!(IteratorB, 1, kindB) axisSlice)
             if (__traits(isSame, Axis, VariableAxis) &&
                 is(DeepElementType!(Slice!(IteratorA, N, kindA)) : DeepElementType!(Slice!(IteratorB, 1, kindB))))
         {
             import core.lifetime: move;
 
-            return buildAxisHistogram!(DefaultCountType, IteratorB, Axis, axisOptions)(dataSlice.move, axisSlice.move);
+            return buildAxisHistogram!(DefaultCountType, IteratorB, Axis, axisOptions)(context, dataSlice.move, axisSlice.move);
         }
     }
 
@@ -1355,14 +1376,14 @@ package mixin template HistogramFactory(alias allocate)
         Params:
             slice = slice
         +/
-        HistogramAccumulator!(Storage!DefaultCountType, EnumAxis!(DefaultCountType, BinType))
-            factory(Iterator, size_t N, SliceKind kind)(
-                       Slice!(Iterator, N, kind) slice)
+        HistogramAccumulator!(Storage!(Context, DefaultCountType), EnumAxis!(DefaultCountType, BinType))
+            factory(Context, Iterator, size_t N, SliceKind kind)(
+                       ref Context context, Slice!(Iterator, N, kind) slice)
             if (__traits(isSame, Axis, EnumAxis))
         {
             import core.lifetime: move;
 
-            return buildAxisHistogram!(DefaultCountType, BinType, Axis)(slice.move);
+            return buildAxisHistogram!(DefaultCountType, BinType, Axis)(context, slice.move);
         }
     }
 
@@ -1381,14 +1402,14 @@ package mixin template HistogramFactory(alias allocate)
         Params:
             slice = slice
         +/
-        HistogramAccumulator!(Storage!CountType, EnumAxis!(DefaultCountType, DeepElementType!(Slice!(Iterator, N, kind))))
-            factory(Iterator, size_t N, SliceKind kind)(
-                       Slice!(Iterator, N, kind) slice)
+        HistogramAccumulator!(Storage!(Context, CountType), EnumAxis!(DefaultCountType, DeepElementType!(Slice!(Iterator, N, kind))))
+            factory(Context, Iterator, size_t N, SliceKind kind)(
+                       ref Context context, Slice!(Iterator, N, kind) slice)
             if (__traits(isSame, Axis, EnumAxis) && is(DeepElementType!(typeof(slice)) == enum))
         {
             import core.lifetime: move;
 
-            return buildAxisHistogram!(CountType, DeepElementType!(typeof(slice)), Axis)(slice.move);
+            return buildAxisHistogram!(CountType, DeepElementType!(typeof(slice)), Axis)(context, slice.move);
         }
     }
 
@@ -1408,20 +1429,20 @@ package mixin template HistogramFactory(alias allocate)
         Params:
             slice = slice
         +/
-        HistogramAccumulator!(Storage!CountType, CategoryAxis!(DefaultCountType, DeepElementType!(Slice!(Iterator, N, kind)), axisOptions))
-            factory(Iterator, size_t N, SliceKind kind)(
-                       Slice!(Iterator, N, kind) slice)
+        HistogramAccumulator!(Storage!(Context, CountType), CategoryAxis!(DefaultCountType, DeepElementType!(Slice!(Iterator, N, kind)), axisOptions))
+            factory(Context, Iterator, size_t N, SliceKind kind)(
+                       ref Context context, Slice!(Iterator, N, kind) slice)
             if (__traits(isSame, Axis, CategoryAxis) && is(DeepElementType!(typeof(slice)) == enum))
         {
             import core.lifetime: move;
 
-            return buildAxisHistogram!(CountType, DeepElementType!(typeof(slice)), Axis, axisOptions)(slice.move);
+            return buildAxisHistogram!(CountType, DeepElementType!(typeof(slice)), Axis, axisOptions)(context, slice.move);
         }
     }
 
 }
 
-// Run the same behavioral checks through both public factories. Storage-specific
+// Run the same behavioral checks through all three public factories. Storage-specific
 // examples and attribute checks remain beside the public APIs.
 version(mir_stat_test)
 {
@@ -1429,6 +1450,8 @@ version(mir_stat_test)
     import mir.stat.descriptive.histogram.api.rc: rchistogram;
     mixin FactoryTests!(histogram, true) gcTests;
     mixin FactoryTests!(rchistogram, false) rcTests;
+    import mir.stat.descriptive.histogram.api.custom: customHistogramForTests;
+    mixin FactoryTests!(customHistogramForTests, true) customTests;
 }
 
 version(mir_stat_test)
@@ -1934,6 +1957,14 @@ private mixin template FactoryTests(alias makeHistogram, bool gcCounts)
             auto h = makeHistogram!VariableAxis(values[].sliced, edges[].sliced);
             return h;
         }));
+        // Named slices exercise the ref branch of the public auto-ref wrapper.
+        static assert(!__traits(compiles, () @safe {
+            double[3] edges = [0, 1, 3];
+            double[1] values = [0.5];
+            auto boundaries = edges[].sliced;
+            auto observations = values[].sliced;
+            return makeHistogram!VariableAxis(observations, boundaries);
+        }));
         // Changing only the boundary ownership permits the return.
         auto makeOwned() @safe pure nothrow
         {
@@ -1946,4 +1977,21 @@ private mixin template FactoryTests(alias makeHistogram, bool gcCounts)
         assert(owned.counts == [1, 0]);
         assert(owned.axis[0].bin(1).high == 3.0);
     }
+}
+
+// Invalid storage is rejected before initialization can overwrite its contents.
+version(mir_stat_test)
+@system pure
+unittest
+{
+    import mir.ndslice.slice: sliced;
+    import mir.stat.descriptive.histogram.axis: RegularAxis, AxisOptions;
+    import std.exception: assertThrown;
+    import core.exception: AssertError;
+
+    uint[3] counts = [7, 8, 9];
+    double[0] observations;
+    auto axis = RegularAxis!(uint, double, AxisOptions())(2u, 0.0, 2.0);
+    assertThrown!AssertError(initializeHistogram(counts[].sliced, axis, observations[]));
+    assert(counts == [7, 8, 9]);
 }

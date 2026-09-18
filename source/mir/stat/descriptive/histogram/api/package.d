@@ -13,3 +13,4 @@ module mir.stat.descriptive.histogram.api;
 
 public import mir.stat.descriptive.histogram.api.rc;
 public import mir.stat.descriptive.histogram.api.gc;
+public import mir.stat.descriptive.histogram.api.custom;

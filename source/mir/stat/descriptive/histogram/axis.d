@@ -2949,10 +2949,18 @@ public:
         assert(slice.length >= 2, "VariableAxis.this: at least two boundaries required");
         assert(slice.length - 1 <= CountType.max,
             "VariableAxis.this: bin count does not fit CountType");
+        assert(strictlyIncreasing(slice),
+            "VariableAxis.this: boundaries must be strictly increasing");
+        import core.lifetime: move;
+        _payload = move(slice);
+    }
+
+    private static bool strictlyIncreasing(S)(ref S slice)
+    {
         foreach (i; 1 .. slice.length)
-            assert(slice[i - 1] < slice[i],
-                "VariableAxis.this: boundaries must be strictly increasing");
-        _payload = slice;
+            if (!(slice[i - 1] < slice[i]))
+                return false;
+        return true;
     }
 
     /++

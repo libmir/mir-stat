@@ -37,6 +37,7 @@ sources_list = [
     'mir/stat/descriptive/histogram/package',
     'mir/stat/descriptive/histogram/api/rc',
     'mir/stat/descriptive/histogram/api/gc',
+    'mir/stat/descriptive/histogram/api/custom',
     'mir/stat/descriptive/histogram/api/factory',
     'mir/stat/descriptive/histogram/api/package',
     'mir/stat/descriptive/weighted',

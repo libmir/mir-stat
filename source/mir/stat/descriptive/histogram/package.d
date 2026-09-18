@@ -18,9 +18,6 @@ public import mir.stat.descriptive.histogram.axis;
 public import mir.stat.descriptive.histogram.traits;
 public import mir.stat.descriptive.histogram.api;
 
-// TODO: Construction conveniences
-// - Add factories for caller-selected allocation strategies.
-//
 // Possible later extensions
 // - Support per-bin accumulators, such as MeanAccumulator.
 // - Add weighted histograms and frequencies.
