@@ -11,7 +11,7 @@ Copyright: 2026 Mir Stat Authors.
 
 module mir.stat.descriptive.histogram;
 
-public import mir.stat.descriptive.histogram.frequency;
+public import mir.stat.descriptive.histogram.relative_frequency;
 public import mir.stat.descriptive.histogram.breaks;
 public import mir.stat.descriptive.histogram.accumulator;
 public import mir.stat.descriptive.histogram.axis;

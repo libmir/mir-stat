@@ -70,17 +70,17 @@ unittest
     static assert(is(h.CountType == ulong));
 }
 
-/// Build a frequency accumulator sharing the histogram's GC-backed counts.
+/// Build a relative frequency accumulator sharing the histogram's GC-backed counts.
 version(mir_stat_test)
 @safe pure nothrow
 unittest
 {
     import mir.ndslice.slice: sliced;
     import mir.stat.descriptive.histogram.axis: RegularAxis;
-    import mir.stat.descriptive.histogram.frequency: FrequencyAccumulator;
+    import mir.stat.descriptive.histogram.relative_frequency: RelativeFrequencyAccumulator;
 
     auto h = [0.0, 1, 2, 3].sliced.histogram!RegularAxis(2u, 0.0, 4.0);
-    auto f = FrequencyAccumulator!(typeof(h.counts), typeof(h.axis[0]))(
+    auto f = RelativeFrequencyAccumulator!(typeof(h.counts), typeof(h.axis[0]))(
         h.counts, h.axis[0]);
     assert(f.count == 4);
     // Make subsequent updates through f so its total stays synchronized.
