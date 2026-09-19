@@ -1683,7 +1683,7 @@ private mixin template FactoryTests(alias makeHistogram, bool gcCounts)
         }}
         static double fractional(S)(S values) { return 2.5; }
         static bool boolean(S)(S values) { return true; }
-        static uint wrongArgument(string value) { return 2; }
+        static uint wrongArgument(Unused = void)(string value) { return 2; }
         static foreach (rule; AliasSeq!(fractional, boolean, wrongArgument, 42))
         {{
             static assert(!__traits(compiles, makeHistogram!(RegularAxis, rule)(data, 0.0, 2.0)));

@@ -529,3 +529,45 @@ unittest
     allocator.deallocate(cast(void[]) f.counts.field);
     assert(allocator.releases == 2);
 }
+
+// Conversion failure after insertion must release the completed count allocation.
+version(mir_stat_test)
+@system pure
+unittest
+{
+    import mir.ndslice.slice: sliced;
+    import std.exception: assertThrown;
+
+    struct ThrowingCopyAxis
+    {
+        alias CountType = uint;
+        alias BinType = double;
+        enum N_bin = 1;
+        bool populated;
+
+        size_t index(double value) @safe pure nothrow @nogc
+        {
+            populated = true;
+            return 0;
+        }
+
+        this(this) @safe pure
+        {
+            if (populated)
+                throw new Exception("axis copy after insertion");
+        }
+    }
+
+    CountingAllocator allocator;
+    double[1] values = [0.5];
+    // Plain construction succeeds: the exception is specific to copying the
+    // populated axis when the relative-frequency wrapper is constructed.
+    auto h = makeHistogram(allocator, values[].sliced, ThrowingCopyAxis());
+    assert(h.counts[0] == 1);
+    allocator.deallocate(cast(void[]) h.counts.field);
+    assert(allocator.allocations == 1 && allocator.releases == 1);
+
+    assertThrown!Exception(makeRelativeFrequencyHistogram(
+        allocator, values[].sliced, ThrowingCopyAxis()));
+    assert(allocator.allocations == 2 && allocator.releases == 2);
+}
