@@ -3993,6 +3993,9 @@ applies when probabilities are passed as variadic arguments.
 The probability-slice overload can instead overwrite the probability storage
 when `allowModifyProbability` is true. It returns that slice, preserving its
 ownership semantics. The variadic overload always returns a new owning result.
+Allocated results use the quantile result type independently of the probability
+element type. In-place probability updates keep the supplied storage's element
+type, which must be able to represent the results.
 
 For all $(LREF QuantileAlgo) except $(LREF QuantileAlgo.type1) and $(LREF QuantileAlgo.type3),
 by default, if `F` is not floating point type or complex type, then the result
@@ -4086,11 +4089,11 @@ template quantile(F,
             }
             return p;
         } else {
-            auto view_p = p.lightScope;
-            auto val_p = view_p.as!G.rcslice;
-            auto temp_p = val_p.lightScope.flattened;
-            foreach(ref e; temp_p) {
-                e = quantileImpl!(FF, quantileAlgo, IteratorOf!(typeof(temp)), G)(temp, e);
+            // Result precision is independent of the probability element type.
+            auto val_p = rcslice!FF([p.length], FF.init);
+            auto temp_p = val_p.lightScope;
+            foreach (i; 0 .. p.length) {
+                temp_p[i] = quantileImpl!(FF, quantileAlgo, IteratorOf!(typeof(temp)), Unqual!G)(temp, p[i]);
             }
             // Return the owning slice, not its temporary borrowed view.
             return val_p;
@@ -4098,14 +4101,13 @@ template quantile(F,
     }
 
     /// ditto
-    auto quantile(Iterator, size_t N, SliceKind kind)(
-        Slice!(Iterator, N, kind) slice, scope const F[] p...)
-        if (isFloatingPoint!(elementType!(F[])))
+    auto quantile(Iterator, size_t N, SliceKind kind, G)(
+        Slice!(Iterator, N, kind) slice, scope const G[] p...)
+        if (isFloatingPoint!(Unqual!G))
     {
         import mir.ndslice.allocation: rcslice;
         import mir.ndslice.slice: IteratorOf;
 
-        alias G = elementType!(F[]);
         alias FF = quantileType!(F, quantileAlgo);
 
         static if (!allowModifySlice) {
@@ -4119,10 +4121,10 @@ template quantile(F,
             auto temp = slice.flattened;
         }
 
-        auto val_p = p.rcslice!G;
-        auto temp_p = val_p.lightScope.flattened;
-        foreach(ref e; temp_p) {
-            e = quantileImpl!(FF, quantileAlgo, IteratorOf!(typeof(temp)), G)(temp, e);
+        auto val_p = rcslice!FF([p.length], FF.init);
+        auto temp_p = val_p.lightScope;
+        foreach (i; 0 .. p.length) {
+            temp_p[i] = quantileImpl!(FF, quantileAlgo, IteratorOf!(typeof(temp)), Unqual!G)(temp, p[i]);
         }
         // Return the owning slice, not its temporary borrowed view.
         return val_p;
@@ -4224,6 +4226,74 @@ template quantile(string quantileAlgo,
                   bool allowModifyProbability = false)
 {
     mixin("alias quantile = .quantile!(QuantileAlgo." ~ quantileAlgo ~ ", allowModifySlice, allowModifyProbability);");
+}
+
+// Probability precision must not select the allocated quantile result type.
+version(mir_stat_test)
+@safe pure nothrow @nogc
+unittest
+{
+    import mir.ndslice.slice: sliced, IteratorOf;
+    import mir.rc.array: RCI;
+    import std.meta: AliasSeq;
+
+    static foreach (F; AliasSeq!(float, double, real))
+    {{
+        static foreach (G; AliasSeq!(float, double, real))
+        {{
+            double[4] data = [0, 1, 2, 3];
+            const G[2] probabilities = [G(0.25), G(0.75)];
+            auto result = data[].sliced.quantile!F(probabilities[].sliced);
+            auto variadic = data[].sliced.quantile!F(probabilities[0], probabilities[1]);
+            static assert(is(IteratorOf!(typeof(result)) == RCI!F));
+            static assert(is(IteratorOf!(typeof(variadic)) == RCI!F));
+            foreach (i; 0 .. probabilities.length)
+            {
+                const expected = data[].sliced.quantile!F(probabilities[i]);
+                assert(result[i] == expected && variadic[i] == expected);
+            }
+            assert(data[] == [0.0, 1.0, 2.0, 3.0]);
+            assert(probabilities[0] == G(0.25) && probabilities[1] == G(0.75));
+        }}
+    }}
+}
+
+// Discontinuous quantiles preserve integers that float cannot represent exactly.
+version(mir_stat_test)
+@safe pure nothrow @nogc
+unittest
+{
+    import mir.ndslice.slice: sliced, IteratorOf;
+    import mir.rc.array: RCI;
+    static foreach (algorithm; [QuantileAlgo.type1, QuantileAlgo.type3])
+    {{
+        int[2] data = [16777217, 16777219];
+        float[2] probabilities = [0.25f, 0.75f];
+        auto result = data[].sliced.quantile!algorithm(probabilities[].sliced);
+        auto variadic = data[].sliced.quantile!algorithm(0.25f, 0.75f);
+        static assert(is(IteratorOf!(typeof(result)) == RCI!int));
+        static assert(is(IteratorOf!(typeof(variadic)) == RCI!int));
+        foreach (i; 0 .. probabilities.length)
+        {
+            const expected = data[].sliced.quantile!algorithm(probabilities[i]);
+            assert(result[i] == expected && variadic[i] == expected);
+        }
+        assert(result[0] == 16777217);
+    }}
+}
+
+// An integral result must not round the probabilities before quantile selection.
+version(mir_stat_test)
+@safe pure nothrow @nogc
+unittest
+{
+    import mir.ndslice.slice: sliced;
+    int[4] data = [1, 2, 3, 4];
+    double[2] probabilities = [0.5, 1.0];
+    auto result = data[].sliced.quantile!(int, QuantileAlgo.type1)(probabilities[].sliced);
+    auto variadic = data[].sliced.quantile!(int, QuantileAlgo.type1)(0.5, 1.0);
+    assert(result[0] == 2 && result[1] == 4);
+    assert(variadic[0] == 2 && variadic[1] == 4);
 }
 
 /// Simple example
