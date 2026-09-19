@@ -1475,7 +1475,8 @@ Shared count updates are visible on later reads; previously returned counts are
 values. Replacing the source's handles does not redirect an existing view.
 
 Reference-counted handles retain ownership. Borrowed count storage and variable
-axis boundaries must outlive the view and any descriptions referring to them.
+axis boundaries must outlive the view. Built-in numeric bin descriptions copy
+their bounds; custom descriptions may still refer to boundary storage.
 Keep storage shape and shared axis boundaries unchanged. The accumulator's
 static-array accessor borrows its internal counts instead of copying them.
 Custom axes must support mir.qualifier.lightConst and const bin access that
@@ -1939,7 +1940,7 @@ unittest
     assert(enums[0].bin.slot == Label.first && enums[1].bin.slot == Label.second);
     assert(categories[0].bin.slot == Label.first && categories[1].count == 4);
 
-    // The view, then the returned bin, retains reference-counted break storage.
+    // The view retains break storage; returned numeric bins copy their bounds.
     auto makeView()
     {
         auto ownedBreaks = rcslice!double([0.0, 2.0, 5.0]);
@@ -1950,11 +1951,10 @@ unittest
     auto owned = makeView();
     assert(owned[1].bin.low == 2.0 && owned[1].count == 3);
     auto description = owned[1].bin;
+    description.low = 100.0;
+    assert(owned[1].bin.low == 2.0);
     owned = typeof(owned).init;
-    assert(description.low == 2.0 && description.high == 5.0);
-    static assert(!__traits(compiles, {
-        description.low = 100.0;
-    }));
+    assert(description.low == 100.0 && description.high == 5.0);
 }
 
 // Invalid access and incompatible input are rejected.
@@ -2081,7 +2081,7 @@ unittest
     static assert(is(typeof(view._axes[0]) ==
         VariableAxis!(uint, RCI!(const double), AxisOptions())));
     auto bin = view.front.bin;
-    static assert(is(typeof(bin) == Bin!(Slice!(RCI!(const double)))));
+    static assert(is(typeof(bin) == Bin!double));
     view = typeof(view).init;
     // Each copy retains both buffers after the source view is released.
     assert(saved.front.count == 3 && sliced.front.count == 3);
@@ -3498,4 +3498,37 @@ unittest
     check(rows);
     const uint[9] backing = [1u, 4u, 7u, 2u, 5u, 8u, 3u, 6u, 9u];
     check(backing[].sliced(3, 3).transposed);
+}
+
+// A numeric entry is a snapshot, even when the view borrows local storage.
+version(mir_stat_test)
+@safe pure nothrow @nogc
+unittest
+{
+    import mir.ndslice.slice: sliced;
+    import mir.stat.descriptive.histogram.axis: VariableAxis, AxisOptions;
+
+    static auto fromLocal() @safe pure nothrow @nogc
+    {
+        double[3] edges = [0, 1, 3];
+        uint[2] counts = [1, 2];
+        alias A = VariableAxis!(uint, double*, AxisOptions());
+        auto h = HistogramAccumulator!(uint[], A)(counts[], A(edges[].sliced));
+        return h.bins[1];
+    }
+    const entry = fromLocal();
+    assert(entry.index == 1 && entry.count == 2);
+    assert(entry.bin.low == 1 && entry.bin.high == 3);
+
+    version(mir_stat_test_lifetime)
+    {
+        // Copying an entry is safe; returning the borrowing view still is not.
+        static assert(!__traits(compiles, () @safe {
+            double[3] edges = [0, 1, 3];
+            uint[2] counts = [1, 2];
+            alias A = VariableAxis!(uint, double*, AxisOptions());
+            auto h = HistogramAccumulator!(uint[], A)(counts[], A(edges[].sliced));
+            return h.bins;
+        }));
+    }
 }

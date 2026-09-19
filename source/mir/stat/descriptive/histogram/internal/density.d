@@ -27,19 +27,6 @@ package(mir.stat.descriptive.histogram) template supportsDensityAxis(Axis)
         enum supportsDensityAxis = false;
 }
 
-// Prefer copied boundary values for variable axes; other numeric axis bin
-// descriptions already hold values rather than borrowing boundary storage.
-package(mir.stat.descriptive.histogram)
-auto numericBin(Axis)(ref const Axis axis, size_t index)
-{
-    import mir.stat.descriptive.histogram.axis: VariableAxis;
-    import std.traits: isInstanceOf;
-    static if (isInstanceOf!(VariableAxis, Axis))
-        return axis.binBounds(index);
-    else
-        return axis.bin(index);
-}
-
 // Keep volume as a normalized mantissa and exponent: multiplying widths can
 // overflow or underflow even when the final density is representable.
 package(mir.stat.descriptive.histogram) struct ScaledBinVolume
