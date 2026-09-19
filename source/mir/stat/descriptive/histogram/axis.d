@@ -3047,6 +3047,15 @@ public:
         }
     }
 
+    // Numeric consumers need values, not a borrowed slice descriptor. Reading
+    // directly also permits scope-bound axes in @safe DIP1000 code.
+    package(mir.stat.descriptive.histogram)
+    Bin!BinType binBounds()(size_t x) const
+    {
+        assert(x < N_bin, "VariableAxis.binBounds: index is out of range");
+        return Bin!BinType(_payload[x], _payload[x + 1]);
+    }
+
     ///
     @trusted Bin!(Slice!(Iterator)) bin()(size_t x)
     {

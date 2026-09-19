@@ -24,6 +24,7 @@ import mir.stat.descriptive.histogram.accumulator: HistogramAccumulator;
 public import mir.stat.descriptive.histogram.accumulator: BinCoverage;
 import mir.stat.descriptive.histogram.traits: isAxis, includeUnderflow;
 import mir.stat.descriptive.histogram.internal.view: supportsBinView;
+private import mir.stat.descriptive.histogram.internal.density: supportsDensityAxis;
 import mir.stat.descriptive.histogram.internal.projection: validMarginalAxes;
 import mir.stat.internal.borrow: hasBorrowEscapeChecking, uncheckedBorrow;
 
@@ -289,6 +290,56 @@ struct RelativeFrequencyAccumulator(Storage, Axis...)
             indices[i] += includeUnderflow!(Axis[i]);
         }
         return normalizeCount!RelativeFrequencyType(storageCount(counts, indices));
+    }
+
+    /++
+    Probability density in an ordinary numeric bin.
+    Divides relative frequency by the product of actual bin widths, measured
+    in the original input coordinates, including for transformed axes.
+    Enabled underflow/overflow counts remain in the total, so integrating over
+    ordinary bins can give less than one. A zero total produces NaN.
+
+    All axes must expose numeric interval boundaries. Boundaries and widths
+    must be finite, with positive widths; assertions check this on access.
+    Categorical bins and underflow/overflow densities are not supported.
+    Intermediate geometry uses real precision and a scaled volume; the result
+    is rounded to DensityType and may underflow or overflow in that type.
+
+    Params:
+        DensityType = floating-point output type; defaults to double
+        index = ordinary bin indices, one per axis
+    +/
+    DensityType density(DensityType = double, Indices...)(Indices index) const
+        if (isFloatingPoint!DensityType && Indices.length == N &&
+            allSatisfy!(isIndex, Indices) && allSatisfy!(supportsDensityAxis, Axis))
+    {
+        import mir.stat.descriptive.histogram.internal.density: ScaledBinVolume, numericBin;
+        // Validate indices and obtain normalization through the existing API.
+        const frequency = relativeFrequency!real(index);
+        ScaledBinVolume volume;
+        static foreach (i; 0 .. N)
+            volume.include(numericBin(histogramAccumulator.axis[i], cast(size_t) index[i]));
+        return volume.normalize!DensityType(frequency);
+    }
+
+    /++
+    Borrow a random-access view of ordinary bins with densities.
+    Entries expose count, relativeFrequency, density, and bin coordinates.
+    Uses the same numeric geometry as $(LREF density). Saved and sliced cursors
+    share live counts and totals while retaining independent positions.
+    All lifetime, const, and @safe restrictions of $(LREF relativeFrequencyBins)
+    apply. Only ordinary bins are exposed; no coverage option is provided.
+
+    Params:
+        DensityType = floating-point output type; defaults to double
+    +/
+    auto densityBins(DensityType = double)() return const
+        if (isFloatingPoint!DensityType && supportsBinView!(Storage, Axis) &&
+            allSatisfy!(supportsDensityAxis, Axis))
+    {
+        // Keep relative frequencies in real precision until density is computed.
+        auto bins = relativeFrequencyBins!real();
+        return DensityBinView!(Storage, DensityType, Axis)(bins);
     }
 
     private template isIndex(T)
@@ -3256,4 +3307,295 @@ unittest
     cursor.popFront();
     assert(cursor.front.cumulativeCount == 2);
     assert(cursor.front.cumulativeRelativeFrequency == 1);
+}
+
+/++
+A snapshot of a numeric bin's count, relative frequency, and density.
+Coordinates and count access are forwarded to the relative-frequency entry.
+Changing this value does not update the source accumulator.
++/
+struct DensityBin(RelativeFrequencyElement, DensityType)
+{
+    private RelativeFrequencyElement _entry;
+    alias _entry this;
+    /// Probability per unit bin volume when this entry was read.
+    DensityType density;
+
+    /// Format bin coordinates, count, relative frequency, and density.
+    void toString(Writer)(ref Writer writer) const
+    {
+        import mir.format: print;
+        import mir.appender: scopedBuffer;
+        import std.range.primitives: put;
+        auto buffer = scopedBuffer!(char, 256);
+        _entry.toString(buffer);
+        print(buffer, ", density=", density);
+        put(writer, buffer.data);
+    }
+}
+
+/++
+Borrowed density view created by RelativeFrequencyAccumulator.densityBins.
+Delegates traversal and source checks to the relative-frequency view.
+The source must remain alive and in place; returned descriptions can borrow
+axis storage. Const cursors support reads and save returns a mutable cursor.
++/
+struct DensityBinView(Storage, DensityType, Axis...)
+    if (isFloatingPoint!DensityType && supportsBinView!(Storage, Axis) &&
+        allSatisfy!(supportsDensityAxis, Axis))
+{
+    private alias Base = RelativeFrequencyBinView!(Storage, real, BinCoverage.ordinary, Axis);
+    private Base _bins;
+    private alias FrequencyElement = RelativeFrequencyBin!(Base.BinView.Element, DensityType);
+    /// Value returned by element access; both normalized fields use DensityType.
+    alias Element = DensityBin!(FrequencyElement, DensityType);
+    private this(Base bins) { _bins = bins; }
+    /// Number of remaining bins.
+    size_t length() const @property { return _bins.length; }
+    /// Whether traversal is exhausted.
+    bool empty() const @property { return _bins.empty; }
+    /// Current first entry.
+    Element front() const @property { return this[0]; }
+    /// Current last entry.
+    Element back() const @property { return this[length - 1]; }
+    /// Advance by one bin.
+    void popFront() { _bins.popFront(); }
+    /// Remove the last bin from this cursor.
+    void popBack() { _bins.popBack(); }
+    /// Independent cursor at the same position.
+    auto save() const @property { return DensityBinView(_bins.save); }
+    /// Read a density at an offset from the cursor.
+    Element opIndex(size_t index) const
+    {
+        import mir.stat.descriptive.histogram.internal.density: ScaledBinVolume;
+        auto entry = _bins[index];
+        ScaledBinVolume volume;
+        static foreach (i; 0 .. Axis.length)
+            volume.include(entry.bin!i);
+        return Element(FrequencyElement(entry._entry, entry.count,
+            cast(DensityType) entry.relativeFrequency),
+            volume.normalize!DensityType(entry.relativeFrequency));
+    }
+    /// Slice relative to this cursor; original bin indices are retained.
+    auto opSlice(size_t begin, size_t end) const
+    {
+        return DensityBinView(_bins[begin .. end]);
+    }
+    /// End index for slicing with $.
+    size_t opDollar() const { return length; }
+}
+
+/// Equal bin probabilities can have different densities when widths differ.
+version(mir_stat_test)
+@safe pure nothrow @nogc
+unittest
+{
+    import mir.ndslice.slice: sliced;
+    import mir.stat.descriptive.histogram.axis: VariableAxis, AxisOptions;
+    uint[2] counts = [1, 1];
+    double[3] boundaries = [0, 1, 3];
+    alias A = VariableAxis!(uint, double*, AxisOptions());
+    auto f = RelativeFrequencyAccumulator!(uint[], A)(counts[], A(boundaries[].sliced));
+    assert(f.relativeFrequency(0) == 0.5 && f.relativeFrequency(1) == 0.5);
+    assert(f.density(0) == 0.5 && f.density(1) == 0.25);
+    // Integrating each constant bin density recovers the total probability.
+    assert(f.density(0) * 1 + f.density(1) * 2 == 1);
+    assert(f.density!float(1) == 0.25f);
+}
+
+// Joint density uses volume, and normalization includes underflow/overflow counts.
+version(mir_stat_test)
+@safe pure nothrow @nogc
+unittest
+{
+    import mir.ndslice.slice: sliced;
+    import mir.stat.descriptive.histogram.axis: RegularAxis, AxisOptions;
+    import std.math: isNaN;
+    alias X = RegularAxis!(uint, double, AxisOptions());
+    uint[4] data = [1, 1, 1, 1];
+    auto f = RelativeFrequencyAccumulator!(typeof(data[].sliced(2, 2)), X, X)(
+        data[].sliced(2, 2), X(2, 0, 2), X(2, 0, 4));
+    assert(f.density(0, 1) == 0.125); // Probability 1/4, area 1 * 2.
+    alias A = RegularAxis!(uint, double, AxisOptions(false, true, true));
+    uint[4] flowCounts = [1, 2, 1, 4];
+    const all = RelativeFrequencyAccumulator!(uint[], A)(flowCounts[], A(2, 0, 4));
+    assert(all.density(0) == 0.125 && all.density(1) == 0.0625);
+    assert((all.density(0) + all.density(1)) * 2 == 3.0 / 8);
+    uint[2] zeros;
+    auto empty = RelativeFrequencyAccumulator!(uint[], X)(zeros[], X(2, 0, 2));
+    assert(isNaN(empty.density(0)));
+    empty.put(0.5);
+    assert(empty.density(1) == 0);
+    static assert(!__traits(compiles, f.density!int(0, 0)));
+    static assert(!__traits(compiles, f.density(0)));
+}
+
+// Transformed-axis density is measured in original coordinates, not log units.
+version(mir_stat_test)
+@safe pure nothrow @nogc
+unittest
+{
+    import mir.stat.descriptive.histogram.axis: TransformAxis, IntegralAxis, CategoryAxis, AxisOptions;
+    import mir.math.common: log2, exp2;
+    alias A = TransformAxis!(uint, double, log2, exp2, AxisOptions());
+    uint[2] counts = [1, 1];
+    auto f = RelativeFrequencyAccumulator!(uint[], A)(counts[], A(2, 1, 4));
+    assert(f.density(0) == 0.5 && f.density(1) == 0.25);
+    alias Unit = IntegralAxis!(uint, long, AxisOptions());
+    auto integers = RelativeFrequencyAccumulator!(uint[], Unit)(counts[], Unit(2, long.max - 2));
+    assert(integers.density!float(0) == 0.5f);
+    enum Label { a, b }
+    alias Categories = RelativeFrequencyAccumulator!(uint[], CategoryAxis!(uint, Label, AxisOptions()));
+    static assert(!__traits(compiles, Categories.init.density(0)));
+    static assert(!__traits(compiles, Categories.init.densityBins()));
+}
+
+// The density adapter preserves const random access, live updates, and attributes.
+version(mir_stat_test)
+pure nothrow @nogc
+unittest
+{
+    static void check()()
+    {
+        import mir.ndslice.allocation: rcslice;
+        import mir.ndslice.slice: sliced;
+        import mir.stat.descriptive.histogram.axis: VariableAxis, AxisOptions;
+        import std.range.primitives: isRandomAccessRange;
+        import mir.appender: scopedBuffer;
+        static immutable uint[2] initial = [1, 1];
+        static immutable double[3] boundaries = [0, 1, 3];
+        auto counts = rcslice!uint(initial[]);
+        alias A = VariableAxis!(uint, immutable(double)*, AxisOptions());
+        auto f = RelativeFrequencyAccumulator!(typeof(counts), A)(counts, A(boundaries[].sliced));
+        auto view = f.densityBins!float();
+        static assert(isRandomAccessRange!(typeof(view)));
+        static assert(is(typeof(view.front.density) == float));
+        assert(view[0].density == 0.5f && view.back.density == 0.25f);
+        const fixed = view;
+        assert(fixed.front.bin.low == 0 && fixed.front.count == 1);
+        auto cursor = fixed.save;
+        cursor.popFront();
+        assert(cursor.front.index == 1 && fixed.length == 2);
+        auto tail = fixed[1 .. 2];
+        assert(tail.front.density == 0.25f);
+        auto writer = scopedBuffer!(char, 256);
+        view.front.toString(writer);
+        assert(writer.data == "bin(low=0.0, high=1.0): count=1, relativeFrequency=0.5, density=0.5");
+        f.put(2.0);
+        assert(view.front.density == cast(float)(1.0 / 3));
+        assert(tail.front.density == cast(float)(1.0 / 3));
+        cursor.popBack();
+        assert(cursor.empty);
+        static assert(!__traits(compiles, () @safe {
+            auto local = typeof(f)(counts, A(boundaries[].sliced));
+            return local.densityBins();
+        }));
+        static assert(!__traits(compiles, () @safe {
+            auto local = typeof(f)(counts, A(boundaries[].sliced));
+            return local.densityBins()[0 .. 1].save;
+        }));
+    }
+    version(mir_stat_test_lifetime)
+        () @safe { check!()(); }();
+    else
+        check!()();
+}
+
+// Transformed density traversal uses original-coordinate bounds and widths.
+version(mir_stat_test)
+pure nothrow @nogc
+unittest
+{
+    static void check()()
+    {
+        import mir.ndslice.allocation: rcslice;
+        import mir.stat.descriptive.histogram.axis: TransformAxis, AxisOptions;
+        import mir.math.common: log2, exp2;
+        static immutable uint[2] initial = [1, 1];
+        auto counts = rcslice!uint(initial[]);
+        alias A = TransformAxis!(uint, double, log2, exp2, AxisOptions());
+        const f = RelativeFrequencyAccumulator!(typeof(counts), A)(counts, A(2, 1, 4));
+        const view = f.densityBins();
+        assert(view.length == 2);
+        assert(view[0].bin.low == 1 && view[0].bin.high == 2);
+        assert(view[1].bin.low == 2 && view[1].bin.high == 4);
+        assert(view[0].density == 0.5 && view[1].density == 0.25);
+        double mass = 0;
+        foreach (i; 0 .. view.length)
+        {
+            const entry = view[i];
+            assert(entry.density == f.density(i));
+            mass += entry.density * (entry.bin.high - entry.bin.low);
+        }
+        assert(mass == 1);
+        const floats = f.densityBins!float();
+        assert(floats[0].density == f.density!float(0));
+        assert(floats[1].density == f.density!float(1));
+    }
+    version(mir_stat_test_lifetime)
+        () @safe { check!()(); }();
+    else
+        check!()();
+}
+
+// Every floating-point output type uses actual rounded regular-axis boundaries.
+version(mir_stat_test)
+@safe pure nothrow @nogc
+unittest
+{
+    import std.meta: AliasSeq;
+    import mir.stat.descriptive.histogram.axis: RegularAxis, VariableAxis, AxisOptions;
+    import mir.ndslice.slice: sliced;
+    import mir.math.common: approxEqual;
+    static foreach (T; AliasSeq!(float, double, real))
+    {{
+        alias A = RegularAxis!(uint, T, AxisOptions());
+        uint[3] counts = [1, 1, 1];
+        auto f = RelativeFrequencyAccumulator!(uint[], A)(counts[], A(3, T(0), T(1)));
+        T mass = 0;
+        foreach (i; 0 .. 3)
+        {
+            const bin = f.axis.bin(i);
+            mass += f.density!T(i) * (bin.high - bin.low);
+        }
+        assert(approxEqual(mass, T(1), T.epsilon * 8, T(0)));
+        alias V = VariableAxis!(uint, T*, AxisOptions());
+        T[2] bounds = [T(0), T.min_normal];
+        uint[1] one = [1];
+        auto tiny = RelativeFrequencyAccumulator!(uint[], V)(one[], V(bounds[].sliced));
+        assert(approxEqual(tiny.density!T(0), T(1) / T.min_normal, T.epsilon * 8, T(0)));
+    }}
+}
+
+// Joint density views retain multidimensional coordinates for nested and strided storage.
+version(mir_stat_test)
+pure nothrow
+unittest
+{
+    static void check()()
+    {
+        import mir.ndslice.slice: sliced;
+        import mir.ndslice.dynamic: transposed;
+        import mir.stat.descriptive.histogram.axis: RegularAxis, AxisOptions;
+        alias A = RegularAxis!(uint, double, AxisOptions());
+        auto nested = RelativeFrequencyAccumulator!(uint[][], A, A)(
+            [[1u, 2u], [3u, 4u]], A(2, 0, 2), A(2, 0, 4));
+        const view = nested.densityBins();
+        assert(view.length == 4);
+        assert(view[2].index!0 == 1 && view[2].index!1 == 0);
+        assert(view[2].density == nested.density(1, 0));
+        assert(view[2].relativeFrequency == nested.relativeFrequency(1, 0));
+        auto tail = view[2 .. $];
+        assert(tail.front.density == 0.15);
+        auto storage = new uint[4];
+        storage[] = [1u, 2u, 3u, 4u];
+        auto strided = storage.sliced(2, 2).transposed;
+        auto f = RelativeFrequencyAccumulator!(typeof(strided), A, A)(strided, A(2, 0, 2), A(2, 0, 4));
+        foreach (entry; f.densityBins!float())
+            assert(entry.density == f.density!float(entry.index!0, entry.index!1));
+    }
+    version(mir_stat_test_lifetime)
+        () @safe { check!()(); }();
+    else
+        check!()();
 }

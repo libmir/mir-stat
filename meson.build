@@ -32,6 +32,7 @@ sources_list = [
     'mir/stat/descriptive/histogram/accumulator',
     'mir/stat/descriptive/histogram/relative_frequency',
     'mir/stat/descriptive/histogram/internal/view',
+    'mir/stat/descriptive/histogram/internal/density',
     'mir/stat/descriptive/histogram/internal/projection',
     'mir/stat/internal/borrow',
     'mir/stat/descriptive/histogram/package',
