@@ -3047,28 +3047,17 @@ public:
         }
     }
 
-    // Numeric consumers need values, not a borrowed slice descriptor. Reading
-    // directly also permits scope-bound axes in @safe DIP1000 code.
-    package(mir.stat.descriptive.histogram)
-    Bin!BinType binBounds()(size_t x) const
-    {
-        assert(x < N_bin, "VariableAxis.binBounds: index is out of range");
-        return Bin!BinType(_payload[x], _payload[x + 1]);
-    }
-
-    ///
-    @trusted Bin!(Slice!(Iterator)) bin()(size_t x)
-    {
-        assert(x < _payload.length - 1, "VariableAxis.bin: input must be less than the length of _payload minus one");
-        return Bin!(Slice!(Iterator))(_payload.select!0(x, (x + 2)));
-    }
-
-    /// ditto
+    /++
+    Return the two boundary values for a bin.
+    Numeric boundaries are independent snapshots: changing the returned bin
+    does not change the axis or its boundary storage. For custom boundary types,
+    copying a value does not deep-copy any references it contains.
+    +/
     auto bin()(size_t x) const
     {
-        assert(x < _payload.length - 1, "VariableAxis.bin: input must be less than the length of _payload minus one");
-        auto bounds = _payload.lightConst.select!0(x, x + 2);
-        return Bin!(typeof(bounds))(bounds);
+        import std.traits: Unqual;
+        assert(x < N_bin, "VariableAxis.bin: index is out of range");
+        return Bin!(Unqual!BinType)(_payload[x], _payload[x + 1]);
     }
 }
 
@@ -3828,4 +3817,51 @@ unittest
     static assert(!isTransformFunction!(notAFunction, double));
     static assert(isTransformFunction!("a * 2", double));
     static assert(!isTransformFunction!("a.missingMember", double));
+}
+
+// Copied numeric bins are independent of boundary qualifiers and storage lifetime.
+version(mir_stat_test)
+@safe pure nothrow @nogc
+unittest
+{
+    import mir.ndslice.slice: sliced;
+    import std.meta: AliasSeq;
+
+    static foreach (T; AliasSeq!(float, double, real))
+    {{
+        static foreach (Q; AliasSeq!(T, const(T), immutable(T)))
+        {{
+            Q[3] edges = [0, 1, 3];
+            alias A = VariableAxis!(uint, Q*, AxisOptions());
+            auto axis = A(edges[].sliced);
+            auto bin = axis.bin(1);
+            static assert(is(typeof(bin) == Bin!T));
+            assert(bin.low == 1 && bin.high == 3);
+            bin.low = 2;
+            assert(edges[1] == 1 && axis.bin(1).low == 1);
+            const reader = axis;
+            assert(reader.bin(1) == Bin!T(1, 3));
+        }}
+        static Bin!T fromLocal() @safe pure nothrow @nogc
+        {
+            T[3] edges = [0, 1, 3];
+            const axis = VariableAxis!(uint, T*, AxisOptions())(edges[].sliced);
+            return axis.bin(1);
+        }
+        assert(fromLocal() == Bin!T(1, 3));
+    }}
+}
+
+// Both the first invalid index and an extreme index are rejected.
+version(mir_stat_test)
+@system pure
+unittest
+{
+    import mir.ndslice.slice: sliced;
+    import std.exception: assertThrown;
+    import core.exception: AssertError;
+    double[3] edges = [0, 1, 3];
+    auto axis = VariableAxis!(uint, double*, AxisOptions())(edges[].sliced);
+    assertThrown!AssertError(axis.bin(2));
+    assertThrown!AssertError(axis.bin(size_t.max));
 }

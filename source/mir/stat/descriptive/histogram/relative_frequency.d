@@ -313,12 +313,12 @@ struct RelativeFrequencyAccumulator(Storage, Axis...)
         if (isFloatingPoint!DensityType && Indices.length == N &&
             allSatisfy!(isIndex, Indices) && allSatisfy!(supportsDensityAxis, Axis))
     {
-        import mir.stat.descriptive.histogram.internal.density: ScaledBinVolume, numericBin;
+        import mir.stat.descriptive.histogram.internal.density: ScaledBinVolume;
         // Validate indices and obtain normalization through the existing API.
         const frequency = relativeFrequency!real(index);
         ScaledBinVolume volume;
         static foreach (i; 0 .. N)
-            volume.include(numericBin(histogramAccumulator.axis[i], cast(size_t) index[i]));
+            volume.include(histogramAccumulator.axis[i].bin(cast(size_t) index[i]));
         return volume.normalize!DensityType(frequency);
     }
 
