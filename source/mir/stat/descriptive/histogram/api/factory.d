@@ -2147,3 +2147,154 @@ private mixin template ConstFactoryTests(alias make, bool relative)
         }
     }
 }
+
+// Quantile and count allocation policies stay paired: both results own their storage.
+package auto buildPercentogram(alias allocate, alias quantiles, alias histogram,
+    Data, P)(scope auto ref Data data, scope auto ref P probabilities)
+{
+    import mir.ndslice.slice: isSlice, sliced;
+    import mir.stat.descriptive.histogram.axis: VariableAxis;
+    import std.traits: isIntegral;
+    import std.math: isFinite, nextUp;
+
+    static if (isIntegral!P)
+    {
+        assert(probabilities > 0 && probabilities < size_t.max,
+            "percentogram: bin count must be positive and leave room for an extra boundary");
+        NoAllocationContext context;
+        auto levels = allocate!double(context, cast(size_t) probabilities + 1);
+        foreach (i; 0 .. levels.length)
+            levels[i] = cast(double) i / probabilities;
+        return buildPercentogram!(allocate, quantiles, histogram)(data, levels);
+    }
+    else
+    {
+        static if (isSlice!Data)
+            scope auto observations = data;
+        else
+            scope auto observations = data[].sliced;
+        static if (isSlice!P)
+            scope auto levels = probabilities;
+        else
+            scope auto levels = probabilities[].sliced;
+        static assert(typeof(observations).N == 1 && typeof(levels).N == 1,
+            "percentogram: observations and probabilities must be one-dimensional");
+        assert(observations.length > 0, "percentogram: observations must not be empty");
+        foreach (x; observations)
+        {
+            static if (!isIntegral!(typeof(x)))
+                assert(isFinite(x), "percentogram: observations must be finite");
+        }
+        assert(levels.length >= 2, "percentogram: at least two probabilities are required");
+        assert(levels[0] == 0 && levels[$ - 1] == 1,
+            "percentogram: probabilities must span zero to one");
+        foreach (i; 1 .. levels.length)
+            assert(levels[i] > levels[i - 1], "percentogram: probabilities must strictly increase");
+
+        auto edges = quantiles(observations, levels);
+        size_t distinct = 0;
+        foreach (i; 0 .. edges.length)
+        {
+            assert(isFinite(edges[i]), "percentogram: quantile boundaries must be finite");
+            if (distinct == 0 || edges[i] > edges[distinct - 1])
+                edges[distinct++] = edges[i];
+            else
+                assert(edges[i] == edges[distinct - 1], "percentogram: boundaries must not decrease");
+        }
+        assert(distinct >= 2, "percentogram: at least two distinct boundaries are required");
+        edges = edges[0 .. distinct];
+        edges[$ - 1] = nextUp(edges[$ - 1]);
+        assert(isFinite(edges[$ - 1]), "percentogram: maximum requires a finite successor");
+        // Quantiles may promote integral observations to floating-point boundaries.
+        // Match the axis value type lazily without another observation buffer.
+        import mir.ndslice.topology: as;
+        import mir.primitives: DeepElementType;
+        return histogram!VariableAxis(observations.as!(DeepElementType!(typeof(edges))), edges);
+    }
+}
+
+version(mir_stat_test)
+package void testPercentogramRejections(alias factory)()
+{
+    import core.exception: AssertError;
+    import std.math: nextDown;
+    import std.meta: AliasSeq;
+    // Direct catches preserve nothrow inference while exercising contract failures.
+    static void rejects(alias operation)()
+    {
+        bool rejected;
+        try { operation(); }
+        catch (AssertError) { rejected = true; }
+        assert(rejected);
+    }
+    rejects!(() { double[0] x; factory(x, 2); })();
+    rejects!(() { double[2] x = [1, 1]; factory(x, 2); })();
+    rejects!(() { double[2] x = [0, 1]; factory(x, 0); })();
+    rejects!(() { double[2] x = [0, 1]; factory(x, -1); })();
+    rejects!(() { double[2] x = [0, 1]; factory(x, size_t.max); })();
+    rejects!(() { double[2] x = [0, double.nan]; factory(x, 2); })();
+    rejects!(() { double[2] x = [0, double.infinity]; factory(x, 2); })();
+    rejects!(() { double[2] x = [0, 1]; double[0] p; factory(x, p); })();
+    rejects!(() { double[2] x = [0, 1]; double[2] p = [0.1, 1]; factory(x, p); })();
+    rejects!(() { double[2] x = [0, 1]; double[3] p = [0, double.nan, 1]; factory(x, p); })();
+    rejects!(() { double[2] x = [0, 1]; double[4] p = [0, 0.5, 0.5, 1]; factory(x, p); })();
+    rejects!(() { double[2] x = [0, 1]; double[4] p = [0, 0.75, 0.25, 1]; factory(x, p); })();
+    static foreach (T; AliasSeq!(float, double, real))
+    {{
+        rejects!(() { T[2] x = [nextDown(T.max), T.max]; factory(x, 1); })();
+    }}
+}
+
+// Use the same tie cases for each allocation policy and both probability APIs.
+version(mir_stat_test)
+package void testPercentogramDuplicates(alias factory)()
+{
+    import std.meta: AliasSeq;
+    import std.math: nextUp, isFinite;
+    // Type-7 quartiles select these sorted observations exactly. Every case
+    // reduces to boundaries 0, 1, 2 before the final endpoint is extended.
+    const int[5][4] samples = [
+        [0, 1, 1, 1, 2], // duplicates only in the interior
+        [0, 0, 0, 1, 2], // duplicates only at the minimum
+        [0, 1, 2, 2, 2], // duplicates only at the maximum
+        [0, 0, 1, 2, 2], // duplicates at both endpoints
+    ];
+    const uint[4] firstCounts = [1, 3, 1, 2];
+    const double[5] probabilities = [0, 0.25, 0.5, 0.75, 1];
+    static foreach (T; AliasSeq!(int, float, double, real))
+    {{
+        foreach (i; 0 .. samples.length)
+        {
+            T[5] data;
+            // Reverse input order so preservation checks also catch in-place sorting.
+            foreach (j; 0 .. data.length)
+                data[j] = samples[i][$ - 1 - j];
+            const original = data;
+            auto explicitLevels = factory(data, probabilities);
+            auto equalIntervals = factory(data, 4);
+            assert(data == original);
+            assert(probabilities[] == [0.0, 0.25, 0.5, 0.75, 1.0]);
+            assert(explicitLevels.axis.N_bin == 2 && equalIntervals.axis.N_bin == 2);
+            assert(explicitLevels.count == 5 && equalIntervals.count == 5);
+            assert(explicitLevels.counts[0] == firstCounts[i]);
+            assert(explicitLevels.counts[1] == 5 - firstCounts[i]);
+            assert(equalIntervals.counts == explicitLevels.counts);
+            double area = 0;
+            foreach (j; 0 .. 2)
+            {
+                auto bin = explicitLevels.bins()[j].bin;
+                auto other = equalIntervals.bins()[j].bin;
+                assert(bin.low == j && bin.high > bin.low);
+                if (j == 0)
+                    assert(bin.high == 1);
+                else
+                    assert(bin.high == nextUp(typeof(bin.high)(2)));
+                assert(other.low == bin.low && other.high == bin.high);
+                const height = explicitLevels.density(j);
+                assert(isFinite(height));
+                area += height * cast(double) (bin.high - bin.low);
+            }
+            assert(area > 0.999999 && area < 1.000001);
+        }
+    }}
+}

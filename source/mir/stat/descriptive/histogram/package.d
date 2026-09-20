@@ -20,7 +20,10 @@ public import mir.stat.descriptive.histogram.api;
 
 // Possible later extensions
 // - Support per-bin accumulators, such as MeanAccumulator.
-// - Add weighted histograms and frequencies.
+// - Add weighted histograms and relative frequencies.
+// - Add percentogram tail trimming with explicit normalization rules.
+// - Add custom-allocator percentograms with explicit ownership and cleanup of
+//   both boundary and count allocations.
 // - Add counters that widen dynamically when their current representation fills.
 // - Replace the Phobos sorted-range dependency in VariableAxis with a Mir
 //   equivalent; VariableAxis already uses a binary-search-based lookup.
