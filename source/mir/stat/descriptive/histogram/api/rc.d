@@ -479,15 +479,15 @@ version(mir_stat_test)
 unittest
 {
     import mir.ndslice.slice: sliced;
-    import mir.stat.descriptive.univariate: quantile;
+    import mir.stat.descriptive.univariate: rcquantile;
     import mir.stat.descriptive.histogram.axis: VariableAxis;
     import std.math: nextUp;
 
     auto data = [0.0, 1, 2, 3, 4, 8, 12, 16].sliced;
     // Probabilities can be selected at runtime; here each interval spans 25%.
     auto probabilities = [0.0, 0.25, 0.5, 0.75, 1.0].sliced;
-    // Quantile returns owning boundaries; the histogram retains that ownership.
-    auto boundaries = data.quantile(probabilities);
+    // Rcquantile returns owning boundaries; the histogram retains that ownership.
+    auto boundaries = data.rcquantile(probabilities);
     assert(boundaries == [0.0, 1.75, 3.5, 9.0, 16.0]);
 
     // VariableAxis uses [low, high) bins by default. Extend the last boundary

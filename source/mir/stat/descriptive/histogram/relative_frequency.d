@@ -656,10 +656,8 @@ unittest
     auto data = [0.0, 1, 2, 3, 4, 8, 12, 16].sliced;
     auto probabilities = [0.0, 0.25, 0.5, 0.75, 1.0].sliced;
     // First compute the data-dependent boundaries; then build the accumulator.
-    // Keep the boundaries in caller-owned storage.
-    auto boundaries = (new double[probabilities.length]).sliced;
-    foreach (i; 0 .. probabilities.length)
-        boundaries[i] = data.quantile(probabilities[i]);
+    // Compute all boundaries together in independent GC-owned storage.
+    auto boundaries = data.quantile(probabilities);
     // Include the sample maximum in the final left-closed, right-open bin.
     boundaries[$ - 1] = nextUp(boundaries[$ - 1]);
     auto axis = variableAxis(boundaries);
