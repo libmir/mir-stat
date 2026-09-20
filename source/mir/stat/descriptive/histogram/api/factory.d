@@ -2155,7 +2155,6 @@ package auto buildPercentogram(alias allocate, alias quantiles, alias histogram,
     import mir.ndslice.slice: isSlice, sliced;
     import mir.stat.descriptive.histogram.axis: VariableAxis;
     import std.traits: isIntegral;
-    import std.math: isFinite, nextUp;
 
     static if (isIntegral!P)
     {
@@ -2177,34 +2176,11 @@ package auto buildPercentogram(alias allocate, alias quantiles, alias histogram,
             scope auto levels = probabilities;
         else
             scope auto levels = probabilities[].sliced;
-        static assert(typeof(observations).N == 1 && typeof(levels).N == 1,
-            "percentogram: observations and probabilities must be one-dimensional");
-        assert(observations.length > 0, "percentogram: observations must not be empty");
-        foreach (x; observations)
-        {
-            static if (!isIntegral!(typeof(x)))
-                assert(isFinite(x), "percentogram: observations must be finite");
-        }
-        assert(levels.length >= 2, "percentogram: at least two probabilities are required");
-        assert(levels[0] == 0 && levels[$ - 1] == 1,
-            "percentogram: probabilities must span zero to one");
-        foreach (i; 1 .. levels.length)
-            assert(levels[i] > levels[i - 1], "percentogram: probabilities must strictly increase");
+        validatePercentogramInputs(observations, levels);
 
         auto edges = quantiles(observations, levels);
-        size_t distinct = 0;
-        foreach (i; 0 .. edges.length)
-        {
-            assert(isFinite(edges[i]), "percentogram: quantile boundaries must be finite");
-            if (distinct == 0 || edges[i] > edges[distinct - 1])
-                edges[distinct++] = edges[i];
-            else
-                assert(edges[i] == edges[distinct - 1], "percentogram: boundaries must not decrease");
-        }
-        assert(distinct >= 2, "percentogram: at least two distinct boundaries are required");
+        const distinct = preparePercentogramEdges(edges);
         edges = edges[0 .. distinct];
-        edges[$ - 1] = nextUp(edges[$ - 1]);
-        assert(isFinite(edges[$ - 1]), "percentogram: maximum requires a finite successor");
         // Quantiles may promote integral observations to floating-point boundaries.
         // Match the axis value type lazily without another observation buffer.
         import mir.ndslice.topology: as;
@@ -2297,4 +2273,44 @@ package void testPercentogramDuplicates(alias factory)()
             assert(area > 0.999999 && area < 1.000001);
         }
     }}
+}
+
+// Keep statistical rules shared without coupling custom allocation to GC/RC ownership.
+package void validatePercentogramInputs(Observations, Levels)(scope Observations observations, scope Levels levels)
+{
+    import std.traits: isIntegral;
+    import std.math: isFinite;
+    static assert(Observations.N == 1 && Levels.N == 1,
+        "percentogram: observations and probabilities must be one-dimensional");
+    assert(observations.length > 0, "percentogram: observations must not be empty");
+    foreach (x; observations)
+    {
+        static if (!isIntegral!(typeof(x)))
+            assert(isFinite(x), "percentogram: observations must be finite");
+    }
+    assert(levels.length >= 2, "percentogram: at least two probabilities are required");
+    assert(levels[0] == 0 && levels[$ - 1] == 1,
+        "percentogram: probabilities must span zero to one");
+    foreach (i; 1 .. levels.length)
+        assert(levels[i] > levels[i - 1], "percentogram: probabilities must strictly increase");
+
+}
+
+// Compact in place but retain the complete allocation handle for manual cleanup.
+package size_t preparePercentogramEdges(Edges)(scope Edges edges)
+{
+    import std.math: isFinite, nextUp;
+    size_t distinct = 0;
+    foreach (i; 0 .. edges.length)
+    {
+        assert(isFinite(edges[i]), "percentogram: quantile boundaries must be finite");
+        if (distinct == 0 || edges[i] > edges[distinct - 1])
+            edges[distinct++] = edges[i];
+        else
+            assert(edges[i] == edges[distinct - 1], "percentogram: boundaries must not decrease");
+    }
+    assert(distinct >= 2, "percentogram: at least two distinct boundaries are required");
+    edges[distinct - 1] = nextUp(edges[distinct - 1]);
+    assert(isFinite(edges[distinct - 1]), "percentogram: maximum requires a finite successor");
+    return distinct;
 }

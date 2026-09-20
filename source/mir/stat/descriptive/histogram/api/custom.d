@@ -571,3 +571,327 @@ unittest
         allocator, values[].sliced, ThrowingCopyAxis()));
     assert(allocator.allocations == 2 && allocator.releases == 2);
 }
+
+/++
+A manually managed percentogram and the original allocations backing it.
+Use `histogram` for counts, relative frequencies, densities, and traversal.
+Call `dispose` exactly once across all copies, through the original allocator,
+after all aliases and borrowed views have finished using either allocation.
+The allocator is not retained and there is no automatic destructor cleanup.
+Copies share storage; do not update independent copies of the accumulator.
++/
+struct AllocatedPercentogram(Histogram, BoundaryStorage, CountStorage)
+{
+    /// Existing relative-frequency accumulator; do not replace it while storage is in use.
+    Histogram histogram;
+    private BoundaryStorage boundaries;
+    private CountStorage counts;
+    private bool active;
+
+    private this(Histogram value, BoundaryStorage edges, CountStorage storage)
+    {
+        histogram = value;
+        boundaries = edges;
+        counts = storage;
+        active = true;
+    }
+
+    /++
+    Release counts and the original boundary allocation through the same allocator.
+    Duplicate compaction does not shorten the allocation passed to cleanup.
+    Repeated disposal of this instance is harmless; other copies become invalid.
+    Deallocation must not throw. Attributes follow the allocator's operations.
+    +/
+    void dispose(Allocator)(ref Allocator allocator)
+    {
+        import std.experimental.allocator: dispose;
+        if (!active) return;
+        allocator.dispose(counts.field);
+        allocator.dispose(boundaries.field);
+        counts = CountStorage.init;
+        boundaries = BoundaryStorage.init;
+        histogram = Histogram.init;
+        active = false;
+    }
+}
+
+/++
+Construct a percentogram with caller-selected allocation for scratch, boundaries,
+and counts. Accepts the same observations and bin count or probabilities as
+$(REF percentogram, mir, stat, descriptive, histogram, api, gc).
+The result exposes a `histogram` and must be disposed through the same allocator.
+Generated probabilities and quantile scratch are released before return.
+Exceptions during construction release completed allocations. Invalid-input
+assertions are contract violations; recovery through nothrow code is not supported.
+Deallocation must not throw.
+Only the active boundary slice is compacted: the full original allocation is
+retained for cleanup. Attributes depend on the allocator.
+
+Params:
+    allocator = allocator providing allocation and nonthrowing deallocation
+    data = one-dimensional observations, as an array or Mir slice
+    probabilities = positive bin count or probability array/slice spanning zero to one
++/
+auto makePercentogram(Allocator, Data, P)(ref Allocator allocator,
+    scope auto ref Data data, scope auto ref P probabilities)
+{
+    import std.traits: isIntegral;
+    import std.experimental.allocator: dispose;
+    import mir.ndslice.slice: isSlice, sliced;
+    import mir.ndslice.topology: as;
+    import mir.primitives: DeepElementType;
+    import mir.stat.descriptive.univariate: makeQuantile;
+    import mir.stat.descriptive.histogram.axis: VariableAxis;
+    import mir.stat.descriptive.histogram.accumulator: HistogramAccumulator;
+    import mir.stat.descriptive.histogram.relative_frequency: RelativeFrequencyAccumulator;
+    import mir.stat.descriptive.histogram.api.factory: validatePercentogramInputs, preparePercentogramEdges;
+    static if (isIntegral!P)
+    {
+        assert(probabilities > 0 && probabilities < size_t.max,
+            "percentogram: bin count must be positive and leave room for an extra boundary");
+        auto levels = allocateCounts!double(allocator, cast(size_t) probabilities + 1);
+        scope(exit) allocator.dispose(levels.field);
+        foreach (i; 0 .. levels.length)
+            levels[i] = cast(double) i / probabilities;
+        return makePercentogram(allocator, data, levels);
+    }
+    else
+    {
+        static if (isSlice!Data) scope auto observations = data;
+        else scope auto observations = data[].sliced;
+        static if (isSlice!P) scope auto levels = probabilities;
+        else scope auto levels = probabilities[].sliced;
+        validatePercentogramInputs(observations, levels);
+        auto edges = makeQuantile(allocator, observations, levels);
+        scope(failure) allocator.dispose(edges.field);
+        const distinct = preparePercentogramEdges(edges);
+        auto h = makeHistogram!VariableAxis(allocator,
+            observations.as!(DeepElementType!(typeof(edges))), edges[0 .. distinct]);
+        scope(failure) allocator.dispose(h.counts.field);
+        static if (is(typeof(h) == HistogramAccumulator!Args, Args...))
+        {
+            auto f = RelativeFrequencyAccumulator!Args(h.counts, h.axis);
+            return AllocatedPercentogram!(typeof(f), typeof(edges), typeof(h.counts))(f, edges, h.counts);
+        }
+    }
+}
+
+/// Allocate quartile bins without the GC and explicitly release the result.
+version(mir_stat_test)
+@system pure nothrow @nogc
+unittest
+{
+    import std.experimental.allocator.mallocator: Mallocator;
+    double[8] data = [0, 1, 2, 3, 4, 8, 12, 16];
+    auto p = makePercentogram(Mallocator.instance, data, 4);
+    scope(exit) p.dispose(Mallocator.instance);
+    assert(p.histogram.count == 8 && p.histogram.counts == [2, 2, 2, 2]);
+    assert(p.histogram.density(0) == 0.25 / 1.75);
+}
+
+/// Mir slices and built-in dynamic arrays support explicit probability intervals.
+version(mir_stat_test)
+@system pure nothrow @nogc
+unittest
+{
+    import std.experimental.allocator.mallocator: Mallocator;
+    import mir.ndslice.slice: sliced;
+    double[5] data = [0, 0, 1, 2, 2];
+    const double[5] levels = [0, 0.25, 0.5, 0.75, 1];
+    auto p = makePercentogram(Mallocator.instance, data[].sliced, levels[]);
+    scope(exit) p.dispose(Mallocator.instance);
+    // Five quantiles become three boundaries. Disposal still releases all five slots.
+    assert(p.histogram.axis.N_bin == 2 && p.histogram.counts == [2, 3]);
+}
+
+// Manual disposal is required, and copies do not represent independent ownership.
+version(mir_stat_test)
+@safe pure nothrow
+unittest
+{
+    // This allocator records release requests but leaves reclamation to the GC.
+    // Misuse can therefore be demonstrated without an unmanaged leak or double free.
+    double[3] data = [0, 1, 2];
+    const double[3] levels = [0, 0.5, 1];
+    SafeAllocator omitted;
+    {
+        auto p = makePercentogram(omitted, data, levels);
+        assert(p.histogram.count == 3);
+        // Scratch was released automatically; boundaries and counts remain allocated.
+        assert(omitted.allocations == 3 && omitted.releases == 1);
+    }
+    // Going out of scope does not release the result's two allocations.
+    // With a manually reclaimed allocator, omitting dispose would leak them.
+    assert(omitted.allocations - omitted.releases == 2);
+
+    SafeAllocator copied;
+    auto original = makePercentogram(copied, data, levels);
+    auto aliasCopy = original; // Shares both allocations; does not allocate new storage.
+    assert(copied.allocations == 3 && copied.releases == 1);
+    original.dispose(copied);
+    assert(copied.releases == copied.allocations);
+    original.dispose(copied); // The same instance remembers it was disposed.
+    assert(copied.releases == 3);
+
+    // The copy still has its own active flag. Never do this with a real freeing
+    // allocator: it would attempt to free the same boundaries and counts twice.
+    // Do not read aliasCopy.histogram after the first disposal either.
+    aliasCopy.dispose(copied);
+    assert(copied.releases == 5); // Two duplicate release requests, not two new allocations.
+}
+
+// A safe allocator supports construction and cleanup in @safe code.
+version(mir_stat_test)
+@safe pure nothrow
+unittest
+{
+    SafeAllocator allocator;
+    int[3] data = [0, 1, 2];
+    auto p = makePercentogram(allocator, data, 2);
+    assert(p.histogram.count == 3);
+    p.dispose(allocator);
+    assert(allocator.allocations == allocator.releases);
+    p.dispose(allocator);
+    assert(allocator.allocations == allocator.releases);
+}
+
+version(mir_stat_test)
+private struct PercentogramAllocator(bool throwing = false)
+{
+    import std.experimental.allocator.mallocator: Mallocator;
+    enum alignment = Mallocator.alignment;
+    size_t allocations, releases, failAt;
+    private void*[8] addresses;
+    private size_t[8] lengths;
+    private bool[8] live;
+    auto allocate(size_t bytes)
+    {
+        ++allocations;
+        static if (throwing)
+            if (allocations == failAt)
+                throw new Exception("percentogram allocation failure");
+        auto memory = Mallocator.instance.allocate(bytes);
+        const i = allocations - 1;
+        assert(i < addresses.length);
+        addresses[i] = memory.ptr;
+        lengths[i] = memory.length;
+        live[i] = true;
+        return memory;
+    }
+    bool deallocate(void[] memory) @system pure nothrow @nogc
+    {
+        foreach (i; 0 .. addresses.length)
+            if (live[i] && addresses[i] == memory.ptr)
+            {
+                // In particular, disposal must not use the compacted boundary length.
+                assert(lengths[i] == memory.length);
+                live[i] = false;
+                ++releases;
+                return Mallocator.instance.deallocate(memory);
+            }
+        assert(false, "unknown allocation or double release");
+    }
+}
+
+// Compacted extrema and interior duplicates retain full allocation extents for disposal.
+version(mir_stat_test)
+@system pure nothrow @nogc
+unittest
+{
+    const double[5][4] samples = [[0, 1, 1, 1, 2], [0, 0, 0, 1, 2],
+        [0, 1, 2, 2, 2], [0, 0, 1, 2, 2]];
+    const uint[4] firstCounts = [1, 3, 1, 2];
+    const double[5] levels = [0, 0.25, 0.5, 0.75, 1];
+    foreach (i; 0 .. samples.length)
+    {
+        PercentogramAllocator!() allocator;
+        auto p = makePercentogram(allocator, samples[i], levels);
+        assert(p.histogram.counts == [firstCounts[i], 5 - firstCounts[i]]);
+        assert(allocator.allocations == 3 && allocator.releases == 1); // scratch only
+        p.dispose(allocator);
+        assert(allocator.releases == 3);
+        p.dispose(allocator);
+        assert(allocator.releases == 3);
+    }
+    PercentogramAllocator!() allocator;
+    auto p = makePercentogram(allocator, samples[3], 4);
+    assert(allocator.allocations == 4 && allocator.releases == 2); // levels and scratch
+    assert(p.histogram.count == 5);
+    p.dispose(allocator);
+    assert(allocator.releases == 4);
+}
+
+// Every allocation failure releases the allocations that preceded it.
+version(mir_stat_test)
+@system pure
+unittest
+{
+    import std.exception: assertThrown;
+    double[3] data = [0, 1, 2];
+    foreach (failure; 1 .. 5)
+    {
+        PercentogramAllocator!true allocator;
+        allocator.failAt = failure;
+        assertThrown!Exception(makePercentogram(allocator, data, 2));
+        assert(allocator.allocations == failure && allocator.releases == failure - 1);
+    }
+}
+
+// With exception unwinding enabled, failed boundary validation also cleans up.
+version(mir_stat_test)
+@system pure
+unittest
+{
+    import core.exception: AssertError;
+    PercentogramAllocator!true allocator;
+    double[3] data = [1, 1, 1];
+    bool rejected;
+    try { makePercentogram(allocator, data, 2); }
+    catch (AssertError) { rejected = true; }
+    assert(rejected && allocator.allocations == 3 && allocator.releases == 3);
+}
+
+// The result owns allocations independently of local observations and probabilities.
+version(mir_stat_test)
+@system pure nothrow @nogc
+unittest
+{
+    import std.experimental.allocator.mallocator: Mallocator;
+    static auto fromLocal()
+    {
+        double[3] data = [2, 0, 1];
+        const double[3] levels = [0, 0.5, 1];
+        return makePercentogram(Mallocator.instance, data, levels);
+    }
+    auto p = fromLocal();
+    scope(exit) p.dispose(Mallocator.instance);
+    assert(p.histogram.count == 3 && p.histogram.counts == [1, 2]);
+}
+
+// User code can throw while validating, copying, or inserting observations.
+version(mir_stat_test)
+@system pure
+unittest
+{
+    import std.exception: assertThrown;
+    import mir.ndslice.slice: sliced;
+    import mir.ndslice.topology: map;
+    double[3] data = [0, 1, 2];
+    const double[3] levels = [0, 0.5, 1];
+    foreach (failure; [1, 4, 7])
+    {
+        PercentogramAllocator!() allocator;
+        size_t calls;
+        double read(double value)
+        {
+            if (++calls == failure)
+                throw new Exception("percentogram observation failure");
+            return value;
+        }
+        auto mapped = data[].sliced.map!read;
+        assertThrown!Exception(makePercentogram(allocator, mapped, levels));
+        assert(calls == failure);
+        assert(allocator.allocations == (failure == 1 ? 0 : failure == 4 ? 1 : 3));
+        assert(allocator.releases == allocator.allocations);
+    }
+}
