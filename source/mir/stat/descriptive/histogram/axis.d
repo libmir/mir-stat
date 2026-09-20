@@ -3494,6 +3494,10 @@ unittest
     assertThrown!AssertError(T(0, 0.0, 1.0));
     alias V = VariableAxis!(uint, double*, AxisOptions());
     foreach (breaks; [cast(double[]) [], [0.0], [0.0, 0.0],
+                      [0.0, 1.0, 1.0, 2.0], // duplicate interior boundary
+                      [0.0, 0.0, 1.0, 2.0], // duplicate minimum only
+                      [0.0, 1.0, 2.0, 2.0], // duplicate maximum only
+                      [0.0, 0.0, 1.0, 2.0, 2.0], // duplicates at both endpoints
                       [0.0, 2.0, 1.0], [0.0, double.nan, 2.0]])
         assertThrown!AssertError(V(breaks.sliced));
     auto many = new double[257];
