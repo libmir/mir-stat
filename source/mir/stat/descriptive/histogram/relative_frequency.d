@@ -28,6 +28,15 @@ private import mir.stat.descriptive.histogram.internal.density: supportsDensityA
 import mir.stat.descriptive.histogram.internal.projection: validMarginalAxes;
 import mir.stat.internal.borrow: hasBorrowEscapeChecking, uncheckedBorrow;
 
+/++ Select which recorded observations form the probability distribution. +/
+enum Normalization
+{
+    /// Include all recorded counts, including underflow and overflow.
+    all,
+    /// Include only bins ordinary on every axis; excluded bins have zero probability.
+    ordinary,
+}
+
 // Limit destinations to writable floating-point arrays and one-dimensional slices.
 private template isRelativeFrequencyDestination(Destination)
 {
@@ -66,8 +75,14 @@ semantics: callers must not modify backing storage through external aliases or
 independently mutate copies of this wrapper that share storage. Counter types
 must be large enough for both bin counts and the total.
 
-Relative frequencies divide by the total, including flow counts. The output
-defaults to double and can be selected independently on each accessor. An empty
+Relative frequencies divide by all recorded counts by default. Select
+`Normalization.ordinary` to condition on observations in ordinary bins on every
+axis. Excluded bins then have zero probability; a zero selected total produces
+NaNs, including for excluded bins. Counts and the maintained total are unchanged.
+Ordinary normalization takes constant time for one-dimensional integral counters.
+Other counter types and joint histograms scan ordinary counts on each scalar or
+random-access view read; cumulative snapshots and traversal compute the denominator once.
+The output defaults to double and can be selected independently on each accessor. An empty
 accumulator returns NaNs; an unoccupied bin in a nonempty accumulator returns zero.
 
 Params:
@@ -197,7 +212,8 @@ struct RelativeFrequencyAccumulator(Storage, Axis...)
     underflow/overflow bins. The last axis advances fastest.
 
     Each element reads its count and relative frequency from this accumulator. The
-    denominator includes enabled flow bins. RelativeFrequencyType defaults to double;
+    denominator includes enabled flow bins by default. Ordinary normalization
+    excludes them from the distribution independently of coverage. RelativeFrequencyType defaults to double;
     relative frequencies are NaN when the total is zero.
 
     The accumulator must outlive the view and every saved or sliced cursor.
@@ -212,16 +228,18 @@ struct RelativeFrequencyAccumulator(Storage, Axis...)
     borrowed by this accessor.
 
     Params:
+        normalization = all recorded counts by default, or ordinary bins only
         RelativeFrequencyType = floating-point output type
         coverage = ordinary bins or all enabled stored bins
     +/
-    auto relativeFrequencyBins(RelativeFrequencyType = double, BinCoverage coverage = BinCoverage.ordinary)() return const
+    auto relativeFrequencyBins(RelativeFrequencyType = double, BinCoverage coverage = BinCoverage.ordinary,
+        Normalization normalization = Normalization.all)() return const
         if (isFloatingPoint!RelativeFrequencyType && supportsBinView!(Storage, Axis) &&
             (coverage == BinCoverage.ordinary || coverage == BinCoverage.all))
     {
         static if (!hasBorrowEscapeChecking)
             uncheckedBorrow();
-        return RelativeFrequencyBinView!(Storage, RelativeFrequencyType, coverage, Axis)(&this);
+        return RelativeFrequencyBinView!(Storage, RelativeFrequencyType, coverage, Axis)(&this, normalization);
     }
 
     /++
@@ -229,8 +247,10 @@ struct RelativeFrequencyAccumulator(Storage, Axis...)
 
     Entries expose count, cumulativeCount, cumulativeRelativeFrequency, and the usual
     bin description and classification. Coverage defaults to ordinary bins;
-    enabled underflow always contributes to cumulative counts. BinCoverage.all
-    also emits enabled underflow/overflow entries. The denominator includes all
+    enabled underflow contributes to cumulative counts by default. Ordinary
+    normalization excludes underflow/overflow from cumulative counts, regardless
+    of coverage; raw per-bin counts remain unchanged. BinCoverage.all
+    also emits enabled underflow/overflow entries. By default, the denominator includes all
     recorded counts; a zero total produces NaNs. Categorical axes follow bin order.
 
     Traversal takes linear time and constant auxiliary storage, without allocating.
@@ -240,17 +260,19 @@ struct RelativeFrequencyAccumulator(Storage, Axis...)
     and @safe restrictions of $(LREF relativeFrequencyBins) also apply here.
 
     Params:
+        normalization = all recorded counts by default, or ordinary bins only
         RelativeFrequencyType = floating-point output type; defaults to double
         coverage = ordinary bins or all enabled stored bins
     +/
     auto cumulativeRelativeFrequencyBins(RelativeFrequencyType = double,
-        BinCoverage coverage = BinCoverage.ordinary)() return const
+        BinCoverage coverage = BinCoverage.ordinary,
+        Normalization normalization = Normalization.all)() return const
         if (N == 1 && isFloatingPoint!RelativeFrequencyType && supportsBinView!(Storage, Axis) &&
             (coverage == BinCoverage.ordinary || coverage == BinCoverage.all))
     {
         static if (!hasBorrowEscapeChecking)
             uncheckedBorrow();
-        return CumulativeRelativeFrequencyBinView!(Storage, RelativeFrequencyType, coverage, Axis)(&this);
+        return CumulativeRelativeFrequencyBinView!(Storage, RelativeFrequencyType, coverage, Axis)(&this, normalization);
     }
 
     /// Total recorded observations, including flow bins.
@@ -269,15 +291,17 @@ struct RelativeFrequencyAccumulator(Storage, Axis...)
     Relative frequency of an ordinary bin.
 
     Supply one ordinary bin index per axis. Storage offsets for enabled
-    underflow bins are applied automatically. The denominator includes all
+    underflow bins are applied automatically. By default, the denominator includes all
     enabled underflow and overflow counts.
-    Returns `RelativeFrequencyType.nan` when the total count is zero.
+    Returns `RelativeFrequencyType.nan` when the selected total is zero.
 
     Params:
+        normalization = all recorded counts by default, or ordinary bins only
         RelativeFrequencyType = floating-point output type; defaults to double
         index = ordinary bin indices, one per axis, each less than its N_bin
     +/
-    RelativeFrequencyType relativeFrequency(RelativeFrequencyType = double, Indices...)(Indices index) const
+    RelativeFrequencyType relativeFrequency(RelativeFrequencyType = double,
+        Normalization normalization = Normalization.all, Indices...)(Indices index) const
         if (isFloatingPoint!RelativeFrequencyType && Indices.length == N &&
             allSatisfy!(isIndex, Indices))
     {
@@ -289,14 +313,14 @@ struct RelativeFrequencyAccumulator(Storage, Axis...)
             indices[i] = cast(size_t) index[i];
             indices[i] += includeUnderflow!(Axis[i]);
         }
-        return normalizeCount!RelativeFrequencyType(storageCount(counts, indices));
+        return normalizeCount!RelativeFrequencyType(storageCount(counts, indices), normalization);
     }
 
     /++
     Probability density in an ordinary numeric bin.
     Divides relative frequency by the product of actual bin widths, measured
     in the original input coordinates, including for transformed axes.
-    Enabled underflow/overflow counts remain in the total, so integrating over
+    By default, enabled underflow/overflow counts remain in the total, so integrating over
     ordinary bins can give less than one. A zero total produces NaN.
 
     All axes must expose numeric interval boundaries. Boundaries and widths
@@ -306,16 +330,17 @@ struct RelativeFrequencyAccumulator(Storage, Axis...)
     is rounded to DensityType and may underflow or overflow in that type.
 
     Params:
+        normalization = all recorded counts by default, or ordinary bins only
         DensityType = floating-point output type; defaults to double
         index = ordinary bin indices, one per axis
     +/
-    DensityType density(DensityType = double, Indices...)(Indices index) const
+    DensityType density(DensityType = double, Normalization normalization = Normalization.all, Indices...)(Indices index) const
         if (isFloatingPoint!DensityType && Indices.length == N &&
             allSatisfy!(isIndex, Indices) && allSatisfy!(supportsDensityAxis, Axis))
     {
         import mir.stat.descriptive.histogram.internal.density: ScaledBinVolume;
         // Validate indices and obtain normalization through the existing API.
-        const frequency = relativeFrequency!real(index);
+        const frequency = relativeFrequency!(real, normalization)(index);
         ScaledBinVolume volume;
         static foreach (i; 0 .. N)
             volume.include(histogramAccumulator.axis[i].bin(cast(size_t) index[i]));
@@ -331,14 +356,15 @@ struct RelativeFrequencyAccumulator(Storage, Axis...)
     apply. Only ordinary bins are exposed; no coverage option is provided.
 
     Params:
+        normalization = all recorded counts by default, or ordinary bins only
         DensityType = floating-point output type; defaults to double
     +/
-    auto densityBins(DensityType = double)() return const
+    auto densityBins(DensityType = double, Normalization normalization = Normalization.all)() return const
         if (isFloatingPoint!DensityType && supportsBinView!(Storage, Axis) &&
             allSatisfy!(supportsDensityAxis, Axis))
     {
         // Keep relative frequencies in real precision until density is computed.
-        auto bins = relativeFrequencyBins!real();
+        auto bins = relativeFrequencyBins!(real, BinCoverage.ordinary, normalization)();
         return DensityBinView!(Storage, DensityType, Axis)(bins);
     }
 
@@ -351,28 +377,31 @@ struct RelativeFrequencyAccumulator(Storage, Axis...)
     /++
     One-dimensional cumulative relative frequency through an ordinary bin, inclusive.
 
-    Sums current counts from bin zero through index, plus enabled underflow.
-    The denominator includes overflow, so the final ordinary bin can have a
+    Sums current counts from bin zero through index, plus enabled underflow
+    with default normalization. Ordinary normalization excludes underflow.
+    By default, the denominator includes overflow, so the final ordinary bin can have a
     cumulative relative frequency below one. Returns `RelativeFrequencyType.nan` when the total
-    is zero. Each call takes time proportional to index + 1 and stores no
-    additional cumulative state. For categorical axes, accumulation follows
+    is zero. Default normalization takes time proportional to index + 1;
+    ordinary normalization also scans all ordinary counts unless counters are integral. No additional
+    cumulative state is stored. For categorical axes, accumulation follows
     the axis's bin order.
 
     Params:
+        normalization = all recorded counts by default, or ordinary bins only
         RelativeFrequencyType = floating-point output type; defaults to double
         index = ordinary bin index, less than axis.N_bin
     +/
-    RelativeFrequencyType cumulativeRelativeFrequency(RelativeFrequencyType = double)(size_t index) const
+    RelativeFrequencyType cumulativeRelativeFrequency(RelativeFrequencyType = double, Normalization normalization = Normalization.all)(size_t index) const
         if (N == 1 && isFloatingPoint!RelativeFrequencyType)
     {
         assert(index < axis.N_bin,
             "RelativeFrequencyAccumulator.cumulativeRelativeFrequency: index is out of range");
         CountType cumulative = 0;
-        static if (includeUnderflow!AxisType)
+        static if (includeUnderflow!AxisType && normalization == Normalization.all)
             cumulative = histogramAccumulator.underflow;
         foreach (i; 0 .. index + 1)
             cumulative += histogramAccumulator.counts[i + includeUnderflow!AxisType];
-        return normalizeCount!RelativeFrequencyType(cumulative);
+        return normalizeCount!RelativeFrequencyType(cumulative, normalization);
     }
 
     /++
@@ -380,8 +409,9 @@ struct RelativeFrequencyAccumulator(Storage, Axis...)
 
     Returns a newly allocated reference-counted Mir slice with one value per
     ordinary bin, in axis order. Each value has the same meaning as
-    $(LREF cumulativeRelativeFrequency): enabled underflow contributes to the numerator,
-    and overflow contributes only to the denominator. No flow entries are
+    $(LREF cumulativeRelativeFrequency): by default enabled underflow contributes
+    to the numerator and overflow to the denominator. Ordinary normalization
+    excludes both. No flow entries are
     appended. All values are `RelativeFrequencyType.nan` when the total is zero.
 
     Computes the result in one pass, using linear time and output storage.
@@ -390,15 +420,16 @@ struct RelativeFrequencyAccumulator(Storage, Axis...)
     insertions or merges. Changing result values does not change the accumulator.
 
     Params:
+        normalization = all recorded counts by default, or ordinary bins only
         RelativeFrequencyType = floating-point output type; defaults to double
     +/
-    auto cumulativeRelativeFrequencies(RelativeFrequencyType = double)() const
+    auto cumulativeRelativeFrequencies(RelativeFrequencyType = double, Normalization normalization = Normalization.all)() const
         if (N == 1 && isFloatingPoint!RelativeFrequencyType)
     {
         import mir.ndslice.allocation: mininitRcslice;
 
         auto result = mininitRcslice!RelativeFrequencyType(axis.N_bin);
-        cumulativeRelativeFrequencies(result);
+        cumulativeRelativeFrequencies!normalization(result);
         return result;
     }
 
@@ -416,9 +447,10 @@ struct RelativeFrequencyAccumulator(Storage, Axis...)
     destination is retained; its values are independent of later source updates.
 
     Params:
+        normalization = all recorded counts by default, or ordinary bins only
         destination = output storage, with length equal to axis.N_bin
     +/
-    void cumulativeRelativeFrequencies(Destination)(scope Destination destination) const
+    void cumulativeRelativeFrequencies(Normalization normalization = Normalization.all, Destination)(scope Destination destination) const
         if (N == 1 && isRelativeFrequencyDestination!Destination)
     {
         import mir.primitives: DeepElementType;
@@ -428,21 +460,59 @@ struct RelativeFrequencyAccumulator(Storage, Axis...)
         assert(destination.length == axis.N_bin,
             "RelativeFrequencyAccumulator.cumulativeRelativeFrequencies: destination length must match ordinary bin count");
         CountType cumulative = 0;
-        static if (includeUnderflow!AxisType)
+        static if (includeUnderflow!AxisType && normalization == Normalization.all)
             cumulative = histogramAccumulator.underflow;
+        const denominator = normalizationCount(normalization);
         foreach (i; 0 .. axis.N_bin)
         {
             cumulative += histogramAccumulator.counts[i + includeUnderflow!AxisType];
-            destination[i] = normalizeCount!RelativeFrequencyType(cumulative);
+            destination[i] = divideCount!RelativeFrequencyType(cumulative, denominator);
         }
     }
 
-    private RelativeFrequencyType normalizeCount(RelativeFrequencyType)(CountType value) const
-        if (isFloatingPoint!RelativeFrequencyType)
+    // Recompute the ordinary total on demand; counts and the maintained total stay unchanged.
+    private CountType ordinaryCount(size_t depth = 0, S)(auto ref const S storage) const
     {
-        if (total == 0)
-            return RelativeFrequencyType.nan;
-        return cast(RelativeFrequencyType) value / cast(RelativeFrequencyType) total;
+        CountType result = 0;
+        enum offset = includeUnderflow!(Axis[depth]);
+        foreach (i; 0 .. histogramAccumulator.axis[depth].N_bin)
+        {
+            static if (depth + 1 == N)
+                result += storage[i + offset];
+            else
+                result += ordinaryCount!(depth + 1)(storage[i + offset]);
+        }
+        return result;
+    }
+
+    private CountType normalizationCount(Normalization normalization) const
+    {
+        import std.traits: isIntegral;
+        if (normalization == Normalization.all)
+            return total;
+        static if (N == 1 && isIntegral!CountType)
+        {
+            // In one dimension the two excluded bins cannot overlap.
+            CountType result = total;
+            static if (includeUnderflow!AxisType)
+                result -= histogramAccumulator.underflow;
+            static if (includeOverflow!AxisType)
+                result -= histogramAccumulator.overflow;
+            return result;
+        }
+        else
+            // Sum directly to avoid floating-point cancellation or overlapping joint tails.
+            return ordinaryCount(counts);
+    }
+
+    private static T divideCount(T)(CountType value, CountType denominator)
+    {
+        return denominator == 0 ? T.nan : cast(T) value / cast(T) denominator;
+    }
+
+    private T normalizeCount(T)(CountType value, Normalization normalization = Normalization.all) const
+    {
+        return divideCount!T(value, normalizationCount(normalization));
     }
 
     /// Required storage length on an axis, including enabled underflow/overflow.
@@ -471,16 +541,20 @@ struct RelativeFrequencyAccumulator(Storage, Axis...)
 
     /++
     Relative frequency of overflow observations on a selected dimension.
-    Returns NaN when the total is zero. Totals on different dimensions can overlap.
+    With ordinary normalization this returns zero, or NaN if the ordinary total
+    is zero. The default uses all recorded counts. Totals on different dimensions can overlap.
 
     Params:
+        normalization = all recorded counts by default, or ordinary bins only
         RelativeFrequencyType = floating-point output type; defaults to double
         dimension = axis dimension; defaults to zero
     +/
-    RelativeFrequencyType overflowRelativeFrequency(RelativeFrequencyType = double, size_t dimension = 0)() const
+    RelativeFrequencyType overflowRelativeFrequency(RelativeFrequencyType = double, size_t dimension = 0,
+        Normalization normalization = Normalization.all)() const
         if (isFloatingPoint!RelativeFrequencyType && dimension < N && includeOverflow!(Axis[dimension]))
     {
-        return normalizeCount!RelativeFrequencyType(overflow!dimension());
+        return normalizeCount!RelativeFrequencyType(
+            normalization == Normalization.ordinary ? CountType(0) : overflow!dimension(), normalization);
     }
 
     /// Recorded underflow observations, summed over the other dimensions.
@@ -495,16 +569,20 @@ struct RelativeFrequencyAccumulator(Storage, Axis...)
 
     /++
     Relative frequency of underflow observations on a selected dimension.
-    Returns NaN when the total is zero. Totals on different dimensions can overlap.
+    With ordinary normalization this returns zero, or NaN if the ordinary total
+    is zero. The default uses all recorded counts. Totals on different dimensions can overlap.
 
     Params:
+        normalization = all recorded counts by default, or ordinary bins only
         RelativeFrequencyType = floating-point output type; defaults to double
         dimension = axis dimension; defaults to zero
     +/
-    RelativeFrequencyType underflowRelativeFrequency(RelativeFrequencyType = double, size_t dimension = 0)() const
+    RelativeFrequencyType underflowRelativeFrequency(RelativeFrequencyType = double, size_t dimension = 0,
+        Normalization normalization = Normalization.all)() const
         if (isFloatingPoint!RelativeFrequencyType && dimension < N && includeUnderflow!(Axis[dimension]))
     {
-        return normalizeCount!RelativeFrequencyType(underflow!dimension());
+        return normalizeCount!RelativeFrequencyType(
+            normalization == Normalization.ordinary ? CountType(0) : underflow!dimension(), normalization);
     }
 
     /// Record an iterable of observations, preserving the total after each put.
@@ -601,6 +679,117 @@ unittest
     assert(f.relativeFrequency(0) == 0.25);
     assert(f.relativeFrequency(1) == 0.5);
     assert(f.relativeFrequency(2) == 0.25);
+}
+
+/// Normalize ordinary bins without discarding recorded underflow or overflow.
+version(mir_stat_test)
+@safe pure nothrow @nogc
+unittest
+{
+    import mir.stat.descriptive.histogram.axis: IntegralAxis, AxisOptions;
+    alias A = IntegralAxis!(uint, double, AxisOptions(false, true, true));
+    uint[4] storage = [1, 2, 3, 4]; // underflow, two ordinary bins, overflow
+    auto f = RelativeFrequencyAccumulator!(uint[], A)(storage[], A(2, 0));
+    assert(f.count == 10 && f.relativeFrequency(0) == 0.2);
+    // Only the five ordinary observations form the conditional distribution.
+    assert(f.relativeFrequency!(double, Normalization.ordinary)(0) == 0.4);
+    assert(f.density!(float, Normalization.ordinary)(1) == 0.6f);
+    assert(f.cumulativeRelativeFrequency!(double, Normalization.ordinary)(1) == 1);
+    double[2] output;
+    f.cumulativeRelativeFrequencies!(Normalization.ordinary)(output[]);
+    assert(output[] == [0.4, 1.0]);
+    auto snapshot = f.cumulativeRelativeFrequencies!(double, Normalization.ordinary)();
+    assert(snapshot == output[]);
+    // Normalization never changes stored counts or their running total.
+    assert(f.count == 10 && f.underflow == 1 && f.overflow == 4);
+}
+
+// Small integral counters retain their type when subtracting underflow/overflow.
+version(mir_stat_test)
+@safe pure nothrow @nogc
+unittest
+{
+    import mir.stat.descriptive.histogram.axis: IntegralAxis, AxisOptions;
+    import std.meta: AliasSeq;
+    alias A = IntegralAxis!(uint, double, AxisOptions(false, true, true));
+    static foreach (T; AliasSeq!(byte, ubyte, int, ulong))
+    {{
+        T[4] storage = [10, 2, 3, 20];
+        const f = RelativeFrequencyAccumulator!(T[], A)(storage[], A(2, 0));
+        assert(f.count == 35);
+        assert(f.relativeFrequency!(double, Normalization.ordinary)(0) == 0.4);
+        assert(f.cumulativeRelativeFrequency!(double, Normalization.ordinary)(1) == 1);
+    }}
+}
+
+// Subtraction would lose the small ordinary population beside large floating counts.
+version(mir_stat_test)
+@safe pure nothrow @nogc
+unittest
+{
+    import mir.stat.descriptive.histogram.axis: IntegralAxis, AxisOptions;
+    import std.meta: AliasSeq;
+    alias A = IntegralAxis!(uint, double, AxisOptions(false, true, true));
+    static foreach (T; AliasSeq!(float, double, real))
+    {{
+        T[4] storage = [T.max / 4, T(0.5), T(1.5), T.max / 4];
+        const f = RelativeFrequencyAccumulator!(T[], A)(storage[], A(2, 0));
+        assert(f.count - f.underflow - f.overflow == 0);
+        assert(f.relativeFrequency!(T, Normalization.ordinary)(0) == T(0.25));
+        assert(f.density!(T, Normalization.ordinary)(1) == T(0.75));
+        assert(f.cumulativeRelativeFrequency!(T, Normalization.ordinary)(1) == 1);
+    }}
+}
+
+// Joint normalization excludes any cell outside an ordinary interval on any axis.
+version(mir_stat_test)
+@safe pure nothrow @nogc
+unittest
+{
+    import mir.stat.descriptive.histogram.axis: IntegralAxis, AxisOptions;
+    import mir.ndslice.slice: sliced;
+    import mir.ndslice.dynamic: transposed;
+    alias A = IntegralAxis!(uint, double, AxisOptions(false, true, true));
+    uint[4][4] storage = [[0, 1, 2, 3], [4, 5, 6, 7], [8, 9, 10, 11], [12, 13, 14, 15]];
+    const f = RelativeFrequencyAccumulator!(uint[4][4], A, A)(storage, A(2, 0), A(2, 0));
+    assert(f.count == 120);
+    assert(f.relativeFrequency!(double, Normalization.ordinary)(0, 1) == 6.0 / 30);
+    assert(f.density!(double, Normalization.ordinary)(1, 1) == 10.0 / 30);
+    uint[16] flat = [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15];
+    auto counts = flat[].sliced(4, 4).transposed;
+    const strided = RelativeFrequencyAccumulator!(typeof(counts), A, A)(counts, A(2, 0), A(2, 0));
+    assert(strided.relativeFrequency!(double, Normalization.ordinary)(1, 0) == 6.0 / 30);
+}
+
+// Empty ordinary populations yield NaN even when underflow/overflow contains counts.
+version(mir_stat_test)
+@safe pure nothrow @nogc
+unittest
+{
+    import mir.stat.descriptive.histogram.axis: IntegralAxis, AxisOptions;
+    import std.math: isNaN;
+    static foreach (under; [false, true])
+    static foreach (over; [false, true])
+    {{
+        alias A = IntegralAxis!(uint, double, AxisOptions(false, over, under));
+        uint[2 + under + over] storage;
+        static if (under) storage[0] = 3;
+        static if (over) storage[$ - 1] = 7;
+        auto f = RelativeFrequencyAccumulator!(uint[], A)(storage[], A(2, 0));
+        assert(isNaN(f.relativeFrequency!(double, Normalization.ordinary)(0)));
+        assert(isNaN(f.density!(double, Normalization.ordinary)(0)));
+        assert(isNaN(f.cumulativeRelativeFrequency!(double, Normalization.ordinary)(1)));
+        auto empty = f.cumulativeRelativeFrequencies!(float, Normalization.ordinary)();
+        assert(isNaN(empty[0]) && isNaN(empty[1]));
+        f.put(0.5, 1.5);
+        assert(f.relativeFrequency!(double, Normalization.ordinary)(0) == 0.5);
+        static if (under)
+            assert(f.underflowRelativeFrequency!(double, 0, Normalization.ordinary)() == 0);
+        static if (over)
+            assert(f.overflowRelativeFrequency!(double, 0, Normalization.ordinary)() == 0);
+        f.put(f); // Self-merging preserves the normalization population.
+        assert(f.relativeFrequency!(double, Normalization.ordinary)(1) == 0.5);
+    }}
 }
 
 /// Choose the relative frequency output type without changing the accumulator.
@@ -1538,7 +1727,7 @@ struct CumulativeRelativeFrequencyBin(HistogramElement, RelativeFrequencyType)
 
     /// Count in this bin.
     typeof(HistogramElement.init.count) count;
-    /// Count through this bin, including enabled underflow.
+    /// Count through this bin within the selected normalization population.
     typeof(HistogramElement.init.count) cumulativeCount;
     /// Cumulative count divided by the total, or NaN for a zero total.
     RelativeFrequencyType cumulativeRelativeFrequency;
@@ -1579,21 +1768,25 @@ struct CumulativeRelativeFrequencyBinView(Storage, RelativeFrequencyType, BinCov
     private alias Cursor = RelativeFrequencyBinView!(Storage, RelativeFrequencyType, coverage, Axis);
     private Cursor _bins;
     private Accumulator.CountType _preceding = 0;
+    private Accumulator.CountType _denominator;
 
     /// Type returned by front.
     alias Element = CumulativeRelativeFrequencyBin!(Cursor.BinView.Element, RelativeFrequencyType);
 
-    private this(const(Accumulator)* source)
+    private this(const(Accumulator)* source, Normalization normalization)
     {
-        _bins = Cursor(source);
+        _bins = Cursor(source, normalization);
+        _denominator = source.normalizationCount(normalization);
         static if (coverage == BinCoverage.ordinary && includeUnderflow!Axis)
-            _preceding = source.histogramAccumulator.underflow;
+            if (normalization == Normalization.all)
+                _preceding = source.histogramAccumulator.underflow;
     }
 
-    private this(Cursor bins, Accumulator.CountType preceding)
+    private this(Cursor bins, Accumulator.CountType preceding, Accumulator.CountType denominator)
     {
         _bins = bins;
         _preceding = preceding;
+        _denominator = denominator;
     }
 
     /// Number of remaining entries.
@@ -1605,24 +1798,27 @@ struct CumulativeRelativeFrequencyBinView(Storage, RelativeFrequencyType, BinCov
     /// Current entry; repeated reads do not advance accumulation.
     Element front() const @property
     {
-        auto entry = _bins.front;
+        auto entry = _bins.readEntry(0);
         Accumulator.CountType cumulative = _preceding;
-        cumulative += entry.count;
-        return Element(entry._entry, entry.count, cumulative,
-            _bins._source.normalizeCount!RelativeFrequencyType(cumulative));
+        if (_bins._normalization == Normalization.all || entry.isOrdinary)
+            cumulative += entry.count;
+        return Element(entry, entry.count, cumulative,
+            Accumulator.divideCount!RelativeFrequencyType(cumulative, _denominator));
     }
 
     /// Advance once, retaining the count of the bin just visited.
     void popFront()
     {
-        _preceding += _bins.front.count;
+        auto entry = _bins.readEntry(0);
+        if (_bins._normalization == Normalization.all || entry.isOrdinary)
+            _preceding += entry.count;
         _bins.popFront();
     }
 
     /// Copy the position and running count, borrowing the same accumulator.
     auto save() const @property
     {
-        return CumulativeRelativeFrequencyBinView(_bins.save, _preceding);
+        return CumulativeRelativeFrequencyBinView(_bins.save, _preceding, _denominator);
     }
 }
 
@@ -1816,7 +2012,8 @@ is a value; a bin description may still borrow axis storage.
 Zero-count bins are included. Coverage selects ordinary bins or all enabled
 underflow/overflow combinations, each visited once. The last axis advances
 fastest, independent of storage strides.
-The denominator includes underflow/overflow counts. Slicing preserves original
+The selected normalization determines the denominator and whether excluded
+bins have zero probability. Slicing preserves original
 per-axis bin indices.
 A const view supports indexing, save, and slicing; derived cursors are mutable.
 
@@ -1839,15 +2036,17 @@ struct RelativeFrequencyBinView(Storage, RelativeFrequencyType, BinCoverage cove
     private alias Accumulator = RelativeFrequencyAccumulator!(Storage, Axis);
     private alias BinView = HistogramBinView!(Storage, coverage, Axis);
     private const(Accumulator)* _source;
+    private Normalization _normalization;
     private size_t[Axis.length] _shape;
     private size_t _begin, _end, _outerLength;
 
     /// Type returned by element access.
     alias Element = RelativeFrequencyBin!(BinView.Element, RelativeFrequencyType);
 
-    private this(const(Accumulator)* source)
+    private this(const(Accumulator)* source, Normalization normalization)
     {
         _source = source;
+        _normalization = normalization;
         auto bins = source.histogramAccumulator.bins!coverage();
         static foreach (i; 0 .. Axis.length)
             _shape[i] = source.axis!i.N_bin;
@@ -1856,9 +2055,10 @@ struct RelativeFrequencyBinView(Storage, RelativeFrequencyType, BinCoverage cove
     }
 
     private this(const(Accumulator)* source, size_t begin, size_t end,
-        size_t[Axis.length] shape, size_t outerLength)
+        size_t[Axis.length] shape, size_t outerLength, Normalization normalization)
     {
         _source = source;
+        _normalization = normalization;
         _shape = shape;
         _outerLength = outerLength;
         _begin = begin;
@@ -1912,18 +2112,32 @@ struct RelativeFrequencyBinView(Storage, RelativeFrequencyType, BinCoverage cove
     /// Copy the cursor, borrowing the same source.
     auto save() const @property
     {
-        return RelativeFrequencyBinView(_source, _begin, _end, _shape, _outerLength);
+        return RelativeFrequencyBinView(_source, _begin, _end, _shape, _outerLength, _normalization);
     }
 
-    /// Read a bin, count, and relative frequency from the same accumulator.
-    Element opIndex(size_t index) const
+    private auto readEntry(size_t index) const
     {
         checkSource();
         assert(index < length, "RelativeFrequencyBinView: index is out of range");
         auto entry = BinView.readElement(_source.counts, _begin + index,
             _shape, _source.histogramAccumulator.axis);
+        return entry;
+    }
+
+    /// Read a bin, count, and relative frequency from the same accumulator.
+    Element opIndex(size_t index) const
+    {
+        auto entry = readEntry(index);
+        bool included = true;
+        if (_normalization == Normalization.ordinary)
+        {
+            static foreach (i; 0 .. Axis.length)
+                included = included && entry.isOrdinary!i;
+        }
         return Element(entry, entry.count,
-            _source.normalizeCount!RelativeFrequencyType(entry.count));
+            _source.normalizeCount!RelativeFrequencyType(
+                _normalization == Normalization.ordinary && !included ? Accumulator.CountType(0) : entry.count,
+                _normalization));
     }
 
     /// Slice relative to the cursor; entry indices remain original bin indices.
@@ -1931,7 +2145,7 @@ struct RelativeFrequencyBinView(Storage, RelativeFrequencyType, BinCoverage cove
     {
         assert(begin <= end && end <= length,
             "RelativeFrequencyBinView: slice is out of range");
-        return RelativeFrequencyBinView(_source, _begin + begin, _begin + end, _shape, _outerLength);
+        return RelativeFrequencyBinView(_source, _begin + begin, _begin + end, _shape, _outerLength, _normalization);
     }
 
     /// Copy the full remaining range.
@@ -3596,4 +3810,85 @@ unittest
         () @safe { check!()(); }();
     else
         check!()();
+}
+
+version(mir_stat_test)
+private void testOrdinaryNormalizationViews()()
+{
+    import mir.stat.descriptive.histogram.axis: IntegralAxis, AxisOptions;
+    import mir.ndslice.allocation: rcslice;
+    import std.math: isNaN;
+    alias A = IntegralAxis!(uint, double, AxisOptions(false, true, true));
+    uint[4] initial = [1, 2, 3, 4];
+    auto counts = rcslice!uint(initial[]);
+    auto f = RelativeFrequencyAccumulator!(typeof(counts), A)(counts, A(2, 0));
+    const view = f.relativeFrequencyBins!(float, BinCoverage.all, Normalization.ordinary)();
+    assert(view.front.count == 1 && view.front.relativeFrequency == 0);
+    assert(view.back.count == 4 && view.back.relativeFrequency == 0);
+    assert(view[1].relativeFrequency == 0.4f);
+    auto part = view[1 .. 3].save;
+    assert(part.front.relativeFrequency == 0.4f && part.back.relativeFrequency == 0.6f);
+    const densities = f.densityBins!(double, Normalization.ordinary)();
+    assert(densities.save[0 .. 1].front.density == 0.4);
+    static foreach (coverage; [BinCoverage.ordinary, BinCoverage.all])
+    {{
+        auto cumulative = f.cumulativeRelativeFrequencyBins!(double, coverage, Normalization.ordinary)();
+        auto saved = cumulative.save;
+        uint sum = 0;
+        foreach (entry; cumulative)
+        {
+            if (entry.isOrdinary) sum += entry.count;
+            assert(entry.cumulativeCount == sum);
+            assert(entry.cumulativeRelativeFrequency == cast(double) sum / 5);
+        }
+        static if (coverage == BinCoverage.all)
+            assert(saved.front.cumulativeCount == 0);
+        else
+            assert(saved.front.cumulativeCount == 2);
+    }}
+    // Joint underflow/overflow combinations are excluded once, not subtracted per axis.
+    auto jointCounts = rcslice!uint(3, 3);
+    foreach (i; 0 .. 3)
+        foreach (j; 0 .. 3)
+            jointCounts[i, j] = cast(uint) (i * 3 + j + 1);
+    auto joint = RelativeFrequencyAccumulator!(typeof(jointCounts), A, A)(jointCounts, A(1, 0), A(1, 0));
+    double probability = 0;
+    foreach (entry; joint.relativeFrequencyBins!(double, BinCoverage.all, Normalization.ordinary)())
+    {
+        const included = entry.isOrdinary!0 && entry.isOrdinary!1;
+        assert(entry.relativeFrequency == (included ? 1.0 : 0.0));
+        probability += entry.relativeFrequency;
+    }
+    assert(probability == 1 && joint.count == 45);
+    // Random-access views read current counts and recompute the ordinary total.
+    f.put(0.5);
+    assert(part.front.relativeFrequency == 0.5f && densities.front.density == 0.5);
+    f.put(-1.0, 3.0);
+    assert(part.front.relativeFrequency == 0.5f && view.front.relativeFrequency == 0);
+    uint[4] onlyFlow = [2, 0, 0, 3];
+    auto emptyCounts = rcslice!uint(onlyFlow[]);
+    auto empty = RelativeFrequencyAccumulator!(typeof(emptyCounts), A)(emptyCounts, A(2, 0));
+    assert(isNaN(empty.relativeFrequencyBins!(double, BinCoverage.all, Normalization.ordinary)().front.relativeFrequency));
+    assert(isNaN(empty.densityBins!(double, Normalization.ordinary)().front.density));
+    assert(isNaN(empty.cumulativeRelativeFrequencyBins!(double, BinCoverage.all, Normalization.ordinary)().front.cumulativeRelativeFrequency));
+}
+
+version(mir_stat_test)
+{
+    static if (hasBorrowEscapeChecking)
+    {
+        @safe pure nothrow @nogc
+        unittest
+        {
+            testOrdinaryNormalizationViews();
+        }
+    }
+    else
+    {
+        @system pure nothrow @nogc
+        unittest
+        {
+            testOrdinaryNormalizationViews();
+        }
+    }
 }
