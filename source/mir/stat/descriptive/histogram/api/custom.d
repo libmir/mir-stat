@@ -630,7 +630,7 @@ retained for cleanup. Attributes depend on the allocator.
 Params:
     allocator = allocator providing allocation and nonthrowing deallocation
     data = one-dimensional observations, as an array or Mir slice
-    probabilities = positive bin count or probability array/slice spanning zero to one
+    probabilities = positive bin count or probability array/slice within zero to one
 +/
 auto makePercentogram(Allocator, Data, P)(ref Allocator allocator,
     scope auto ref Data data, scope auto ref P probabilities)
@@ -641,7 +641,7 @@ auto makePercentogram(Allocator, Data, P)(ref Allocator allocator,
     import mir.ndslice.topology: as;
     import mir.primitives: DeepElementType;
     import mir.stat.descriptive.univariate: makeQuantile;
-    import mir.stat.descriptive.histogram.axis: VariableAxis;
+    import mir.stat.descriptive.histogram.axis: variableAxis, AxisOptions;
     import mir.stat.descriptive.histogram.accumulator: HistogramAccumulator;
     import mir.stat.descriptive.histogram.relative_frequency: RelativeFrequencyAccumulator;
     import mir.stat.descriptive.histogram.api.factory: validatePercentogramInputs, preparePercentogramEdges;
@@ -665,8 +665,9 @@ auto makePercentogram(Allocator, Data, P)(ref Allocator allocator,
         auto edges = makeQuantile(allocator, observations, levels);
         scope(failure) allocator.dispose(edges.field);
         const distinct = preparePercentogramEdges(edges);
-        auto h = makeHistogram!VariableAxis(allocator,
-            observations.as!(DeepElementType!(typeof(edges))), edges[0 .. distinct]);
+        auto axis = variableAxis!(AxisOptions(false, true, true))(edges[0 .. distinct]);
+        auto h = makeHistogram(allocator,
+            observations.as!(DeepElementType!(typeof(edges))), axis);
         scope(failure) allocator.dispose(h.counts.field);
         static if (is(typeof(h) == HistogramAccumulator!Args, Args...))
         {
@@ -685,7 +686,7 @@ unittest
     double[8] data = [0, 1, 2, 3, 4, 8, 12, 16];
     auto p = makePercentogram(Mallocator.instance, data, 4);
     scope(exit) p.dispose(Mallocator.instance);
-    assert(p.histogram.count == 8 && p.histogram.counts == [2, 2, 2, 2]);
+    assert(p.histogram.count == 8 && p.histogram.counts == [0, 2, 2, 2, 2, 0]);
     assert(p.histogram.density(0) == 0.25 / 1.75);
 }
 
@@ -701,7 +702,23 @@ unittest
     auto p = makePercentogram(Mallocator.instance, data[].sliced, levels[]);
     scope(exit) p.dispose(Mallocator.instance);
     // Five quantiles become three boundaries. Disposal still releases all five slots.
-    assert(p.histogram.axis.N_bin == 2 && p.histogram.counts == [2, 3]);
+    assert(p.histogram.axis.N_bin == 2 && p.histogram.counts == [0, 2, 3, 0]);
+}
+
+/// Restricted quantile intervals keep tail counts available for normalization.
+version(mir_stat_test)
+@system pure nothrow @nogc
+unittest
+{
+    import std.experimental.allocator.mallocator: Mallocator;
+    import mir.stat.descriptive.histogram.relative_frequency: Normalization;
+    double[9] data = [0, 1, 2, 3, 4, 5, 6, 7, 8];
+    const double[3] levels = [0.25, 0.5, 0.75];
+    auto p = makePercentogram(Mallocator.instance, data, levels);
+    scope(exit) p.dispose(Mallocator.instance);
+    assert(p.histogram.underflow == 2 && p.histogram.overflow == 2);
+    assert(p.histogram.relativeFrequency(0) == 2.0 / 9);
+    assert(p.histogram.relativeFrequency!(double, Normalization.ordinary)(0) == 2.0 / 5);
 }
 
 // Manual disposal is required, and copies do not represent independent ownership.
@@ -806,7 +823,7 @@ unittest
     {
         PercentogramAllocator!() allocator;
         auto p = makePercentogram(allocator, samples[i], levels);
-        assert(p.histogram.counts == [firstCounts[i], 5 - firstCounts[i]]);
+        assert(p.histogram.counts == [0, firstCounts[i], 5 - firstCounts[i], 0]);
         assert(allocator.allocations == 3 && allocator.releases == 1); // scratch only
         p.dispose(allocator);
         assert(allocator.releases == 3);
@@ -865,7 +882,7 @@ unittest
     }
     auto p = fromLocal();
     scope(exit) p.dispose(Mallocator.instance);
-    assert(p.histogram.count == 3 && p.histogram.counts == [1, 2]);
+    assert(p.histogram.count == 3 && p.histogram.counts == [0, 1, 2, 0]);
 }
 
 // User code can throw while validating, copying, or inserting observations.
@@ -894,4 +911,27 @@ unittest
         assert(allocator.allocations == (failure == 1 ? 0 : failure == 4 ? 1 : 3));
         assert(allocator.releases == allocator.allocations);
     }
+}
+
+version(mir_stat_test)
+private auto customPercentogramIntervalFactory(Data, P)(scope auto ref Data data, scope auto ref P probabilities)
+{
+    import std.experimental.allocator.mallocator: Mallocator;
+    return makePercentogram(Mallocator.instance, data, probabilities);
+}
+
+version(mir_stat_test)
+private void releasePercentogramForTests(T)(ref T result)
+{
+    import std.experimental.allocator.mallocator: Mallocator;
+    result.dispose(Mallocator.instance);
+}
+
+// Restricted intervals retain tail counts and the usual explicit disposal contract.
+version(mir_stat_test)
+@system pure nothrow @nogc
+unittest
+{
+    import mir.stat.descriptive.histogram.api.factory: testPercentogramIntervals;
+    testPercentogramIntervals!(customPercentogramIntervalFactory, releasePercentogramForTests)();
 }
