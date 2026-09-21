@@ -489,10 +489,10 @@ unittest
     auto f = makeRelativeFrequencyHistogram!RegularAxis(Mallocator.instance, values[].sliced, 2u, 0.0, 4.0);
     // Counts are read-only; the cast is solely for final manual deallocation.
     scope(exit) Mallocator.instance.deallocate(cast(void[]) f.counts.field);
-    assert(f.count == 4);
+    assert(f.total == 4);
     assert(f.relativeFrequency(0) == 0.75);
     f.put(3.5);
-    assert(f.count == 5);
+    assert(f.total == 5);
     assert(f.relativeFrequency(1) == 0.4);
 }
 
@@ -525,7 +525,7 @@ unittest
     auto f = makeRelativeFrequencyHistogram!RegularAxis(
         allocator, values[].sliced, 2u, 0.0, 2.0);
     assert(allocator.allocations == 2 && allocator.releases == 1);
-    assert(f.count == 2 && f.relativeFrequency(0) == 0.5);
+    assert(f.total == 2 && f.relativeFrequency(0) == 0.5);
     allocator.deallocate(cast(void[]) f.counts.field);
     assert(allocator.releases == 2);
 }
@@ -697,7 +697,7 @@ unittest
     // Eight observations request two bins, with probabilities [0, 0.5, 1].
     auto p = makePercentogram(Mallocator.instance, data);
     scope(exit) p.dispose(Mallocator.instance);
-    assert(p.histogram.count == 8 && p.histogram.counts == [0, 4, 4, 0]);
+    assert(p.histogram.total == 8 && p.histogram.counts == [0, 4, 4, 0]);
     assert(p.histogram.density(0) == 0.5 / 3.5);
 
     // Override the default with four ordinary bins: probabilities [0, 0.25, 0.5, 0.75, 1].
@@ -752,7 +752,7 @@ unittest
     SafeAllocator omitted;
     {
         auto p = makePercentogram(omitted, data, levels);
-        assert(p.histogram.count == 3);
+        assert(p.histogram.total == 3);
         // Scratch was released automatically; boundaries and counts remain allocated.
         assert(omitted.allocations == 3 && omitted.releases == 1);
     }
@@ -784,7 +784,7 @@ unittest
     SafeAllocator allocator;
     int[3] data = [0, 1, 2];
     auto p = makePercentogram(allocator, data, 2);
-    assert(p.histogram.count == 3);
+    assert(p.histogram.total == 3);
     p.dispose(allocator);
     assert(allocator.allocations == allocator.releases);
     p.dispose(allocator);
@@ -852,7 +852,7 @@ unittest
     PercentogramAllocator!() allocator;
     auto p = makePercentogram(allocator, samples[3], 4);
     assert(allocator.allocations == 4 && allocator.releases == 2); // levels and scratch
-    assert(p.histogram.count == 5);
+    assert(p.histogram.total == 5);
     p.dispose(allocator);
     assert(allocator.releases == 4);
 }
@@ -901,7 +901,7 @@ unittest
     }
     auto p = fromLocal();
     scope(exit) p.dispose(Mallocator.instance);
-    assert(p.histogram.count == 3 && p.histogram.counts == [0, 1, 2, 0]);
+    assert(p.histogram.total == 3 && p.histogram.counts == [0, 1, 2, 0]);
 }
 
 // User code can throw while validating, copying, or inserting observations.
@@ -979,7 +979,7 @@ unittest
         value = i;
     auto strided = makePercentogram(Mallocator.instance, backing[].sliced.stride(2));
     scope(exit) strided.dispose(Mallocator.instance);
-    assert(strided.histogram.count == 9);
+    assert(strided.histogram.total == 9);
     assert(strided.histogram.axis.N_bin == 3);
     assert(strided.histogram.counts == [0, 3, 3, 3, 0]);
 }

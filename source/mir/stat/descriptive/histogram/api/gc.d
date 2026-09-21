@@ -82,10 +82,10 @@ unittest
     auto h = [0.0, 1, 2, 3].sliced.histogram!RegularAxis(2u, 0.0, 4.0);
     auto f = RelativeFrequencyAccumulator!(typeof(h.counts), typeof(h.axis[0]))(
         h.counts, h.axis[0]);
-    assert(f.count == 4);
+    assert(f.total == 4);
     // Make subsequent updates through f so its total stays synchronized.
     f.put(1.0);
-    assert(f.count == 5);
+    assert(f.total == 5);
     assert(h.counts == [3u, 2]); // The count storage is shared.
 }
 
@@ -143,10 +143,10 @@ unittest
     import mir.stat.descriptive.histogram.axis: RegularAxis;
     double[4] values = [0, 1, 1, 3];
     auto f = relativeFrequencyHistogram!RegularAxis(values[].sliced, 2u, 0.0, 4.0);
-    assert(f.count == 4);
+    assert(f.total == 4);
     assert(f.relativeFrequency(0) == 0.75);
     f.put(3.5);
-    assert(f.count == 5);
+    assert(f.total == 5);
     assert(f.relativeFrequency(1) == 0.4);
 }
 
@@ -206,14 +206,14 @@ unittest
     double[8] data = [0, 1, 2, 3, 4, 8, 12, 16];
     // Eight observations request two bins, with probabilities [0, 0.5, 1].
     auto p = percentogram(data);
-    assert(p.count == 8 && p.counts == [0, 4, 4, 0]);
+    assert(p.total == 8 && p.counts == [0, 4, 4, 0]);
     assert(p.relativeFrequency(0) == 0.5);
     // The first bin spans [0, 3.5); height times width equals its probability.
     assert(p.density(0) == 0.5 / 3.5);
     // Construction preserves the observations; later updates keep the same bins.
     assert(data[] == [0.0, 1, 2, 3, 4, 8, 12, 16]);
     p.put(1.0);
-    assert(p.count == 9 && p.counts[1] == 5);
+    assert(p.total == 9 && p.counts[1] == 5);
 
     // Override the default with four ordinary bins: probabilities [0, 0.25, 0.5, 0.75, 1].
     auto quartiles = percentogram(data, 4);
@@ -233,7 +233,7 @@ unittest
     const double[3] levels = [0, 0.25, 1];
     // These Mir slices borrow the input arrays; the result owns its storage.
     auto p = percentogram(observations[].sliced, levels[].sliced);
-    assert(p.count == 8 && p.counts == [0, 2, 6, 0]);
+    assert(p.total == 8 && p.counts == [0, 2, 6, 0]);
     assert(p.relativeFrequency(0) == 0.25);
     assert(p.relativeFrequency(1) == 0.75);
 }
@@ -249,7 +249,7 @@ unittest
     double[] data = observations[];
     const(double)[] probabilities = levels[];
     auto p = percentogram(data, probabilities);
-    assert(p.count == 4 && p.counts == [0, 2, 2, 0]);
+    assert(p.total == 4 && p.counts == [0, 2, 2, 0]);
     // Mutating the original data does not change the stored boundaries or counts.
     data[] = -1;
     assert(p.bins()[0].bin.low == 0 && p.counts == [0, 2, 2, 0]);
@@ -267,7 +267,7 @@ unittest
         return percentogram(data, probabilities);
     }
     auto p = fromLocal();
-    assert(p.count == 5 && p.counts == [0, 3, 2, 0]);
+    assert(p.total == 5 && p.counts == [0, 3, 2, 0]);
     double area = 0;
     foreach (i; 0 .. p.axis.N_bin)
     {
@@ -290,10 +290,10 @@ unittest
         T[6] values = [0, 99, 1, 99, 2, 99];
         const double[3] probabilities = [0, 0.5, 1];
         auto p = percentogram(values[].sliced.stride(2), probabilities);
-        assert(p.count == 3 && p.counts == [0, 1, 2, 0]);
+        assert(p.total == 3 && p.counts == [0, 1, 2, 0]);
         static assert(is(typeof(p.bins()[0].bin.low) == T));
         auto one = percentogram(values[].sliced.stride(2), 1);
-        assert(one.count == 3 && one.counts == [0, 3, 0]);
+        assert(one.total == 3 && one.counts == [0, 3, 0]);
     }}
 }
 
@@ -326,7 +326,7 @@ unittest
     auto p = percentogram(data, probabilities);
     // Cutoffs are 2 and 6, both included. Raw counts also contain the two tails.
     assert(p.counts == [2, 2, 3, 2]);
-    assert(p.underflow == 2 && p.overflow == 2 && p.count == 9);
+    assert(p.underflow == 2 && p.overflow == 2 && p.total == 9);
     assert(p.relativeFrequency(0) == 2.0 / 9);
     // Condition on the five retained observations without changing any counts.
     assert(p.relativeFrequency!(double, Normalization.ordinary)(0) == 2.0 / 5);
@@ -362,7 +362,7 @@ unittest
     foreach (i, ref value; backing)
         value = i;
     auto strided = percentogram(backing[].sliced.stride(2));
-    assert(strided.count == 9);
+    assert(strided.total == 9);
     assert(strided.axis.N_bin == 3);
     assert(strided.counts == [0, 3, 3, 3, 0]);
 }

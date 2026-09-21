@@ -20,5 +20,5 @@ public import mir.stat.descriptive.histogram.api;
 
 // Possible later extensions
 // - Support per-bin accumulators, such as MeanAccumulator.
-// - Add weighted histograms and relative frequencies.
+// - Add weighted histogram and relative-frequency factory APIs.
 // - Add counters that widen dynamically when their current representation fills.
