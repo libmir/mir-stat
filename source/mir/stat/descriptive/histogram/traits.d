@@ -83,6 +83,39 @@ template includeUnderflow(AxisType)
 }
 
 /++
+Number of ordinary bins as a storage index. Validates that N_bin is positive,
+whole, and representable as size_t before conversion. Counter precision does
+not determine the type used for storage shapes or traversal.
+Params:
+    axis = axis defining the ordinary bins
++/
+size_t ordinaryBinCount(A)(auto ref const A axis)
+    if (isAxis!A)
+{
+    import std.traits: isFloatingPoint, Unqual;
+    const count = axis.N_bin;
+    static if (isFloatingPoint!(typeof(count)))
+    {
+        // Use the exact exclusive bound 2^(size_t.sizeof*8). Converting size_t.max
+        // to float/double may round upward and incorrectly admit that bound.
+        alias T = Unqual!(typeof(count));
+        enum T limit = T(size_t.max / 2 + 1) * 2;
+        assert(count > 0 && count < limit,
+            "Histogram: ordinary bin count is out of range");
+        const result = cast(size_t) count;
+        assert(cast(T) result == count,
+            "Histogram: ordinary bin count must be a whole number");
+        return result;
+    }
+    else
+    {
+        assert(count > 0 && count <= size_t.max,
+            "Histogram: ordinary bin count is out of range");
+        return cast(size_t) count;
+    }
+}
+
+/++
 Number of storage positions required by an axis, including enabled
 underflow and overflow bins. N_bin continues to count only ordinary bins.
 Params:
@@ -92,9 +125,10 @@ size_t storageExtent(A)(auto ref const A axis)
     if (isAxis!A)
 {
     enum size_t extra = includeUnderflow!A + includeOverflow!A;
-    assert(axis.N_bin > 0 && axis.N_bin <= size_t.max - extra,
+    const count = ordinaryBinCount(axis);
+    assert(count <= size_t.max - extra,
         "Histogram: storage extent is out of range");
-    return cast(size_t) axis.N_bin + extra;
+    return count + extra;
 }
 
 // Checks whether type `T` can be used in a switch statement. This is useful for
@@ -412,4 +446,81 @@ unittest
     assert(checkedBreakCount!(float, exact)(data) == 16777216.0f);
     assertThrown!AssertError(checkedBreakCount!(float, rounded)(data));
     assertThrown!AssertError(checkedBreakCount!(double, tooLarge)(data));
+}
+
+// Shape conversion is independent of the precision of bin contents.
+version(mir_stat_test)
+@safe pure nothrow @nogc
+unittest
+{
+    import std.meta: AliasSeq;
+    static foreach (T; AliasSeq!(uint, ulong, float, double, real))
+    {{
+        struct Axis
+        {
+            alias CountType = T;
+            alias BinType = double;
+            T N_bin;
+            enum size_t index = 0; // Only axis sizing is exercised.
+        }
+        auto axis = Axis(3);
+        static assert(is(typeof(ordinaryBinCount(axis)) == size_t));
+        assert(ordinaryBinCount(axis) == 3 && storageExtent(axis) == 3);
+    }}
+    struct HugeAxis
+    {
+        alias CountType = size_t;
+        alias BinType = double;
+        size_t N_bin = size_t.max;
+        enum size_t index = 0; // Only axis sizing is exercised.
+    }
+    assert(ordinaryBinCount(HugeAxis()) == size_t.max);
+    assert(storageExtent(HugeAxis()) == size_t.max);
+}
+
+version(mir_stat_test)
+@system pure nothrow @nogc
+unittest
+{
+    import std.meta: AliasSeq;
+    import core.exception: AssertError;
+    static void rejects(scope void delegate() pure nothrow @nogc operation)
+        pure nothrow @nogc
+    {
+        bool rejected;
+        try { operation(); }
+        catch (AssertError) { rejected = true; }
+        assert(rejected);
+    }
+    static foreach (T; AliasSeq!(float, double, real))
+    {{
+        struct Axis
+        {
+            alias CountType = T;
+            alias BinType = double;
+            T N_bin;
+            enum size_t index = 0; // Only axis sizing is exercised.
+        }
+        T[6] invalid = [0, -1, T.nan, T.infinity, -T.infinity, T(1.5)];
+        foreach (count; invalid)
+            rejects(() { ordinaryBinCount(Axis(count)); });
+        enum T limit = T(size_t.max / 2 + 1) * 2;
+        rejects(() { ordinaryBinCount(Axis(limit)); });
+        import std.math: nextDown;
+        // On 32-bit targets double/real can represent fractional values here.
+        // Choose the largest whole bin count below the exclusive bound.
+        const below = cast(T) cast(size_t) nextDown(limit);
+        assert(ordinaryBinCount(Axis(below)) == cast(size_t) below);
+    }}
+    struct AxisWithOverflow
+    {
+        alias CountType = size_t;
+        alias BinType = double;
+        size_t N_bin;
+        enum size_t index = 0; // Only axis sizing is exercised.
+        enum bool isOverflow = false; // Marks the presence of an overflow bin.
+    }
+    rejects(() { ordinaryBinCount(AxisWithOverflow(0)); });
+    rejects(() { storageExtent(AxisWithOverflow(size_t.max)); });
+    assert(storageExtent(AxisWithOverflow(size_t.max - 1)) == size_t.max);
 }

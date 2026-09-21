@@ -17,6 +17,8 @@ T4=$(TR $(TDNW $(LREF $1)) $(TD $2) $(TD $3) $(TD $4))
 
 module mir.stat.descriptive.histogram.accumulator;
 
+private import mir.stat.descriptive.histogram.traits: ordinaryBinCount;
+
 import mir.primitives: DeepElementType;
 import mir.stat.descriptive.histogram.traits: isAxis;
 import mir.stat.descriptive.histogram.internal.view: supportsBinView, JointArrayInfo;
@@ -1598,7 +1600,7 @@ struct HistogramBinView(Storage, BinCoverage coverage, Axis...)
         size_t length = 1;
         static foreach (i; 0 .. N)
         {{
-            _shape[i] = axes[i].N_bin;
+            _shape[i] = ordinaryBinCount(axes[i]);
             storageShape[i] = H.axisStorageExtent(axes[i]);
             const extent = coverage == BinCoverage.all ? storageShape[i] : _shape[i];
             assert(extent == 0 || length <= size_t.max / extent,

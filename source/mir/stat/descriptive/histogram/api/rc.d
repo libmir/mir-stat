@@ -998,3 +998,59 @@ unittest
         return rcWeightedRelativeFrequencyHistogram!VariableAxis(data, weights, edges[].sliced);
     }));
 }
+
+// Floating-point counters must work with every view and both snapshot APIs.
+version(mir_stat_test)
+private void testWeightedFactoryViews()()
+{
+    import std.meta: AliasSeq;
+    import mir.stat.descriptive.histogram.axis: RegularAxis, AxisOptions;
+    import mir.stat.descriptive.histogram.accumulator: BinCoverage;
+    import mir.stat.descriptive.histogram.relative_frequency: Normalization;
+    static foreach (T; AliasSeq!(float, double, real))
+    {{
+        double[4] data = [-1, 0.5, 1.5, 2];
+        T[4] weights = [1, 2, 3, 4];
+        enum options = AxisOptions(false, true, true);
+        static if (is(T == double))
+            auto h = rcWeightedHistogram!(RegularAxis, options)(data, weights, 2u, 0.0, 2.0);
+        else
+            auto h = rcWeightedHistogram!(T, RegularAxis, options)(data, weights, 2u, 0.0, 2.0);
+        auto hb = h.bins();
+        assert(hb.length == 2 && hb.front.count == 2 && hb.back.count == 3);
+        auto all = h.bins!(BinCoverage.all)();
+        assert(all.length == 4 && all.front.count == 1 && all.back.count == 4);
+        static if (is(T == double))
+            auto f = rcWeightedRelativeFrequencyHistogram!(RegularAxis, options)(data, weights, 2u, 0.0, 2.0);
+        else
+            auto f = rcWeightedRelativeFrequencyHistogram!(T, RegularAxis, options)(data, weights, 2u, 0.0, 2.0);
+        auto counts = f.bins();
+        auto frequencies = f.relativeFrequencyBins();
+        auto densities = f.densityBins();
+        auto cumulative = f.cumulativeRelativeFrequencyBins();
+        assert(counts.front.count == 2 && frequencies.length == 2);
+        assert(frequencies.front.relativeFrequency == 0.2);
+        assert(densities.front.density == 0.2);
+        assert(cumulative.front.cumulativeRelativeFrequency == 0.3);
+        cumulative.popFront();
+        assert(cumulative.front.cumulativeRelativeFrequency == 0.6);
+        auto snapshot = f.cumulativeRelativeFrequencies();
+        assert(snapshot == [0.3, 0.6]);
+        double[2] output;
+        f.cumulativeRelativeFrequencies!(Normalization.ordinary)(output[]);
+        assert(output == [0.4, 1.0]);
+    }}
+}
+
+version(mir_stat_test_lifetime)
+@safe pure nothrow @nogc
+unittest
+{
+    testWeightedFactoryViews();
+}
+else version(mir_stat_test)
+@system pure nothrow @nogc
+unittest
+{
+    testWeightedFactoryViews();
+}

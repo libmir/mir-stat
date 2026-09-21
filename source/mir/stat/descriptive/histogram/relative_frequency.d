@@ -18,6 +18,8 @@ T4=$(TR $(TDNW $(LREF $1)) $(TD $2) $(TD $3) $(TD $4))
 
 module mir.stat.descriptive.histogram.relative_frequency;
 
+private import mir.stat.descriptive.histogram.traits: ordinaryBinCount;
+
 import mir.internal.utility: isFloatingPoint;
 import std.meta: allSatisfy;
 import mir.stat.descriptive.histogram.accumulator: HistogramAccumulator;
@@ -432,7 +434,7 @@ struct RelativeFrequencyAccumulator(Storage, Axis...)
     {
         import mir.ndslice.allocation: mininitRcslice;
 
-        auto result = mininitRcslice!RelativeFrequencyType(axis.N_bin);
+        auto result = mininitRcslice!RelativeFrequencyType(ordinaryBinCount(axis));
         cumulativeRelativeFrequencies!normalization(result);
         return result;
     }
@@ -461,13 +463,13 @@ struct RelativeFrequencyAccumulator(Storage, Axis...)
         import std.traits: Unqual;
 
         alias RelativeFrequencyType = Unqual!(DeepElementType!Destination);
-        assert(destination.length == axis.N_bin,
+        assert(destination.length == ordinaryBinCount(axis),
             "RelativeFrequencyAccumulator.cumulativeRelativeFrequencies: destination length must match ordinary bin count");
         CountType cumulative = 0;
         static if (includeUnderflow!AxisType && normalization == Normalization.all)
             cumulative = histogramAccumulator.underflow;
         const denominator = normalizationCount(normalization);
-        foreach (size_t i; 0 .. cast(size_t) axis.N_bin)
+        foreach (i; 0 .. ordinaryBinCount(axis))
         {
             cumulative += histogramAccumulator.counts[i + includeUnderflow!AxisType];
             destination[i] = divideCount!RelativeFrequencyType(cumulative, denominator);
@@ -479,7 +481,7 @@ struct RelativeFrequencyAccumulator(Storage, Axis...)
     {
         CountType result = 0;
         enum offset = includeUnderflow!(Axis[depth]);
-        foreach (size_t i; 0 .. cast(size_t) histogramAccumulator.axis[depth].N_bin)
+        foreach (i; 0 .. ordinaryBinCount(histogramAccumulator.axis[depth]))
         {
             static if (depth + 1 == N)
                 result += storage[i + offset];
@@ -2096,7 +2098,7 @@ struct RelativeFrequencyBinView(Storage, RelativeFrequencyType, BinCoverage cove
         _normalization = normalization;
         auto bins = source.histogramAccumulator.bins!coverage();
         static foreach (i; 0 .. Axis.length)
-            _shape[i] = source.axis!i.N_bin;
+            _shape[i] = ordinaryBinCount(source.axis!i);
         _outerLength = source.counts.length;
         _end = bins.length;
     }
@@ -2118,7 +2120,7 @@ struct RelativeFrequencyBinView(Storage, RelativeFrequencyType, BinCoverage cove
         assert(_source.counts.length == _outerLength,
             "RelativeFrequencyBinView: source storage shape changed while borrowed");
         static foreach (i; 0 .. Axis.length)
-            assert(_source.axis!i.N_bin == _shape[i],
+            assert(ordinaryBinCount(_source.axis!i) == _shape[i],
                 "RelativeFrequencyBinView: source bin count changed while borrowed");
     }
 
