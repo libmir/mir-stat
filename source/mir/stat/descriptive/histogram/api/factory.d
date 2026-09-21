@@ -2147,3 +2147,277 @@ private mixin template ConstFactoryTests(alias make, bool relative)
         }
     }
 }
+
+// Compute ceil(cuberoot(n)) exactly, without floating-point rounding at cubes
+// or overflow from cubing a candidate. This is a sample-size heuristic.
+package size_t defaultPercentogramBinCount(size_t n) @safe pure nothrow @nogc
+{
+    assert(n > 0, "percentogram: observations must be nonempty");
+    size_t low = 1;
+    size_t high = size_t(1) << ((size_t.sizeof * 8 + 2) / 3);
+    while (low < high)
+    {
+        const middle = low + (high - low) / 2;
+        // middle^3 >= n is equivalent to middle > (n - 1) / middle^2.
+        if (middle > (n - 1) / middle / middle)
+            high = middle;
+        else
+            low = middle + 1;
+    }
+    return low;
+}
+
+version(mir_stat_test)
+@safe pure nothrow @nogc
+unittest
+{
+    assert(defaultPercentogramBinCount(1) == 1);
+    assert(defaultPercentogramBinCount(2) == 2);
+    foreach (size_t root; [2, 5, 10, 100, 1000])
+    {
+        const cube = root * root * root;
+        assert(defaultPercentogramBinCount(cube - 1) == root);
+        assert(defaultPercentogramBinCount(cube) == root);
+        assert(defaultPercentogramBinCount(cube + 1) == root + 1);
+    }
+    static if (size_t.sizeof == 8)
+        assert(defaultPercentogramBinCount(size_t.max) == 2_642_246);
+    else
+        assert(defaultPercentogramBinCount(size_t.max) == 1_626);
+}
+
+// Quantile and count allocation policies stay paired: both results own their storage.
+package auto buildPercentogram(alias allocate, alias quantiles, alias histogram,
+    Data, P)(scope auto ref Data data, scope auto ref P probabilities)
+{
+    import mir.ndslice.slice: isSlice, sliced;
+    import mir.stat.descriptive.histogram.axis: variableAxis, AxisOptions;
+    import std.traits: isIntegral;
+
+    static if (isIntegral!P)
+    {
+        assert(probabilities > 0 && probabilities < size_t.max,
+            "percentogram: bin count must be positive and leave room for an extra boundary");
+        NoAllocationContext context;
+        auto levels = allocate!double(context, cast(size_t) probabilities + 1);
+        foreach (i; 0 .. levels.length)
+            levels[i] = cast(double) i / probabilities;
+        return buildPercentogram!(allocate, quantiles, histogram)(data, levels);
+    }
+    else
+    {
+        static if (isSlice!Data)
+            scope auto observations = data;
+        else
+            scope auto observations = data[].sliced;
+        static if (isSlice!P)
+            scope auto levels = probabilities;
+        else
+            scope auto levels = probabilities[].sliced;
+        validatePercentogramInputs(observations, levels);
+
+        auto edges = quantiles(observations, levels);
+        const distinct = preparePercentogramEdges(edges);
+        edges = edges[0 .. distinct];
+        // Quantiles may promote integral observations to floating-point boundaries.
+        // Match the axis value type lazily without another observation buffer.
+        import mir.ndslice.topology: as;
+        import mir.primitives: DeepElementType;
+        auto axis = variableAxis!(AxisOptions(false, true, true))(edges);
+        return histogram(observations.as!(DeepElementType!(typeof(edges))), axis);
+    }
+}
+
+version(mir_stat_test)
+package void testPercentogramRejections(alias factory)()
+{
+    import core.exception: AssertError;
+    import std.math: nextDown;
+    import std.meta: AliasSeq;
+    // Direct catches preserve nothrow inference while exercising contract failures.
+    static void rejects(alias operation)()
+    {
+        bool rejected;
+        try { operation(); }
+        catch (AssertError) { rejected = true; }
+        assert(rejected);
+    }
+    rejects!(() { double[0] x; factory(x, 2); })();
+    rejects!(() { double[2] x = [1, 1]; factory(x, 2); })();
+    rejects!(() { double[3] x = [0, 0, 1]; double[2] p = [0, 0.25]; factory(x, p); })();
+    rejects!(() { double[2] x = [0, 1]; factory(x, 0); })();
+    rejects!(() { double[2] x = [0, 1]; factory(x, -1); })();
+    rejects!(() { double[2] x = [0, 1]; factory(x, size_t.max); })();
+    rejects!(() { double[2] x = [0, double.nan]; factory(x, 2); })();
+    rejects!(() { double[2] x = [0, double.infinity]; factory(x, 2); })();
+    rejects!(() { double[2] x = [0, 1]; double[0] p; factory(x, p); })();
+    rejects!(() { double[2] x = [0, 1]; double[2] p = [-0.1, 1]; factory(x, p); })();
+    rejects!(() { double[2] x = [0, 1]; double[2] p = [0, 1.1]; factory(x, p); })();
+    rejects!(() { double[2] x = [0, 1]; double[3] p = [0, double.nan, 1]; factory(x, p); })();
+    rejects!(() { double[2] x = [0, 1]; double[4] p = [0, 0.5, 0.5, 1]; factory(x, p); })();
+    rejects!(() { double[2] x = [0, 1]; double[4] p = [0, 0.75, 0.25, 1]; factory(x, p); })();
+    static foreach (T; AliasSeq!(float, double, real))
+    {{
+        rejects!(() { T[2] x = [nextDown(T.max), T.max]; factory(x, 1); })();
+    }}
+}
+
+// Use the same tie cases for each allocation policy and both probability APIs.
+version(mir_stat_test)
+package void testPercentogramDuplicates(alias factory)()
+{
+    import std.meta: AliasSeq;
+    import std.math: nextUp, isFinite;
+    // Type-7 quartiles select these sorted observations exactly. Every case
+    // reduces to boundaries 0, 1, 2 before the final endpoint is extended.
+    const int[5][4] samples = [
+        [0, 1, 1, 1, 2], // duplicates only in the interior
+        [0, 0, 0, 1, 2], // duplicates only at the minimum
+        [0, 1, 2, 2, 2], // duplicates only at the maximum
+        [0, 0, 1, 2, 2], // duplicates at both endpoints
+    ];
+    const uint[4] firstCounts = [1, 3, 1, 2];
+    const double[5] probabilities = [0, 0.25, 0.5, 0.75, 1];
+    static foreach (T; AliasSeq!(int, float, double, real))
+    {{
+        foreach (i; 0 .. samples.length)
+        {
+            T[5] data;
+            // Reverse input order so preservation checks also catch in-place sorting.
+            foreach (j; 0 .. data.length)
+                data[j] = samples[i][$ - 1 - j];
+            const original = data;
+            auto explicitLevels = factory(data, probabilities);
+            auto equalIntervals = factory(data, 4);
+            assert(data == original);
+            assert(probabilities[] == [0.0, 0.25, 0.5, 0.75, 1.0]);
+            assert(explicitLevels.axis.N_bin == 2 && equalIntervals.axis.N_bin == 2);
+            assert(explicitLevels.count == 5 && equalIntervals.count == 5);
+            assert(explicitLevels.counts[1] == firstCounts[i]);
+            assert(explicitLevels.counts[2] == 5 - firstCounts[i]);
+            assert(equalIntervals.counts == explicitLevels.counts);
+            double area = 0;
+            foreach (j; 0 .. 2)
+            {
+                auto bin = explicitLevels.bins()[j].bin;
+                auto other = equalIntervals.bins()[j].bin;
+                assert(bin.low == j && bin.high > bin.low);
+                if (j == 0)
+                    assert(bin.high == 1);
+                else
+                    assert(bin.high == nextUp(typeof(bin.high)(2)));
+                assert(other.low == bin.low && other.high == bin.high);
+                const height = explicitLevels.density(j);
+                assert(isFinite(height));
+                area += height * cast(double) (bin.high - bin.low);
+            }
+            assert(area > 0.999999 && area < 1.000001);
+        }
+    }}
+}
+
+// Keep statistical rules shared without coupling custom allocation to GC/RC ownership.
+package void validatePercentogramInputs(Observations, Levels)(scope Observations observations, scope Levels levels)
+{
+    import std.traits: isIntegral;
+    import std.math: isFinite;
+    static assert(Observations.N == 1 && Levels.N == 1,
+        "percentogram: observations and probabilities must be one-dimensional");
+    assert(observations.length > 0, "percentogram: observations must not be empty");
+    foreach (x; observations)
+    {
+        static if (!isIntegral!(typeof(x)))
+            assert(isFinite(x), "percentogram: observations must be finite");
+    }
+    assert(levels.length >= 2, "percentogram: at least two probabilities are required");
+    assert(levels[0] >= 0 && levels[$ - 1] <= 1,
+        "percentogram: probabilities must lie between zero and one");
+    foreach (i; 1 .. levels.length)
+        assert(levels[i] > levels[i - 1], "percentogram: probabilities must strictly increase");
+
+}
+
+// Compact in place but retain the complete allocation handle for manual cleanup.
+package size_t preparePercentogramEdges(Edges)(scope Edges edges)
+{
+    import std.math: isFinite, nextUp;
+    size_t distinct = 0;
+    foreach (i; 0 .. edges.length)
+    {
+        assert(isFinite(edges[i]), "percentogram: quantile boundaries must be finite");
+        if (distinct == 0 || edges[i] > edges[distinct - 1])
+            edges[distinct++] = edges[i];
+        else
+            assert(edges[i] == edges[distinct - 1], "percentogram: boundaries must not decrease");
+    }
+    assert(distinct >= 2, "percentogram: at least two distinct boundaries are required");
+    edges[distinct - 1] = nextUp(edges[distinct - 1]);
+    assert(isFinite(edges[distinct - 1]), "percentogram: maximum requires a finite successor");
+    return distinct;
+}
+
+// Test the same restricted intervals for owning and explicitly disposed results.
+version(mir_stat_test)
+package void testPercentogramIntervals(alias factory, alias release = null)()
+{
+    import mir.stat.descriptive.histogram.relative_frequency: Normalization;
+    import std.math: nextUp, isNaN;
+    static ref auto histogramOf(T)(return ref T value)
+    {
+        static if (__traits(hasMember, T, "histogram")) return value.histogram;
+        else return value;
+    }
+    double[9] data = [0, 1, 2, 3, 4, 5, 6, 7, 8];
+    const double[3][4] levels = [[0.25, 0.5, 0.75], [0.25, 0.5, 1],
+        [0, 0.5, 0.75], [0.2, 0.5, 0.8]];
+    const uint[4][4] expected = [[2, 2, 3, 2], [2, 2, 5, 0], [0, 4, 3, 2], [2, 2, 3, 2]];
+    foreach (i; 0 .. levels.length)
+    {
+        auto result = factory(data, levels[i]);
+        scope(exit) { static if (!is(typeof(release) == typeof(null))) release(result); }
+        void check(H)(ref H p)
+        {
+            assert(p.count == 9 && p.counts == expected[i][]);
+            assert(p.underflow == expected[i][0] && p.overflow == expected[i][3]);
+            const ordinary = expected[i][1] + expected[i][2];
+            assert(p.relativeFrequency(0) == cast(double) expected[i][1] / 9);
+            assert(p.relativeFrequency!(double, Normalization.ordinary)(0) == cast(double) expected[i][1] / ordinary);
+            assert(p.cumulativeRelativeFrequency!(double, Normalization.ordinary)(1) == 1);
+            assert(p.cumulativeRelativeFrequency(1) == cast(double) (9 - expected[i][3]) / 9);
+            double allArea = 0, ordinaryArea = 0;
+            foreach (j; 0 .. 2)
+            {
+                auto bin = p.bins()[j].bin;
+                const width = bin.high - bin.low;
+                allArea += p.density(j) * width;
+                ordinaryArea += p.density!(double, Normalization.ordinary)(j) * width;
+            }
+            assert(allArea > cast(double) ordinary / 9 - 1e-12 && allArea < cast(double) ordinary / 9 + 1e-12);
+            assert(ordinaryArea > 1 - 1e-12 && ordinaryArea < 1 + 1e-12);
+            const low = p.axis.low, high = p.axis.high;
+            p.put(-1.0, 9.0);
+            assert(p.count == 11 && p.underflow == expected[i][0] + 1 && p.overflow == expected[i][3] + 1);
+            assert(p.axis.low == low && p.axis.high == high);
+        }
+        check(histogramOf(result));
+    }
+    {
+        // Ties at both cutoffs belong to ordinary bins: seven of nine are retained.
+        double[9] tied = [0, 1, 1, 1, 2, 3, 3, 3, 4];
+        auto result = factory(tied, levels[0]);
+        scope(exit) { static if (!is(typeof(release) == typeof(null))) release(result); }
+        assert(histogramOf(result).counts == [1, 3, 4, 1]);
+        assert(histogramOf(result).axis.high == nextUp(3.0));
+    }
+    {
+        // An interpolated interval can contain no observed values at all.
+        double[2] sparse = [0, 10];
+        double[2] interval = [0.25, 0.75];
+        auto result = factory(sparse, interval);
+        scope(exit) { static if (!is(typeof(release) == typeof(null))) release(result); }
+        assert(histogramOf(result).counts == [1, 0, 1]);
+        assert(histogramOf(result).density(0) == 0);
+        assert(isNaN(histogramOf(result).density!(double, Normalization.ordinary)(0)));
+    }
+    assert(data[] == [0.0, 1, 2, 3, 4, 5, 6, 7, 8]);
+}

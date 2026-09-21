@@ -550,18 +550,19 @@ unittest
 
 // Test example vs. R in extreme case
 version(mir_stat_test)
-@safe pure nothrow
+@safe pure nothrow @nogc
 unittest
 {
     import mir.math.common: ceil, pow;
-    import mir.stat.descriptive: quantile;
-    import mir.ndslice.allocation: slice;
+    import mir.stat.descriptive: rcquantile;
+    import mir.ndslice.slice: sliced;
 
-    auto x = slice!double([500], 0.0);
+    double[500] observations = 0;
+    auto x = observations[].sliced;
     x[0] = 1;
 
     auto k = x.freedmanDiaconis!size_t;
-    assert(k == ceil(((1.0 - 0.0) / ((x.quantile(1.0 - 1.0 / 512) / (1.0 - 2.0 / 512)) / pow(500.0, 1.0 / 3)))));
+    assert(k == ceil(((1.0 - 0.0) / ((x.rcquantile(1.0 - 1.0 / 512) / (1.0 - 2.0 / 512)) / pow(500.0, 1.0 / 3)))));
 }
 
 // withAsSlice test

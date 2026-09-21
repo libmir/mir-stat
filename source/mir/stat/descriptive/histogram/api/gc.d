@@ -149,3 +149,220 @@ unittest
     assert(f.count == 5);
     assert(f.relativeFrequency(1) == 0.4);
 }
+
+/++
+Construct a percentogram using quantile boundaries and observed relative frequencies.
+Returns a relative-frequency accumulator with GC-owned boundaries and counts.
+Use `density` or `densityBins` for bar heights: area represents observed probability.
+
+Observations must be nonempty and finite and are not modified. Supply a positive
+bin count or strictly increasing probabilities within zero to one. The default
+quantile algorithm is type7. Equal boundaries are combined, so fewer bins may be
+returned; constant observations are rejected. Counts need not be equal, especially
+with ties. Observations are converted to the quantile boundary type for counting;
+integral inputs use double boundaries, so sufficiently large integers may lose
+precision or yield coincident boundaries. Later updates retain the original boundaries.
+
+Both underflow and overflow counters are always enabled, including for full-range
+probabilities. Raw counts contain underflow first and overflow last; ordinary-bin
+indices used by relativeFrequency and density still start at zero.
+Bins are left-closed and right-open. The final boundary is increased by one
+representable step to include observations equal to the upper quantile cutoff;
+this slightly increases its width. A cutoff without a finite successor is rejected.
+Observations equal to either outer quantile cutoff are included in ordinary bins.
+Values below or above the selected interval are counted in underflow/overflow.
+By default they remain in the normalization total. Use `Normalization.ordinary`
+on relative-frequency, density, or cumulative accessors to exclude them from the
+probability distribution. With ties, actual retained counts can differ from the
+requested probability span.
+
+Omitting probabilities requests `ceil(cuberoot(n))` ordinary bins for `n` observations,
+with equally spaced probabilities from zero to one. This is a sample-size heuristic.
+Tied boundaries can reduce the number of ordinary bins.
+
+Params:
+    data = one-dimensional observations, as an array or slice
+    probabilities = positive bin count or probability array/slice
++/
+auto percentogram(Data, P)(scope auto ref Data data, scope auto ref P probabilities)
+{
+    import mir.stat.descriptive.univariate: quantile;
+    import mir.stat.descriptive.histogram.api.factory: buildPercentogram;
+    return buildPercentogram!(allocateCounts, quantile, relativeFrequencyHistogram)(data, probabilities);
+}
+
+/// ditto
+auto percentogram(Data)(scope auto ref Data data)
+{
+    import mir.stat.descriptive.histogram.api.factory: defaultPercentogramBinCount;
+    return percentogram(data, defaultPercentogramBinCount(data.length));
+}
+
+/// Choose the bin count from the sample size and use density as bar height.
+version(mir_stat_test)
+@safe pure nothrow
+unittest
+{
+    double[8] data = [0, 1, 2, 3, 4, 8, 12, 16];
+    // Eight observations request two bins, with probabilities [0, 0.5, 1].
+    auto p = percentogram(data);
+    assert(p.count == 8 && p.counts == [0, 4, 4, 0]);
+    assert(p.relativeFrequency(0) == 0.5);
+    // The first bin spans [0, 3.5); height times width equals its probability.
+    assert(p.density(0) == 0.5 / 3.5);
+    // Construction preserves the observations; later updates keep the same bins.
+    assert(data[] == [0.0, 1, 2, 3, 4, 8, 12, 16]);
+    p.put(1.0);
+    assert(p.count == 9 && p.counts[1] == 5);
+
+    // Override the default with four ordinary bins: probabilities [0, 0.25, 0.5, 0.75, 1].
+    auto quartiles = percentogram(data, 4);
+    // The first and last counters are underflow and overflow, both zero here.
+    assert(quartiles.counts == [0, 2, 2, 2, 2, 0]);
+    assert(quartiles.relativeFrequency(0) == 0.25);
+    assert(quartiles.density(0) == 0.25 / 1.75);
+}
+
+/// Select probability intervals explicitly using Mir slices.
+version(mir_stat_test)
+@safe pure nothrow
+unittest
+{
+    import mir.ndslice.slice: sliced;
+    double[8] observations = [0, 1, 2, 3, 4, 8, 12, 16];
+    const double[3] levels = [0, 0.25, 1];
+    // These Mir slices borrow the input arrays; the result owns its storage.
+    auto p = percentogram(observations[].sliced, levels[].sliced);
+    assert(p.count == 8 && p.counts == [0, 2, 6, 0]);
+    assert(p.relativeFrequency(0) == 0.25);
+    assert(p.relativeFrequency(1) == 0.75);
+}
+
+/// Built-in dynamic arrays can be passed directly, without conversion to Mir slices.
+version(mir_stat_test)
+@safe pure nothrow
+unittest
+{
+    double[4] observations = [0, 1, 2, 3];
+    const double[3] levels = [0, 0.5, 1];
+    // A dynamic array is a length/pointer view; it need not use GC storage.
+    double[] data = observations[];
+    const(double)[] probabilities = levels[];
+    auto p = percentogram(data, probabilities);
+    assert(p.count == 4 && p.counts == [0, 2, 2, 0]);
+    // Mutating the original data does not change the stored boundaries or counts.
+    data[] = -1;
+    assert(p.bins()[0].bin.low == 0 && p.counts == [0, 2, 2, 0]);
+}
+
+// Boundaries and counts survive local inputs; tied boundaries are combined.
+version(mir_stat_test)
+@safe pure nothrow
+unittest
+{
+    static auto fromLocal()
+    {
+        const double[5] data = [0, 0, 0, 1, 2];
+        const double[5] probabilities = [0, 0.25, 0.5, 0.75, 1];
+        return percentogram(data, probabilities);
+    }
+    auto p = fromLocal();
+    assert(p.count == 5 && p.counts == [0, 3, 2, 0]);
+    double area = 0;
+    foreach (i; 0 .. p.axis.N_bin)
+    {
+        auto bin = p.bins()[i].bin;
+        area += p.density(i) * (bin.high - bin.low);
+    }
+    assert(area > 0.999999 && area < 1.000001);
+}
+
+// Boundary precision follows observations; both endpoints are counted.
+version(mir_stat_test)
+@safe pure nothrow
+unittest
+{
+    import std.meta: AliasSeq;
+    import mir.ndslice.slice: sliced;
+    import mir.ndslice.topology: stride;
+    static foreach (T; AliasSeq!(float, double, real))
+    {{
+        T[6] values = [0, 99, 1, 99, 2, 99];
+        const double[3] probabilities = [0, 0.5, 1];
+        auto p = percentogram(values[].sliced.stride(2), probabilities);
+        assert(p.count == 3 && p.counts == [0, 1, 2, 0]);
+        static assert(is(typeof(p.bins()[0].bin.low) == T));
+        auto one = percentogram(values[].sliced.stride(2), 1);
+        assert(one.count == 3 && one.counts == [0, 3, 0]);
+    }}
+}
+
+// Invalid inputs are rejected rather than producing degenerate density bins.
+version(mir_stat_test)
+@system pure nothrow
+unittest
+{
+    import mir.stat.descriptive.histogram.api.factory: testPercentogramRejections;
+    testPercentogramRejections!percentogram();
+}
+
+// Combine duplicate quantiles before extending the maximum and constructing the axis.
+version(mir_stat_test)
+@safe pure nothrow
+unittest
+{
+    import mir.stat.descriptive.histogram.api.factory: testPercentogramDuplicates;
+    testPercentogramDuplicates!percentogram();
+}
+
+/// Keep excluded tails in underflow/overflow and choose the normalization explicitly.
+version(mir_stat_test)
+@safe pure nothrow
+unittest
+{
+    import mir.stat.descriptive.histogram.relative_frequency: Normalization;
+    double[9] data = [0, 1, 2, 3, 4, 5, 6, 7, 8];
+    const double[3] probabilities = [0.25, 0.5, 0.75];
+    auto p = percentogram(data, probabilities);
+    // Cutoffs are 2 and 6, both included. Raw counts also contain the two tails.
+    assert(p.counts == [2, 2, 3, 2]);
+    assert(p.underflow == 2 && p.overflow == 2 && p.count == 9);
+    assert(p.relativeFrequency(0) == 2.0 / 9);
+    // Condition on the five retained observations without changing any counts.
+    assert(p.relativeFrequency!(double, Normalization.ordinary)(0) == 2.0 / 5);
+    assert(p.density!(double, Normalization.ordinary)(0) == 0.2);
+    assert(p.cumulativeRelativeFrequency!(double, Normalization.ordinary)(1) == 1);
+}
+
+version(mir_stat_test)
+@safe pure nothrow
+unittest
+{
+    import mir.stat.descriptive.histogram.api.factory: testPercentogramIntervals;
+    testPercentogramIntervals!percentogram();
+}
+
+// Sample-size defaults match explicit probabilities, including tied boundaries.
+version(mir_stat_test)
+@safe pure nothrow
+unittest
+{
+    import mir.ndslice.slice: sliced;
+    const double[8] data = [0, 0, 0, 0, 0, 2, 3, 4];
+    const double[3] levels = [0, 0.5, 1];
+    auto automatic = percentogram(data[].sliced);
+    auto explicit = percentogram(data, levels);
+    assert(automatic.counts == explicit.counts);
+    assert(automatic.axis.N_bin == 1);
+    foreach (i; 0 .. automatic.axis.N_bin)
+        assert(automatic.density(i) == explicit.density(i));
+    // Use the logical length of a strided view: nine observations request three bins.
+    import mir.ndslice.topology: stride;
+    double[18] backing;
+    foreach (i, ref value; backing)
+        value = i;
+    auto strided = percentogram(backing[].sliced.stride(2));
+    assert(strided.count == 9);
+    assert(strided.axis.N_bin == 3);
+    assert(strided.counts == [0, 3, 3, 3, 0]);
+}
