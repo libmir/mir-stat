@@ -22,14 +22,15 @@ module mir.stat.descriptive.histogram.api.factory;
 
 // Storage ownership stays with the caller. Validate before writing so a bad
 // extent cannot clear unrelated storage before the constructor rejects it.
-package auto initializeHistogram(Storage, Axis, Data)(Storage counts, Axis axis, Data data)
+package auto initializeHistogram(bool insert = true, Storage, Axis, Data)(Storage counts, Axis axis, Data data)
 {
     import mir.stat.descriptive.histogram.accumulator: HistogramAccumulator;
     auto h = HistogramAccumulator!(Storage, Axis)(counts, axis);
     // Floating-point .init is NaN; every counter must instead start at zero.
     foreach (ref count; h.counts)
         count = 0;
-    h.put(data);
+    static if (insert)
+        h.put(data);
     return h;
 }
 
@@ -37,7 +38,7 @@ package auto initializeHistogram(Storage, Axis, Data)(Storage counts, Axis axis,
 package struct NoAllocationContext {}
 
 // Shared overloads keep allocation policy independent of axis construction.
-package mixin template HistogramFactory(alias allocate, alias release = null)
+package mixin template HistogramFactory(alias allocate, alias release = null, bool insert = true)
 {
     import mir.ndslice.slice: Slice, SliceKind;
     import mir.stat.descriptive.histogram.accumulator: HistogramAccumulator;
@@ -74,7 +75,7 @@ package mixin template HistogramFactory(alias allocate, alias release = null)
         static if (!is(typeof(release) == typeof(null)))
             scope(failure) release(context, counts);
         import mir.stat.descriptive.histogram.api.factory: initializeHistogram;
-        return initializeHistogram(counts, axis, x);
+        return initializeHistogram!insert(counts, axis, x);
     }
 
     /++
@@ -2023,28 +2024,28 @@ private mixin template RelativeFrequencyFactoryTests(alias make)
 
         double[5] values = [-1, 0, 1, 2, 4];
         auto ordinary = make!RegularAxis(values[1 .. 4].sliced, 2u, 0.0, 4.0);
-        assert(ordinary.count == 3);
+        assert(ordinary.total == 3);
         assert(ordinary.relativeFrequency(0) == 2.0 / 3);
         enum options = AxisOptions(false, true, true);
         auto all = make!(ulong, double, RegularAxis, options)(
             values[].sliced, 2u, 0.0, 4.0);
         static assert(is(all.CountType == ulong));
-        assert(all.count == 5);
+        assert(all.total == 5);
         assert(all.underflowRelativeFrequency() == 0.2);
         assert(all.overflowRelativeFrequency() == 0.2);
         assert(all.cumulativeRelativeFrequency(1) == 0.8);
         all.put(3.0);
-        assert(all.count == 6 && all.relativeFrequency(1) == 2.0 / 6);
+        assert(all.total == 6 && all.relativeFrequency(1) == 2.0 / 6);
 
         alias A = RegularAxis!(uint, double, AxisOptions());
         double[0] empty;
         auto explicitAxis = make(empty[].sliced, A(2, 0, 4));
-        assert(explicitAxis.count == 0 && isNaN(explicitAxis.relativeFrequency(0)));
+        assert(explicitAxis.total == 0 && isNaN(explicitAxis.relativeFrequency(0)));
         static uint two(S)(S data) { return 2; }
         double[4] powers = [1, 2, 4, 8];
         auto transformed = make!(TransformAxis, log2, exp2, two)(
             powers[].sliced(2, 2).transposed, 1.0, 16.0);
-        assert(transformed.count == 4 && transformed.relativeFrequency(0) == 0.5);
+        assert(transformed.total == 4 && transformed.relativeFrequency(0) == 0.5);
     }
 
     @safe pure nothrow
@@ -2064,7 +2065,7 @@ private mixin template RelativeFrequencyFactoryTests(alias make)
         }
         auto f = owned();
         f.put(2.5);
-        assert(f.count == 3 && f.relativeFrequency(1) == 2.0 / 3);
+        assert(f.total == 3 && f.relativeFrequency(1) == 2.0 / 3);
         auto saved = f.cumulativeRelativeFrequencies();
         assert(saved == [1.0 / 3, 1]);
     }
@@ -2078,7 +2079,7 @@ private mixin template RelativeFrequencyFactoryTests(alias make)
         double[3] edges = [0, 1, 3];
         double[2] values = [0.5, 2.0];
         auto f = make!(uint, VariableAxis)(values[].sliced, edges[].sliced);
-        assert(f.count == 2 && f.relativeFrequency(1) == 0.5);
+        assert(f.total == 2 && f.relativeFrequency(1) == 0.5);
         static assert(!__traits(compiles, () @safe {
             double[3] localEdges = [0, 1, 3];
             double[1] localValues = [0.5];
@@ -2107,7 +2108,7 @@ private mixin template ConstFactoryTests(alias make, bool relative)
         mutableResult.put(2.5);
         assert(mutableResult.counts == [2u, 1, 2]);
         static if (relative)
-            assert(mutableResult.count == 5 && mutableResult.relativeFrequency(2) == 0.4);
+            assert(mutableResult.total == 5 && mutableResult.relativeFrequency(2) == 0.4);
 
         // Static storage lets this test cover const semantics without borrowing
         // local boundaries in builds that do not enable DIP1000.
@@ -2123,7 +2124,7 @@ private mixin template ConstFactoryTests(alias make, bool relative)
         static assert(!__traits(compiles, { frozen.counts[0] = 0; }));
         static if (relative)
         {
-            assert(frozen.count == 4 && frozen.relativeFrequency!float(0) == 0.5f);
+            assert(frozen.total == 4 && frozen.relativeFrequency!float(0) == 0.5f);
             assert(frozen.cumulativeRelativeFrequency(1) == 1);
             assert(frozen.cumulativeRelativeFrequencies() == [0.5, 1]);
             double[2] destination;
@@ -2292,7 +2293,7 @@ package void testPercentogramDuplicates(alias factory)()
             assert(data == original);
             assert(probabilities[] == [0.0, 0.25, 0.5, 0.75, 1.0]);
             assert(explicitLevels.axis.N_bin == 2 && equalIntervals.axis.N_bin == 2);
-            assert(explicitLevels.count == 5 && equalIntervals.count == 5);
+            assert(explicitLevels.total == 5 && equalIntervals.total == 5);
             assert(explicitLevels.counts[1] == firstCounts[i]);
             assert(explicitLevels.counts[2] == 5 - firstCounts[i]);
             assert(equalIntervals.counts == explicitLevels.counts);
@@ -2377,7 +2378,7 @@ package void testPercentogramIntervals(alias factory, alias release = null)()
         scope(exit) { static if (!is(typeof(release) == typeof(null))) release(result); }
         void check(H)(ref H p)
         {
-            assert(p.count == 9 && p.counts == expected[i][]);
+            assert(p.total == 9 && p.counts == expected[i][]);
             assert(p.underflow == expected[i][0] && p.overflow == expected[i][3]);
             const ordinary = expected[i][1] + expected[i][2];
             assert(p.relativeFrequency(0) == cast(double) expected[i][1] / 9);
@@ -2396,7 +2397,7 @@ package void testPercentogramIntervals(alias factory, alias release = null)()
             assert(ordinaryArea > 1 - 1e-12 && ordinaryArea < 1 + 1e-12);
             const low = p.axis.low, high = p.axis.high;
             p.put(-1.0, 9.0);
-            assert(p.count == 11 && p.underflow == expected[i][0] + 1 && p.overflow == expected[i][3] + 1);
+            assert(p.total == 11 && p.underflow == expected[i][0] + 1 && p.overflow == expected[i][3] + 1);
             assert(p.axis.low == low && p.axis.high == high);
         }
         check(histogramOf(result));
@@ -2420,4 +2421,78 @@ package void testPercentogramIntervals(alias factory, alias release = null)()
         assert(isNaN(histogramOf(result).density!(double, Normalization.ordinary)(0)));
     }
     assert(data[] == [0.0, 1, 2, 3, 4, 5, 6, 7, 8]);
+}
+
+// Reuse axis dispatch without first performing unweighted insertion. Observations
+// remain available to bin-count rules; only the final insertion step differs.
+package mixin template WeightedHistogramFactory(alias allocate, alias release = null)
+{
+    private mixin HistogramFactory!(allocate, release, false) emptyImplementation;
+
+    template weightedFactory(Options...)
+    {
+        auto weightedFactory(Context, Data, Weights, Args...)(
+            ref Context context, scope auto ref Data data,
+            scope auto ref Weights weights, auto ref Args args)
+        {
+            import mir.ndslice.slice: isSlice, sliced;
+            static if (isSlice!Data)
+                scope auto observations = data.lightScope;
+            else
+                scope auto observations = data[].sliced;
+            static if (isSlice!Weights)
+                scope auto masses = weights.lightScope;
+            else
+                scope auto masses = weights[].sliced;
+            static assert(observations.N == masses.N,
+                "Weighted histogram observations and weights must have matching ranks");
+            assert(observations.shape == masses.shape,
+                "Weighted histogram observations and weights must have matching shapes");
+
+            import mir.stat.descriptive.histogram.api.factory: insertWeighted;
+            import mir.stat.descriptive.histogram.axis: VariableAxis, EnumAxis;
+            import std.traits: Unqual, isNumeric;
+            import std.meta: AliasSeq;
+            // Expand the counter and coordinate types explicitly: a single floating
+            // type in the existing overloads can mean either of those two choices.
+            static if (Options.length && __traits(isTemplate, Options[0]))
+                alias Selected = AliasSeq!(double, Options);
+            else
+                alias Selected = Options;
+            static if (Selected.length == 2 && __traits(isSame, Selected[1], EnumAxis))
+            {
+                alias Axis = EnumAxis!(Selected[0], Unqual!(typeof(observations).DeepElement));
+                auto h = emptyImplementation.factory!Axis(context, observations, args);
+            }
+            else static if (Selected.length >= 2 && __traits(isTemplate, Selected[1]) &&
+                !__traits(isSame, Selected[1], VariableAxis))
+            {
+                static if (Args.length && isNumeric!(Args[$ - 1]))
+                    alias Coordinate = Unqual!(Args[$ - 1]);
+                else
+                    alias Coordinate = Unqual!(typeof(observations).DeepElement);
+                auto h = emptyImplementation.factory!(Selected[0], Coordinate, Selected[1 .. $])(
+                    context, observations, args);
+            }
+            else
+                auto h = emptyImplementation.factory!Selected(context, observations, args);
+            static if (!is(typeof(release) == typeof(null)))
+                scope(failure) release(context, h.counts);
+            insertWeighted(h, observations, masses);
+            return h;
+        }
+    }
+}
+
+package void insertWeighted(H, Data, Weights)(ref H h, scope Data data, scope Weights weights)
+{
+    // Recursing through matching shapes preserves logical pairing for arbitrary
+    // strides, without allocating flattened copies or truncating either input.
+    foreach (i; 0 .. data.length)
+    {
+        static if (Data.N == 1)
+            h.putWeighted(weights[i], data[i]);
+        else
+            insertWeighted(h, data[i], weights[i]);
+    }
 }

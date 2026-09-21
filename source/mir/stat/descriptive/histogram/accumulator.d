@@ -17,6 +17,8 @@ T4=$(TR $(TDNW $(LREF $1)) $(TD $2) $(TD $3) $(TD $4))
 
 module mir.stat.descriptive.histogram.accumulator;
 
+private import mir.stat.descriptive.histogram.traits: ordinaryBinCount;
+
 import mir.primitives: DeepElementType;
 import mir.stat.descriptive.histogram.traits: isAxis;
 import mir.stat.descriptive.histogram.internal.view: supportsBinView, JointArrayInfo;
@@ -25,6 +27,15 @@ import mir.qualifier: lightConst;
 import std.meta: allSatisfy;
 import std.traits: isNumeric, Unqual, isStaticArray;
 import mir.ndslice.slice: isSlice;
+
+// Weighted insertion follows implicit conversion rules for real numeric weights.
+package template acceptsHistogramWeight(C, W)
+{
+    import std.traits: isIntegral, isFloatingPoint;
+    enum acceptsHistogramWeight =
+        (isIntegral!(Unqual!C) || isFloatingPoint!(Unqual!C)) &&
+        (isIntegral!(Unqual!W) || isFloatingPoint!(Unqual!W)) && is(W : C);
+}
 
 private template isJointStorage(Storage, size_t rank)
 {
@@ -52,6 +63,9 @@ bins from zero; storage indices are shifted by one when underflow is enabled.
 The same layout applies to one-dimensional histograms.
 
 Bin views traverse ordinary joint bins with the last axis advancing fastest.
+Use putWeighted(weight, coordinates...) to accumulate weights instead of unit
+counts. Bin counts then represent sums of weights; this accumulator maintains
+neither a separate observation count nor a running total.
 
 If the `Axis` has an `options` member, the histogram may optionally allow
 for overflow and underflow members.
@@ -105,6 +119,14 @@ private:
         return cast(size_t) index + includeUnderflow!(Axis[i]);
     }
 
+    size_t[N] storageIndices(T...)(T coordinates)
+    {
+        size_t[N] indices;
+        static foreach (i; 0 .. N)
+            indices[i] = storageIndex!i(coordinates[i]);
+        return indices;
+    }
+
     // Validate every branch: checking only the first row would miss ragged arrays.
     static void validateArrayShape(size_t depth = 0, S)(auto ref const S storage,
         const ref size_t[N] shape)
@@ -150,13 +172,18 @@ private:
     }
 
     // Recurse by reference so nested static arrays are updated in place.
-    static void incrementArray(size_t depth = 0, S)(ref S storage,
-        const ref size_t[N] indices)
+    static void updateArray(bool weighted, size_t depth = 0, S)(ref S storage,
+        const ref size_t[N] indices, CountType weight = CountType.init)
     {
         static if (depth + 1 == N)
-            storage[indices[depth]]++;
+        {
+            static if (weighted)
+                storage[indices[depth]] += weight;
+            else
+                storage[indices[depth]]++;
+        }
         else
-            incrementArray!(depth + 1)(storage[indices[depth]], indices);
+            updateArray!(weighted, depth + 1)(storage[indices[depth]], indices, weight);
     }
 
     // Fix one coordinate and sum the remaining dimensions. Indexed traversal
@@ -354,14 +381,45 @@ public:
         {
             // Resolve all coordinates before changing counts, including when
             // an axis rejects an observation or returns an invalid index.
-            size_t[N] indices;
-            static foreach (i; 0 .. N)
-                indices[i] = storageIndex!i(x[i]);
+            const indices = storageIndices(x);
             static if (isSlice!Storage)
                 counts[indices]++;
             else
-                incrementArray(counts, indices);
+                updateArray!false(counts, indices);
         }
+    }
+
+    /++
+    Add a finite, nonnegative weight to one bin without maintaining a total.
+    Supply exactly one coordinate per axis. Ordinary put continues to add one.
+    Weight must be implicitly convertible to CountType and within its range;
+    floating-point storage may round it to the counter precision. Fractional
+    weights require floating-point counters. Counters must accommodate accumulated
+    weights; overflow is not checked. Invalid weights and coordinates are rejected
+    before changing storage. A zero weight still validates coordinates.
+
+    Params:
+        weight = finite, nonnegative contribution to the selected bin
+        coordinates = one compatible coordinate per axis
+    +/
+    void putWeighted(W, T...)(W weight, T coordinates)
+        if (acceptsHistogramWeight!(CountType, W) && T.length == N && acceptsArguments!T)
+    {
+        import std.traits: isFloatingPoint;
+        import std.math: isFinite;
+        static if (isFloatingPoint!(Unqual!W))
+            assert(isFinite(weight), "HistogramAccumulator.putWeighted: weight must be finite");
+        assert(weight >= 0 && weight <= CountType.max,
+            "HistogramAccumulator.putWeighted: weight must be nonnegative and fit CountType");
+        const CountType added = weight;
+        const indices = storageIndices(coordinates);
+        if (added == 0) return;
+        static if (N == 1)
+            counts[indices[0]] += added;
+        else static if (isSlice!Storage)
+            counts[indices] += added;
+        else
+            updateArray!true(counts, indices, added);
     }
 
     /++
@@ -425,6 +483,25 @@ public:
         return axisEndTotal!dimension(counts, 0);
     }
 
+}
+
+/// Accumulate weights in bins without maintaining a separate total.
+version(mir_stat_test)
+@safe pure nothrow @nogc
+unittest
+{
+    import mir.stat.descriptive.histogram.axis: IntegralAxis, AxisOptions;
+    alias A = IntegralAxis!(uint, double, AxisOptions(false, true, true));
+    double[4] storage = 0; // underflow, two ordinary bins, overflow
+    auto h = HistogramAccumulator!(double[], A)(storage[], A(2, 0));
+    h.putWeighted(0.5, 0.25);
+    h.putWeighted(1.5, 1.25);
+    h.put(0.75); // Unweighted insertion still adds one.
+    h.putWeighted(2.0, -1.0);
+    assert(h.counts == [2.0, 1.5, 1.5, 0]);
+    assert(h.underflow == 2);
+    h.putWeighted(0.0, 1.25);
+    assert(h.counts[2] == 1.5);
 }
 
 /// Allocate one-dimensional storage including both underflow and overflow.
@@ -1523,7 +1600,7 @@ struct HistogramBinView(Storage, BinCoverage coverage, Axis...)
         size_t length = 1;
         static foreach (i; 0 .. N)
         {{
-            _shape[i] = axes[i].N_bin;
+            _shape[i] = ordinaryBinCount(axes[i]);
             storageShape[i] = H.axisStorageExtent(axes[i]);
             const extent = coverage == BinCoverage.all ? storageShape[i] : _shape[i];
             assert(extent == 0 || length <= size_t.max / extent,
@@ -3531,4 +3608,46 @@ unittest
             return h.bins;
         }));
     }
+}
+
+// Weighted updates share joint indexing for nested arrays and strided slices.
+version(mir_stat_test)
+@safe pure nothrow @nogc
+unittest
+{
+    import mir.stat.descriptive.histogram.axis: IntegralAxis, AxisOptions;
+    import mir.ndslice.slice: sliced;
+    import mir.ndslice.dynamic: transposed;
+    alias A = IntegralAxis!(uint, double, AxisOptions(false, true, true));
+    double[4][4] nested = 0;
+    auto h = HistogramAccumulator!(typeof(nested), A, A)(nested, A(2, 0), A(2, 0));
+    h.putWeighted(0.5, 0.25, 1.25);
+    h.putWeighted(2.0, -1.0, 3.0);
+    assert(h.counts[1][2] == 0.5 && h.counts[0][3] == 2);
+    auto marginal = h.marginal!0();
+    assert(marginal.counts == [2.0, 0.5, 0, 0]);
+    double[16] raw = 0;
+    auto view = raw[].sliced(4, 4).transposed;
+    auto other = HistogramAccumulator!(typeof(view), A, A)(view, A(2, 0), A(2, 0));
+    other.putWeighted(1.5, 0.25, 1.25);
+    other.put(h);
+    assert(other.counts[1, 2] == 2 && other.counts[0, 3] == 2);
+    assert(raw[9] == 2);
+}
+
+// Integral weights are supported; fractional weights cannot silently truncate.
+version(mir_stat_test)
+@safe pure nothrow @nogc
+unittest
+{
+    import mir.stat.descriptive.histogram.axis: IntegralAxis, AxisOptions;
+    alias A = IntegralAxis!(uint, double, AxisOptions());
+    uint[2] storage = 0;
+    auto h = HistogramAccumulator!(uint[], A)(storage[], A(2, 0));
+    h.putWeighted(3u, 0.5);
+    assert(h.counts == [3u, 0u]);
+    static assert(!__traits(compiles, h.putWeighted(0.5, 0.5)));
+    static assert(!__traits(compiles, h.putWeighted(1u, 0.5, 1.5)));
+    static assert(!__traits(compiles, h.putWeighted(1u)));
+    static assert(!__traits(compiles, h.putWeighted(1u, "invalid coordinate")));
 }

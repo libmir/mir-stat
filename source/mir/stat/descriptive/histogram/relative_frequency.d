@@ -18,6 +18,8 @@ T4=$(TR $(TDNW $(LREF $1)) $(TD $2) $(TD $3) $(TD $4))
 
 module mir.stat.descriptive.histogram.relative_frequency;
 
+private import mir.stat.descriptive.histogram.traits: ordinaryBinCount;
+
 import mir.internal.utility: isFloatingPoint;
 import std.meta: allSatisfy;
 import mir.stat.descriptive.histogram.accumulator: HistogramAccumulator;
@@ -63,7 +65,9 @@ private template isRelativeFrequencyDestination(Destination)
 }
 
 /++
-Histogram wrapper that also maintains the total recorded count.
+Histogram wrapper that also maintains the total recorded bin contents.
+With weighted insertion, bin counts and total represent sums of weights rather
+than numbers of observations. Ordinary put adds one; putWeighted adds its weight.
 The total includes ordinary bins and enabled underflow and overflow counters.
 Storage supplied to the constructor may already contain counts, including
 enabled underflow/overflow bins on every dimension, as in
@@ -108,9 +112,10 @@ struct RelativeFrequencyAccumulator(Storage, Axis...)
 
     private enum N = Axis.length;
     private alias AxisType = Axis[0];
+    import mir.stat.descriptive.histogram.accumulator: acceptsHistogramWeight;
     private alias Histogram = HistogramAccumulator!(Storage, Axis);
     private Histogram histogramAccumulator;
-    private CountType total;
+    private CountType _total;
 
     /// Type used for bin counts and the running total.
     alias CountType = Histogram.CountType;
@@ -123,7 +128,7 @@ struct RelativeFrequencyAccumulator(Storage, Axis...)
     this(Storage counts, Axis axis)
     {
         histogramAccumulator = Histogram(counts, axis);
-        total = storageTotal(counts);
+        _total = storageTotal(counts);
     }
 
     // Recurse over dimensions so nested arrays and strided slices agree.
@@ -275,10 +280,11 @@ struct RelativeFrequencyAccumulator(Storage, Axis...)
         return CumulativeRelativeFrequencyBinView!(Storage, RelativeFrequencyType, coverage, Axis)(&this, normalization);
     }
 
-    /// Total recorded observations, including flow bins.
-    CountType count() const @property
+    /// Sum of recorded bin contents, including underflow/overflow. With weighted
+    /// insertion this is the sum of weights, not the number of observations.
+    CountType total() const @property
     {
-        return total;
+        return _total;
     }
 
     /// Read-only access to count storage, including enabled underflow/overflow bins.
@@ -428,7 +434,7 @@ struct RelativeFrequencyAccumulator(Storage, Axis...)
     {
         import mir.ndslice.allocation: mininitRcslice;
 
-        auto result = mininitRcslice!RelativeFrequencyType(axis.N_bin);
+        auto result = mininitRcslice!RelativeFrequencyType(ordinaryBinCount(axis));
         cumulativeRelativeFrequencies!normalization(result);
         return result;
     }
@@ -457,13 +463,13 @@ struct RelativeFrequencyAccumulator(Storage, Axis...)
         import std.traits: Unqual;
 
         alias RelativeFrequencyType = Unqual!(DeepElementType!Destination);
-        assert(destination.length == axis.N_bin,
+        assert(destination.length == ordinaryBinCount(axis),
             "RelativeFrequencyAccumulator.cumulativeRelativeFrequencies: destination length must match ordinary bin count");
         CountType cumulative = 0;
         static if (includeUnderflow!AxisType && normalization == Normalization.all)
             cumulative = histogramAccumulator.underflow;
         const denominator = normalizationCount(normalization);
-        foreach (i; 0 .. axis.N_bin)
+        foreach (i; 0 .. ordinaryBinCount(axis))
         {
             cumulative += histogramAccumulator.counts[i + includeUnderflow!AxisType];
             destination[i] = divideCount!RelativeFrequencyType(cumulative, denominator);
@@ -475,7 +481,7 @@ struct RelativeFrequencyAccumulator(Storage, Axis...)
     {
         CountType result = 0;
         enum offset = includeUnderflow!(Axis[depth]);
-        foreach (i; 0 .. histogramAccumulator.axis[depth].N_bin)
+        foreach (i; 0 .. ordinaryBinCount(histogramAccumulator.axis[depth]))
         {
             static if (depth + 1 == N)
                 result += storage[i + offset];
@@ -489,11 +495,11 @@ struct RelativeFrequencyAccumulator(Storage, Axis...)
     {
         import std.traits: isIntegral;
         if (normalization == Normalization.all)
-            return total;
+            return _total;
         static if (N == 1 && isIntegral!CountType)
         {
             // In one dimension the two excluded bins cannot overlap.
-            CountType result = total;
+            CountType result = _total;
             static if (includeUnderflow!AxisType)
                 result -= histogramAccumulator.underflow;
             static if (includeOverflow!AxisType)
@@ -622,14 +628,33 @@ struct RelativeFrequencyAccumulator(Storage, Axis...)
             static foreach (i; 0 .. T.length)
             {
                 histogramAccumulator.put(x[i]);
-                total++;
+                _total++;
             }
         }
         else
         {
             histogramAccumulator.put(x);
-            total++;
+            _total++;
         }
+    }
+
+    /++
+    Record one weighted observation and update the total after successful insertion.
+    Weight and coordinate requirements follow HistogramAccumulator.putWeighted.
+    Relative frequencies, densities, and cumulative results use summed weights.
+    No separate number of observations is maintained. Both bins and the total
+    must accommodate accumulated weights; overflow is not checked.
+
+    Params:
+        weight = finite, nonnegative contribution
+        coordinates = one compatible coordinate per axis
+    +/
+    void putWeighted(W, T...)(W weight, T coordinates)
+        if (acceptsHistogramWeight!(CountType, W) && T.length == N && acceptsArguments!T)
+    {
+        histogramAccumulator.putWeighted(weight, coordinates);
+        const CountType added = weight;
+        if (added != 0) _total += added;
     }
 
     private template acceptsMerge(F)
@@ -651,11 +676,35 @@ struct RelativeFrequencyAccumulator(Storage, Axis...)
     +/
     void put(F)(auto ref const F f) if (acceptsMerge!F)
     {
-        auto addedCount = f.count;
+        auto addedCount = f.total;
         histogramAccumulator.put(f.histogramAccumulator);
-        total += addedCount;
+        _total += addedCount;
     }
 
+}
+
+/// Relative frequencies normalize summed weights, while ordinary put adds one.
+version(mir_stat_test)
+@safe pure nothrow @nogc
+unittest
+{
+    import mir.stat.descriptive.histogram.axis: IntegralAxis, AxisOptions;
+    alias A = IntegralAxis!(uint, double, AxisOptions(false, true, true));
+    double[4] storage = 0;
+    auto f = RelativeFrequencyAccumulator!(double[], A)(storage[], A(2, 0));
+    f.putWeighted(0.5, 0.25);
+    f.putWeighted(1.5, 1.25);
+    f.putWeighted(2.0, -1.0);
+    assert(f.total == 4 && f.counts == [2.0, 0.5, 1.5, 0]);
+    assert(f.relativeFrequency(0) == 0.125);
+    assert(f.relativeFrequency!(double, Normalization.ordinary)(0) == 0.25);
+    assert(f.density!(double, Normalization.ordinary)(1) == 0.75);
+    assert(f.cumulativeRelativeFrequency(0) == 0.625);
+    assert(f.cumulativeRelativeFrequencies!(double, Normalization.ordinary)() == [0.25, 1.0]);
+    f.put(0.75);
+    assert(f.total == 5 && f.counts[1] == 1.5);
+    f.putWeighted(0.0, 1.25);
+    assert(f.total == 5);
 }
 
 /// Collect observations, inspect counts, and read relative frequencies.
@@ -667,13 +716,13 @@ unittest
 
     alias Axis = IntegralAxis!(uint, double, AxisOptions());
     auto f = RelativeFrequencyAccumulator!(uint[], Axis)([0u, 0u, 0u], Axis(3, 0.0));
-    assert(f.count == 0);
+    assert(f.total == 0);
 
     // Bins are [0, 1), [1, 2), and [2, 3).
     f.put(0.5);
     f.put([1.0, 1.5, 2.5]);
     assert(f.counts == [1u, 2u, 1u]);
-    assert(f.count == 4);
+    assert(f.total == 4);
 
     // Frequencies default to double and divide each bin count by the total.
     assert(f.relativeFrequency(0) == 0.25);
@@ -690,7 +739,7 @@ unittest
     alias A = IntegralAxis!(uint, double, AxisOptions(false, true, true));
     uint[4] storage = [1, 2, 3, 4]; // underflow, two ordinary bins, overflow
     auto f = RelativeFrequencyAccumulator!(uint[], A)(storage[], A(2, 0));
-    assert(f.count == 10 && f.relativeFrequency(0) == 0.2);
+    assert(f.total == 10 && f.relativeFrequency(0) == 0.2);
     // Only the five ordinary observations form the conditional distribution.
     assert(f.relativeFrequency!(double, Normalization.ordinary)(0) == 0.4);
     assert(f.density!(float, Normalization.ordinary)(1) == 0.6f);
@@ -701,7 +750,7 @@ unittest
     auto snapshot = f.cumulativeRelativeFrequencies!(double, Normalization.ordinary)();
     assert(snapshot == output[]);
     // Normalization never changes stored counts or their running total.
-    assert(f.count == 10 && f.underflow == 1 && f.overflow == 4);
+    assert(f.total == 10 && f.underflow == 1 && f.overflow == 4);
 }
 
 // Small integral counters retain their type when subtracting underflow/overflow.
@@ -716,7 +765,7 @@ unittest
     {{
         T[4] storage = [10, 2, 3, 20];
         const f = RelativeFrequencyAccumulator!(T[], A)(storage[], A(2, 0));
-        assert(f.count == 35);
+        assert(f.total == 35);
         assert(f.relativeFrequency!(double, Normalization.ordinary)(0) == 0.4);
         assert(f.cumulativeRelativeFrequency!(double, Normalization.ordinary)(1) == 1);
     }}
@@ -734,7 +783,7 @@ unittest
     {{
         T[4] storage = [T.max / 4, T(0.5), T(1.5), T.max / 4];
         const f = RelativeFrequencyAccumulator!(T[], A)(storage[], A(2, 0));
-        assert(f.count - f.underflow - f.overflow == 0);
+        assert(f.total - f.underflow - f.overflow == 0);
         assert(f.relativeFrequency!(T, Normalization.ordinary)(0) == T(0.25));
         assert(f.density!(T, Normalization.ordinary)(1) == T(0.75));
         assert(f.cumulativeRelativeFrequency!(T, Normalization.ordinary)(1) == 1);
@@ -752,7 +801,7 @@ unittest
     alias A = IntegralAxis!(uint, double, AxisOptions(false, true, true));
     uint[4][4] storage = [[0, 1, 2, 3], [4, 5, 6, 7], [8, 9, 10, 11], [12, 13, 14, 15]];
     const f = RelativeFrequencyAccumulator!(uint[4][4], A, A)(storage, A(2, 0), A(2, 0));
-    assert(f.count == 120);
+    assert(f.total == 120);
     assert(f.relativeFrequency!(double, Normalization.ordinary)(0, 1) == 6.0 / 30);
     assert(f.density!(double, Normalization.ordinary)(1, 1) == 10.0 / 30);
     uint[16] flat = [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15];
@@ -853,7 +902,7 @@ unittest
     auto f = RelativeFrequencyAccumulator!(size_t[], typeof(axis))(
         new size_t[boundaries.length - 1], axis);
     f.put(data);
-    assert(f.count == 8 && f.counts == [2, 2, 2, 2]);
+    assert(f.total == 8 && f.counts == [2, 2, 2, 2]);
 
     foreach (i; 0 .. boundaries.length - 1)
     {
@@ -1075,7 +1124,7 @@ unittest
     assert(f.counts == [1u, 1u, 1u, 1u]);
     assert(f.underflow == 1);
     assert(f.overflow == 1);
-    assert(f.count == 4);
+    assert(f.total == 4);
 
     assert(f.relativeFrequency(0) == 0.25);
     assert(f.relativeFrequency(1) == 0.25);
@@ -1113,15 +1162,15 @@ unittest
     auto counts = rcslice!uint([2u, 1u]);
     alias F = RelativeFrequencyAccumulator!(typeof(counts), Axis);
     auto f = F(counts, Axis(2, 0.0));
-    assert(f.count == 3);
+    assert(f.total == 3);
 
     // Each accumulator has separate backing storage.
     auto other = F(rcslice!uint([0u, 0u]), Axis(2, 0.0));
     other.put([0.5, 1.5]);
     f.put(other);
     assert(f.counts == [3u, 2u]);
-    assert(f.count == 5);
-    assert(other.count == 2);
+    assert(f.total == 5);
+    assert(other.total == 2);
 
     // Frequencies use the combined counts and total.
     assert(f.relativeFrequency(0) == 0.6);
@@ -1144,7 +1193,7 @@ unittest
     // Two coordinates describe one observation, so the total increases once.
     f.put(0.5, 1.5);
     f.put(-1.0, 1.5);
-    assert(f.count == 2);
+    assert(f.total == 2);
 
     // RelativeFrequency indices refer to ordinary bins, without the storage offset.
     assert(f.relativeFrequency(0, 1) == 0.5);
@@ -1174,13 +1223,13 @@ unittest
     // Sum over every position of axis one. The two retained bins represent
     // all eleven observations, including those outside axis one's interval.
     assert(marginal.counts == [7u, 4u]);
-    assert(marginal.count == 11 && marginal.count == joint.count);
+    assert(marginal.total == 11 && marginal.total == joint.total);
     assert(marginal.relativeFrequency(0) == 7.0 / 11);
     assert(marginal.relativeFrequency!float(1) == 4.0f / 11);
 
     // The marginal maintains its own counts and total after construction.
     marginal.put(1);
-    assert(marginal.count == 12 && joint.count == 11);
+    assert(marginal.total == 12 && joint.total == 11);
     joint.put(0, -1);
     assert(marginal.counts == [7u, 5u]);
 }
@@ -1206,9 +1255,9 @@ unittest
             f.counts[0] = 9;
         }));
         static assert(!__traits(compiles, {
-            f.count = 9;
+            f.total = 9;
         }));
-        assert(f.count == 3);
+        assert(f.total == 3);
         assert(f.counts == [0u, 1u, 2u, 0u, 0u]);
         assert(f.axis.N_bin == 3);
         assert(f.underflow == 0 && f.overflow == 0);
@@ -1218,31 +1267,31 @@ unittest
             uint sum = 0;
             foreach (value; f.counts)
                 sum += value;
-            assert(f.count == sum);
+            assert(f.total == sum);
         }
         checkTotal();
         f.put(0.5);
-        assert(f.count == 4);
+        assert(f.total == 4);
         checkTotal();
         f.put([-1.0, 1.5, 3.0]);
-        assert(f.count == 7);
+        assert(f.total == 7);
         checkTotal();
         f.put([2.0, 2.5].sliced);
         assert(f.counts == [1u, 2u, 3u, 2u, 1u]);
         assert(f.underflow == 1 && f.overflow == 1);
         checkTotal();
         f.put((double[]).init);
-        assert(f.count == 9);
+        assert(f.total == 9);
         checkTotal();
 
         auto other = F(otherCounts, axis);
-        assert(other.count == 0);
+        assert(other.total == 0);
         other.put([-2.0, 0.5, 4.0, 5.0]);
         f.put(other);
         assert(f.counts == [2u, 3u, 3u, 2u, 3u]);
         assert(f.underflow == 2 && f.overflow == 3);
-        assert(f.count == 13);
-        assert(other.count == 4);
+        assert(f.total == 13);
+        assert(other.total == 4);
         checkTotal();
     }
 
@@ -1264,7 +1313,7 @@ unittest
     static assert(!__traits(compiles, f.overflow()));
     static assert(!__traits(compiles, f.underflow()));
     f.put(only(0.5, 1.5, 1.75));
-    assert(f.count == 3 && f.counts == [1, 2]);
+    assert(f.total == 3 && f.counts == [1, 2]);
 
     enum Label { first, second }
     alias Categories = CategoryAxis!(uint, Label, AxisOptions(EnableOverflow(true)));
@@ -1273,7 +1322,7 @@ unittest
     c.put(["second", "unknown"]);
     c.put(Label.second);
     assert(c.counts == [1u, 2u, 1u]);
-    assert(c.overflow == 1 && c.count == 4);
+    assert(c.overflow == 1 && c.total == 4);
 }
 
 // Rejected input must not inflate the total; a partially accepted range stays consistent.
@@ -1289,13 +1338,13 @@ unittest
     alias F = RelativeFrequencyAccumulator!(uint[], Axis);
     auto f = F([0u, 0u], Axis(2, 0.0));
     assertThrown!AssertError(f.put(3.0));
-    assert(f.count == 0 && f.counts == [0u, 0u]);
+    assert(f.total == 0 && f.counts == [0u, 0u]);
     assertThrown!AssertError(f.put([0.5, 3.0]));
-    assert(f.count == 1 && f.counts == [1u, 0u]);
+    assert(f.total == 1 && f.counts == [1u, 0u]);
 
     auto incompatible = F([1u, 0u], Axis(2, 1.0));
     assertThrown!AssertError(f.put(incompatible));
-    assert(f.count == 1 && f.counts == [1u, 0u]);
+    assert(f.total == 1 && f.counts == [1u, 0u]);
     assertThrown!AssertError(F([0u], Axis(2, 0.0)));
 }
 
@@ -1321,12 +1370,12 @@ unittest
     f.put(other);
     assert(f.counts == [1u, 2u, 2u]);
     assert(f.underflow == 1 && f.overflow == 2);
-    assert(f.count == 5);
+    assert(f.total == 5);
 
     f.put(f);
     assert(f.counts == [2u, 4u, 4u]);
     assert(f.underflow == 2 && f.overflow == 4);
-    assert(f.count == 10);
+    assert(f.total == 10);
 }
 
 // Frequencies use current totals, including flows, for all supported output types.
@@ -1387,7 +1436,7 @@ unittest
             assert(f.underflowRelativeFrequency!T().approxEqual(cast(T) 1 / 6));
         }
         // Reading relative frequencies does not mutate either counts or the total.
-        assert(f.count == 6 && f.counts == [1u, 2u, 2u, 0u, 1u]);
+        assert(f.total == 6 && f.counts == [1u, 2u, 2u, 0u, 1u]);
         assert(f.underflow == 1 && f.overflow == 1);
     }
     check([0u, 0u, 0u, 0u, 0u], [0u, 0u, 2u, 0u, 0u]);
@@ -1448,7 +1497,7 @@ unittest
             f.put(other);
             assert(read(f) == cast(double)(2 + 2 * low) / (3 + 2 * low + 2 * high));
             assert(f.counts[hasUnderflow .. $ - hasOverflow] == [1u, 1u, 1u]);
-            assert(f.count == 3 + 2 * low + 2 * high);
+            assert(f.total == 3 + 2 * low + 2 * high);
         }
         check(new uint[3 + hasUnderflow + hasOverflow], new uint[3 + hasUnderflow + hasOverflow]);
         check(rcslice!uint(3 + hasUnderflow + hasOverflow), rcslice!uint(3 + hasUnderflow + hasOverflow));
@@ -1487,7 +1536,7 @@ unittest
                 assert(values.length == source.axis.N_bin);
                 foreach (i; 0 .. values.length)
                 {
-                    if (source.count == 0)
+                    if (source.total == 0)
                         assert(isNaN(values[i]));
                     else
                         assert(values[i] == source.cumulativeRelativeFrequency!T(i));
@@ -1642,7 +1691,7 @@ unittest
     f.put(0.5);
     assertThrown!AssertError(f.relativeFrequency(2));
     assertThrown!AssertError(f.cumulativeRelativeFrequency(2));
-    assert(f.count == 1);
+    assert(f.total == 1);
 }
 
 
@@ -2049,7 +2098,7 @@ struct RelativeFrequencyBinView(Storage, RelativeFrequencyType, BinCoverage cove
         _normalization = normalization;
         auto bins = source.histogramAccumulator.bins!coverage();
         static foreach (i; 0 .. Axis.length)
-            _shape[i] = source.axis!i.N_bin;
+            _shape[i] = ordinaryBinCount(source.axis!i);
         _outerLength = source.counts.length;
         _end = bins.length;
     }
@@ -2071,7 +2120,7 @@ struct RelativeFrequencyBinView(Storage, RelativeFrequencyType, BinCoverage cove
         assert(_source.counts.length == _outerLength,
             "RelativeFrequencyBinView: source storage shape changed while borrowed");
         static foreach (i; 0 .. Axis.length)
-            assert(_source.axis!i.N_bin == _shape[i],
+            assert(ordinaryBinCount(_source.axis!i) == _shape[i],
                 "RelativeFrequencyBinView: source bin count changed while borrowed");
     }
 
@@ -2290,7 +2339,7 @@ unittest
         sum += entry.relativeFrequency;
     }
     // Every stored joint bin appears once, so the corner is counted once.
-    assert(outside == 9 && f.count == 14);
+    assert(outside == 9 && f.total == 14);
     import mir.math.common: approxEqual;
     assert(sum.approxEqual(1.0));
 }
@@ -2323,7 +2372,7 @@ unittest
         }));
         assert(isNaN(bins[0].relativeFrequency));
         f.put([-1.0, 0.5, 0.75, 2.5, 4.0]);
-        assert(bins.length == 3 && f.count == 5);
+        assert(bins.length == 3 && f.total == 5);
         assert(bins[0].count == 2 && bins[0].relativeFrequency == cast(T) 2 / 5);
         assert(bins[1].count == 0 && bins[1].relativeFrequency == 0);
         assert(bins[2].relativeFrequency == cast(T) 1 / 5);
@@ -2331,7 +2380,7 @@ unittest
         auto other = F(otherCounts, Axis(3, 0.0));
         other.put([-1.0, 1.5]);
         f.put(other);
-        assert(f.count == 7 && bins.front.relativeFrequency.approxEqual(cast(T) 2 / 7));
+        assert(f.total == 7 && bins.front.relativeFrequency.approxEqual(cast(T) 2 / 7));
         assert(previous.relativeFrequency == cast(T) 2 / 5);
         previous.count = 100;
         assert(f.counts[1] == 2);
@@ -2593,7 +2642,7 @@ unittest
     f.put(other);
     void read(ref const F source) @safe pure nothrow @nogc
     {
-        assert(source.count == 8);
+        assert(source.total == 8);
         assert(source.underflow == 2 && source.overflow == 2);
         assert(source.underflowRelativeFrequency!float() == 0.25f);
         assert(source.overflowRelativeFrequency!real() == 0.25L);
@@ -2654,7 +2703,7 @@ unittest
     static assert(!__traits(compiles, f.put(0.5, "invalid")));
     static assert(!__traits(compiles, f.put("invalid", 0.5)));
     f.put(-1.0, 0.5, 1.5, 3.0);
-    assert(f.count == 4 && f.counts == [1u, 1u, 1u, 1u]);
+    assert(f.total == 4 && f.counts == [1u, 1u, 1u, 1u]);
     assert(f.underflow == 1 && f.overflow == 1);
     const double first = 0.5;
     immutable double second = 1.5;
@@ -2664,14 +2713,14 @@ unittest
     immutable double[] frozen = [0.5, 1.5];
     f.put(readOnly);
     f.put(frozen);
-    assert(f.count == 10 && f.counts == [1u, 4u, 4u, 1u]);
+    assert(f.total == 10 && f.counts == [1u, 4u, 4u, 1u]);
     enum Label { first, second }
     alias C = CategoryAxis!(uint, Label, AxisOptions(false, true));
     auto categories = RelativeFrequencyAccumulator!(uint[], C)([0u, 0u, 0u], C());
     static assert(__traits(compiles, categories.put(Label.first, "second")));
     static assert(!__traits(compiles, categories.put(Label.first, 0.5)));
     categories.put(Label.first, "second", "unknown");
-    assert(categories.count == 3 && categories.overflow == 1);
+    assert(categories.total == 3 && categories.overflow == 1);
     assert(categories.counts == [1u, 1u, 1u]);
 }
 
@@ -2686,7 +2735,7 @@ unittest
     alias A = IntegralAxis!(uint, double, AxisOptions());
     auto f = RelativeFrequencyAccumulator!(uint[], A)([0u, 0u], A(2, 0.0));
     assertThrown!AssertError(f.put(0.5, double.nan, 1.5));
-    assert(f.count == 1 && f.counts == [1u, 0u]);
+    assert(f.total == 1 && f.counts == [1u, 0u]);
 }
 
 // Joint totals and access agree for nested arrays and noncontiguous slices.
@@ -2705,7 +2754,7 @@ unittest
     initial[1][2] = 3; // Ordinary bin (0, 1).
     auto f = RelativeFrequencyAccumulator!(typeof(initial), A, A)(
         initial, A(2, 0.0), A(2, 0.0));
-    assert(f.count == 5);
+    assert(f.total == 5);
     assert(f.underflow == 2 && f.overflow!1 == 2);
     assert(f.relativeFrequency(0, 1) == 0.6);
     assert(f.axis!1.N_bin == 2);
@@ -2728,20 +2777,20 @@ unittest
     storage[1, 2] = 3;
     auto g = RelativeFrequencyAccumulator!(typeof(storage), A, A)(
         storage, A(2, 0.0), A(2, 0.0));
-    assert(g.count == f.count);
+    assert(g.total == f.total);
     assert(g.relativeFrequency(0, 1) == f.relativeFrequency(0, 1));
 
     // Merge across storage representations, then verify self-merge totals.
     f.put(g);
-    assert(f.count == 10 && f.counts[1][2] == 6);
+    assert(f.total == 10 && f.counts[1][2] == 6);
     assert(f.underflow == 4 && f.overflow!1 == 4);
     g.put(f);
-    assert(g.count == 15 && storage[1, 2] == 9);
+    assert(g.total == 15 && storage[1, 2] == 9);
     f.put(f);
-    assert(f.count == 20 && f.relativeFrequency(0, 1) == 0.6);
+    assert(f.total == 20 && f.relativeFrequency(0, 1) == 0.6);
     const snapshot = f; // Static storage is an independent copy.
     g.put(snapshot);
-    assert(g.count == 35 && g.relativeFrequency(0, 1) == 0.6);
+    assert(g.total == 35 && g.relativeFrequency(0, 1) == 0.6);
 
     static foreach (T; AliasSeq!(float, double, real))
     {
@@ -2776,20 +2825,20 @@ unittest
         assert(isNaN(f.underflowRelativeFrequency!(T, 2)()));
     }
     f.put(0.5, 3.0, -1.0);
-    assert(f.count == 1 && f.counts[0][2][0] == 1);
+    assert(f.total == 1 && f.counts[0][2][0] == 1);
     assert(f.overflow!1 == 1 && f.underflow!2 == 1);
     assert(f.relativeFrequency(0, 0, 0) == 0);
     f.put(1.5, 0.5, 1.5);
-    assert(f.count == 2 && f.relativeFrequency(1, 0, 1) == 0.5);
+    assert(f.total == 2 && f.relativeFrequency(1, 0, 1) == 0.5);
     assertThrown!AssertError(f.put(0.5, 0.5, 9.0));
-    assert(f.count == 2 && f.counts[0][0][0] == 0);
+    assert(f.total == 2 && f.counts[0][0][0] == 0);
     assertThrown!AssertError(f.relativeFrequency(-1, 0, 0));
     assertThrown!AssertError(f.relativeFrequency(0, 2, 0));
 
     auto incompatible = RelativeFrequencyAccumulator!(typeof(storage), A, B, C)(
         storage, A(2, 1.0), B(2, 0.0), C(2, 0.0));
     assertThrown!AssertError(f.put(incompatible));
-    assert(f.count == 2 && f.relativeFrequency(1, 0, 1) == 0.5);
+    assert(f.total == 2 && f.relativeFrequency(1, 0, 1) == 0.5);
 }
 
 // Dynamic nested arrays validate every row and support independent merge sources.
@@ -2803,11 +2852,11 @@ unittest
     alias A = IntegralAxis!(uint, double, AxisOptions());
     alias F = RelativeFrequencyAccumulator!(uint[][], A, A);
     auto f = F([[1u, 2u], [3u, 4u]], A(2, 0.0), A(2, 0.0));
-    assert(f.count == 10 && f.relativeFrequency(1, 0) == 0.3);
+    assert(f.total == 10 && f.relativeFrequency(1, 0) == 0.3);
     f.put(0.5, 1.5);
-    assert(f.count == 11 && f.counts[0][1] == 3);
+    assert(f.total == 11 && f.counts[0][1] == 3);
     f.put(F([[0u, 1u], [0u, 0u]], A(2, 0.0), A(2, 0.0)));
-    assert(f.count == 12 && f.counts[0][1] == 4);
+    assert(f.total == 12 && f.counts[0][1] == 4);
 
     assertThrown!AssertError(F([[0u, 0u], [0u]], A(2, 0.0), A(2, 0.0)));
     alias OtherCount = RelativeFrequencyAccumulator!(ulong[][], A, A);
@@ -2848,7 +2897,7 @@ unittest
             foreach (k; 0 .. 2)
                 f.put(cast(int) i, cast(double) j, cast(int) k);
     f.put(-1, 0.0, 3); // Excluded entry, included in the total.
-    assert(f.count == 13);
+    assert(f.total == 13);
     foreach (flat; 0 .. bins.length)
     {
         auto entry = bins[flat];
@@ -2963,7 +3012,7 @@ unittest
         alias F = RelativeFrequencyAccumulator!(typeof(initial), A);
         auto f = F(initial, A(2, 0.0));
         enum total = 8 + 7 * u + 11 * o;
-        assert(f.count == total && f.storageExtent() == initial.length);
+        assert(f.total == total && f.storageExtent() == initial.length);
         assert(f.relativeFrequency(0) == 3.0 / total);
         assert(f.relativeFrequency(1) == 5.0 / total);
         double[2] result;
@@ -2975,7 +3024,7 @@ unittest
         assert(snapshot.length == 2 && snapshot == result[]);
         const source = f;
         f.put(source);
-        assert(f.count == 2 * total);
+        assert(f.total == 2 * total);
         assert(f.relativeFrequency(0) == 3.0 / total);
         static if (u) assert(f.underflow == 14);
         static if (o) assert(f.overflow == 22);
@@ -3016,12 +3065,12 @@ unittest
         assertThrown!AssertError(all.front.index);
         assertThrown!AssertError(all.back.bin);
         auto other = F([0u, 0u, 0u, 1u], A(2, 0.0));
-        const oldTotal = f.count;
+        const oldTotal = f.total;
         f.put(other);
         assert(all.back.count == before.count + 1);
         assert(all.back.relativeFrequency == cast(T)(before.count + 1) / (oldTotal + 1));
         assert(tail.back.relativeFrequency == all.back.relativeFrequency);
-        assert(all.front.relativeFrequency == cast(T) 1 / f.count);
+        assert(all.front.relativeFrequency == cast(T) 1 / f.total);
     }}
     static assert(!__traits(compiles, f.relativeFrequencyBins!(double, cast(BinCoverage) 99)()));
 }
@@ -3157,14 +3206,14 @@ unittest
         auto f = RelativeFrequencyAccumulator!(typeof(data), A, A)(data, A(1, 0), A(1, 0));
         auto empty = f.marginal!1();
         static assert(is(typeof(empty).CountType == T));
-        assert(empty.count == 0 && empty.counts == [T(0), T(0), T(0)]);
+        assert(empty.total == 0 && empty.counts == [T(0), T(0), T(0)]);
         assert(isNaN(empty.relativeFrequency!T(0)));
         data[0][2] = T(0.25);
         data[1][1] = T(0.5);
         data[2][0] = T(0.25);
         auto filled = RelativeFrequencyAccumulator!(typeof(data), A, A)(data, A(1, 0), A(1, 0));
         auto m = filled.marginal!1();
-        assert(m.count == 1 && m.count == filled.count);
+        assert(m.total == 1 && m.total == filled.total);
         assert(m.underflow == T(0.25) && m.overflow == T(0.25));
         assert(m.relativeFrequency!T(0) == T(0.5));
         static assert(!__traits(compiles, filled.marginal!(0, 0)()));
@@ -3186,9 +3235,9 @@ unittest
         return f.marginal!0();
     }
     auto m = makeMarginal();
-    assert(m.count == 10 && m.counts == [3u, 7u]);
+    assert(m.total == 10 && m.counts == [3u, 7u]);
     m.put(1);
-    assert(m.count == 11 && m.relativeFrequency(1) == 8.0 / 11);
+    assert(m.total == 11 && m.relativeFrequency(1) == 8.0 / 11);
 }
 
 
@@ -3210,12 +3259,12 @@ unittest
     const f = RelativeFrequencyAccumulator!(typeof(storage), A, A, A)(
         storage, A(2, 0), A(3, 10), A(4, 20));
     auto m = f.marginal!(2, 0)();
-    assert(m.count == 300 && m.count == f.count);
+    assert(m.total == 300 && m.total == f.total);
     assert(m.counts.shape == [4, 2]);
     assert(m.axis!0.bin(0).low == 20 && m.axis!1.bin(0).low == 0);
     assert(m.relativeFrequency(0, 0) == 15.0 / 300);
     m.put(20, 0);
-    assert(m.count == 301 && f.count == 300);
+    assert(m.total == 301 && f.total == 300);
 }
 
 
@@ -3232,16 +3281,16 @@ unittest
     {
         auto f = RelativeFrequencyAccumulator!(S, A, A)(storage, A(1, 0), A(1, 0));
         static assert(is(typeof(f).CountType == uint));
-        assert(f.count == 45 && f.relativeFrequency(0, 0) == 5.0 / 45);
+        assert(f.total == 45 && f.relativeFrequency(0, 0) == 5.0 / 45);
         assert(f.underflow == 6 && f.overflow == 24);
         assert(f.underflow!1 == 12 && f.overflow!1 == 18);
         assert(f.underflowRelativeFrequency!(double, 1) == 12.0 / 45);
         const frozen = f;
-        assert(frozen.count == 45 && frozen.relativeFrequency(0, 0) == 5.0 / 45);
+        assert(frozen.total == 45 && frozen.relativeFrequency(0, 0) == 5.0 / 45);
         auto marginal = f.marginal!0();
-        assert(marginal.count == 45 && marginal.counts == [6u, 15u, 24u]);
+        assert(marginal.total == 45 && marginal.counts == [6u, 15u, 24u]);
         marginal.put(0);
-        assert(marginal.count == 46 && f.count == 45);
+        assert(marginal.total == 46 && f.total == 45);
         static assert(!__traits(compiles, f.put(0, 0)));
         static assert(!__traits(compiles, f.put(f)));
         static assert(!__traits(compiles, { f.counts[0][0] = 0; }));
@@ -3269,7 +3318,7 @@ unittest
     {
         auto f = RelativeFrequencyAccumulator!(S, A)(storage, A(2, 0));
         static assert(is(typeof(f).CountType == uint));
-        assert(f.count == 10 && f.underflow == 1 && f.overflow == 4);
+        assert(f.total == 10 && f.underflow == 1 && f.overflow == 4);
         assert(f.relativeFrequency(0) == 0.2 && f.cumulativeRelativeFrequency(1) == 0.6);
         double[2] output;
         f.cumulativeRelativeFrequencies(output[]);
@@ -3417,7 +3466,7 @@ unittest
     auto counts = rcslice!uint(initial[]);
     auto f = RelativeFrequencyAccumulator!(typeof(counts), A)(counts, A(2, 0));
 
-    assert(f.count == 8 && f.relativeFrequency!float(0) == 0.25f);
+    assert(f.total == 8 && f.relativeFrequency!float(0) == 0.25f);
     assert(f.underflowRelativeFrequency() == 0.125 && f.overflowRelativeFrequency() == 0.25);
 
     // Snapshot allocation uses reference-counted storage, not the GC.
@@ -3449,7 +3498,7 @@ unittest
     // remain independent, while a newly borrowed range sees the updated counts.
     f.put(0);
     assert(snapshot[0] == 0.375f && snapshot[1] == 0.75f);
-    assert(f.relativeFrequencyBins().front.count == 3 && f.count == 9);
+    assert(f.relativeFrequencyBins().front.count == 3 && f.total == 9);
 }
 
 // Joint traversal and marginalization also preserve the complete attribute set;
@@ -3468,7 +3517,7 @@ unittest
     f.put(0, 1);
     f.put(1, 0);
     f.put(2, 2);
-    assert(f.count == 4 && f.relativeFrequency!float(0, 1) == 0.25f);
+    assert(f.total == 4 && f.relativeFrequency!float(0, 1) == 0.25f);
     assert(f.underflow!0() == 1 && f.overflow!1() == 1);
 
     auto bins = f.relativeFrequencyBins!(float, BinCoverage.all)();
@@ -3483,9 +3532,9 @@ unittest
     assert(f.bins!(BinCoverage.all)()[6].count == 1);
 
     auto marginal = f.marginal!0();
-    assert(marginal.count == 4 && marginal.relativeFrequency(0) == 0.25);
+    assert(marginal.total == 4 && marginal.relativeFrequency(0) == 0.25);
     marginal.put(0);
-    assert(marginal.count == 5 && f.count == 4);
+    assert(marginal.total == 5 && f.total == 4);
     assert(f.relativeFrequency(0, 1) == 0.25);
 }
 
@@ -3846,6 +3895,31 @@ private void testOrdinaryNormalizationViews()()
         else
             assert(saved.front.cumulativeCount == 2);
     }}
+    // Weighted updates are visible through saved views; cumulative traversal
+    // uses summed weights and must finish before the source changes again.
+    double[4] weightedInitial = [1.0, 0.0, 0.0, 2.0];
+    auto weightedStorage = rcslice!double(weightedInitial[]);
+    auto weighted = RelativeFrequencyAccumulator!(typeof(weightedStorage), A)(weightedStorage, A(2, 0));
+    auto live = weighted.relativeFrequencyBins!(double, BinCoverage.all)();
+    auto conditional = weighted.densityBins!(double, Normalization.ordinary)();
+    weighted.putWeighted(0.5, 0.25);
+    weighted.putWeighted(1.5, 1.25);
+    assert(weighted.total == 5 && live[1].count == 0.5);
+    assert(live[1].relativeFrequency == 0.1);
+    assert(conditional.front.density == 0.25 && conditional.back.density == 0.75);
+    auto prefixes = weighted.cumulativeRelativeFrequencyBins!(double,
+        BinCoverage.all, Normalization.ordinary)();
+    double[4] expected = [0.0, 0.25, 1.0, 1.0];
+    foreach (value; expected)
+    {
+        assert(prefixes.front.cumulativeRelativeFrequency == value);
+        prefixes.popFront();
+    }
+    assert(prefixes.empty);
+    double[2] snapshot;
+    weighted.cumulativeRelativeFrequencies!(Normalization.ordinary)(snapshot[]);
+    assert(snapshot[] == [0.25, 1.0]);
+
     // Joint underflow/overflow combinations are excluded once, not subtracted per axis.
     auto jointCounts = rcslice!uint(3, 3);
     foreach (i; 0 .. 3)
@@ -3859,7 +3933,7 @@ private void testOrdinaryNormalizationViews()()
         assert(entry.relativeFrequency == (included ? 1.0 : 0.0));
         probability += entry.relativeFrequency;
     }
-    assert(probability == 1 && joint.count == 45);
+    assert(probability == 1 && joint.total == 45);
     // Random-access views read current counts and recompute the ordinary total.
     f.put(0.5);
     assert(part.front.relativeFrequency == 0.5f && densities.front.density == 0.5);
@@ -3891,4 +3965,84 @@ version(mir_stat_test)
             testOrdinaryNormalizationViews();
         }
     }
+}
+
+// Rejections preserve both storage and total, even when a later coordinate fails.
+version(mir_stat_test)
+@system pure nothrow @nogc
+unittest
+{
+    import core.exception: AssertError;
+    import mir.stat.descriptive.histogram.axis: IntegralAxis, AxisOptions;
+    static void rejects(scope void delegate() pure nothrow @nogc operation) pure nothrow @nogc
+    {
+        bool rejected;
+        try { operation(); }
+        catch (AssertError) { rejected = true; }
+        assert(rejected);
+    }
+    alias A = IntegralAxis!(uint, double, AxisOptions());
+    double[2][2] storage = 0;
+    auto f = RelativeFrequencyAccumulator!(typeof(storage), A, A)(storage, A(2, 0), A(2, 0));
+    f.putWeighted(0.5, 0.5, 1.5);
+    foreach (weight; [-1.0, double.nan, double.infinity, -double.infinity])
+        rejects(() { f.putWeighted(weight, 0.5, 1.5); });
+    rejects(() { f.putWeighted(1.0, 0.5, 3.0); });
+    rejects(() { f.putWeighted(0.0, 0.5, 3.0); });
+    assert(f.total == 0.5 && f.counts[0][1] == 0.5);
+    assert(f.counts[0][0] == 0 && f.counts[1][0] == 0 && f.counts[1][1] == 0);
+    auto m = f.marginal!1();
+    assert(m.total == 0.5 && m.counts == [0.0, 0.5]);
+    f.put(f);
+    assert(f.total == 1 && f.counts[0][1] == 1);
+
+    uint[2] integral = 0;
+    auto integerWeights = RelativeFrequencyAccumulator!(uint[], A)(integral[], A(2, 0));
+    rejects(() { integerWeights.putWeighted(-1, 0.5); });
+    assert(integerWeights.total == 0 && integerWeights.counts[0] == 0);
+    int[2] signed = 0;
+    auto signedWeights = RelativeFrequencyAccumulator!(int[], A)(signed[], A(2, 0));
+    rejects(() { signedWeights.putWeighted(uint.max, 0.5); });
+    assert(signedWeights.total == 0 && signedWeights.counts[0] == 0);
+}
+
+version(mir_stat_test)
+@safe pure nothrow @nogc
+unittest
+{
+    import std.math: isNaN;
+    import mir.stat.descriptive.histogram.axis: IntegralAxis, AxisOptions;
+    import mir.ndslice.slice: sliced;
+    import mir.ndslice.dynamic: transposed;
+    alias A = IntegralAxis!(uint, double, AxisOptions());
+    double[4] storage = 0;
+    auto counts = storage[].sliced(2, 2).transposed;
+    auto f = RelativeFrequencyAccumulator!(typeof(counts), A, A)(counts, A(2, 0), A(2, 0));
+    f.putWeighted(0.0, 0.5, 1.5);
+    assert(f.total == 0 && isNaN(f.relativeFrequency(0, 1)));
+    f.putWeighted(0.5, 0.5, 1.5);
+    f.putWeighted(1.5, 1.5, 0.5);
+    assert(f.total == 2 && f.relativeFrequency(0, 1) == 0.25);
+    assert(f.density(1, 0) == 0.75);
+}
+
+// Weight precision follows storage, independently of coordinate precision.
+version(mir_stat_test)
+@safe pure nothrow @nogc
+unittest
+{
+    import std.meta: AliasSeq;
+    import mir.stat.descriptive.histogram.axis: IntegralAxis, AxisOptions;
+    alias A = IntegralAxis!(uint, double, AxisOptions());
+    static foreach (T; AliasSeq!(float, double, real))
+    {{
+        T[2] storage = T(0);
+        auto f = RelativeFrequencyAccumulator!(T[], A)(storage[], A(2, 0));
+        const T weight = T(0.5);
+        f.putWeighted(weight, 0.5);
+        f.putWeighted(1, 1.5);
+        static assert(is(typeof(f.total) == T));
+        assert(f.total == T(1.5) && f.counts[0] == weight);
+        assert(f.relativeFrequency(1) == 2.0 / 3);
+    }}
 }
