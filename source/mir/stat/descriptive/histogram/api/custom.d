@@ -570,6 +570,15 @@ unittest
     assertThrown!Exception(makeRelativeFrequencyHistogram(
         allocator, values[].sliced, ThrowingCopyAxis()));
     assert(allocator.allocations == 2 && allocator.releases == 2);
+
+    uint[1] weights = [2];
+    auto weighted = makeWeightedHistogram(allocator, values, weights, ThrowingCopyAxis());
+    assert(weighted.counts[0] == 2);
+    allocator.deallocate(cast(void[]) weighted.counts.field);
+    assert(allocator.allocations == 3 && allocator.releases == 3);
+    assertThrown!Exception(makeWeightedRelativeFrequencyHistogram(
+        allocator, values, weights, ThrowingCopyAxis()));
+    assert(allocator.allocations == 4 && allocator.releases == 4);
 }
 
 /++
@@ -982,4 +991,113 @@ unittest
     assert(strided.histogram.total == 9);
     assert(strided.histogram.axis.N_bin == 3);
     assert(strided.histogram.counts == [0, 3, 3, 3, 0]);
+}
+
+private import mir.stat.descriptive.histogram.api.factory: WeightedHistogramFactory;
+private mixin WeightedHistogramFactory!(allocateCounts, releaseCounts) weightedImplementation;
+
+/++
+Construct a weighted histogram with caller-allocated counts.
+Supply observations, weights, and the usual histogram axis arguments after the allocator.
+Built-in arrays and Mir slices are accepted. Their shapes must match; matching
+multidimensional slices are traversed elementwise into a one-axis histogram.
+Weights must be finite, nonnegative, and implicitly convertible to the counter
+type. Axis templates default to `double` counters, independently of the bin-count
+argument. An explicit counter override or concrete axis retains its counter type.
+Integral counters require integral weights. Counts must accommodate their sums.
+Bin-count rules operate on observations, without weighting the rule itself.
+Axis ownership and explicit count disposal follow $(LREF makeHistogram).
++/
+template makeWeightedHistogram(Options...)
+{
+    auto makeWeightedHistogram(Allocator, Data, Weights, Args...)(ref Allocator allocator,
+        scope auto ref Data data, scope auto ref Weights weights, auto ref Args args)
+    {
+        return weightedImplementation.weightedFactory!Options(allocator, data, weights, args);
+    }
+}
+
+/++
+Construct relative frequencies from weighted counts. Accepts the arguments and
+counter-type choices of $(LREF makeWeightedHistogram). The total is the sum of
+stored weights, including enabled underflow/overflow bins. Normalization and
+subsequent weighted insertion use the existing relative-frequency accumulator.
++/
+template makeWeightedRelativeFrequencyHistogram(Options...)
+{
+    auto makeWeightedRelativeFrequencyHistogram(Allocator, Args...)(ref Allocator allocator, auto ref Args args)
+    {
+        import mir.stat.descriptive.histogram.accumulator: HistogramAccumulator;
+        import mir.stat.descriptive.histogram.relative_frequency: RelativeFrequencyAccumulator;
+        auto h = makeWeightedHistogram!Options(allocator, args);
+        scope(failure) releaseCounts(allocator, h.counts);
+        static if (is(typeof(h) == HistogramAccumulator!Types, Types...))
+            return RelativeFrequencyAccumulator!Types(h.counts, h.axis);
+    }
+}
+
+/// Construct weighted counts and relative frequencies with explicit disposal.
+version(mir_stat_test)
+@system pure nothrow @nogc
+unittest
+{
+    import mir.stat.descriptive.histogram.axis: RegularAxis;
+    import std.experimental.allocator.mallocator: Mallocator;
+    import std.experimental.allocator: dispose;
+    double[3] observations = [0.25, 0.75, 1.25];
+    double[3] weights = [0.5, 1.5, 2.0];
+    auto h = makeWeightedHistogram!RegularAxis(Mallocator.instance, observations, weights, 2u, 0.0, 2.0);
+    scope(exit) Mallocator.instance.dispose(h.counts.field);
+    assert(h.counts == [2.0, 2.0]);
+    auto f = makeWeightedRelativeFrequencyHistogram!RegularAxis(Mallocator.instance, observations, weights, 2u, 0.0, 2.0);
+    // Counts are read-only; cast only for final manual deallocation.
+    scope(exit) Mallocator.instance.deallocate(cast(void[]) f.counts.field);
+    assert(f.total == 4.0);
+    assert(f.relativeFrequency(0) == 0.5);
+}
+
+version(mir_stat_test)
+@safe pure nothrow
+unittest
+{
+    import mir.stat.descriptive.histogram.axis: RegularAxis;
+    import std.experimental.allocator: dispose;
+    SafeAllocator allocator;
+    double[2] data = [0.5, 1.5];
+    uint[2] weights = [1, 2];
+    auto h = makeWeightedHistogram!RegularAxis(allocator, data, weights, 2u, 0.0, 2.0);
+    assert(h.counts == [1, 2]);
+    allocator.dispose(h.counts.field);
+    assert(allocator.allocations == 1 && allocator.releases == 1);
+}
+
+// Reject mismatched shapes before allocation, and release counts on insertion failure.
+version(mir_stat_test)
+@system pure
+unittest
+{
+    import mir.ndslice.slice: sliced;
+    import mir.ndslice.topology: map;
+    import mir.stat.descriptive.histogram.axis: RegularAxis;
+    import std.exception: assertThrown;
+    import core.exception: AssertError;
+    CountingAllocator allocator;
+    double[4] data = [0, 1, 2, 3];
+    double[4] weights = [1, 2, 3, 4];
+    assertThrown!AssertError(makeWeightedHistogram!RegularAxis(
+        allocator, data, weights[0 .. 3], 4u, 0.0, 4.0));
+    assertThrown!AssertError(makeWeightedHistogram!RegularAxis(
+        allocator, data[].sliced(2, 2), weights[].sliced(1, 4), 4u, 0.0, 4.0));
+    assert(allocator.allocations == 0 && allocator.releases == 0);
+    static double failOnTwo(double x) @safe pure
+    {
+        if (x == 2) throw new Exception("weighted insertion failure");
+        return x;
+    }
+    assertThrown!Exception(makeWeightedHistogram!RegularAxis(
+        allocator, data[].sliced.map!failOnTwo, weights, 4u, 0.0, 4.0));
+    assert(allocator.allocations == 1 && allocator.releases == 1);
+    assertThrown!Exception(makeWeightedRelativeFrequencyHistogram!RegularAxis(
+        allocator, data, weights[].sliced.map!failOnTwo, 4u, 0.0, 4.0));
+    assert(allocator.allocations == 2 && allocator.releases == 2);
 }

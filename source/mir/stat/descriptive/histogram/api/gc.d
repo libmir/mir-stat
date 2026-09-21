@@ -366,3 +366,82 @@ unittest
     assert(strided.axis.N_bin == 3);
     assert(strided.counts == [0, 3, 3, 3, 0]);
 }
+
+private import mir.stat.descriptive.histogram.api.factory: WeightedHistogramFactory;
+private mixin WeightedHistogramFactory!(allocateCounts) weightedImplementation;
+
+/++
+Construct a weighted histogram with garbage-collected counts.
+Supply observations, weights, and the usual histogram axis arguments.
+Built-in arrays and Mir slices are accepted. Their shapes must match; matching
+multidimensional slices are traversed elementwise into a one-axis histogram.
+Weights must be finite, nonnegative, and implicitly convertible to the counter
+type. Axis templates default to `double` counters, independently of the bin-count
+argument. An explicit counter override or concrete axis retains its counter type.
+Integral counters require integral weights. Counts must accommodate their sums.
+Bin-count rules operate on observations, without weighting the rule itself.
+Axis ownership and count ownership follow $(LREF histogram).
++/
+template weightedHistogram(Options...)
+{
+    auto weightedHistogram(Data, Weights, Args...)(
+        scope auto ref Data data, scope auto ref Weights weights, auto ref Args args)
+    {
+        NoAllocationContext context;
+        return weightedImplementation.weightedFactory!Options(context, data, weights, args);
+    }
+}
+
+/++
+Construct relative frequencies from weighted counts. Accepts the arguments and
+counter-type choices of $(LREF weightedHistogram). The total is the sum of
+stored weights, including enabled underflow/overflow bins. Normalization and
+subsequent weighted insertion use the existing relative-frequency accumulator.
++/
+template weightedRelativeFrequencyHistogram(Options...)
+{
+    auto weightedRelativeFrequencyHistogram(Args...)(auto ref Args args)
+    {
+        import mir.stat.descriptive.histogram.accumulator: HistogramAccumulator;
+        import mir.stat.descriptive.histogram.relative_frequency: RelativeFrequencyAccumulator;
+        auto h = weightedHistogram!Options(args);
+        static if (is(typeof(h) == HistogramAccumulator!Types, Types...))
+            return RelativeFrequencyAccumulator!Types(h.counts, h.axis);
+    }
+}
+
+/// Construct weighted counts and relative frequencies from built-in arrays.
+version(mir_stat_test)
+@safe pure nothrow
+unittest
+{
+    import mir.stat.descriptive.histogram.axis: RegularAxis;
+    double[3] observations = [0.25, 0.75, 1.25];
+    double[3] weights = [0.5, 1.5, 2.0];
+    auto h = weightedHistogram!RegularAxis(observations, weights, 2u, 0.0, 2.0);
+    assert(h.counts == [2.0, 2.0]);
+    auto f = weightedRelativeFrequencyHistogram!RegularAxis(observations, weights, 2u, 0.0, 2.0);
+    assert(f.total == 4.0);
+    assert(f.relativeFrequency(0) == 0.5);
+}
+
+version(mir_stat_test)
+@system pure nothrow
+unittest
+{
+    import core.exception: AssertError;
+    import mir.stat.descriptive.histogram.axis: RegularAxis;
+    double[1] data = [0.5];
+    double[1] weights;
+    foreach (weight; [-1.0, double.nan, double.infinity, -double.infinity])
+    {
+        weights[0] = weight;
+        bool rejected;
+        try { auto h = weightedHistogram!RegularAxis(data, weights, 2u, 0.0, 2.0); }
+        catch (AssertError) { rejected = true; }
+        assert(rejected);
+    }
+    weights[0] = 0;
+    auto f = weightedRelativeFrequencyHistogram!RegularAxis(data, weights, 2u, 0.0, 2.0);
+    assert(f.total == 0 && f.counts == [0, 0]);
+}

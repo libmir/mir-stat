@@ -782,3 +782,219 @@ unittest
     assert(strided.axis.N_bin == 3);
     assert(strided.counts == [0, 3, 3, 3, 0]);
 }
+
+private import mir.stat.descriptive.histogram.api.factory: WeightedHistogramFactory;
+private mixin WeightedHistogramFactory!(allocateRC) weightedImplementation;
+
+/++
+Construct a weighted histogram with reference-counted counts.
+Supply observations, weights, and the usual histogram axis arguments.
+Built-in arrays and Mir slices are accepted. Their shapes must match; matching
+multidimensional slices are traversed elementwise into a one-axis histogram.
+Weights must be finite, nonnegative, and implicitly convertible to the counter
+type. Axis templates default to `double` counters, independently of the bin-count
+argument. An explicit counter override or concrete axis retains its counter type.
+Integral counters require integral weights. Counts must accommodate their sums.
+Bin-count rules operate on observations, without weighting the rule itself.
+Axis ownership and count ownership follow $(LREF rchistogram).
++/
+template rcWeightedHistogram(Options...)
+{
+    auto rcWeightedHistogram(Data, Weights, Args...)(
+        scope auto ref Data data, scope auto ref Weights weights, auto ref Args args)
+    {
+        NoAllocationContext context;
+        return weightedImplementation.weightedFactory!Options(context, data, weights, args);
+    }
+}
+
+/++
+Construct relative frequencies from weighted counts. Accepts the arguments and
+counter-type choices of $(LREF rcWeightedHistogram). The total is the sum of
+stored weights, including enabled underflow/overflow bins. Normalization and
+subsequent weighted insertion use the existing relative-frequency accumulator.
++/
+template rcWeightedRelativeFrequencyHistogram(Options...)
+{
+    auto rcWeightedRelativeFrequencyHistogram(Args...)(auto ref Args args)
+    {
+        import mir.stat.descriptive.histogram.accumulator: HistogramAccumulator;
+        import mir.stat.descriptive.histogram.relative_frequency: RelativeFrequencyAccumulator;
+        auto h = rcWeightedHistogram!Options(args);
+        static if (is(typeof(h) == HistogramAccumulator!Types, Types...))
+            return RelativeFrequencyAccumulator!Types(h.counts, h.axis);
+    }
+}
+
+/// Integral weights still default to double counters, allowing fractional updates later.
+version(mir_stat_test)
+@safe pure nothrow @nogc
+unittest
+{
+    import mir.stat.descriptive.histogram.axis: RegularAxis, AxisOptions;
+    double[3] observations = [0.25, 0.75, 1.25];
+    uint[3] weights = [1, 3, 2];
+    auto h = rcWeightedHistogram!RegularAxis(observations, weights, 2u, 0.0, 2.0);
+    static assert(is(h.CountType == double)); // 2u selects the number of bins only.
+    assert(h.counts == [4.0, 2.0]);
+    h.putWeighted(0.5, 1.25);
+    assert(h.counts == [4.0, 2.5]);
+}
+
+/// Override the counter type when building an axis from a template.
+version(mir_stat_test)
+@safe pure nothrow @nogc
+unittest
+{
+    import mir.ndslice.slice: sliced;
+    import mir.stat.descriptive.histogram.axis: RegularAxis, AxisOptions;
+    double[3] observations = [0.25, 0.75, 1.25];
+    double[3] weights = [0.5, 1.5, 2.0];
+    auto h = rcWeightedHistogram!(real, RegularAxis)(
+        observations[].sliced, weights[].sliced, 2u, 0.0, 2.0);
+    static assert(is(h.CountType == real));
+    assert(h.counts == [2.0L, 2.0L]);
+}
+
+/// A supplied axis keeps its counter type: use integral counters for integral weights.
+version(mir_stat_test)
+@safe pure nothrow @nogc
+unittest
+{
+    import mir.stat.descriptive.histogram.axis: RegularAxis, AxisOptions;
+    double[3] observations = [0.25, 0.75, 1.25];
+    uint[3] weights = [1, 3, 2];
+    auto axis = RegularAxis!(uint, double, AxisOptions())(2, 0.0, 2.0);
+    auto h = rcWeightedHistogram(observations[], weights[], axis);
+    static assert(is(h.CountType == uint));
+    assert(h.counts == [4u, 2]);
+    // Fractional weights require floating-point counters, as in the first example.
+    static assert(!__traits(compiles, h.putWeighted(0.5, 0.25)));
+}
+
+/// Relative frequencies divide bin weights by their total, not by the number of observations.
+version(mir_stat_test)
+@safe pure nothrow @nogc
+unittest
+{
+    import mir.stat.descriptive.histogram.axis: RegularAxis, AxisOptions;
+    double[3] observations = [0.25, 0.75, 1.25];
+    double[3] weights = [0.5, 1.5, 2.0];
+    auto f = rcWeightedRelativeFrequencyHistogram!RegularAxis(
+        observations, weights, 2u, 0.0, 2.0);
+    assert(f.total == 4.0);
+    assert(f.relativeFrequency(0) == 0.5);
+    assert(f.relativeFrequency(1) == 0.5);
+}
+
+// Weighted construction preserves logical pairing, qualifiers, and axis options.
+version(mir_stat_test)
+@safe pure nothrow @nogc
+unittest
+{
+    import mir.ndslice.slice: sliced;
+    import mir.ndslice.dynamic: transposed;
+    import mir.stat.descriptive.histogram.axis: RegularAxis, VariableAxis, TransformAxis, AxisOptions;
+    import mir.stat.descriptive.histogram.relative_frequency: Normalization;
+    double[4] values = [-1, 0.5, 1.5, 2];
+    double[4] weights = [1, 2, 3, 4];
+    const data = values[].sliced(2, 2).transposed;
+    const masses = weights[].sliced(2, 2).transposed;
+    enum options = AxisOptions(false, true, true);
+    auto f = rcWeightedRelativeFrequencyHistogram!(RegularAxis, options)(data, masses, 2u, 0.0, 2.0);
+    assert(f.counts == [1, 2, 3, 4]);
+    assert(f.total == 10);
+    assert(f.relativeFrequency(0) == 0.2);
+    assert(f.relativeFrequency!(double, Normalization.ordinary)(0) == 0.4);
+    double[2] cumulative;
+    f.cumulativeRelativeFrequencies(cumulative[]);
+    assert(cumulative == [0.3, 0.6]);
+    auto column = rcWeightedHistogram!(RegularAxis, options)(data[0], masses[0], 2u, 0.0, 2.0);
+    assert(column.counts == [1, 0, 3, 0]);
+
+    const(double)[3] edges = [0, 1, 2];
+    auto variable = rcWeightedHistogram!VariableAxis(values[1 .. 3], weights[1 .. 3], edges[].sliced);
+    assert(variable.counts == [2, 3]);
+    static assert(is(variable.CountType == double));
+
+    double[2] powers = [1, 4];
+    auto transformed = rcWeightedHistogram!(TransformAxis, "log2(a)", "exp2(a)")(
+        powers, weights[1 .. 3], 2u, 1.0, 16.0);
+    assert(transformed.counts == [2, 3]);
+
+    double[0] empty;
+    auto zero = rcWeightedRelativeFrequencyHistogram!RegularAxis(empty, empty, 2u, 0.0, 2.0);
+    assert(zero.counts == [0, 0] && zero.total == 0);
+    import std.math: isNaN;
+    assert(isNaN(zero.relativeFrequency(0)));
+    const(uint)[2] integralWeights = [1, 2];
+    auto integral = rcWeightedHistogram!(uint, RegularAxis)(powers, integralWeights, 2u, 0.0, 8.0);
+    static assert(is(integral.CountType == uint));
+    assert(integral.counts == [1, 2]);
+}
+
+// Temporary inputs may disappear; the result owns its counts, including under DIP1000.
+version(mir_stat_test)
+@safe pure nothrow @nogc
+unittest
+{
+    import mir.stat.descriptive.histogram.axis: RegularAxis;
+    static auto build() @safe pure nothrow @nogc
+    {
+        const(double)[2] data = [0.5, 1.5];
+        const(double)[2] weights = [0.5, 1.5];
+        return rcWeightedRelativeFrequencyHistogram!RegularAxis(data, weights, 2u, 0.0, 2.0);
+    }
+    auto f = build();
+    assert(f.counts == [0.5, 1.5] && f.total == 2);
+}
+
+version(mir_stat_test)
+@safe pure nothrow @nogc
+unittest
+{
+    import mir.stat.descriptive.histogram.axis: RegularAxis, IntegralAxis, CategoryAxis, EnumAxis, AxisOptions;
+    import mir.ndslice.slice: sliced;
+    double[2] data = [0.5, 1.5];
+    float[2] weights = [0.5f, 1.5f];
+    alias Axis = RegularAxis!(float, double, AxisOptions());
+    auto concrete = rcWeightedHistogram!Axis(data, weights, 2f, 0.0, 2.0);
+    auto instance = rcWeightedHistogram(data, weights, Axis(2, 0, 2));
+    static assert(is(concrete.CountType == float));
+    assert(concrete.counts == instance.counts && instance.counts == [0.5f, 1.5f]);
+    double[2] wideWeights = [0.5, 1.5];
+    static assert(!__traits(compiles, rcWeightedHistogram(data, wideWeights, RegularAxis!(uint, double, AxisOptions())(2, 0, 2))));
+    static assert(!__traits(compiles, rcWeightedHistogram!RegularAxis(
+        data[].sliced(1, 2), weights, 2u, 0.0, 2.0)));
+    auto integral = rcWeightedHistogram!IntegralAxis(data, weights, 2u, 0.0);
+    assert(integral.counts == [0.5, 1.5]);
+    static uint two(S)(S samples) @safe pure nothrow @nogc { return 2; }
+    auto rule = rcWeightedHistogram!(RegularAxis, two)(data, weights, 0.0, 2.0);
+    assert(rule.counts == [0.5, 1.5]);
+    enum Label { first, second }
+    Label[2] labels = [Label.first, Label.second];
+    auto enumerated = rcWeightedHistogram!EnumAxis(labels, weights);
+    auto categorized = rcWeightedHistogram!CategoryAxis(labels, weights);
+    assert(enumerated.counts == [0.5, 1.5]);
+    assert(categorized.counts == [0.5, 1.5]);
+}
+
+version(mir_stat_test_lifetime)
+@safe pure nothrow @nogc
+unittest
+{
+    import mir.ndslice.slice: sliced;
+    import mir.stat.descriptive.histogram.axis: VariableAxis;
+    static assert(!__traits(compiles, () @safe {
+        double[3] edges = [0, 1, 2];
+        double[1] data = [0.5];
+        double[1] weights = [1];
+        return rcWeightedHistogram!VariableAxis(data, weights, edges[].sliced);
+    }));
+    static assert(!__traits(compiles, () @safe {
+        double[3] edges = [0, 1, 2];
+        double[1] data = [0.5];
+        double[1] weights = [1];
+        return rcWeightedRelativeFrequencyHistogram!VariableAxis(data, weights, edges[].sliced);
+    }));
+}

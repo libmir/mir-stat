@@ -22,14 +22,15 @@ module mir.stat.descriptive.histogram.api.factory;
 
 // Storage ownership stays with the caller. Validate before writing so a bad
 // extent cannot clear unrelated storage before the constructor rejects it.
-package auto initializeHistogram(Storage, Axis, Data)(Storage counts, Axis axis, Data data)
+package auto initializeHistogram(bool insert = true, Storage, Axis, Data)(Storage counts, Axis axis, Data data)
 {
     import mir.stat.descriptive.histogram.accumulator: HistogramAccumulator;
     auto h = HistogramAccumulator!(Storage, Axis)(counts, axis);
     // Floating-point .init is NaN; every counter must instead start at zero.
     foreach (ref count; h.counts)
         count = 0;
-    h.put(data);
+    static if (insert)
+        h.put(data);
     return h;
 }
 
@@ -37,7 +38,7 @@ package auto initializeHistogram(Storage, Axis, Data)(Storage counts, Axis axis,
 package struct NoAllocationContext {}
 
 // Shared overloads keep allocation policy independent of axis construction.
-package mixin template HistogramFactory(alias allocate, alias release = null)
+package mixin template HistogramFactory(alias allocate, alias release = null, bool insert = true)
 {
     import mir.ndslice.slice: Slice, SliceKind;
     import mir.stat.descriptive.histogram.accumulator: HistogramAccumulator;
@@ -74,7 +75,7 @@ package mixin template HistogramFactory(alias allocate, alias release = null)
         static if (!is(typeof(release) == typeof(null)))
             scope(failure) release(context, counts);
         import mir.stat.descriptive.histogram.api.factory: initializeHistogram;
-        return initializeHistogram(counts, axis, x);
+        return initializeHistogram!insert(counts, axis, x);
     }
 
     /++
@@ -2420,4 +2421,78 @@ package void testPercentogramIntervals(alias factory, alias release = null)()
         assert(isNaN(histogramOf(result).density!(double, Normalization.ordinary)(0)));
     }
     assert(data[] == [0.0, 1, 2, 3, 4, 5, 6, 7, 8]);
+}
+
+// Reuse axis dispatch without first performing unweighted insertion. Observations
+// remain available to bin-count rules; only the final insertion step differs.
+package mixin template WeightedHistogramFactory(alias allocate, alias release = null)
+{
+    private mixin HistogramFactory!(allocate, release, false) emptyImplementation;
+
+    template weightedFactory(Options...)
+    {
+        auto weightedFactory(Context, Data, Weights, Args...)(
+            ref Context context, scope auto ref Data data,
+            scope auto ref Weights weights, auto ref Args args)
+        {
+            import mir.ndslice.slice: isSlice, sliced;
+            static if (isSlice!Data)
+                scope auto observations = data.lightScope;
+            else
+                scope auto observations = data[].sliced;
+            static if (isSlice!Weights)
+                scope auto masses = weights.lightScope;
+            else
+                scope auto masses = weights[].sliced;
+            static assert(observations.N == masses.N,
+                "Weighted histogram observations and weights must have matching ranks");
+            assert(observations.shape == masses.shape,
+                "Weighted histogram observations and weights must have matching shapes");
+
+            import mir.stat.descriptive.histogram.api.factory: insertWeighted;
+            import mir.stat.descriptive.histogram.axis: VariableAxis, EnumAxis;
+            import std.traits: Unqual, isNumeric;
+            import std.meta: AliasSeq;
+            // Expand the counter and coordinate types explicitly: a single floating
+            // type in the existing overloads can mean either of those two choices.
+            static if (Options.length && __traits(isTemplate, Options[0]))
+                alias Selected = AliasSeq!(double, Options);
+            else
+                alias Selected = Options;
+            static if (Selected.length == 2 && __traits(isSame, Selected[1], EnumAxis))
+            {
+                alias Axis = EnumAxis!(Selected[0], Unqual!(typeof(observations).DeepElement));
+                auto h = emptyImplementation.factory!Axis(context, observations, args);
+            }
+            else static if (Selected.length >= 2 && __traits(isTemplate, Selected[1]) &&
+                !__traits(isSame, Selected[1], VariableAxis))
+            {
+                static if (Args.length && isNumeric!(Args[$ - 1]))
+                    alias Coordinate = Unqual!(Args[$ - 1]);
+                else
+                    alias Coordinate = Unqual!(typeof(observations).DeepElement);
+                auto h = emptyImplementation.factory!(Selected[0], Coordinate, Selected[1 .. $])(
+                    context, observations, args);
+            }
+            else
+                auto h = emptyImplementation.factory!Selected(context, observations, args);
+            static if (!is(typeof(release) == typeof(null)))
+                scope(failure) release(context, h.counts);
+            insertWeighted(h, observations, masses);
+            return h;
+        }
+    }
+}
+
+package void insertWeighted(H, Data, Weights)(ref H h, scope Data data, scope Weights weights)
+{
+    // Recursing through matching shapes preserves logical pairing for arbitrary
+    // strides, without allocating flattened copies or truncating either input.
+    foreach (i; 0 .. data.length)
+    {
+        static if (Data.N == 1)
+            h.putWeighted(weights[i], data[i]);
+        else
+            insertWeighted(h, data[i], weights[i]);
+    }
 }

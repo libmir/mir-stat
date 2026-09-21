@@ -467,7 +467,7 @@ struct RelativeFrequencyAccumulator(Storage, Axis...)
         static if (includeUnderflow!AxisType && normalization == Normalization.all)
             cumulative = histogramAccumulator.underflow;
         const denominator = normalizationCount(normalization);
-        foreach (i; 0 .. axis.N_bin)
+        foreach (size_t i; 0 .. cast(size_t) axis.N_bin)
         {
             cumulative += histogramAccumulator.counts[i + includeUnderflow!AxisType];
             destination[i] = divideCount!RelativeFrequencyType(cumulative, denominator);
@@ -479,7 +479,7 @@ struct RelativeFrequencyAccumulator(Storage, Axis...)
     {
         CountType result = 0;
         enum offset = includeUnderflow!(Axis[depth]);
-        foreach (i; 0 .. histogramAccumulator.axis[depth].N_bin)
+        foreach (size_t i; 0 .. cast(size_t) histogramAccumulator.axis[depth].N_bin)
         {
             static if (depth + 1 == N)
                 result += storage[i + offset];
