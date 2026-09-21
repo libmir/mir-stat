@@ -672,7 +672,6 @@ auto makePercentogram(Allocator, Data, P)(ref Allocator allocator,
         auto axis = variableAxis!(AxisOptions(false, true, true))(edges[0 .. distinct]);
         auto h = makeHistogram(allocator,
             observations.as!(DeepElementType!(typeof(edges))), axis);
-        scope(failure) allocator.dispose(h.counts.field);
         static if (is(typeof(h) == HistogramAccumulator!Args, Args...))
         {
             auto f = RelativeFrequencyAccumulator!Args(h.counts, h.axis);
