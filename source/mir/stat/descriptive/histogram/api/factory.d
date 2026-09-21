@@ -2148,6 +2148,44 @@ private mixin template ConstFactoryTests(alias make, bool relative)
     }
 }
 
+// Compute ceil(cuberoot(n)) exactly, without floating-point rounding at cubes
+// or overflow from cubing a candidate. This is a sample-size heuristic.
+package size_t defaultPercentogramBinCount(size_t n) @safe pure nothrow @nogc
+{
+    assert(n > 0, "percentogram: observations must be nonempty");
+    size_t low = 1;
+    size_t high = size_t(1) << ((size_t.sizeof * 8 + 2) / 3);
+    while (low < high)
+    {
+        const middle = low + (high - low) / 2;
+        // middle^3 >= n is equivalent to middle > (n - 1) / middle^2.
+        if (middle > (n - 1) / middle / middle)
+            high = middle;
+        else
+            low = middle + 1;
+    }
+    return low;
+}
+
+version(mir_stat_test)
+@safe pure nothrow @nogc
+unittest
+{
+    assert(defaultPercentogramBinCount(1) == 1);
+    assert(defaultPercentogramBinCount(2) == 2);
+    foreach (size_t root; [2, 5, 10, 100, 1000])
+    {
+        const cube = root * root * root;
+        assert(defaultPercentogramBinCount(cube - 1) == root);
+        assert(defaultPercentogramBinCount(cube) == root);
+        assert(defaultPercentogramBinCount(cube + 1) == root + 1);
+    }
+    static if (size_t.sizeof == 8)
+        assert(defaultPercentogramBinCount(size_t.max) == 2_642_246);
+    else
+        assert(defaultPercentogramBinCount(size_t.max) == 1_626);
+}
+
 // Quantile and count allocation policies stay paired: both results own their storage.
 package auto buildPercentogram(alias allocate, alias quantiles, alias histogram,
     Data, P)(scope auto ref Data data, scope auto ref P probabilities)

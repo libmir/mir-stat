@@ -592,6 +592,10 @@ on relative-frequency, density, or cumulative accessors to exclude them from the
 probability distribution. With ties, actual retained counts can differ from the
 requested probability span.
 
+Omitting probabilities requests `ceil(cuberoot(n))` ordinary bins for `n` observations,
+with equally spaced probabilities from zero to one. This is a sample-size heuristic.
+Tied boundaries can reduce the number of ordinary bins.
+
 Params:
     data = one-dimensional observations, as an array or slice
     probabilities = positive bin count or probability array/slice
@@ -603,21 +607,36 @@ auto rcpercentogram(Data, P)(scope auto ref Data data, scope auto ref P probabil
     return buildPercentogram!(allocateRC, rcquantile, rcRelativeFrequencyHistogram)(data, probabilities);
 }
 
-/// Construct quartile bins and use density as bar height.
+/// ditto
+auto rcpercentogram(Data)(scope auto ref Data data)
+{
+    import mir.stat.descriptive.histogram.api.factory: defaultPercentogramBinCount;
+    return rcpercentogram(data, defaultPercentogramBinCount(data.length));
+}
+
+/// Choose the bin count from the sample size and use density as bar height.
 version(mir_stat_test)
 @safe pure nothrow @nogc
 unittest
 {
     double[8] data = [0, 1, 2, 3, 4, 8, 12, 16];
-    auto p = rcpercentogram(data, 4);
-    assert(p.count == 8 && p.counts == [0, 2, 2, 2, 2, 0]);
-    assert(p.relativeFrequency(0) == 0.25);
-    // The first bin spans [0, 1.75); height times width equals its probability.
-    assert(p.density(0) == 0.25 / 1.75);
+    // Eight observations request two bins, with probabilities [0, 0.5, 1].
+    auto p = rcpercentogram(data);
+    assert(p.count == 8 && p.counts == [0, 4, 4, 0]);
+    assert(p.relativeFrequency(0) == 0.5);
+    // The first bin spans [0, 3.5); height times width equals its probability.
+    assert(p.density(0) == 0.5 / 3.5);
     // Construction preserves the observations; later updates keep the same bins.
     assert(data[] == [0.0, 1, 2, 3, 4, 8, 12, 16]);
     p.put(1.0);
-    assert(p.count == 9 && p.counts[1] == 3);
+    assert(p.count == 9 && p.counts[1] == 5);
+
+    // Override the default with four ordinary bins: probabilities [0, 0.25, 0.5, 0.75, 1].
+    auto quartiles = rcpercentogram(data, 4);
+    // The first and last counters are underflow and overflow, both zero here.
+    assert(quartiles.counts == [0, 2, 2, 2, 2, 0]);
+    assert(quartiles.relativeFrequency(0) == 0.25);
+    assert(quartiles.density(0) == 0.25 / 1.75);
 }
 
 /// Select probability intervals explicitly using Mir slices.
@@ -737,4 +756,29 @@ unittest
 {
     import mir.stat.descriptive.histogram.api.factory: testPercentogramIntervals;
     testPercentogramIntervals!rcpercentogram();
+}
+
+// Sample-size defaults match explicit probabilities, including tied boundaries.
+version(mir_stat_test)
+@safe pure nothrow @nogc
+unittest
+{
+    import mir.ndslice.slice: sliced;
+    const double[8] data = [0, 0, 0, 0, 0, 2, 3, 4];
+    const double[3] levels = [0, 0.5, 1];
+    auto automatic = rcpercentogram(data[].sliced);
+    auto explicit = rcpercentogram(data, levels);
+    assert(automatic.counts == explicit.counts);
+    assert(automatic.axis.N_bin == 1);
+    foreach (i; 0 .. automatic.axis.N_bin)
+        assert(automatic.density(i) == explicit.density(i));
+    // Use the logical length of a strided view: nine observations request three bins.
+    import mir.ndslice.topology: stride;
+    double[18] backing;
+    foreach (i, ref value; backing)
+        value = i;
+    auto strided = rcpercentogram(backing[].sliced.stride(2));
+    assert(strided.count == 9);
+    assert(strided.axis.N_bin == 3);
+    assert(strided.counts == [0, 3, 3, 3, 0]);
 }

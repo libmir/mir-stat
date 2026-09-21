@@ -627,6 +627,10 @@ Deallocation must not throw.
 Only the active boundary slice is compacted: the full original allocation is
 retained for cleanup. Attributes depend on the allocator.
 
+Omitting probabilities requests `ceil(cuberoot(n))` ordinary bins for `n` observations,
+with equally spaced probabilities from zero to one. This is a sample-size heuristic.
+Tied boundaries can reduce the number of ordinary bins.
+
 Params:
     allocator = allocator providing allocation and nonthrowing deallocation
     data = one-dimensional observations, as an array or Mir slice
@@ -677,17 +681,33 @@ auto makePercentogram(Allocator, Data, P)(ref Allocator allocator,
     }
 }
 
-/// Allocate quartile bins without the GC and explicitly release the result.
+/// ditto
+auto makePercentogram(Allocator, Data)(ref Allocator allocator, scope auto ref Data data)
+{
+    import mir.stat.descriptive.histogram.api.factory: defaultPercentogramBinCount;
+    return makePercentogram(allocator, data, defaultPercentogramBinCount(data.length));
+}
+
+/// Choose the bin count from the sample size without the GC; explicitly release the result.
 version(mir_stat_test)
 @system pure nothrow @nogc
 unittest
 {
     import std.experimental.allocator.mallocator: Mallocator;
     double[8] data = [0, 1, 2, 3, 4, 8, 12, 16];
-    auto p = makePercentogram(Mallocator.instance, data, 4);
+    // Eight observations request two bins, with probabilities [0, 0.5, 1].
+    auto p = makePercentogram(Mallocator.instance, data);
     scope(exit) p.dispose(Mallocator.instance);
-    assert(p.histogram.count == 8 && p.histogram.counts == [0, 2, 2, 2, 2, 0]);
-    assert(p.histogram.density(0) == 0.25 / 1.75);
+    assert(p.histogram.count == 8 && p.histogram.counts == [0, 4, 4, 0]);
+    assert(p.histogram.density(0) == 0.5 / 3.5);
+
+    // Override the default with four ordinary bins: probabilities [0, 0.25, 0.5, 0.75, 1].
+    auto quartiles = makePercentogram(Mallocator.instance, data, 4);
+    scope(exit) quartiles.dispose(Mallocator.instance);
+    // The first and last counters are underflow and overflow, both zero here.
+    assert(quartiles.histogram.counts == [0, 2, 2, 2, 2, 0]);
+    assert(quartiles.histogram.relativeFrequency(0) == 0.25);
+    assert(quartiles.histogram.density(0) == 0.25 / 1.75);
 }
 
 /// Mir slices and built-in dynamic arrays support explicit probability intervals.
@@ -934,4 +954,33 @@ unittest
 {
     import mir.stat.descriptive.histogram.api.factory: testPercentogramIntervals;
     testPercentogramIntervals!(customPercentogramIntervalFactory, releasePercentogramForTests)();
+}
+
+// Sample-size defaults match explicit probabilities, including tied boundaries.
+version(mir_stat_test)
+@system pure nothrow @nogc
+unittest
+{
+    import mir.ndslice.slice: sliced;
+    import std.experimental.allocator.mallocator: Mallocator;
+    const double[8] data = [0, 0, 0, 0, 0, 2, 3, 4];
+    const double[3] levels = [0, 0.5, 1];
+    auto automatic = makePercentogram(Mallocator.instance, data[].sliced);
+    scope(exit) automatic.dispose(Mallocator.instance);
+    auto explicit = makePercentogram(Mallocator.instance, data, levels);
+    scope(exit) explicit.dispose(Mallocator.instance);
+    assert(automatic.histogram.counts == explicit.histogram.counts);
+    assert(automatic.histogram.axis.N_bin == 1);
+    foreach (i; 0 .. automatic.histogram.axis.N_bin)
+        assert(automatic.histogram.density(i) == explicit.histogram.density(i));
+    // Use the logical length of a strided view: nine observations request three bins.
+    import mir.ndslice.topology: stride;
+    double[18] backing;
+    foreach (i, ref value; backing)
+        value = i;
+    auto strided = makePercentogram(Mallocator.instance, backing[].sliced.stride(2));
+    scope(exit) strided.dispose(Mallocator.instance);
+    assert(strided.histogram.count == 9);
+    assert(strided.histogram.axis.N_bin == 3);
+    assert(strided.histogram.counts == [0, 3, 3, 3, 0]);
 }
