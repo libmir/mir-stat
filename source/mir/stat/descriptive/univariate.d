@@ -4070,7 +4070,13 @@ private auto dispatchQuantile(F, QuantileAlgo algorithm, bool modify,
 {
     import std.traits: CommonType, Unqual;
     import mir.ndslice.slice: sliced;
-    static if (P.length == 1)
+    static if (P.length == 0)
+    {
+        const double[5] levels = [0, 0.25, 0.5, 0.75, 1];
+        return allocatedQuantile!(F, algorithm, modify, allocation)(
+            context, data, levels[].sliced);
+    }
+    else static if (P.length == 1)
     {
         static if (isFloatingPoint!(Unqual!(P[0])))
             return allocatedQuantile!(F, algorithm, modify, allocation)(
@@ -4159,6 +4165,8 @@ permits rearranging the input and avoids that scratch allocation. When input
 modification is enabled, observations must not overlap the probabilities.
 Use $(LREF quantileInto) for caller-provided output.
 Quantile algorithms and inferred result types follow $(LREF QuantileAlgo).
+Omitting probabilities returns the minimum, quartiles, and maximum using
+`[0, 0.25, 0.5, 0.75, 1]`.
 
 Params:
     F = explicit output type; inferred from observations when omitted
@@ -4171,10 +4179,9 @@ template rcquantile(F, QuantileAlgo algorithm = QuantileAlgo.type7, bool allowMo
     /++
     Params:
         data = observations as a slice or array
-        probabilities = a scalar, probability slice/array, or variadic probabilities
+        probabilities = a scalar, probability slice/array, or variadic probabilities; omitted for quartiles
     +/
     auto rcquantile(Data, P...)(scope auto ref Data data, scope auto ref P probabilities)
-        if (P.length > 0)
     {
         QuantileContext context;
         return dispatchQuantile!(F, algorithm, allowModifySlice, QuantileAllocation.rc)(
@@ -4188,16 +4195,26 @@ template rcquantile(QuantileAlgo algorithm = QuantileAlgo.type7, bool allowModif
     /++
     Params:
         data = observations as a slice or array
-        probabilities = a scalar, probability slice/array, or variadic probabilities
+        probabilities = a scalar, probability slice/array, or variadic probabilities; omitted for quartiles
     +/
     auto rcquantile(Data, P...)(scope auto ref Data data, scope auto ref P probabilities)
-        if (P.length > 0)
     {
         alias F = quantileType!(typeof(quantileSlice(data)), algorithm);
         QuantileContext context;
         return dispatchQuantile!(F, algorithm, allowModifySlice, QuantileAllocation.rc)(
             context, data, probabilities);
     }
+}
+
+/// Omit probabilities to obtain the minimum, quartiles, and maximum.
+version(mir_stat_test)
+@safe pure nothrow @nogc
+unittest
+{
+    int[5] data = [4, 0, 3, 1, 2];
+    auto result = rcquantile(data);
+    assert(result == [0.0, 1, 2, 3, 4]);
+    assert(data[] == [4, 0, 3, 1, 2]);
 }
 
 /// ditto
@@ -4235,6 +4252,8 @@ permits rearranging the input and avoids that scratch allocation. When input
 modification is enabled, observations must not overlap the probabilities.
 Use $(LREF quantileInto) for caller-provided output.
 Quantile algorithms and inferred result types follow $(LREF QuantileAlgo).
+Omitting probabilities returns the minimum, quartiles, and maximum using
+`[0, 0.25, 0.5, 0.75, 1]`.
 
 Params:
     F = explicit output type; inferred from observations when omitted
@@ -4248,10 +4267,9 @@ template makeQuantile(F, QuantileAlgo algorithm = QuantileAlgo.type7, bool allow
     Params:
         allocator = allocator used for scratch and result storage
         data = observations as a slice or array
-        probabilities = a scalar, probability slice/array, or variadic probabilities
+        probabilities = a scalar, probability slice/array, or variadic probabilities; omitted for quartiles
     +/
     auto makeQuantile(Allocator, Data, P...)(ref Allocator allocator, scope auto ref Data data, scope auto ref P probabilities)
-        if (P.length > 0)
     {
         return dispatchQuantile!(F, algorithm, allowModifySlice, QuantileAllocation.custom)(
             allocator, data, probabilities);
@@ -4265,15 +4283,28 @@ template makeQuantile(QuantileAlgo algorithm = QuantileAlgo.type7, bool allowMod
     Params:
         allocator = allocator used for scratch and result storage
         data = observations as a slice or array
-        probabilities = a scalar, probability slice/array, or variadic probabilities
+        probabilities = a scalar, probability slice/array, or variadic probabilities; omitted for quartiles
     +/
     auto makeQuantile(Allocator, Data, P...)(ref Allocator allocator, scope auto ref Data data, scope auto ref P probabilities)
-        if (P.length > 0)
     {
         alias F = quantileType!(typeof(quantileSlice(data)), algorithm);
         return dispatchQuantile!(F, algorithm, allowModifySlice, QuantileAllocation.custom)(
             allocator, data, probabilities);
     }
+}
+
+/// Omit probabilities to obtain the minimum, quartiles, and maximum.
+version(mir_stat_test)
+@system pure nothrow @nogc
+unittest
+{
+    import std.experimental.allocator.mallocator: Mallocator;
+    import std.experimental.allocator: dispose;
+    int[5] data = [4, 0, 3, 1, 2];
+    auto result = makeQuantile(Mallocator.instance, data);
+    scope(exit) Mallocator.instance.dispose(result.field);
+    assert(result == [0.0, 1, 2, 3, 4]);
+    assert(data[] == [4, 0, 3, 1, 2]);
 }
 
 /// ditto
@@ -4314,6 +4345,8 @@ permits rearranging the input and avoids that scratch allocation. When input
 modification is enabled, observations must not overlap the probabilities.
 Use $(LREF quantileInto) for caller-provided output.
 Quantile algorithms and inferred result types follow $(LREF QuantileAlgo).
+Omitting probabilities returns the minimum, quartiles, and maximum using
+`[0, 0.25, 0.5, 0.75, 1]`.
 
 Params:
     F = explicit output type; inferred from observations when omitted
@@ -4326,10 +4359,9 @@ template quantile(F, QuantileAlgo algorithm = QuantileAlgo.type7, bool allowModi
     /++
     Params:
         data = observations as a slice or array
-        probabilities = a scalar, probability slice/array, or variadic probabilities
+        probabilities = a scalar, probability slice/array, or variadic probabilities; omitted for quartiles
     +/
     auto quantile(Data, P...)(scope auto ref Data data, scope auto ref P probabilities)
-        if (P.length > 0)
     {
         QuantileContext context;
         return dispatchQuantile!(F, algorithm, allowModifySlice, QuantileAllocation.gc)(
@@ -4343,16 +4375,26 @@ template quantile(QuantileAlgo algorithm = QuantileAlgo.type7, bool allowModifyS
     /++
     Params:
         data = observations as a slice or array
-        probabilities = a scalar, probability slice/array, or variadic probabilities
+        probabilities = a scalar, probability slice/array, or variadic probabilities; omitted for quartiles
     +/
     auto quantile(Data, P...)(scope auto ref Data data, scope auto ref P probabilities)
-        if (P.length > 0)
     {
         alias F = quantileType!(typeof(quantileSlice(data)), algorithm);
         QuantileContext context;
         return dispatchQuantile!(F, algorithm, allowModifySlice, QuantileAllocation.gc)(
             context, data, probabilities);
     }
+}
+
+/// Omit probabilities to obtain the minimum, quartiles, and maximum.
+version(mir_stat_test)
+@safe pure nothrow
+unittest
+{
+    int[5] data = [4, 0, 3, 1, 2];
+    auto result = quantile(data);
+    assert(result == [0.0, 1, 2, 3, 4]);
+    assert(data[] == [4, 0, 3, 1, 2]);
 }
 
 /// ditto
@@ -4365,6 +4407,53 @@ template quantile(F, string algorithm, bool allowModifySlice = false)
 template quantile(string algorithm, bool allowModifySlice = false)
 {
     mixin("alias quantile = .quantile!(QuantileAlgo." ~ algorithm ~ ", allowModifySlice);");
+}
+
+// Defaults preserve result precision, algorithm selection, and owning storage.
+version(mir_stat_test)
+@safe pure nothrow
+unittest
+{
+    import mir.ndslice.slice: sliced;
+    import mir.primitives: DeepElementType;
+    import std.meta: AliasSeq;
+    static foreach (factory; AliasSeq!(quantile, rcquantile))
+    {{
+        const float[6] data = [9, 0, 7, 2, 5, 3];
+        const double[5] levels = [0, 0.25, 0.5, 0.75, 1];
+        auto result = factory(data[].sliced);
+        static assert(is(DeepElementType!(typeof(result)) == float));
+        assert(result == factory(data, levels));
+        auto precise = factory!real(data[]);
+        static assert(is(DeepElementType!(typeof(precise)) == real));
+        assert(precise == factory!real(data, levels));
+        assert(factory!"type1"(data) == factory!"type1"(data, levels));
+        float[6] workspace = data;
+        assert((factory!(QuantileAlgo.type7, true)(workspace) == result));
+    }}
+    auto escaped = () @safe pure nothrow {
+        double[5] local = [4, 3, 2, 1, 0];
+        return quantile(local);
+    }();
+    assert(escaped == [0.0, 1, 2, 3, 4]);
+}
+
+version(mir_stat_test)
+@system pure nothrow @nogc
+unittest
+{
+    import std.experimental.allocator.mallocator: Mallocator;
+    import std.experimental.allocator: dispose;
+    import mir.primitives: DeepElementType;
+    const int[6] data = [9, 0, 7, 2, 5, 3];
+    const double[5] levels = [0, 0.25, 0.5, 0.75, 1];
+    auto result = makeQuantile!real(Mallocator.instance, data);
+    scope(exit) Mallocator.instance.dispose(result.field);
+    static assert(is(DeepElementType!(typeof(result)) == real));
+    assert(result == rcquantile!real(data, levels));
+    auto discrete = makeQuantile!"type1"(Mallocator.instance, data);
+    scope(exit) Mallocator.instance.dispose(discrete.field);
+    assert(discrete == rcquantile!"type1"(data, levels));
 }
 
 /// GC results own their storage independently of local inputs.
