@@ -3024,26 +3024,23 @@ public:
         checkOverUnderFlow!(BinType, axisOptions)(x, low(), high());
 
         // Search a borrowed slice while this axis retains the backing storage.
-        // This avoids copying reference-counted iterators inside Phobos's
-        // SortedRange, whose slicing path is not DIP1000-safe for those iterators.
+        import mir.ndslice.sorting: transitionIndex;
         static if (!axisOptions.isRightClosed) {
             static if (axisOptions.isCircular) {
                 if (x == high()) {
                     return cast(CountType) 0;
                 }
             }
-            import std.range: assumeSorted;
             return cast(CountType)
-                (_payload.lightScope.assumeSorted!("a <= b").lowerBound(x).length - 1);
+                (_payload.lightScope.transitionIndex!("a <= b")(x) - 1);
         } else {
             static if (axisOptions.isCircular) {
                 if (x == low()) {
                     return cast(CountType) (N_bin() - 1);
                 }
             }
-            import std.range: assumeSorted;
             return cast(CountType)
-                (_payload.lightScope.assumeSorted!("a < b").lowerBound(x).length - 1);
+                (_payload.lightScope.transitionIndex!("a < b")(x) - 1);
         }
     }
 
@@ -3868,4 +3865,52 @@ unittest
     auto axis = VariableAxis!(uint, double*, AxisOptions())(edges[].sliced);
     assertThrown!AssertError(axis.bin(2));
     assertThrown!AssertError(axis.bin(size_t.max));
+}
+
+// Binary search agrees with a linear lookup at and immediately around each edge.
+version(mir_stat_test)
+@safe pure nothrow @nogc
+unittest
+{
+    import mir.ndslice.slice: sliced;
+    import mir.ndslice.topology: stride;
+    import mir.ndslice.allocation: rcslice;
+    import std.math: nextUp, nextDown;
+    import std.meta: AliasSeq;
+    static foreach (T; AliasSeq!(float, double, real))
+    static foreach (right; [false, true])
+    static foreach (circular; [false, true])
+    {{
+        T[9] edges = [-8, -3, -1, 0, 0.25, 1, 4, 9, 16];
+        T[18] interleaved;
+        foreach (i, edge; edges)
+        {
+            interleaved[2 * i] = edge;
+            interleaved[2 * i + 1] = T.nan;
+        }
+        static void check(S)(S boundaries)
+        {
+            auto axis = variableAxis!(AxisOptions(right, true, true, circular))(boundaries);
+            foreach (i; 0 .. boundaries.length)
+            {
+                foreach (x; [nextDown(boundaries[i]), boundaries[i], nextUp(boundaries[i])])
+                {
+                    if (axis.isUnderflow(x) || axis.isOverflow(x)) continue;
+                    if (circular && (x == axis.low || x == axis.high))
+                    {
+                        assert(axis.index(x) == (right ? axis.N_bin - 1 : 0));
+                        continue;
+                    }
+                    size_t expected = 0;
+                    foreach (j; 1 .. boundaries.length - 1)
+                        if (right ? boundaries[j] < x : boundaries[j] <= x)
+                            ++expected;
+                    assert(axis.index(x) == expected);
+                }
+            }
+        }
+        check(edges[].sliced);
+        check(interleaved[].sliced.stride(2));
+        check(rcslice(edges[]));
+    }}
 }
