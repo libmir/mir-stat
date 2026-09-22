@@ -52,7 +52,7 @@ unittest
     auto data = [0.0, 1, 2, 3].sliced;
     auto h = data.histogram!RegularAxis(2u, 0.0, 4.0);
     assert(h.counts == [2u, 2]);
-    static assert(is(typeof(h.counts.iterator) == uint*));
+    static assert(is(typeof(h.counts.iterator) == size_t*));
 }
 
 /// Override the counter type and include underflow and overflow bins.
@@ -63,8 +63,8 @@ unittest
     import mir.ndslice.slice: sliced;
     import mir.stat.descriptive.histogram.axis: AxisOptions, RegularAxis;
 
-    alias Axis = RegularAxis!(ulong, double, AxisOptions(false, true, true));
-    auto h = [-1.0, 0, 1, 2, 3, 4].sliced.histogram!Axis(2, 0.0, 4.0);
+    alias Axis = RegularAxis!(double, AxisOptions(false, true, true));
+    auto h = [-1.0, 0, 1, 2, 3, 4].sliced.histogram!(ulong, Axis)(2, 0.0, 4.0);
     assert(h.counts == [1UL, 2, 2, 1]);
     assert(h.underflow == 1 && h.overflow == 1);
     static assert(is(h.CountType == ulong));
@@ -377,7 +377,8 @@ Built-in arrays and Mir slices are accepted. Their shapes must match; matching
 multidimensional slices are traversed elementwise into a one-axis histogram.
 Weights must be finite, nonnegative, and implicitly convertible to the counter
 type. Axis templates default to `double` counters, independently of the bin-count
-argument. An explicit counter override or concrete axis retains its counter type.
+argument. An explicit leading counter type overrides this default, including with a supplied
+axis instance or concrete axis type. Axes never select counter storage.
 Integral counters require integral weights. Counts must accommodate their sums.
 Bin-count rules operate on observations, without weighting the rule itself.
 Axis ownership and count ownership follow $(LREF histogram).

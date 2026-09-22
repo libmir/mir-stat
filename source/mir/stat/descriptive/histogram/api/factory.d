@@ -41,1410 +41,154 @@ package struct NoAllocationContext {}
 package mixin template HistogramFactory(alias allocate, alias release = null, bool insert = true)
 {
     import mir.ndslice.slice: Slice, SliceKind;
-    import mir.stat.descriptive.histogram.accumulator: HistogramAccumulator;
-    import mir.stat.descriptive.histogram.axis: AxisOptions,
-        inverseTransformMapping, hasInverseTransformMapping, isTransformFunction,
-        TransformAxis, acceptsTransformedBreakFunction;
-    import mir.stat.descriptive.histogram.traits: isAxis, storageExtent, acceptsBreakFunction;
+    import mir.stat.descriptive.histogram.traits: isAxis, storageExtent, DefaultCountType;
 
-    // Distinct aliases keep recursive overload dispatch in the outer scope.
-    private alias buildHistogram = factoryImplBasic;
-    private alias buildAxisHistogram = factoryImpl;
-    private alias dispatchHistogram = factory;
-    import std.traits: ReturnType;
-    // Infer storage without constructing or copying a stateful allocator.
-    private auto allocationType(T, Context)(ref Context context)
-    {
-        return allocate!T(context, size_t.init);
-    }
-    private alias Storage(Context, T) = ReturnType!(allocationType!(T, Context));
-
-    /++
-    Params:
-        x = input observations
-        axis = axis defining the bins
-    +/
-    HistogramAccumulator!(Storage!(Context, Axis.CountType), Axis)
-        factoryImplBasic(Context, Iterator, size_t N, SliceKind kind, Axis)(
-                   ref Context context, Slice!(Iterator, N, kind) x, Axis axis)
+    // Counter storage is selected here, independently of the axis metadata.
+    auto factoryImplBasic(CountType = DefaultCountType, Context, Data, Axis)(
+        ref Context context, scope Data data, Axis axis)
         if (isAxis!Axis)
     {
-        auto counts = allocate!(Axis.CountType)(context, storageExtent(axis));
-        // GC/RC storage manages its own lifetime; only caller allocation
-        // needs an explicit failure handler.
+        import mir.stat.descriptive.histogram.api.factory: initializeHistogram;
+        auto counts = allocate!CountType(context, storageExtent(axis));
         static if (!is(typeof(release) == typeof(null)))
             scope(failure) release(context, counts);
-        import mir.stat.descriptive.histogram.api.factory: initializeHistogram;
-        return initializeHistogram!insert(counts, axis, x);
+        return initializeHistogram!insert(counts, axis, data);
     }
 
-    /++
-    Params:
-        CountType = the type that is used to count in histogram bins
-        BinType = the type of the values that are compared in histogram bins
-        Axis = type of axis
-        axisOptions = options
-    +/
-    private
-    template factoryImpl(CountType, BinType, alias Axis, AxisOptions axisOptions)
-        if (__traits(isTemplate, Axis))
+    template factory(Options...)
     {
-        import mir.stat.descriptive.histogram.axis: CategoryAxis, IntegralAxis, RegularAxis;
-
-        /++
-        Params:
-            slice = slice
-            N_bin = number of bins
-            low = the value of the smallest bin
-        +/
-        HistogramAccumulator!(Storage!(Context, CountType), IntegralAxis!(CountType, BinType, axisOptions))
-            factoryImpl(Context, Iterator, size_t N, SliceKind kind)(
-                       ref Context context, Slice!(Iterator, N, kind) slice,
-                       CountType N_bin,
-                       BinType low)
-            if (__traits(isSame, Axis, IntegralAxis))
+        auto factory(Context, Iterator, size_t N, SliceKind kind, Args...)(
+            ref Context context, Slice!(Iterator, N, kind) data, auto ref Args args)
         {
-            import core.lifetime: move;
-
-            auto integralAxis = IntegralAxis!(CountType, BinType, axisOptions)(N_bin, low);
-            return buildHistogram(context, slice.move, integralAxis);
-        }
-
-        /++
-        Params:
-            slice = slice
-            N_bin = number of bins
-            low = the value of the smallest bin
-            high = the value of the largest bin
-        +/
-        HistogramAccumulator!(Storage!(Context, CountType), RegularAxis!(CountType, BinType, axisOptions))
-            factoryImpl(Context, Iterator, size_t N, SliceKind kind)(
-                       ref Context context, Slice!(Iterator, N, kind) slice,
-                       CountType N_bin,
-                       BinType low,
-                       BinType high)
-            if (__traits(isSame, Axis, RegularAxis))
-        {
-            import core.lifetime: move;
-
-            auto regularAxis = RegularAxis!(CountType, BinType, axisOptions)(N_bin, low, high);
-            return buildHistogram(context, slice.move, regularAxis);
-        }
-
-        /++
-        Params:
-            slice = slice
-        +/
-        HistogramAccumulator!(Storage!(Context, CountType), CategoryAxis!(CountType, BinType, axisOptions))
-            factoryImpl(Context, Iterator, size_t N, SliceKind kind)(
-                       ref Context context, Slice!(Iterator, N, kind) slice)
-            if (__traits(isSame, Axis, CategoryAxis))
-        {
-            import core.lifetime: move;
-
-            CategoryAxis!(CountType, BinType, axisOptions) categoryAxis;
-            return buildHistogram(context, slice.move, categoryAxis);
-        }
-    }
-
-    /++
-    Params:
-        CountType = the type that is used to count in histogram bins
-        BinType = the type of the values that are compared in histogram bins
-        Axis = type of axis
-    +/
-    private
-    template factoryImpl(CountType, BinType, alias Axis)
-        if (__traits(isTemplate, Axis))
-    {
-        import mir.stat.descriptive.histogram.axis: EnumAxis;
-
-        ///
-        HistogramAccumulator!(Storage!(Context, CountType), EnumAxis!(CountType, BinType))
-            factoryImpl(Context, Iterator, size_t N, SliceKind kind)(
-                       ref Context context, Slice!(Iterator, N, kind) slice)
-            if (__traits(isSame, Axis, EnumAxis))
-        {
-            import core.lifetime: move;
-
-            EnumAxis!(CountType, BinType) enumAxis;
-            return buildHistogram(context, slice.move, enumAxis);
-        }
-    }
-
-    /++
-    Params:
-        CountType = the type that is used to count in histogram bins
-        BinType = the type of the values that are compared in histogram bins
-        Axis = type of axis
-        transform = function to transform axis
-        inverseTransform = function to undo transform
-        axisOptions = options
-    +/
-    private
-    template factoryImpl(CountType, BinType, alias Axis, alias transform, alias inverseTransform, AxisOptions axisOptions)
-        if (__traits(isTemplate, Axis) &&
-            isTransformFunction!(transform, BinType) &&
-            isTransformFunction!(inverseTransform, BinType))
-    {
-        import mir.stat.descriptive.histogram.axis: TransformAxis;
-
-        /++
-        Params:
-            slice = slice
-            N_bin = number of bins
-            low = the value of the smallest bin
-            high = the value of the largest bin
-        +/
-        HistogramAccumulator!(Storage!(Context, CountType), TransformAxis!(CountType, BinType, transform, inverseTransform, axisOptions))
-            factoryImpl(Context, Iterator, size_t N, SliceKind kind)(
-                       ref Context context, Slice!(Iterator, N, kind) slice,
-                       CountType N_bin,
-                       BinType low,
-                       BinType high)
-            if (__traits(isSame, Axis, TransformAxis))
-        {
-            import core.lifetime: move;
-
-            auto transformAxis = TransformAxis!(CountType, BinType, transform, inverseTransform, axisOptions)(N_bin, low, high);
-            return buildHistogram(context, slice.move, transformAxis);
-        }
-    }
-
-    /++
-    Params:
-        CountType = the type that is used to count in histogram bins
-        BinType = the type of the values that are compared in histogram bins
-        Axis = type of axis
-        transform = function to transform axis
-        axisOptions = options
-    +/
-    private
-    template factoryImpl(CountType, BinType, alias Axis, alias transform, AxisOptions axisOptions)
-        if (__traits(isTemplate, Axis) &&
-            hasInverseTransformMapping!transform)
-    {
-        import mir.stat.descriptive.histogram.axis: TransformAxis;
-
-        /++
-        Params:
-            slice = slice
-            N_bin = number of bins
-            low = the value of the smallest bin
-            high = the value of the largest bin
-        +/
-        HistogramAccumulator!(Storage!(Context, CountType), TransformAxis!(CountType, BinType, transform, inverseTransformMapping!transform, axisOptions))
-            factoryImpl(Context, Iterator, size_t N, SliceKind kind)(
-                       ref Context context, Slice!(Iterator, N, kind) slice,
-                       CountType N_bin,
-                       BinType low,
-                       BinType high)
-            if (__traits(isSame, Axis, TransformAxis))
-        {
-            import core.lifetime: move;
-
-            auto transformAxis = TransformAxis!(CountType, BinType, transform, inverseTransformMapping!transform, axisOptions)(N_bin, low, high);
-            return buildHistogram(context, slice.move, transformAxis);
-        }
-    }
-
-    /++
-    Params:
-        CountType = the type that is used to count in histogram bins
-        Iterator = iterator used in slice
-        Axis = type of axis
-        axisOptions = options
-    +/
-    private
-    template factoryImpl(CountType, Iterator, alias Axis, AxisOptions axisOptions)
-        if (__traits(isTemplate, Axis))
-    {
-        import mir.stat.descriptive.histogram.axis: VariableAxis;
-        /++
-        Params:
-            dataSlice = slice of data
-            axisSlice = slice of axis breaks
-        +/
-
-        HistogramAccumulator!(Storage!(Context, CountType), VariableAxis!(CountType, Iterator, axisOptions))
-            factoryImpl(Context, DataIterator, size_t N, SliceKind kindA, SliceKind kindB)(
-                       ref Context context, Slice!(DataIterator, N, kindA) dataSlice,
-                       // The returned axis may borrow these boundaries.
-                       return scope Slice!(Iterator, 1, kindB) axisSlice)
-            if (__traits(isSame, Axis, VariableAxis))
-        {
-            import core.lifetime: move;
-
-            auto variableAxis = VariableAxis!(CountType, Iterator, axisOptions)(axisSlice.move);
-            return buildHistogram(context, dataSlice.move, variableAxis.move);
-        }
-    }
-
-    /++
-    Computes a histogram of the inputs.
-    The allocated counts include enabled underflow/overflow bins, before and after
-    the ordinary bins respectively. Ordinary bin views exclude those end bins.
-
-    If the `Axis` has an `options` member, the histogram may optionally allow
-    for overflow and underflow members.
-
-    Params:
-        slice = slice
-        axis = axis
-
-    See_also:
-        $(LREF HistogramAccumulator),
-        $(LREF AxisOptions),
-        $(LREF IntegralAxis),
-        $(LREF RegularAxis),
-        $(LREF EnumAxis),
-        $(LREF CategoryAxis),
-        $(LREF VariableAxis)
-    +/
-    HistogramAccumulator!(Storage!(Context, Axis.CountType), Axis)
-        factory(Context, Iterator, size_t N, SliceKind kind, Axis)(
-                   ref Context context, Slice!(Iterator, N, kind) slice, Axis axis)
-        if (isAxis!Axis)
-    {
-        import core.lifetime: move;
-        return buildHistogram(context, slice.move, axis);
-    }
-
-    /++
-    Choose the number of integral or regular bins using a rule on the observations.
-    The rule is called once with a light-scope view and must return a positive integer
-    representable by CountType. It must not mutate or retain the observation view.
-    Bounds remain explicit. The resulting histogram owns its count storage.
-
-    Params:
-        CountType = count type
-        BinType = axis value type
-        Axis = IntegralAxis or RegularAxis
-        breakFunction = callable returning the number of bins
-        axisOptions = axis options
-    +/
-    template factory(CountType, BinType, alias Axis, alias breakFunction,
-        AxisOptions axisOptions = AxisOptions())
-        if (isRuleAxis!Axis)
-    {
-        /++
-        Params:
-            slice = input observations
-            bounds = low for IntegralAxis; low and high for RegularAxis
-        +/
-        auto factory(Context, Iterator, size_t N, SliceKind kind, Bounds...)(
-            ref Context context, Slice!(Iterator, N, kind) slice, Bounds bounds)
-            if (acceptsBreakFunction!(breakFunction, typeof(slice)) &&
-                validRuleBounds!(Axis, BinType, Bounds))
-        {
-            import mir.stat.descriptive.histogram.axis: integralAxis, regularAxis, IntegralAxis;
-            static if (__traits(isSame, Axis, IntegralAxis))
-                auto axis = integralAxis!(CountType, BinType, breakFunction, axisOptions)(slice, bounds);
+            import std.traits: isNumeric, Unqual;
+            static if (Options.length && is(Options[0]) && isNumeric!(Options[0]))
+            {
+                alias CountType = Unqual!(Options[0]);
+                alias AxisSelection = Options[1 .. $];
+            }
             else
-                auto axis = regularAxis!(CountType, BinType, breakFunction, axisOptions)(slice, bounds);
-            return buildHistogram(context, slice, axis);
+            {
+                alias CountType = DefaultCountType;
+                alias AxisSelection = Options;
+            }
+            static if (AxisSelection.length == 0)
+            {
+                static assert(Args.length == 1 && isAxis!(Args[0]),
+                    "Histogram factory: supply an axis instance or select an axis template");
+                return factoryImplBasic!CountType(context, data, args[0]);
+            }
+            else
+            {
+                import mir.stat.descriptive.histogram.api.factory: constructHistogramAxis;
+                auto axis = constructHistogramAxis!AxisSelection(data, args);
+                import core.lifetime: move;
+                return factoryImplBasic!CountType(context, data, axis.move);
+            }
         }
     }
-
-    /++
-    Infer the axis value type from the bounds while specifying the count type.
-    Params:
-        CountType = count type
-        Axis = IntegralAxis or RegularAxis
-        breakFunction = callable returning the number of bins
-        axisOptions = axis options
-    +/
-    template factory(CountType, alias Axis, alias breakFunction,
-        AxisOptions axisOptions = AxisOptions())
-        if (isRuleAxis!Axis)
-    {
-        /// ditto
-        auto factory(Context, Iterator, size_t N, SliceKind kind, BinType, Bounds...)(
-            ref Context context, Slice!(Iterator, N, kind) slice, BinType low, Bounds rest)
-            if (acceptsBreakFunction!(breakFunction, typeof(slice)) &&
-                validRuleBounds!(Axis, BinType, BinType, Bounds))
-        {
-            return dispatchHistogram!(CountType, BinType, Axis, breakFunction, axisOptions)(context, slice, low, rest);
-        }
-    }
-
-    /++
-    Use the default count type and infer the axis value type from the observations.
-    Params:
-        Axis = IntegralAxis or RegularAxis
-        breakFunction = callable returning the number of bins
-        axisOptions = axis options
-    +/
-    template factory(alias Axis, alias breakFunction, AxisOptions axisOptions = AxisOptions())
-        if (isRuleAxis!Axis)
-    {
-        /// ditto
-        auto factory(Context, Iterator, size_t N, SliceKind kind, Bounds...)(
-            ref Context context, Slice!(Iterator, N, kind) slice, Bounds bounds)
-            if (acceptsBreakFunction!(breakFunction, typeof(slice)) &&
-                validRuleBounds!(Axis, typeof(slice).DeepElement, Bounds))
-        {
-            import mir.stat.descriptive.histogram.traits: DefaultCountType;
-            import std.traits: Unqual;
-            return dispatchHistogram!(DefaultCountType, Unqual!(typeof(slice).DeepElement),
-                Axis, breakFunction, axisOptions)(context, slice, bounds);
-        }
-    }
-
-    /++
-    Choose transformed-axis bin counts from transformed observations.
-    Bounds remain in original units. The rule must return a positive integer count.
-    Params:
-        CountType = count type
-        BinType = axis value type
-        Axis = TransformAxis
-        transform = forward transform
-        inverseTransform = inverse transform
-        breakFunction = rule applied to transformed observations
-        axisOptions = axis options
-    +/
-    template factory(CountType, BinType, alias Axis, alias transform, alias inverseTransform, alias breakFunction,
-        AxisOptions axisOptions = AxisOptions())
-        if (__traits(isSame, Axis, TransformAxis))
-    {
-        /++
-        Params:
-            slice = input observations in original units
-            low = lower bound in original units
-            high = upper bound in original units
-        +/
-        auto factory(Context, Iterator, size_t N, SliceKind kind)(
-            ref Context context, Slice!(Iterator, N, kind) slice, BinType low, BinType high)
-            if (acceptsTransformedBreakFunction!(breakFunction, transform, BinType, typeof(slice)) &&
-                isTransformFunction!(inverseTransform, BinType))
-        {
-            import mir.stat.descriptive.histogram.axis: transformAxis;
-            auto axis = transformAxis!(CountType, BinType, transform, inverseTransform,
-                breakFunction, axisOptions)(slice, low, high);
-            return buildHistogram(context, slice, axis);
-        }
-    }
-
-    /++
-    Choose transformed-axis bin counts from transformed observations.
-    Bounds remain in original units. The rule must return a positive integer count.
-    Params:
-        CountType = count type
-        Axis = TransformAxis
-        transform = forward transform
-        inverseTransform = inverse transform
-        breakFunction = rule applied to transformed observations
-        axisOptions = axis options
-    +/
-    template factory(CountType, alias Axis, alias transform, alias inverseTransform, alias breakFunction,
-        AxisOptions axisOptions = AxisOptions())
-        if (__traits(isSame, Axis, TransformAxis))
-    {
-        /++
-        Params:
-            slice = input observations in original units
-            low = lower bound in original units
-            high = upper bound in original units
-        +/
-        auto factory(Context, Iterator, size_t N, SliceKind kind, BinType)(
-            ref Context context, Slice!(Iterator, N, kind) slice, BinType low, BinType high)
-            if (acceptsTransformedBreakFunction!(breakFunction, transform, BinType, typeof(slice)) &&
-                isTransformFunction!(inverseTransform, BinType))
-        {
-            return dispatchHistogram!(CountType, BinType, Axis, transform,
-                inverseTransform, breakFunction, axisOptions)(context, slice, low, high);
-        }
-    }
-
-    /++
-    Choose transformed-axis bin counts from transformed observations.
-    Bounds remain in original units. The rule must return a positive integer count.
-    Params:
-        Axis = TransformAxis
-        transform = forward transform
-        inverseTransform = inverse transform
-        breakFunction = rule applied to transformed observations
-        axisOptions = axis options
-    +/
-    template factory(alias Axis, alias transform, alias inverseTransform, alias breakFunction,
-        AxisOptions axisOptions = AxisOptions())
-        if (__traits(isSame, Axis, TransformAxis))
-    {
-        import std.traits: Unqual;
-
-        /++
-        Params:
-            slice = input observations in original units
-            low = lower bound in original units
-            high = upper bound in original units
-        +/
-        auto factory(Context, Iterator, size_t N, SliceKind kind, BinType)(
-            ref Context context, Slice!(Iterator, N, kind) slice, BinType low, BinType high)
-            if (acceptsTransformedBreakFunction!(breakFunction, transform, Unqual!(typeof(slice).DeepElement), typeof(slice)) &&
-                isTransformFunction!(inverseTransform, Unqual!(typeof(slice).DeepElement)) && is(BinType : typeof(slice).DeepElement))
-        {
-            import mir.stat.descriptive.histogram.traits: DefaultCountType;
-            return dispatchHistogram!(DefaultCountType, Unqual!(typeof(slice).DeepElement), Axis, transform,
-                inverseTransform, breakFunction, axisOptions)(context, slice, low, high);
-        }
-    }
-
-    /++
-    Choose transformed-axis bin counts from transformed observations.
-    Bounds remain in original units. The rule must return a positive integer count.
-    Params:
-        CountType = count type
-        BinType = axis value type
-        Axis = TransformAxis
-        transform = forward transform
-        breakFunction = rule applied to transformed observations
-        axisOptions = axis options
-    +/
-    template factory(CountType, BinType, alias Axis, alias transform, alias breakFunction,
-        AxisOptions axisOptions = AxisOptions())
-        if (__traits(isSame, Axis, TransformAxis) && hasInverseTransformMapping!transform)
-    {
-        /++
-        Params:
-            slice = input observations in original units
-            low = lower bound in original units
-            high = upper bound in original units
-        +/
-        auto factory(Context, Iterator, size_t N, SliceKind kind)(
-            ref Context context, Slice!(Iterator, N, kind) slice, BinType low, BinType high)
-            if (acceptsTransformedBreakFunction!(breakFunction, transform, BinType, typeof(slice)))
-        {
-            return dispatchHistogram!(CountType, BinType, Axis, transform,
-                inverseTransformMapping!transform, breakFunction, axisOptions)(context, slice, low, high);
-        }
-    }
-
-    /++
-    Choose transformed-axis bin counts from transformed observations.
-    Bounds remain in original units. The rule must return a positive integer count.
-    Params:
-        CountType = count type
-        Axis = TransformAxis
-        transform = forward transform
-        breakFunction = rule applied to transformed observations
-        axisOptions = axis options
-    +/
-    template factory(CountType, alias Axis, alias transform, alias breakFunction,
-        AxisOptions axisOptions = AxisOptions())
-        if (__traits(isSame, Axis, TransformAxis) && hasInverseTransformMapping!transform)
-    {
-        /++
-        Params:
-            slice = input observations in original units
-            low = lower bound in original units
-            high = upper bound in original units
-        +/
-        auto factory(Context, Iterator, size_t N, SliceKind kind, BinType)(
-            ref Context context, Slice!(Iterator, N, kind) slice, BinType low, BinType high)
-            if (acceptsTransformedBreakFunction!(breakFunction, transform, BinType, typeof(slice)))
-        {
-            return dispatchHistogram!(CountType, BinType, Axis, transform,
-                inverseTransformMapping!transform, breakFunction, axisOptions)(context, slice, low, high);
-        }
-    }
-
-    /++
-    Choose transformed-axis bin counts from transformed observations.
-    Bounds remain in original units. The rule must return a positive integer count.
-    Params:
-        Axis = TransformAxis
-        transform = forward transform
-        breakFunction = rule applied to transformed observations
-        axisOptions = axis options
-    +/
-    template factory(alias Axis, alias transform, alias breakFunction,
-        AxisOptions axisOptions = AxisOptions())
-        if (__traits(isSame, Axis, TransformAxis) && hasInverseTransformMapping!transform)
-    {
-        import std.traits: Unqual;
-
-        /++
-        Params:
-            slice = input observations in original units
-            low = lower bound in original units
-            high = upper bound in original units
-        +/
-        auto factory(Context, Iterator, size_t N, SliceKind kind, BinType)(
-            ref Context context, Slice!(Iterator, N, kind) slice, BinType low, BinType high)
-            if (acceptsTransformedBreakFunction!(breakFunction, transform, Unqual!(typeof(slice).DeepElement), typeof(slice)) && is(BinType : typeof(slice).DeepElement))
-        {
-            import mir.stat.descriptive.histogram.traits: DefaultCountType;
-            return dispatchHistogram!(DefaultCountType, Unqual!(typeof(slice).DeepElement), Axis, transform,
-                inverseTransformMapping!transform, breakFunction, axisOptions)(context, slice, low, high);
-        }
-    }
-
-    private template isRuleAxis(alias Axis)
-    {
-        import mir.stat.descriptive.histogram.axis: IntegralAxis, RegularAxis;
-        enum isRuleAxis = __traits(isSame, Axis, IntegralAxis) || __traits(isSame, Axis, RegularAxis);
-    }
-
-    private template validRuleBounds(alias Axis, BinType, Bounds...)
-    {
-        import mir.stat.descriptive.histogram.axis: IntegralAxis;
-        static if (__traits(isSame, Axis, IntegralAxis))
-            enum expected = 1;
-        else
-            enum expected = 2;
-        static if (Bounds.length != expected)
-            enum validRuleBounds = false;
-        else static if (expected == 1)
-            enum validRuleBounds = is(Bounds[0] : BinType);
-        else
-            enum validRuleBounds = is(Bounds[0] : BinType) && is(Bounds[1] : BinType);
-    }
-
-    /++
-    Params:
-        Axis = type of axis
-    +/
-    template factory(Axis)
-        if (isAxis!Axis)
-    {
-        import std.traits: isInstanceOf;
-        import mir.stat.descriptive.histogram.axis: IntegralAxis, RegularAxis,
-            TransformAxis, EnumAxis, CategoryAxis, VariableAxis;
-
-        /++
-        Params:
-            slice = slice
-            N_bin = number of bins
-            low = the value of the smallest bin
-        +/
-        HistogramAccumulator!(Storage!(Context, Axis.CountType), Axis)
-            factory(Context, Iterator, size_t N, SliceKind kind, CountType, BinType)(
-                       ref Context context, Slice!(Iterator, N, kind) slice,
-                       CountType N_bin,
-                       BinType low)
-            if (isInstanceOf!(IntegralAxis, Axis))
-        {
-            import core.lifetime: move;
-
-            auto integralAxis = Axis(N_bin, low);
-            return buildHistogram(context, slice.move, integralAxis);
-        }
-
-        /++
-        Params:
-            slice = slice
-            N_bin = number of bins
-            low = the value of the smallest bin
-            high = the value of the largest bin
-        +/
-        HistogramAccumulator!(Storage!(Context, Axis.CountType), Axis)
-            factory(Context, Iterator, size_t N, SliceKind kind, CountType, BinType)(
-                        ref Context context, Slice!(Iterator, N, kind) slice,
-                        CountType N_bin,
-                        BinType low,
-                        BinType high)
-            if (isInstanceOf!(RegularAxis, Axis) || isInstanceOf!(TransformAxis, Axis))
-        {
-            import core.lifetime: move;
-
-            auto axis = Axis(N_bin, low, high);
-            return buildHistogram(context, slice.move, axis);
-        }
-
-        /++
-        Params:
-            slice = slice
-        +/
-        HistogramAccumulator!(Storage!(Context, Axis.CountType), Axis)
-            factory(Context, Iterator, size_t N, SliceKind kind)(
-                        ref Context context, Slice!(Iterator, N, kind) slice)
-            if (isInstanceOf!(EnumAxis, Axis) || isInstanceOf!(CategoryAxis, Axis))
-        {
-            import core.lifetime: move;
-
-            auto axis = Axis();
-            return buildHistogram(context, slice.move, axis);
-        }
-
-        /++
-        Params:
-            dataSlice = slice of data
-            axisSlice = slice of axis breaks
-        +/
-        HistogramAccumulator!(Storage!(Context, Axis.CountType), Axis)
-            factory(Context, DataIterator, AxisIterator, size_t N,
-                        SliceKind kindA, SliceKind kindB)(
-                        ref Context context, Slice!(DataIterator, N, kindA) dataSlice,
-                        Slice!(AxisIterator, 1, kindB) axisSlice)
-            if (isInstanceOf!(VariableAxis, Axis))
-        {
-            import core.lifetime: move;
-
-            auto axis = Axis(axisSlice.move);
-            return buildHistogram(context, dataSlice.move, axis.move);
-        }
-    }
-
-    /++
-    Params:
-        CountType = the type that is used to count in histogram bins
-        BinType = the type of the values that are compared in histogram bins
-        Axis = type of axis
-        axisOptions = options
-    +/
-    template factory(CountType, BinType, alias Axis, AxisOptions axisOptions = AxisOptions())
-        if (__traits(isTemplate, Axis))
-    {
-        import mir.stat.descriptive.histogram.axis: IntegralAxis, RegularAxis, CategoryAxis;
-
-        /++
-        Params:
-            slice = slice
-            N_bin = number of bins
-            low = the value of the smallest bin
-        +/
-        HistogramAccumulator!(Storage!(Context, CountType), IntegralAxis!(CountType, BinType, axisOptions))
-            factory(Context, Iterator, size_t N, SliceKind kind)(
-                       ref Context context, Slice!(Iterator, N, kind) slice,
-                       CountType N_bin,
-                       BinType low)
-            if (__traits(isSame, Axis, IntegralAxis))
-        {
-            import core.lifetime: move;
-
-            return buildAxisHistogram!(CountType, BinType, Axis, axisOptions)(context, slice.move, N_bin, low);
-        }
-
-        /++
-        Params:
-            slice = slice
-            N_bin = number of bins
-            low = the value of the smallest bin
-            high = the value of the largest bin
-        +/
-        HistogramAccumulator!(Storage!(Context, CountType), RegularAxis!(CountType, BinType, axisOptions))
-            factory(Context, Iterator, size_t N, SliceKind kind)(
-                       ref Context context, Slice!(Iterator, N, kind) slice,
-                       CountType N_bin,
-                       BinType low,
-                       BinType high)
-            if (__traits(isSame, Axis, RegularAxis))
-        {
-            import core.lifetime: move;
-
-            return buildAxisHistogram!(CountType, BinType, Axis, axisOptions)(context, slice.move, N_bin, low, high);
-        }
-
-        /++
-        Params:
-            slice = slice
-        +/
-        HistogramAccumulator!(Storage!(Context, CountType), CategoryAxis!(CountType, BinType, axisOptions))
-            factory(Context, Iterator, size_t N, SliceKind kind)(
-                       ref Context context, Slice!(Iterator, N, kind) slice)
-            if (__traits(isSame, Axis, CategoryAxis) && is(BinType == enum))
-        {
-            import core.lifetime: move;
-
-            return buildAxisHistogram!(CountType, BinType, Axis, axisOptions)(context, slice.move);
-        }
-    }
-
-    /++
-    Params:
-        CountType = the type that is used to count in histogram bins
-        BinType = the type of the values that are compared in histogram bins
-        Axis = type of axis
-        transform = function to transform axis
-        inverseTransform = function to undo transform
-        axisOptions = options
-    +/
-    template factory(CountType, BinType, alias Axis, alias transform, alias inverseTransform, AxisOptions axisOptions = AxisOptions())
-        if (__traits(isTemplate, Axis) &&
-            isTransformFunction!(transform, BinType) &&
-            isTransformFunction!(inverseTransform, BinType))
-    {
-        import mir.stat.descriptive.histogram.axis: TransformAxis;
-
-        /++
-        Params:
-            slice = slice
-            N_bin = number of bins
-            low = the value of the smallest bin
-            high = the value of the largest bin
-        +/
-        HistogramAccumulator!(Storage!(Context, CountType), TransformAxis!(CountType, BinType, transform, inverseTransform, axisOptions))
-            factory(Context, Iterator, size_t N, SliceKind kind)(
-                       ref Context context, Slice!(Iterator, N, kind) slice,
-                       CountType N_bin,
-                       BinType low,
-                       BinType high)
-            if (__traits(isSame, Axis, TransformAxis))
-        {
-            import core.lifetime: move;
-
-            return buildAxisHistogram!(CountType, BinType, Axis, transform, inverseTransform, axisOptions)(context, slice.move, N_bin, low, high);
-        }
-    }
-
-    /++
-    Params:
-        CountType = the type that is used to count in histogram bins
-        BinType = the type of the values that are compared in histogram bins
-        Axis = type of axis
-        transform = function to transform axis
-        axisOptions = options
-    +/
-    template factory(CountType, BinType, alias Axis, alias transform, AxisOptions axisOptions = AxisOptions())
-        if (__traits(isTemplate, Axis) &&
-            hasInverseTransformMapping!transform)
-    {
-        import mir.stat.descriptive.histogram.axis: TransformAxis;
-
-        /++
-        Params:
-            slice = slice
-            N_bin = number of bins
-            low = the value of the smallest bin
-            high = the value of the largest bin
-        +/
-        HistogramAccumulator!(Storage!(Context, CountType), TransformAxis!(CountType, BinType, transform, inverseTransformMapping!transform, axisOptions))
-            factory(Context, Iterator, size_t N, SliceKind kind)(
-                       ref Context context, Slice!(Iterator, N, kind) slice,
-                       CountType N_bin,
-                       BinType low,
-                       BinType high)
-            if (__traits(isSame, Axis, TransformAxis))
-        {
-            import core.lifetime: move;
-
-            return buildAxisHistogram!(CountType, BinType, Axis, transform, inverseTransformMapping!transform, axisOptions)(context, slice.move, N_bin, low, high);
-        }
-    }
-
-    /++
-    Params:
-        CountType = the type that is used to count in histogram bins
-        Iterator = iterator used in slice
-        Axis = type of axis
-        axisOptions = options
-    +/
-    template factory(CountType, Iterator, alias Axis, AxisOptions axisOptions = AxisOptions())
-        if (__traits(isTemplate, Axis))
-    {
-        import mir.stat.descriptive.histogram.axis: VariableAxis;
-
-        /++
-        Params:
-            dataSlice = slice of data
-            axisSlice = slice of axis breaks
-        +/
-        HistogramAccumulator!(Storage!(Context, CountType), VariableAxis!(CountType, Iterator, axisOptions))
-            factory(Context, size_t N, SliceKind kindA, SliceKind kindB)(
-                       ref Context context, Slice!(Iterator, N, kindA) dataSlice,
-                       Slice!(Iterator, 1, kindB) axisSlice)
-            if (__traits(isSame, Axis, VariableAxis))
-        {
-            import core.lifetime: move;
-
-            return buildAxisHistogram!(CountType, Iterator, Axis, axisOptions)(context, dataSlice.move, axisSlice.move);
-        }
-    }
-
-    /++
-    Params:
-        BinType = the type of the values that are compared in histogram bins
-        Axis = type of axis
-        axisOptions = options
-    +/
-    template factory(BinType, alias Axis, AxisOptions axisOptions = AxisOptions())
-        if (__traits(isTemplate, Axis))
-    {
-        import mir.stat.descriptive.histogram.axis: IntegralAxis, RegularAxis, CategoryAxis;
-        import mir.stat.descriptive.histogram.traits: DefaultCountType;
-
-        /++
-        Params:
-            slice = slice
-            N_bin = number of bins
-            low = the value of the smallest bin
-        +/
-        HistogramAccumulator!(Storage!(Context, DefaultCountType), IntegralAxis!(DefaultCountType, BinType, axisOptions))
-            factory(Context, Iterator, size_t N, SliceKind kind)(
-                       ref Context context, Slice!(Iterator, N, kind) slice,
-                       DefaultCountType N_bin,
-                       BinType low)
-            if (__traits(isSame, Axis, IntegralAxis))
-        {
-            import core.lifetime: move;
-
-            return buildAxisHistogram!(DefaultCountType, BinType, Axis, axisOptions)(context, slice.move, N_bin, low);
-        }
-
-        /++
-        Params:
-            slice = slice
-            N_bin = number of bins
-            low = the value of the smallest bin
-            high = the value of the largest bin
-        +/
-        HistogramAccumulator!(Storage!(Context, DefaultCountType), RegularAxis!(DefaultCountType, BinType, axisOptions))
-            factory(Context, Iterator, size_t N, SliceKind kind)(
-                       ref Context context, Slice!(Iterator, N, kind) slice,
-                       DefaultCountType N_bin,
-                       BinType low,
-                       BinType high)
-            if (__traits(isSame, Axis, RegularAxis))
-        {
-            import core.lifetime: move;
-
-            return buildAxisHistogram!(DefaultCountType, BinType, Axis, axisOptions)(context, slice.move, N_bin, low, high);
-        }
-
-        /++
-        Params:
-            slice = slice
-        +/
-        HistogramAccumulator!(Storage!(Context, DefaultCountType), CategoryAxis!(DefaultCountType, BinType, axisOptions))
-            factory(Context, Iterator, size_t N, SliceKind kind)(
-                       ref Context context, Slice!(Iterator, N, kind) slice)
-            if (__traits(isSame, Axis, CategoryAxis) && is(BinType == enum))
-        {
-            import core.lifetime: move;
-
-            return buildAxisHistogram!(DefaultCountType, BinType, Axis, axisOptions)(context, slice.move);
-        }
-    }
-
-    /++
-    Params:
-        BinType = the type of the values that are compared in histogram bins
-        Axis = type of axis
-        transform = function to transform axis
-        inverseTransform = function to undo transform
-        axisOptions = options
-    +/
-    template factory(BinType, alias Axis, alias transform, alias inverseTransform, AxisOptions axisOptions = AxisOptions())
-        if (__traits(isTemplate, Axis) &&
-            isTransformFunction!(transform, BinType) &&
-            isTransformFunction!(inverseTransform, BinType))
-    {
-        import mir.stat.descriptive.histogram.axis: TransformAxis;
-        import mir.stat.descriptive.histogram.traits: DefaultCountType;
-
-
-        /++
-        Params:
-            slice = slice
-            N_bin = number of bins
-            low = the value of the smallest bin
-            high = the value of the largest bin
-        +/
-        HistogramAccumulator!(Storage!(Context, DefaultCountType), TransformAxis!(DefaultCountType, BinType, transform, inverseTransform, axisOptions))
-            factory(Context, Iterator, size_t N, SliceKind kind)(
-                       ref Context context, Slice!(Iterator, N, kind) slice,
-                       DefaultCountType N_bin,
-                       BinType low,
-                       BinType high)
-            if (__traits(isSame, Axis, TransformAxis))
-        {
-            import core.lifetime: move;
-
-            return buildAxisHistogram!(DefaultCountType, BinType, Axis, transform, inverseTransform, axisOptions)(context, slice.move, N_bin, low, high);
-        }
-    }
-
-    /++
-    Params:
-        BinType = the type of the values that are compared in histogram bins
-        Axis = type of axis
-        transform = function to transform axis
-        axisOptions = options
-    +/
-    template factory(BinType, alias Axis, alias transform, AxisOptions axisOptions = AxisOptions())
-        if (__traits(isTemplate, Axis) &&
-            hasInverseTransformMapping!transform)
-    {
-        import mir.stat.descriptive.histogram.axis: TransformAxis;
-        import mir.stat.descriptive.histogram.traits: DefaultCountType;
-
-
-        /++
-        Params:
-            slice = slice
-            N_bin = number of bins
-            low = the value of the smallest bin
-            high = the value of the largest bin
-        +/
-        HistogramAccumulator!(Storage!(Context, DefaultCountType), TransformAxis!(DefaultCountType, BinType, transform, inverseTransformMapping!transform, axisOptions))
-            factory(Context, Iterator, size_t N, SliceKind kind)(
-                       ref Context context, Slice!(Iterator, N, kind) slice,
-                       DefaultCountType N_bin,
-                       BinType low,
-                       BinType high)
-            if (__traits(isSame, Axis, TransformAxis))
-        {
-            import core.lifetime: move;
-
-            return buildAxisHistogram!(DefaultCountType, BinType, Axis, transform, inverseTransformMapping!transform, axisOptions)(context, slice.move, N_bin, low, high);
-        }
-    }
-
-    /++
-    Params:
-        Iterator = iterator used in slice
-        Axis = type of axis
-        axisOptions = options
-    +/
-    template factory(Iterator, alias Axis, AxisOptions axisOptions = AxisOptions())
-        if (__traits(isTemplate, Axis))
-    {
-        import mir.stat.descriptive.histogram.axis: VariableAxis;
-        import mir.stat.descriptive.histogram.traits: DefaultCountType;
-
-        /++
-        Params:
-            dataSlice = slice of data
-            axisSlice = slice of axis breaks
-        +/
-        HistogramAccumulator!(Storage!(Context, DefaultCountType), VariableAxis!(DefaultCountType, Iterator, axisOptions))
-            factory(Context, size_t N, SliceKind kindA, SliceKind kindB)(
-                       ref Context context, Slice!(Iterator, N, kindA) dataSlice,
-                       Slice!(Iterator, 1, kindB) axisSlice)
-            if (__traits(isSame, Axis, VariableAxis))
-        {
-            import core.lifetime: move;
-
-            return buildAxisHistogram!(DefaultCountType, Iterator, Axis, axisOptions)(context, dataSlice.move, axisSlice.move);
-        }
-    }
-
-    /++
-    Params:
-        CountType = the type that is used to count in histogram bins
-        Axis = type of axis
-        axisOptions = options
-    +/
-    template factory(CountType, alias Axis, AxisOptions axisOptions = AxisOptions())
-        if (__traits(isTemplate, Axis))
-    {
-        import mir.stat.descriptive.histogram.axis: IntegralAxis, RegularAxis;
-
-        /++
-        Params:
-            slice = slice
-            N_bin = number of bins
-            low = the value of the smallest bin
-        +/
-        HistogramAccumulator!(Storage!(Context, CountType), IntegralAxis!(CountType, BinType, axisOptions))
-            factory(Context, Iterator, size_t N, SliceKind kind, BinType)(
-                       ref Context context, Slice!(Iterator, N, kind) slice,
-                       CountType N_bin,
-                       BinType low)
-            if (__traits(isSame, Axis, IntegralAxis))
-        {
-            import core.lifetime: move;
-
-            return buildAxisHistogram!(CountType, BinType, Axis, axisOptions)(context, slice.move, N_bin, low);
-        }
-
-        /++
-        Params:
-            slice = slice
-            N_bin = number of bins
-            low = the value of the smallest bin
-            high = the value of the largest bin
-        +/
-        HistogramAccumulator!(Storage!(Context, CountType), RegularAxis!(CountType, BinType, axisOptions))
-            factory(Context, Iterator, size_t N, SliceKind kind, BinType)(
-                ref Context context, Slice!(Iterator, N, kind) slice,
-                CountType N_bin,
-                BinType low,
-                BinType high)
-            if (__traits(isSame, Axis, RegularAxis))
-        {
-            import core.lifetime: move;
-
-            return buildAxisHistogram!(CountType, BinType, Axis, axisOptions)(context, slice.move, N_bin, low, high);
-        }
-    }
-
-    /++
-    Params:
-        CountType = the type that is used to count in histogram bins
-        transform = function to transform axis
-        inverseTransform = function to undo transform
-        Axis = type of axis
-        axisOptions = options
-    +/
-    template factory(CountType, alias Axis, alias transform, alias inverseTransform, AxisOptions axisOptions = AxisOptions())
-        if (__traits(isTemplate, Axis))
-    {
-        import mir.stat.descriptive.histogram.axis: TransformAxis;
-
-        /++
-        Params:
-            slice = slice
-            N_bin = number of bins
-            low = the value of the smallest bin
-            high = the value of the largest bin
-        +/
-        HistogramAccumulator!(Storage!(Context, CountType), TransformAxis!(CountType, BinType, transform, inverseTransform, axisOptions))
-            factory(Context, Iterator, size_t N, SliceKind kind, BinType)(
-                ref Context context, Slice!(Iterator, N, kind) slice,
-                CountType N_bin,
-                BinType low,
-                BinType high)
-            if (__traits(isSame, Axis, TransformAxis) &&
-                isTransformFunction!(transform, BinType) &&
-                isTransformFunction!(inverseTransform, BinType))
-        {
-            import core.lifetime: move;
-
-            return buildAxisHistogram!(CountType, BinType, Axis, transform, inverseTransform, axisOptions)(context, slice.move, N_bin, low, high);
-        }
-    }
-
-    /++
-    Params:
-        CountType = the type that is used to count in histogram bins
-        transform = function to transform axis
-        Axis = type of axis
-        axisOptions = options
-    +/
-    template factory(CountType, alias Axis, alias transform, AxisOptions axisOptions = AxisOptions())
-        if (__traits(isTemplate, Axis) &&
-            hasInverseTransformMapping!transform)
-    {
-        import mir.stat.descriptive.histogram.axis: TransformAxis;
-
-        /++
-        Params:
-            slice = slice
-            N_bin = number of bins
-            low = the value of the smallest bin
-            high = the value of the largest bin
-        +/
-        HistogramAccumulator!(Storage!(Context, CountType), TransformAxis!(CountType, BinType, transform, inverseTransformMapping!transform, axisOptions))
-            factory(Context, Iterator, size_t N, SliceKind kind, BinType)(
-                ref Context context, Slice!(Iterator, N, kind) slice,
-                CountType N_bin,
-                BinType low,
-                BinType high)
-            if (__traits(isSame, Axis, TransformAxis))
-        {
-            import core.lifetime: move;
-
-            return buildAxisHistogram!(CountType, BinType, Axis, transform, inverseTransformMapping!transform, axisOptions)(context, slice.move, N_bin, low, high);
-        }
-    }
-
-    /++
-    Params:
-        CountType = the type that is used to count in histogram bins
-        Axis = type of axis
-        axisOptions = options
-    +/
-    template factory(CountType, alias Axis, AxisOptions axisOptions = AxisOptions())
-        if (__traits(isTemplate, Axis))
-    {
-        import mir.primitives: DeepElementType;
-        import mir.stat.descriptive.histogram.axis: VariableAxis;
-
-        /++
-        Params:
-            dataSlice = slice of data
-            axisSlice = slice of axis breaks
-        +/
-        HistogramAccumulator!(Storage!(Context, CountType), VariableAxis!(CountType, IteratorB, axisOptions))
-            factory(Context, IteratorA, size_t N, SliceKind kindA, IteratorB, SliceKind kindB)(
-                       ref Context context, Slice!(IteratorA, N, kindA) dataSlice,
-                       Slice!(IteratorB, 1, kindB) axisSlice)
-            if (__traits(isSame, Axis, VariableAxis) &&
-                is(DeepElementType!(Slice!(IteratorA, N, kindA)) : DeepElementType!(Slice!(IteratorB, 1, kindB))))
-        {
-            import core.lifetime: move;
-
-            return buildAxisHistogram!(CountType, IteratorB, Axis, axisOptions)(context, dataSlice.move, axisSlice.move);
-        }
-    }
-
-    /++
-    Params:
-        Axis = type of axis
-        axisOptions = options
-    +/
-    template factory(alias Axis, AxisOptions axisOptions = AxisOptions())
-        if (__traits(isTemplate, Axis))
-    {
-        import std.traits: Unqual;
-        import mir.primitives: DeepElementType;
-        import mir.stat.descriptive.histogram.axis: CategoryAxis, IntegralAxis, RegularAxis;
-        import mir.stat.descriptive.histogram.traits: DefaultCountType;
-
-        /++
-        Params:
-            slice = slice
-            N_bin = number of bins
-            low = the value of the smallest bin
-        +/
-        HistogramAccumulator!(Storage!(Context, Unqual!CountType), IntegralAxis!(Unqual!CountType, BinType, axisOptions))
-            factory(Context, Iterator, size_t N, SliceKind kind, CountType, BinType)(
-                       ref Context context, Slice!(Iterator, N, kind) slice,
-                       CountType N_bin,
-                       BinType low)
-            if (__traits(isSame, Axis, IntegralAxis))
-        {
-            import core.lifetime: move;
-
-            return buildAxisHistogram!(Unqual!CountType, BinType, Axis, axisOptions)(context, slice.move, N_bin, low);
-        }
-
-        /++
-        Params:
-            slice = slice
-            N_bin = number of bins
-            low = the value of the smallest bin
-            high = the value of the largest bin
-        +/
-        HistogramAccumulator!(Storage!(Context, Unqual!CountType), RegularAxis!(Unqual!CountType, BinType, axisOptions))
-            factory(Context, Iterator, size_t N, SliceKind kind, CountType, BinType)(
-                ref Context context, Slice!(Iterator, N, kind) slice,
-                CountType N_bin,
-                BinType low,
-                BinType high)
-            if (__traits(isSame, Axis, RegularAxis))
-        {
-            import core.lifetime: move;
-
-            return buildAxisHistogram!(Unqual!CountType, BinType, Axis, axisOptions)(context, slice.move, N_bin, low, high);
-        }
-
-        /++
-        Params:
-            slice = slice
-        +/
-        HistogramAccumulator!(Storage!(Context, DefaultCountType), CategoryAxis!(DefaultCountType, DeepElementType!(Slice!(Iterator, N, kind)), axisOptions))
-            factory(Context, Iterator, size_t N, SliceKind kind)(
-                       ref Context context, Slice!(Iterator, N, kind) slice)
-            if (__traits(isSame, Axis, CategoryAxis) && is(DeepElementType!(typeof(slice)) == enum))
-        {
-            import core.lifetime: move;
-
-            return buildAxisHistogram!(DefaultCountType, DeepElementType!(typeof(slice)), Axis, axisOptions)(context, slice.move);
-        }
-    }
-
-    /++
-    Params:
-        Axis = type of axis
-    +/
-    template factory(alias Axis)
-        if (__traits(isTemplate, Axis))
-    {
-        import mir.primitives: DeepElementType;
-        import mir.stat.descriptive.histogram.axis: EnumAxis;
-        import mir.stat.descriptive.histogram.traits: DefaultCountType;
-
-        /++
-        Params:
-            slice = slice
-        +/
-        HistogramAccumulator!(Storage!(Context, DefaultCountType), EnumAxis!(DefaultCountType, DeepElementType!(Slice!(Iterator, N, kind))))
-            factory(Context, Iterator, size_t N, SliceKind kind)(
-                       ref Context context, Slice!(Iterator, N, kind) slice)
-            if (__traits(isSame, Axis, EnumAxis) && is(DeepElementType!(typeof(slice)) == enum))
-        {
-            import core.lifetime: move;
-            import mir.stat.descriptive.histogram.traits: DefaultCountType;
-
-            return buildAxisHistogram!(DefaultCountType, DeepElementType!(typeof(slice)), Axis)(context, slice.move);
-        }
-    }
-
-    /++
-    Params:
-        Axis = type of axis
-        transform = function to transform axis
-        inverseTransform = function to undo transform
-        axisOptions = options
-    +/
-    template factory(alias Axis, alias transform, alias inverseTransform, AxisOptions axisOptions = AxisOptions())
-        if (__traits(isTemplate, Axis))
-    {
-        import std.traits: Unqual;
-        import mir.stat.descriptive.histogram.axis: TransformAxis;
-
-        /++
-        Params:
-            slice = slice
-            N_bin = number of bins
-            low = the value of the smallest bin
-            high = the value of the largest bin
-        +/
-        HistogramAccumulator!(Storage!(Context, Unqual!CountType), TransformAxis!(Unqual!CountType, BinType, transform, inverseTransform, axisOptions))
-            factory(Context, Iterator, size_t N, SliceKind kind, CountType, BinType)(
-                ref Context context, Slice!(Iterator, N, kind) slice,
-                CountType N_bin,
-                BinType low,
-                BinType high)
-            if (__traits(isSame, Axis, TransformAxis) &&
-                isTransformFunction!(transform, BinType) &&
-                isTransformFunction!(inverseTransform, BinType))
-        {
-            import core.lifetime: move;
-
-            return buildAxisHistogram!(Unqual!CountType, BinType, Axis, transform, inverseTransform, axisOptions)(context, slice.move, N_bin, low, high);
-        }
-    }
-
-    /++
-    Params:
-        Axis = type of axis
-        transform = function to transform axis
-        axisOptions = options
-    +/
-    template factory(alias Axis, alias transform, AxisOptions axisOptions = AxisOptions())
-        if (__traits(isTemplate, Axis) &&
-            hasInverseTransformMapping!transform)
-    {
-        import std.traits: Unqual;
-        import mir.stat.descriptive.histogram.axis: TransformAxis;
-
-        /++
-        Params:
-            slice = slice
-            N_bin = number of bins
-            low = the value of the smallest bin
-            high = the value of the largest bin
-        +/
-        HistogramAccumulator!(Storage!(Context, Unqual!CountType), TransformAxis!(Unqual!CountType, BinType, transform, inverseTransformMapping!transform, axisOptions))
-            factory(Context, Iterator, size_t N, SliceKind kind, CountType, BinType)(
-                ref Context context, Slice!(Iterator, N, kind) slice,
-                CountType N_bin,
-                BinType low,
-                BinType high)
-            if (__traits(isSame, Axis, TransformAxis))
-        {
-            import core.lifetime: move;
-
-            return buildAxisHistogram!(Unqual!CountType, BinType, Axis, transform, inverseTransformMapping!transform, axisOptions)(context, slice.move, N_bin, low, high);
-        }
-    }
-
-    /++
-    Params:
-        Axis = type of axis
-        axisOptions = options
-    +/
-    template factory(alias Axis, AxisOptions axisOptions = AxisOptions())
-        if (__traits(isTemplate, Axis))
-    {
-        import mir.primitives: DeepElementType;
-        import mir.stat.descriptive.histogram.axis: VariableAxis;
-        import mir.stat.descriptive.histogram.traits: DefaultCountType;
-
-        /++
-        Params:
-            dataSlice = slice of data
-            axisSlice = slice of axis breaks
-        +/
-        HistogramAccumulator!(Storage!(Context, DefaultCountType), VariableAxis!(DefaultCountType, IteratorB, axisOptions))
-            factory(Context, IteratorA, size_t N, SliceKind kindA, IteratorB, SliceKind kindB)(
-                       ref Context context, Slice!(IteratorA, N, kindA) dataSlice,
-                       Slice!(IteratorB, 1, kindB) axisSlice)
-            if (__traits(isSame, Axis, VariableAxis) &&
-                is(DeepElementType!(Slice!(IteratorA, N, kindA)) : DeepElementType!(Slice!(IteratorB, 1, kindB))))
-        {
-            import core.lifetime: move;
-
-            return buildAxisHistogram!(DefaultCountType, IteratorB, Axis, axisOptions)(context, dataSlice.move, axisSlice.move);
-        }
-    }
-
-    /++
-    Params:
-        BinType = the type of the values that are compared in histogram bins
-        Axis = type of axis
-    +/
-    template factory(BinType, alias Axis)
-        if (__traits(isTemplate, Axis) && is(BinType == enum))
-    {
-        import mir.stat.descriptive.histogram.axis: EnumAxis;
-        import mir.stat.descriptive.histogram.traits: DefaultCountType;
-
-        /++
-        Params:
-            slice = slice
-        +/
-        HistogramAccumulator!(Storage!(Context, DefaultCountType), EnumAxis!(DefaultCountType, BinType))
-            factory(Context, Iterator, size_t N, SliceKind kind)(
-                       ref Context context, Slice!(Iterator, N, kind) slice)
-            if (__traits(isSame, Axis, EnumAxis))
-        {
-            import core.lifetime: move;
-
-            return buildAxisHistogram!(DefaultCountType, BinType, Axis)(context, slice.move);
-        }
-    }
-
-    /++
-    Params:
-        CountType = the type that is used to count in histogram bins
-        Axis = type of axis
-    +/
-    template factory(CountType, alias Axis)
-        if (__traits(isTemplate, Axis) && !is(CountType == enum))
-    {
-        import mir.primitives: DeepElementType;
-        import mir.stat.descriptive.histogram.axis: EnumAxis;
-
-        /++
-        Params:
-            slice = slice
-        +/
-        HistogramAccumulator!(Storage!(Context, CountType), EnumAxis!(DefaultCountType, DeepElementType!(Slice!(Iterator, N, kind))))
-            factory(Context, Iterator, size_t N, SliceKind kind)(
-                       ref Context context, Slice!(Iterator, N, kind) slice)
-            if (__traits(isSame, Axis, EnumAxis) && is(DeepElementType!(typeof(slice)) == enum))
-        {
-            import core.lifetime: move;
-
-            return buildAxisHistogram!(CountType, DeepElementType!(typeof(slice)), Axis)(context, slice.move);
-        }
-    }
-
-    /++
-    Params:
-        CountType = the type that is used to count in histogram bins
-        Axis = type of axis
-        axisOptions = options
-    +/
-    template factory(CountType, alias Axis, AxisOptions axisOptions = AxisOptions())
-        if (__traits(isTemplate, Axis) && !is(CountType == enum))
-    {
-        import mir.primitives: DeepElementType;
-        import mir.stat.descriptive.histogram.axis: CategoryAxis;
-
-        /++
-        Params:
-            slice = slice
-        +/
-        HistogramAccumulator!(Storage!(Context, CountType), CategoryAxis!(DefaultCountType, DeepElementType!(Slice!(Iterator, N, kind)), axisOptions))
-            factory(Context, Iterator, size_t N, SliceKind kind)(
-                       ref Context context, Slice!(Iterator, N, kind) slice)
-            if (__traits(isSame, Axis, CategoryAxis) && is(DeepElementType!(typeof(slice)) == enum))
-        {
-            import core.lifetime: move;
-
-            return buildAxisHistogram!(CountType, DeepElementType!(typeof(slice)), Axis, axisOptions)(context, slice.move);
-        }
-    }
-
 }
 
-// Run the same behavioral checks through all three public factories. Storage-specific
-// examples and attribute checks remain beside the public APIs.
+// Axis selection has no knowledge of counter storage or allocation policy.
+package template constructHistogramAxis(Selection...)
+{
+    auto constructHistogramAxis(Data, Args...)(scope Data data, auto ref Args args)
+    {
+        import mir.stat.descriptive.histogram.traits: isAxis;
+        import mir.stat.descriptive.histogram.axis: AxisOptions, IntegralAxis,
+            RegularAxis, TransformAxis, VariableAxis, EnumAxis, CategoryAxis,
+            integralAxis, regularAxis, transformAxis;
+        import std.traits: CommonType, Unqual;
+        static if (Selection.length == 1 && is(Selection[0]) && isAxis!(Selection[0]))
+        {
+            alias Axis = Selection[0];
+            return Axis(args);
+        }
+        else
+        {
+            static if (is(Selection[0]))
+            {
+                alias Coordinate = Selection[0];
+                alias Axis = Selection[1];
+                alias Rest = Selection[2 .. $];
+            }
+            else
+            {
+                alias Axis = Selection[0];
+                alias Rest = Selection[1 .. $];
+            }
+            static if (Rest.length && is(typeof(Rest[$ - 1]) == AxisOptions))
+            {
+                enum options = Rest[$ - 1];
+                alias Parameters = Rest[0 .. $ - 1];
+            }
+            else
+            {
+                enum options = AxisOptions();
+                alias Parameters = Rest;
+            }
+            static if (__traits(isSame, Axis, VariableAxis))
+            {
+                static assert(Parameters.length == 0 && Args.length == 1);
+                static if (is(Selection[0]))
+                    return VariableAxis!(Coordinate, options)(args[0]);
+                else
+                {
+                    import mir.stat.descriptive.histogram.axis: variableAxis;
+                    return variableAxis!options(args[0]);
+                }
+            }
+            else
+            {
+                static if (is(Selection[0]))
+                    alias BinType = Coordinate;
+                else static if ((__traits(isSame, Axis, TransformAxis) && Args.length == 2) ||
+                    ((__traits(isSame, Axis, RegularAxis) || __traits(isSame, Axis, IntegralAxis)) && Parameters.length))
+                    alias BinType = Unqual!(Data.DeepElement);
+                else static if ((__traits(isSame, Axis, RegularAxis) || __traits(isSame, Axis, TransformAxis)) && Args.length == 3)
+                    // Explicit bin counts leave coordinate inference to both bounds.
+                    alias BinType = Unqual!(CommonType!(Args[1], Args[2]));
+                else static if (Args.length)
+                    alias BinType = Unqual!(Args[$ - 1]);
+                else
+                    alias BinType = Unqual!(Data.DeepElement);
+                static if (__traits(isSame, Axis, IntegralAxis) || __traits(isSame, Axis, RegularAxis))
+                {
+                    static if (__traits(isSame, Axis, IntegralAxis))
+                        alias makeAxis = integralAxis;
+                    else
+                        alias makeAxis = regularAxis;
+                    static if (Parameters.length)
+                    {
+                        static assert(Parameters.length == 1);
+                        return makeAxis!(BinType, Parameters[0], options)(data, args);
+                    }
+                    else
+                        return Axis!(BinType, options)(args);
+                }
+                else static if (__traits(isSame, Axis, TransformAxis))
+                {
+                    static if (Args.length == 2)
+                        return transformAxis!(BinType, Parameters, options)(data, args);
+                    else
+                        return transformAxis!(BinType, Parameters, options)(args);
+                }
+                else static if (__traits(isSame, Axis, EnumAxis))
+                {
+                    static assert(Parameters.length == 0 && Args.length == 0 && options == AxisOptions());
+                    return EnumAxis!BinType();
+                }
+                else static if (__traits(isSame, Axis, CategoryAxis))
+                {
+                    static assert(Parameters.length == 0 && Args.length == 0);
+                    return CategoryAxis!(BinType, options)();
+                }
+                else
+                    static assert(0, "Histogram factory: unsupported axis template");
+            }
+        }
+    }
+}
+
 version(mir_stat_test)
 {
     import mir.stat.descriptive.histogram.api.gc: histogram;
@@ -1469,25 +213,62 @@ private mixin template FactoryTests(alias makeHistogram, bool gcCounts)
     else
         private alias CountStorage(T) = Slice!(RCI!T);
 
-    // Explicit regular-axis types preserve their counter type and flow options.
+    // Explicit regular-axis types preserve geometry and underflow/overflow options.
     @safe pure nothrow
     unittest
     {
         import mir.ndslice.slice: sliced;
         import mir.stat.descriptive.histogram.axis: RegularAxis, EnableOverflow;
 
-        alias Axis = RegularAxis!(uint, double, AxisOptions());
+        alias Axis = RegularAxis!(double, AxisOptions());
         auto data = [0.0, 1, 4, 5, 6, 9, 10, 13, 14].sliced;
         auto h = makeHistogram!Axis(data, 3u, 0.0, 15.0);
         assert(h.counts == [3u, 3u, 3u]);
-        static assert(is(typeof(h) == HistogramAccumulator!(CountStorage!uint, Axis)));
+        static assert(is(typeof(h) == HistogramAccumulator!(CountStorage!size_t, Axis)));
 
-        alias OverflowAxis = RegularAxis!(uint, double, AxisOptions(EnableOverflow(true)));
+        alias OverflowAxis = RegularAxis!(double, AxisOptions(EnableOverflow(true)));
         auto withOverflow = [1.0, 6.0, 11.0, 20.0].sliced;
         auto flow = makeHistogram!OverflowAxis(withOverflow, 3u, 0.0, 15.0);
         assert(flow.counts == [1u, 1u, 1u, 1u]);
         assert(flow.overflow == 1);
-        static assert(is(flow.CountType == uint));
+        static assert(is(flow.CountType == size_t));
+    }
+
+    // Mixed bounds infer the same coordinate type in either order.
+    @safe pure nothrow
+    unittest
+    {
+        void check(Low, High, Expected)()
+        {
+            import mir.ndslice.slice: sliced;
+            import mir.stat.descriptive.histogram.axis: RegularAxis, TransformAxis, regularAxis;
+            Expected[3] values = [0.25, 1.25, 2.25];
+            Low low = 0;
+            High high = 4;
+            auto ordinary = makeHistogram!(uint, RegularAxis)(values[].sliced, 2u, low, high);
+            auto transformed = makeHistogram!(uint, TransformAxis, "a", "a")(
+                values[].sliced, 2u, low, high);
+            auto direct = regularAxis(2u, low, high);
+            static assert(is(ordinary.axis[0].BinType == Expected));
+            static assert(is(transformed.axis[0].BinType == Expected));
+            static assert(is(direct.BinType == Expected));
+            static assert(is(ordinary.CountType == uint));
+            assert(ordinary.counts == [2u, 1]);
+            assert(transformed.counts == ordinary.counts);
+        }
+        void checkAll()()
+        {
+            check!(float, double, double)();
+            check!(double, float, double)();
+            check!(double, real, real)();
+            check!(real, double, real)();
+            check!(int, float, float)();
+            check!(float, int, float)();
+        }
+        static if (gcCounts)
+            checkAll!()();
+        else
+            () @nogc { checkAll!()(); }();
     }
 
     // Explicit transform-axis types retain the custom transform and inverse.
@@ -1500,12 +281,12 @@ private mixin template FactoryTests(alias makeHistogram, bool gcCounts)
         static double transform(double x) { return x * x; }
         static double inverse(double x) { import mir.math.common: sqrt; return sqrt(x); }
 
-        alias Axis = TransformAxis!(uint, double, transform, inverse, AxisOptions());
+        alias Axis = TransformAxis!(double, transform, inverse, AxisOptions());
         auto data = [0.5, 1.0, 2.5, 3.5].sliced;
         auto h = makeHistogram!Axis(data, 4u, 0.0, 4.0);
         assert(h.counts == [2u, 1u, 0u, 1u]);
         assert(h.axis[0].bin(0).high == 2.0);
-        static assert(is(typeof(h) == HistogramAccumulator!(CountStorage!uint, Axis)));
+        static assert(is(typeof(h) == HistogramAccumulator!(CountStorage!size_t, Axis)));
     }
 
     // Explicit variable-axis types accept identical and different iterator types.
@@ -1521,16 +302,16 @@ private mixin template FactoryTests(alias makeHistogram, bool gcCounts)
         {{
             auto data = [0.0, 0.5, 1.5, 2.5, 3.5].sliced;
             auto breaks = [0.0, 1.0, 3.0, 4.0].sliced;
-            alias Axis = VariableAxis!(CountType, double*, AxisOptions());
-            auto h = makeHistogram!Axis(data, breaks);
+            alias Axis = VariableAxis!(double*, AxisOptions());
+            auto h = makeHistogram!(CountType, Axis)(data, breaks);
             assert(h.counts == [2u, 2u, 1u]);
             static assert(is(typeof(h) == HistogramAccumulator!(CountStorage!CountType, Axis)));
 
-            alias RcAxis = VariableAxis!(CountType, RCI!double, AxisOptions());
+            alias RcAxis = VariableAxis!(RCI!double, AxisOptions());
             auto makeOwnedHistogram()
             {
                 auto ownedBreaks = rcslice!double([0.0, 1.0, 3.0, 4.0]);
-                return makeHistogram!RcAxis(data, ownedBreaks);
+                return makeHistogram!(CountType, RcAxis)(data, ownedBreaks);
             }
             auto mixed = makeOwnedHistogram();
             assert(mixed.counts == [2u, 2u, 1u]);
@@ -1549,17 +330,17 @@ private mixin template FactoryTests(alias makeHistogram, bool gcCounts)
         import mir.ndslice.slice: sliced;
         import mir.stat.descriptive.histogram.axis: IntegralAxis, EnumAxis, CategoryAxis;
 
-        alias Integral = IntegralAxis!(uint, double, AxisOptions());
-        auto h = makeHistogram!Integral([0.0, 0.5, 1.5].sliced, 2u, 0.0);
+        alias Integral = IntegralAxis!(double, AxisOptions());
+        auto h = makeHistogram!(uint, Integral)([0.0, 0.5, 1.5].sliced, 2u, 0.0);
         assert(h.counts == [2u, 1u]);
         static assert(is(h.CountType == uint));
 
         enum Label { first, second }
         auto labels = [Label.first, Label.second, Label.second].sliced;
-        alias Enumerated = EnumAxis!(uint, Label);
-        alias Categorized = CategoryAxis!(uint, Label, AxisOptions());
-        auto e = makeHistogram!Enumerated(labels);
-        auto c = makeHistogram!Categorized(labels);
+        alias Enumerated = EnumAxis!(Label);
+        alias Categorized = CategoryAxis!(Label, AxisOptions());
+        auto e = makeHistogram!(uint, Enumerated)(labels);
+        auto c = makeHistogram!(uint, Categorized)(labels);
         assert(e.counts == [1u, 2u]);
         assert(c.counts == [1u, 2u]);
         static assert(is(e.CountType == uint));
@@ -1627,7 +408,7 @@ private mixin template FactoryTests(alias makeHistogram, bool gcCounts)
         static foreach (u; [false, true])
         static foreach (o; [false, true])
         {{
-            alias A = IntegralAxis!(uint, double, AxisOptions(false, o, u));
+            alias A = IntegralAxis!(double, AxisOptions(false, o, u));
             auto h = makeHistogram([0.5, 1.5].sliced, A(2, 0.0));
             assert(h.counts.length == 2 + u + o);
             assert(h.counts[u] == 1 && h.counts[u + 1] == 1);
@@ -1657,7 +438,7 @@ private mixin template FactoryTests(alias makeHistogram, bool gcCounts)
         auto integral = makeHistogram!(uint, IntegralAxis, rule)(data[0 .. 3], 0.0);
         assert(calls == 3);
         static assert(is(integral.CountType == uint));
-        auto expected = makeHistogram(data[0 .. 3], data.integralAxis!(uint, double, rule)(0.0));
+        auto expected = makeHistogram(data[0 .. 3], data.integralAxis!(double, rule)(0.0));
         assert(integral.counts == expected.counts);
         static foreach (builtin; AliasSeq!(sturges, scott, freedmanDiaconis, sturges!uint))
         {{
@@ -1667,7 +448,7 @@ private mixin template FactoryTests(alias makeHistogram, bool gcCounts)
         }}
     }
 
-    // Reject non-integer results and check narrowing before constructing the axis.
+    // Reject invalid rule results; bin count is independent of counter width.
     unittest
     {
         import mir.ndslice.slice: sliced;
@@ -1676,11 +457,11 @@ private mixin template FactoryTests(alias makeHistogram, bool gcCounts)
         import std.meta: AliasSeq;
         import core.exception: AssertError;
         auto data = [0.0, 1].sliced;
-        static foreach (value; AliasSeq!(0, -1, 256UL, ulong.max))
+        static foreach (value; AliasSeq!(0, -1))
         {{
             static auto invalid(S)(S values) { return value; }
             assertThrown!AssertError(makeHistogram!(ubyte, double, RegularAxis, invalid)(data, 0.0, 2.0));
-            assertThrown!AssertError(data.regularAxis!(ubyte, double, invalid)(0.0, 2.0));
+            assertThrown!AssertError(data.regularAxis!(double, invalid)(0.0, 2.0));
         }}
         static double fractional(S)(S values) { return 2.5; }
         static bool boolean(S)(S values) { return true; }
@@ -1692,9 +473,10 @@ private mixin template FactoryTests(alias makeHistogram, bool gcCounts)
         static uint two(S)(S values) { return 2; }
         static assert(!__traits(compiles, makeHistogram!(IntegralAxis, two)(data, 0.0, 2.0)));
         static assert(!__traits(compiles, makeHistogram!(RegularAxis, two)(data, 0.0)));
-        static auto boundary(S)(S values) { return 255UL; }
-        auto h = makeHistogram!(ubyte, double, RegularAxis, boundary)(data, 0.0, 255.0);
-        assert(h.axis[0].N_bin == 255);
+        static auto boundary(S)(S values) { return 300UL; }
+        auto h = makeHistogram!(ubyte, double, RegularAxis, boundary)(data, 0.0, 300.0);
+        assert(h.axis[0].N_bin == 300 && h.counts.length == 300);
+        static assert(is(h.CountType == ubyte));
     }
 
     // Cover custom rules, precision/options overrides, and scalar/rule disambiguation.
@@ -1813,7 +595,7 @@ private mixin template FactoryTests(alias makeHistogram, bool gcCounts)
         static assert(!__traits(compiles,
             data.transformAxis!(log2, exp2, floatRule)(1.0f, 16.0f)));
         // Explicit coordinate overrides continue to select float for the rule.
-        auto explicitType = data.transformAxis!(uint, float, log2, floatRule)(1.0f, 16.0f);
+        auto explicitType = data.transformAxis!(float, log2, floatRule)(1.0f, 16.0f);
         static assert(is(explicitType.BinType == float));
         assert(explicitType.N_bin == 2);
     }
@@ -1838,8 +620,8 @@ private mixin template FactoryTests(alias makeHistogram, bool gcCounts)
                 auto mapped = makeHistogram!(TransformAxis, log2)(data, n, 1.0, 16.0);
                 static foreach (h; AliasSeq!(integral, regular, transformed, mapped))
                 {
-                    static assert(is(h.CountType == uint));
-                    static assert(is(h.axis[0].CountType == uint));
+                    static assert(is(h.CountType == size_t));
+                    static assert(is(typeof(h.axis[0].N_bin()) == size_t));
                     h.put(1.5);
                 }
                 assert(integral.counts == [2, 2]);
@@ -1870,7 +652,7 @@ private mixin template FactoryTests(alias makeHistogram, bool gcCounts)
             static immutable edges = [0.0, 1.0, 3.0];
             auto boundaries = rcslice!double(edges);
             auto h = makeHistogram!VariableAxis(samples[].sliced, boundaries);
-            static assert(is(typeof(h.axis[0]) == VariableAxis!(size_t, RCI!double, AxisOptions())));
+            static assert(is(typeof(h.axis[0]) == VariableAxis!(RCI!double, AxisOptions())));
             assert(h.counts == [1, 2]);
             // Release the caller's reference. The histogram must retain the boundaries.
             boundaries = typeof(boundaries).init;
@@ -1883,7 +665,7 @@ private mixin template FactoryTests(alias makeHistogram, bool gcCounts)
             auto borrowed = makeHistogram!VariableAxis(observations, edges[].sliced);
             assert(borrowed.counts == [1, 2]);
             static assert(is(typeof(borrowed.axis[0]) ==
-                VariableAxis!(size_t, immutable(double)*, AxisOptions())));
+                VariableAxis!(immutable(double)*, AxisOptions())));
 
             // Counter overrides and underflow/overflow options use the same helper.
             enum options = AxisOptions(false, true, true);
@@ -1908,7 +690,7 @@ private mixin template FactoryTests(alias makeHistogram, bool gcCounts)
 
         static foreach (T; AliasSeq!(float, double, real))
         {{
-            alias Axis = RegularAxis!(T, double, AxisOptions(false, true, true));
+            alias Axis = RegularAxis!(double, AxisOptions(false, true, true));
             double[0] empty;
             auto h = makeHistogram(empty[].sliced, Axis(2, 0.0, 4.0));
             assert(h.counts == [0, 0, 0, 0]);
@@ -1993,7 +775,7 @@ unittest
 
     uint[3] counts = [7, 8, 9];
     double[0] observations;
-    auto axis = RegularAxis!(uint, double, AxisOptions())(2u, 0.0, 2.0);
+    auto axis = RegularAxis!(double, AxisOptions())(2u, 0.0, 2.0);
     assertThrown!AssertError(initializeHistogram(counts[].sliced, axis, observations[]));
     assert(counts == [7, 8, 9]);
 }
@@ -2037,7 +819,7 @@ private mixin template RelativeFrequencyFactoryTests(alias make)
         all.put(3.0);
         assert(all.total == 6 && all.relativeFrequency(1) == 2.0 / 6);
 
-        alias A = RegularAxis!(uint, double, AxisOptions());
+        alias A = RegularAxis!(double, AxisOptions());
         double[0] empty;
         auto explicitAxis = make(empty[].sliced, A(2, 0, 4));
         assert(explicitAxis.total == 0 && isNaN(explicitAxis.relativeFrequency(0)));
@@ -2104,7 +886,7 @@ private mixin template ConstFactoryTests(alias make, bool relative)
         const observations = values[].sliced;
         const uint n = 3;
         auto mutableResult = make!RegularAxis(observations, n, 0.0, 3.0);
-        static assert(is(mutableResult.CountType == uint));
+        static assert(is(mutableResult.CountType == size_t));
         mutableResult.put(2.5);
         assert(mutableResult.counts == [2u, 1, 2]);
         static if (relative)
@@ -2450,32 +1232,11 @@ package mixin template WeightedHistogramFactory(alias allocate, alias release = 
                 "Weighted histogram observations and weights must have matching shapes");
 
             import mir.stat.descriptive.histogram.api.factory: insertWeighted;
-            import mir.stat.descriptive.histogram.axis: VariableAxis, EnumAxis;
-            import std.traits: Unqual, isNumeric;
-            import std.meta: AliasSeq;
-            // Expand the counter and coordinate types explicitly: a single floating
-            // type in the existing overloads can mean either of those two choices.
-            static if (Options.length && __traits(isTemplate, Options[0]))
-                alias Selected = AliasSeq!(double, Options);
+            import std.traits: isNumeric;
+            static if (Options.length && is(Options[0]) && isNumeric!(Options[0]))
+                auto h = emptyImplementation.factory!Options(context, observations, args);
             else
-                alias Selected = Options;
-            static if (Selected.length == 2 && __traits(isSame, Selected[1], EnumAxis))
-            {
-                alias Axis = EnumAxis!(Selected[0], Unqual!(typeof(observations).DeepElement));
-                auto h = emptyImplementation.factory!Axis(context, observations, args);
-            }
-            else static if (Selected.length >= 2 && __traits(isTemplate, Selected[1]) &&
-                !__traits(isSame, Selected[1], VariableAxis))
-            {
-                static if (Args.length && isNumeric!(Args[$ - 1]))
-                    alias Coordinate = Unqual!(Args[$ - 1]);
-                else
-                    alias Coordinate = Unqual!(typeof(observations).DeepElement);
-                auto h = emptyImplementation.factory!(Selected[0], Coordinate, Selected[1 .. $])(
-                    context, observations, args);
-            }
-            else
-                auto h = emptyImplementation.factory!Selected(context, observations, args);
+                auto h = emptyImplementation.factory!(double, Options)(context, observations, args);
             static if (!is(typeof(release) == typeof(null)))
                 scope(failure) release(context, h.counts);
             insertWeighted(h, observations, masses);

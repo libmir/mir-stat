@@ -54,12 +54,12 @@ unittest
     import mir.ndslice.slice: sliced;
     import mir.stat.descriptive.histogram.axis: AxisOptions, IntegralAxis;
 
-    auto integralAxis = IntegralAxis!(size_t, double, AxisOptions())(5, 2.0);
+    auto integralAxis = IntegralAxis!(double, AxisOptions())(5, 2.0);
     auto x = [2.0, 2.5, 3.0, 3.5].sliced;
 
     auto h = rchistogramImplBasic(x, integralAxis);
     assert(h.counts == [2, 2, 0, 0, 0]);
-    static assert(is(typeof(h.counts) == Slice!(RCI!(integralAxis.CountType))));
+    static assert(is(typeof(h.counts) == Slice!(RCI!size_t)));
 }
 
 /++
@@ -75,8 +75,10 @@ $(LI `data.rchistogram!(TransformAxis, transform, inverse)(n, low, high)`)
 $(LI `data.rchistogram!VariableAxis(boundaries)`)
 $(LI `data.rchistogram!EnumAxis()` or `data.rchistogram!CategoryAxis()`))
 
+Counters default to size_t, independently of the bin-count argument and axis.
 A concrete axis type can replace the axis template. Explicit template arguments
-can override count and bin types; axis options follow the axis (and transforms,
+select the counter type first and optionally the coordinate type second, for example
+`rchistogram!(uint, double, RegularAxis)` or `rchistogram!uint(data, axis)`; axis options follow the axis (and transforms,
 when supplied). A supported transform may omit its inverse. A bin-count rule
 can replace the explicit bin count; see the examples below. Data may be an
 ndslice of any rank; its elements are counted as one-dimensional observations.
@@ -107,7 +109,7 @@ unittest
     auto data = [0.0, 1, 2, 3].sliced;
     auto h = data.rchistogram!RegularAxis(2u, 0.0, 4.0);
     assert(h.counts == [2u, 2]);
-    static assert(is(typeof(h.counts.iterator) == RCI!uint));
+    static assert(is(typeof(h.counts.iterator) == RCI!size_t));
 }
 
 /// Override the counter type and include underflow and overflow bins.
@@ -118,8 +120,8 @@ unittest
     import mir.ndslice.slice: sliced;
     import mir.stat.descriptive.histogram.axis: AxisOptions, RegularAxis;
 
-    alias Axis = RegularAxis!(ulong, double, AxisOptions(false, true, true));
-    auto h = [-1.0, 0, 1, 2, 3, 4].sliced.rchistogram!Axis(2, 0.0, 4.0);
+    alias Axis = RegularAxis!(double, AxisOptions(false, true, true));
+    auto h = [-1.0, 0, 1, 2, 3, 4].sliced.rchistogram!(ulong, Axis)(2, 0.0, 4.0);
     assert(h.counts == [1UL, 2, 2, 1]);
     assert(h.underflow == 1 && h.overflow == 1);
     static assert(is(h.CountType == ulong));
@@ -275,7 +277,7 @@ unittest
 
     auto h1 = x.rchistogram!IntegralAxis(3u, 0.0);
     assert(h1.counts == result1);
-    static assert(is(h1.CountType == uint));
+    static assert(is(h1.CountType == size_t));
 
     // Pass axis directly
     auto iAxis = integralAxis(3u, 0.0);
@@ -308,7 +310,7 @@ unittest
 
     auto h1 = x.rchistogram!RegularAxis(3u, 0.0, 15.0);
     assert(h1.counts == result1);
-    static assert(is(h1.CountType == uint));
+    static assert(is(h1.CountType == size_t));
 
     // Pass axis directly
     auto regularAxis2 = regularAxis(3u, 0.0, 15.0);
@@ -343,7 +345,7 @@ unittest
 
     auto h1 = x.rchistogram!(TransformAxis, log10, inverseTransformMapping!log10)(4u, 10.0 ^^ 2.0, 10.0 ^^ 12.0);
     assert(h1.counts == result1);
-    static assert(is(h1.CountType == uint));
+    static assert(is(h1.CountType == size_t));
 
     // Pass axis directly
     auto regularAxis2 = transformAxis!(log10, inverseTransformMapping!log10)(4u, 10.0 ^^ 2.0, 10.0 ^^ 12.0);
@@ -366,7 +368,7 @@ unittest
     // For some functions, inverseTransform is not needed
     auto h6 = x.rchistogram!(TransformAxis, log10)(4u, 10.0 ^^ 2.0, 10.0 ^^ 12.0);
     assert(h6.counts == result1);
-    static assert(is(h6.CountType == uint));
+    static assert(is(h6.CountType == size_t));
 
     // Pass axis directly without inverseTransform
     auto regularAxis4 = transformAxis!log10(4u, 10.0 ^^ 2.0, 10.0 ^^ 12.0);
@@ -437,7 +439,7 @@ unittest
     static assert(is(h1.CountType == size_t));
 
     // Can handle string inputs
-    auto h2 = y.rchistogram!(Foo, CategoryAxis);
+    auto h2 = y.rchistogram!(size_t, Foo, CategoryAxis);
     assert(h2.counts == result);
 
     // Pass axis directly
@@ -793,7 +795,8 @@ Built-in arrays and Mir slices are accepted. Their shapes must match; matching
 multidimensional slices are traversed elementwise into a one-axis histogram.
 Weights must be finite, nonnegative, and implicitly convertible to the counter
 type. Axis templates default to `double` counters, independently of the bin-count
-argument. An explicit counter override or concrete axis retains its counter type.
+argument. An explicit leading counter type overrides this default, including with a supplied
+axis instance or concrete axis type. Axes never select counter storage.
 Integral counters require integral weights. Counts must accommodate their sums.
 Bin-count rules operate on observations, without weighting the rule itself.
 Axis ownership and count ownership follow $(LREF rchistogram).
@@ -856,7 +859,7 @@ unittest
     assert(h.counts == [2.0L, 2.0L]);
 }
 
-/// A supplied axis keeps its counter type: use integral counters for integral weights.
+/// Select integral counters independently of a supplied axis for integral weights.
 version(mir_stat_test)
 @safe pure nothrow @nogc
 unittest
@@ -864,8 +867,8 @@ unittest
     import mir.stat.descriptive.histogram.axis: RegularAxis, AxisOptions;
     double[3] observations = [0.25, 0.75, 1.25];
     uint[3] weights = [1, 3, 2];
-    auto axis = RegularAxis!(uint, double, AxisOptions())(2, 0.0, 2.0);
-    auto h = rcWeightedHistogram(observations[], weights[], axis);
+    auto axis = RegularAxis!(double, AxisOptions())(2, 0.0, 2.0);
+    auto h = rcWeightedHistogram!uint(observations[], weights[], axis);
     static assert(is(h.CountType == uint));
     assert(h.counts == [4u, 2]);
     // Fractional weights require floating-point counters, as in the first example.
@@ -957,13 +960,13 @@ unittest
     import mir.ndslice.slice: sliced;
     double[2] data = [0.5, 1.5];
     float[2] weights = [0.5f, 1.5f];
-    alias Axis = RegularAxis!(float, double, AxisOptions());
-    auto concrete = rcWeightedHistogram!Axis(data, weights, 2f, 0.0, 2.0);
-    auto instance = rcWeightedHistogram(data, weights, Axis(2, 0, 2));
+    alias Axis = RegularAxis!(double, AxisOptions());
+    auto concrete = rcWeightedHistogram!(float, Axis)(data, weights, 2u, 0.0, 2.0);
+    auto instance = rcWeightedHistogram!float(data, weights, Axis(2, 0, 2));
     static assert(is(concrete.CountType == float));
     assert(concrete.counts == instance.counts && instance.counts == [0.5f, 1.5f]);
     double[2] wideWeights = [0.5, 1.5];
-    static assert(!__traits(compiles, rcWeightedHistogram(data, wideWeights, RegularAxis!(uint, double, AxisOptions())(2, 0, 2))));
+    static assert(!__traits(compiles, rcWeightedHistogram!uint(data, wideWeights, RegularAxis!(double, AxisOptions())(2, 0, 2))));
     static assert(!__traits(compiles, rcWeightedHistogram!RegularAxis(
         data[].sliced(1, 2), weights, 2u, 0.0, 2.0)));
     auto integral = rcWeightedHistogram!IntegralAxis(data, weights, 2u, 0.0);
@@ -1053,4 +1056,73 @@ else version(mir_stat_test)
 unittest
 {
     testWeightedFactoryViews();
+}
+
+/// Reuse one axis with different counter storage; bin counts and indices stay integral.
+version(mir_stat_test)
+@safe pure nothrow @nogc
+unittest
+{
+    import mir.ndslice.slice: sliced;
+    import mir.stat.descriptive.histogram.axis: RegularAxis, AxisOptions;
+    double[3] data = [0.25, 0.75, 1.25];
+    float[3] weights = [0.5f, 1.5f, 2.0f];
+    auto axis = RegularAxis!(double, AxisOptions())(2, 0.0, 2.0);
+    auto counts = rchistogram!uint(data[].sliced, axis);
+    auto weighted = rcWeightedHistogram!float(data, weights, axis);
+    auto relative = rcWeightedRelativeFrequencyHistogram(data, weights, axis);
+    static assert(is(typeof(axis.N_bin()) == size_t));
+    static assert(is(typeof(axis.index(0.5)) == size_t));
+    static assert(is(counts.CountType == uint));
+    static assert(is(weighted.CountType == float));
+    static assert(is(relative.CountType == double));
+    assert(counts.counts == [2u, 1]);
+    assert(weighted.counts == [2.0f, 2.0f]);
+    assert(relative.total == 4 && relative.relativeFrequency(0) == 0.5);
+}
+
+// Weighted factories share mixed-bound inference without changing counter defaults.
+version(mir_stat_test)
+@safe pure nothrow @nogc
+unittest
+{
+    import mir.stat.descriptive.histogram.axis: RegularAxis, TransformAxis;
+    double[3] values = [0.25, 1.25, 2.25];
+    uint[3] weights = [1, 2, 3];
+    double low = 0;
+    float high = 4;
+    auto h = rcWeightedHistogram!RegularAxis(values, weights, 2u, low, high);
+    auto f = rcWeightedRelativeFrequencyHistogram!(TransformAxis, "a", "a")(
+        values, weights, 2u, float(0), double(4));
+    static assert(is(h.axis[0].BinType == double));
+    static assert(is(f.CountType == double));
+    static assert(is(h.CountType == double));
+    assert(h.counts == [3.0, 3.0]);
+    assert(f.counts == h.counts && f.total == 6);
+}
+
+// Custom axes supply geometry and integral indices, without counter metadata.
+version(mir_stat_test)
+@safe pure nothrow @nogc
+unittest
+{
+    import mir.ndslice.slice: sliced;
+    struct TwoBins
+    {
+        alias BinType = double;
+        enum uint N_bin = 2;
+        uint index(double value) const @safe pure nothrow @nogc
+        {
+            assert(value >= 0 && value < 2);
+            return value < 1 ? 0u : 1u;
+        }
+    }
+    double[2] data = [0.5, 1.5];
+    uint[2] weights = [2, 3];
+    auto h = rchistogram!ubyte(data[].sliced, TwoBins());
+    auto f = rcWeightedRelativeFrequencyHistogram!float(data, weights, TwoBins());
+    static assert(is(h.CountType == ubyte));
+    static assert(is(f.CountType == float));
+    assert(h.counts == [1, 1]);
+    assert(f.total == 5 && f.counts == [2, 3]);
 }

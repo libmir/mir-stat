@@ -48,6 +48,7 @@ template makeHistogram(Options...)
 {
     import mir.ndslice.slice: Slice, SliceKind;
     import mir.stat.descriptive.histogram.traits: isAxis;
+    import std.traits: isNumeric, Unqual;
 
     // Preserve the direct construction path for an explicitly supplied axis.
     // Shared overload dispatch is only needed when the axis must be deduced.
@@ -55,18 +56,23 @@ template makeHistogram(Options...)
     Params:
         allocator = allocator instance providing allocation and deallocation
         observations = observations to count
-        axis = axis defining the bins and counter type
+        axis = axis defining the bins
     +/
     auto makeHistogram(Allocator, Iterator, size_t N, SliceKind kind, Axis)(
         ref Allocator allocator, Slice!(Iterator, N, kind) observations, Axis axis)
-        if (!Options.length && isAxis!Axis)
+        if (isAxis!Axis && (!Options.length ||
+            (Options.length == 1 && is(Options[0]) && isNumeric!(Options[0]))))
     {
         import mir.ndslice.allocation: makeSlice;
         import mir.stat.descriptive.histogram.traits: storageExtent;
         import mir.stat.descriptive.histogram.api.factory: initializeHistogram;
         import std.experimental.allocator: dispose;
 
-        auto counts = makeSlice!(Axis.CountType)(allocator, storageExtent(axis));
+        static if (Options.length)
+            alias CountType = Unqual!(Options[0]);
+        else
+            alias CountType = size_t;
+        auto counts = makeSlice!CountType(allocator, storageExtent(axis));
         scope(failure) allocator.dispose(counts.field);
         return initializeHistogram(counts, axis, observations);
     }
@@ -80,7 +86,8 @@ template makeHistogram(Options...)
         args = observation slice followed by axis construction arguments
     +/
     auto makeHistogram(Allocator, Args...)(ref Allocator allocator, auto ref Args args)
-        if (Options.length || Args.length != 2 || !isAxis!(Args[1]))
+        if (!(Args.length == 2 && isAxis!(Args[1]) &&
+            (!Options.length || (Options.length == 1 && is(Options[0]) && isNumeric!(Options[0])))))
     {
         static if (Options.length)
             return implementation.factory!Options(allocator, args);
@@ -100,7 +107,7 @@ unittest
     import std.experimental.allocator: dispose;
 
     double[4] data = [0, 1, 2, 3];
-    auto axis = RegularAxis!(uint, double, AxisOptions())(2u, 0.0, 4.0);
+    auto axis = RegularAxis!(double, AxisOptions())(2u, 0.0, 4.0);
     auto h = makeHistogram(Mallocator.instance, data[].sliced, axis);
     scope(exit) Mallocator.instance.dispose(h.counts.field);
     assert(h.counts == [2u, 2]);
@@ -185,7 +192,7 @@ unittest
     SafeAllocator allocator;
     double[4] values = [0, 1, 2, 3];
     auto h = makeHistogram(allocator, values[].sliced,
-        RegularAxis!(uint, double, AxisOptions())(2u, 0.0, 4.0));
+        RegularAxis!(double, AxisOptions())(2u, 0.0, 4.0));
     assert(allocator.allocations == 1 && allocator.releases == 0);
     assert(h.counts == [2, 2]);
     allocator.dispose(h.counts.field);
@@ -206,8 +213,8 @@ unittest
     {{
         CountingAllocator allocator;
         double[0] empty;
-        alias Axis = RegularAxis!(T, double, AxisOptions(false, true, true));
-        auto h = makeHistogram(allocator, empty[].sliced, Axis(3, 0.0, 3.0));
+        alias Axis = RegularAxis!(double, AxisOptions(false, true, true));
+        auto h = makeHistogram!T(allocator, empty[].sliced, Axis(3, 0.0, 3.0));
         assert(allocator.allocations == 1 && allocator.releases == 0);
         assert(allocator.lastBytes == 5 * T.sizeof);
         assert(h.counts == [0, 0, 0, 0, 0]);
@@ -236,7 +243,7 @@ unittest
     double[3] values = [0, 1, 2];
     CountingAllocator allocator;
     assertThrown!Exception(makeHistogram(allocator,
-        values[].sliced.map!failOnTwo, RegularAxis!(uint, double, AxisOptions())(3u, 0.0, 3.0)));
+        values[].sliced.map!failOnTwo, RegularAxis!(double, AxisOptions())(3u, 0.0, 3.0)));
     assert(allocator.allocations == 1 && allocator.releases == 1);
 }
 
@@ -252,7 +259,7 @@ unittest
 
     double[6] values = [0.5, 0.25, 1.5, 0.25, 2.5, 0.25];
     auto matrix = values[].sliced(3, 2);
-    auto axis = RegularAxis!(uint, double, AxisOptions())(3u, 0.0, 3.0);
+    auto axis = RegularAxis!(double, AxisOptions())(3u, 0.0, 3.0);
     CountingAllocator allocator;
     auto all = makeHistogram(allocator, matrix.transposed, axis);
     scope(exit) allocator.dispose(all.counts.field);
@@ -278,7 +285,7 @@ unittest
         SafeAllocator allocator;
         double[3] edges = [0, 1, 3];
         double[1] values = [0.5];
-        auto axis = VariableAxis!(uint, double*, AxisOptions())(edges[].sliced);
+        auto axis = VariableAxis!(double*, AxisOptions())(edges[].sliced);
         auto h = makeHistogram(allocator, values[].sliced, axis);
         return h;
     }));
@@ -288,7 +295,7 @@ unittest
         SafeAllocator allocator;
         double[3] edges = [0, 1, 3];
         double[1] values = [0.5];
-        auto axis = VariableAxis!(uint, RCI!double, AxisOptions())(rcslice!double(edges[]));
+        auto axis = VariableAxis!(RCI!double, AxisOptions())(rcslice!double(edges[]));
         // This allocator uses GC-backed memory, which survives the local handle.
         return makeHistogram(allocator, values[].sliced, axis);
     }
@@ -1003,7 +1010,8 @@ Built-in arrays and Mir slices are accepted. Their shapes must match; matching
 multidimensional slices are traversed elementwise into a one-axis histogram.
 Weights must be finite, nonnegative, and implicitly convertible to the counter
 type. Axis templates default to `double` counters, independently of the bin-count
-argument. An explicit counter override or concrete axis retains its counter type.
+argument. An explicit leading counter type overrides this default, including with a supplied
+axis instance or concrete axis type. Axes never select counter storage.
 Integral counters require integral weights. Counts must accommodate their sums.
 Bin-count rules operate on observations, without weighting the rule itself.
 Axis ownership and explicit count disposal follow $(LREF makeHistogram).

@@ -689,7 +689,7 @@ version(mir_stat_test)
 unittest
 {
     import mir.stat.descriptive.histogram.axis: IntegralAxis, AxisOptions;
-    alias A = IntegralAxis!(uint, double, AxisOptions(false, true, true));
+    alias A = IntegralAxis!(double, AxisOptions(false, true, true));
     double[4] storage = 0;
     auto f = RelativeFrequencyAccumulator!(double[], A)(storage[], A(2, 0));
     f.putWeighted(0.5, 0.25);
@@ -714,7 +714,7 @@ unittest
 {
     import mir.stat.descriptive.histogram.axis: AxisOptions, IntegralAxis;
 
-    alias Axis = IntegralAxis!(uint, double, AxisOptions());
+    alias Axis = IntegralAxis!(double, AxisOptions());
     auto f = RelativeFrequencyAccumulator!(uint[], Axis)([0u, 0u, 0u], Axis(3, 0.0));
     assert(f.total == 0);
 
@@ -736,7 +736,7 @@ version(mir_stat_test)
 unittest
 {
     import mir.stat.descriptive.histogram.axis: IntegralAxis, AxisOptions;
-    alias A = IntegralAxis!(uint, double, AxisOptions(false, true, true));
+    alias A = IntegralAxis!(double, AxisOptions(false, true, true));
     uint[4] storage = [1, 2, 3, 4]; // underflow, two ordinary bins, overflow
     auto f = RelativeFrequencyAccumulator!(uint[], A)(storage[], A(2, 0));
     assert(f.total == 10 && f.relativeFrequency(0) == 0.2);
@@ -760,7 +760,7 @@ unittest
 {
     import mir.stat.descriptive.histogram.axis: IntegralAxis, AxisOptions;
     import std.meta: AliasSeq;
-    alias A = IntegralAxis!(uint, double, AxisOptions(false, true, true));
+    alias A = IntegralAxis!(double, AxisOptions(false, true, true));
     static foreach (T; AliasSeq!(byte, ubyte, int, ulong))
     {{
         T[4] storage = [10, 2, 3, 20];
@@ -778,7 +778,7 @@ unittest
 {
     import mir.stat.descriptive.histogram.axis: IntegralAxis, AxisOptions;
     import std.meta: AliasSeq;
-    alias A = IntegralAxis!(uint, double, AxisOptions(false, true, true));
+    alias A = IntegralAxis!(double, AxisOptions(false, true, true));
     static foreach (T; AliasSeq!(float, double, real))
     {{
         T[4] storage = [T.max / 4, T(0.5), T(1.5), T.max / 4];
@@ -798,7 +798,7 @@ unittest
     import mir.stat.descriptive.histogram.axis: IntegralAxis, AxisOptions;
     import mir.ndslice.slice: sliced;
     import mir.ndslice.dynamic: transposed;
-    alias A = IntegralAxis!(uint, double, AxisOptions(false, true, true));
+    alias A = IntegralAxis!(double, AxisOptions(false, true, true));
     uint[4][4] storage = [[0, 1, 2, 3], [4, 5, 6, 7], [8, 9, 10, 11], [12, 13, 14, 15]];
     const f = RelativeFrequencyAccumulator!(uint[4][4], A, A)(storage, A(2, 0), A(2, 0));
     assert(f.total == 120);
@@ -820,7 +820,7 @@ unittest
     static foreach (under; [false, true])
     static foreach (over; [false, true])
     {{
-        alias A = IntegralAxis!(uint, double, AxisOptions(false, over, under));
+        alias A = IntegralAxis!(double, AxisOptions(false, over, under));
         uint[2 + under + over] storage;
         static if (under) storage[0] = 3;
         static if (over) storage[$ - 1] = 7;
@@ -848,7 +848,7 @@ unittest
 {
     import mir.stat.descriptive.histogram.axis: AxisOptions, IntegralAxis;
 
-    alias Axis = IntegralAxis!(uint, double, AxisOptions());
+    alias Axis = IntegralAxis!(double, AxisOptions());
     auto f = RelativeFrequencyAccumulator!(uint[], Axis)([0u, 0u], Axis(2, 0.0));
     f.put([0.5, 1.5]);
 
@@ -873,7 +873,7 @@ unittest
     auto n = rule(data);
 
     // Only the resulting count is needed to construct the axis and storage.
-    alias Axis = RegularAxis!(size_t, double, AxisOptions());
+    alias Axis = RegularAxis!(double, AxisOptions());
     auto f = RelativeFrequencyAccumulator!(size_t[], Axis)(new size_t[n], Axis(n, 0.0, 12.0));
     f.put(data);
     assert(f.counts == [3, 4, 2]);
@@ -924,7 +924,7 @@ version(mir_stat_test)
 unittest
 {
     import mir.stat.descriptive.histogram.axis: IntegralAxis, AxisOptions;
-    alias A = IntegralAxis!(uint, double, AxisOptions(false, true, true));
+    alias A = IntegralAxis!(double, AxisOptions(false, true, true));
     auto f = RelativeFrequencyAccumulator!(uint[], A)([1u, 2u, 3u, 0u], A(2, 0.0));
 
     // bins has the same meaning as on HistogramAccumulator: descriptions
@@ -950,7 +950,7 @@ unittest
 {
     import mir.stat.descriptive.histogram.axis: AxisOptions, IntegralAxis;
 
-    alias Axis = IntegralAxis!(uint, double, AxisOptions());
+    alias Axis = IntegralAxis!(double, AxisOptions());
     auto f = RelativeFrequencyAccumulator!(uint[], Axis)([2u, 3u, 5u], Axis(3, 0.0));
 
     // Include the selected bin and all earlier bins in the numerator.
@@ -973,7 +973,7 @@ pure nothrow
 unittest
 {
     import mir.stat.descriptive.histogram.axis: IntegralAxis, AxisOptions;
-    alias A = IntegralAxis!(uint, int, AxisOptions());
+    alias A = IntegralAxis!(int, AxisOptions());
     auto f = RelativeFrequencyAccumulator!(uint[], A)([1u, 2u, 1u], A(3, 0));
     auto bins = f.cumulativeRelativeFrequencyBins();
     assert(bins.front.count == 1 && bins.front.cumulativeRelativeFrequency == 0.25);
@@ -998,7 +998,7 @@ pure nothrow
 unittest
 {
     import mir.stat.descriptive.histogram.axis: IntegralAxis, AxisOptions;
-    alias A = IntegralAxis!(uint, int, AxisOptions(false, true, true));
+    alias A = IntegralAxis!(int, AxisOptions(false, true, true));
     auto f = RelativeFrequencyAccumulator!(uint[], A)([1u, 2u, 3u, 4u], A(2, 0));
     auto all = f.cumulativeRelativeFrequencyBins!(float, BinCoverage.all)();
     static assert(is(typeof(all.front.cumulativeRelativeFrequency) == float));
@@ -1024,7 +1024,7 @@ unittest
 {
     import mir.stat.descriptive.histogram.axis: AxisOptions, IntegralAxis;
 
-    alias Axis = IntegralAxis!(uint, double, AxisOptions());
+    alias Axis = IntegralAxis!(double, AxisOptions());
     auto f = RelativeFrequencyAccumulator!(uint[], Axis)([2u, 3u, 5u], Axis(3, 0.0));
 
     // Allocate one double value per ordinary bin, computing all prefixes once.
@@ -1046,7 +1046,7 @@ unittest
     import mir.ndslice.allocation: rcslice;
     import mir.stat.descriptive.histogram.axis: AxisOptions, IntegralAxis;
 
-    alias Axis = IntegralAxis!(uint, double, AxisOptions());
+    alias Axis = IntegralAxis!(double, AxisOptions());
     auto f = RelativeFrequencyAccumulator!(uint[], Axis)([1u, 3u], Axis(2, 0.0));
     auto output = new double[2];
     f.cumulativeRelativeFrequencies(output);
@@ -1073,7 +1073,7 @@ unittest
     import mir.stat.descriptive.histogram.axis: AxisOptions, IntegralAxis,
         EnableOverflow, EnableUnderflow;
 
-    alias Axis = IntegralAxis!(uint, double,
+    alias Axis = IntegralAxis!(double,
         AxisOptions(EnableOverflow(true), EnableUnderflow(true)));
     auto f = RelativeFrequencyAccumulator!(uint[], Axis)([0u, 0u, 0u, 0u], Axis(2, 0.0));
     f.put([-1.0, 0.5, 1.5, 3.0]);
@@ -1097,7 +1097,7 @@ unittest
     import mir.stat.descriptive.histogram.axis: AxisOptions, IntegralAxis,
         EnableOverflow, EnableUnderflow;
 
-    alias Axis = IntegralAxis!(uint, double,
+    alias Axis = IntegralAxis!(double,
         AxisOptions(EnableOverflow(true), EnableUnderflow(true)));
     auto f = RelativeFrequencyAccumulator!(uint[], Axis)([0u, 0u, 0u, 0u], Axis(2, 0.0));
     f.put([-1.0, 0.5, 1.5, 3.0]);
@@ -1117,7 +1117,7 @@ unittest
     import mir.stat.descriptive.histogram.axis: AxisOptions, IntegralAxis,
         EnableOverflow, EnableUnderflow;
 
-    alias Axis = IntegralAxis!(uint, double,
+    alias Axis = IntegralAxis!(double,
         AxisOptions(EnableOverflow(true), EnableUnderflow(true)));
     auto f = RelativeFrequencyAccumulator!(uint[], Axis)([0u, 0u, 0u, 0u], Axis(2, 0.0));
     f.put([-1.0, 0.5, 1.5, 3.0]);
@@ -1140,7 +1140,7 @@ unittest
     import std.math: isNaN;
     import mir.stat.descriptive.histogram.axis: AxisOptions, IntegralAxis;
 
-    alias Axis = IntegralAxis!(uint, double, AxisOptions());
+    alias Axis = IntegralAxis!(double, AxisOptions());
     auto f = RelativeFrequencyAccumulator!(uint[], Axis)([0u, 0u], Axis(2, 0.0));
     assert(isNaN(f.relativeFrequency(0)));
     assert(isNaN(f.relativeFrequency(1)));
@@ -1158,7 +1158,7 @@ unittest
     import mir.ndslice.allocation: rcslice;
     import mir.stat.descriptive.histogram.axis: AxisOptions, IntegralAxis;
 
-    alias Axis = IntegralAxis!(uint, double, AxisOptions());
+    alias Axis = IntegralAxis!(double, AxisOptions());
     auto counts = rcslice!uint([2u, 1u]);
     alias F = RelativeFrequencyAccumulator!(typeof(counts), Axis);
     auto f = F(counts, Axis(2, 0.0));
@@ -1184,7 +1184,7 @@ unittest
 {
     import mir.stat.descriptive.histogram.axis: AxisOptions, IntegralAxis;
 
-    alias A = IntegralAxis!(uint, double, AxisOptions(false, true, true));
+    alias A = IntegralAxis!(double, AxisOptions(false, true, true));
     // Each axis has two ordinary bins plus underflow and overflow.
     uint[4][4] storage;
     auto f = RelativeFrequencyAccumulator!(typeof(storage), A, A)(
@@ -1213,8 +1213,8 @@ version(mir_stat_test)
 unittest
 {
     import mir.stat.descriptive.histogram.axis: IntegralAxis, AxisOptions;
-    alias X = IntegralAxis!(uint, int, AxisOptions());
-    alias Y = IntegralAxis!(uint, int, AxisOptions(false, true, true));
+    alias X = IntegralAxis!(int, AxisOptions());
+    alias Y = IntegralAxis!(int, AxisOptions(false, true, true));
     auto joint = RelativeFrequencyAccumulator!(uint[][], X, Y)(
         [[1u, 4u, 2u], [0u, 3u, 1u]], X(2, 0), Y(1, 0));
     const source = joint;
@@ -1243,7 +1243,7 @@ unittest
     import mir.ndslice.slice: sliced;
     import mir.stat.descriptive.histogram.axis: AxisOptions, IntegralAxis;
 
-    alias Axis = IntegralAxis!(uint, double, AxisOptions(false, true, true));
+    alias Axis = IntegralAxis!(double, AxisOptions(false, true, true));
 
     void check(Storage)(Storage counts, Storage otherCounts)
     {
@@ -1308,7 +1308,7 @@ unittest
         CategoryAxis, EnableOverflow;
     import std.range: only;
 
-    alias Axis = IntegralAxis!(size_t, double, AxisOptions());
+    alias Axis = IntegralAxis!(double, AxisOptions());
     auto f = RelativeFrequencyAccumulator!(size_t[], Axis)([0UL, 0], Axis(2, 0.0));
     static assert(!__traits(compiles, f.overflow()));
     static assert(!__traits(compiles, f.underflow()));
@@ -1316,7 +1316,7 @@ unittest
     assert(f.total == 3 && f.counts == [1, 2]);
 
     enum Label { first, second }
-    alias Categories = CategoryAxis!(uint, Label, AxisOptions(EnableOverflow(true)));
+    alias Categories = CategoryAxis!(Label, AxisOptions(EnableOverflow(true)));
     auto c = RelativeFrequencyAccumulator!(uint[], Categories)([0u, 0u, 0u], Categories());
     c.put("first");
     c.put(["second", "unknown"]);
@@ -1334,7 +1334,7 @@ unittest
     import std.exception: assertThrown;
     import mir.stat.descriptive.histogram.axis: AxisOptions, IntegralAxis;
 
-    alias Axis = IntegralAxis!(uint, double, AxisOptions());
+    alias Axis = IntegralAxis!(double, AxisOptions());
     alias F = RelativeFrequencyAccumulator!(uint[], Axis);
     auto f = F([0u, 0u], Axis(2, 0.0));
     assertThrown!AssertError(f.put(3.0));
@@ -1389,7 +1389,7 @@ unittest
     import mir.ndslice.allocation: rcslice;
     import mir.stat.descriptive.histogram.axis: AxisOptions, IntegralAxis;
 
-    alias Axis = IntegralAxis!(uint, double, AxisOptions(false, true, true));
+    alias Axis = IntegralAxis!(double, AxisOptions(false, true, true));
     void check(Storage)(Storage emptyCounts, Storage populatedCounts)
     {
         alias F = RelativeFrequencyAccumulator!(Storage, Axis);
@@ -1457,7 +1457,7 @@ unittest
     static foreach (hasUnderflow; AliasSeq!(false, true))
     static foreach (hasOverflow; AliasSeq!(false, true))
     {{
-        alias Axis = IntegralAxis!(uint, double,
+        alias Axis = IntegralAxis!(double,
             AxisOptions(EnableOverflow(hasOverflow), EnableUnderflow(hasUnderflow)));
         void check(Storage)(Storage storage, Storage otherStorage)
         {
@@ -1520,7 +1520,7 @@ unittest
     static foreach (hasUnderflow; AliasSeq!(false, true))
     static foreach (hasOverflow; AliasSeq!(false, true))
     {{
-        alias Axis = IntegralAxis!(uint, double,
+        alias Axis = IntegralAxis!(double,
             AxisOptions(EnableOverflow(hasOverflow), EnableUnderflow(hasUnderflow)));
         void check(Storage)(Storage storage, Storage otherStorage)
         {
@@ -1588,7 +1588,7 @@ unittest
     import mir.ndslice.topology: stride;
     import mir.stat.descriptive.histogram.axis: AxisOptions, IntegralAxis;
 
-    alias Axis = IntegralAxis!(uint, double, AxisOptions());
+    alias Axis = IntegralAxis!(double, AxisOptions());
     alias F = RelativeFrequencyAccumulator!(uint[], Axis);
     auto f = F([0u, 0u], Axis(2, 0.0));
     static foreach (T; AliasSeq!(float, double, real))
@@ -1626,7 +1626,7 @@ unittest
     import mir.ndslice.slice: sliced;
     import mir.stat.descriptive.histogram.axis: AxisOptions, IntegralAxis;
 
-    alias Axis = IntegralAxis!(uint, double, AxisOptions());
+    alias Axis = IntegralAxis!(double, AxisOptions());
     auto f = RelativeFrequencyAccumulator!(uint[], Axis)([0u, 0u], Axis(2, 0.0));
     const(double)[] readOnly = [0.0, 0.0];
     immutable(double)[] fixedValues = [0.0, 0.0];
@@ -1661,7 +1661,7 @@ unittest
 
     auto snapshot()
     {
-        alias Axis = IntegralAxis!(uint, double, AxisOptions());
+        alias Axis = IntegralAxis!(double, AxisOptions());
         auto counts = rcslice!uint([1u, 3u]);
         auto f = RelativeFrequencyAccumulator!(typeof(counts), Axis)(counts, Axis(2, 0.0));
         return f.cumulativeRelativeFrequencies();
@@ -1680,7 +1680,7 @@ unittest
     import std.exception: assertThrown;
     import mir.stat.descriptive.histogram.axis: AxisOptions, IntegralAxis;
 
-    alias Axis = IntegralAxis!(uint, double, AxisOptions());
+    alias Axis = IntegralAxis!(double, AxisOptions());
     auto f = RelativeFrequencyAccumulator!(uint[], Axis)([0u, 0u], Axis(2, 0.0));
     static assert(!__traits(compiles, f.overflowRelativeFrequency()));
     static assert(!__traits(compiles, f.underflowRelativeFrequency()));
@@ -1789,7 +1789,7 @@ unittest
 {
     import std.format: format;
     import mir.stat.descriptive.histogram.axis: IntegralAxis, AxisOptions;
-    alias A = IntegralAxis!(uint, double, AxisOptions());
+    alias A = IntegralAxis!(double, AxisOptions());
     auto f = RelativeFrequencyAccumulator!(uint[], A)([1u, 3u], A(2, 0.0));
     auto entries = f.cumulativeRelativeFrequencyBins;
     entries.popFront();
@@ -1963,7 +1963,7 @@ unittest
 {
     import std.format: format;
     import mir.stat.descriptive.histogram.axis: IntegralAxis, AxisOptions;
-    alias A = IntegralAxis!(uint, double, AxisOptions());
+    alias A = IntegralAxis!(double, AxisOptions());
     auto f = RelativeFrequencyAccumulator!(uint[], A)([1u, 3u], A(2, 0.0));
     const entry = f.relativeFrequencyBins.front;
     assert(format("%s", entry) == "bin(low=0.0, high=1.0): count=1, relativeFrequency=0.25");
@@ -1980,7 +1980,7 @@ unittest
     import std.format: format;
     import mir.stat.descriptive.histogram.axis: IntegralAxis, AxisOptions;
 
-    alias A = IntegralAxis!(uint, double, AxisOptions());
+    alias A = IntegralAxis!(double, AxisOptions());
     auto f = RelativeFrequencyAccumulator!(uint[], A)([1u, 3u], A(2, 0.0));
 
     // Call printFrequencies(f) to write to stdout. The helper is compiled but
@@ -2038,7 +2038,7 @@ unittest
         assert(writer.data == expected);
     }
 
-    alias A = IntegralAxis!(uint, double, AxisOptions());
+    alias A = IntegralAxis!(double, AxisOptions());
     uint[2] storage = [1, 3];
     auto f = RelativeFrequencyAccumulator!(uint[], A)(storage[], A(2, 0.0));
     static foreach (T; AliasSeq!(float, double, real))
@@ -2211,7 +2211,7 @@ unittest
 {
     import mir.stat.descriptive.histogram.axis: IntegralAxis, AxisOptions;
 
-    alias Axis = IntegralAxis!(uint, double, AxisOptions());
+    alias Axis = IntegralAxis!(double, AxisOptions());
     auto f = RelativeFrequencyAccumulator!(uint[], Axis)([0u, 0u], Axis(2, 0.0));
     f.put([0.5, 1.25, 1.5, 1.75]);
 
@@ -2230,7 +2230,7 @@ unittest
 {
     import mir.stat.descriptive.histogram.axis: IntegralAxis, AxisOptions;
 
-    alias Axis = IntegralAxis!(uint, double, AxisOptions());
+    alias Axis = IntegralAxis!(double, AxisOptions());
     auto f = RelativeFrequencyAccumulator!(uint[], Axis)([1u, 1u], Axis(2, 0.0));
     auto bins = f.relativeFrequencyBins!float();
     static assert(is(typeof(bins.front.relativeFrequency) == float));
@@ -2244,7 +2244,7 @@ unittest
 {
     import mir.stat.descriptive.histogram.axis: IntegralAxis, AxisOptions;
 
-    alias Axis = IntegralAxis!(uint, double, AxisOptions());
+    alias Axis = IntegralAxis!(double, AxisOptions());
     auto f = RelativeFrequencyAccumulator!(uint[], Axis)([1u, 1u], Axis(2, 0.0));
 
     // const fixes this view's traversal position; it does not freeze f's data.
@@ -2282,7 +2282,7 @@ unittest
 {
     import mir.stat.descriptive.histogram.axis: IntegralAxis, AxisOptions;
 
-    alias A = IntegralAxis!(uint, double, AxisOptions(false, true, true));
+    alias A = IntegralAxis!(double, AxisOptions(false, true, true));
     // Two ordinary bins per axis, plus underflow and overflow on each axis.
     auto f = RelativeFrequencyAccumulator!(uint[][], A, A)(
         [[0u, 0u, 0u, 0u], [0u, 0u, 0u, 0u],
@@ -2321,7 +2321,7 @@ pure nothrow
 unittest
 {
     import mir.stat.descriptive.histogram.axis: IntegralAxis, AxisOptions;
-    alias A = IntegralAxis!(uint, double, AxisOptions(false, true, true));
+    alias A = IntegralAxis!(double, AxisOptions(false, true, true));
     auto f = RelativeFrequencyAccumulator!(uint[][], A, A)(
         [[0u, 3u, 0u, 2u], [0u, 0u, 0u, 0u],
          [0u, 5u, 0u, 4u], [0u, 0u, 0u, 0u]],
@@ -2357,7 +2357,7 @@ unittest
     import std.range.primitives: isRandomAccessRange, hasSlicing, hasAssignableElements;
     import std.meta: AliasSeq;
 
-    alias Axis = IntegralAxis!(uint, double, AxisOptions(false, true, true));
+    alias Axis = IntegralAxis!(double, AxisOptions(false, true, true));
     void check(T, Storage)(Storage counts, Storage otherCounts)
     {
         alias F = RelativeFrequencyAccumulator!(Storage, Axis);
@@ -2443,14 +2443,14 @@ unittest
             assert(bins[i].relativeFrequency == (i == 0 ? 0.25 : 0.75));
         }
     }
-    check(IntegralAxis!(uint, double, AxisOptions())(2, 0.0));
-    check(RegularAxis!(uint, double, AxisOptions(true))(2, 0.0, 4.0));
-    check(TransformAxis!(uint, double, "a * 2", "a / 2", AxisOptions())(2, 0.0, 4.0));
-    check(VariableAxis!(uint, double*, AxisOptions())([0.0, 1.0, 4.0].sliced));
-    check(VariableAxis!(uint, RCI!double, AxisOptions())(rcslice!double([0.0, 1.0, 4.0])));
+    check(IntegralAxis!(double, AxisOptions())(2, 0.0));
+    check(RegularAxis!(double, AxisOptions(true))(2, 0.0, 4.0));
+    check(TransformAxis!(double, "a * 2", "a / 2", AxisOptions())(2, 0.0, 4.0));
+    check(VariableAxis!(double*, AxisOptions())([0.0, 1.0, 4.0].sliced));
+    check(VariableAxis!(RCI!double, AxisOptions())(rcslice!double([0.0, 1.0, 4.0])));
     enum Label { first, second }
-    check(EnumAxis!(uint, Label)());
-    check(CategoryAxis!(uint, Label, AxisOptions())());
+    check(EnumAxis!(Label)());
+    check(CategoryAxis!(Label, AxisOptions())());
 }
 
 // Assertions catch malformed use, but do not claim to detect dangling pointers.
@@ -2461,7 +2461,7 @@ unittest
     import std.exception: assertThrown;
     import mir.stat.descriptive.histogram.axis: IntegralAxis, AxisOptions;
 
-    alias Axis = IntegralAxis!(uint, double, AxisOptions());
+    alias Axis = IntegralAxis!(double, AxisOptions());
     alias F = RelativeFrequencyAccumulator!(uint[], Axis);
     auto f = F([0u, 0u], Axis(2, 0.0));
     auto bins = f.relativeFrequencyBins();
@@ -2490,7 +2490,7 @@ version(mir_stat_test)
 unittest
 {
     import mir.stat.descriptive.histogram.axis: IntegralAxis, AxisOptions;
-    alias Axis = IntegralAxis!(uint, double, AxisOptions());
+    alias Axis = IntegralAxis!(double, AxisOptions());
     alias F = RelativeFrequencyAccumulator!(uint[], Axis);
     enum safeBorrowCompiles = __traits(compiles, () @safe {
         auto f = F([1u, 1u], Axis(2, 0.0));
@@ -2520,7 +2520,7 @@ version(mir_stat_test_lifetime)
         import mir.stat.descriptive.histogram.axis: IntegralAxis, AxisOptions;
         import mir.ndslice.allocation: rcslice;
         import std.algorithm: map, equal;
-        alias Axis = IntegralAxis!(uint, double, AxisOptions());
+        alias Axis = IntegralAxis!(double, AxisOptions());
 
         void check(Storage)(Storage counts)
         {
@@ -2560,7 +2560,7 @@ version(mir_stat_test_lifetime)
         // A borrowed variable axis is usable while its backing arrays live.
         import mir.ndslice.slice: sliced;
         import mir.stat.descriptive.histogram.axis: VariableAxis;
-        alias Variable = VariableAxis!(uint, double*, AxisOptions());
+        alias Variable = VariableAxis!(double*, AxisOptions());
         uint[] counts = [1, 3];
         double[] breaks = [0, 1, 4];
         auto f = RelativeFrequencyAccumulator!(uint[], Variable)(
@@ -2573,7 +2573,7 @@ version(mir_stat_test_lifetime)
     unittest
     {
         import mir.stat.descriptive.histogram.axis: IntegralAxis, AxisOptions;
-        alias Axis = IntegralAxis!(uint, double, AxisOptions());
+        alias Axis = IntegralAxis!(double, AxisOptions());
         alias F = RelativeFrequencyAccumulator!(uint[], Axis);
         alias View = RelativeFrequencyBinView!(uint[], double, BinCoverage.ordinary, Axis);
         static assert(!__traits(compiles, () @safe {
@@ -2612,7 +2612,7 @@ version(mir_stat_test_lifetime)
         static assert(!__traits(compiles, () @safe {
             import mir.ndslice.slice: sliced;
             import mir.stat.descriptive.histogram.axis: VariableAxis;
-            alias Variable = VariableAxis!(uint, double*, AxisOptions());
+            alias Variable = VariableAxis!(double*, AxisOptions());
             uint[2] counts = [1, 3];
             double[3] breaks = [0, 1, 4];
             auto f = RelativeFrequencyAccumulator!(uint[], Variable)(
@@ -2632,7 +2632,7 @@ unittest
     import mir.stat.descriptive.histogram.axis: IntegralAxis, AxisOptions;
     static immutable uint[4] zero = [0, 0, 0, 0];
     static immutable double[4] samples = [-1.0, 0.5, 1.5, 3.0];
-    alias A = IntegralAxis!(uint, double, AxisOptions(false, true, true));
+    alias A = IntegralAxis!(double, AxisOptions(false, true, true));
     auto counts = rcslice!uint(zero[]);
     alias F = RelativeFrequencyAccumulator!(typeof(counts), A);
     auto f = F(counts, A(2, 0.0));
@@ -2668,7 +2668,7 @@ unittest
     // Infer safety so the same test is @safe with escape checking and @system
     // without it; neither version may introduce GC allocation.
     auto exercise = () @nogc {
-        alias A = IntegralAxis!(uint, double, AxisOptions());
+        alias A = IntegralAxis!(double, AxisOptions());
         auto counts = rcslice!uint(initial[]);
         auto f = RelativeFrequencyAccumulator!(typeof(counts), A)(counts, A(2, 0.0));
         auto view = f.relativeFrequencyBins();
@@ -2696,7 +2696,7 @@ version(mir_stat_test)
 unittest
 {
     import mir.stat.descriptive.histogram.axis: IntegralAxis, CategoryAxis, AxisOptions;
-    alias A = IntegralAxis!(uint, double, AxisOptions(false, true, true));
+    alias A = IntegralAxis!(double, AxisOptions(false, true, true));
     auto f = RelativeFrequencyAccumulator!(uint[], A)([0u, 0u, 0u, 0u], A(2, 0.0));
     static assert(__traits(compiles, f.put(0.5, 1.5)));
     static assert(!__traits(compiles, f.put()));
@@ -2715,7 +2715,7 @@ unittest
     f.put(frozen);
     assert(f.total == 10 && f.counts == [1u, 4u, 4u, 1u]);
     enum Label { first, second }
-    alias C = CategoryAxis!(uint, Label, AxisOptions(false, true));
+    alias C = CategoryAxis!(Label, AxisOptions(false, true));
     auto categories = RelativeFrequencyAccumulator!(uint[], C)([0u, 0u, 0u], C());
     static assert(__traits(compiles, categories.put(Label.first, "second")));
     static assert(!__traits(compiles, categories.put(Label.first, 0.5)));
@@ -2732,7 +2732,7 @@ unittest
     import core.exception: AssertError;
     import std.exception: assertThrown;
     import mir.stat.descriptive.histogram.axis: IntegralAxis, AxisOptions;
-    alias A = IntegralAxis!(uint, double, AxisOptions());
+    alias A = IntegralAxis!(double, AxisOptions());
     auto f = RelativeFrequencyAccumulator!(uint[], A)([0u, 0u], A(2, 0.0));
     assertThrown!AssertError(f.put(0.5, double.nan, 1.5));
     assert(f.total == 1 && f.counts == [1u, 0u]);
@@ -2748,7 +2748,7 @@ unittest
     import mir.ndslice.dynamic: transposed;
     import mir.stat.descriptive.histogram.axis: AxisOptions, IntegralAxis;
 
-    alias A = IntegralAxis!(uint, double, AxisOptions(false, true, true));
+    alias A = IntegralAxis!(double, AxisOptions(false, true, true));
     uint[4][4] initial;
     initial[0][3] = 2; // Underflow on axis 0, overflow on axis 1.
     initial[1][2] = 3; // Ordinary bin (0, 1).
@@ -2812,9 +2812,9 @@ unittest
     import core.exception: AssertError;
     import std.math: isNaN;
     import mir.stat.descriptive.histogram.axis: AxisOptions, IntegralAxis;
-    alias A = IntegralAxis!(uint, double, AxisOptions());
-    alias B = IntegralAxis!(uint, double, AxisOptions(false, true, false));
-    alias C = IntegralAxis!(uint, double, AxisOptions(false, false, true));
+    alias A = IntegralAxis!(double, AxisOptions());
+    alias B = IntegralAxis!(double, AxisOptions(false, true, false));
+    alias C = IntegralAxis!(double, AxisOptions(false, false, true));
     uint[3][3][2] storage;
     auto f = RelativeFrequencyAccumulator!(typeof(storage), A, B, C)(
         storage, A(2, 0.0), B(2, 0.0), C(2, 0.0));
@@ -2849,7 +2849,7 @@ unittest
     import std.exception: assertThrown;
     import core.exception: AssertError;
     import mir.stat.descriptive.histogram.axis: AxisOptions, IntegralAxis;
-    alias A = IntegralAxis!(uint, double, AxisOptions());
+    alias A = IntegralAxis!(double, AxisOptions());
     alias F = RelativeFrequencyAccumulator!(uint[][], A, A);
     auto f = F([[1u, 2u], [3u, 4u]], A(2, 0.0), A(2, 0.0));
     assert(f.total == 10 && f.relativeFrequency(1, 0) == 0.3);
@@ -2879,9 +2879,9 @@ unittest
     import std.meta: AliasSeq;
     import std.math: isNaN;
 
-    alias X = IntegralAxis!(uint, int, AxisOptions(false, true, true));
-    alias Y = IntegralAxis!(uint, double, AxisOptions());
-    alias Z = IntegralAxis!(uint, int, AxisOptions(false, true, false));
+    alias X = IntegralAxis!(int, AxisOptions(false, true, true));
+    alias Y = IntegralAxis!(double, AxisOptions());
+    alias Z = IntegralAxis!(int, AxisOptions(false, true, false));
     uint[36] buffer;
     auto storage = buffer[].sliced(3, 3, 4).transposed!(2, 1, 0);
     auto f = RelativeFrequencyAccumulator!(typeof(storage), X, Y, Z)(
@@ -2942,7 +2942,7 @@ unittest
 {
     import mir.ndslice.allocation: rcslice;
     import mir.stat.descriptive.histogram.axis: IntegralAxis, AxisOptions;
-    alias A = IntegralAxis!(uint, int, AxisOptions());
+    alias A = IntegralAxis!(int, AxisOptions());
     auto storage = rcslice!uint(2, 2);
     alias F = RelativeFrequencyAccumulator!(typeof(storage), A, A);
     auto f = F(storage, A(2, 0), A(2, 0));
@@ -2974,8 +2974,8 @@ unittest
 {
     import mir.stat.descriptive.histogram.axis: IntegralAxis, EnumAxis, AxisOptions;
     enum Label { first, second }
-    alias X = IntegralAxis!(uint, double, AxisOptions());
-    alias Y = EnumAxis!(uint, Label);
+    alias X = IntegralAxis!(double, AxisOptions());
+    alias Y = EnumAxis!(Label);
     alias F = RelativeFrequencyAccumulator!(uint[][], X, Y);
     auto f = F([[0u, 0u], [0u, 0u]], X(2, 0.0), Y());
     f.put(1.5, Label.second);
@@ -3003,7 +3003,7 @@ unittest
     static foreach (u; [false, true])
     static foreach (o; [false, true])
     {{
-        alias A = IntegralAxis!(uint, double, AxisOptions(false, o, u));
+        alias A = IntegralAxis!(double, AxisOptions(false, o, u));
         uint[2 + u + o] initial;
         initial[u] = 3;
         initial[u + 1] = 5;
@@ -3041,7 +3041,7 @@ unittest
     import core.exception: AssertError;
     import std.exception: assertThrown;
     import mir.stat.descriptive.histogram.axis: IntegralAxis, AxisOptions;
-    alias A = IntegralAxis!(uint, double, AxisOptions(false, true, true));
+    alias A = IntegralAxis!(double, AxisOptions(false, true, true));
     alias F = RelativeFrequencyAccumulator!(uint[], A);
     auto f = F([0u, 0u, 0u, 0u], A(2, 0.0));
     static foreach (T; AliasSeq!(float, double, real))
@@ -3082,7 +3082,7 @@ unittest
 {
     import mir.ndslice.allocation: rcslice;
     import mir.stat.descriptive.histogram.axis: IntegralAxis, AxisOptions;
-    alias A = IntegralAxis!(uint, int, AxisOptions(false, true, true));
+    alias A = IntegralAxis!(int, AxisOptions(false, true, true));
     auto counts = rcslice!uint(4, 4);
     alias F = RelativeFrequencyAccumulator!(typeof(counts), A, A);
     auto f = F(counts, A(2, 0), A(2, 0));
@@ -3113,7 +3113,7 @@ unittest
 {
     import mir.stat.descriptive.histogram.axis: IntegralAxis, AxisOptions;
     import mir.stat.descriptive.histogram.accumulator: HistogramAccumulator;
-    alias A = IntegralAxis!(uint, double, AxisOptions(false, true, true));
+    alias A = IntegralAxis!(double, AxisOptions(false, true, true));
     auto f = RelativeFrequencyAccumulator!(uint[][], A, A)(
         [[0u, 0u, 0u, 0u], [0u, 0u, 0u, 0u],
          [0u, 0u, 0u, 0u], [0u, 0u, 0u, 0u]],
@@ -3154,7 +3154,7 @@ unittest
 {
     import mir.ndslice.allocation: rcslice;
     import mir.stat.descriptive.histogram.axis: IntegralAxis, AxisOptions;
-    alias A = IntegralAxis!(uint, int, AxisOptions(false, true, true));
+    alias A = IntegralAxis!(int, AxisOptions(false, true, true));
     auto owning()
     {
         auto storage = rcslice!uint(4);
@@ -3198,7 +3198,7 @@ unittest
     import std.meta: AliasSeq;
     import std.math: isNaN;
     import mir.stat.descriptive.histogram.axis: IntegralAxis, AxisOptions;
-    alias A = IntegralAxis!(uint, int, AxisOptions(false, true, true));
+    alias A = IntegralAxis!(int, AxisOptions(false, true, true));
     static foreach (T; AliasSeq!(float, double, real))
     {{
         T[3][3] data;
@@ -3227,7 +3227,7 @@ version(mir_stat_test_lifetime)
 unittest
 {
     import mir.stat.descriptive.histogram.axis: IntegralAxis, AxisOptions;
-    alias A = IntegralAxis!(uint, int, AxisOptions());
+    alias A = IntegralAxis!(int, AxisOptions());
     auto makeMarginal()
     {
         uint[2][2] data = [[1u, 2u], [3u, 4u]];
@@ -3249,7 +3249,7 @@ unittest
     import mir.ndslice.slice: sliced;
     import mir.ndslice.dynamic: transposed;
     import mir.stat.descriptive.histogram.axis: IntegralAxis, AxisOptions;
-    alias A = IntegralAxis!(uint, int, AxisOptions());
+    alias A = IntegralAxis!(int, AxisOptions());
     uint[24] data;
     auto storage = data[].sliced(4, 3, 2).transposed!(2, 1, 0);
     foreach (i; 0 .. 2)
@@ -3276,7 +3276,7 @@ unittest
     import mir.stat.descriptive.histogram.axis: IntegralAxis, AxisOptions;
     import mir.ndslice.slice: sliced;
     import mir.ndslice.dynamic: transposed;
-    alias A = IntegralAxis!(uint, int, AxisOptions(false, true, true));
+    alias A = IntegralAxis!(int, AxisOptions(false, true, true));
     void check(S)(S storage)
     {
         auto f = RelativeFrequencyAccumulator!(S, A, A)(storage, A(1, 0), A(1, 0));
@@ -3313,7 +3313,7 @@ unittest
 {
     import mir.stat.descriptive.histogram.axis: IntegralAxis, AxisOptions;
     import mir.ndslice.slice: sliced;
-    alias A = IntegralAxis!(uint, int, AxisOptions(false, true, true));
+    alias A = IntegralAxis!(int, AxisOptions(false, true, true));
     void check(S)(S storage)
     {
         auto f = RelativeFrequencyAccumulator!(S, A)(storage, A(2, 0));
@@ -3346,7 +3346,7 @@ unittest
     static foreach (under; [false, true])
     static foreach (over; [false, true])
     {{
-        alias A = IntegralAxis!(uint, int, AxisOptions(false, over, under));
+        alias A = IntegralAxis!(int, AxisOptions(false, over, under));
         uint[] counts = new uint[2 + under + over];
         counts[] = 1;
         const f = RelativeFrequencyAccumulator!(uint[], A)(counts, A(2, 0));
@@ -3379,7 +3379,7 @@ unittest
         foreach (entry; zero.cumulativeRelativeFrequencyBins!(double, BinCoverage.all)())
             assert(entry.cumulativeCount == 0 && isNaN(entry.cumulativeRelativeFrequency));
     }}
-    alias A = IntegralAxis!(uint, int, AxisOptions());
+    alias A = IntegralAxis!(int, AxisOptions());
     alias Joint = RelativeFrequencyAccumulator!(uint[][], A, A);
     static assert(!__traits(compiles, Joint.init.cumulativeRelativeFrequencyBins()));
     alias F = RelativeFrequencyAccumulator!(uint[], A);
@@ -3396,7 +3396,7 @@ unittest
     import mir.stat.descriptive.histogram.axis: IntegralAxis, AxisOptions;
     static immutable uint[3] initial = [1, 2, 1];
     auto exercise = () @nogc {
-        alias A = IntegralAxis!(uint, int, AxisOptions());
+        alias A = IntegralAxis!(int, AxisOptions());
         auto counts = rcslice!uint(initial[]);
         auto f = RelativeFrequencyAccumulator!(typeof(counts), A)(counts, A(3, 0));
         auto cursor = f.cumulativeRelativeFrequencyBins();
@@ -3416,7 +3416,7 @@ unittest
 
     uint[5] data = [1, 99, 2, 99, 1];
     auto strided = Slice!(uint*, 1, SliceKind.universal)([3], [2], data.ptr);
-    alias A = IntegralAxis!(uint, int, AxisOptions());
+    alias A = IntegralAxis!(int, AxisOptions());
     auto f = RelativeFrequencyAccumulator!(typeof(strided), A)(strided, A(3, 0));
     auto cursor = f.cumulativeRelativeFrequencyBins();
     cursor.popFront(); cursor.popFront();
@@ -3427,7 +3427,7 @@ version(mir_stat_test_lifetime)
 unittest
 {
     import mir.stat.descriptive.histogram.axis: IntegralAxis, AxisOptions;
-    alias A = IntegralAxis!(uint, int, AxisOptions());
+    alias A = IntegralAxis!(int, AxisOptions());
     alias F = RelativeFrequencyAccumulator!(uint[], A);
     static assert(!__traits(compiles, () @safe {
         auto f = F([1u, 2u], A(2, 0));
@@ -3461,7 +3461,7 @@ unittest
     import mir.ndslice.allocation: rcslice;
     import mir.stat.descriptive.histogram.axis: IntegralAxis, AxisOptions;
 
-    alias A = IntegralAxis!(uint, int, AxisOptions(false, true, true));
+    alias A = IntegralAxis!(int, AxisOptions(false, true, true));
     static immutable uint[4] initial = [1, 2, 3, 2];
     auto counts = rcslice!uint(initial[]);
     auto f = RelativeFrequencyAccumulator!(typeof(counts), A)(counts, A(2, 0));
@@ -3510,7 +3510,7 @@ unittest
     import mir.ndslice.allocation: rcslice;
     import mir.stat.descriptive.histogram.axis: IntegralAxis, AxisOptions;
 
-    alias A = IntegralAxis!(uint, int, AxisOptions(false, true, true));
+    alias A = IntegralAxis!(int, AxisOptions(false, true, true));
     auto counts = rcslice!uint(4, 4);
     auto f = RelativeFrequencyAccumulator!(typeof(counts), A, A)(counts, A(2, 0), A(2, 0));
     f.put(-1, -1);
@@ -3544,7 +3544,7 @@ pure nothrow
 unittest
 {
     import mir.stat.descriptive.histogram.axis: IntegralAxis, AxisOptions;
-    alias A = IntegralAxis!(ubyte, int, AxisOptions());
+    alias A = IntegralAxis!(int, AxisOptions());
     auto f = RelativeFrequencyAccumulator!(ubyte[], A)([cast(ubyte) 1, 2], A(2, 0));
     auto cursor = f.cumulativeRelativeFrequencyBins();
     static assert(is(typeof(cursor.front.cumulativeCount) == ubyte));
@@ -3560,7 +3560,7 @@ pure nothrow
 unittest
 {
     import mir.stat.descriptive.histogram.axis: IntegralAxis, AxisOptions;
-    alias A = IntegralAxis!(uint, int, AxisOptions());
+    alias A = IntegralAxis!(int, AxisOptions());
     auto f = RelativeFrequencyAccumulator!(double[], A)([0.5, 1.5], A(2, 0));
     auto cursor = f.cumulativeRelativeFrequencyBins();
     assert(cursor.front.cumulativeCount == 0.5);
@@ -3655,7 +3655,7 @@ unittest
     import mir.stat.descriptive.histogram.axis: VariableAxis, AxisOptions;
     uint[2] counts = [1, 1];
     double[3] boundaries = [0, 1, 3];
-    alias A = VariableAxis!(uint, double*, AxisOptions());
+    alias A = VariableAxis!(double*, AxisOptions());
     auto f = RelativeFrequencyAccumulator!(uint[], A)(counts[], A(boundaries[].sliced));
     assert(f.relativeFrequency(0) == 0.5 && f.relativeFrequency(1) == 0.5);
     assert(f.density(0) == 0.5 && f.density(1) == 0.25);
@@ -3672,12 +3672,12 @@ unittest
     import mir.ndslice.slice: sliced;
     import mir.stat.descriptive.histogram.axis: RegularAxis, AxisOptions;
     import std.math: isNaN;
-    alias X = RegularAxis!(uint, double, AxisOptions());
+    alias X = RegularAxis!(double, AxisOptions());
     uint[4] data = [1, 1, 1, 1];
     auto f = RelativeFrequencyAccumulator!(typeof(data[].sliced(2, 2)), X, X)(
         data[].sliced(2, 2), X(2, 0, 2), X(2, 0, 4));
     assert(f.density(0, 1) == 0.125); // Probability 1/4, area 1 * 2.
-    alias A = RegularAxis!(uint, double, AxisOptions(false, true, true));
+    alias A = RegularAxis!(double, AxisOptions(false, true, true));
     uint[4] flowCounts = [1, 2, 1, 4];
     const all = RelativeFrequencyAccumulator!(uint[], A)(flowCounts[], A(2, 0, 4));
     assert(all.density(0) == 0.125 && all.density(1) == 0.0625);
@@ -3698,15 +3698,15 @@ unittest
 {
     import mir.stat.descriptive.histogram.axis: TransformAxis, IntegralAxis, CategoryAxis, AxisOptions;
     import mir.math.common: log2, exp2;
-    alias A = TransformAxis!(uint, double, log2, exp2, AxisOptions());
+    alias A = TransformAxis!(double, log2, exp2, AxisOptions());
     uint[2] counts = [1, 1];
     auto f = RelativeFrequencyAccumulator!(uint[], A)(counts[], A(2, 1, 4));
     assert(f.density(0) == 0.5 && f.density(1) == 0.25);
-    alias Unit = IntegralAxis!(uint, long, AxisOptions());
+    alias Unit = IntegralAxis!(long, AxisOptions());
     auto integers = RelativeFrequencyAccumulator!(uint[], Unit)(counts[], Unit(2, long.max - 2));
     assert(integers.density!float(0) == 0.5f);
     enum Label { a, b }
-    alias Categories = RelativeFrequencyAccumulator!(uint[], CategoryAxis!(uint, Label, AxisOptions()));
+    alias Categories = RelativeFrequencyAccumulator!(uint[], CategoryAxis!(Label, AxisOptions()));
     static assert(!__traits(compiles, Categories.init.density(0)));
     static assert(!__traits(compiles, Categories.init.densityBins()));
 }
@@ -3726,7 +3726,7 @@ unittest
         static immutable uint[2] initial = [1, 1];
         static immutable double[3] boundaries = [0, 1, 3];
         auto counts = rcslice!uint(initial[]);
-        alias A = VariableAxis!(uint, immutable(double)*, AxisOptions());
+        alias A = VariableAxis!(immutable(double)*, AxisOptions());
         auto f = RelativeFrequencyAccumulator!(typeof(counts), A)(counts, A(boundaries[].sliced));
         auto view = f.densityBins!float();
         static assert(isRandomAccessRange!(typeof(view)));
@@ -3774,7 +3774,7 @@ unittest
         import mir.math.common: log2, exp2;
         static immutable uint[2] initial = [1, 1];
         auto counts = rcslice!uint(initial[]);
-        alias A = TransformAxis!(uint, double, log2, exp2, AxisOptions());
+        alias A = TransformAxis!(double, log2, exp2, AxisOptions());
         const f = RelativeFrequencyAccumulator!(typeof(counts), A)(counts, A(2, 1, 4));
         const view = f.densityBins();
         assert(view.length == 2);
@@ -3810,7 +3810,7 @@ unittest
     import mir.math.common: approxEqual;
     static foreach (T; AliasSeq!(float, double, real))
     {{
-        alias A = RegularAxis!(uint, T, AxisOptions());
+        alias A = RegularAxis!(T, AxisOptions());
         uint[3] counts = [1, 1, 1];
         auto f = RelativeFrequencyAccumulator!(uint[], A)(counts[], A(3, T(0), T(1)));
         T mass = 0;
@@ -3820,7 +3820,7 @@ unittest
             mass += f.density!T(i) * (bin.high - bin.low);
         }
         assert(approxEqual(mass, T(1), T.epsilon * 8, T(0)));
-        alias V = VariableAxis!(uint, T*, AxisOptions());
+        alias V = VariableAxis!(T*, AxisOptions());
         T[2] bounds = [T(0), T.min_normal];
         uint[1] one = [1];
         auto tiny = RelativeFrequencyAccumulator!(uint[], V)(one[], V(bounds[].sliced));
@@ -3838,7 +3838,7 @@ unittest
         import mir.ndslice.slice: sliced;
         import mir.ndslice.dynamic: transposed;
         import mir.stat.descriptive.histogram.axis: RegularAxis, AxisOptions;
-        alias A = RegularAxis!(uint, double, AxisOptions());
+        alias A = RegularAxis!(double, AxisOptions());
         auto nested = RelativeFrequencyAccumulator!(uint[][], A, A)(
             [[1u, 2u], [3u, 4u]], A(2, 0, 2), A(2, 0, 4));
         const view = nested.densityBins();
@@ -3867,7 +3867,7 @@ private void testOrdinaryNormalizationViews()()
     import mir.stat.descriptive.histogram.axis: IntegralAxis, AxisOptions;
     import mir.ndslice.allocation: rcslice;
     import std.math: isNaN;
-    alias A = IntegralAxis!(uint, double, AxisOptions(false, true, true));
+    alias A = IntegralAxis!(double, AxisOptions(false, true, true));
     uint[4] initial = [1, 2, 3, 4];
     auto counts = rcslice!uint(initial[]);
     auto f = RelativeFrequencyAccumulator!(typeof(counts), A)(counts, A(2, 0));
@@ -3981,7 +3981,7 @@ unittest
         catch (AssertError) { rejected = true; }
         assert(rejected);
     }
-    alias A = IntegralAxis!(uint, double, AxisOptions());
+    alias A = IntegralAxis!(double, AxisOptions());
     double[2][2] storage = 0;
     auto f = RelativeFrequencyAccumulator!(typeof(storage), A, A)(storage, A(2, 0), A(2, 0));
     f.putWeighted(0.5, 0.5, 1.5);
@@ -4014,7 +4014,7 @@ unittest
     import mir.stat.descriptive.histogram.axis: IntegralAxis, AxisOptions;
     import mir.ndslice.slice: sliced;
     import mir.ndslice.dynamic: transposed;
-    alias A = IntegralAxis!(uint, double, AxisOptions());
+    alias A = IntegralAxis!(double, AxisOptions());
     double[4] storage = 0;
     auto counts = storage[].sliced(2, 2).transposed;
     auto f = RelativeFrequencyAccumulator!(typeof(counts), A, A)(counts, A(2, 0), A(2, 0));
@@ -4033,7 +4033,7 @@ unittest
 {
     import std.meta: AliasSeq;
     import mir.stat.descriptive.histogram.axis: IntegralAxis, AxisOptions;
-    alias A = IntegralAxis!(uint, double, AxisOptions());
+    alias A = IntegralAxis!(double, AxisOptions());
     static foreach (T; AliasSeq!(float, double, real))
     {{
         T[2] storage = T(0);

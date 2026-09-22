@@ -83,36 +83,31 @@ template includeUnderflow(AxisType)
 }
 
 /++
-Number of ordinary bins as a storage index. Validates that N_bin is positive,
-whole, and representable as size_t before conversion. Counter precision does
-not determine the type used for storage shapes or traversal.
+Number of ordinary bins as a storage index. The axis contract requires an integral
+N_bin; validates positivity and representability as size_t before conversion.
+Counter precision does not determine the type used for storage shapes or traversal.
 Params:
     axis = axis defining the ordinary bins
 +/
 size_t ordinaryBinCount(A)(auto ref const A axis)
     if (isAxis!A)
 {
-    import std.traits: isFloatingPoint, Unqual;
-    const count = axis.N_bin;
-    static if (isFloatingPoint!(typeof(count)))
-    {
-        // Use the exact exclusive bound 2^(size_t.sizeof*8). Converting size_t.max
-        // to float/double may round upward and incorrectly admit that bound.
-        alias T = Unqual!(typeof(count));
-        enum T limit = T(size_t.max / 2 + 1) * 2;
-        assert(count > 0 && count < limit,
-            "Histogram: ordinary bin count is out of range");
-        const result = cast(size_t) count;
-        assert(cast(T) result == count,
-            "Histogram: ordinary bin count must be a whole number");
-        return result;
-    }
-    else
-    {
-        assert(count > 0 && count <= size_t.max,
-            "Histogram: ordinary bin count is out of range");
-        return cast(size_t) count;
-    }
+    return checkedBinCount(axis.N_bin);
+}
+
+// Preserve the signed input until it has been checked, before storing an index.
+package size_t checkedBinCount(T)(T count)
+    if (isIntegralBinCount!T)
+{
+    assert(count > 0 && count <= size_t.max,
+        "Histogram: ordinary bin count is out of range");
+    return cast(size_t) count;
+}
+
+package template isIntegralBinCount(T)
+{
+    import std.traits: isIntegral, Unqual;
+    enum isIntegralBinCount = isIntegral!T && !is(Unqual!T == bool);
 }
 
 /++
@@ -142,8 +137,9 @@ template isSwitchable(E)
 }
 
 /++
-Detect whether a type is an `Axis`. An `Axis` type must have `index`, `BinType`,
-`CountType`, and `N_bin` members.
+Detect whether a type is an `Axis`. An `Axis` type must have `BinType`,
+`N_bin`, and callable `index` members. Bin counts and indices must be integral
+(non-bool) types; no counter-storage type is required.
 
 Params:
     T = type
@@ -156,9 +152,14 @@ template isAxis(T)
 
     static if (hasMember!(T, "index") &&
                hasMember!(T, "BinType") &&
-               hasMember!(T, "CountType") &&
                hasMember!(T, "N_bin")) {
-        enum bool isAxis = true;
+        import std.traits: isIntegral, Unqual;
+        static if (is(typeof(() { auto count = T.init.N_bin; return count; }()) Size) &&
+            is(typeof(T.init.index(T.BinType.init)) Index))
+            enum bool isAxis = isIntegral!Size && !is(Unqual!Size == bool) &&
+                isIntegral!Index && !is(Unqual!Index == bool);
+        else
+            enum bool isAxis = false;
     } else {
         enum bool isAxis = false;
     }
@@ -171,9 +172,8 @@ unittest
 {
     struct FooAxis
     {
-        size_t index = 1;
+        size_t index(size_t value) const @safe pure nothrow @nogc;
         alias BinType = size_t;
-        alias CountType = double;
         size_t N_bin = 2;
     }
     static assert(isAxis!FooAxis);
@@ -210,9 +210,8 @@ unittest
 
     struct FooAxis(AxisOptions axisOptions)
     {
-        size_t index = 1;
+        size_t index(size_t value) const @safe pure nothrow @nogc;
         alias BinType = size_t;
-        alias CountType = double;
         size_t N_bin = 2;
         alias options = axisOptions;
     }
@@ -227,9 +226,8 @@ unittest
 {
     struct FooAxis
     {
-        size_t index = 1;
+        size_t index(size_t value) const @safe pure nothrow @nogc;
         alias BinType = size_t;
-        alias CountType = double;
         size_t N_bin = 2;
     }
     static assert(!hasAxisOptions!FooAxis);
@@ -237,17 +235,17 @@ unittest
 
 
 /// Test if type is an integral axis
-enum bool isIntegralAxis(T) = is(T : IntegralAxis!(CountType, BinType, axisOptions), CountType, BinType, AxisOptions axisOptions);
+enum bool isIntegralAxis(T) = is(T : IntegralAxis!(BinType, axisOptions), BinType, AxisOptions axisOptions);
 
 /// Test if type is an regular axis
-enum bool isRegularAxis(T) = is(T : RegularAxis!(CountType, BinType, axisOptions), CountType, BinType, AxisOptions axisOptions);
-enum bool isTransformAxis(T) = is(T : TransformAxis!(CountType, BinType, transform, inverseTransform, axisOptions), CountType, BinType, alias transform, alias inverseTransform, AxisOptions axisOptions);
+enum bool isRegularAxis(T) = is(T : RegularAxis!(BinType, axisOptions), BinType, AxisOptions axisOptions);
+enum bool isTransformAxis(T) = is(T : TransformAxis!(BinType, transform, inverseTransform, axisOptions), BinType, alias transform, alias inverseTransform, AxisOptions axisOptions);
 
 /// Test if type is an enum axis
-enum bool isEnumAxis(T) = is(T : EnumAxis!(CountType, BinType), CountType, BinType);
+enum bool isEnumAxis(T) = is(T : EnumAxis!(BinType), BinType);
 
 /// Test if type is a category axis
-enum bool isCategoryAxis(T) = is(T : CategoryAxis!(CountType, BinType, axisOptions), CountType, BinType, AxisOptions axisOptions);
+enum bool isCategoryAxis(T) = is(T : CategoryAxis!(BinType, axisOptions), BinType, AxisOptions axisOptions);
 
 ///
 version(mir_stat_test)
@@ -264,11 +262,11 @@ unittest
         B
     }
 
-    IntegralAxis!(size_t, double, AxisOptions()) integralAxis;
-    RegularAxis!(size_t, double, AxisOptions()) regularAxis;
-    TransformAxis!(size_t, double, log10, inverseTransformMapping!log10, AxisOptions()) transformAxis;
-    EnumAxis!(size_t, Foo) enumAxis;
-    CategoryAxis!(size_t, Foo, AxisOptions()) categoryAxis;
+    IntegralAxis!(double, AxisOptions()) integralAxis;
+    RegularAxis!(double, AxisOptions()) regularAxis;
+    TransformAxis!(double, log10, inverseTransformMapping!log10, AxisOptions()) transformAxis;
+    EnumAxis!(Foo) enumAxis;
+    CategoryAxis!(Foo, AxisOptions()) categoryAxis;
 
     static assert(isIntegralAxis!(typeof(integralAxis)));
     static assert(!isIntegralAxis!(typeof(regularAxis)));
@@ -320,40 +318,13 @@ unittest
 {
     struct FooAxis
     {
-        size_t index = 1;
+        size_t index(size_t value) const @safe pure nothrow @nogc;
         alias BinType = size_t;
-        alias CountType = double;
         size_t N_bin = 2;
     }
     static assert(is(BinTypeOf!FooAxis == size_t));
 }
 
-/++
-Get the `CountType` of an `Axis` type.
-
-Params:
-    T = type
-+/
-template CountTypeOf(T)
-    if (isAxis!T)
-{
-    alias CountTypeOf = T.CountType;
-}
-
-/// Example
-version(mir_stat_test)
-@safe pure nothrow @nogc
-unittest
-{
-    struct FooAxis
-    {
-        size_t index = 1;
-        alias BinType = size_t;
-        alias CountType = double;
-        size_t N_bin = 2;
-    }
-    static assert(is(CountTypeOf!FooAxis == double));
-}
 
 /++
 CHeck if `breakFunction` is `sturges`, `scott`, or `freedmanDiaconis`.
@@ -413,114 +384,73 @@ package template acceptsBreakFunction(alias rule, S)
 }
 
 // Validate before narrowing so a large rule result cannot wrap into a valid count.
-package CountType checkedBreakCount(CountType, alias rule, S)(S observations)
+package size_t checkedBreakCount(alias rule, S)(S observations)
     if (acceptsBreakFunction!(rule, S))
 {
-    import std.traits: isIntegral, isFloatingPoint;
-    const count = rule(observations.lightScope);
-    assert(count > 0, "histogram break rule must return a positive bin count");
-    static if (isIntegral!CountType)
-        assert(cast(ulong) count <= cast(ulong) CountType.max,
-            "histogram break count must fit CountType");
-    const converted = cast(CountType) count;
-    // Require a safe integer round trip; 2^64 itself cannot be cast to ulong.
-    static if (isFloatingPoint!CountType)
-        assert(converted < 18446744073709551616.0L &&
-            cast(ulong) converted == cast(ulong) count,
-            "histogram break count must be exactly representable by CountType");
-    return converted;
+    return checkedBinCount(rule(observations.lightScope));
 }
 
-// Floating counters must represent a rule's integer result exactly.
+// Rule results are checked against index capacity, independently of counters.
 version(mir_stat_test)
-pure
+@system pure
 unittest
 {
     import mir.ndslice.slice: sliced;
     import std.exception: assertThrown;
     import core.exception: AssertError;
-    static uint exact(S)(S data) { return 1u << 24; }
-    static uint rounded(S)(S data) { return (1u << 24) + 1; }
-    static ulong tooLarge(S)(S data) { return ulong.max; }
-    auto data = [1.0].sliced;
-    assert(checkedBreakCount!(float, exact)(data) == 16777216.0f);
-    assertThrown!AssertError(checkedBreakCount!(float, rounded)(data));
-    assertThrown!AssertError(checkedBreakCount!(double, tooLarge)(data));
+    static uint large(S)(S data) { return (1u << 24) + 1; }
+    static int negative(S)(S data) { return -1; }
+    static uint zero(S)(S data) { return 0; }
+    double[1] values = [1];
+    auto data = values[].sliced;
+    assert(checkedBreakCount!large(data) == (1u << 24) + 1);
+    assertThrown!AssertError(checkedBreakCount!negative(data));
+    assertThrown!AssertError(checkedBreakCount!zero(data));
 }
 
-// Shape conversion is independent of the precision of bin contents.
 version(mir_stat_test)
 @safe pure nothrow @nogc
 unittest
 {
-    import std.meta: AliasSeq;
-    static foreach (T; AliasSeq!(uint, ulong, float, double, real))
-    {{
-        struct Axis
-        {
-            alias CountType = T;
-            alias BinType = double;
-            T N_bin;
-            enum size_t index = 0; // Only axis sizing is exercised.
-        }
-        auto axis = Axis(3);
-        static assert(is(typeof(ordinaryBinCount(axis)) == size_t));
-        assert(ordinaryBinCount(axis) == 3 && storageExtent(axis) == 3);
-    }}
-    struct HugeAxis
+    struct Axis(Size, Index = size_t)
     {
-        alias CountType = size_t;
         alias BinType = double;
-        size_t N_bin = size_t.max;
-        enum size_t index = 0; // Only axis sizing is exercised.
+        Size N_bin;
+        Index index(double value) const @safe pure nothrow @nogc;
     }
-    assert(ordinaryBinCount(HugeAxis()) == size_t.max);
-    assert(storageExtent(HugeAxis()) == size_t.max);
+    static assert(isAxis!(Axis!uint));
+    static assert(isAxis!(Axis!size_t));
+    static assert(!isAxis!(Axis!double));
+    static assert(!isAxis!(Axis!bool));
+    static assert(!isAxis!(Axis!(size_t, double)));
+    static assert(!isAxis!(Axis!(size_t, bool)));
+    assert(ordinaryBinCount(Axis!uint(3)) == 3);
+    assert(storageExtent(Axis!uint(3)) == 3);
+    assert(ordinaryBinCount(Axis!size_t(size_t.max)) == size_t.max);
 }
 
 version(mir_stat_test)
 @system pure nothrow @nogc
 unittest
 {
-    import std.meta: AliasSeq;
     import core.exception: AssertError;
-    static void rejects(scope void delegate() pure nothrow @nogc operation)
-        pure nothrow @nogc
+    static void rejects(scope void delegate() pure nothrow @nogc operation) pure nothrow @nogc
     {
         bool rejected;
-        try { operation(); }
-        catch (AssertError) { rejected = true; }
+        try { operation(); } catch (AssertError) { rejected = true; }
         assert(rejected);
     }
-    static foreach (T; AliasSeq!(float, double, real))
-    {{
-        struct Axis
-        {
-            alias CountType = T;
-            alias BinType = double;
-            T N_bin;
-            enum size_t index = 0; // Only axis sizing is exercised.
-        }
-        T[6] invalid = [0, -1, T.nan, T.infinity, -T.infinity, T(1.5)];
-        foreach (count; invalid)
-            rejects(() { ordinaryBinCount(Axis(count)); });
-        enum T limit = T(size_t.max / 2 + 1) * 2;
-        rejects(() { ordinaryBinCount(Axis(limit)); });
-        import std.math: nextDown;
-        // On 32-bit targets double/real can represent fractional values here.
-        // Choose the largest whole bin count below the exclusive bound.
-        const below = cast(T) cast(size_t) nextDown(limit);
-        assert(ordinaryBinCount(Axis(below)) == cast(size_t) below);
-    }}
-    struct AxisWithOverflow
+    struct Axis(Size)
     {
-        alias CountType = size_t;
         alias BinType = double;
-        size_t N_bin;
-        enum size_t index = 0; // Only axis sizing is exercised.
-        enum bool isOverflow = false; // Marks the presence of an overflow bin.
+        Size N_bin;
+        size_t index(double value) const @safe pure nothrow @nogc;
+        enum bool isOverflow = false;
     }
-    rejects(() { ordinaryBinCount(AxisWithOverflow(0)); });
-    rejects(() { storageExtent(AxisWithOverflow(size_t.max)); });
-    assert(storageExtent(AxisWithOverflow(size_t.max - 1)) == size_t.max);
+    rejects(() { ordinaryBinCount(Axis!int(0)); });
+    rejects(() { ordinaryBinCount(Axis!int(-1)); });
+    rejects(() { storageExtent(Axis!size_t(size_t.max)); });
+    assert(storageExtent(Axis!size_t(size_t.max - 1)) == size_t.max);
+    static if (size_t.sizeof < ulong.sizeof)
+        rejects(() { ordinaryBinCount(Axis!ulong(ulong.max)); });
 }
