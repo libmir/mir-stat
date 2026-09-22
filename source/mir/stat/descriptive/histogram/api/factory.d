@@ -37,6 +37,127 @@ package auto initializeHistogram(bool insert = true, Storage, Axis, Data)(Storag
 // GC/RC storage already carries its own lifetime policy.
 package struct NoAllocationContext {}
 
+package template areHistogramAxes(Axes...)
+{
+    import std.meta: allSatisfy;
+    import mir.stat.descriptive.histogram.traits: isAxis;
+    enum areHistogramAxes = Axes.length > 0 && allSatisfy!(isAxis, Axes);
+}
+
+// Allocation callbacks return normally initialized, one-dimensional storage.
+// Keep this separate from data-driven factories, which initialize numeric counts.
+package mixin template AxisHistogramFactory(alias allocate, alias release = null)
+{
+    auto axisFactory(Cell = size_t, Context, Axes...)(ref Context context, Axes axes)
+        if (areHistogramAxes!Axes)
+    {
+        import std.traits: Unqual, isNumeric;
+        import mir.stat.descriptive.histogram.traits: storageExtent;
+        import mir.stat.descriptive.histogram.accumulator: HistogramAccumulator;
+        import mir.ndslice.slice: sliced;
+        alias Value = Unqual!Cell;
+        static assert(isNumeric!Value || is(Value == struct),
+            "Histogram cells must be numeric values or default-initializable accumulator structs");
+        size_t[Axes.length] shape;
+        size_t length = 1;
+        static foreach (i; 0 .. Axes.length)
+        {
+            shape[i] = storageExtent(axes[i]);
+            assert(shape[i] > 0 && length <= size_t.max / shape[i],
+                "Histogram storage extent overflows size_t");
+            length *= shape[i];
+        }
+        assert(length <= size_t.max / Value.sizeof,
+            "Histogram storage size overflows size_t");
+        auto cells = allocate!Value(context, length);
+        static if (!is(typeof(release) == typeof(null)))
+            scope(failure) release(context, cells);
+        static if (isNumeric!Value)
+            foreach (ref cell; cells)
+                cell = 0;
+        auto storage = cells.sliced(shape);
+        return HistogramAccumulator!(typeof(storage), Axes)(storage, axes);
+    }
+}
+
+// Share behavioral coverage while each caller checks its allocation attributes.
+version(mir_stat_test)
+package void testAxisOnlyFactory(alias factory, alias dispose = null)()
+{
+    import std.meta: AliasSeq;
+    import std.math: isNaN;
+    import mir.stat.descriptive.histogram.axis: IntegralAxis, AxisOptions, variableAxis;
+    import mir.ndslice.slice: sliced;
+    alias A = IntegralAxis!(double, AxisOptions(false, true, true));
+    const axis = A(2, 0);
+    static foreach (T; AliasSeq!(uint, float, double, real))
+    {{
+        auto h = factory!T(axis, axis);
+        static if (!is(typeof(dispose) == typeof(null)))
+            scope(exit) dispose(h);
+        assert(h.counts.shape == [4, 4]);
+        foreach (cell; h.counts.field)
+            assert(cell == 0);
+        h.putWeighted(2u, -1.0, 2.0);
+        assert(h.counts[0, 3] == 2);
+        const view = h.bins;
+        assert(view.front.value == 0);
+    }}
+    {
+        auto h = factory(axis);
+        static if (!is(typeof(dispose) == typeof(null)))
+            scope(exit) dispose(h);
+        static assert(is(h.CountType == size_t));
+        assert(h.counts == [0, 0, 0, 0]);
+    }
+    static struct Cell
+    {
+        int marker = 17;
+        double measurement; // NaN is part of this cell's default state.
+        void put(double sample) @safe pure nothrow @nogc { measurement = sample; }
+    }
+    {
+        auto h = factory!Cell(axis, axis, axis);
+        static if (!is(typeof(dispose) == typeof(null)))
+            scope(exit) dispose(h);
+        assert(h.counts.shape == [4, 4, 4]);
+        foreach (ref cell; h.counts.field)
+            assert(cell.marker == 17 && isNaN(cell.measurement));
+        h.putSample(5.0, 0.5, 0.5, 0.5);
+        const readOnly = h;
+        assert(readOnly.bins.front.value.measurement == 5.0);
+        static assert(!__traits(compiles, readOnly.putSample(1.0, 0.5, 0.5, 0.5)));
+    }
+    {
+        double[3] edges = [0.0, 1.0, 3.0];
+        auto h = factory!Cell(variableAxis(edges[].sliced));
+        static if (!is(typeof(dispose) == typeof(null)))
+            scope(exit) dispose(h);
+        h.putSample(8.0, 2.0);
+        assert(h.counts[1].measurement == 8.0);
+    }
+    {
+        import mir.ndslice.allocation: rcslice;
+        static immutable double[3] boundaries = [0.0, 1.0, 3.0];
+        auto edges = rcslice!double(boundaries[]);
+        auto h = factory!Cell(variableAxis(edges));
+        static if (!is(typeof(dispose) == typeof(null)))
+            scope(exit) dispose(h);
+        edges = typeof(edges).init;
+        // Owning boundaries remain alive independently of the original handle.
+        h.putSample(9.0, 2.0);
+        assert(h.bins.back.value.measurement == 9.0);
+        assert(h.bins.back.bin.high == 3.0);
+    }
+    static assert(!__traits(compiles, factory!(uint, double)(axis)));
+    static assert(!__traits(compiles, factory!void(axis)));
+    version(mir_stat_test_lifetime)
+        static assert(!__traits(compiles, () @safe {
+            double[3] edges = [0.0, 1.0, 3.0];
+            return factory!Cell(variableAxis(edges[].sliced));
+        }));
+}
+
 // Shared overloads keep allocation policy independent of axis construction.
 package mixin template HistogramFactory(alias allocate, alias release = null, bool insert = true)
 {

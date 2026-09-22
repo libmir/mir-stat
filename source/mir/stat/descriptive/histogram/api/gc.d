@@ -16,12 +16,20 @@ private auto allocateCounts(T)(ref NoAllocationContext context, size_t length) @
 }
 
 private mixin HistogramFactory!allocateCounts implementation;
+private import mir.stat.descriptive.histogram.api.factory: AxisHistogramFactory, areHistogramAxes;
+private mixin AxisHistogramFactory!allocateCounts axisImplementation;
 
 /++
 Construct a histogram with garbage-collected count storage.
 Accepts the same axes, bin-count rules, type overrides, and options as
 $(REF rchistogram, mir, stat, descriptive, histogram, api, rc).
 Counts, including enabled underflow/overflow bins, start at zero.
+
+Supply only axis instances to allocate an empty one-dimensional or joint
+histogram: histogram!Cell(axis, ...). Cell defaults to size_t. Numeric cells
+start at zero; accumulator structs retain their default initialization.
+No observations are inserted. Use putSample or putWeightedSample to accumulate
+measurements in nonnumeric cells.
 
 Count allocation does not change axis boundary ownership: borrowed variable-axis
 boundaries must still outlive the histogram. Construction allocates GC memory;
@@ -34,11 +42,43 @@ template histogram(Options...)
     auto histogram(Args...)(auto ref Args args)
     {
         NoAllocationContext context;
-        static if (Options.length)
+        static if (areHistogramAxes!Args)
+        {
+            static assert(Options.length <= 1, "Axis-only construction accepts one cell type");
+            return axisImplementation.axisFactory!Options(context, args);
+        }
+        else static if (Options.length)
             return implementation.factory!Options(context, args);
         else
             return implementation.factory(context, args);
     }
+}
+
+/++
+Track sales revenue by customer age as purchases arrive. GC storage initializes
+each Summator before insertion, and each purchase updates its age group's total.
++/
+version(mir_stat_test)
+@safe pure nothrow
+unittest
+{
+    import mir.math.sum: Summator, Summation;
+    import mir.stat.descriptive.histogram.axis: RegularAxis, AxisOptions;
+    alias Cell = Summator!(double, Summation.pairwise);
+    auto ages = RegularAxis!(double, AxisOptions())(2, 20.0, 60.0);
+    auto sales = histogram!Cell(ages);
+    sales.putSample(30.0, 25.0);
+    sales.putSample(50.0, 35.0);
+    assert(sales.bins.front.value.sum == 80.0);
+    assert(sales.bins.back.value.sum == 0.0);
+}
+
+version(mir_stat_test)
+@safe pure nothrow
+unittest
+{
+    import mir.stat.descriptive.histogram.api.factory: testAxisOnlyFactory;
+    testAxisOnlyFactory!histogram();
 }
 
 /// Construct two equal-width bins from observations.

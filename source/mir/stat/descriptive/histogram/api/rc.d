@@ -37,6 +37,13 @@ private auto allocateRC(T)(ref NoAllocationContext context, size_t length)
 }
 
 private mixin HistogramFactory!allocateRC implementation;
+private import mir.stat.descriptive.histogram.api.factory: AxisHistogramFactory, areHistogramAxes;
+private auto allocateCells(T)(ref NoAllocationContext context, size_t length)
+{
+    import mir.ndslice.allocation: rcslice;
+    return rcslice!T(length);
+}
+private mixin AxisHistogramFactory!allocateCells axisImplementation;
 
 // Retain the existing construction entry point.
 auto rchistogramImplBasic(Data, Axis)(Data data, Axis axis)
@@ -82,6 +89,13 @@ select the counter type first and optionally the coordinate type second, for exa
 when supplied). A supported transform may omit its inverse. A bin-count rule
 can replace the explicit bin count; see the examples below. Data may be an
 ndslice of any rank; its elements are counted as one-dimensional observations.
+
+Supply only axis instances to allocate an empty one-dimensional or joint
+histogram: rchistogram!Cell(axis, ...). Cell defaults to size_t. Numeric cells
+start at zero; accumulator structs retain their default initialization.
+No observations are inserted. Use putSample or putWeightedSample to accumulate
+measurements in nonnumeric cells. Cell storage is reference-counted; borrowed
+axis boundaries must still outlive the histogram and its views.
 +/
 template rchistogram(Options...)
 {
@@ -90,11 +104,74 @@ template rchistogram(Options...)
     auto rchistogram(Args...)(auto ref Args args)
     {
         NoAllocationContext context;
-        static if (Options.length)
+        static if (areHistogramAxes!Args)
+        {
+            static assert(Options.length <= 1, "Axis-only construction accepts one cell type");
+            return axisImplementation.axisFactory!Options(context, args);
+        }
+        else static if (Options.length)
             return implementation.factory!Options(context, args);
         else
             return implementation.factory(context, args);
     }
+}
+
+/++
+Allocate mean-latency bins before requests arrive. Temperature selects a bin;
+response time updates its mean. Reference-counted storage owns the cells and
+keeps them alive while histogram copies or bin views still reference them.
++/
+version(mir_stat_test)
+@safe pure nothrow @nogc
+unittest
+{
+    import mir.math.sum: Summation;
+    import mir.stat.descriptive.univariate: MeanAccumulator;
+    import mir.stat.descriptive.histogram.axis: RegularAxis, AxisOptions;
+    alias Cell = MeanAccumulator!(double, Summation.pairwise);
+    auto temperature = RegularAxis!(double, AxisOptions())(2, 20.0, 60.0);
+    auto timings = rchistogram!Cell(temperature);
+    assert(timings.counts[0].count == 0);
+    timings.putSample(100.0, 25.0);
+    timings.putSample(200.0, 35.0);
+    assert(timings.bins.front.value.mean == 150.0);
+}
+
+version(mir_stat_test)
+@safe pure nothrow @nogc
+unittest
+{
+    import mir.stat.descriptive.histogram.api.factory: testAxisOnlyFactory;
+    testAxisOnlyFactory!rchistogram();
+}
+
+// Cell destructors run only when the last owning histogram/view is released.
+version(mir_stat_test)
+@safe pure nothrow @nogc
+unittest
+{
+    import mir.ndslice.allocation: rcslice;
+    import mir.stat.descriptive.histogram.axis: IntegralAxis, AxisOptions;
+    static struct Cell
+    {
+        size_t[] destroyed;
+        ~this() @safe pure nothrow @nogc
+        {
+            if (destroyed.length) ++destroyed[0];
+        }
+    }
+    auto destructionCount = rcslice!size_t(1);
+    {
+        auto h = rchistogram!Cell(IntegralAxis!(int, AxisOptions())(2, 0));
+        foreach (ref cell; h.counts.field)
+            cell.destroyed = destructionCount.lightScope.field;
+        auto view = h.bins;
+        h = typeof(h).init;
+        assert(destructionCount[0] == 0);
+        // The view retains the cells even after the histogram releases them.
+        assert(view.length == 2);
+    }
+    assert(destructionCount[0] == 2);
 }
 
 /// Construct two equal-width bins from observations.
