@@ -21,7 +21,7 @@ T4=$(TR $(TDNW $(LREF $1)) $(TD $2) $(TD $3) $(TD $4))
 module mir.stat.descriptive.histogram.axis;
 
 import mir.functional: naryFun;
-import mir.stat.descriptive.histogram.traits: DefaultCountType, isBreakFunction, acceptsBreakFunction, checkedBreakCount;
+import mir.stat.descriptive.histogram.traits: isBreakFunction, acceptsBreakFunction, checkedBreakCount, checkedBinCount, isIntegralBinCount;
 import mir.ndslice.slice: isSlice;
 import mir.ndslice.traits: isContiguousVector;
 import std.meta: NoDuplicates;
@@ -337,18 +337,17 @@ struct Bin(T)
 // DMD 2.113 can crash compiling that expression after inlining. Limiting this
 // barrier to the conversion lets the rest of axis lookup remain inlineable.
 // Revisit the workaround when https://github.com/dlang/dmd/issues/23833 is fixed.
-private CountType floatingBinIndex(CountType, T)(T value)
+private size_t floatingBinIndex(T)(T value)
 {
     version (DigitalMars)
         pragma(inline, false);
-    return cast(CountType) value;
+    return cast(size_t) value;
 }
 
 /++
 Axis for an interval of integral values with unit steps.
 
 Params:
-    CountT = the type that is used to count in histogram bins
     BinT = the type of the values that are compared in histogram bins
     axisOptions = options
 
@@ -360,15 +359,13 @@ See_also:
     $(LREF CategoryAxis),
     $(LREF VariableAxis)
 +/
-struct IntegralAxis(CountT, BinT, AxisOptions axisOptions)
+struct IntegralAxis(BinT, AxisOptions axisOptions)
 {
 private:
-    CountType _N_bin;
+    size_t _N_bin;
     BinType _low;
 
 public:
-    ///
-    alias CountType = CountT;
 
     ///
     alias BinType = BinT;
@@ -381,11 +378,12 @@ public:
     finite, representable, and greater than low. Floating-point boundaries must
     remain strictly increasing; checking them takes O(N_bin) construction time.
     +/
-    this(CountType N_bin, BinType low)
+    this(BinCount)(BinCount N_bin, BinType low)
+        if (isIntegralBinCount!BinCount)
     {
-        assert(N_bin > 0, "IntegralAxis.this: N_bin must be positive");
+        const n = checkedBinCount(N_bin);
         import std.traits: isIntegral;
-        static if (isIntegral!CountType && isIntegral!BinType)
+        static if (isIntegral!BinType)
         {
             // Check before high() narrows the count or adds it to low.
             // Positive integral counts can be compared without signed promotion.
@@ -394,7 +392,7 @@ public:
             assert(low <= BinType.max - cast(BinType) N_bin,
                 "IntegralAxis.this: upper bound must fit BinType");
         }
-        _N_bin = N_bin;
+        _N_bin = n;
         _low = low;
         assert(high > low, "IntegralAxis.this: upper bound must exceed low");
         import mir.internal.utility: isFloatingPoint;
@@ -409,7 +407,7 @@ public:
     }
 
     ///
-    CountType N_bin()() const
+    size_t N_bin()() const
     {
         return _N_bin;
     }
@@ -449,7 +447,7 @@ public:
     }
 
     ///
-    CountType index()(BinType x) const
+    size_t index()(BinType x) const
     {
         import mir.stat.descriptive.histogram.traits: checkOverUnderFlow;
 
@@ -462,23 +460,23 @@ public:
             static if (axisOptions.isRightClosed)
             {
                 if (x == _low)
-                    return cast(CountType) (_N_bin - 1);
+                    return cast(size_t) (_N_bin - 1);
             }
             else if (x == high())
-                return cast(CountType) 0;
+                return cast(size_t) 0;
         }
         static if (isIntegral!BinType)
         {
             static if (axisOptions.isRightClosed)
-                return cast(CountType) (x - _low - 1);
+                return cast(size_t) (x - _low - 1);
             else
-                return cast(CountType) (x - _low);
+                return cast(size_t) (x - _low);
         }
         else
         {
             // Subtraction supplies an estimate only: compare the original value
             // with the same rounded edges exposed by bin().
-            return cast(CountType) locateBoundaryBin!(axisOptions.isRightClosed())(
+            return cast(size_t) locateBoundaryBin!(axisOptions.isRightClosed())(
                 this, x, x - _low);
         }
     }
@@ -501,7 +499,7 @@ version(mir_stat_test)
 @safe pure nothrow @nogc
 unittest
 {
-    auto integralAxis = IntegralAxis!(size_t, double, AxisOptions())(10, 2.0);
+    auto integralAxis = IntegralAxis!(double, AxisOptions())(10, 2.0);
     assert(integralAxis.high == 12);
 
     assert(!integralAxis.isOverflow(5.0));
@@ -531,7 +529,7 @@ unittest
     pragma(inline, true)
     ulong lookup(T, bool rightClosed)(T value) @safe pure nothrow @nogc
     {
-        auto axis = IntegralAxis!(ulong, T, AxisOptions(rightClosed))(4, T(-1));
+        auto axis = IntegralAxis!(T, AxisOptions(rightClosed))(4, T(-1));
         return axis.index(value);
     }
 
@@ -550,7 +548,7 @@ version(mir_stat_test)
 @safe pure nothrow @nogc
 unittest
 {
-    auto axis = IntegralAxis!(size_t, double, AxisOptions())(3, 0.5);
+    auto axis = IntegralAxis!(double, AxisOptions())(3, 0.5);
 
     assert(axis.index(0.5) == 0);
     assert(axis.index(1.25) == 0);
@@ -565,7 +563,7 @@ version(mir_stat_test)
 @safe pure nothrow @nogc
 unittest
 {
-    auto integralAxis = IntegralAxis!(size_t, double, AxisOptions(true))(10, 2.0);
+    auto integralAxis = IntegralAxis!(double, AxisOptions(true))(10, 2.0);
 
     assert(integralAxis.index(2.5) == 0);
     assert(integralAxis.index(3.0) == 0);
@@ -584,7 +582,7 @@ version(mir_stat_test)
 @safe pure nothrow @nogc
 unittest
 {
-    auto integralAxis = IntegralAxis!(size_t, double, AxisOptions())(10, 2.0);
+    auto integralAxis = IntegralAxis!(double, AxisOptions())(10, 2.0);
 
     assert(integralAxis.index(3.5) == 1);
     assert(integralAxis.index(4.0) == 2);
@@ -599,7 +597,7 @@ version(mir_stat_test)
 @safe pure nothrow @nogc
 unittest
 {
-    auto integralAxis = IntegralAxis!(size_t, int, AxisOptions())(10, 2);
+    auto integralAxis = IntegralAxis!(int, AxisOptions())(10, 2);
 
     assert(integralAxis.index(2) == 0);
     assert(integralAxis.index(4) == 2);
@@ -612,7 +610,7 @@ version(mir_stat_test)
 @safe pure nothrow @nogc
 unittest
 {
-    auto integralAxis = IntegralAxis!(size_t, int, AxisOptions(true))(10, 2);
+    auto integralAxis = IntegralAxis!(int, AxisOptions(true))(10, 2);
 
     assert(integralAxis.index(4) == 1);
     assert(integralAxis.index(5) == 2);
@@ -625,7 +623,7 @@ version(mir_stat_test)
 @safe pure nothrow @nogc
 unittest
 {
-    auto integralAxis = IntegralAxis!(size_t, int, AxisOptions(IsCircular(true)))(10, 2);
+    auto integralAxis = IntegralAxis!(int, AxisOptions(IsCircular(true)))(10, 2);
 
     assert(integralAxis.index(2) == 0);
     assert(integralAxis.index(5) == 3);
@@ -637,7 +635,7 @@ version(mir_stat_test)
 @safe pure nothrow @nogc
 unittest
 {
-    auto integralAxis = IntegralAxis!(size_t, int, AxisOptions(IsRightClosed(true), IsCircular(true)))(10, 2);
+    auto integralAxis = IntegralAxis!(int, AxisOptions(IsRightClosed(true), IsCircular(true)))(10, 2);
 
     assert(integralAxis.index(2) == 9);
     assert(integralAxis.index(5) == 2);
@@ -654,54 +652,19 @@ Params:
 See_also:
     $(LREF IntegralAxis)
 +/
-IntegralAxis!(CountType, BinType, axisOptions)
-    integralAxis(CountType, BinType, AxisOptions axisOptions = AxisOptions())(CountType N_bin, BinType low)
+IntegralAxis!(BinType, axisOptions)
+    integralAxis(BinType, AxisOptions axisOptions = AxisOptions(), BinCount)(BinCount N_bin, BinType low)
+        if (isIntegralBinCount!BinCount)
 {
-    return IntegralAxis!(CountType, BinType, axisOptions)(N_bin, low);
+    return IntegralAxis!(BinType, axisOptions)(N_bin, low);
 }
 
-/++
-Params:
-    BinType = the type of the values that are compared in histogram bins
-    axisOptions = options
-    N_bin = number of bins
-    low = value of smallest bin
-+/
-IntegralAxis!(DefaultCountType, BinType, axisOptions)
-    integralAxis(BinType, AxisOptions axisOptions = AxisOptions())(DefaultCountType N_bin, BinType low)
-{
-    return .integralAxis!(DefaultCountType, BinType, axisOptions)(N_bin, low);
-}
 
 /++
 Choose the number of bins with a callable on a light-scope observation view.
 The rule must not mutate or retain the view. Its result must be a positive integer
-representable by CountType; assertions check the value before conversion.
+representable by size_t; assertions check the value before conversion.
 
-Params:
-    CountType = the type that is used to count in histogram bins
-    BinType = the type of the values that are compared in histogram bins
-    breakFunction = function used to determine breaks
-    axisOptions = options
-+/
-template integralAxis(CountType, BinType, alias breakFunction, AxisOptions axisOptions = AxisOptions())
-{
-    import mir.ndslice.slice: Slice, SliceKind;
-
-    /++
-    Params:
-        slice = slice
-        low = value of smallest bin
-    +/
-    IntegralAxis!(CountType, BinType, axisOptions)
-        integralAxis(Iterator, size_t N, SliceKind kind)(Slice!(Iterator, N, kind) slice, BinType low)
-        if (acceptsBreakFunction!(breakFunction, Slice!(Iterator, N, kind)))
-    {
-        return .integralAxis!(CountType, BinType, axisOptions)(checkedBreakCount!(CountType, breakFunction)(slice), low);
-    }
-}
-
-/++
 Params:
     BinType = the type of the values that are compared in histogram bins
     breakFunction = function used to determine breaks
@@ -716,14 +679,14 @@ template integralAxis(BinType, alias breakFunction, AxisOptions axisOptions = Ax
         slice = slice
         low = value of smallest bin
     +/
-    IntegralAxis!(DefaultCountType, BinType, axisOptions)
+    IntegralAxis!(BinType, axisOptions)
         integralAxis(Iterator, size_t N, SliceKind kind)(Slice!(Iterator, N, kind) slice, BinType low)
         if (acceptsBreakFunction!(breakFunction, Slice!(Iterator, N, kind)))
     {
-        import core.lifetime: move;
-        return .integralAxis!(DefaultCountType, BinType, breakFunction, axisOptions)(slice.move, low);
+        return .integralAxis!(BinType, axisOptions)(checkedBreakCount!breakFunction(slice), low);
     }
 }
+
 
 /++
 Params:
@@ -740,13 +703,13 @@ template integralAxis(alias breakFunction, AxisOptions axisOptions = AxisOptions
         slice = slice
         low = value of smallest bin
     +/
-    IntegralAxis!(DefaultCountType, DeepElementType!(Slice!(Iterator, N, kind)), axisOptions)
+    IntegralAxis!(DeepElementType!(Slice!(Iterator, N, kind)), axisOptions)
         integralAxis(Iterator, size_t N, SliceKind kind, BinType)(Slice!(Iterator, N, kind) slice, BinType low)
             if (is(BinType : DeepElementType!(Slice!(Iterator, N, kind))) &&
                 acceptsBreakFunction!(breakFunction, Slice!(Iterator, N, kind)))
     {
         import core.lifetime: move;
-        return .integralAxis!(DefaultCountType, DeepElementType!(Slice!(Iterator, N, kind)), breakFunction, axisOptions)(slice.move, low);
+        return .integralAxis!(DeepElementType!(Slice!(Iterator, N, kind)), breakFunction, axisOptions)(slice.move, low);
     }
 }
 
@@ -755,17 +718,13 @@ version(mir_stat_test)
 @safe pure nothrow @nogc
 unittest
 {
-    import mir.stat.descriptive.histogram.traits: DefaultCountType;
+    auto x0 = integralAxis!(double, AxisOptions())(10, 2.0);
+    auto x1 = integralAxis!(double)(10, 2.0);
+    auto x2 = integralAxis(10, 2.0);
 
-    auto x0 = integralAxis!(size_t, double, AxisOptions())(10, 2.0);
-    auto x1 = integralAxis!(size_t, double)(10, 2.0);
-    auto x2 = integralAxis!double(10, 2.0);
-    auto x3 = integralAxis(10, 2.0);
-
-    static assert(is(typeof(x0) == IntegralAxis!(size_t, double, AxisOptions())));
-    static assert(is(typeof(x1) == IntegralAxis!(size_t, double, AxisOptions())));
-    static assert(is(typeof(x2) == IntegralAxis!(DefaultCountType, double, AxisOptions())));
-    static assert(is(typeof(x2) == IntegralAxis!(DefaultCountType, double, AxisOptions())));
+    static assert(is(typeof(x0) == IntegralAxis!(double, AxisOptions())));
+    static assert(is(typeof(x1) == IntegralAxis!(double, AxisOptions())));
+    static assert(is(typeof(x2) == IntegralAxis!(double, AxisOptions())));
 }
 
 /// Example with break function
@@ -773,22 +732,18 @@ version(mir_stat_test)
 @safe pure nothrow
 unittest
 {
-    import mir.stat.descriptive.histogram.traits: DefaultCountType;
-
     import mir.ndslice.slice: sliced;
     import mir.stat.descriptive.histogram.breaks: sturges;
 
     auto x = [0.0, 1, 2, 3, 4, 5, 6, 7].sliced;
 
-    auto y0 = integralAxis!(size_t, double, sturges, AxisOptions())(x, 2.0);
-    auto y1 = integralAxis!(size_t, double, sturges)(x, 2.0);
-    auto y2 = integralAxis!(double, sturges)(x, 2.0);
-    auto y3 = integralAxis!sturges(x, 2.0);
+    auto y0 = integralAxis!(double, sturges, AxisOptions())(x, 2.0);
+    auto y1 = integralAxis!(double, sturges)(x, 2.0);
+    auto y2 = integralAxis!sturges(x, 2.0);
 
-    static assert(is(typeof(y0) == IntegralAxis!(size_t, double, AxisOptions())));
-    static assert(is(typeof(y1) == IntegralAxis!(size_t, double, AxisOptions())));
-    static assert(is(typeof(y2) == IntegralAxis!(DefaultCountType, double, AxisOptions())));
-    static assert(is(typeof(y3) == IntegralAxis!(DefaultCountType, double, AxisOptions())));
+    static assert(is(typeof(y0) == IntegralAxis!(double, AxisOptions())));
+    static assert(is(typeof(y1) == IntegralAxis!(double, AxisOptions())));
+    static assert(is(typeof(y2) == IntegralAxis!(double, AxisOptions())));
 }
 
 // Check number of bins
@@ -801,7 +756,7 @@ unittest
 
     auto x = [0.0, 1, 2, 3, 4, 5, 6, 7].sliced;
 
-    auto y = integralAxis!(size_t, double, sturges, AxisOptions())(x, 2.0);
+    auto y = integralAxis!(double, sturges, AxisOptions())(x, 2.0);
 
     assert(y.N_bin == 4);
 }
@@ -834,7 +789,7 @@ private size_t locateBoundaryBin(bool rightClosed, Axis, Value, Scaled)(
     {
         // The estimate is positive and below n, so truncation gives the same
         // integer as floor without a separate rounding operation.
-        candidate = floatingBinIndex!size_t(scaled);
+        candidate = floatingBinIndex(scaled);
         static if (rightClosed)
             if (scaled == candidate)
                 --candidate;
@@ -882,7 +837,7 @@ unittest
     static foreach (T; AliasSeq!(float, double, real))
     static foreach (rightClosed; [false, true])
     {{
-        auto axis = RegularAxis!(size_t, T, AxisOptions(rightClosed))(4, T(0), T(4));
+        auto axis = RegularAxis!(T, AxisOptions(rightClosed))(4, T(0), T(4));
         T[8] values = [T(0.25), nextDown(T(1)), T(1), nextUp(T(1)),
             T(1.25), T(2.75), T(3), nextDown(T(4))];
         foreach (x; values)
@@ -906,7 +861,6 @@ See $(LREF TransformAxis) for an alternative axis that allows for monotonic
 transformations.
 
 Params:
-    CountT = the type that is used to count in histogram bins
     BinT = the type of the values that are compared in histogram bins
     axisOptions = options
 
@@ -918,18 +872,16 @@ See_also:
     $(LREF CategoryAxis),
     $(LREF VariableAxis)
 +/
-struct RegularAxis(CountT, BinT, AxisOptions axisOptions)
+struct RegularAxis(BinT, AxisOptions axisOptions)
 {
     import mir.math.common: fmamath;
 
 private:
-    CountType _N_bin;
+    size_t _N_bin;
     BinType _low;
     BinType _high;
 
 public:
-    ///
-    alias CountType = CountT;
 
     ///
     alias BinType = BinT;
@@ -943,9 +895,10 @@ public:
     Adjacent rounded boundaries must be strictly increasing. Assertion-enabled
     construction checks all bins in O(N_bin) time without allocating storage.
     +/
-    this(CountType N_bin, BinType low, BinType high)
+    this(BinCount)(BinCount N_bin, BinType low, BinType high)
+        if (isIntegralBinCount!BinCount)
     {
-        assert(N_bin > 0, "RegularAxis.this: N_bin must be positive");
+        const n = checkedBinCount(N_bin);
         assert(high > low, "RegularAxis.this: high must be greater than low");
         import mir.internal.utility: isFloatingPoint;
         static if (isFloatingPoint!BinType)
@@ -954,7 +907,7 @@ public:
             assert(isFinite(low) && isFinite(high) && isFinite(high - low),
                 "RegularAxis.this: bounds and width must be finite");
         }
-        _N_bin = N_bin;
+        _N_bin = n;
         _low = low;
         _high = high;
         assert(hasStrictBoundaries(this),
@@ -982,7 +935,7 @@ public:
     }
 
     ///
-    CountType N_bin()() const
+    size_t N_bin()() const
     {
         return _N_bin;
     }
@@ -1038,7 +991,7 @@ public:
     Normalization supplies a candidate; the original observation is checked
     against its edges. A mismatch uses an O(log N_bin) boundary search.
     +/
-    CountType index()(BinType x) const
+    size_t index()(BinType x) const
     {
         import mir.stat.descriptive.histogram.traits: checkOverUnderFlow;
         checkOverUnderFlow!(BinType, axisOptions)(x, _low, _high);
@@ -1053,7 +1006,7 @@ public:
             else if (x == _high)
                 return 0;
         }
-        return cast(CountType) locateBoundaryBin!(axisOptions.isRightClosed())(
+        return cast(size_t) locateBoundaryBin!(axisOptions.isRightClosed())(
             this, x, _N_bin * this.value(x));
     }
 
@@ -1071,7 +1024,7 @@ version(mir_stat_test)
 unittest
 {
     import std.math: nextDown, nextUp;
-    auto axis = RegularAxis!(uint, double, AxisOptions())(2, -1.0, 1.0);
+    auto axis = RegularAxis!(double, AxisOptions())(2, -1.0, 1.0);
 
     // Both descriptions use exactly the same shared edge, at zero.
     assert(axis.bin(0).high == axis.bin(1).low);
@@ -1089,7 +1042,7 @@ version(mir_stat_test)
 @safe pure nothrow @nogc
 unittest
 {
-    auto regularAxis = RegularAxis!(size_t, double, AxisOptions())(10, 2.0, 12.0);
+    auto regularAxis = RegularAxis!(double, AxisOptions())(10, 2.0, 12.0);
     assert(regularAxis.low == 2);
     assert(regularAxis.high == 12);
 
@@ -1113,7 +1066,7 @@ version(mir_stat_test)
 @safe pure nothrow @nogc
 unittest
 {
-    auto regularAxis = RegularAxis!(size_t, double, AxisOptions(true))(10, 2.0, 12.0);
+    auto regularAxis = RegularAxis!(double, AxisOptions(true))(10, 2.0, 12.0);
 
     assert(regularAxis.index(2.5) == 0);
     assert(regularAxis.index(3.0) == 0);
@@ -1126,7 +1079,7 @@ version(mir_stat_test)
 @safe pure nothrow @nogc
 unittest
 {
-    auto regularAxis = RegularAxis!(size_t, double, AxisOptions(IsCircular(true)))(10, 2.0, 12.0);
+    auto regularAxis = RegularAxis!(double, AxisOptions(IsCircular(true)))(10, 2.0, 12.0);
 
     assert(regularAxis.index(2.5) == 0);
     assert(regularAxis.index(3.0) == 1);
@@ -1139,7 +1092,7 @@ version(mir_stat_test)
 @safe pure nothrow @nogc
 unittest
 {
-    auto regularAxis = RegularAxis!(size_t, double, AxisOptions(IsRightClosed(true), IsCircular(true)))(10, 2.0, 12.0);
+    auto regularAxis = RegularAxis!(double, AxisOptions(IsRightClosed(true), IsCircular(true)))(10, 2.0, 12.0);
 
     assert(regularAxis.index(2.0) == 9);
     assert(regularAxis.index(2.5) == 0);
@@ -1153,7 +1106,7 @@ version(mir_stat_test)
 @safe pure nothrow @nogc
 unittest
 {
-    auto regularAxis = RegularAxis!(size_t, double, AxisOptions())(10, 2.0, 12.0);
+    auto regularAxis = RegularAxis!(double, AxisOptions())(10, 2.0, 12.0);
     assert(regularAxis.stepSize == 1);
     assert(regularAxis.value(7.0) == 0.5);
 
@@ -1170,7 +1123,7 @@ version(mir_stat_test)
 @safe pure nothrow @nogc
 unittest
 {
-    auto regularAxis = RegularAxis!(size_t, double, AxisOptions())(20, 2.0, 12.0);
+    auto regularAxis = RegularAxis!(double, AxisOptions())(20, 2.0, 12.0);
 
     assert(regularAxis.index(2.0) == 0);
     assert(regularAxis.index(2.25) == 0);
@@ -1192,7 +1145,7 @@ version(mir_stat_test)
 @safe pure nothrow @nogc
 unittest
 {
-    auto regularAxis = RegularAxis!(size_t, double, AxisOptions(true))(20, 2.0, 12.0);
+    auto regularAxis = RegularAxis!(double, AxisOptions(true))(20, 2.0, 12.0);
 
     assert(regularAxis.index(2.25) == 0);
     assert(regularAxis.index(2.5) == 0);
@@ -1220,56 +1173,19 @@ Params:
 See_also:
     $(LREF RegularAxis)
 +/
-RegularAxis!(CountType, BinType, axisOptions)
-    regularAxis(CountType, BinType, AxisOptions axisOptions = AxisOptions())(CountType N_bin, BinType low, BinType high)
+RegularAxis!(BinType, axisOptions)
+    regularAxis(BinType, AxisOptions axisOptions = AxisOptions(), BinCount)(BinCount N_bin, BinType low, BinType high)
+        if (isIntegralBinCount!BinCount)
 {
-    return RegularAxis!(CountType, BinType, axisOptions)(N_bin, low, high);
+    return RegularAxis!(BinType, axisOptions)(N_bin, low, high);
 }
 
-/++
-Params:
-    BinType = the type of the values that are compared in histogram bins
-    axisOptions = options
-    N_bin = number of bins
-    low = value of smallest bin
-    high = value of the largest bin
-+/
-RegularAxis!(DefaultCountType, BinType, axisOptions)
-    regularAxis(BinType, AxisOptions axisOptions = AxisOptions())(DefaultCountType N_bin, BinType low, BinType high)
-{
-    return .regularAxis!(DefaultCountType, BinType, axisOptions)(N_bin, low, high);
-}
 
 /++
 Choose the number of bins with a callable on a light-scope observation view.
 The rule must not mutate or retain the view. Its result must be a positive integer
-representable by CountType; assertions check the value before conversion.
+representable by size_t; assertions check the value before conversion.
 
-Params:
-    CountType = the type that is used to count in histogram bins
-    BinType = the type of the values that are compared in histogram bins
-    breakFunction = function used to determine breaks
-    axisOptions = options
-+/
-template regularAxis(CountType, BinType, alias breakFunction, AxisOptions axisOptions = AxisOptions())
-{
-    import mir.ndslice.slice: Slice, SliceKind;
-
-    /++
-    Params:
-        slice = slice
-        low = value of smallest bin
-        high = value of the largest bin
-    +/
-    RegularAxis!(CountType, BinType, axisOptions)
-        regularAxis(Iterator, size_t N, SliceKind kind)(Slice!(Iterator, N, kind) slice, BinType low, BinType high)
-        if (acceptsBreakFunction!(breakFunction, Slice!(Iterator, N, kind)))
-    {
-        return .regularAxis!(CountType, BinType, axisOptions)(checkedBreakCount!(CountType, breakFunction)(slice), low, high);
-    }
-}
-
-/++
 Params:
     BinType = the type of the values that are compared in histogram bins
     breakFunction = function used to determine breaks
@@ -1285,14 +1201,14 @@ template regularAxis(BinType, alias breakFunction, AxisOptions axisOptions = Axi
         low = value of smallest bin
         high = value of the largest bin
     +/
-    RegularAxis!(DefaultCountType, BinType, axisOptions)
+    RegularAxis!(BinType, axisOptions)
         regularAxis(Iterator, size_t N, SliceKind kind)(Slice!(Iterator, N, kind) slice, BinType low, BinType high)
         if (acceptsBreakFunction!(breakFunction, Slice!(Iterator, N, kind)))
     {
-        import core.lifetime: move;
-        return .regularAxis!(DefaultCountType, BinType, breakFunction, axisOptions)(slice.move, low, high);
+        return .regularAxis!(BinType, axisOptions)(checkedBreakCount!breakFunction(slice), low, high);
     }
 }
+
 
 /++
 Params:
@@ -1310,13 +1226,13 @@ template regularAxis(alias breakFunction, AxisOptions axisOptions = AxisOptions(
         low = value of smallest bin
         high = value of the largest bin
     +/
-    RegularAxis!(DefaultCountType, DeepElementType!(Slice!(Iterator, N, kind)), axisOptions)
+    RegularAxis!(DeepElementType!(Slice!(Iterator, N, kind)), axisOptions)
         regularAxis(Iterator, size_t N, SliceKind kind, BinType)(Slice!(Iterator, N, kind) slice, BinType low, BinType high)
             if (is(BinType : DeepElementType!(Slice!(Iterator, N, kind))) &&
                 acceptsBreakFunction!(breakFunction, Slice!(Iterator, N, kind)))
     {
         import core.lifetime: move;
-        return .regularAxis!(DefaultCountType, DeepElementType!(Slice!(Iterator, N, kind)), breakFunction, axisOptions)(slice.move, low, high);
+        return .regularAxis!(DeepElementType!(Slice!(Iterator, N, kind)), breakFunction, axisOptions)(slice.move, low, high);
     }
 }
 
@@ -1325,17 +1241,13 @@ version(mir_stat_test)
 @safe pure nothrow @nogc
 unittest
 {
-    import mir.stat.descriptive.histogram.traits: DefaultCountType;
+    auto x0 = regularAxis!(double, AxisOptions())(10, 2.0, 12.0);
+    auto x1 = regularAxis!(double)(10, 2.0, 12.0);
+    auto x2 = regularAxis(10, 2.0, 12.0);
 
-    auto x0 = regularAxis!(size_t, double, AxisOptions())(10, 2.0, 12.0);
-    auto x1 = regularAxis!(size_t, double)(10, 2.0, 12.0);
-    auto x2 = regularAxis!double(10, 2.0, 12.0);
-    auto x3 = regularAxis(10, 2.0, 12.0);
-
-    static assert(is(typeof(x0) == RegularAxis!(size_t, double, AxisOptions())));
-    static assert(is(typeof(x1) == RegularAxis!(size_t, double, AxisOptions())));
-    static assert(is(typeof(x2) == RegularAxis!(DefaultCountType, double, AxisOptions())));
-    static assert(is(typeof(x2) == RegularAxis!(DefaultCountType, double, AxisOptions())));
+    static assert(is(typeof(x0) == RegularAxis!(double, AxisOptions())));
+    static assert(is(typeof(x1) == RegularAxis!(double, AxisOptions())));
+    static assert(is(typeof(x2) == RegularAxis!(double, AxisOptions())));
 }
 
 /// Example with break function
@@ -1343,22 +1255,18 @@ version(mir_stat_test)
 @safe pure nothrow
 unittest
 {
-    import mir.stat.descriptive.histogram.traits: DefaultCountType;
-
     import mir.ndslice.slice: sliced;
     import mir.stat.descriptive.histogram.breaks: sturges;
 
     auto x = [0.0, 1, 2, 3, 4, 5, 6, 7].sliced;
 
-    auto y0 = regularAxis!(size_t, double, sturges, AxisOptions())(x, 2.0, 12.0);
-    auto y1 = regularAxis!(size_t, double, sturges)(x, 2.0, 12.0);
-    auto y2 = regularAxis!(double, sturges)(x, 2.0, 12.0);
-    auto y3 = regularAxis!sturges(x, 2.0, 12.0);
+    auto y0 = regularAxis!(double, sturges, AxisOptions())(x, 2.0, 12.0);
+    auto y1 = regularAxis!(double, sturges)(x, 2.0, 12.0);
+    auto y2 = regularAxis!sturges(x, 2.0, 12.0);
 
-    static assert(is(typeof(y0) == RegularAxis!(size_t, double, AxisOptions())));
-    static assert(is(typeof(y1) == RegularAxis!(size_t, double, AxisOptions())));
-    static assert(is(typeof(y2) == RegularAxis!(DefaultCountType, double, AxisOptions())));
-    static assert(is(typeof(y3) == RegularAxis!(DefaultCountType, double, AxisOptions())));
+    static assert(is(typeof(y0) == RegularAxis!(double, AxisOptions())));
+    static assert(is(typeof(y1) == RegularAxis!(double, AxisOptions())));
+    static assert(is(typeof(y2) == RegularAxis!(double, AxisOptions())));
 }
 
 // Check number of bins
@@ -1371,7 +1279,7 @@ unittest
 
     auto x = [0.0, 1, 2, 3, 4, 5, 6, 7].sliced;
 
-    auto y = regularAxis!(size_t, double, sturges, AxisOptions())(x, 2.0, 12.0);
+    auto y = regularAxis!(double, sturges, AxisOptions())(x, 2.0, 12.0);
 
     assert(y.N_bin == 4);
 }
@@ -1384,7 +1292,6 @@ A $(LREF RegularAxis) is equivalent to a $(LREF TransformAxis) with an identity
 `transform` function.
 
 Params:
-    CountT = the type that is used to count in histogram bins
     BinT = the type of the values that are compared in histogram bins
     transform = function to transform axis
     axisOptions = options
@@ -1398,12 +1305,12 @@ See_also:
     $(LREF CategoryAxis),
     $(LREF VariableAxis)
 +/
-struct TransformAxis(CountT, BinT, alias transform, alias inverseTransform, AxisOptions axisOptions)
+struct TransformAxis(BinT, alias transform, alias inverseTransform, AxisOptions axisOptions)
 {
     import mir.math.common: fmamath;
 
 private:
-    RegularAxis!(CountType, BinType, axisOptions) regularAxis = void;
+    RegularAxis!(BinType, axisOptions) regularAxis = void;
     BinType _low;
     BinType _high;
 
@@ -1414,8 +1321,6 @@ private:
     static assert (is(BinType == inverseTransformType), "the return type of inverseTransform must match BinType");
 
 public:
-    ///
-    alias CountType = CountT;
 
     ///
     alias BinType = BinT;
@@ -1429,10 +1334,11 @@ public:
     between low and high must be strictly increasing. Assertion-enabled
     construction checks all edges in O(N_bin) time without allocating storage.
     +/
-    this(CountType N_bin, BinType low, BinType high)
+    this(BinCount)(BinCount N_bin, BinType low, BinType high)
+        if (isIntegralBinCount!BinCount)
     {
         assert(high > low, "TransformAxis.this: high must be greater than low");
-        regularAxis = RegularAxis!(CountType, BinType, axisOptions)(N_bin, transformFunction(low), transformFunction(high));
+        regularAxis = RegularAxis!(BinType, axisOptions)(N_bin, transformFunction(low), transformFunction(high));
         _low = low;
         _high = high;
         assert(hasStrictBoundaries(this),
@@ -1449,7 +1355,7 @@ public:
     }
 
     ///
-    CountType N_bin()() const
+    size_t N_bin()() const
     {
         return regularAxis._N_bin;
     }
@@ -1517,7 +1423,7 @@ public:
     The forward transform provides only a candidate: rounded transform values
     may coincide even when observations lie on opposite sides of an edge.
     +/
-    CountType index()(BinType x) const
+    size_t index()(BinType x) const
     {
         import mir.stat.descriptive.histogram.traits: checkOverUnderFlow;
         checkOverUnderFlow!(BinType, axisOptions)(x, _low, _high);
@@ -1531,7 +1437,7 @@ public:
             else if (x == _high)
                 return 0;
         }
-        return cast(CountType) locateBoundaryBin!(axisOptions.isRightClosed())(
+        return cast(size_t) locateBoundaryBin!(axisOptions.isRightClosed())(
             this, x, N_bin * regularAxis.value(transformFunction(x)));
     }
 
@@ -1550,7 +1456,7 @@ unittest
 {
     import mir.math.common: log10;
     import std.math: nextDown, nextUp;
-    auto axis = TransformAxis!(uint, double, log10, "10.0 ^^ a", AxisOptions())(
+    auto axis = TransformAxis!(double, log10, "10.0 ^^ a", AxisOptions())(
         20, 1.0, 1.0e12);
     auto edge = axis.bin(1).low;
 
@@ -1577,7 +1483,7 @@ unittest
         return 10.0 ^^ x;
     }
 
-    auto transformAxis = TransformAxis!(size_t, double, log10, inverseLog10, AxisOptions())(10, 10.0 ^^ 2.0, 10.0 ^^ 12.0);
+    auto transformAxis = TransformAxis!(double, log10, inverseLog10, AxisOptions())(10, 10.0 ^^ 2.0, 10.0 ^^ 12.0);
 
     assert(transformAxis.low == 10.0 ^^ 2.0);
     assert(transformAxis.high == 10.0 ^^ 12.0);
@@ -1597,11 +1503,11 @@ unittest
     assert(transformAxis.bin(9) == Bin!double(10.0 ^^ 11.0, 10.0 ^^ 12.0));
 
     // Can also supply lambda
-    auto transformAxis2 = TransformAxis!(size_t, double, a => log10(a), a => 10.0 ^^ a, AxisOptions())(10, 10.0 ^^ 2.0, 10.0 ^^ 12.0);
+    auto transformAxis2 = TransformAxis!(double, a => log10(a), a => 10.0 ^^ a, AxisOptions())(10, 10.0 ^^ 2.0, 10.0 ^^ 12.0);
     assert(transformAxis2.index(10.0 ^^ 3.0) == 1);
 
     // Or string lambda
-    auto transformAxis3 = TransformAxis!(size_t, double, "log10(a)", "10.0 ^^ a", AxisOptions())(10, 10.0 ^^ 2.0, 10.0 ^^ 12.0);
+    auto transformAxis3 = TransformAxis!(double, "log10(a)", "10.0 ^^ a", AxisOptions())(10, 10.0 ^^ 2.0, 10.0 ^^ 12.0);
     assert(transformAxis3.index(10.0 ^^ 3.0) == 1);
 }
 
@@ -1616,7 +1522,7 @@ unittest
         return 10.0 ^^ x;
     }
 
-    auto transformAxis = TransformAxis!(size_t, double, log10, inverseLog10, AxisOptions(true))(10, 10.0 ^^ 2.0, 10.0 ^^ 12.0);
+    auto transformAxis = TransformAxis!(double, log10, inverseLog10, AxisOptions(true))(10, 10.0 ^^ 2.0, 10.0 ^^ 12.0);
 
     assert(transformAxis.index(10.0 ^^ 2.5) == 0);
     assert(transformAxis.index(10.0 ^^ 3.0) == 0);
@@ -1635,7 +1541,7 @@ unittest
         return 10.0 ^^ x;
     }
 
-    auto transformAxis = TransformAxis!(size_t, double, log10, inverseLog10, AxisOptions(IsCircular(true)))(10, 10.0 ^^ 2.0, 10.0 ^^ 12.0);
+    auto transformAxis = TransformAxis!(double, log10, inverseLog10, AxisOptions(IsCircular(true)))(10, 10.0 ^^ 2.0, 10.0 ^^ 12.0);
 
     assert(transformAxis.index(10.0 ^^ 2.5) == 0);
     assert(transformAxis.index(10.0 ^^ 3.0) == 1);
@@ -1654,7 +1560,7 @@ unittest
         return 10.0 ^^ x;
     }
 
-    auto transformAxis = TransformAxis!(size_t, double, log10, inverseLog10, AxisOptions(IsRightClosed(true), IsCircular(true)))(10, 10.0 ^^ 2.0, 10.0 ^^ 12.0);
+    auto transformAxis = TransformAxis!(double, log10, inverseLog10, AxisOptions(IsRightClosed(true), IsCircular(true)))(10, 10.0 ^^ 2.0, 10.0 ^^ 12.0);
 
     assert(transformAxis.index(10.0 ^^ 2.0) == 9);
     assert(transformAxis.index(10.0 ^^ 2.5) == 0);
@@ -1674,7 +1580,7 @@ unittest
         return 10.0 ^^ x;
     }
 
-    auto transformAxis = TransformAxis!(size_t, double, log10, inverseLog10, AxisOptions())(10, 10.0 ^^ 2.0, 10.0 ^^ 12.0);
+    auto transformAxis = TransformAxis!(double, log10, inverseLog10, AxisOptions())(10, 10.0 ^^ 2.0, 10.0 ^^ 12.0);
     assert(transformAxis.stepSize == 1);
     assert(transformAxis.value(10.0 ^^ 7.0) == 0.5);
 
@@ -1697,7 +1603,7 @@ unittest
         return 10.0 ^^ x;
     }
 
-    auto transformAxis = TransformAxis!(size_t, double, log10, inverseLog10, AxisOptions())(20, 10.0 ^^ 2.0, 10.0 ^^ 12.0);
+    auto transformAxis = TransformAxis!(double, log10, inverseLog10, AxisOptions())(20, 10.0 ^^ 2.0, 10.0 ^^ 12.0);
 
     assert(transformAxis.index(10.0 ^^ 2.0) == 0);
     assert(transformAxis.index(10.0 ^^ 2.25) == 0);
@@ -1726,7 +1632,7 @@ unittest
         return 10.0 ^^ x;
     }
 
-    auto transformAxis = TransformAxis!(size_t, double, log10, inverseLog10, AxisOptions(true))(20, 10.0 ^^ 2.0, 10.0 ^^ 12.0);
+    auto transformAxis = TransformAxis!(double, log10, inverseLog10, AxisOptions(true))(20, 10.0 ^^ 2.0, 10.0 ^^ 12.0);
 
     assert(transformAxis.index(10.0 ^^ 2.25) == 0);
     assert(transformAxis.index(10.0 ^^ 2.5) == 0);
@@ -1754,15 +1660,15 @@ unittest
         return 10.0 ^^ x;
     }
 
-    auto transformAxis1 = TransformAxis!(size_t, double, log10, inverseLog10, AxisOptions())(10, 10.0 ^^ 2.0, 10.0 ^^ 12.0);
+    auto transformAxis1 = TransformAxis!(double, log10, inverseLog10, AxisOptions())(10, 10.0 ^^ 2.0, 10.0 ^^ 12.0);
     assert(transformAxis1.bin(0) == Bin!double(10.0 ^^ 2.0, 10.0 ^^ 3.0));
 
     // lambda function
-    auto transformAxis2 = TransformAxis!(size_t, double, a => log10(a), a => (10.0 ^^ a), AxisOptions())(10, 10.0 ^^ 2.0, 10.0 ^^ 12.0);
+    auto transformAxis2 = TransformAxis!(double, a => log10(a), a => (10.0 ^^ a), AxisOptions())(10, 10.0 ^^ 2.0, 10.0 ^^ 12.0);
     assert(transformAxis2.bin(0) == Bin!double(10.0 ^^ 2.0, 10.0 ^^ 3.0));
 
     // string lambda
-    auto transformAxis3 = TransformAxis!(size_t, double, "log10(a)", "(10.0 ^^ a)", AxisOptions())(10, 10.0 ^^ 2.0, 10.0 ^^ 12.0);
+    auto transformAxis3 = TransformAxis!(double, "log10(a)", "(10.0 ^^ a)", AxisOptions())(10, 10.0 ^^ 2.0, 10.0 ^^ 12.0);
     assert(transformAxis3.bin(0) == Bin!double(10.0 ^^ 2.0, 10.0 ^^ 3.0));
 }
 
@@ -1773,13 +1679,13 @@ unittest
 {
     import mir.math.common: exp, log, log2, sqrt;
 
-    auto transformAxis1 = TransformAxis!(size_t, double, log, exp, AxisOptions())(10, exp(2.0), exp(12.0));
+    auto transformAxis1 = TransformAxis!(double, log, exp, AxisOptions())(10, exp(2.0), exp(12.0));
     assert(transformAxis1.bin(0) == Bin!double(exp(2.0), exp(3.0)));
 
-    auto transformAxis2 = TransformAxis!(size_t, double, log2, "2.0 ^^ a", AxisOptions())(10, 2.0 ^^ 2.0, 2.0 ^^ 12.0);
+    auto transformAxis2 = TransformAxis!(double, log2, "2.0 ^^ a", AxisOptions())(10, 2.0 ^^ 2.0, 2.0 ^^ 12.0);
     assert(transformAxis2.bin(0) == Bin!double(4.0, 8.0));
 
-    auto transformAxis3 = TransformAxis!(size_t, double, sqrt, (a => a ^^ 2.0), AxisOptions())(10, 4.0, 144.0);
+    auto transformAxis3 = TransformAxis!(double, sqrt, (a => a ^^ 2.0), AxisOptions())(10, 4.0, 144.0);
     assert(transformAxis3.bin(0) == Bin!double(4.0, 9.0));
 }
 
@@ -1955,17 +1861,16 @@ Params:
 See_also:
     $(LREF TransformAxis)
 +/
-TransformAxis!(CountType, BinType, transform, inverseTransform, axisOptions)
-    transformAxis(CountType, BinType, alias transform, alias inverseTransform, AxisOptions axisOptions = AxisOptions())(CountType N_bin, BinType low, BinType high)
-        if (isTransformFunction!(transform, BinType) &&
+TransformAxis!(BinType, transform, inverseTransform, axisOptions)
+    transformAxis(BinType, alias transform, alias inverseTransform, AxisOptions axisOptions = AxisOptions(), BinCount)(BinCount N_bin, BinType low, BinType high)
+        if (isIntegralBinCount!BinCount && isTransformFunction!(transform, BinType) &&
             isTransformFunction!(inverseTransform, BinType))
 {
-    return TransformAxis!(CountType, BinType, transform, inverseTransform, axisOptions)(N_bin, low, high);
+    return TransformAxis!(BinType, transform, inverseTransform, axisOptions)(N_bin, low, high);
 }
 
 /++
 Params:
-    CountType = the type that is used to count in histogram bins
     BinType = the type of the values that are compared in histogram bins
     transform = function to transform axis
     axisOptions = options
@@ -1973,48 +1878,14 @@ Params:
     low = value of smallest bin
     high = value of the largest bin
 +/
-TransformAxis!(CountType, BinType, transform, inverseTransformMapping!transform, axisOptions)
-    transformAxis(CountType, BinType, alias transform, AxisOptions axisOptions = AxisOptions())(CountType N_bin, BinType low, BinType high)
-        if (hasInverseTransformMapping!transform)
+TransformAxis!(BinType, transform, inverseTransformMapping!transform, axisOptions)
+    transformAxis(BinType, alias transform, AxisOptions axisOptions = AxisOptions(), BinCount)(BinCount N_bin, BinType low, BinType high)
+        if (isIntegralBinCount!BinCount && hasInverseTransformMapping!transform)
 {
     alias inverseTransform = inverseTransformMapping!transform;
-    return TransformAxis!(CountType, BinType, transform, inverseTransform, axisOptions)(N_bin, low, high);
+    return TransformAxis!(BinType, transform, inverseTransform, axisOptions)(N_bin, low, high);
 }
 
-/++
-Params:
-    BinType = the type of the values that are compared in histogram bins
-    transform = function to transform axis
-    inverseTransform = function to undo transform
-    axisOptions = options
-    N_bin = number of bins
-    low = value of smallest bin
-    high = value of the largest bin
-+/
-TransformAxis!(DefaultCountType, BinType, transform, inverseTransform, axisOptions)
-    transformAxis(BinType, alias transform, alias inverseTransform, AxisOptions axisOptions = AxisOptions())(DefaultCountType N_bin, BinType low, BinType high)
-        if (isTransformFunction!(transform, BinType) &&
-            isTransformFunction!(inverseTransform, BinType))
-{
-    return .transformAxis!(DefaultCountType, BinType, transform, inverseTransform, axisOptions)(N_bin, low, high);
-}
-
-/++
-Params:
-    BinType = the type of the values that are compared in histogram bins
-    transform = function to transform axis
-    axisOptions = options
-    N_bin = number of bins
-    low = value of smallest bin
-    high = value of the largest bin
-+/
-TransformAxis!(DefaultCountType, BinType, transform, inverseTransformMapping!transform, axisOptions)
-    transformAxis(BinType, alias transform, AxisOptions axisOptions = AxisOptions())(DefaultCountType N_bin, BinType low, BinType high)
-        if (hasInverseTransformMapping!transform)
-{
-    alias inverseTransform = inverseTransformMapping!transform;
-    return .transformAxis!(DefaultCountType, BinType, transform, inverseTransform, axisOptions)(N_bin, low, high);
-}
 
 /++
 Params:
@@ -2030,12 +1901,12 @@ template transformAxis(alias transform, alias inverseTransform, AxisOptions axis
         low = value of smallest bin
         high = value of the largest bin
     +/
-    TransformAxis!(DefaultCountType, BinType, transform, inverseTransform, axisOptions)
-        transformAxis(BinType)(DefaultCountType N_bin, BinType low, BinType high)
-            if (isTransformFunction!(transform, BinType) &&
+    TransformAxis!(BinType, transform, inverseTransform, axisOptions)
+        transformAxis(BinType, BinCount)(BinCount N_bin, BinType low, BinType high)
+            if (isIntegralBinCount!BinCount && isTransformFunction!(transform, BinType) &&
                 isTransformFunction!(inverseTransform, BinType))
     {
-        return .transformAxis!(DefaultCountType, BinType, transform, inverseTransform, axisOptions)(N_bin, low, high);
+        return .transformAxis!(BinType, transform, inverseTransform, axisOptions)(N_bin, low, high);
     }
 }
 
@@ -2053,11 +1924,12 @@ template transformAxis(alias transform, AxisOptions axisOptions = AxisOptions())
         low = value of smallest bin
         high = value of the largest bin
     +/
-    TransformAxis!(DefaultCountType, BinType, transform, inverseTransformMapping!transform, axisOptions)
-        transformAxis(BinType)(DefaultCountType N_bin, BinType low, BinType high)
+    TransformAxis!(BinType, transform, inverseTransformMapping!transform, axisOptions)
+        transformAxis(BinType, BinCount)(BinCount N_bin, BinType low, BinType high)
+        if (isIntegralBinCount!BinCount)
     {
         alias inverseTransform = inverseTransformMapping!transform;
-        return .transformAxis!(DefaultCountType, BinType, transform, inverseTransform, axisOptions)(N_bin, low, high);
+        return .transformAxis!(BinType, transform, inverseTransform, axisOptions)(N_bin, low, high);
     }
 }
 
@@ -2065,71 +1937,11 @@ template transformAxis(alias transform, AxisOptions axisOptions = AxisOptions())
 Choose the bin count by applying the rule to transformed observations.
 The rule receives a lazy, light-scope view in the same coordinate type used by
 this axis's regular bins. It must not mutate or retain that view. The result
-must be a positive integer representable by CountType.
+must be a positive integer representable by size_t.
 Bounds and the observations later inserted into the histogram remain in original
 units. To choose a count from original data instead, calculate it separately and
 use the overload taking an explicit N_bin.
 
-Params:
-    CountType = the type that is used to count in histogram bins
-    BinType = the type of the values that are compared in histogram bins
-    transform = function to transform axis
-    inverseTransform = function to undo transform
-    breakFunction = function used to determine breaks
-    axisOptions = options
-+/
-template transformAxis(CountType, BinType, alias transform, alias inverseTransform, alias breakFunction, AxisOptions axisOptions = AxisOptions())
-    if (isTransformFunction!(transform, BinType) &&
-        isTransformFunction!(inverseTransform, BinType))
-{
-    import mir.ndslice.slice: Slice, SliceKind;
-
-    /++
-    Params:
-        slice = slice
-        low = value of smallest bin
-        high = value of the largest bin
-    +/
-    TransformAxis!(CountType, BinType, transform, inverseTransform, axisOptions)
-        transformAxis(Iterator, size_t N, SliceKind kind)(Slice!(Iterator, N, kind) slice, BinType low, BinType high)
-        if (acceptsTransformedBreakFunction!(breakFunction, transform, BinType, Slice!(Iterator, N, kind)))
-    {
-        auto transformed = transformedBreakData!(BinType, transform)(slice);
-        const count = checkedBreakCount!(CountType, breakFunction)(transformed);
-        return .transformAxis!(CountType, BinType, transform, inverseTransform, axisOptions)(count, low, high);
-    }
-}
-
-/++
-Params:
-    CountType = the type that is used to count in histogram bins
-    BinType = the type of the values that are compared in histogram bins
-    transform = function to transform axis
-    breakFunction = function used to determine breaks
-    axisOptions = options
-+/
-template transformAxis(CountType, BinType, alias transform, alias breakFunction, AxisOptions axisOptions = AxisOptions())
-    if (hasInverseTransformMapping!transform)
-{
-    import mir.ndslice.slice: Slice, SliceKind;
-
-    /++
-    Params:
-        slice = slice
-        low = value of smallest bin
-        high = value of the largest bin
-    +/
-    TransformAxis!(CountType, BinType, transform, inverseTransformMapping!transform, axisOptions)
-        transformAxis(Iterator, size_t N, SliceKind kind)(Slice!(Iterator, N, kind) slice, BinType low, BinType high)
-        if (acceptsTransformedBreakFunction!(breakFunction, transform, BinType, Slice!(Iterator, N, kind)))
-    {
-        import core.lifetime: move;
-        alias inverseTransform = inverseTransformMapping!transform;
-        return .transformAxis!(CountType, BinType, transform, inverseTransform, breakFunction, axisOptions)(slice.move, low, high);
-    }
-}
-
-/++
 Params:
     BinType = the type of the values that are compared in histogram bins
     transform = function to transform axis
@@ -2149,12 +1961,13 @@ template transformAxis(BinType, alias transform, alias inverseTransform, alias b
         low = value of smallest bin
         high = value of the largest bin
     +/
-    TransformAxis!(DefaultCountType, BinType, transform, inverseTransform, axisOptions)
+    TransformAxis!(BinType, transform, inverseTransform, axisOptions)
         transformAxis(Iterator, size_t N, SliceKind kind)(Slice!(Iterator, N, kind) slice, BinType low, BinType high)
         if (acceptsTransformedBreakFunction!(breakFunction, transform, BinType, Slice!(Iterator, N, kind)))
     {
-        import core.lifetime: move;
-        return .transformAxis!(DefaultCountType, BinType, transform, inverseTransform, breakFunction, axisOptions)(slice.move, low, high);
+        auto transformed = transformedBreakData!(BinType, transform)(slice);
+        const count = checkedBreakCount!breakFunction(transformed);
+        return .transformAxis!(BinType, transform, inverseTransform, axisOptions)(count, low, high);
     }
 }
 
@@ -2176,15 +1989,16 @@ template transformAxis(BinType, alias transform, alias breakFunction, AxisOption
         low = value of smallest bin
         high = value of the largest bin
     +/
-    TransformAxis!(DefaultCountType, BinType, transform, inverseTransformMapping!transform, axisOptions)
+    TransformAxis!(BinType, transform, inverseTransformMapping!transform, axisOptions)
         transformAxis(Iterator, size_t N, SliceKind kind)(Slice!(Iterator, N, kind) slice, BinType low, BinType high)
         if (acceptsTransformedBreakFunction!(breakFunction, transform, BinType, Slice!(Iterator, N, kind)))
     {
         import core.lifetime: move;
         alias inverseTransform = inverseTransformMapping!transform;
-        return .transformAxis!(DefaultCountType, BinType, transform, inverseTransform, breakFunction, axisOptions)(slice.move, low, high);
+        return .transformAxis!(BinType, transform, inverseTransform, breakFunction, axisOptions)(slice.move, low, high);
     }
 }
+
 
 /++
 Params:
@@ -2204,7 +2018,7 @@ template transformAxis(alias transform, alias inverseTransform, alias breakFunct
         low = value of smallest bin
         high = value of the largest bin
     +/
-    TransformAxis!(DefaultCountType, DeepElementType!(Slice!(Iterator, N, kind)), transform, inverseTransform, axisOptions)
+    TransformAxis!(DeepElementType!(Slice!(Iterator, N, kind)), transform, inverseTransform, axisOptions)
         transformAxis(Iterator, size_t N, SliceKind kind, BinType)(Slice!(Iterator, N, kind) slice, BinType low, BinType high)
             if (isTransformFunction!(transform, DeepElementType!(Slice!(Iterator, N, kind))) &&
                 isTransformFunction!(inverseTransform, DeepElementType!(Slice!(Iterator, N, kind))) &&
@@ -2212,7 +2026,7 @@ template transformAxis(alias transform, alias inverseTransform, alias breakFunct
                 acceptsTransformedBreakFunction!(breakFunction, transform, DeepElementType!(Slice!(Iterator, N, kind)), Slice!(Iterator, N, kind)))
     {
         import core.lifetime: move;
-        return .transformAxis!(DefaultCountType, DeepElementType!(Slice!(Iterator, N, kind)), transform, inverseTransform, breakFunction, axisOptions)(slice.move, low, high);
+        return .transformAxis!(DeepElementType!(Slice!(Iterator, N, kind)), transform, inverseTransform, breakFunction, axisOptions)(slice.move, low, high);
     }
 }
 
@@ -2234,7 +2048,7 @@ template transformAxis(alias transform, alias breakFunction, AxisOptions axisOpt
         low = value of smallest bin
         high = value of the largest bin
     +/
-    TransformAxis!(DefaultCountType, DeepElementType!(Slice!(Iterator, N, kind)), transform, inverseTransformMapping!transform, axisOptions)
+    TransformAxis!(DeepElementType!(Slice!(Iterator, N, kind)), transform, inverseTransformMapping!transform, axisOptions)
         transformAxis(Iterator, size_t N, SliceKind kind, BinType)(Slice!(Iterator, N, kind) slice, BinType low, BinType high)
             if (is(BinType : DeepElementType!(Slice!(Iterator, N, kind))) &&
                 acceptsTransformedBreakFunction!(breakFunction, transform, DeepElementType!(Slice!(Iterator, N, kind)), Slice!(Iterator, N, kind)))
@@ -2242,7 +2056,7 @@ template transformAxis(alias transform, alias breakFunction, AxisOptions axisOpt
         import core.lifetime: move;
 
         alias inverseTransform = inverseTransformMapping!transform;
-        return .transformAxis!(DefaultCountType, DeepElementType!(Slice!(Iterator, N, kind)), transform, inverseTransform, breakFunction, axisOptions)(slice.move, low, high);
+        return .transformAxis!(DeepElementType!(Slice!(Iterator, N, kind)), transform, inverseTransform, breakFunction, axisOptions)(slice.move, low, high);
     }
 }
 
@@ -2251,25 +2065,19 @@ version(mir_stat_test)
 @safe pure nothrow @nogc
 unittest
 {
-    import mir.stat.descriptive.histogram.traits: DefaultCountType;
-
     import mir.math.common: exp, log;
 
-    auto x0 = transformAxis!(size_t, double, exp, log, AxisOptions())(10, 2.0, 12.0);
-    auto x1 = transformAxis!(size_t, double, exp, log)(10, 2.0, 12.0);
-    auto x2 = transformAxis!(size_t, double, exp)(10, 2.0, 12.0);
-    auto x3 = transformAxis!(double, exp, log)(10, 2.0, 12.0);
-    auto x4 = transformAxis!(double, exp)(10, 2.0, 12.0);
-    auto x5 = transformAxis!(exp, log)(10, 2.0, 12.0);
-    auto x6 = transformAxis!exp(10, 2.0, 12.0);
+    auto x0 = transformAxis!(double, exp, log, AxisOptions())(10, 2.0, 12.0);
+    auto x1 = transformAxis!(double, exp, log)(10, 2.0, 12.0);
+    auto x2 = transformAxis!(double, exp)(10, 2.0, 12.0);
+    auto x3 = transformAxis!(exp, log)(10, 2.0, 12.0);
+    auto x4 = transformAxis!exp(10, 2.0, 12.0);
 
-    static assert(is(typeof(x0) == TransformAxis!(size_t, double, exp, log, AxisOptions())));
-    static assert(is(typeof(x1) == TransformAxis!(size_t, double, exp, log, AxisOptions())));
-    static assert(is(typeof(x2) == TransformAxis!(size_t, double, exp, log, AxisOptions())));
-    static assert(is(typeof(x3) == TransformAxis!(DefaultCountType, double, exp, log, AxisOptions())));
-    static assert(is(typeof(x4) == TransformAxis!(DefaultCountType, double, exp, log, AxisOptions())));
-    static assert(is(typeof(x5) == TransformAxis!(DefaultCountType, double, exp, log, AxisOptions())));
-    static assert(is(typeof(x6) == TransformAxis!(DefaultCountType, double, exp, log, AxisOptions())));
+    static assert(is(typeof(x0) == TransformAxis!(double, exp, log, AxisOptions())));
+    static assert(is(typeof(x1) == TransformAxis!(double, exp, log, AxisOptions())));
+    static assert(is(typeof(x2) == TransformAxis!(double, exp, log, AxisOptions())));
+    static assert(is(typeof(x3) == TransformAxis!(double, exp, log, AxisOptions())));
+    static assert(is(typeof(x4) == TransformAxis!(double, exp, log, AxisOptions())));
 }
 
 /// Example with break function
@@ -2277,33 +2085,27 @@ version(mir_stat_test)
 @safe pure nothrow
 unittest
 {
-    import mir.stat.descriptive.histogram.traits: DefaultCountType;
-
     import mir.math.common: exp, log;
     import mir.ndslice.slice: sliced;
     import mir.stat.descriptive.histogram.breaks;
 
     auto x = [0.0, 1, 2, 3, 4, 5, 6, 7].sliced;
 
-    auto y0 = transformAxis!(size_t, double, exp, log, sturges, AxisOptions())(x, 2.0, 12.0);
-    auto y1 = transformAxis!(size_t, double, exp, log, sturges)(x, 2.0, 12.0);
-    auto y2 = transformAxis!(double, exp, log, sturges)(x, 2.0, 12.0);
-    auto y3 = transformAxis!(exp, log, sturges)(x, 2.0, 12.0);
+    auto y0 = transformAxis!(double, exp, log, sturges, AxisOptions())(x, 2.0, 12.0);
+    auto y1 = transformAxis!(double, exp, log, sturges)(x, 2.0, 12.0);
+    auto y2 = transformAxis!(exp, log, sturges)(x, 2.0, 12.0);
 
-    static assert(is(typeof(y0) == TransformAxis!(size_t, double, exp, log, AxisOptions())));
-    static assert(is(typeof(y1) == TransformAxis!(size_t, double, exp, log, AxisOptions())));
-    static assert(is(typeof(y2) == TransformAxis!(DefaultCountType, double, exp, log, AxisOptions())));
-    static assert(is(typeof(y3) == TransformAxis!(DefaultCountType, double, exp, log, AxisOptions())));
+    static assert(is(typeof(y0) == TransformAxis!(double, exp, log, AxisOptions())));
+    static assert(is(typeof(y1) == TransformAxis!(double, exp, log, AxisOptions())));
+    static assert(is(typeof(y2) == TransformAxis!(double, exp, log, AxisOptions())));
 
-    auto y4 = transformAxis!(size_t, double, exp, sturges, AxisOptions())(x, 2.0, 12.0);
-    auto y5 = transformAxis!(size_t, double, exp, sturges)(x, 2.0, 12.0);
-    auto y6 = transformAxis!(double, exp, sturges)(x, 2.0, 12.0);
-    auto y7 = transformAxis!(exp, sturges)(x, 2.0, 12.0);
+    auto y3 = transformAxis!(double, exp, sturges, AxisOptions())(x, 2.0, 12.0);
+    auto y4 = transformAxis!(double, exp, sturges)(x, 2.0, 12.0);
+    auto y5 = transformAxis!(exp, sturges)(x, 2.0, 12.0);
 
-    static assert(is(typeof(y4) == TransformAxis!(size_t, double, exp, log, AxisOptions())));
-    static assert(is(typeof(y5) == TransformAxis!(size_t, double, exp, log, AxisOptions())));
-    static assert(is(typeof(y6) == TransformAxis!(DefaultCountType, double, exp, log, AxisOptions())));
-    static assert(is(typeof(y7) == TransformAxis!(DefaultCountType, double, exp, log, AxisOptions())));
+    static assert(is(typeof(y3) == TransformAxis!(double, exp, log, AxisOptions())));
+    static assert(is(typeof(y4) == TransformAxis!(double, exp, log, AxisOptions())));
+    static assert(is(typeof(y5) == TransformAxis!(double, exp, log, AxisOptions())));
 }
 
 // Check number of bins
@@ -2317,7 +2119,7 @@ unittest
 
     auto x = [0.0, 1, 2, 3, 4, 5, 6, 7].sliced;
 
-    auto y = transformAxis!(size_t, double, exp, log, sturges, AxisOptions())(x, 2.0, 12.0);
+    auto y = transformAxis!(double, exp, log, sturges, AxisOptions())(x, 2.0, 12.0);
 
     assert(y.N_bin == 4);
 }
@@ -2329,19 +2131,19 @@ unittest
 {
     import mir.math.common: exp, exp2, log, log2, log10, sqrt;
 
-    auto x0 = transformAxis!(size_t, double, exp, AxisOptions())(10, 2.0, 12.0);
-    auto x1 = transformAxis!(size_t, double, exp2, AxisOptions())(10, 2.0, 12.0);
-    auto x2 = transformAxis!(size_t, double, log, AxisOptions())(10, 2.0, 12.0);
-    auto x3 = transformAxis!(size_t, double, log2, AxisOptions())(10, 2.0, 12.0);
-    auto x4 = transformAxis!(size_t, double, log10, AxisOptions())(10, 2.0, 12.0);
-    auto x5 = transformAxis!(size_t, double, sqrt, AxisOptions())(10, 2.0, 12.0);
+    auto x0 = transformAxis!(double, exp, AxisOptions())(10, 2.0, 12.0);
+    auto x1 = transformAxis!(double, exp2, AxisOptions())(10, 2.0, 12.0);
+    auto x2 = transformAxis!(double, log, AxisOptions())(10, 2.0, 12.0);
+    auto x3 = transformAxis!(double, log2, AxisOptions())(10, 2.0, 12.0);
+    auto x4 = transformAxis!(double, log10, AxisOptions())(10, 2.0, 12.0);
+    auto x5 = transformAxis!(double, sqrt, AxisOptions())(10, 2.0, 12.0);
 
-    static assert(is(typeof(x0) == TransformAxis!(size_t, double, exp, log, AxisOptions())));
-    static assert(is(typeof(x1) == TransformAxis!(size_t, double, exp2, log2, AxisOptions())));
-    static assert(is(typeof(x2) == TransformAxis!(size_t, double, log, exp, AxisOptions())));
-    static assert(is(typeof(x3) == TransformAxis!(size_t, double, log2, exp2, AxisOptions())));
-    static assert(is(typeof(x4) == TransformAxis!(size_t, double, log10, exp10, AxisOptions())));
-    static assert(is(typeof(x5) == TransformAxis!(size_t, double, sqrt, square, AxisOptions())));
+    static assert(is(typeof(x0) == TransformAxis!(double, exp, log, AxisOptions())));
+    static assert(is(typeof(x1) == TransformAxis!(double, exp2, log2, AxisOptions())));
+    static assert(is(typeof(x2) == TransformAxis!(double, log, exp, AxisOptions())));
+    static assert(is(typeof(x3) == TransformAxis!(double, log2, exp2, AxisOptions())));
+    static assert(is(typeof(x4) == TransformAxis!(double, log10, exp10, AxisOptions())));
+    static assert(is(typeof(x5) == TransformAxis!(double, sqrt, square, AxisOptions())));
 }
 
 // test string and lambda functions
@@ -2354,16 +2156,16 @@ unittest
     alias f = a => exp(a);
     alias g = a => log(a);
 
-    auto x00 = transformAxis!(size_t, double, exp, log, AxisOptions())(10, 2.0, 12.0);
-    auto x01 = transformAxis!(size_t, double, "exp(a)", "log(a)", AxisOptions())(10, 2.0, 12.0);
-    auto x02 = transformAxis!(size_t, double, exp, "log(a)", AxisOptions())(10, 2.0, 12.0);
-    auto x03 = transformAxis!(size_t, double, "exp(a)", log, AxisOptions())(10, 2.0, 12.0);
-    auto x04 = transformAxis!(size_t, double, f, g, AxisOptions())(10, 2.0, 12.0);
-    auto x05 = transformAxis!(size_t, double, exp, g, AxisOptions())(10, 2.0, 12.0);
-    auto x06 = transformAxis!(size_t, double, f, log, AxisOptions())(10, 2.0, 12.0);
-    auto x07 = transformAxis!(double, "exp(a)", "log(a)")(10, 2.0, 12.0);
-    auto x08 = transformAxis!(double, exp, "log(a)")(10, 2.0, 12.0);
-    auto x09 = transformAxis!(double, "exp(a)", log)(10, 2.0, 12.0);
+    auto x0 = transformAxis!(double, exp, log, AxisOptions())(10, 2.0, 12.0);
+    auto x1 = transformAxis!(double, "exp(a)", "log(a)", AxisOptions())(10, 2.0, 12.0);
+    auto x2 = transformAxis!(double, exp, "log(a)", AxisOptions())(10, 2.0, 12.0);
+    auto x3 = transformAxis!(double, "exp(a)", log, AxisOptions())(10, 2.0, 12.0);
+    auto x4 = transformAxis!(double, f, g, AxisOptions())(10, 2.0, 12.0);
+    auto x5 = transformAxis!(double, exp, g, AxisOptions())(10, 2.0, 12.0);
+    auto x6 = transformAxis!(double, f, log, AxisOptions())(10, 2.0, 12.0);
+    auto x7 = transformAxis!(double, "exp(a)", "log(a)")(10, 2.0, 12.0);
+    auto x8 = transformAxis!(double, exp, "log(a)")(10, 2.0, 12.0);
+    auto x9 = transformAxis!(double, "exp(a)", log)(10, 2.0, 12.0);
     auto x10 = transformAxis!(double, f, g)(10, 2.0, 12.0);
     auto x11 = transformAxis!(double, exp, g)(10, 2.0, 12.0);
     auto x12 = transformAxis!(double, f, log)(10, 2.0, 12.0);
@@ -2374,25 +2176,25 @@ unittest
     auto x17 = transformAxis!(exp, g)(10, 2.0, 12.0);
     auto x18 = transformAxis!(f, log)(10, 2.0, 12.0);
 
-    static assert(is(typeof(x00) == TransformAxis!(size_t, double, exp, log, AxisOptions())));
-    static assert(is(typeof(x01) == TransformAxis!(size_t, double, "exp(a)", "log(a)", AxisOptions())));
-    static assert(is(typeof(x02) == TransformAxis!(size_t, double, exp, "log(a)", AxisOptions())));
-    static assert(is(typeof(x03) == TransformAxis!(size_t, double, "exp(a)", log, AxisOptions())));
-    static assert(is(typeof(x04) == TransformAxis!(size_t, double, f, g, AxisOptions())));
-    static assert(is(typeof(x05) == TransformAxis!(size_t, double, exp, g, AxisOptions())));
-    static assert(is(typeof(x06) == TransformAxis!(size_t, double, f, log, AxisOptions())));
-    static assert(is(typeof(x07) == TransformAxis!(DefaultCountType, double, "exp(a)", "log(a)", AxisOptions())));
-    static assert(is(typeof(x08) == TransformAxis!(DefaultCountType, double, exp, "log(a)", AxisOptions())));
-    static assert(is(typeof(x09) == TransformAxis!(DefaultCountType, double, "exp(a)", log, AxisOptions())));
-    static assert(is(typeof(x10) == TransformAxis!(DefaultCountType, double, f, g, AxisOptions())));
-    static assert(is(typeof(x11) == TransformAxis!(DefaultCountType, double, exp, g, AxisOptions())));
-    static assert(is(typeof(x12) == TransformAxis!(DefaultCountType, double, f, log, AxisOptions())));
-    static assert(is(typeof(x13) == TransformAxis!(DefaultCountType, double, "exp(a)", "log(a)", AxisOptions())));
-    static assert(is(typeof(x14) == TransformAxis!(DefaultCountType, double, exp, "log(a)", AxisOptions())));
-    static assert(is(typeof(x15) == TransformAxis!(DefaultCountType, double, "exp(a)", log, AxisOptions())));
-    static assert(is(typeof(x16) == TransformAxis!(DefaultCountType, double, f, g, AxisOptions())));
-    static assert(is(typeof(x17) == TransformAxis!(DefaultCountType, double, exp, g, AxisOptions())));
-    static assert(is(typeof(x18) == TransformAxis!(DefaultCountType, double, f, log, AxisOptions())));
+    static assert(is(typeof(x0) == TransformAxis!(double, exp, log, AxisOptions())));
+    static assert(is(typeof(x1) == TransformAxis!(double, "exp(a)", "log(a)", AxisOptions())));
+    static assert(is(typeof(x2) == TransformAxis!(double, exp, "log(a)", AxisOptions())));
+    static assert(is(typeof(x3) == TransformAxis!(double, "exp(a)", log, AxisOptions())));
+    static assert(is(typeof(x4) == TransformAxis!(double, f, g, AxisOptions())));
+    static assert(is(typeof(x5) == TransformAxis!(double, exp, g, AxisOptions())));
+    static assert(is(typeof(x6) == TransformAxis!(double, f, log, AxisOptions())));
+    static assert(is(typeof(x7) == TransformAxis!(double, "exp(a)", "log(a)", AxisOptions())));
+    static assert(is(typeof(x8) == TransformAxis!(double, exp, "log(a)", AxisOptions())));
+    static assert(is(typeof(x9) == TransformAxis!(double, "exp(a)", log, AxisOptions())));
+    static assert(is(typeof(x10) == TransformAxis!(double, f, g, AxisOptions())));
+    static assert(is(typeof(x11) == TransformAxis!(double, exp, g, AxisOptions())));
+    static assert(is(typeof(x12) == TransformAxis!(double, f, log, AxisOptions())));
+    static assert(is(typeof(x13) == TransformAxis!(double, "exp(a)", "log(a)", AxisOptions())));
+    static assert(is(typeof(x14) == TransformAxis!(double, exp, "log(a)", AxisOptions())));
+    static assert(is(typeof(x15) == TransformAxis!(double, "exp(a)", log, AxisOptions())));
+    static assert(is(typeof(x16) == TransformAxis!(double, f, g, AxisOptions())));
+    static assert(is(typeof(x17) == TransformAxis!(double, exp, g, AxisOptions())));
+    static assert(is(typeof(x18) == TransformAxis!(double, f, log, AxisOptions())));
 }
 
 // test string and lambda functions with breaks
@@ -2409,16 +2211,16 @@ unittest
 
     auto x = [0.0, 1, 2, 3, 4, 5, 6, 7].sliced;
 
-    auto y00 = transformAxis!(size_t, double, exp, log, sturges, AxisOptions())(x, 2.0, 12.0);
-    auto y01 = transformAxis!(size_t, double, "exp(a)", "log(a)", sturges, AxisOptions())(x, 2.0, 12.0);
-    auto y02 = transformAxis!(size_t, double, exp, "log(a)", sturges, AxisOptions())(x, 2.0, 12.0);
-    auto y03 = transformAxis!(size_t, double, "exp(a)", log, sturges, AxisOptions())(x, 2.0, 12.0);
-    auto y04 = transformAxis!(size_t, double, f, g, sturges, AxisOptions())(x, 2.0, 12.0);
-    auto y05 = transformAxis!(size_t, double, exp, g, sturges, AxisOptions())(x, 2.0, 12.0);
-    auto y06 = transformAxis!(size_t, double, f, log, sturges, AxisOptions())(x, 2.0, 12.0);
-    auto y07 = transformAxis!(double, "exp(a)", "log(a)", sturges)(x, 2.0, 12.0);
-    auto y08 = transformAxis!(double, exp, "log(a)", sturges)(x, 2.0, 12.0);
-    auto y09 = transformAxis!(double, "exp(a)", log, sturges)(x, 2.0, 12.0);
+    auto y0 = transformAxis!(double, exp, log, sturges, AxisOptions())(x, 2.0, 12.0);
+    auto y1 = transformAxis!(double, "exp(a)", "log(a)", sturges, AxisOptions())(x, 2.0, 12.0);
+    auto y2 = transformAxis!(double, exp, "log(a)", sturges, AxisOptions())(x, 2.0, 12.0);
+    auto y3 = transformAxis!(double, "exp(a)", log, sturges, AxisOptions())(x, 2.0, 12.0);
+    auto y4 = transformAxis!(double, f, g, sturges, AxisOptions())(x, 2.0, 12.0);
+    auto y5 = transformAxis!(double, exp, g, sturges, AxisOptions())(x, 2.0, 12.0);
+    auto y6 = transformAxis!(double, f, log, sturges, AxisOptions())(x, 2.0, 12.0);
+    auto y7 = transformAxis!(double, "exp(a)", "log(a)", sturges)(x, 2.0, 12.0);
+    auto y8 = transformAxis!(double, exp, "log(a)", sturges)(x, 2.0, 12.0);
+    auto y9 = transformAxis!(double, "exp(a)", log, sturges)(x, 2.0, 12.0);
     auto y10 = transformAxis!(double, f, g, sturges)(x, 2.0, 12.0);
     auto y11 = transformAxis!(double, exp, g, sturges)(x, 2.0, 12.0);
     auto y12 = transformAxis!(double, f, log, sturges)(x, 2.0, 12.0);
@@ -2429,25 +2231,25 @@ unittest
     auto y17 = transformAxis!(exp, g, sturges)(x, 2.0, 12.0);
     auto y18 = transformAxis!(f, log, sturges)(x, 2.0, 12.0);
 
-    static assert(is(typeof(y00) == TransformAxis!(size_t, double, exp, log, AxisOptions())));
-    static assert(is(typeof(y01) == TransformAxis!(size_t, double, "exp(a)", "log(a)", AxisOptions())));
-    static assert(is(typeof(y02) == TransformAxis!(size_t, double, exp, "log(a)", AxisOptions())));
-    static assert(is(typeof(y03) == TransformAxis!(size_t, double, "exp(a)", log, AxisOptions())));
-    static assert(is(typeof(y04) == TransformAxis!(size_t, double, f, g, AxisOptions())));
-    static assert(is(typeof(y05) == TransformAxis!(size_t, double, exp, g, AxisOptions())));
-    static assert(is(typeof(y06) == TransformAxis!(size_t, double, f, log, AxisOptions())));
-    static assert(is(typeof(y07) == TransformAxis!(DefaultCountType, double, "exp(a)", "log(a)", AxisOptions())));
-    static assert(is(typeof(y08) == TransformAxis!(DefaultCountType, double, exp, "log(a)", AxisOptions())));
-    static assert(is(typeof(y09) == TransformAxis!(DefaultCountType, double, "exp(a)", log, AxisOptions())));
-    static assert(is(typeof(y10) == TransformAxis!(DefaultCountType, double, f, g, AxisOptions())));
-    static assert(is(typeof(y11) == TransformAxis!(DefaultCountType, double, exp, g, AxisOptions())));
-    static assert(is(typeof(y12) == TransformAxis!(DefaultCountType, double, f, log, AxisOptions())));
-    static assert(is(typeof(y13) == TransformAxis!(DefaultCountType, double, "exp(a)", "log(a)", AxisOptions())));
-    static assert(is(typeof(y14) == TransformAxis!(DefaultCountType, double, exp, "log(a)", AxisOptions())));
-    static assert(is(typeof(y15) == TransformAxis!(DefaultCountType, double, "exp(a)", log, AxisOptions())));
-    static assert(is(typeof(y16) == TransformAxis!(DefaultCountType, double, f, g, AxisOptions())));
-    static assert(is(typeof(y17) == TransformAxis!(DefaultCountType, double, exp, g, AxisOptions())));
-    static assert(is(typeof(y18) == TransformAxis!(DefaultCountType, double, f, log, AxisOptions())));
+    static assert(is(typeof(y0) == TransformAxis!(double, exp, log, AxisOptions())));
+    static assert(is(typeof(y1) == TransformAxis!(double, "exp(a)", "log(a)", AxisOptions())));
+    static assert(is(typeof(y2) == TransformAxis!(double, exp, "log(a)", AxisOptions())));
+    static assert(is(typeof(y3) == TransformAxis!(double, "exp(a)", log, AxisOptions())));
+    static assert(is(typeof(y4) == TransformAxis!(double, f, g, AxisOptions())));
+    static assert(is(typeof(y5) == TransformAxis!(double, exp, g, AxisOptions())));
+    static assert(is(typeof(y6) == TransformAxis!(double, f, log, AxisOptions())));
+    static assert(is(typeof(y7) == TransformAxis!(double, "exp(a)", "log(a)", AxisOptions())));
+    static assert(is(typeof(y8) == TransformAxis!(double, exp, "log(a)", AxisOptions())));
+    static assert(is(typeof(y9) == TransformAxis!(double, "exp(a)", log, AxisOptions())));
+    static assert(is(typeof(y10) == TransformAxis!(double, f, g, AxisOptions())));
+    static assert(is(typeof(y11) == TransformAxis!(double, exp, g, AxisOptions())));
+    static assert(is(typeof(y12) == TransformAxis!(double, f, log, AxisOptions())));
+    static assert(is(typeof(y13) == TransformAxis!(double, "exp(a)", "log(a)", AxisOptions())));
+    static assert(is(typeof(y14) == TransformAxis!(double, exp, "log(a)", AxisOptions())));
+    static assert(is(typeof(y15) == TransformAxis!(double, "exp(a)", log, AxisOptions())));
+    static assert(is(typeof(y16) == TransformAxis!(double, f, g, AxisOptions())));
+    static assert(is(typeof(y17) == TransformAxis!(double, exp, g, AxisOptions())));
+    static assert(is(typeof(y18) == TransformAxis!(double, f, log, AxisOptions())));
 }
 
 /++
@@ -2456,7 +2258,6 @@ Axis where the bins are made up of values from an enum.
 Does not allow for overflow or underflow for improved performance.
 
 Params:
-    CountT = the type that is used to count in histogram bins
     BinT = the type of the values that are compared in histogram bins
 
 See_also:
@@ -2467,18 +2268,16 @@ See_also:
     $(LREF CategoryAxis),
     $(LREF VariableAxis)
 +/
-struct EnumAxis(CountT, BinT)
+struct EnumAxis(BinT)
     if (is(BinT == enum) &&
         EnumMembers!BinT.length == NoDuplicates!(EnumMembers!BinT).length)
 {
-    ///
-    alias CountType = CountT;
 
     ///
     alias BinType = BinT;
 
     ///
-    CountType N_bin()() const
+    size_t N_bin()() const
     {
         import std.traits: EnumMembers;
 
@@ -2486,7 +2285,7 @@ struct EnumAxis(CountT, BinT)
     }
 
     ///
-    CountType index()(BinType value) const
+    size_t index()(BinType value) const
     {
         import std.traits: OriginalType, EnumMembers;
         import mir.stat.descriptive.histogram.traits: isSwitchable;
@@ -2498,7 +2297,7 @@ struct EnumAxis(CountT, BinT)
                 foreach (size_t i, member; EnumMembers!BinType)
                 {
                     case member:
-                        return cast(CountType) i;
+                        return cast(size_t) i;
                 }
             }
         }
@@ -2507,7 +2306,7 @@ struct EnumAxis(CountT, BinT)
             foreach (size_t i, member; EnumMembers!BinType)
             {
                 if (value == member) {
-                    return cast(CountType) i;
+                    return cast(size_t) i;
                 }
             }
             assert(0, "EnumAxis.index: value is not an enum member");
@@ -2576,7 +2375,7 @@ unittest
 
     void check(E)(E invalid)
     {
-        EnumAxis!(size_t, E) axis;
+        EnumAxis!(E) axis;
         foreach (size_t i, member; EnumMembers!E)
         {
             assert(axis.index(member) == i);
@@ -2594,7 +2393,7 @@ unittest
 
     // The switch path must reject the one-past-end index at the same guard.
     enum Small { first, second }
-    EnumAxis!(size_t, Small) small;
+    EnumAxis!(Small) small;
     assertThrown!AssertError(small.bin(small.N_bin));
     static assert(!__traits(compiles, small.bin!2()));
 }
@@ -2610,7 +2409,7 @@ unittest
         B,
         C
     }
-    EnumAxis!(size_t, Foo) enumAxis;
+    EnumAxis!(Foo) enumAxis;
 
     assert(enumAxis.index(Foo.A) == 0);
     assert(enumAxis.index(Foo.B) == 1);
@@ -2636,7 +2435,7 @@ unittest
         B = "Y",
         C = "X"
     }
-    EnumAxis!(size_t, Foo) enumAxis;
+    EnumAxis!(Foo) enumAxis;
 
     assert(enumAxis.index(Foo.A) == 0);
     assert(enumAxis.index(Foo.B) == 1);
@@ -2662,7 +2461,7 @@ unittest
         B = 1,
         C = 3
     }
-    EnumAxis!(size_t, Foo) enumAxis;
+    EnumAxis!(Foo) enumAxis;
 
     assert(enumAxis.index(Foo.A) == 0);
     assert(enumAxis.index(Foo.B) == 1);
@@ -2681,41 +2480,31 @@ unittest
 Factory function to produce $(LREF EnumAxis)
 
 Params:
-    CountType = the type that is used to count in histogram bins
     BinType = the type of the values that are compared in histogram bins
 
 See_also:
     $(LREF EnumAxis)
 +/
-EnumAxis!(CountType, BinType) enumAxis(CountType, BinType)()
+EnumAxis!(BinType) enumAxis(BinType)()
 {
-    return EnumAxis!(CountType, BinType)();
+    return EnumAxis!(BinType)();
 }
 
-/// ditto
-EnumAxis!(DefaultCountType, BinType) enumAxis(BinType)()
-{
-    return .enumAxis!(DefaultCountType, BinType)();
-}
 
 /// Example
 version(mir_stat_test)
 @safe pure nothrow @nogc
 unittest
 {
-    import mir.stat.descriptive.histogram.traits: DefaultCountType;
-
     enum Foo
     {
         A,
         B,
         C
     }
-    auto x0 = enumAxis!(size_t, Foo);
-    auto x1 = enumAxis!Foo;
+    auto x0 = enumAxis!(Foo);
 
-    static assert(is(typeof(x0) == EnumAxis!(size_t, Foo)));
-    static assert(is(typeof(x1) == EnumAxis!(DefaultCountType, Foo)));
+    static assert(is(typeof(x0) == EnumAxis!(Foo)));
 }
 
 /++
@@ -2723,7 +2512,6 @@ Axis similar to EnumAxis, but allows for overflow for when a string is passed
 that does not match with enum members of `BinT`.
 
 Params:
-    CountT = the type that is used to count in histogram bins
     BinT = the type of the values that are compared in histogram bins
     axisOptions = options
 
@@ -2735,17 +2523,15 @@ See_also:
     $(LREF EnumAxis),
     $(LREF VariableAxis)
 +/
-struct CategoryAxis(CountT, BinT, AxisOptions axisOptions)
+struct CategoryAxis(BinT, AxisOptions axisOptions)
     if (is(BinT == enum) &&
         EnumMembers!BinT.length == NoDuplicates!(EnumMembers!BinT).length)
 {
     import std.traits: isSomeString;
 
     ///
-    EnumAxis!(CountT, BinT) enumAxis;
+    EnumAxis!(BinT) enumAxis;
 
-    ///
-    alias CountType = CountT;
 
     ///
     alias BinType = BinT;
@@ -2754,19 +2540,19 @@ struct CategoryAxis(CountT, BinT, AxisOptions axisOptions)
     alias options = axisOptions;
 
     ///
-    CountType N_bin()() const
+    size_t N_bin()() const
     {
         return enumAxis.N_bin;
     }
 
     ///
-    CountType index()(BinType value) const
+    size_t index()(BinType value) const
     {
         return enumAxis.index(value);
     }
 
     ///
-    CountType index(A)(A value) const
+    size_t index(A)(A value) const
         if (isSomeString!A)
     {
         import mir.conv: to;
@@ -2840,7 +2626,7 @@ unittest
         B,
         C
     }
-    CategoryAxis!(size_t, Foo, AxisOptions()) categoryAxis;
+    CategoryAxis!(Foo, AxisOptions()) categoryAxis;
 
     assert(categoryAxis.index(Foo.A) == 0);
     assert(categoryAxis.index(Foo.B) == 1);
@@ -2879,7 +2665,7 @@ unittest
         B,
         C
     }
-    CategoryAxis!(size_t, Foo, AxisOptions()) categoryAxis;
+    CategoryAxis!(Foo, AxisOptions()) categoryAxis;
 
     assertThrown!AssertError(categoryAxis.index("D"));
 }
@@ -2888,33 +2674,26 @@ unittest
 Factory function to produce $(LREF CategoryAxis)
 
 Params:
-    CountType = the type that is used to count in histogram bins
     BinType = the type of the values that are compared in histogram bins
     axisOptions = options
 
 See_also:
     $(LREF CategoryAxis)
 +/
-CategoryAxis!(CountType, BinType, axisOptions)
-    categoryAxis(CountType, BinType, AxisOptions axisOptions = AxisOptions())()
+CategoryAxis!(BinType, axisOptions)
+    categoryAxis(BinType, AxisOptions axisOptions = AxisOptions())()
 {
-    return CategoryAxis!(CountType, BinType, axisOptions)();
+    return CategoryAxis!(BinType, axisOptions)();
 }
 
 /// ditto
-CategoryAxis!(DefaultCountType, BinType, axisOptions)
-    categoryAxis(BinType, AxisOptions axisOptions = AxisOptions())()
-{
-    return .categoryAxis!(DefaultCountType, BinType, axisOptions)();
-}
+
 
 /// Example
 version(mir_stat_test)
 @safe pure nothrow @nogc
 unittest
 {
-    import mir.stat.descriptive.histogram.traits: DefaultCountType;
-
     enum Foo
     {
         A,
@@ -2922,20 +2701,17 @@ unittest
         C
     }
 
-    auto x0 = categoryAxis!(size_t, Foo, AxisOptions());
-    auto x1 = categoryAxis!(Foo, AxisOptions());
-    auto x2 = categoryAxis!Foo;
+    auto x0 = categoryAxis!(Foo, AxisOptions());
+    auto x1 = categoryAxis!Foo;
 
-    static assert(is(typeof(x0) == CategoryAxis!(size_t, Foo, AxisOptions())));
-    static assert(is(typeof(x1) == CategoryAxis!(DefaultCountType, Foo, AxisOptions())));
-    static assert(is(typeof(x2) == CategoryAxis!(DefaultCountType, Foo, AxisOptions())));
+    static assert(is(typeof(x0) == CategoryAxis!(Foo, AxisOptions())));
+    static assert(is(typeof(x1) == CategoryAxis!(Foo, AxisOptions())));
 }
 
 /++
 Axis for non-equidistant data.
 
 Params:
-    CountT = the type that is used to count in histogram bins
     Iterator = iterator type for the bin boundaries
     axisOptions = options
 
@@ -2947,7 +2723,7 @@ See_also:
     $(LREF EnumAxis),
     $(LREF CategoryAxis)
 +/
-struct VariableAxis(CountT, Iterator, AxisOptions axisOptions)
+struct VariableAxis(Iterator, AxisOptions axisOptions)
 {
     import mir.primitives: DeepElementType;
     import mir.ndslice.slice: Slice, SliceKind;
@@ -2957,8 +2733,6 @@ private:
 
 public:
 
-    ///
-    alias CountType = CountT;
 
     ///
     alias BinType = DeepElementType!(Slice!(Iterator));
@@ -2968,14 +2742,12 @@ public:
 
     /++
     Boundaries must define at least one bin, be strictly increasing, and have a
-    bin count representable by CountType. Keep shared boundaries unchanged
+    bin count representable by size_t. Keep shared boundaries unchanged
     while using the axis, including through external aliases.
     +/
     this(It, SliceKind kind)(Slice!(It, 1LU, kind) slice)
     {
         assert(slice.length >= 2, "VariableAxis.this: at least two boundaries required");
-        assert(slice.length - 1 <= CountType.max,
-            "VariableAxis.this: bin count does not fit CountType");
         assert(strictlyIncreasing(slice),
             "VariableAxis.this: boundaries must be strictly increasing");
         import core.lifetime: move;
@@ -2998,15 +2770,15 @@ public:
     {
         import mir.qualifier: LightConstOf;
         // Reuse already validated boundaries without scanning them on each view.
-        VariableAxis!(CountType, LightConstOf!Iterator, axisOptions) result;
+        VariableAxis!(LightConstOf!Iterator, axisOptions) result;
         result._payload = _payload.lightConst;
         return result;
     }
 
     ///
-    CountType N_bin()() const
+    size_t N_bin()() const
     {
-        return cast(CountType) _payload.length - 1;
+        return cast(size_t) _payload.length - 1;
     }
 
     ///
@@ -3044,7 +2816,7 @@ public:
     }
 
     ///
-    CountType index()(BinType x)
+    size_t index()(BinType x)
     {
         import mir.stat.descriptive.histogram.traits: checkOverUnderFlow;
 
@@ -3055,18 +2827,18 @@ public:
         static if (!axisOptions.isRightClosed) {
             static if (axisOptions.isCircular) {
                 if (x == high()) {
-                    return cast(CountType) 0;
+                    return cast(size_t) 0;
                 }
             }
-            return cast(CountType)
+            return cast(size_t)
                 (_payload.lightScope.transitionIndex!("a <= b")(x) - 1);
         } else {
             static if (axisOptions.isCircular) {
                 if (x == low()) {
-                    return cast(CountType) (N_bin() - 1);
+                    return cast(size_t) (N_bin() - 1);
                 }
             }
-            return cast(CountType)
+            return cast(size_t)
                 (_payload.lightScope.transitionIndex!("a < b")(x) - 1);
         }
     }
@@ -3085,7 +2857,7 @@ public:
     }
 }
 
-// Variable-axis indices use CountType for both interval conventions.
+// Variable-axis indices use size_t for both interval conventions.
 version(mir_stat_test)
 @safe pure nothrow
 unittest
@@ -3093,15 +2865,15 @@ unittest
     import mir.ndslice.slice: sliced;
 
     auto breaks = [0.0, 1.0, 3.0, 4.0].sliced;
-    auto left = VariableAxis!(uint, double*, AxisOptions())(breaks);
-    static assert(is(typeof(left.index(0.5)) == uint));
+    auto left = VariableAxis!(double*, AxisOptions())(breaks);
+    static assert(is(typeof(left.index(0.5)) == size_t));
     assert(left.index(0.0) == 0u);
     assert(left.index(1.0) == 1u);
     assert(left.index(2.0) == 1u);
     assert(left.index(3.0) == 2u);
 
-    auto right = VariableAxis!(uint, double*, AxisOptions(IsRightClosed(true)))(breaks);
-    static assert(is(typeof(right.index(0.5)) == uint));
+    auto right = VariableAxis!(double*, AxisOptions(IsRightClosed(true)))(breaks);
+    static assert(is(typeof(right.index(0.5)) == size_t));
     assert(right.index(1.0) == 0u);
     assert(right.index(2.0) == 1u);
     assert(right.index(3.0) == 1u);
@@ -3123,7 +2895,7 @@ unittest
         counts[i] = i + 2.0;
         i++;
     }
-    auto variableAxis = VariableAxis!(size_t, RCI!(double), AxisOptions())(counts.asSlice);
+    auto variableAxis = VariableAxis!(RCI!(double), AxisOptions())(counts.asSlice);
     assert(variableAxis.N_bin == (counts.length - 1));
     assert(variableAxis.low == 2.0);
     assert(variableAxis.high == 12.0);
@@ -3161,7 +2933,7 @@ unittest
         counts[i] = i + 2.0;
         i++;
     }
-    auto variableAxis = VariableAxis!(size_t, RCI!(double), AxisOptions(true))(counts.asSlice);
+    auto variableAxis = VariableAxis!(RCI!(double), AxisOptions(true))(counts.asSlice);
 
     assert(variableAxis.index(2.5) == 0);
     assert(variableAxis.index(3.0) == 0);
@@ -3190,7 +2962,7 @@ unittest
         counts[i] = i + 2.0;
         i++;
     }
-    auto variableAxis = VariableAxis!(size_t, RCI!(double), AxisOptions())(counts.asSlice);
+    auto variableAxis = VariableAxis!(RCI!(double), AxisOptions())(counts.asSlice);
 
     assert(variableAxis.index(3.5) == 1);
     assert(variableAxis.index(4.0) == 2);
@@ -3215,7 +2987,7 @@ unittest
         counts[i] = cast(int) i + 2;
         i++;
     }
-    auto variableAxis = VariableAxis!(size_t, RCI!(int), AxisOptions())(counts.asSlice);
+    auto variableAxis = VariableAxis!(RCI!(int), AxisOptions())(counts.asSlice);
 
     assert(variableAxis.index(2) == 0);
     assert(variableAxis.index(4) == 2);
@@ -3238,7 +3010,7 @@ unittest
         counts[i] = cast(int) i + 2u;
         i++;
     }
-    auto variableAxis = VariableAxis!(size_t, RCI!(int), AxisOptions(true))(counts.asSlice);
+    auto variableAxis = VariableAxis!(RCI!(int), AxisOptions(true))(counts.asSlice);
 
     assert(variableAxis.index(4) == 1);
     assert(variableAxis.index(5) == 2);
@@ -3261,7 +3033,7 @@ unittest
         counts[i] = cast(int) i + 2u;
         i++;
     }
-    auto variableAxis = VariableAxis!(size_t, RCI!(int), AxisOptions(IsCircular(true)))(counts.asSlice);
+    auto variableAxis = VariableAxis!(RCI!(int), AxisOptions(IsCircular(true)))(counts.asSlice);
 
     assert(variableAxis.index(2) == 0);
     assert(variableAxis.index(5) == 3);
@@ -3283,7 +3055,7 @@ unittest
         counts[i] = cast(int) i + 2u;
         i++;
     }
-    auto variableAxis = VariableAxis!(size_t, RCI!(int), AxisOptions(IsRightClosed(true), IsCircular(true)))(counts.asSlice);
+    auto variableAxis = VariableAxis!(RCI!(int), AxisOptions(IsRightClosed(true), IsCircular(true)))(counts.asSlice);
 
     assert(variableAxis.index(2) == 9);
     assert(variableAxis.index(5) == 2);
@@ -3294,33 +3066,11 @@ unittest
 Factory function to produce $(LREF VariableAxis) object
 
 Params:
-    CountType = the type that is used to count in histogram bins
     Iterator = the type of the values that are compared in histogram bins
     axisOptions = options
 
 See_also:
     $(LREF VariableAxis)
-+/
-template variableAxis(CountType, Iterator, AxisOptions axisOptions = AxisOptions())
-{
-    import core.lifetime: move;
-    import mir.ndslice.slice: Slice, SliceKind;
-
-    /++
-    Params:
-        slice = slice
-    +/
-    VariableAxis!(CountType, Iterator, axisOptions)
-        variableAxis(size_t N, SliceKind kind)(Slice!(Iterator, N, kind) slice)
-    {
-        return VariableAxis!(CountType, Iterator, axisOptions)(slice.move);
-    }
-}
-
-/++
-Params:
-    Iterator = the type of the values that are compared in histogram bins
-    axisOptions = options
 +/
 template variableAxis(Iterator, AxisOptions axisOptions = AxisOptions())
 {
@@ -3331,12 +3081,13 @@ template variableAxis(Iterator, AxisOptions axisOptions = AxisOptions())
     Params:
         slice = slice
     +/
-    VariableAxis!(DefaultCountType, Iterator, axisOptions)
+    VariableAxis!(Iterator, axisOptions)
         variableAxis(size_t N, SliceKind kind)(Slice!(Iterator, N, kind) slice)
     {
-        return .variableAxis!(DefaultCountType, Iterator, axisOptions)(slice.move);
+        return VariableAxis!(Iterator, axisOptions)(slice.move);
     }
 }
+
 
 /++
 Params:
@@ -3351,10 +3102,10 @@ template variableAxis(AxisOptions axisOptions = AxisOptions())
     Params:
         slice = slice
     +/
-    VariableAxis!(DefaultCountType, Iterator, axisOptions)
+    VariableAxis!(Iterator, axisOptions)
         variableAxis(Iterator, size_t N, SliceKind kind)(Slice!(Iterator, N, kind) slice)
     {
-        return .variableAxis!(DefaultCountType, Iterator, axisOptions)(slice.move);
+        return .variableAxis!(Iterator, axisOptions)(slice.move);
     }
 }
 
@@ -3363,8 +3114,6 @@ version(mir_stat_test)
 @safe pure nothrow @nogc
 unittest
 {
-    import mir.stat.descriptive.histogram.traits: DefaultCountType;
-
     import mir.rc.array;
 
     size_t len = 11;
@@ -3376,13 +3125,13 @@ unittest
         i++;
     }
 
-    auto x0 = variableAxis!(size_t, RCI!(double), AxisOptions())(counts.asSlice);
+    auto x0 = variableAxis!(RCI!(double), AxisOptions())(counts.asSlice);
     auto x1 = variableAxis!(RCI!(double))(counts.asSlice);
     auto x2 = variableAxis(counts.asSlice);
 
-    static assert(is(typeof(x0) == VariableAxis!(size_t, RCI!(double), AxisOptions())));
-    static assert(is(typeof(x1) == VariableAxis!(DefaultCountType, RCI!(double), AxisOptions())));
-    static assert(is(typeof(x2) == VariableAxis!(DefaultCountType, RCI!(double), AxisOptions())));
+    static assert(is(typeof(x0) == VariableAxis!(RCI!(double), AxisOptions())));
+    static assert(is(typeof(x1) == VariableAxis!(RCI!(double), AxisOptions())));
+    static assert(is(typeof(x2) == VariableAxis!(RCI!(double), AxisOptions())));
 }
 
 
@@ -3398,7 +3147,7 @@ unittest
     {
         // Only the returned axis retains this allocation after the call.
         auto breaks = rcslice!double([0.0, 1.0, 3.0, 6.0]);
-        return VariableAxis!(uint, RCI!double, AxisOptions(rightClosed))(breaks);
+        return VariableAxis!(RCI!double, AxisOptions(rightClosed))(breaks);
     }
 
     void check(Axis)(ref Axis axis) @safe pure nothrow @nogc
@@ -3438,7 +3187,7 @@ unittest
     static foreach (rightClosed; [false, true])
     static foreach (circular; [false, true])
     {{
-        alias A = RegularAxis!(uint, double, AxisOptions(rightClosed, true, true, circular));
+        alias A = RegularAxis!(double, AxisOptions(rightClosed, true, true, circular));
         auto axis = A(2, -1.0, 1.0);
         // Exact hexadecimal literals represent the adjacent doubles inside each end.
         assert(axis.index(0x1.fffffffffffffp-1) == 1);
@@ -3458,11 +3207,11 @@ unittest
         }
     }}
     // An identity transform exercises the same endpoint rounding through delegation.
-    alias Transformed = TransformAxis!(uint, double, "a", "a", AxisOptions());
+    alias Transformed = TransformAxis!(double, "a", "a", AxisOptions());
     auto transformed = Transformed(2, -1.0, 1.0);
     assert(transformed.index(0x1.fffffffffffffp-1) == 1);
     // Underflow during normalization at the lower end of a right-closed axis.
-    auto tiny = RegularAxis!(uint, double, AxisOptions(true))(2, 0.0, 4.0);
+    auto tiny = RegularAxis!(double, AxisOptions(true))(2, 0.0, 4.0);
     assert(tiny.index(0x0.0000000000001p-1022) == 0);
 }
 
@@ -3473,7 +3222,7 @@ unittest
 {
     import core.exception: AssertError;
     import std.exception: assertThrown;
-    alias WideCount = IntegralAxis!(ulong, uint, AxisOptions());
+    alias WideCount = IntegralAxis!(uint, AxisOptions());
     assertThrown!AssertError(WideCount(0x1_0000_0001UL, 0u));
     // A representable count can still overflow when added to the lower bound.
     assertThrown!AssertError(WideCount(2, uint.max - 1));
@@ -3481,7 +3230,7 @@ unittest
     assert(unsignedLimit.high == uint.max);
     assert(unsignedLimit.index(uint.max - 1) == uint.max - 1);
 
-    alias Signed = IntegralAxis!(uint, int, AxisOptions());
+    alias Signed = IntegralAxis!(int, AxisOptions());
     assertThrown!AssertError(Signed(cast(uint) int.max + 1, 0));
     assertThrown!AssertError(Signed(2, int.max - 1));
     auto signedLimit = Signed(2, int.max - 2);
@@ -3505,8 +3254,8 @@ unittest
     import std.exception: assertThrown;
     import mir.ndslice.slice: sliced;
 
-    alias I = IntegralAxis!(uint, double, AxisOptions());
-    alias R = RegularAxis!(uint, double, AxisOptions());
+    alias I = IntegralAxis!(double, AxisOptions());
+    alias R = RegularAxis!(double, AxisOptions());
     assertThrown!AssertError(I(0, 0.0));
     assertThrown!AssertError(I(2, double.nan));
     assertThrown!AssertError(I(2, double.infinity));
@@ -3514,9 +3263,9 @@ unittest
     assertThrown!AssertError(R(2, 1.0, 1.0));
     assertThrown!AssertError(R(2, double.nan, 1.0));
     assertThrown!AssertError(R(2, 0.0, double.infinity));
-    alias T = TransformAxis!(uint, double, "a", "a", AxisOptions());
+    alias T = TransformAxis!(double, "a", "a", AxisOptions());
     assertThrown!AssertError(T(0, 0.0, 1.0));
-    alias V = VariableAxis!(uint, double*, AxisOptions());
+    alias V = VariableAxis!(double*, AxisOptions());
     foreach (breaks; [cast(double[]) [], [0.0], [0.0, 0.0],
                       [0.0, 1.0, 1.0, 2.0], // duplicate interior boundary
                       [0.0, 0.0, 1.0, 2.0], // duplicate minimum only
@@ -3526,8 +3275,8 @@ unittest
         assertThrown!AssertError(V(breaks.sliced));
     auto many = new double[257];
     foreach (i, ref value; many) value = i;
-    alias Small = VariableAxis!(ubyte, double*, AxisOptions());
-    assertThrown!AssertError(Small(many.sliced));
+    auto manyBins = V(many.sliced);
+    assert(manyBins.N_bin == 256 && manyBins.index(255.5) == 255);
     assert(V([0.0, 1.0].sliced).N_bin == 1);
 }
 
@@ -3556,7 +3305,7 @@ unittest
             static foreach (right; [false, true])
             static foreach (circular; [false, true])
             {{
-                alias A = RegularAxis!(uint, T, AxisOptions(right, true, true, circular));
+                alias A = RegularAxis!(T, AxisOptions(right, true, true, circular));
                 auto axis = A(2, interval[0], interval[1]);
                 const T insideLow = nextUp(interval[0]);
                 const T insideHigh = nextDown(interval[1]);
@@ -3591,15 +3340,15 @@ unittest
         }
         // On a zero-based axis, adjacent values around the exact interior edge
         // do not lose precision through subtraction of a nonzero lower bound.
-        auto left = RegularAxis!(uint, T, AxisOptions())(2, T(0), T(2));
-        auto right = RegularAxis!(uint, T, AxisOptions(true))(2, T(0), T(2));
+        auto left = RegularAxis!(T, AxisOptions())(2, T(0), T(2));
+        auto right = RegularAxis!(T, AxisOptions(true))(2, T(0), T(2));
         assert(left.index(nextDown(T(1))) == 0);
         assert(left.index(T(1)) == 1);
         assert(left.index(nextUp(T(1))) == 1);
         assert(right.index(nextDown(T(1))) == 0);
         assert(right.index(T(1)) == 0);
         assert(right.index(nextUp(T(1))) == 1);
-        auto tiny = RegularAxis!(uint, T, AxisOptions(true))(2, T(0), T(4));
+        auto tiny = RegularAxis!(T, AxisOptions(true))(2, T(0), T(4));
         assert(tiny.index(smallest) == 0);
     }}
 }
@@ -3615,7 +3364,7 @@ unittest
     import mir.stat.descriptive.histogram.accumulator: HistogramAccumulator;
     static foreach (T; AliasSeq!(float, double, real))
     {{
-        alias A = RegularAxis!(uint, T, AxisOptions(false, true, true));
+        alias A = RegularAxis!(T, AxisOptions(false, true, true));
         assertThrown!AssertError(A(2, -T.max, T.max));
         assertThrown!AssertError(A(2, T(0), T.infinity));
         assertThrown!AssertError(A(2, -T.infinity, T(0)));
@@ -3698,7 +3447,7 @@ unittest
     static foreach (right; [false, true])
     static foreach (circular; [false, true])
     {{
-        alias A = RegularAxis!(uint, T, AxisOptions(right, true, true, circular));
+        alias A = RegularAxis!(T, AxisOptions(right, true, true, circular));
         T[2][4] intervals = [[T(-1), T(1)], [T(0.1), T(1.1)],
             [-T.max / 4, T.max / 4], [-T.min_normal, T.min_normal]];
         foreach (n; [2u, 3u, 10u, 100u])
@@ -3735,11 +3484,11 @@ unittest
     static foreach (right; [false, true])
     static foreach (circular; [false, true])
     {{
-        alias Log = TransformAxis!(uint, T, (T x) => cast(T) log10(x),
+        alias Log = TransformAxis!(T, (T x) => cast(T) log10(x),
             (T x) => cast(T)(T(10) ^^ x), AxisOptions(right, true, true, circular));
         auto logarithmic = Log(20, T(1), T(1.0e12));
         checkBoundaryMembership(logarithmic);
-        alias Root = TransformAxis!(uint, T, (T x) => cast(T) sqrt(x),
+        alias Root = TransformAxis!(T, (T x) => cast(T) sqrt(x),
             (T x) => x * x, AxisOptions(right, true, true, circular));
         auto squareRoot = Root(20, T(0), T(1.0e12));
         checkBoundaryMembership(squareRoot);
@@ -3757,7 +3506,7 @@ unittest
     import std.math: nextUp, sqrt;
     static foreach (T; AliasSeq!(float, double, real))
     {{
-        alias A = RegularAxis!(uint, T, AxisOptions());
+        alias A = RegularAxis!(T, AxisOptions());
         assertThrown!AssertError(A(4, T(1), nextUp(T(1))));
         const T small = nextUp(T(0));
         assertThrown!AssertError(A(2, T(0), small));
@@ -3765,13 +3514,13 @@ unittest
         auto one = A(1, T(0), small);
         assert(one.index(T(0)) == 0);
         assert(one.bin(0).high == small);
-        alias Root = TransformAxis!(uint, T, (T x) => cast(T) sqrt(x),
+        alias Root = TransformAxis!(T, (T x) => cast(T) sqrt(x),
             (T x) => x * x, AxisOptions());
         assertThrown!AssertError(Root(2, T(0), small));
     }}
-    alias Constant = TransformAxis!(uint, double, "a", "0.0", AxisOptions());
-    alias Reversed = TransformAxis!(uint, double, "a", "1.0 - a", AxisOptions());
-    alias Invalid = TransformAxis!(uint, double, "a", "double.nan", AxisOptions());
+    alias Constant = TransformAxis!(double, "a", "0.0", AxisOptions());
+    alias Reversed = TransformAxis!(double, "a", "1.0 - a", AxisOptions());
+    alias Invalid = TransformAxis!(double, "a", "double.nan", AxisOptions());
     assertThrown!AssertError(Constant(4, 0.0, 1.0));
     assertThrown!AssertError(Reversed(4, 0.0, 1.0));
     assertThrown!AssertError(Invalid(4, 0.0, 1.0));
@@ -3789,7 +3538,7 @@ unittest
     static foreach (T; AliasSeq!(float, double, real))
     static foreach (right; [false, true])
     {{
-        alias A = IntegralAxis!(uint, T, AxisOptions(right));
+        alias A = IntegralAxis!(T, AxisOptions(right));
         // At this power of two, the spacing above it is two rather than one.
         const T limit = T(2) ^^ T.mant_dig;
         assertThrown!AssertError(A(4, limit));
@@ -3815,7 +3564,7 @@ unittest
     static foreach (right; [false, true])
     static foreach (circular; [false, true])
     {{
-        alias A = IntegralAxis!(uint, T, AxisOptions(right, true, true, circular));
+        alias A = IntegralAxis!(T, AxisOptions(right, true, true, circular));
         const T limit = T(2) ^^ T.mant_dig;
         // These grids touch the precision limit without crossing into the
         // region where adjacent unit steps collapse.
@@ -3860,7 +3609,7 @@ unittest
         static foreach (Q; AliasSeq!(T, const(T), immutable(T)))
         {{
             Q[3] edges = [0, 1, 3];
-            alias A = VariableAxis!(uint, Q*, AxisOptions());
+            alias A = VariableAxis!(Q*, AxisOptions());
             auto axis = A(edges[].sliced);
             auto bin = axis.bin(1);
             static assert(is(typeof(bin) == Bin!T));
@@ -3873,7 +3622,7 @@ unittest
         static Bin!T fromLocal() @safe pure nothrow @nogc
         {
             T[3] edges = [0, 1, 3];
-            const axis = VariableAxis!(uint, T*, AxisOptions())(edges[].sliced);
+            const axis = VariableAxis!(T*, AxisOptions())(edges[].sliced);
             return axis.bin(1);
         }
         assert(fromLocal() == Bin!T(1, 3));
@@ -3889,7 +3638,7 @@ unittest
     import std.exception: assertThrown;
     import core.exception: AssertError;
     double[3] edges = [0, 1, 3];
-    auto axis = VariableAxis!(uint, double*, AxisOptions())(edges[].sliced);
+    auto axis = VariableAxis!(double*, AxisOptions())(edges[].sliced);
     assertThrown!AssertError(axis.bin(2));
     assertThrown!AssertError(axis.bin(size_t.max));
 }
@@ -3940,4 +3689,53 @@ unittest
         check(interleaved[].sliced.stride(2));
         check(rcslice(edges[]));
     }}
+}
+
+// All built-in axes use size_t metadata independently of future count storage.
+version(mir_stat_test)
+@safe pure nothrow @nogc
+unittest
+{
+    import mir.ndslice.slice: sliced;
+    import std.meta: AliasSeq;
+    import std.traits: hasMember;
+    enum Label { a, b }
+    alias Axes = AliasSeq!(IntegralAxis!(double, AxisOptions()),
+        RegularAxis!(double, AxisOptions()),
+        TransformAxis!(double, "a", "a", AxisOptions()),
+        VariableAxis!(double*, AxisOptions()), EnumAxis!Label,
+        CategoryAxis!(Label, AxisOptions()));
+    static foreach (A; Axes)
+    {
+        static assert(!hasMember!(A, "CountType"));
+        static assert(is(typeof(A.init.N_bin()) == size_t));
+        static assert(is(typeof(A.init.index(A.BinType.init)) == size_t));
+    }
+    static assert(!__traits(compiles, RegularAxis!(double, AxisOptions())(2.5, 0.0, 3.0)));
+    static assert(!__traits(compiles, integralAxis!double(true, 0.0)));
+    static assert(!__traits(compiles, regularAxis!double(2.0, 0.0, 3.0)));
+}
+
+// Signed inputs must be validated before conversion to size_t.
+version(mir_stat_test)
+@system pure nothrow @nogc
+unittest
+{
+    import core.exception: AssertError;
+    static void rejects(scope void delegate() pure nothrow @nogc operation) pure nothrow @nogc
+    {
+        bool rejected;
+        try { operation(); } catch (AssertError) { rejected = true; }
+        assert(rejected);
+    }
+    alias I = IntegralAxis!(double, AxisOptions());
+    alias R = RegularAxis!(double, AxisOptions());
+    alias T = TransformAxis!(double, "a", "a", AxisOptions());
+    int n = -1;
+    rejects(() { auto a = I(n, 0.0); });
+    rejects(() { auto a = R(n, 0.0, 1.0); });
+    rejects(() { auto a = T(n, 0.0, 1.0); });
+    rejects(() { auto a = integralAxis!double(n, 0.0); });
+    rejects(() { auto a = regularAxis!double(n, 0.0, 1.0); });
+    rejects(() { auto a = transformAxis!(double, "a", "a")(n, 0.0, 1.0); });
 }

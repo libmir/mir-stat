@@ -491,7 +491,7 @@ version(mir_stat_test)
 unittest
 {
     import mir.stat.descriptive.histogram.axis: IntegralAxis, AxisOptions;
-    alias A = IntegralAxis!(uint, double, AxisOptions(false, true, true));
+    alias A = IntegralAxis!(double, AxisOptions(false, true, true));
     double[4] storage = 0; // underflow, two ordinary bins, overflow
     auto h = HistogramAccumulator!(double[], A)(storage[], A(2, 0));
     h.putWeighted(0.5, 0.25);
@@ -513,7 +513,7 @@ unittest
         EnableUnderflow, EnableOverflow;
     import mir.stat.descriptive.histogram.traits: storageExtent;
 
-    alias A = IntegralAxis!(uint, double,
+    alias A = IntegralAxis!(double,
         AxisOptions(EnableUnderflow(true), EnableOverflow(true)));
     auto axis = A(3, 0.0);
     // N_bin counts ordinary bins; storageExtent includes the two end bins.
@@ -542,7 +542,7 @@ unittest
 {
     import mir.stat.descriptive.histogram.axis: AxisOptions, IntegralAxis;
 
-    auto integralAxis = IntegralAxis!(size_t, double, AxisOptions())(5, 2.0);
+    auto integralAxis = IntegralAxis!(double, AxisOptions())(5, 2.0);
     size_t[] counts = [0, 0, 0, 0, 0];
 
     auto h = HistogramAccumulator!(size_t[], typeof(integralAxis))(counts, integralAxis);
@@ -559,7 +559,7 @@ unittest
 {
     import mir.stat.descriptive.histogram.axis: AxisOptions, IntegralAxis;
 
-    auto integralAxis = IntegralAxis!(size_t, double, AxisOptions(false, true, true))(5, 2.0);
+    auto integralAxis = IntegralAxis!(double, AxisOptions(false, true, true))(5, 2.0);
     size_t[] counts = [0, 0, 0, 0, 0, 0, 0];
 
     auto h = HistogramAccumulator!(size_t[], typeof(integralAxis))(counts, integralAxis);
@@ -594,7 +594,7 @@ unittest
 {
     import mir.stat.descriptive.histogram.axis: AxisOptions, IntegralAxis, EnableUnderflow;
 
-    auto integralAxis = IntegralAxis!(size_t, double, AxisOptions(EnableUnderflow(true)))(5, 2.0);
+    auto integralAxis = IntegralAxis!(double, AxisOptions(EnableUnderflow(true)))(5, 2.0);
     size_t[] counts = [0, 0, 0, 0, 0, 0];
 
     auto h = HistogramAccumulator!(size_t[], typeof(integralAxis))(counts, integralAxis);
@@ -618,7 +618,7 @@ unittest
         A,
         B
     }
-    EnumAxis!(size_t, Foo) enumAxis;
+    EnumAxis!(Foo) enumAxis;
     size_t[] counts = [0, 0];
 
     auto h = HistogramAccumulator!(size_t[], typeof(enumAxis))(counts, enumAxis);
@@ -639,7 +639,7 @@ unittest
         A,
         B
     }
-    CategoryAxis!(size_t, Foo, AxisOptions(false, true)) categoryAxis;
+    CategoryAxis!(Foo, AxisOptions(false, true)) categoryAxis;
     size_t[] counts = [0, 0, 0];
 
     auto h = HistogramAccumulator!(size_t[], typeof(categoryAxis))(counts, categoryAxis);
@@ -667,7 +667,7 @@ unittest
 {
     import mir.stat.descriptive.histogram.axis: AxisOptions, RegularAxis;
 
-    auto regularAxis = RegularAxis!(size_t, double, AxisOptions())(5, 2.0, 12.0);
+    auto regularAxis = RegularAxis!(double, AxisOptions())(5, 2.0, 12.0);
     size_t[] counts = [0, 0, 0, 0, 0];
 
     auto h = HistogramAccumulator!(size_t[], typeof(regularAxis))(counts, regularAxis);
@@ -684,7 +684,7 @@ unittest
 {
     import mir.stat.descriptive.histogram.axis: AxisOptions, RegularAxis;
 
-    auto regularAxis = RegularAxis!(size_t, double, AxisOptions(false, true, true))(5, 2.0, 12.0);
+    auto regularAxis = RegularAxis!(double, AxisOptions(false, true, true))(5, 2.0, 12.0);
     size_t[] counts = [0, 0, 0, 0, 0, 0, 0];
 
     auto h = HistogramAccumulator!(size_t[], typeof(regularAxis))(counts, regularAxis);
@@ -707,7 +707,7 @@ unittest
 {
     import mir.stat.descriptive.histogram.axis: AxisOptions, RegularAxis;
 
-    auto regularAxis = RegularAxis!(size_t, double, AxisOptions(true))(5, 2.0, 12.0);
+    auto regularAxis = RegularAxis!(double, AxisOptions(true))(5, 2.0, 12.0);
     size_t[] counts = [0, 0, 0, 0, 0];
 
     auto h = HistogramAccumulator!(size_t[], typeof(regularAxis))(counts, regularAxis);
@@ -724,7 +724,7 @@ unittest
 {
     import mir.stat.descriptive.histogram.axis: AxisOptions, RegularAxis;
 
-    auto regularAxis = RegularAxis!(size_t, double, AxisOptions(true, true, true))(5, 2.0, 12.0);
+    auto regularAxis = RegularAxis!(double, AxisOptions(true, true, true))(5, 2.0, 12.0);
     size_t[] counts = [0, 0, 0, 0, 0, 0, 0];
 
     auto h = HistogramAccumulator!(size_t[], typeof(regularAxis))(counts, regularAxis);
@@ -748,7 +748,7 @@ unittest
     import mir.math.common: log10;
     import mir.stat.descriptive.histogram.axis: AxisOptions, TransformAxis, inverseTransformMapping;
 
-    auto transformAxis = TransformAxis!(size_t, double, log10, inverseTransformMapping!log10, AxisOptions())(5, 10.0 ^^ 2.0, 10.0 ^^ 12.0);
+    auto transformAxis = TransformAxis!(double, log10, inverseTransformMapping!log10, AxisOptions())(5, 10.0 ^^ 2.0, 10.0 ^^ 12.0);
     size_t[] counts = [0, 0, 0, 0, 0];
 
     auto h = HistogramAccumulator!(size_t[], typeof(transformAxis))(counts, transformAxis);
@@ -766,7 +766,7 @@ unittest
     import mir.math.common: log10;
     import mir.stat.descriptive.histogram.axis: AxisOptions, TransformAxis, inverseTransformMapping;
 
-    auto transformAxis = TransformAxis!(size_t, double, log10, inverseTransformMapping!log10, AxisOptions(false, true, true))(5, 10.0 ^^ 2.0, 10.0 ^^ 12.0);
+    auto transformAxis = TransformAxis!(double, log10, inverseTransformMapping!log10, AxisOptions(false, true, true))(5, 10.0 ^^ 2.0, 10.0 ^^ 12.0);
     size_t[] counts = [0, 0, 0, 0, 0, 0, 0];
 
     auto h = HistogramAccumulator!(size_t[], typeof(transformAxis))(counts, transformAxis);
@@ -790,7 +790,7 @@ unittest
     import mir.math.common: log10;
     import mir.stat.descriptive.histogram.axis: AxisOptions, TransformAxis, inverseTransformMapping;
 
-    auto transformAxis = TransformAxis!(size_t, double, log10, inverseTransformMapping!log10, AxisOptions(true))(5, 10.0 ^^ 2.0, 10.0 ^^ 12.0);
+    auto transformAxis = TransformAxis!(double, log10, inverseTransformMapping!log10, AxisOptions(true))(5, 10.0 ^^ 2.0, 10.0 ^^ 12.0);
     size_t[] counts = [0, 0, 0, 0, 0];
 
     auto h = HistogramAccumulator!(size_t[], typeof(transformAxis))(counts, transformAxis);
@@ -808,7 +808,7 @@ unittest
     import mir.math.common: log10;
     import mir.stat.descriptive.histogram.axis: AxisOptions, TransformAxis, inverseTransformMapping;
 
-    auto transformAxis = TransformAxis!(size_t, double, log10, inverseTransformMapping!log10, AxisOptions(true, true, true))(5, 10.0 ^^ 2.0, 10.0 ^^ 12.0);
+    auto transformAxis = TransformAxis!(double, log10, inverseTransformMapping!log10, AxisOptions(true, true, true))(5, 10.0 ^^ 2.0, 10.0 ^^ 12.0);
     size_t[] counts = [0, 0, 0, 0, 0, 0, 0];
 
     auto h = HistogramAccumulator!(size_t[], typeof(transformAxis))(counts, transformAxis);
@@ -833,7 +833,7 @@ unittest
     import mir.stat.descriptive.histogram.axis: AxisOptions, VariableAxis;
 
     auto axisSlice = [2.0, 3, 4, 5, 6, 7].sliced;
-    auto variableAxis = VariableAxis!(size_t, double*, AxisOptions())(axisSlice);
+    auto variableAxis = VariableAxis!(double*, AxisOptions())(axisSlice);
     size_t[] counts = [0, 0, 0, 0, 0];
 
     auto h = HistogramAccumulator!(size_t[], typeof(variableAxis))(counts, variableAxis);
@@ -852,7 +852,7 @@ unittest
     import mir.stat.descriptive.histogram.axis: AxisOptions, VariableAxis;
 
     auto axisSlice = [2.0, 3, 4, 5, 6, 7].sliced;
-    auto variableAxis = VariableAxis!(size_t, double*, AxisOptions(false, true, true))(axisSlice);
+    auto variableAxis = VariableAxis!(double*, AxisOptions(false, true, true))(axisSlice);
     size_t[] counts = [0, 0, 0, 0, 0, 0, 0];
 
     auto h = HistogramAccumulator!(size_t[], typeof(variableAxis))(counts, variableAxis);
@@ -875,9 +875,9 @@ unittest
 {
     import mir.stat.descriptive.histogram.axis: AxisOptions, IntegralAxis;
 
-    auto integralAxis1 = IntegralAxis!(size_t, double, AxisOptions())(5, 2.0);
+    auto integralAxis1 = IntegralAxis!(double, AxisOptions())(5, 2.0);
     size_t[] counts1 = [0, 0, 0, 0, 0];
-    auto integralAxis2 = IntegralAxis!(size_t, double, AxisOptions())(5, 2.0);
+    auto integralAxis2 = IntegralAxis!(double, AxisOptions())(5, 2.0);
     size_t[] counts2 = [0, 0, 0, 0, 0];
 
     auto h1 = HistogramAccumulator!(size_t[], typeof(integralAxis1))(counts1, integralAxis1);
@@ -898,9 +898,9 @@ unittest
     import mir.stat.descriptive.histogram.axis: AxisOptions, IntegralAxis,
         EnableOverflow, EnableUnderflow;
 
-    auto integralAxis1 = IntegralAxis!(size_t, double, AxisOptions(EnableOverflow(true), EnableUnderflow(true)))(5, 2.0);
+    auto integralAxis1 = IntegralAxis!(double, AxisOptions(EnableOverflow(true), EnableUnderflow(true)))(5, 2.0);
     size_t[] counts1 = [0, 0, 0, 0, 0, 0, 0];
-    auto integralAxis2 = IntegralAxis!(size_t, double, AxisOptions(EnableOverflow(true), EnableUnderflow(true)))(5, 2.0);
+    auto integralAxis2 = IntegralAxis!(double, AxisOptions(EnableOverflow(true), EnableUnderflow(true)))(5, 2.0);
     size_t[] counts2 = [0, 0, 0, 0, 0, 0, 0];
 
     auto h1 = HistogramAccumulator!(size_t[], typeof(integralAxis1))(counts1, integralAxis1);
@@ -962,7 +962,7 @@ unittest
 {
     import mir.stat.descriptive.histogram.axis: AxisOptions, IntegralAxis;
 
-    alias A = IntegralAxis!(uint, double, AxisOptions());
+    alias A = IntegralAxis!(double, AxisOptions());
     uint[][] counts = [[0u, 0u, 0u], [0u, 0u, 0u]];
     auto h = HistogramAccumulator!(uint[][], A, A)(counts, A(2, 0.0), A(3, 0.0));
     h.put(0.5, 1.5);
@@ -983,7 +983,7 @@ unittest
     import mir.ndslice.slice: sliced;
     import mir.stat.descriptive.histogram.axis: AxisOptions, IntegralAxis;
 
-    alias A = IntegralAxis!(uint, double, AxisOptions());
+    alias A = IntegralAxis!(double, AxisOptions());
     uint[6] buffer;
     auto counts = buffer[].sliced(2, 3);
     auto h = HistogramAccumulator!(typeof(counts), A, A)(
@@ -1003,7 +1003,7 @@ version(mir_stat_test)
 unittest
 {
     import mir.stat.descriptive.histogram.axis: IntegralAxis, AxisOptions;
-    alias A = IntegralAxis!(uint, double, AxisOptions());
+    alias A = IntegralAxis!(double, AxisOptions());
 
     // In D, the rightmost static-array dimension is the outermost: this
     // storage has two planes, three rows per plane, and four counts per row.
@@ -1028,7 +1028,7 @@ unittest
 {
     import mir.stat.descriptive.histogram.axis: IntegralAxis, AxisOptions,
         EnableUnderflow, EnableOverflow;
-    alias A = IntegralAxis!(uint, double,
+    alias A = IntegralAxis!(double,
         AxisOptions(EnableUnderflow(true), EnableOverflow(true)));
 
     // Two ordinary x bins and three ordinary y bins, with an extra bin at
@@ -1067,9 +1067,9 @@ unittest
     import mir.ndslice.slice: sliced;
     import mir.stat.descriptive.histogram.axis: IntegralAxis, AxisOptions,
         EnableUnderflow, EnableOverflow;
-    alias X = IntegralAxis!(uint, double, AxisOptions(EnableUnderflow(true)));
-    alias Y = IntegralAxis!(uint, double, AxisOptions());
-    alias Z = IntegralAxis!(uint, double, AxisOptions(EnableOverflow(true)));
+    alias X = IntegralAxis!(double, AxisOptions(EnableUnderflow(true)));
+    alias Y = IntegralAxis!(double, AxisOptions());
+    alias Z = IntegralAxis!(double, AxisOptions(EnableOverflow(true)));
 
     // Two ordinary bins per axis, plus x underflow and z overflow, require
     // a 3-by-2-by-3 grid. The ndslice shares the caller's buffer.
@@ -1102,8 +1102,8 @@ unittest
 {
     import mir.stat.descriptive.histogram.axis: IntegralAxis, AxisOptions,
         EnableUnderflow, EnableOverflow;
-    alias X = IntegralAxis!(uint, double, AxisOptions(EnableUnderflow(true)));
-    alias Y = IntegralAxis!(uint, double, AxisOptions(EnableOverflow(true)));
+    alias X = IntegralAxis!(double, AxisOptions(EnableUnderflow(true)));
+    alias Y = IntegralAxis!(double, AxisOptions(EnableOverflow(true)));
     uint[3][3] storage;
     alias H = HistogramAccumulator!(typeof(storage), X, Y);
     auto first = H(storage, X(2, 0.0), Y(2, 0.0));
@@ -1128,7 +1128,7 @@ version(mir_stat_test)
 unittest
 {
     import mir.stat.descriptive.histogram.axis: IntegralAxis, AxisOptions;
-    alias A = IntegralAxis!(uint, int, AxisOptions());
+    alias A = IntegralAxis!(int, AxisOptions());
     auto joint = HistogramAccumulator!(uint[][], A, A)(
         [[1u, 4u, 2u], [0u, 3u, 1u]], A(2, 0), A(3, 10));
 
@@ -1155,7 +1155,7 @@ version(mir_stat_test)
 unittest
 {
     import mir.stat.descriptive.histogram.axis: IntegralAxis, AxisOptions;
-    alias A = IntegralAxis!(uint, int, AxisOptions(false, true, true));
+    alias A = IntegralAxis!(int, AxisOptions(false, true, true));
     auto joint = HistogramAccumulator!(uint[][], A, A)(
         [[1u, 2u, 3u], [4u, 5u, 6u], [7u, 8u, 9u]], A(1, 0), A(1, 0));
     auto marginal = joint.marginal!0();
@@ -1211,10 +1211,10 @@ unittest
     static foreach (rightClosed; [false, true])
     {{
         enum options = AxisOptions(rightClosed, true, true, true);
-        check(IntegralAxis!(size_t, double, options)(2, 1.0));
-        check(RegularAxis!(size_t, double, options)(2, 1.0, 9.0));
-        check(TransformAxis!(size_t, double, sqrt, square, options)(2, 1.0, 9.0));
-        check(VariableAxis!(size_t, double*, options)([1.0, 4.0, 9.0].sliced));
+        check(IntegralAxis!(double, options)(2, 1.0));
+        check(RegularAxis!(double, options)(2, 1.0, 9.0));
+        check(TransformAxis!(double, sqrt, square, options)(2, 1.0, 9.0));
+        check(VariableAxis!(double*, options)([1.0, 4.0, 9.0].sliced));
     }}
 }
 
@@ -1373,7 +1373,7 @@ unittest
     import mir.format: text;
     import mir.stat.descriptive.histogram.axis: IntegralAxis, AxisOptions;
 
-    alias A = IntegralAxis!(uint, double, AxisOptions());
+    alias A = IntegralAxis!(double, AxisOptions());
     auto h = HistogramAccumulator!(uint[], A)([2u, 1u], A(2, 0.0));
     const entry = h.bins.front;
     assert(format("%s", entry) == "bin(low=0.0, high=1.0): count=2");
@@ -1393,7 +1393,7 @@ unittest
     import std.format: format;
     import mir.stat.descriptive.histogram.axis: IntegralAxis, AxisOptions;
 
-    alias A = IntegralAxis!(uint, double, AxisOptions());
+    alias A = IntegralAxis!(double, AxisOptions());
     auto h = HistogramAccumulator!(uint[], A)([2u, 1u], A(2, 0.0));
 
     // Call printHistogram(h) to write to stdout. The helper is compiled but
@@ -1429,7 +1429,7 @@ unittest
 {
     import std.format: format;
     import mir.stat.descriptive.histogram.axis: IntegralAxis, AxisOptions;
-    alias A = IntegralAxis!(uint, double, AxisOptions(false, true, true));
+    alias A = IntegralAxis!(double, AxisOptions(false, true, true));
     auto h = HistogramAccumulator!(uint[][], A, A)(
         [[0u, 1u, 0u], [0u, 2u, 0u], [0u, 0u, 3u]], A(1, 0.0), A(1, 0.0));
     auto entries = h.bins!(BinCoverage.all);
@@ -1446,7 +1446,7 @@ unittest
     import std.format: format;
     import mir.stat.descriptive.histogram.axis: EnumAxis;
     enum Color { red, blue }
-    auto h = HistogramAccumulator!(uint[], EnumAxis!(uint, Color))([1u, 2u], EnumAxis!(uint, Color)());
+    auto h = HistogramAccumulator!(uint[], EnumAxis!(Color))([1u, 2u], EnumAxis!(Color)());
     assert(format("%s", h.bins[1]) == "bin(slot=blue): count=2");
 
     static struct Description
@@ -1491,8 +1491,8 @@ unittest
     import mir.stat.descriptive.histogram.axis: CategoryAxis, IntegralAxis, AxisOptions;
 
     enum Label { first, second }
-    alias C = CategoryAxis!(uint, Label, AxisOptions());
-    alias A = IntegralAxis!(uint, int, AxisOptions());
+    alias C = CategoryAxis!(Label, AxisOptions());
+    alias A = IntegralAxis!(int, AxisOptions());
     auto counts = rcslice!uint(2, 2);
     auto h = HistogramAccumulator!(typeof(counts), C, A)(counts, C(), A(2, 0));
     // Both enum values and their string names use the same category.
@@ -1528,7 +1528,7 @@ unittest
             buffer[length++] = value;
         }
     }
-    alias A = IntegralAxis!(uint, double, AxisOptions());
+    alias A = IntegralAxis!(double, AxisOptions());
     uint[2] counts = [2, 1];
     auto h = HistogramAccumulator!(uint[], A)(counts[], A(2, 0.0));
     const entry = h.bins.front;
@@ -1750,7 +1750,7 @@ unittest
 {
     import mir.stat.descriptive.histogram.axis: AxisOptions, IntegralAxis;
 
-    alias Axis = IntegralAxis!(uint, double, AxisOptions());
+    alias Axis = IntegralAxis!(double, AxisOptions());
     auto h = HistogramAccumulator!(uint[], Axis)([0u, 0u, 0u], Axis(3, 0.0));
     h.put([0.5, 1.0, 1.5, 2.5]);
 
@@ -1770,9 +1770,9 @@ version(mir_stat_test)
 unittest
 {
     import mir.stat.descriptive.histogram.axis: IntegralAxis, CategoryAxis, AxisOptions;
-    alias X = IntegralAxis!(uint, double, AxisOptions());
+    alias X = IntegralAxis!(double, AxisOptions());
     enum Color { red, blue, green }
-    alias Y = CategoryAxis!(uint, Color, AxisOptions());
+    alias Y = CategoryAxis!(Color, AxisOptions());
     uint[][] counts = [[1u, 2u, 3u], [4u, 5u, 6u]];
     auto h = HistogramAccumulator!(typeof(counts), X, Y)(counts, X(2, 0.0), Y());
     auto view = h.bins;
@@ -1805,7 +1805,7 @@ unittest
     import mir.ndslice.slice: sliced;
     import mir.stat.descriptive.histogram.axis: IntegralAxis, AxisOptions,
         EnableUnderflow, EnableOverflow;
-    alias A = IntegralAxis!(uint, double,
+    alias A = IntegralAxis!(double,
         AxisOptions(EnableUnderflow(true), EnableOverflow(true)));
     uint[16] buffer;
     auto counts = buffer[].sliced(4, 4);
@@ -1833,7 +1833,7 @@ unittest
 {
     import mir.stat.descriptive.histogram.axis: AxisOptions, IntegralAxis;
 
-    alias Axis = IntegralAxis!(uint, double, AxisOptions());
+    alias Axis = IntegralAxis!(double, AxisOptions());
     auto h = HistogramAccumulator!(uint[], Axis)([1u, 2u, 1u], Axis(3, 0.0));
     auto bins = h.bins;
     assert(bins[1].count == 2);
@@ -1853,7 +1853,7 @@ unittest
     import mir.stat.descriptive.histogram.axis: AxisOptions, CategoryAxis;
 
     enum Label { first, second }
-    alias Axis = CategoryAxis!(uint, Label, AxisOptions());
+    alias Axis = CategoryAxis!(Label, AxisOptions());
     auto h = HistogramAccumulator!(uint[], Axis)([0u, 0u], Axis());
     h.put([Label.first, Label.second, Label.second]);
 
@@ -1872,7 +1872,7 @@ unittest
     import mir.ndslice.allocation: rcslice;
     import mir.stat.descriptive.histogram.axis: AxisOptions, IntegralAxis;
 
-    alias Axis = IntegralAxis!(uint, double, AxisOptions());
+    alias Axis = IntegralAxis!(double, AxisOptions());
     auto counts = rcslice!uint([1u, 2u]);
     auto h = HistogramAccumulator!(typeof(counts), Axis)(counts, Axis(2, 0.0));
     auto bins = h.bins;
@@ -1897,7 +1897,7 @@ unittest
 {
     import mir.stat.descriptive.histogram.axis: AxisOptions, IntegralAxis;
 
-    alias Axis = IntegralAxis!(uint, double, AxisOptions());
+    alias Axis = IntegralAxis!(double, AxisOptions());
     alias H = HistogramAccumulator!(uint[], Axis);
     auto h = H([1u, 2u, 3u], Axis(3, 0.0));
 
@@ -1936,7 +1936,7 @@ unittest
     import std.range.primitives: isRandomAccessRange, hasLength, hasSlicing,
         hasAssignableElements, isInfinite;
 
-    alias Axis = IntegralAxis!(uint, double, AxisOptions(false, true, true));
+    alias Axis = IntegralAxis!(double, AxisOptions(false, true, true));
     void check(Storage)(Storage counts, Storage replacement)
     {
         auto h = HistogramAccumulator!(Storage, Axis)(counts, Axis(3, 0.0));
@@ -2001,17 +2001,17 @@ unittest
             assert(bins[i].count == counts[i]);
         }
     }
-    checkNumeric(IntegralAxis!(uint, double, AxisOptions())(3, 0.0));
-    checkNumeric(RegularAxis!(uint, double, AxisOptions(true))(3, 0.0, 6.0));
-    checkNumeric(RegularAxis!(uint, double, AxisOptions(false, false, false, true))(3, 0.0, 6.0));
-    checkNumeric(TransformAxis!(uint, double, "a * 2", "a / 2", AxisOptions())(3, 0.0, 6.0));
+    checkNumeric(IntegralAxis!(double, AxisOptions())(3, 0.0));
+    checkNumeric(RegularAxis!(double, AxisOptions(true))(3, 0.0, 6.0));
+    checkNumeric(RegularAxis!(double, AxisOptions(false, false, false, true))(3, 0.0, 6.0));
+    checkNumeric(TransformAxis!(double, "a * 2", "a / 2", AxisOptions())(3, 0.0, 6.0));
 
     auto breaks = [0.0, 1.0, 3.0, 6.0].sliced;
-    checkNumeric(VariableAxis!(uint, double*, AxisOptions())(breaks));
+    checkNumeric(VariableAxis!(double*, AxisOptions())(breaks));
 
     enum Label { first, second }
-    alias Enum = EnumAxis!(uint, Label);
-    alias Category = CategoryAxis!(uint, Label, AxisOptions());
+    alias Enum = EnumAxis!(Label);
+    alias Category = CategoryAxis!(Label, AxisOptions());
     auto enums = HistogramAccumulator!(uint[], Enum)([2u, 4u], Enum()).bins;
     auto categories = HistogramAccumulator!(uint[], Category)([2u, 4u], Category()).bins;
     assert(enums[0].bin.slot == Label.first && enums[1].bin.slot == Label.second);
@@ -2021,7 +2021,7 @@ unittest
     auto makeView()
     {
         auto ownedBreaks = rcslice!double([0.0, 2.0, 5.0]);
-        auto axis = VariableAxis!(uint, typeof(ownedBreaks._iterator), AxisOptions())(ownedBreaks);
+        auto axis = VariableAxis!(typeof(ownedBreaks._iterator), AxisOptions())(ownedBreaks);
         auto counts = rcslice!uint([2u, 3u]);
         return HistogramAccumulator!(typeof(counts), typeof(axis))(counts, axis).bins;
     }
@@ -2042,7 +2042,7 @@ unittest
     import std.exception: assertThrown;
     import mir.stat.descriptive.histogram.axis: AxisOptions, IntegralAxis;
 
-    alias Axis = IntegralAxis!(uint, double, AxisOptions());
+    alias Axis = IntegralAxis!(double, AxisOptions());
     alias H = HistogramAccumulator!(uint[], Axis);
     assertThrown!AssertError(H([0u], Axis(2, 0.0)).bins);
     auto bins = H([0u, 0u], Axis(2, 0.0)).bins;
@@ -2082,7 +2082,7 @@ unittest
     import std.range: retro, take;
     import std.range.primitives: isRandomAccessRange;
 
-    alias Axis = IntegralAxis!(uint, double, AxisOptions());
+    alias Axis = IntegralAxis!(double, AxisOptions());
     void check(Storage)(Storage counts)
     {
         alias H = HistogramAccumulator!(Storage, Axis);
@@ -2141,7 +2141,7 @@ unittest
     auto makeView()
     {
         auto breaks = rcslice!double([0.0, 1.0, 3.0, 6.0]);
-        alias Axis = VariableAxis!(uint, RCI!double, AxisOptions());
+        alias Axis = VariableAxis!(RCI!double, AxisOptions());
         auto counts = rcslice!uint([1u, 2u, 3u]);
         const h = HistogramAccumulator!(typeof(counts), Axis)(counts, Axis(breaks));
         const fixed = h.bins;
@@ -2156,7 +2156,7 @@ unittest
     assert(view.front.bin.low == 1.0 && view.back.bin.high == 6.0);
     static assert(is(typeof(view._counts) == Slice!(RCI!(const uint))));
     static assert(is(typeof(view._axes[0]) ==
-        VariableAxis!(uint, RCI!(const double), AxisOptions())));
+        VariableAxis!(RCI!(const double), AxisOptions())));
     auto bin = view.front.bin;
     static assert(is(typeof(bin) == Bin!double));
     view = typeof(view).init;
@@ -2177,7 +2177,7 @@ unittest
     import mir.stat.descriptive.histogram.axis: AxisOptions, IntegralAxis;
     import std.algorithm: map, equal;
 
-    alias Axis = IntegralAxis!(uint, double, AxisOptions());
+    alias Axis = IntegralAxis!(double, AxisOptions());
     uint[] backing = [1u, 99u, 2u, 99u, 3u, 99u];
     auto strided = Slice!(uint*, 1, SliceKind.universal)([3], [2], backing.ptr);
     const view = HistogramBinView!(typeof(strided), BinCoverage.ordinary, Axis)(strided, Axis(3, 0.0));
@@ -2232,7 +2232,7 @@ version(mir_stat_test)
 unittest
 {
     import mir.stat.descriptive.histogram.axis: IntegralAxis, AxisOptions;
-    alias A = IntegralAxis!(size_t, double, AxisOptions());
+    alias A = IntegralAxis!(double, AxisOptions());
     auto h = HistogramAccumulator!(size_t[], A)([0UL, 0UL], A(2, 0.0));
     static assert(!__traits(compiles, h.put()));
     static assert(__traits(compiles, h.put(0.5, 1.5)));
@@ -2269,7 +2269,7 @@ unittest
     import core.exception: AssertError;
     import std.exception: assertThrown;
     import mir.stat.descriptive.histogram.axis: IntegralAxis, AxisOptions;
-    alias A = IntegralAxis!(size_t, double, AxisOptions());
+    alias A = IntegralAxis!(double, AxisOptions());
     alias H = HistogramAccumulator!(size_t[], A);
     auto axis = A(2, 0.0);
     assertThrown!AssertError(H([0UL], axis));
@@ -2288,7 +2288,7 @@ unittest
     import mir.stat.descriptive.histogram.axis: IntegralAxis, CategoryAxis, AxisOptions;
     static immutable uint[4] zero = [0, 0, 0, 0];
     static immutable double[4] samples = [-1.0, 0.5, 1.5, 3.0];
-    alias A = IntegralAxis!(uint, double, AxisOptions(false, true, true));
+    alias A = IntegralAxis!(double, AxisOptions(false, true, true));
     auto counts = rcslice!uint(zero[]);
     alias H = HistogramAccumulator!(typeof(counts), A);
     auto h = H(counts, A(2, 0.0));
@@ -2309,13 +2309,13 @@ unittest
 
     // Enum and string category insertion are also usable without the GC.
     enum Label { first, second }
-    alias C = CategoryAxis!(uint, Label, AxisOptions());
+    alias C = CategoryAxis!(Label, AxisOptions());
     auto category = HistogramAccumulator!(typeof(counts), C)(rcslice!uint(zero[0 .. 2]), C());
     category.put(Label.second);
     assert(category.bins.back.count == 1);
     category.put("first");
     assert(category.bins.front.count == 1);
-    alias FlowCategory = CategoryAxis!(uint, Label, AxisOptions(false, true));
+    alias FlowCategory = CategoryAxis!(Label, AxisOptions(false, true));
     auto withFlow = HistogramAccumulator!(typeof(counts), FlowCategory)(
         rcslice!uint(zero[0 .. 3]), FlowCategory());
     withFlow.put("unknown");
@@ -2328,7 +2328,7 @@ version(mir_stat_test)
 unittest
 {
     import mir.stat.descriptive.histogram.axis: IntegralAxis, AxisOptions;
-    alias A = IntegralAxis!(uint, double, AxisOptions());
+    alias A = IntegralAxis!(double, AxisOptions());
     uint[3][2] zero;
     alias H = HistogramAccumulator!(typeof(zero), A, A);
     auto diagonal = H(zero, A(2, 0.0), A(3, 0.0));
@@ -2355,7 +2355,7 @@ version(mir_stat_test)
 unittest
 {
     import mir.stat.descriptive.histogram.axis: IntegralAxis, AxisOptions;
-    alias A = IntegralAxis!(uint, double, AxisOptions());
+    alias A = IntegralAxis!(double, AxisOptions());
     uint[3][2] buffer;
     buffer[1][2] = 4;
     auto fixedRows = buffer[];
@@ -2382,8 +2382,8 @@ unittest
     import mir.ndslice.dynamic: transposed;
     import mir.stat.descriptive.histogram.axis: IntegralAxis, CategoryAxis, AxisOptions;
     enum Label { first, second, third }
-    alias A = IntegralAxis!(uint, double, AxisOptions());
-    alias C = CategoryAxis!(uint, Label, AxisOptions());
+    alias A = IntegralAxis!(double, AxisOptions());
+    alias C = CategoryAxis!(Label, AxisOptions());
     ulong[6] buffer;
     auto counts = buffer[].sliced(3, 2).transposed;
     auto h = HistogramAccumulator!(typeof(counts), A, C)(counts, A(2, 0.0), C());
@@ -2406,7 +2406,7 @@ unittest
     import std.exception: assertThrown;
     import mir.ndslice.slice: sliced;
     import mir.stat.descriptive.histogram.axis: IntegralAxis, AxisOptions;
-    alias A = IntegralAxis!(uint, double, AxisOptions());
+    alias A = IntegralAxis!(double, AxisOptions());
     alias H = HistogramAccumulator!(uint[][], A, A);
     auto x = A(2, 0.0);
     auto y = A(3, 0.0);
@@ -2446,7 +2446,7 @@ unittest
 {
     import mir.ndslice.slice: Slice;
     import mir.stat.descriptive.histogram.axis: IntegralAxis, AxisOptions;
-    alias A = IntegralAxis!(uint, double, AxisOptions());
+    alias A = IntegralAxis!(double, AxisOptions());
     static assert(!__traits(compiles, HistogramAccumulator!(uint[], A, A).init));
     static assert(!__traits(compiles, HistogramAccumulator!(uint[][][], A, A).init));
     static assert(!__traits(compiles, HistogramAccumulator!(Slice!(uint*, 1), A, A).init));
@@ -2469,9 +2469,9 @@ unittest
         enum ox = (flags & 2) != 0;
         enum uy = (flags & 4) != 0;
         enum oy = (flags & 8) != 0;
-        alias X = IntegralAxis!(uint, double,
+        alias X = IntegralAxis!(double,
             AxisOptions(EnableUnderflow(ux), EnableOverflow(ox)));
-        alias Y = IntegralAxis!(uint, double,
+        alias Y = IntegralAxis!(double,
             AxisOptions(EnableUnderflow(uy), EnableOverflow(oy)));
         enum rows = 2 + ux + ox;
         enum columns = 3 + uy + oy;
@@ -2544,9 +2544,9 @@ unittest
     import mir.ndslice.slice: sliced;
     import mir.stat.descriptive.histogram.axis: IntegralAxis, AxisOptions,
         EnableUnderflow, EnableOverflow;
-    alias F = IntegralAxis!(uint, double,
+    alias F = IntegralAxis!(double,
         AxisOptions(EnableUnderflow(true), EnableOverflow(true)));
-    alias A = IntegralAxis!(uint, double, AxisOptions());
+    alias A = IntegralAxis!(double, AxisOptions());
     alias H = HistogramAccumulator!(uint[][], F, A);
     auto x = F(2, 0.0);
     auto y = A(3, 0.0);
@@ -2583,11 +2583,11 @@ unittest
         AxisOptions, EnableUnderflow, EnableOverflow, IsCircular, IsRightClosed;
     static foreach (rightClosed; [false, true])
     {{
-        alias X = IntegralAxis!(uint, double, AxisOptions(
+        alias X = IntegralAxis!(double, AxisOptions(
             EnableUnderflow(true), EnableOverflow(true),
             IsCircular(true), IsRightClosed(rightClosed)));
         enum Label { first, second }
-        alias Y = CategoryAxis!(uint, Label, AxisOptions(EnableOverflow(true)));
+        alias Y = CategoryAxis!(Label, AxisOptions(EnableOverflow(true)));
         alias Storage = uint[3][4];
         auto h = HistogramAccumulator!(Storage, X, Y)(
             Storage.init, X(2, 0.0), Y());
@@ -2610,7 +2610,7 @@ unittest
 {
     import mir.stat.descriptive.histogram.axis: IntegralAxis, AxisOptions,
         EnableUnderflow, EnableOverflow, IsRightClosed;
-    alias A = IntegralAxis!(uint, double, AxisOptions(
+    alias A = IntegralAxis!(double, AxisOptions(
         EnableUnderflow(true), EnableOverflow(true), IsRightClosed(true)));
     ulong[][] counts = [[0UL, 0UL, 0UL], [0UL, 0UL, 0UL], [0UL, 0UL, 0UL]];
     counts[0][0] = cast(ulong) uint.max + 1;
@@ -2656,10 +2656,10 @@ unittest
     import mir.ndslice.dynamic: transposed;
     import mir.stat.descriptive.histogram.axis: IntegralAxis, AxisOptions,
         EnableUnderflow, EnableOverflow;
-    alias X = IntegralAxis!(uint, double,
+    alias X = IntegralAxis!(double,
         AxisOptions(EnableUnderflow(true), EnableOverflow(true)));
-    alias Y = IntegralAxis!(uint, double, AxisOptions(EnableUnderflow(true)));
-    alias Z = IntegralAxis!(uint, double, AxisOptions(EnableOverflow(true)));
+    alias Y = IntegralAxis!(double, AxisOptions(EnableUnderflow(true)));
+    alias Z = IntegralAxis!(double, AxisOptions(EnableOverflow(true)));
     uint[5][4][4] storage;
     auto a = HistogramAccumulator!(typeof(storage), X, Y, Z)(
         storage, X(2, 0.0), Y(3, 0.0), Z(4, 0.0));
@@ -2707,7 +2707,7 @@ unittest
     import mir.ndslice.slice: sliced;
     import mir.stat.descriptive.histogram.axis: IntegralAxis, AxisOptions,
         EnableOverflow;
-    alias A = IntegralAxis!(uint, int, AxisOptions(EnableOverflow(true)));
+    alias A = IntegralAxis!(int, AxisOptions(EnableOverflow(true)));
     ulong[2][2][2][2] storage;
     auto a = HistogramAccumulator!(typeof(storage), A, A, A, A)(
         storage, A(1, 0), A(1, 0), A(1, 0), A(1, 0));
@@ -2736,7 +2736,7 @@ unittest
     import std.exception: assertThrown;
     import mir.ndslice.slice: sliced, Slice;
     import mir.stat.descriptive.histogram.axis: IntegralAxis, AxisOptions;
-    alias A = IntegralAxis!(uint, double, AxisOptions());
+    alias A = IntegralAxis!(double, AxisOptions());
     alias H = HistogramAccumulator!(uint[][][], A, A, A);
     auto axis = A(2, 0.0);
     uint[][][] counts = [[[0u, 0u], [0u, 0u]], [[0u, 0u], [0u]]];
@@ -2766,10 +2766,10 @@ unittest
     import std.exception: assertThrown;
     import mir.stat.descriptive.histogram.axis: IntegralAxis, CategoryAxis,
         AxisOptions, EnableUnderflow, EnableOverflow;
-    alias X = IntegralAxis!(uint, int, AxisOptions(EnableUnderflow(true)));
+    alias X = IntegralAxis!(int, AxisOptions(EnableUnderflow(true)));
     enum Label { first, second }
-    alias Y = CategoryAxis!(uint, Label, AxisOptions(EnableOverflow(true)));
-    alias Z = IntegralAxis!(uint, double, AxisOptions());
+    alias Y = CategoryAxis!(Label, AxisOptions(EnableOverflow(true)));
+    alias Z = IntegralAxis!(double, AxisOptions());
     uint[2][3][3] counts;
     auto h = HistogramAccumulator!(typeof(counts), X, Y, Z)(
         counts, X(2, 0), Y(), Z(2, 0.0));
@@ -2791,7 +2791,7 @@ version(mir_stat_test)
 unittest
 {
     import mir.stat.descriptive.histogram.axis: IntegralAxis, AxisOptions;
-    alias A = IntegralAxis!(uint, int, AxisOptions());
+    alias A = IntegralAxis!(int, AxisOptions());
     uint[2][2][2] buffer;
     auto planes = buffer[];
     auto h = HistogramAccumulator!(typeof(planes), A, A, A)(
@@ -2818,10 +2818,10 @@ unittest
     import mir.ndslice.dynamic: transposed;
     import mir.stat.descriptive.histogram.axis: IntegralAxis, AxisOptions,
         EnableUnderflow, EnableOverflow;
-    alias X = IntegralAxis!(uint, int,
+    alias X = IntegralAxis!(int,
         AxisOptions(EnableUnderflow(true), EnableOverflow(true)));
-    alias Y = IntegralAxis!(uint, int, AxisOptions());
-    alias Z = IntegralAxis!(uint, int, AxisOptions(EnableOverflow(true)));
+    alias Y = IntegralAxis!(int, AxisOptions());
+    alias Z = IntegralAxis!(int, AxisOptions(EnableOverflow(true)));
     uint[3][2][4] storage;
     alias H = HistogramAccumulator!(typeof(storage), X, Y, Z);
     auto arrayHist = H(storage, X(2, 0), Y(2, 0), Z(2, 0));
@@ -2865,7 +2865,7 @@ unittest
     import std.exception: assertThrown;
     import mir.ndslice.slice: sliced;
     import mir.stat.descriptive.histogram.axis: IntegralAxis, AxisOptions;
-    alias A = IntegralAxis!(uint, int, AxisOptions());
+    alias A = IntegralAxis!(int, AxisOptions());
     alias H = HistogramAccumulator!(uint[][], A, A);
     auto make() { return H([[1u, 2u], [3u, 4u]], A(2, 0), A(2, 0)); }
     auto destination = make();
@@ -2903,7 +2903,7 @@ unittest
 {
     import mir.ndslice.slice: sliced;
     import mir.stat.descriptive.histogram.axis: IntegralAxis, AxisOptions;
-    alias A = IntegralAxis!(uint, int, AxisOptions());
+    alias A = IntegralAxis!(int, AxisOptions());
     uint[2][2] storage = [[1u, 2u], [3u, 4u]];
     auto a = HistogramAccumulator!(typeof(storage), A, A)(storage, A(2, 0), A(2, 0));
     a.put(a);
@@ -2928,7 +2928,7 @@ unittest
 {
     import mir.ndslice.slice: sliced;
     import mir.stat.descriptive.histogram.axis: IntegralAxis, AxisOptions;
-    alias A = IntegralAxis!(uint, int, AxisOptions());
+    alias A = IntegralAxis!(int, AxisOptions());
     alias H = HistogramAccumulator!(uint[2][2], A, A);
     uint[2][2] initial = [[1u, 2u], [3u, 4u]];
     auto destination = H(initial, A(2, 0), A(2, 0));
@@ -2953,9 +2953,9 @@ unittest
     import mir.stat.descriptive.histogram.axis: IntegralAxis, AxisOptions,
         EnableUnderflow, EnableOverflow;
     import std.range.primitives: isRandomAccessRange;
-    alias X = IntegralAxis!(uint, int, AxisOptions(EnableUnderflow(true)));
-    alias Y = IntegralAxis!(uint, int, AxisOptions());
-    alias Z = IntegralAxis!(uint, int, AxisOptions(EnableOverflow(true)));
+    alias X = IntegralAxis!(int, AxisOptions(EnableUnderflow(true)));
+    alias Y = IntegralAxis!(int, AxisOptions());
+    alias Z = IntegralAxis!(int, AxisOptions(EnableOverflow(true)));
     uint[36] buffer;
     auto counts = buffer[].sliced(4, 3, 3).transposed!(2, 1, 0);
     auto h = HistogramAccumulator!(typeof(counts), X, Y, Z)(
@@ -2998,7 +2998,7 @@ version(mir_stat_test)
 unittest
 {
     import mir.stat.descriptive.histogram.axis: IntegralAxis, AxisOptions;
-    alias A = IntegralAxis!(uint, int, AxisOptions());
+    alias A = IntegralAxis!(int, AxisOptions());
     uint[][][] counts = [[[1u, 2u], [3u, 4u]], [[5u, 6u], [7u, 8u]]];
     auto h = HistogramAccumulator!(typeof(counts), A, A, A)(counts, A(2, 0), A(2, 0), A(2, 0));
     auto view = h.bins;
@@ -3021,8 +3021,8 @@ unittest
     auto makeView()
     {
         auto breaks = rcslice!double([0.0, 1.0, 3.0]);
-        alias X = VariableAxis!(uint, typeof(breaks._iterator), AxisOptions());
-        alias Y = IntegralAxis!(uint, int, AxisOptions());
+        alias X = VariableAxis!(typeof(breaks._iterator), AxisOptions());
+        alias Y = IntegralAxis!(int, AxisOptions());
         auto counts = rcslice!uint(2, 2);
         auto h = HistogramAccumulator!(typeof(counts), X, Y)(counts, X(breaks), Y(2, 0));
         h.put(2.0, 1);
@@ -3041,7 +3041,7 @@ unittest
 {
     import mir.stat.descriptive.histogram.axis: IntegralAxis, AxisOptions;
     import mir.stat.internal.borrow: hasBorrowEscapeChecking;
-    alias A = IntegralAxis!(uint, int, AxisOptions());
+    alias A = IntegralAxis!(int, AxisOptions());
     alias Storage = uint[2][2];
     alias H = HistogramAccumulator!(Storage, A, A);
     void check() @nogc
@@ -3085,7 +3085,7 @@ unittest
     import std.exception: assertThrown;
     import mir.ndslice.slice: Slice, SliceKind;
     import mir.stat.descriptive.histogram.axis: IntegralAxis, AxisOptions, Bin;
-    alias A = IntegralAxis!(uint, int, AxisOptions());
+    alias A = IntegralAxis!(int, AxisOptions());
     alias V = HistogramBinView!(uint[][], BinCoverage.ordinary, A, A);
     assertThrown!AssertError(V([[0u, 0u], [0u]], A(2, 0), A(2, 0)));
     auto view = V([[0u, 0u], [0u, 0u]], A(2, 0), A(2, 0));
@@ -3120,7 +3120,7 @@ unittest
     static foreach (u; [false, true])
     static foreach (o; [false, true])
     {{
-        alias A = IntegralAxis!(uint, double, AxisOptions(false, o, u));
+        alias A = IntegralAxis!(double, AxisOptions(false, o, u));
         enum n = 2 + u + o;
         auto axis = A(2, 0.0);
         uint[n] initial;
@@ -3169,7 +3169,7 @@ unittest
     import std.exception: assertThrown;
     import mir.stat.descriptive.histogram.axis: IntegralAxis, AxisOptions;
     import mir.stat.descriptive.histogram.traits: storageExtent;
-    alias A = IntegralAxis!(uint, double, AxisOptions(false, true, true));
+    alias A = IntegralAxis!(double, AxisOptions(false, true, true));
     alias H = HistogramAccumulator!(uint[], A);
     assertThrown!AssertError(H([0u, 0u], A(2, 0.0)));
     assertThrown!AssertError(H([0u, 0u, 0u, 0u, 0u], A(2, 0.0)));
@@ -3191,7 +3191,7 @@ version(mir_stat_test)
 unittest
 {
     import mir.stat.descriptive.histogram.axis: IntegralAxis, AxisOptions;
-    alias A = IntegralAxis!(uint, double, AxisOptions(false, true, true));
+    alias A = IntegralAxis!(double, AxisOptions(false, true, true));
     auto h = HistogramAccumulator!(uint[], A)([2u, 3u, 4u, 1u], A(2, 0.0));
 
     // Default traversal still returns only the two ordinary bins.
@@ -3227,8 +3227,8 @@ unittest
     static foreach (u; [false, true])
     static foreach (o; [false, true])
     {{
-        alias X = IntegralAxis!(uint, int, AxisOptions(false, o, u));
-        alias Y = IntegralAxis!(uint, double, AxisOptions(false, true, true));
+        alias X = IntegralAxis!(int, AxisOptions(false, o, u));
+        alias Y = IntegralAxis!(double, AxisOptions(false, true, true));
         enum rows = 2 + u + o;
         enum columns = 5;
         uint[rows * columns] buffer;
@@ -3287,8 +3287,8 @@ unittest
     import mir.stat.descriptive.histogram.axis: CategoryAxis, VariableAxis, AxisOptions;
     import mir.ndslice.slice: sliced;
     enum Label { first, second }
-    alias X = CategoryAxis!(uint, Label, AxisOptions(false, true));
-    alias Y = VariableAxis!(uint, double*, AxisOptions(false, true, true));
+    alias X = CategoryAxis!(Label, AxisOptions(false, true));
+    alias Y = VariableAxis!(double*, AxisOptions(false, true, true));
     auto y = Y([0.0, 1.0, 3.0].sliced);
     auto h = HistogramAccumulator!(uint[][], X, Y)(
         [[0u, 0u, 0u, 0u], [0u, 0u, 0u, 0u], [0u, 0u, 0u, 0u]], X(), y);
@@ -3315,7 +3315,7 @@ unittest
 {
     import mir.ndslice.allocation: rcslice;
     import mir.stat.descriptive.histogram.axis: IntegralAxis, AxisOptions;
-    alias A = IntegralAxis!(uint, int, AxisOptions(false, true, true));
+    alias A = IntegralAxis!(int, AxisOptions(false, true, true));
     auto owning()
     {
         auto counts = rcslice!uint([2u, 3u, 4u, 1u]);
@@ -3354,7 +3354,7 @@ unittest
     static foreach (u; [false, true])
     static foreach (o; [false, true])
     {{
-        alias A = IntegralAxis!(uint, int, AxisOptions(false, o, u));
+        alias A = IntegralAxis!(int, AxisOptions(false, o, u));
         uint[2 + u + o] buffer;
         auto storage = buffer[].sliced;
         auto h = HistogramAccumulator!(typeof(storage), A)(storage, A(2, 0));
@@ -3378,7 +3378,7 @@ unittest
     import mir.stat.descriptive.histogram.axis: IntegralAxis, AxisOptions;
     import mir.ndslice.slice: sliced;
     import mir.ndslice.dynamic: transposed;
-    alias A = IntegralAxis!(uint, int, AxisOptions());
+    alias A = IntegralAxis!(int, AxisOptions());
     uint[4][3][2] data;
     uint[24] backing;
     // A transposed [4,3,2] slice has logical shape [2,3,4].
@@ -3425,8 +3425,8 @@ unittest
     import mir.ndslice.allocation: rcslice;
     import mir.rc.array: RCI;
     import mir.stat.descriptive.histogram.axis: VariableAxis, IntegralAxis, AxisOptions;
-    alias X = VariableAxis!(uint, RCI!double, AxisOptions());
-    alias Y = IntegralAxis!(uint, int, AxisOptions());
+    alias X = VariableAxis!(RCI!double, AxisOptions());
+    alias Y = IntegralAxis!(int, AxisOptions());
     auto makeMarginal()
     {
         double[3] values = [0.0, 1.0, 4.0];
@@ -3450,13 +3450,13 @@ unittest
     import mir.ndslice.slice: sliced;
     import mir.stat.descriptive.histogram.axis: VariableAxis, IntegralAxis, AxisOptions;
     double[] boundaries = [0, 1, 4];
-    alias X = VariableAxis!(uint, double*, AxisOptions());
-    alias Y = IntegralAxis!(uint, int, AxisOptions());
+    alias X = VariableAxis!(double*, AxisOptions());
+    alias Y = IntegralAxis!(int, AxisOptions());
     uint[2][2] data = [[1u, 2u], [3u, 4u]];
     const h = HistogramAccumulator!(typeof(data), X, Y)(
         data, X(boundaries[].sliced), Y(2, 0));
     auto result = h.marginal!0();
-    static assert(is(typeof(result.axis[0]) == VariableAxis!(uint, const(double)*, AxisOptions())));
+    static assert(is(typeof(result.axis[0]) == VariableAxis!(const(double)*, AxisOptions())));
     assert(result.axis[0].bin(1).low == 1 && result.axis[0].bin(1).high == 4);
     result.put(2.0);
     assert(result.counts == [3u, 8u]);
@@ -3469,7 +3469,7 @@ unittest
 {
     import mir.ndslice.slice: sliced;
     import mir.stat.descriptive.histogram.axis: VariableAxis, IntegralAxis, AxisOptions;
-    alias A = IntegralAxis!(uint, int, AxisOptions());
+    alias A = IntegralAxis!(int, AxisOptions());
     auto makeMarginal()
     {
         uint[2][2] data = [[1u, 2u], [3u, 4u]];
@@ -3489,7 +3489,7 @@ unittest
 
     static assert(!__traits(compiles, () @safe {
         double[3] boundaries = [0, 1, 4];
-        alias X = VariableAxis!(uint, double*, AxisOptions());
+        alias X = VariableAxis!(double*, AxisOptions());
         uint[2][2] data;
         auto h = HistogramAccumulator!(typeof(data), X, A)(
             data, X(boundaries[].sliced), A(2, 0));
@@ -3507,7 +3507,7 @@ unittest
     import core.exception: AssertError;
     import std.exception: assertThrown;
     import mir.stat.descriptive.histogram.axis: IntegralAxis, AxisOptions;
-    alias A = IntegralAxis!(uint, int, AxisOptions());
+    alias A = IntegralAxis!(int, AxisOptions());
     auto data = [[1u, 2u], [3u, 4u]];
     auto h = HistogramAccumulator!(typeof(data), A, A)(data, A(2, 0), A(2, 0));
     data[1] = [3u];
@@ -3529,7 +3529,7 @@ unittest
         uint index(int value) const { return cast(uint) value; }
     }
     enum Label { first, second }
-    alias C = CategoryAxis!(uint, Label, AxisOptions(false, true));
+    alias C = CategoryAxis!(Label, AxisOptions(false, true));
     uint[3][2] data = [[1u, 2u, 3u], [4u, 5u, 6u]];
     auto h = HistogramAccumulator!(typeof(data), CountOnlyAxis, C)(data, CountOnlyAxis(), C());
     auto numeric = h.marginal!0();
@@ -3549,7 +3549,7 @@ unittest
     import mir.stat.descriptive.histogram.axis: IntegralAxis, AxisOptions;
     import mir.ndslice.slice: sliced;
     import mir.ndslice.dynamic: transposed;
-    alias A = IntegralAxis!(uint, int, AxisOptions(false, true, true));
+    alias A = IntegralAxis!(int, AxisOptions(false, true, true));
     void check(S)(S storage)
     {
         auto h = HistogramAccumulator!(S, A, A)(storage, A(1, 0), A(1, 0));
@@ -3589,7 +3589,7 @@ unittest
     {
         double[3] edges = [0, 1, 3];
         uint[2] counts = [1, 2];
-        alias A = VariableAxis!(uint, double*, AxisOptions());
+        alias A = VariableAxis!(double*, AxisOptions());
         auto h = HistogramAccumulator!(uint[], A)(counts[], A(edges[].sliced));
         return h.bins[1];
     }
@@ -3603,7 +3603,7 @@ unittest
         static assert(!__traits(compiles, () @safe {
             double[3] edges = [0, 1, 3];
             uint[2] counts = [1, 2];
-            alias A = VariableAxis!(uint, double*, AxisOptions());
+            alias A = VariableAxis!(double*, AxisOptions());
             auto h = HistogramAccumulator!(uint[], A)(counts[], A(edges[].sliced));
             return h.bins;
         }));
@@ -3618,7 +3618,7 @@ unittest
     import mir.stat.descriptive.histogram.axis: IntegralAxis, AxisOptions;
     import mir.ndslice.slice: sliced;
     import mir.ndslice.dynamic: transposed;
-    alias A = IntegralAxis!(uint, double, AxisOptions(false, true, true));
+    alias A = IntegralAxis!(double, AxisOptions(false, true, true));
     double[4][4] nested = 0;
     auto h = HistogramAccumulator!(typeof(nested), A, A)(nested, A(2, 0), A(2, 0));
     h.putWeighted(0.5, 0.25, 1.25);
@@ -3641,7 +3641,7 @@ version(mir_stat_test)
 unittest
 {
     import mir.stat.descriptive.histogram.axis: IntegralAxis, AxisOptions;
-    alias A = IntegralAxis!(uint, double, AxisOptions());
+    alias A = IntegralAxis!(double, AxisOptions());
     uint[2] storage = 0;
     auto h = HistogramAccumulator!(uint[], A)(storage[], A(2, 0));
     h.putWeighted(3u, 0.5);
