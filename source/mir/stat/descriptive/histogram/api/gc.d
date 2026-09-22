@@ -16,12 +16,120 @@ private auto allocateCounts(T)(ref NoAllocationContext context, size_t length) @
 }
 
 private mixin HistogramFactory!allocateCounts implementation;
+private import mir.stat.descriptive.histogram.api.factory: AxisHistogramFactory, areHistogramAxes;
+private mixin AxisHistogramFactory!allocateCounts axisImplementation;
+
+/++
+Project a histogram onto selected axes using fresh garbage-collected storage.
+Retain at least one axis and fewer than the source rank, without duplicates.
+The template argument order becomes the result's axis order. All stored counts
+on discarded axes contribute, including underflow/overflow bins; retained axes
+keep their definitions and enabled end bins. Cell types are preserved.
+
+Numeric cells are added. Accumulator cells merge their full state through
+put(sourceCell), or through += when that put operation is unavailable. For
+example, MeanAccumulator combines counts and sums, so a marginal mean weights
+each contributing bin by its observation count rather than averaging bin means.
+WMeanAccumulator similarly combines weighted sums and total weights.
+
+Accumulator cells start in their normal default state, which must represent
+an empty accumulator. Custom merge operations must combine contributions without
+modifying the source. The result has fresh cell storage; references retained by
+custom cells follow their merge semantics and are not automatically deep-copied.
+Empty bins retain the accumulator's usual empty-state behavior.
+
+Works with HistogramAccumulator and RelativeFrequencyAccumulator. A relative
+frequency result recomputes its total from the projected counts. Source and
+result numeric counts are independent. Axes must support mir.qualifier.lightConst.
+Owning axis boundaries remain owned; borrowed
+boundaries must outlive the result and its views. Counts must accommodate the
+resulting sums and total.
+
+Use h.marginal!dimension() through UFCS. For reference-counted or custom storage,
+use rcMarginal or makeMarginal. This replaces the former RC-only marginal member.
+Params:
+    dimensions = source axes to retain, in result order
+    source = histogram with mergeable cells, or relative frequency accumulator
++/
+template marginal(dimensions...)
+{
+    import mir.stat.descriptive.histogram.api.factory: acceptsMarginal;
+    auto marginal(H)(auto ref const H source)
+        if (acceptsMarginal!(H, dimensions))
+    {
+        NoAllocationContext context;
+        return source.projectMarginal!(axisImplementation.axisFactory, null,
+            NoAllocationContext, dimensions)(context);
+    }
+}
+
+/++
+Combine sensor-report summaries across longitude to compare latitude bands.
+Each report represents a different number of readings. Marginalization preserves
+those weights when combining the regional weighted means.
++/
+version(mir_stat_test)
+@safe pure nothrow
+unittest
+{
+    import mir.math.sum: Summation;
+    import mir.stat.descriptive.weighted: WMeanAccumulator, AssumeWeights;
+    import mir.stat.descriptive.histogram.axis: RegularAxis, AxisOptions;
+    alias Cell = WMeanAccumulator!(double, Summation.pairwise, AssumeWeights.primary);
+    auto coordinate = RegularAxis!(double, AxisOptions())(2, 0.0, 2.0);
+    auto reports = histogram!Cell(coordinate, coordinate);
+    reports.putWeightedSample(2.0, 10.0, 0.5, 0.5);
+    reports.putWeightedSample(6.0, 30.0, 0.5, 1.5);
+
+    auto byLatitude = reports.marginal!0();
+    assert(byLatitude.counts[0].weight == 8.0);
+    assert(byLatitude.counts[0].wmean == 25.0);
+    // Averaging the two regional means would incorrectly give 20.
+    assert(byLatitude.counts[1].weight == 0.0);
+    // WMeanAccumulator requires a nonzero weight before reading wmean.
+}
+
+/++
+Summarize request counts by temperature after recording temperature and server
+jointly. Keep using GC storage for the summary; its counts are independent of
+later requests recorded in the original histogram.
++/
+version(mir_stat_test)
+@safe pure nothrow
+unittest
+{
+    import mir.stat.descriptive.histogram.axis: IntegralAxis, AxisOptions;
+    alias A = IntegralAxis!(int, AxisOptions());
+    auto requests = histogram(A(2, 0), A(2, 0));
+    requests.put(0, 0);
+    requests.put(0, 1);
+    requests.put(1, 1);
+    auto byTemperature = requests.marginal!0();
+    static assert(is(typeof(byTemperature.counts.iterator) == size_t*));
+    assert(byTemperature.counts == [2, 1]);
+    requests.put(0, 0);
+    assert(byTemperature.counts == [2, 1]);
+}
+
+version(mir_stat_test)
+@safe pure nothrow
+unittest
+{
+    import mir.stat.descriptive.histogram.api.factory: testMarginalFactory;
+    testMarginalFactory!marginal();
+}
 
 /++
 Construct a histogram with garbage-collected count storage.
 Accepts the same axes, bin-count rules, type overrides, and options as
 $(REF rchistogram, mir, stat, descriptive, histogram, api, rc).
 Counts, including enabled underflow/overflow bins, start at zero.
+
+Supply only axis instances to allocate an empty one-dimensional or joint
+histogram: histogram!Cell(axis, ...). Cell defaults to size_t. Numeric cells
+start at zero; accumulator structs retain their default initialization.
+No observations are inserted. Use putSample or putWeightedSample to accumulate
+measurements in nonnumeric cells.
 
 Count allocation does not change axis boundary ownership: borrowed variable-axis
 boundaries must still outlive the histogram. Construction allocates GC memory;
@@ -34,11 +142,43 @@ template histogram(Options...)
     auto histogram(Args...)(auto ref Args args)
     {
         NoAllocationContext context;
-        static if (Options.length)
+        static if (areHistogramAxes!Args)
+        {
+            static assert(Options.length <= 1, "Axis-only construction accepts one cell type");
+            return axisImplementation.axisFactory!Options(context, args);
+        }
+        else static if (Options.length)
             return implementation.factory!Options(context, args);
         else
             return implementation.factory(context, args);
     }
+}
+
+/++
+Track sales revenue by customer age as purchases arrive. GC storage initializes
+each Summator before insertion, and each purchase updates its age group's total.
++/
+version(mir_stat_test)
+@safe pure nothrow
+unittest
+{
+    import mir.math.sum: Summator, Summation;
+    import mir.stat.descriptive.histogram.axis: RegularAxis, AxisOptions;
+    alias Cell = Summator!(double, Summation.pairwise);
+    auto ages = RegularAxis!(double, AxisOptions())(2, 20.0, 60.0);
+    auto sales = histogram!Cell(ages);
+    sales.putSample(30.0, 25.0);
+    sales.putSample(50.0, 35.0);
+    assert(sales.bins.front.value.sum == 80.0);
+    assert(sales.bins.back.value.sum == 0.0);
+}
+
+version(mir_stat_test)
+@safe pure nothrow
+unittest
+{
+    import mir.stat.descriptive.histogram.api.factory: testAxisOnlyFactory;
+    testAxisOnlyFactory!histogram();
 }
 
 /// Construct two equal-width bins from observations.

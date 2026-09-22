@@ -37,6 +37,398 @@ package auto initializeHistogram(bool insert = true, Storage, Axis, Data)(Storag
 // GC/RC storage already carries its own lifetime policy.
 package struct NoAllocationContext {}
 
+package template areHistogramAxes(Axes...)
+{
+    import std.meta: allSatisfy;
+    import mir.stat.descriptive.histogram.traits: isAxis;
+    enum areHistogramAxes = Axes.length > 0 && allSatisfy!(isAxis, Axes);
+}
+
+package template acceptsMarginal(H, dimensions...)
+{
+    import std.traits: Unqual, isNumeric;
+    import mir.stat.descriptive.histogram.accumulator: HistogramAccumulator;
+    import mir.stat.descriptive.histogram.relative_frequency: RelativeFrequencyAccumulator;
+    import mir.stat.descriptive.histogram.internal.projection: validMarginalAxes;
+    import mir.stat.descriptive.histogram.internal.cell: acceptsCellMerge;
+    static if (is(Unqual!H == HistogramAccumulator!Args, Args...))
+        enum acceptsMarginal = acceptsCellMerge!(Unqual!(H.CountType)) &&
+            validMarginalAxes!(Args.length - 1, dimensions);
+    else static if (is(Unqual!H == RelativeFrequencyAccumulator!Args, Args...))
+        enum acceptsMarginal = isNumeric!(H.CountType) &&
+            validMarginalAxes!(Args.length - 1, dimensions);
+    else
+        enum acceptsMarginal = false;
+}
+
+// Projection semantics are shared; allocation attributes are checked by callers.
+version(mir_stat_test)
+package void testMarginalFactory(alias project, alias dispose = null)()
+{
+    testAccumulatorMarginal!(project, dispose)();
+    import mir.stat.descriptive.histogram.accumulator: HistogramAccumulator;
+    import mir.stat.descriptive.histogram.relative_frequency: RelativeFrequencyAccumulator;
+    import mir.stat.descriptive.histogram.axis: IntegralAxis, AxisOptions;
+    import mir.ndslice.slice: sliced;
+    import mir.ndslice.dynamic: transposed;
+    alias A = IntegralAxis!(int, AxisOptions());
+    uint[8] data = [1, 2, 3, 4, 5, 6, 7, 8];
+    auto storage = data[].sliced(2, 2, 2);
+    const source = HistogramAccumulator!(typeof(storage), A, A, A)(
+        storage, A(2, 0), A(2, 0), A(2, 0));
+    auto h = project!(2, 0)(source);
+    static if (!is(typeof(dispose) == typeof(null)))
+        scope(exit) dispose(h);
+    assert(h.counts.shape == [2, 2]);
+    assert(h.counts[0, 0] == 4 && h.counts[0, 1] == 12);
+    assert(h.counts[1, 0] == 6 && h.counts[1, 1] == 14);
+    h.put(0, 0);
+    assert(data[0] == 1);
+    data[0] = 100;
+    assert(h.counts[0, 0] == 5);
+    static assert(!__traits(compiles, project!()(source)));
+    static assert(!__traits(compiles, project!(0, 0)(source)));
+    static assert(!__traits(compiles, project!3(source)));
+    static assert(!__traits(compiles, project!(0, 1, 2)(source)));
+
+    alias Flow = IntegralAxis!(int, AxisOptions(false, true, true));
+    double[9] counts = [1, 2, 3, 4, 5, 6, 7, 8, 9];
+    auto strided = counts[].sliced(3, 3).transposed;
+    auto f = RelativeFrequencyAccumulator!(typeof(strided), Flow, Flow)(
+        strided, Flow(1, 0), Flow(1, 0));
+    const readOnly = f;
+    auto rf = project!0(readOnly);
+    static if (!is(typeof(dispose) == typeof(null)))
+        scope(exit) dispose(rf);
+    assert(rf.counts == [12.0, 15.0, 18.0]);
+    assert(rf.total == 45.0);
+    assert(rf.relativeFrequency(0) == 15.0 / 45.0);
+    f.put(0, 0);
+    assert(rf.total == 45.0 && rf.counts[1] == 15.0);
+    rf.put(0);
+    assert(rf.total == 46.0 && f.total == 46.0);
+    assert(counts[4] == 6.0);
+
+    version(mir_stat_test_lifetime)
+    static if (is(typeof(dispose) == typeof(null)))
+    {
+        import mir.stat.descriptive.histogram.axis: VariableAxis;
+        alias X = VariableAxis!(double*, AxisOptions());
+        // A borrowed count buffer is consumed, not retained in the result.
+        auto fromLocalCounts() @safe
+        {
+            uint[2][2] local = [[1u, 2u], [3u, 4u]];
+            auto source = HistogramAccumulator!(typeof(local), A, A)(local, A(2, 0), A(2, 0));
+            return project!0(source);
+        }
+        assert(fromLocalCounts().counts == [3u, 7u]);
+        {
+            double[3] edges = [0.0, 1.0, 2.0];
+            uint[2][2] local = [[1u, 2u], [3u, 4u]];
+            auto borrowedSource = HistogramAccumulator!(typeof(local), X, A)(
+                local, X(edges[].sliced), A(2, 0));
+            auto borrowed = project!0(borrowedSource);
+            assert(borrowed.counts == [3u, 7u]);
+        }
+        static assert(!__traits(compiles, () @safe {
+            double[3] edges = [0.0, 1.0, 2.0];
+            uint[2][2] local;
+            auto source = HistogramAccumulator!(typeof(local), X, A)(
+                local, X(edges[].sliced), A(2, 0));
+            return project!0(source);
+        }));
+        static assert(!__traits(compiles, () @safe {
+            double[3] edges = [0.0, 1.0, 2.0];
+            uint[2][2] local;
+            auto source = RelativeFrequencyAccumulator!(typeof(local), X, A)(
+                local, X(edges[].sliced), A(2, 0));
+            return project!0(source);
+        }));
+    }
+}
+
+version(mir_stat_test)
+package void testAccumulatorMarginal(alias project, alias dispose = null)()
+{
+    import std.meta: AliasSeq;
+    import std.math: isNaN;
+    import mir.math.sum: Summator, Summation;
+    import mir.stat.descriptive.univariate: MeanAccumulator;
+    import mir.stat.descriptive.weighted: WMeanAccumulator, AssumeWeights;
+    import mir.stat.descriptive.histogram.accumulator: HistogramAccumulator, BinCoverage;
+    import mir.stat.descriptive.histogram.axis: IntegralAxis, AxisOptions;
+    import mir.ndslice.slice: sliced;
+    import mir.ndslice.dynamic: transposed;
+    alias A = IntegralAxis!(int, AxisOptions(false, true, true));
+    alias Sum = Summator!(double, Summation.pairwise);
+    alias Mean = MeanAccumulator!(double, Summation.pairwise);
+    alias Weighted = WMeanAccumulator!(double, Summation.pairwise, AssumeWeights.primary);
+    static foreach (Cell; AliasSeq!(Sum, Mean, Weighted))
+    {{
+        Cell[12] buffer;
+        auto storage = buffer[].sliced(3, 4).transposed;
+        auto h = HistogramAccumulator!(typeof(storage), A, A)(storage, A(2, 0), A(1, 0));
+        foreach (int i; 0 .. 4)
+        {
+            if (i == 2) continue; // Leave one ordinary destination bin empty.
+            foreach (int j; 0 .. 3)
+            {
+                const value = 4.0 * (3 * i + j + 1);
+                static if (is(Cell == Weighted))
+                    h.putWeightedSample(cast(double)(j + 1), value, i - 1, j - 1);
+                else
+                    h.putSample(value, i - 1, j - 1);
+            }
+        }
+        // Equivalent nested arrays exercise a different projection traversal.
+        Cell[3][4] nested;
+        foreach (i; 0 .. 4)
+            foreach (j; 0 .. 3)
+                nested[i][j] = storage[i, j];
+        const arraySource = HistogramAccumulator!(typeof(nested), A, A)(nested, A(2, 0), A(1, 0));
+        const source = h;
+        auto result = project!0(source);
+        static if (!is(typeof(dispose) == typeof(null)))
+            scope(exit) dispose(result);
+        auto arrayResult = project!0(arraySource);
+        static if (!is(typeof(dispose) == typeof(null)))
+            scope(exit) dispose(arrayResult);
+        auto all = result.bins!(BinCoverage.all);
+        assert(all.front.isUnderflow && all.back.isOverflow);
+        foreach (i; [0, 1, 3])
+        {
+            static if (is(Cell == Sum))
+            {
+                assert(result.counts[i].sum == 12.0 * (3 * i + 2));
+                assert(arrayResult.counts[i].sum == result.counts[i].sum);
+            }
+            else static if (is(Cell == Mean))
+            {
+                assert(result.counts[i].count == 3);
+                assert(result.counts[i].mean == 4.0 * (3 * i + 2));
+                assert(arrayResult.counts[i].mean == result.counts[i].mean);
+            }
+            else
+            {
+                assert(result.counts[i].weight == 6.0);
+                const expected = (4.0 * (3 * i + 1) + 8.0 * (3 * i + 2) + 12.0 * (3 * i + 3)) / 6.0;
+                assert(result.counts[i].wmean == expected);
+                assert(arrayResult.counts[i].wmean == result.counts[i].wmean);
+            }
+        }
+        static if (is(Cell == Sum))
+            assert(result.counts[2].sum == 0);
+        else static if (is(Cell == Mean))
+            assert(result.counts[2].count == 0 && isNaN(result.counts[2].mean));
+        else
+            assert(result.counts[2].weight == 0);
+    }}
+
+    // Retained-axis order applies to accumulator cells in three dimensions too.
+    Mean[2][2][2] cells;
+    alias Plain = IntegralAxis!(int, AxisOptions());
+    auto joint = HistogramAccumulator!(typeof(cells), Plain, Plain, Plain)(
+        cells, Plain(2, 0), Plain(2, 0), Plain(2, 0));
+    foreach (int i; 0 .. 2)
+        foreach (int j; 0 .. 2)
+            foreach (int k; 0 .. 2)
+                joint.putSample(10.0 * (4 * i + 2 * j + k), i, j, k);
+    auto reordered = project!(2, 0)(joint);
+    static if (!is(typeof(dispose) == typeof(null)))
+        scope(exit) dispose(reordered);
+    foreach (i; 0 .. 2)
+        foreach (k; 0 .. 2)
+        {
+            assert(reordered.counts[k, i].count == 2);
+            assert(reordered.counts[k, i].mean == 10.0 * (4 * i + k + 1));
+        }
+    static struct SampleOnly
+    {
+        void put(double sample) @safe pure nothrow @nogc {}
+    }
+    SampleOnly[1][1] unsupported;
+    auto noMerge = HistogramAccumulator!(typeof(unsupported), Plain, Plain)(
+        unsupported, Plain(1, 0), Plain(1, 0));
+    static assert(!__traits(compiles, project!0(noMerge)));
+}
+
+// Owning cell storage must not hide references to stack data retained by a cell.
+version(mir_stat_test_lifetime)
+@safe pure nothrow
+unittest
+{
+    import mir.stat.descriptive.histogram.accumulator: HistogramAccumulator;
+    import mir.stat.descriptive.histogram.axis: IntegralAxis, AxisOptions;
+    import mir.stat.descriptive.histogram.api.gc: histogram, marginal;
+    import mir.stat.descriptive.histogram.api.rc: rchistogram, rcMarginal;
+    static struct Cell
+    {
+        const(int)[] data;
+        void put(return scope const(int)[] sample) @safe pure nothrow @nogc
+        {
+            data = sample;
+        }
+        void put(return scope ref const Cell source) @safe pure nothrow @nogc
+        {
+            data = source.data;
+        }
+    }
+    alias A = IntegralAxis!(int, AxisOptions());
+    static void check(alias factory, alias project)() @safe pure nothrow
+    {
+        // Heap-backed sample data can be retained by both the cells and result.
+        auto data = [7];
+        auto h = factory!Cell(A(1, 0), A(1, 0));
+        h.putSample(data[], 0, 0);
+        auto result = project!0(h);
+        assert(result.counts[0].data[0] == 7);
+        data[0] = 9;
+        assert(result.counts[0].data[0] == 9); // Merging does not deep-copy data.
+
+        static auto fromLocalCells() @safe pure nothrow
+        {
+            Cell[1][1] cells;
+            cells[0][0].data = [7];
+            auto source = HistogramAccumulator!(typeof(cells), A, A)(
+                cells, A(1, 0), A(1, 0));
+            return project!0(source);
+        }
+        assert(fromLocalCells().counts[0].data[0] == 7);
+
+        static assert(!__traits(compiles, () @safe {
+            int[1] local = [7];
+            auto escaping = factory!Cell(A(1, 0));
+            escaping.putSample(local[], 0);
+            return escaping;
+        }));
+        // Even fresh marginal storage cannot make borrowed cell data owning.
+        static assert(!__traits(compiles, () @safe {
+            int[1] local = [7];
+            Cell[1][1] cells;
+            cells[0][0].data = local[];
+            auto source = HistogramAccumulator!(typeof(cells), A, A)(
+                cells, A(1, 0), A(1, 0));
+            return project!0(source);
+        }));
+    }
+    check!(histogram, marginal)();
+    check!(rchistogram, rcMarginal)();
+}
+
+// Allocation callbacks return normally initialized, one-dimensional storage.
+// Keep this separate from data-driven factories, which initialize numeric counts.
+package mixin template AxisHistogramFactory(alias allocate, alias release = null)
+{
+    auto axisFactory(Cell = size_t, Context, Axes...)(ref Context context, Axes axes)
+        if (areHistogramAxes!Axes)
+    {
+        import std.traits: Unqual, isNumeric;
+        import mir.stat.descriptive.histogram.traits: storageExtent;
+        import mir.stat.descriptive.histogram.accumulator: HistogramAccumulator;
+        import mir.ndslice.slice: sliced;
+        alias Value = Unqual!Cell;
+        static assert(isNumeric!Value || is(Value == struct),
+            "Histogram cells must be numeric values or default-initializable accumulator structs");
+        size_t[Axes.length] shape;
+        size_t length = 1;
+        static foreach (i; 0 .. Axes.length)
+        {
+            shape[i] = storageExtent(axes[i]);
+            assert(shape[i] > 0 && length <= size_t.max / shape[i],
+                "Histogram storage extent overflows size_t");
+            length *= shape[i];
+        }
+        assert(length <= size_t.max / Value.sizeof,
+            "Histogram storage size overflows size_t");
+        auto cells = allocate!Value(context, length);
+        static if (!is(typeof(release) == typeof(null)))
+            scope(failure) release(context, cells);
+        static if (isNumeric!Value)
+            foreach (ref cell; cells)
+                cell = 0;
+        auto storage = cells.sliced(shape);
+        return HistogramAccumulator!(typeof(storage), Axes)(storage, axes);
+    }
+}
+
+// Share behavioral coverage while each caller checks its allocation attributes.
+version(mir_stat_test)
+package void testAxisOnlyFactory(alias factory, alias dispose = null)()
+{
+    import std.meta: AliasSeq;
+    import std.math: isNaN;
+    import mir.stat.descriptive.histogram.axis: IntegralAxis, AxisOptions, variableAxis;
+    import mir.ndslice.slice: sliced;
+    alias A = IntegralAxis!(double, AxisOptions(false, true, true));
+    const axis = A(2, 0);
+    static foreach (T; AliasSeq!(uint, float, double, real))
+    {{
+        auto h = factory!T(axis, axis);
+        static if (!is(typeof(dispose) == typeof(null)))
+            scope(exit) dispose(h);
+        assert(h.counts.shape == [4, 4]);
+        foreach (cell; h.counts.field)
+            assert(cell == 0);
+        h.putWeighted(2u, -1.0, 2.0);
+        assert(h.counts[0, 3] == 2);
+        const view = h.bins;
+        assert(view.front.value == 0);
+    }}
+    {
+        auto h = factory(axis);
+        static if (!is(typeof(dispose) == typeof(null)))
+            scope(exit) dispose(h);
+        static assert(is(h.CountType == size_t));
+        assert(h.counts == [0, 0, 0, 0]);
+    }
+    static struct Cell
+    {
+        int marker = 17;
+        double measurement; // NaN is part of this cell's default state.
+        void put(double sample) @safe pure nothrow @nogc { measurement = sample; }
+    }
+    {
+        auto h = factory!Cell(axis, axis, axis);
+        static if (!is(typeof(dispose) == typeof(null)))
+            scope(exit) dispose(h);
+        assert(h.counts.shape == [4, 4, 4]);
+        foreach (ref cell; h.counts.field)
+            assert(cell.marker == 17 && isNaN(cell.measurement));
+        h.putSample(5.0, 0.5, 0.5, 0.5);
+        const readOnly = h;
+        assert(readOnly.bins.front.value.measurement == 5.0);
+        static assert(!__traits(compiles, readOnly.putSample(1.0, 0.5, 0.5, 0.5)));
+    }
+    {
+        double[3] edges = [0.0, 1.0, 3.0];
+        auto h = factory!Cell(variableAxis(edges[].sliced));
+        static if (!is(typeof(dispose) == typeof(null)))
+            scope(exit) dispose(h);
+        h.putSample(8.0, 2.0);
+        assert(h.counts[1].measurement == 8.0);
+    }
+    {
+        import mir.ndslice.allocation: rcslice;
+        static immutable double[3] boundaries = [0.0, 1.0, 3.0];
+        auto edges = rcslice!double(boundaries[]);
+        auto h = factory!Cell(variableAxis(edges));
+        static if (!is(typeof(dispose) == typeof(null)))
+            scope(exit) dispose(h);
+        edges = typeof(edges).init;
+        // Owning boundaries remain alive independently of the original handle.
+        h.putSample(9.0, 2.0);
+        assert(h.bins.back.value.measurement == 9.0);
+        assert(h.bins.back.bin.high == 3.0);
+    }
+    static assert(!__traits(compiles, factory!(uint, double)(axis)));
+    static assert(!__traits(compiles, factory!void(axis)));
+    version(mir_stat_test_lifetime)
+        static assert(!__traits(compiles, () @safe {
+            double[3] edges = [0.0, 1.0, 3.0];
+            return factory!Cell(variableAxis(edges[].sliced));
+        }));
+}
+
 // Shared overloads keep allocation policy independent of axis construction.
 package mixin template HistogramFactory(alias allocate, alias release = null, bool insert = true)
 {

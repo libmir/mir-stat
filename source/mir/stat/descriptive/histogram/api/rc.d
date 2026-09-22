@@ -37,6 +37,100 @@ private auto allocateRC(T)(ref NoAllocationContext context, size_t length)
 }
 
 private mixin HistogramFactory!allocateRC implementation;
+private import mir.stat.descriptive.histogram.api.factory: AxisHistogramFactory, areHistogramAxes;
+private auto allocateCells(T)(ref NoAllocationContext context, size_t length)
+{
+    import mir.ndslice.allocation: rcslice;
+    return rcslice!T(length);
+}
+private mixin AxisHistogramFactory!allocateCells axisImplementation;
+
+/++
+Project a histogram onto selected axes using fresh reference-counted storage.
+Axis selection, cell merging, underflow/overflow treatment, and relative
+frequency totals follow $(REF marginal, mir, stat, descriptive, histogram, api, gc).
+The source allocation strategy does not affect the result's ownership.
+Owning axis boundaries remain owned; borrowed boundaries must remain valid.
+Use h.rcMarginal!dimension() through UFCS; this is the replacement for calls
+to the former marginal member that require reference-counted results.
+Params:
+    dimensions = source axes to retain, in result order
+    source = histogram with mergeable cells, or relative frequency accumulator
++/
+template rcMarginal(dimensions...)
+{
+    import mir.stat.descriptive.histogram.api.factory: acceptsMarginal;
+    auto rcMarginal(H)(auto ref const H source)
+        if (acceptsMarginal!(H, dimensions))
+    {
+        NoAllocationContext context;
+        return source.projectMarginal!(axisImplementation.axisFactory, null,
+            NoAllocationContext, dimensions)(context);
+    }
+}
+
+/++
+Combine server-specific latency summaries to compare temperatures without
+distinguishing servers. Servers can handle different numbers of requests, so
+the marginal merges counts and sums rather than averaging the server means.
++/
+version(mir_stat_test)
+@safe pure nothrow @nogc
+unittest
+{
+    import mir.math.sum: Summation;
+    import mir.stat.descriptive.univariate: MeanAccumulator;
+    import mir.stat.descriptive.histogram.axis: RegularAxis, IntegralAxis, AxisOptions;
+    import std.math: isNaN;
+    alias Cell = MeanAccumulator!(double, Summation.pairwise);
+    auto temperature = RegularAxis!(double, AxisOptions())(2, 20.0, 60.0);
+    auto server = IntegralAxis!(int, AxisOptions())(2, 0);
+    auto timings = rchistogram!Cell(temperature, server);
+    timings.putSample(100.0, 25.0, 0); // Server 0 handled one request.
+    foreach (i; 0 .. 3)
+        timings.putSample(300.0, 25.0, 1); // Server 1 handled three requests.
+
+    auto byTemperature = timings.rcMarginal!0();
+    assert(byTemperature.counts[0].count == 4);
+    assert(byTemperature.counts[0].mean == 250.0);
+    // Averaging the two server means would incorrectly give 200 ms.
+    assert(byTemperature.counts[1].count == 0);
+    assert(isNaN(byTemperature.counts[1].mean));
+
+    timings.putSample(500.0, 25.0, 0);
+    assert(byTemperature.counts[0].mean == 250.0);
+    byTemperature.putSample(50.0, 25.0);
+    assert(byTemperature.counts[0].mean == 210.0);
+    assert(timings.counts[0, 0].count == 2);
+}
+
+/++
+Combine server-specific request counts into a temperature summary with RC storage.
+The summary keeps its count buffer alive independently of the original histogram.
++/
+version(mir_stat_test)
+@safe pure nothrow @nogc
+unittest
+{
+    import mir.stat.descriptive.histogram.axis: IntegralAxis, AxisOptions;
+    import mir.rc.array: RCI;
+    alias A = IntegralAxis!(int, AxisOptions());
+    auto requests = rchistogram(A(2, 0), A(2, 0));
+    requests.put(0, 0);
+    requests.put(0, 1);
+    auto byTemperature = requests.rcMarginal!0();
+    static assert(is(typeof(byTemperature.counts.iterator) == RCI!size_t));
+    requests = typeof(requests).init;
+    assert(byTemperature.counts == [2, 0]);
+}
+
+version(mir_stat_test)
+@safe pure nothrow @nogc
+unittest
+{
+    import mir.stat.descriptive.histogram.api.factory: testMarginalFactory;
+    testMarginalFactory!rcMarginal();
+}
 
 // Retain the existing construction entry point.
 auto rchistogramImplBasic(Data, Axis)(Data data, Axis axis)
@@ -82,6 +176,13 @@ select the counter type first and optionally the coordinate type second, for exa
 when supplied). A supported transform may omit its inverse. A bin-count rule
 can replace the explicit bin count; see the examples below. Data may be an
 ndslice of any rank; its elements are counted as one-dimensional observations.
+
+Supply only axis instances to allocate an empty one-dimensional or joint
+histogram: rchistogram!Cell(axis, ...). Cell defaults to size_t. Numeric cells
+start at zero; accumulator structs retain their default initialization.
+No observations are inserted. Use putSample or putWeightedSample to accumulate
+measurements in nonnumeric cells. Cell storage is reference-counted; borrowed
+axis boundaries must still outlive the histogram and its views.
 +/
 template rchistogram(Options...)
 {
@@ -90,11 +191,74 @@ template rchistogram(Options...)
     auto rchistogram(Args...)(auto ref Args args)
     {
         NoAllocationContext context;
-        static if (Options.length)
+        static if (areHistogramAxes!Args)
+        {
+            static assert(Options.length <= 1, "Axis-only construction accepts one cell type");
+            return axisImplementation.axisFactory!Options(context, args);
+        }
+        else static if (Options.length)
             return implementation.factory!Options(context, args);
         else
             return implementation.factory(context, args);
     }
+}
+
+/++
+Allocate mean-latency bins before requests arrive. Temperature selects a bin;
+response time updates its mean. Reference-counted storage owns the cells and
+keeps them alive while histogram copies or bin views still reference them.
++/
+version(mir_stat_test)
+@safe pure nothrow @nogc
+unittest
+{
+    import mir.math.sum: Summation;
+    import mir.stat.descriptive.univariate: MeanAccumulator;
+    import mir.stat.descriptive.histogram.axis: RegularAxis, AxisOptions;
+    alias Cell = MeanAccumulator!(double, Summation.pairwise);
+    auto temperature = RegularAxis!(double, AxisOptions())(2, 20.0, 60.0);
+    auto timings = rchistogram!Cell(temperature);
+    assert(timings.counts[0].count == 0);
+    timings.putSample(100.0, 25.0);
+    timings.putSample(200.0, 35.0);
+    assert(timings.bins.front.value.mean == 150.0);
+}
+
+version(mir_stat_test)
+@safe pure nothrow @nogc
+unittest
+{
+    import mir.stat.descriptive.histogram.api.factory: testAxisOnlyFactory;
+    testAxisOnlyFactory!rchistogram();
+}
+
+// Cell destructors run only when the last owning histogram/view is released.
+version(mir_stat_test)
+@safe pure nothrow @nogc
+unittest
+{
+    import mir.ndslice.allocation: rcslice;
+    import mir.stat.descriptive.histogram.axis: IntegralAxis, AxisOptions;
+    static struct Cell
+    {
+        size_t[] destroyed;
+        ~this() @safe pure nothrow @nogc
+        {
+            if (destroyed.length) ++destroyed[0];
+        }
+    }
+    auto destructionCount = rcslice!size_t(1);
+    {
+        auto h = rchistogram!Cell(IntegralAxis!(int, AxisOptions())(2, 0));
+        foreach (ref cell; h.counts.field)
+            cell.destroyed = destructionCount.lightScope.field;
+        auto view = h.bins;
+        h = typeof(h).init;
+        assert(destructionCount[0] == 0);
+        // The view retains the cells even after the histogram releases them.
+        assert(view.length == 2);
+    }
+    assert(destructionCount[0] == 2);
 }
 
 /// Construct two equal-width bins from observations.

@@ -9,6 +9,81 @@ module mir.stat.descriptive.histogram.api.custom;
 
 private import mir.stat.descriptive.histogram.api.factory: HistogramFactory;
 private mixin HistogramFactory!(allocateCounts, releaseCounts) implementation;
+private import mir.stat.descriptive.histogram.api.factory: AxisHistogramFactory, areHistogramAxes;
+private mixin AxisHistogramFactory!(allocateCounts, releaseCounts) axisImplementation;
+
+/++
+Project a histogram onto selected axes using a caller-selected allocator.
+Axis selection, cell merging, underflow/overflow treatment, and relative
+frequency totals follow $(REF marginal, mir, stat, descriptive, histogram, api, gc).
+The allocator is not retained. Dispose of result.counts.field through the same
+allocator after all uses of the result and its views have finished. For relative
+frequency results, counts are exposed read-only. At final disposal, use
+allocator.dispose(cast(typeof(result).CountType[]) result.counts.field) to release
+the mutable allocation created by this factory. Do not use that cast to modify
+counts while the relative frequency accumulator is in use.
+Borrowed axis boundaries remain borrowed; owning boundary handles are retained.
+If construction or projection throws, the allocated result storage is released.
+Params:
+    dimensions = source axes to retain, in result order
+    allocator = allocator providing allocation and deallocation
+    source = histogram with mergeable cells, or relative frequency accumulator
++/
+template makeMarginal(dimensions...)
+{
+    import mir.stat.descriptive.histogram.api.factory: acceptsMarginal;
+    auto makeMarginal(Allocator, H)(ref Allocator allocator, auto ref const H source)
+        if (acceptsMarginal!(H, dimensions))
+    {
+        return source.projectMarginal!(axisImplementation.axisFactory, releaseCounts,
+            Allocator, dimensions)(allocator);
+    }
+}
+
+/++
+Allocate a temperature summary with the same custom allocator used for joint
+request counts. Source and summary have separate buffers; dispose of both after
+their final use.
++/
+version(mir_stat_test)
+@system pure nothrow @nogc
+unittest
+{
+    import mir.stat.descriptive.histogram.axis: IntegralAxis, AxisOptions;
+    import std.experimental.allocator: dispose;
+    import std.experimental.allocator.mallocator: Mallocator;
+    alias A = IntegralAxis!(int, AxisOptions());
+    auto requests = makeHistogram(Mallocator.instance, A(2, 0), A(2, 0));
+    scope(exit) Mallocator.instance.dispose(requests.counts.field);
+    requests.put(0, 0);
+    requests.put(0, 1);
+    auto summary = makeMarginal!0(Mallocator.instance, requests);
+    scope(exit) Mallocator.instance.dispose(summary.counts.field);
+    assert(summary.counts == [2, 0]);
+}
+
+version(mir_stat_test)
+@system pure nothrow @nogc
+unittest
+{
+    import mir.stat.descriptive.histogram.api.factory: testMarginalFactory;
+    import std.experimental.allocator: dispose;
+    import std.experimental.allocator.mallocator: Mallocator;
+    template project(dimensions...)
+    {
+        static auto project(H)(auto ref const H source)
+        {
+            return makeMarginal!dimensions(Mallocator.instance, source);
+        }
+    }
+    static void release(H)(ref H h)
+    {
+        // Custom allocation creates mutable numeric cells; the RF wrapper exposes
+        // only a const view. Recover the allocation type solely for disposal.
+        Mallocator.instance.dispose(cast(H.CountType[]) h.counts.field);
+    }
+    testMarginalFactory!(project, release)();
+}
 
 private auto allocateCounts(T, Allocator)(ref Allocator allocator, size_t extent)
 {
@@ -30,6 +105,12 @@ $(REF rchistogram, mir, stat, descriptive, histogram, api, rc), with the allocat
 as the first function argument.
 Counts start at zero, including enabled underflow/overflow bins. All elements
 of the observation slice are inserted into the one-dimensional histogram.
+
+Supply only axis instances after the allocator to allocate an empty histogram:
+makeHistogram!Cell(allocator, axis, ...). Multiple axes produce joint storage.
+Cell defaults to size_t. Numeric cells start at zero; accumulator structs retain
+their default initialization. Dispose of counts.field through the same allocator
+to destroy cells and release storage when no histogram or view uses it.
 
 The allocator follows $(REF makeSlice, mir, ndslice, allocation) conventions.
 It is passed by reference and is not stored in the result. The returned count
@@ -83,17 +164,61 @@ template makeHistogram(Options...)
     /++
     Params:
         allocator = allocator instance providing allocation and deallocation
-        args = observation slice followed by axis construction arguments
+        args = axis instances, or an observation slice followed by axis construction arguments
     +/
     auto makeHistogram(Allocator, Args...)(ref Allocator allocator, auto ref Args args)
-        if (!(Args.length == 2 && isAxis!(Args[1]) &&
+        if (areHistogramAxes!Args || !(Args.length == 2 && isAxis!(Args[1]) &&
             (!Options.length || (Options.length == 1 && is(Options[0]) && isNumeric!(Options[0])))))
     {
-        static if (Options.length)
+        static if (areHistogramAxes!Args)
+        {
+            static assert(Options.length <= 1, "Axis-only construction accepts one cell type");
+            return axisImplementation.axisFactory!Options(allocator, args);
+        }
+        else static if (Options.length)
             return implementation.factory!Options(allocator, args);
         else
             return implementation.factory(allocator, args);
     }
+}
+
+/++
+Combine sensor reports by region, weighting each report by the number of readings
+it represents. Allocate cells without the GC, then dispose of the entire cell
+buffer after all uses of the histogram and its views have finished.
++/
+version(mir_stat_test)
+@system pure nothrow @nogc
+unittest
+{
+    import mir.math.sum: Summation;
+    import mir.stat.descriptive.weighted: WMeanAccumulator, AssumeWeights;
+    import mir.stat.descriptive.histogram.axis: RegularAxis, AxisOptions;
+    import std.experimental.allocator: dispose;
+    import std.experimental.allocator.mallocator: Mallocator;
+    alias Cell = WMeanAccumulator!(double, Summation.pairwise, AssumeWeights.primary);
+    auto latitude = RegularAxis!(double, AxisOptions())(2, 0.0, 2.0);
+    auto longitude = latitude;
+    auto readings = makeHistogram!Cell(Mallocator.instance, latitude, longitude);
+    scope(exit) Mallocator.instance.dispose(readings.counts.field);
+    readings.putWeightedSample(2.0, 10.0, 0.5, 1.5);
+    readings.putWeightedSample(6.0, 30.0, 0.5, 1.5);
+    assert(readings.counts[0, 1].wmean == 25.0);
+}
+
+version(mir_stat_test)
+@system pure nothrow @nogc
+unittest
+{
+    import mir.stat.descriptive.histogram.api.factory: testAxisOnlyFactory;
+    import std.experimental.allocator: dispose;
+    import std.experimental.allocator.mallocator: Mallocator;
+    static auto factory(Cell = size_t, Axes...)(Axes axes)
+    {
+        return makeHistogram!Cell(Mallocator.instance, axes);
+    }
+    static void release(H)(ref H h) { Mallocator.instance.dispose(h.counts.field); }
+    testAxisOnlyFactory!(factory, release)();
 }
 
 /// Allocate and count without using the GC, then release the count storage.
@@ -178,6 +303,246 @@ private struct SafeAllocator
         ++releases;
         return true;
     }
+}
+
+// A failed cell merge releases the partially populated marginal.
+version(mir_stat_test)
+@system pure
+unittest
+{
+    import mir.stat.descriptive.histogram.accumulator: HistogramAccumulator;
+    import mir.stat.descriptive.histogram.axis: IntegralAxis, AxisOptions;
+    import std.exception: assertThrown;
+    static struct Cell
+    {
+        int value;
+        bool fail;
+        void put(ref const Cell source) @safe pure
+        {
+            if (source.fail) throw new Exception("cell merge failure");
+            value += source.value;
+        }
+    }
+    alias A = IntegralAxis!(int, AxisOptions());
+    Cell[2][2] cells;
+    cells[0][0].value = 3;
+    cells[0][1].fail = true;
+    auto source = HistogramAccumulator!(typeof(cells), A, A)(cells, A(2, 0), A(2, 0));
+    CountingAllocator allocator;
+    assertThrown!Exception(makeMarginal!0(allocator, source));
+    assert(allocator.allocations == 1 && allocator.releases == 1);
+    assert(source.counts[0][0].value == 3 && source.counts[0][1].fail);
+}
+
+// Safety depends on the allocator's contract, including its release operation.
+version(mir_stat_test)
+@safe pure nothrow
+unittest
+{
+    import mir.stat.descriptive.histogram.axis: IntegralAxis, AxisOptions;
+    import mir.math.sum: Summator, Summation;
+    import std.experimental.allocator: dispose;
+    alias Cell = Summator!(double, Summation.pairwise);
+    alias A = IntegralAxis!(int, AxisOptions());
+    SafeAllocator allocator;
+    auto h = makeHistogram!Cell(allocator, A(2, 0), A(2, 0));
+    h.putSample(7.0, 0, 1);
+    assert(h.bins[1].value.sum == 7.0);
+    allocator.dispose(h.counts.field);
+    assert(allocator.allocations == 1 && allocator.releases == 1);
+}
+
+version(mir_stat_test)
+@safe pure nothrow
+unittest
+{
+    import mir.stat.descriptive.histogram.axis: IntegralAxis, AxisOptions;
+    import std.experimental.allocator: dispose;
+    alias A = IntegralAxis!(int, AxisOptions());
+    SafeAllocator allocator;
+    auto h = makeHistogram!uint(allocator, A(2, 0), A(2, 0));
+    h.put(0, 0);
+    h.put(0, 1);
+    auto summary = makeMarginal!0(allocator, h);
+    assert(summary.counts == [2u, 0u]);
+    allocator.dispose(summary.counts.field);
+    allocator.dispose(h.counts.field);
+    assert(allocator.allocations == 2 && allocator.releases == 2);
+}
+
+// Explicit disposal destroys every initialized cell, including unused cells.
+version(mir_stat_test)
+@system pure nothrow @nogc
+unittest
+{
+    import mir.stat.descriptive.histogram.axis: IntegralAxis, AxisOptions;
+    import std.experimental.allocator: dispose;
+    static struct Cell
+    {
+        size_t* destroyed;
+        int marker = 17;
+        ~this() @safe pure nothrow @nogc
+        {
+            assert(marker == 17);
+            if (destroyed) ++*destroyed;
+        }
+    }
+    alias A = IntegralAxis!(int, AxisOptions(false, true, true));
+    CountingAllocator allocator;
+    size_t destroyed;
+    auto h = makeHistogram!Cell(allocator, A(2, 0), A(2, 0));
+    foreach (ref cell; h.counts.field)
+        cell.destroyed = &destroyed;
+    allocator.dispose(h.counts.field);
+    assert(destroyed == 16);
+    assert(allocator.allocations == 1 && allocator.releases == 1);
+}
+
+// Overflow must be rejected before invoking the allocator.
+version(mir_stat_test)
+@system pure nothrow @nogc
+unittest
+{
+    import core.exception: AssertError;
+    static struct Axis
+    {
+        alias BinType = int;
+        size_t N_bin;
+        size_t index(int value) const @safe pure nothrow @nogc { return 0; }
+    }
+    CountingAllocator allocator;
+    bool rejected;
+    {
+        import std.experimental.allocator: dispose;
+        CountingAllocator validAllocator;
+        auto h = makeHistogram!uint(validAllocator, Axis(1));
+        h.put(0);
+        assert(h.counts[0] == 1);
+        validAllocator.dispose(h.counts.field);
+        assert(validAllocator.allocations == 1 && validAllocator.releases == 1);
+    }
+    try { auto h = makeHistogram!uint(allocator, Axis(size_t.max)); }
+    catch (AssertError) { rejected = true; }
+    assert(rejected);
+    rejected = false;
+    try { auto h = makeHistogram!uint(allocator, Axis(size_t.max), Axis(2)); }
+    catch (AssertError) { rejected = true; }
+    assert(rejected);
+    assert(allocator.allocations == 0 && allocator.releases == 0);
+}
+
+// If copying axes fails after allocation, release the cell storage.
+version(mir_stat_test)
+@system pure
+unittest
+{
+    import std.exception: assertThrown;
+    struct Allocator
+    {
+        CountingAllocator base;
+        bool* allocated;
+        enum alignment = CountingAllocator.alignment;
+        void[] allocate(size_t bytes) @safe pure nothrow @nogc
+        {
+            auto memory = base.allocate(bytes);
+            *allocated = true;
+            return memory;
+        }
+        bool deallocate(void[] memory) @system pure nothrow @nogc
+        {
+            return base.deallocate(memory);
+        }
+    }
+    static struct Axis
+    {
+        alias BinType = int;
+        enum N_bin = 2;
+        const(bool)* allocated;
+        Axis lightConst() const @safe pure nothrow @nogc { return Axis(allocated); }
+        size_t index(int value) const @safe pure nothrow @nogc { return 0; }
+        this(this) @safe pure
+        {
+            if (*allocated) throw new Exception("axis copy after allocation");
+        }
+    }
+    bool allocated;
+    Allocator allocator;
+    allocator.allocated = &allocated;
+    assertThrown!Exception(makeHistogram(allocator, Axis(&allocated)));
+    assert(allocator.base.allocations == 1 && allocator.base.releases == 1);
+
+    import mir.stat.descriptive.histogram.accumulator: HistogramAccumulator;
+    allocated = false;
+    uint[2][2] counts;
+    auto source = HistogramAccumulator!(typeof(counts), Axis, Axis)(
+        counts, Axis(&allocated), Axis(&allocated));
+    source.put(0, 0);
+    assert(source.counts[0][0] == 1);
+    assertThrown!Exception(makeMarginal!0(allocator, source));
+    assert(allocator.base.allocations == 2 && allocator.base.releases == 2);
+}
+
+// Projection succeeds, but copying its axes into the RF wrapper can still fail.
+version(mir_stat_test)
+@system pure
+unittest
+{
+    import mir.stat.descriptive.histogram.accumulator: HistogramAccumulator;
+    import mir.stat.descriptive.histogram.relative_frequency: RelativeFrequencyAccumulator;
+    import std.exception: assertThrown;
+    import std.experimental.allocator: dispose;
+    static struct State { uint* counts; }
+    static struct Allocator
+    {
+        CountingAllocator base;
+        State* state;
+        enum alignment = CountingAllocator.alignment;
+        void[] allocate(size_t bytes) @system pure nothrow @nogc
+        {
+            auto memory = base.allocate(bytes);
+            state.counts = cast(uint*) memory.ptr;
+            return memory;
+        }
+        bool deallocate(void[] memory) @system pure nothrow @nogc
+        {
+            state.counts = null;
+            return base.deallocate(memory);
+        }
+    }
+    static struct Axis
+    {
+        alias BinType = int;
+        enum N_bin = 1;
+        const(State)* state;
+        Axis lightConst() const @safe pure nothrow @nogc { return Axis(state); }
+        size_t index(int value) const @safe pure nothrow @nogc { return 0; }
+        this(this) @safe pure
+        {
+            if (state.counts !is null && *state.counts != 0)
+                throw new Exception("axis copy after projection");
+        }
+    }
+    State state;
+    Allocator allocator;
+    allocator.state = &state;
+    uint[1][1] counts;
+    auto source = HistogramAccumulator!(typeof(counts), Axis, Axis)(
+        counts, Axis(&state), Axis(&state));
+    source.put(0, 0);
+    auto relative = RelativeFrequencyAccumulator!(typeof(counts), Axis, Axis)(
+        source.counts, source.axis);
+
+    // The same axis and allocator successfully produce an ordinary marginal.
+    auto projected = makeMarginal!0(allocator, source);
+    assert(projected.counts[0] == 1);
+    allocator.dispose(projected.counts.field);
+    assert(allocator.base.allocations == 1 && allocator.base.releases == 1);
+
+    // Only the subsequent wrapper construction copies the populated axis.
+    assertThrown!Exception(makeMarginal!0(allocator, relative));
+    assert(allocator.base.allocations == 2 && allocator.base.releases == 2);
+    assert(state.counts is null);
+    assert(relative.total == 1 && relative.counts[0][0] == 1);
 }
 
 // Safety depends on the allocator's contract, including its release operation.
