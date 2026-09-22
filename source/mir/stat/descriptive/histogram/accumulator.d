@@ -26,6 +26,8 @@ import mir.primitives: DeepElementType;
 import mir.stat.descriptive.histogram.traits: isAxis;
 import mir.stat.descriptive.histogram.internal.view: supportsBinView, JointArrayInfo;
 import mir.stat.descriptive.histogram.internal.projection: validMarginalAxes;
+private import mir.stat.descriptive.histogram.internal.cell:
+    acceptsCellSamples, acceptsCellMerge, mergeCell;
 import mir.qualifier: lightConst;
 import std.meta: allSatisfy;
 import std.traits: isNumeric, Unqual, isStaticArray;
@@ -79,8 +81,9 @@ and accumulating purchase amounts gives total sales revenue for each age group.
 Use putSample(sample, coordinates...) or
 putWeightedSample(weight, sample, coordinates...) to update the selected cell.
 Caller-provided cells retain their existing state, including their normal default
-initialization. Numeric counting operations and marginalization require numeric
-cells; sample operations forward to the stored accumulator's put method.
+initialization. Numeric counting operations require numeric cells; sample
+operations forward to the stored accumulator's put method. Marginalization
+combines accumulator states using the same operation as histogram merging.
 
 Storage requirements:
 Storage is a built-in array or Mir ndslice whose elements are the bin cells.
@@ -108,8 +111,8 @@ read-only storage can be used for bin views when the axes support bin descriptio
 and the cells support const copying. Cell operations determine their own sample
 and weight validity, allocation behavior, and function attributes.
 
-Marginalization and the underflow/overflow total members currently require
-numeric cells. Accumulator end bins can be read through bins!(BinCoverage.all).
+The underflow/overflow total members currently require numeric cells.
+Accumulator end bins can be read through bins!(BinCoverage.all).
 
 If the `Axis` has an `options` member, the histogram may optionally allow
 for overflow and underflow members.
@@ -191,7 +194,7 @@ private:
             enum acceptsMerge =
                 is(Unqual!H == HistogramAccumulator!(Args[0], Axis)) &&
                 is(Unqual!(H.CountType) == Unqual!CountType) &&
-                acceptsCellMerge;
+                acceptsCellMerge!StoredCountType;
         else
             enum acceptsMerge = false;
     }
@@ -213,32 +216,16 @@ private:
         foreach (i; 0 .. destination.length)
         {
             static if (depth + 1 == N)
-            {
-                static if (acceptsSamples!(const CountType))
-                    destination[i].put(source[i]);
-                else
-                    destination[i] += source[i];
-            }
+                mergeCell(destination[i], source[i]);
             else
                 mergeStorage!(depth + 1)(destination[i], source[i]);
         }
     }
 
-    private enum acceptsCellMerge = acceptsSamples!(const CountType) ||
-        __traits(compiles, {
-            StoredCountType cell;
-            const CountType source;
-            cell += source;
-        });
-
     // Probe only the cell operation; coordinate checking is shared with counting.
     private template acceptsSamples(Samples...)
     {
-        enum acceptsSamples = !isNumeric!CountType && __traits(compiles, {
-            StoredCountType cell;
-            Samples samples;
-            cell.put(samples);
-        });
+        enum acceptsSamples = acceptsCellSamples!(StoredCountType, Samples);
     }
 
     // Keep nested static arrays as references, and preserve ndslice strides.
@@ -295,10 +282,10 @@ public:
     // Shared projection implementation for GC, RC, and custom API factories.
     package(mir.stat.descriptive.histogram)
     auto projectMarginal(alias make, alias release, Context, dimensions...)(ref Context context) const
-        if (isNumeric!CountType && validMarginalAxes!(N, dimensions))
+        if (acceptsCellMerge!CountType && validMarginalAxes!(N, dimensions))
     {
         import std.meta: staticMap;
-        import mir.stat.descriptive.histogram.internal.projection: projectCounts;
+        import mir.stat.descriptive.histogram.internal.projection: projectCells;
 
         template SelectedAxis(size_t dimension)
         {
@@ -319,7 +306,7 @@ public:
         static if (!is(typeof(release) == typeof(null)))
             scope(failure) release(context, result.counts);
         enum selectedDimensions = [dimensions];
-        projectCounts!(N, selectedDimensions)(result.counts, counts);
+        projectCells!(N, selectedDimensions)(result.counts, counts);
         return result;
     }
 
@@ -857,7 +844,7 @@ unittest
     static assert(!__traits(compiles, h.putWeightedSample(1.0, 2.0, 0.5, 0.5)));
     static assert(!__traits(compiles, h.put(0.5, 0.5)));
     static assert(!__traits(compiles, h.putWeighted(1.0, 0.5, 0.5)));
-    static assert(!__traits(compiles, h.rcMarginal!0));
+    assert(h.rcMarginal!0().counts[0].count == 3);
     static assert(!__traits(compiles, all[0].count));
 }
 

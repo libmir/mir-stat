@@ -24,11 +24,23 @@ Project a histogram onto selected axes using fresh garbage-collected storage.
 Retain at least one axis and fewer than the source rank, without duplicates.
 The template argument order becomes the result's axis order. All stored counts
 on discarded axes contribute, including underflow/overflow bins; retained axes
-keep their definitions and enabled end bins. Counter types are preserved.
+keep their definitions and enabled end bins. Cell types are preserved.
+
+Numeric cells are added. Accumulator cells merge their full state through
+put(sourceCell), or through += when that put operation is unavailable. For
+example, MeanAccumulator combines counts and sums, so a marginal mean weights
+each contributing bin by its observation count rather than averaging bin means.
+WMeanAccumulator similarly combines weighted sums and total weights.
+
+Accumulator cells start in their normal default state, which must represent
+an empty accumulator. Custom merge operations must combine contributions without
+modifying the source. The result has fresh cell storage; references retained by
+custom cells follow their merge semantics and are not automatically deep-copied.
+Empty bins retain the accumulator's usual empty-state behavior.
 
 Works with HistogramAccumulator and RelativeFrequencyAccumulator. A relative
 frequency result recomputes its total from the projected counts. Source and
-result counts are independent. Axes must support mir.qualifier.lightConst.
+result numeric counts are independent. Axes must support mir.qualifier.lightConst.
 Owning axis boundaries remain owned; borrowed
 boundaries must outlive the result and its views. Counts must accommodate the
 resulting sums and total.
@@ -37,7 +49,7 @@ Use h.marginal!dimension() through UFCS. For reference-counted or custom storage
 use rcMarginal or makeMarginal. This replaces the former RC-only marginal member.
 Params:
     dimensions = source axes to retain, in result order
-    source = numeric histogram or relative frequency accumulator
+    source = histogram with mergeable cells, or relative frequency accumulator
 +/
 template marginal(dimensions...)
 {
@@ -49,6 +61,32 @@ template marginal(dimensions...)
         return source.projectMarginal!(axisImplementation.axisFactory, null,
             NoAllocationContext, dimensions)(context);
     }
+}
+
+/++
+Combine sensor-report summaries across longitude to compare latitude bands.
+Each report represents a different number of readings. Marginalization preserves
+those weights when combining the regional weighted means.
++/
+version(mir_stat_test)
+@safe pure nothrow
+unittest
+{
+    import mir.math.sum: Summation;
+    import mir.stat.descriptive.weighted: WMeanAccumulator, AssumeWeights;
+    import mir.stat.descriptive.histogram.axis: RegularAxis, AxisOptions;
+    alias Cell = WMeanAccumulator!(double, Summation.pairwise, AssumeWeights.primary);
+    auto coordinate = RegularAxis!(double, AxisOptions())(2, 0.0, 2.0);
+    auto reports = histogram!Cell(coordinate, coordinate);
+    reports.putWeightedSample(2.0, 10.0, 0.5, 0.5);
+    reports.putWeightedSample(6.0, 30.0, 0.5, 1.5);
+
+    auto byLatitude = reports.marginal!0();
+    assert(byLatitude.counts[0].weight == 8.0);
+    assert(byLatitude.counts[0].wmean == 25.0);
+    // Averaging the two regional means would incorrectly give 20.
+    assert(byLatitude.counts[1].weight == 0.0);
+    // WMeanAccumulator requires a nonzero weight before reading wmean.
 }
 
 /++

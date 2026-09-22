@@ -14,7 +14,7 @@ private mixin AxisHistogramFactory!(allocateCounts, releaseCounts) axisImplement
 
 /++
 Project a histogram onto selected axes using a caller-selected allocator.
-Axis selection, underflow/overflow treatment, counter types, and relative
+Axis selection, cell merging, underflow/overflow treatment, and relative
 frequency totals follow $(REF marginal, mir, stat, descriptive, histogram, api, gc).
 The allocator is not retained. Dispose of result.counts.field through the same
 allocator after all uses of the result and its views have finished. For relative
@@ -27,7 +27,7 @@ If construction or projection throws, the allocated result storage is released.
 Params:
     dimensions = source axes to retain, in result order
     allocator = allocator providing allocation and deallocation
-    source = numeric histogram or relative frequency accumulator
+    source = histogram with mergeable cells, or relative frequency accumulator
 +/
 template makeMarginal(dimensions...)
 {
@@ -303,6 +303,35 @@ private struct SafeAllocator
         ++releases;
         return true;
     }
+}
+
+// A failed cell merge releases the partially populated marginal.
+version(mir_stat_test)
+@system pure
+unittest
+{
+    import mir.stat.descriptive.histogram.accumulator: HistogramAccumulator;
+    import mir.stat.descriptive.histogram.axis: IntegralAxis, AxisOptions;
+    import std.exception: assertThrown;
+    static struct Cell
+    {
+        int value;
+        bool fail;
+        void put(ref const Cell source) @safe pure
+        {
+            if (source.fail) throw new Exception("cell merge failure");
+            value += source.value;
+        }
+    }
+    alias A = IntegralAxis!(int, AxisOptions());
+    Cell[2][2] cells;
+    cells[0][0].value = 3;
+    cells[0][1].fail = true;
+    auto source = HistogramAccumulator!(typeof(cells), A, A)(cells, A(2, 0), A(2, 0));
+    CountingAllocator allocator;
+    assertThrown!Exception(makeMarginal!0(allocator, source));
+    assert(allocator.allocations == 1 && allocator.releases == 1);
+    assert(source.counts[0][0].value == 3 && source.counts[0][1].fail);
 }
 
 // Safety depends on the allocator's contract, including its release operation.

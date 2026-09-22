@@ -47,7 +47,7 @@ private mixin AxisHistogramFactory!allocateCells axisImplementation;
 
 /++
 Project a histogram onto selected axes using fresh reference-counted storage.
-Axis selection, underflow/overflow treatment, counter types, and relative
+Axis selection, cell merging, underflow/overflow treatment, and relative
 frequency totals follow $(REF marginal, mir, stat, descriptive, histogram, api, gc).
 The source allocation strategy does not affect the result's ownership.
 Owning axis boundaries remain owned; borrowed boundaries must remain valid.
@@ -55,7 +55,7 @@ Use h.rcMarginal!dimension() through UFCS; this is the replacement for calls
 to the former marginal member that require reference-counted results.
 Params:
     dimensions = source axes to retain, in result order
-    source = numeric histogram or relative frequency accumulator
+    source = histogram with mergeable cells, or relative frequency accumulator
 +/
 template rcMarginal(dimensions...)
 {
@@ -67,6 +67,41 @@ template rcMarginal(dimensions...)
         return source.projectMarginal!(axisImplementation.axisFactory, null,
             NoAllocationContext, dimensions)(context);
     }
+}
+
+/++
+Combine server-specific latency summaries to compare temperatures without
+distinguishing servers. Servers can handle different numbers of requests, so
+the marginal merges counts and sums rather than averaging the server means.
++/
+version(mir_stat_test)
+@safe pure nothrow @nogc
+unittest
+{
+    import mir.math.sum: Summation;
+    import mir.stat.descriptive.univariate: MeanAccumulator;
+    import mir.stat.descriptive.histogram.axis: RegularAxis, IntegralAxis, AxisOptions;
+    import std.math: isNaN;
+    alias Cell = MeanAccumulator!(double, Summation.pairwise);
+    auto temperature = RegularAxis!(double, AxisOptions())(2, 20.0, 60.0);
+    auto server = IntegralAxis!(int, AxisOptions())(2, 0);
+    auto timings = rchistogram!Cell(temperature, server);
+    timings.putSample(100.0, 25.0, 0); // Server 0 handled one request.
+    foreach (i; 0 .. 3)
+        timings.putSample(300.0, 25.0, 1); // Server 1 handled three requests.
+
+    auto byTemperature = timings.rcMarginal!0();
+    assert(byTemperature.counts[0].count == 4);
+    assert(byTemperature.counts[0].mean == 250.0);
+    // Averaging the two server means would incorrectly give 200 ms.
+    assert(byTemperature.counts[1].count == 0);
+    assert(isNaN(byTemperature.counts[1].mean));
+
+    timings.putSample(500.0, 25.0, 0);
+    assert(byTemperature.counts[0].mean == 250.0);
+    byTemperature.putSample(50.0, 25.0);
+    assert(byTemperature.counts[0].mean == 210.0);
+    assert(timings.counts[0, 0].count == 2);
 }
 
 /++

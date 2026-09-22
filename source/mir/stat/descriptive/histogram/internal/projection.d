@@ -34,16 +34,17 @@ template validMarginalAxes(size_t rank, dimensions...)
     }();
 }
 
-// Destination is already zeroed, has the selected shape, and does not alias
+// Destination has empty initialized cells, the selected shape, and does not alias
 // source. Walk every stored source coordinate once, including end bins.
 // Partial ndslices are handles; auto ref preserves nested static-array storage.
-void projectCounts(size_t rank, alias dimensions, D, S)(ref D destination, auto ref const S source)
+void projectCells(size_t rank, alias dimensions, D, S)(ref D destination, auto ref const S source)
 {
-    static void add(size_t depth, T, V)(auto ref T destination, V value,
+    import mir.stat.descriptive.histogram.internal.cell: mergeCell;
+    static void add(size_t depth, T, V)(auto ref T destination, auto ref const V value,
         const ref size_t[rank] indices)
     {
         static if (depth == dimensions.length)
-            destination += value;
+            mergeCell(destination, value);
         else
             add!(depth + 1)(destination[indices[dimensions[depth]]], value, indices);
     }

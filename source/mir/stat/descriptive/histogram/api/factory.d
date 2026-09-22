@@ -50,8 +50,9 @@ package template acceptsMarginal(H, dimensions...)
     import mir.stat.descriptive.histogram.accumulator: HistogramAccumulator;
     import mir.stat.descriptive.histogram.relative_frequency: RelativeFrequencyAccumulator;
     import mir.stat.descriptive.histogram.internal.projection: validMarginalAxes;
+    import mir.stat.descriptive.histogram.internal.cell: acceptsCellMerge;
     static if (is(Unqual!H == HistogramAccumulator!Args, Args...))
-        enum acceptsMarginal = isNumeric!(H.CountType) &&
+        enum acceptsMarginal = acceptsCellMerge!(Unqual!(H.CountType)) &&
             validMarginalAxes!(Args.length - 1, dimensions);
     else static if (is(Unqual!H == RelativeFrequencyAccumulator!Args, Args...))
         enum acceptsMarginal = isNumeric!(H.CountType) &&
@@ -64,6 +65,7 @@ package template acceptsMarginal(H, dimensions...)
 version(mir_stat_test)
 package void testMarginalFactory(alias project, alias dispose = null)()
 {
+    testAccumulatorMarginal!(project, dispose)();
     import mir.stat.descriptive.histogram.accumulator: HistogramAccumulator;
     import mir.stat.descriptive.histogram.relative_frequency: RelativeFrequencyAccumulator;
     import mir.stat.descriptive.histogram.axis: IntegralAxis, AxisOptions;
@@ -143,6 +145,111 @@ package void testMarginalFactory(alias project, alias dispose = null)()
             return project!0(source);
         }));
     }
+}
+
+version(mir_stat_test)
+package void testAccumulatorMarginal(alias project, alias dispose = null)()
+{
+    import std.meta: AliasSeq;
+    import std.math: isNaN;
+    import mir.math.sum: Summator, Summation;
+    import mir.stat.descriptive.univariate: MeanAccumulator;
+    import mir.stat.descriptive.weighted: WMeanAccumulator, AssumeWeights;
+    import mir.stat.descriptive.histogram.accumulator: HistogramAccumulator, BinCoverage;
+    import mir.stat.descriptive.histogram.axis: IntegralAxis, AxisOptions;
+    import mir.ndslice.slice: sliced;
+    import mir.ndslice.dynamic: transposed;
+    alias A = IntegralAxis!(int, AxisOptions(false, true, true));
+    alias Sum = Summator!(double, Summation.pairwise);
+    alias Mean = MeanAccumulator!(double, Summation.pairwise);
+    alias Weighted = WMeanAccumulator!(double, Summation.pairwise, AssumeWeights.primary);
+    static foreach (Cell; AliasSeq!(Sum, Mean, Weighted))
+    {{
+        Cell[12] buffer;
+        auto storage = buffer[].sliced(3, 4).transposed;
+        auto h = HistogramAccumulator!(typeof(storage), A, A)(storage, A(2, 0), A(1, 0));
+        foreach (int i; 0 .. 4)
+        {
+            if (i == 2) continue; // Leave one ordinary destination bin empty.
+            foreach (int j; 0 .. 3)
+            {
+                const value = 4.0 * (3 * i + j + 1);
+                static if (is(Cell == Weighted))
+                    h.putWeightedSample(cast(double)(j + 1), value, i - 1, j - 1);
+                else
+                    h.putSample(value, i - 1, j - 1);
+            }
+        }
+        // Equivalent nested arrays exercise a different projection traversal.
+        Cell[3][4] nested;
+        foreach (i; 0 .. 4)
+            foreach (j; 0 .. 3)
+                nested[i][j] = storage[i, j];
+        const arraySource = HistogramAccumulator!(typeof(nested), A, A)(nested, A(2, 0), A(1, 0));
+        const source = h;
+        auto result = project!0(source);
+        static if (!is(typeof(dispose) == typeof(null)))
+            scope(exit) dispose(result);
+        auto arrayResult = project!0(arraySource);
+        static if (!is(typeof(dispose) == typeof(null)))
+            scope(exit) dispose(arrayResult);
+        auto all = result.bins!(BinCoverage.all);
+        assert(all.front.isUnderflow && all.back.isOverflow);
+        foreach (i; [0, 1, 3])
+        {
+            static if (is(Cell == Sum))
+            {
+                assert(result.counts[i].sum == 12.0 * (3 * i + 2));
+                assert(arrayResult.counts[i].sum == result.counts[i].sum);
+            }
+            else static if (is(Cell == Mean))
+            {
+                assert(result.counts[i].count == 3);
+                assert(result.counts[i].mean == 4.0 * (3 * i + 2));
+                assert(arrayResult.counts[i].mean == result.counts[i].mean);
+            }
+            else
+            {
+                assert(result.counts[i].weight == 6.0);
+                const expected = (4.0 * (3 * i + 1) + 8.0 * (3 * i + 2) + 12.0 * (3 * i + 3)) / 6.0;
+                assert(result.counts[i].wmean == expected);
+                assert(arrayResult.counts[i].wmean == result.counts[i].wmean);
+            }
+        }
+        static if (is(Cell == Sum))
+            assert(result.counts[2].sum == 0);
+        else static if (is(Cell == Mean))
+            assert(result.counts[2].count == 0 && isNaN(result.counts[2].mean));
+        else
+            assert(result.counts[2].weight == 0);
+    }}
+
+    // Retained-axis order applies to accumulator cells in three dimensions too.
+    Mean[2][2][2] cells;
+    alias Plain = IntegralAxis!(int, AxisOptions());
+    auto joint = HistogramAccumulator!(typeof(cells), Plain, Plain, Plain)(
+        cells, Plain(2, 0), Plain(2, 0), Plain(2, 0));
+    foreach (int i; 0 .. 2)
+        foreach (int j; 0 .. 2)
+            foreach (int k; 0 .. 2)
+                joint.putSample(10.0 * (4 * i + 2 * j + k), i, j, k);
+    auto reordered = project!(2, 0)(joint);
+    static if (!is(typeof(dispose) == typeof(null)))
+        scope(exit) dispose(reordered);
+    foreach (i; 0 .. 2)
+        foreach (k; 0 .. 2)
+        {
+            assert(reordered.counts[k, i].count == 2);
+            assert(reordered.counts[k, i].mean == 10.0 * (4 * i + k + 1));
+        }
+    static struct SampleOnly
+    {
+        void put(double sample) @safe pure nothrow @nogc {}
+    }
+    SampleOnly[1][1] unsupported;
+    auto noMerge = HistogramAccumulator!(typeof(unsupported), Plain, Plain)(
+        unsupported, Plain(1, 0), Plain(1, 0));
+    static assert(!__traits(compiles, project!0(noMerge)));
 }
 
 // Allocation callbacks return normally initialized, one-dimensional storage.
