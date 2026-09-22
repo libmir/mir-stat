@@ -252,6 +252,69 @@ package void testAccumulatorMarginal(alias project, alias dispose = null)()
     static assert(!__traits(compiles, project!0(noMerge)));
 }
 
+// Owning cell storage must not hide references to stack data retained by a cell.
+version(mir_stat_test_lifetime)
+@safe pure nothrow
+unittest
+{
+    import mir.stat.descriptive.histogram.accumulator: HistogramAccumulator;
+    import mir.stat.descriptive.histogram.axis: IntegralAxis, AxisOptions;
+    import mir.stat.descriptive.histogram.api.gc: histogram, marginal;
+    import mir.stat.descriptive.histogram.api.rc: rchistogram, rcMarginal;
+    static struct Cell
+    {
+        const(int)[] data;
+        void put(return scope const(int)[] sample) @safe pure nothrow @nogc
+        {
+            data = sample;
+        }
+        void put(return scope ref const Cell source) @safe pure nothrow @nogc
+        {
+            data = source.data;
+        }
+    }
+    alias A = IntegralAxis!(int, AxisOptions());
+    static void check(alias factory, alias project)() @safe pure nothrow
+    {
+        // Heap-backed sample data can be retained by both the cells and result.
+        auto data = [7];
+        auto h = factory!Cell(A(1, 0), A(1, 0));
+        h.putSample(data[], 0, 0);
+        auto result = project!0(h);
+        assert(result.counts[0].data[0] == 7);
+        data[0] = 9;
+        assert(result.counts[0].data[0] == 9); // Merging does not deep-copy data.
+
+        static auto fromLocalCells() @safe pure nothrow
+        {
+            Cell[1][1] cells;
+            cells[0][0].data = [7];
+            auto source = HistogramAccumulator!(typeof(cells), A, A)(
+                cells, A(1, 0), A(1, 0));
+            return project!0(source);
+        }
+        assert(fromLocalCells().counts[0].data[0] == 7);
+
+        static assert(!__traits(compiles, () @safe {
+            int[1] local = [7];
+            auto escaping = factory!Cell(A(1, 0));
+            escaping.putSample(local[], 0);
+            return escaping;
+        }));
+        // Even fresh marginal storage cannot make borrowed cell data owning.
+        static assert(!__traits(compiles, () @safe {
+            int[1] local = [7];
+            Cell[1][1] cells;
+            cells[0][0].data = local[];
+            auto source = HistogramAccumulator!(typeof(cells), A, A)(
+                cells, A(1, 0), A(1, 0));
+            return project!0(source);
+        }));
+    }
+    check!(histogram, marginal)();
+    check!(rchistogram, rcMarginal)();
+}
+
 // Allocation callbacks return normally initialized, one-dimensional storage.
 // Keep this separate from data-driven factories, which initialize numeric counts.
 package mixin template AxisHistogramFactory(alias allocate, alias release = null)
