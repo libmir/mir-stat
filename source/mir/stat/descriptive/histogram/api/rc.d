@@ -1081,6 +1081,26 @@ unittest
     assert(relative.total == 4 && relative.relativeFrequency(0) == 0.5);
 }
 
+// Weighted factories share mixed-bound inference without changing counter defaults.
+version(mir_stat_test)
+@safe pure nothrow @nogc
+unittest
+{
+    import mir.stat.descriptive.histogram.axis: RegularAxis, TransformAxis;
+    double[3] values = [0.25, 1.25, 2.25];
+    uint[3] weights = [1, 2, 3];
+    double low = 0;
+    float high = 4;
+    auto h = rcWeightedHistogram!RegularAxis(values, weights, 2u, low, high);
+    auto f = rcWeightedRelativeFrequencyHistogram!(TransformAxis, "a", "a")(
+        values, weights, 2u, float(0), double(4));
+    static assert(is(h.axis[0].BinType == double));
+    static assert(is(f.CountType == double));
+    static assert(is(h.CountType == double));
+    assert(h.counts == [3.0, 3.0]);
+    assert(f.counts == h.counts && f.total == 6);
+}
+
 // Custom axes supply geometry and integral indices, without counter metadata.
 version(mir_stat_test)
 @safe pure nothrow @nogc

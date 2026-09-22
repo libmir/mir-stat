@@ -97,7 +97,7 @@ package template constructHistogramAxis(Selection...)
         import mir.stat.descriptive.histogram.axis: AxisOptions, IntegralAxis,
             RegularAxis, TransformAxis, VariableAxis, EnumAxis, CategoryAxis,
             integralAxis, regularAxis, transformAxis;
-        import std.traits: Unqual;
+        import std.traits: CommonType, Unqual;
         static if (Selection.length == 1 && is(Selection[0]) && isAxis!(Selection[0]))
         {
             alias Axis = Selection[0];
@@ -144,6 +144,9 @@ package template constructHistogramAxis(Selection...)
                 else static if ((__traits(isSame, Axis, TransformAxis) && Args.length == 2) ||
                     ((__traits(isSame, Axis, RegularAxis) || __traits(isSame, Axis, IntegralAxis)) && Parameters.length))
                     alias BinType = Unqual!(Data.DeepElement);
+                else static if ((__traits(isSame, Axis, RegularAxis) || __traits(isSame, Axis, TransformAxis)) && Args.length == 3)
+                    // Explicit bin counts leave coordinate inference to both bounds.
+                    alias BinType = Unqual!(CommonType!(Args[1], Args[2]));
                 else static if (Args.length)
                     alias BinType = Unqual!(Args[$ - 1]);
                 else
@@ -229,6 +232,43 @@ private mixin template FactoryTests(alias makeHistogram, bool gcCounts)
         assert(flow.counts == [1u, 1u, 1u, 1u]);
         assert(flow.overflow == 1);
         static assert(is(flow.CountType == size_t));
+    }
+
+    // Mixed bounds infer the same coordinate type in either order.
+    @safe pure nothrow
+    unittest
+    {
+        void check(Low, High, Expected)()
+        {
+            import mir.ndslice.slice: sliced;
+            import mir.stat.descriptive.histogram.axis: RegularAxis, TransformAxis, regularAxis;
+            Expected[3] values = [0.25, 1.25, 2.25];
+            Low low = 0;
+            High high = 4;
+            auto ordinary = makeHistogram!(uint, RegularAxis)(values[].sliced, 2u, low, high);
+            auto transformed = makeHistogram!(uint, TransformAxis, "a", "a")(
+                values[].sliced, 2u, low, high);
+            auto direct = regularAxis(2u, low, high);
+            static assert(is(ordinary.axis[0].BinType == Expected));
+            static assert(is(transformed.axis[0].BinType == Expected));
+            static assert(is(direct.BinType == Expected));
+            static assert(is(ordinary.CountType == uint));
+            assert(ordinary.counts == [2u, 1]);
+            assert(transformed.counts == ordinary.counts);
+        }
+        void checkAll()()
+        {
+            check!(float, double, double)();
+            check!(double, float, double)();
+            check!(double, real, real)();
+            check!(real, double, real)();
+            check!(int, float, float)();
+            check!(float, int, float)();
+        }
+        static if (gcCounts)
+            checkAll!()();
+        else
+            () @nogc { checkAll!()(); }();
     }
 
     // Explicit transform-axis types retain the custom transform and inverse.
