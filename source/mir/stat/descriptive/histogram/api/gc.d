@@ -20,6 +20,68 @@ private import mir.stat.descriptive.histogram.api.factory: AxisHistogramFactory,
 private mixin AxisHistogramFactory!allocateCounts axisImplementation;
 
 /++
+Project a histogram onto selected axes using fresh garbage-collected storage.
+Retain at least one axis and fewer than the source rank, without duplicates.
+The template argument order becomes the result's axis order. All stored counts
+on discarded axes contribute, including underflow/overflow bins; retained axes
+keep their definitions and enabled end bins. Counter types are preserved.
+
+Works with HistogramAccumulator and RelativeFrequencyAccumulator. A relative
+frequency result recomputes its total from the projected counts. Source and
+result counts are independent. Axes must support mir.qualifier.lightConst.
+Owning axis boundaries remain owned; borrowed
+boundaries must outlive the result and its views. Counts must accommodate the
+resulting sums and total.
+
+Use h.marginal!dimension() through UFCS. For reference-counted or custom storage,
+use rcMarginal or makeMarginal. This replaces the former RC-only marginal member.
+Params:
+    dimensions = source axes to retain, in result order
+    source = numeric histogram or relative frequency accumulator
++/
+template marginal(dimensions...)
+{
+    import mir.stat.descriptive.histogram.api.factory: acceptsMarginal;
+    auto marginal(H)(auto ref const H source)
+        if (acceptsMarginal!(H, dimensions))
+    {
+        NoAllocationContext context;
+        return source.projectMarginal!(axisImplementation.axisFactory, null,
+            NoAllocationContext, dimensions)(context);
+    }
+}
+
+/++
+Summarize request counts by temperature after recording temperature and server
+jointly. Keep using GC storage for the summary; its counts are independent of
+later requests recorded in the original histogram.
++/
+version(mir_stat_test)
+@safe pure nothrow
+unittest
+{
+    import mir.stat.descriptive.histogram.axis: IntegralAxis, AxisOptions;
+    alias A = IntegralAxis!(int, AxisOptions());
+    auto requests = histogram(A(2, 0), A(2, 0));
+    requests.put(0, 0);
+    requests.put(0, 1);
+    requests.put(1, 1);
+    auto byTemperature = requests.marginal!0();
+    static assert(is(typeof(byTemperature.counts.iterator) == size_t*));
+    assert(byTemperature.counts == [2, 1]);
+    requests.put(0, 0);
+    assert(byTemperature.counts == [2, 1]);
+}
+
+version(mir_stat_test)
+@safe pure nothrow
+unittest
+{
+    import mir.stat.descriptive.histogram.api.factory: testMarginalFactory;
+    testMarginalFactory!marginal();
+}
+
+/++
 Construct a histogram with garbage-collected count storage.
 Accepts the same axes, bin-count rules, type overrides, and options as
 $(REF rchistogram, mir, stat, descriptive, histogram, api, rc).

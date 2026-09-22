@@ -18,6 +18,9 @@ T4=$(TR $(TDNW $(LREF $1)) $(TD $2) $(TD $3) $(TD $4))
 
 module mir.stat.descriptive.histogram.relative_frequency;
 
+version(mir_stat_test)
+private import mir.stat.descriptive.histogram.api.rc: rcMarginal;
+
 private import mir.stat.descriptive.histogram.traits: ordinaryBinCount;
 
 import mir.internal.utility: isFloatingPoint;
@@ -154,25 +157,14 @@ struct RelativeFrequencyAccumulator(Storage, Axis...)
             return storageCount!(depth + 1)(storage[indices[depth]], indices);
     }
 
-    /++
-    Sum over discarded axes to create a marginal relative frequency accumulator.
-
-    Uses HistogramAccumulator.marginal's axis selection and ownership rules.
-    All stored counts contribute, including underflow/overflow bins. Fresh
-    reference-counted storage holds the resulting counts, and the result's
-    maintained total is calculated from those counts. Subsequent source and
-    result updates are independent. Borrowed axis boundaries remain borrowed;
-    scope-bound sources with borrowed axis data are rejected in @safe code.
-    The counter type is preserved and must accommodate the sums and total.
-
-    Params:
-        dimensions = zero-based source axes to retain, in result order;
-            select at least one and fewer than N axes, without duplicates
-    +/
-    auto marginal(dimensions...)() const
+    // Shared projection implementation for GC, RC, and custom API factories.
+    package(mir.stat.descriptive.histogram)
+    auto projectMarginal(alias make, alias release, Context, dimensions...)(ref Context context) const
         if (validMarginalAxes!(N, dimensions))
     {
-        auto projected = histogramAccumulator.marginal!dimensions();
+        auto projected = histogramAccumulator.projectMarginal!(make, release, Context, dimensions)(context);
+        static if (!is(typeof(release) == typeof(null)))
+            scope(failure) release(context, projected.counts);
         static if (is(typeof(projected) == HistogramAccumulator!Args, Args...))
             return RelativeFrequencyAccumulator!Args(projected.counts, projected.axis);
     }
@@ -1212,13 +1204,14 @@ version(mir_stat_test)
 @safe pure nothrow
 unittest
 {
+    import mir.stat.descriptive.histogram.api.rc: rcMarginal;
     import mir.stat.descriptive.histogram.axis: IntegralAxis, AxisOptions;
     alias X = IntegralAxis!(int, AxisOptions());
     alias Y = IntegralAxis!(int, AxisOptions(false, true, true));
     auto joint = RelativeFrequencyAccumulator!(uint[][], X, Y)(
         [[1u, 4u, 2u], [0u, 3u, 1u]], X(2, 0), Y(1, 0));
     const source = joint;
-    auto marginal = source.marginal!0();
+    auto marginal = source.rcMarginal!0();
 
     // Sum over every position of axis one. The two retained bins represent
     // all eleven observations, including those outside axis one's interval.
@@ -3204,7 +3197,7 @@ unittest
         T[3][3] data;
         foreach (ref row; data) row[] = 0;
         auto f = RelativeFrequencyAccumulator!(typeof(data), A, A)(data, A(1, 0), A(1, 0));
-        auto empty = f.marginal!1();
+        auto empty = f.rcMarginal!1();
         static assert(is(typeof(empty).CountType == T));
         assert(empty.total == 0 && empty.counts == [T(0), T(0), T(0)]);
         assert(isNaN(empty.relativeFrequency!T(0)));
@@ -3212,12 +3205,12 @@ unittest
         data[1][1] = T(0.5);
         data[2][0] = T(0.25);
         auto filled = RelativeFrequencyAccumulator!(typeof(data), A, A)(data, A(1, 0), A(1, 0));
-        auto m = filled.marginal!1();
+        auto m = filled.rcMarginal!1();
         assert(m.total == 1 && m.total == filled.total);
         assert(m.underflow == T(0.25) && m.overflow == T(0.25));
         assert(m.relativeFrequency!T(0) == T(0.5));
-        static assert(!__traits(compiles, filled.marginal!(0, 0)()));
-        static assert(!__traits(compiles, filled.marginal!2()));
+        static assert(!__traits(compiles, filled.rcMarginal!(0, 0)()));
+        static assert(!__traits(compiles, filled.rcMarginal!2()));
     }}
 }
 
@@ -3232,7 +3225,7 @@ unittest
     {
         uint[2][2] data = [[1u, 2u], [3u, 4u]];
         auto f = RelativeFrequencyAccumulator!(typeof(data), A, A)(data, A(2, 0), A(2, 0));
-        return f.marginal!0();
+        return f.rcMarginal!0();
     }
     auto m = makeMarginal();
     assert(m.total == 10 && m.counts == [3u, 7u]);
@@ -3258,7 +3251,7 @@ unittest
                 storage[i,j,k] = cast(uint)(1 + i*12 + j*4 + k);
     const f = RelativeFrequencyAccumulator!(typeof(storage), A, A, A)(
         storage, A(2, 0), A(3, 10), A(4, 20));
-    auto m = f.marginal!(2, 0)();
+    auto m = f.rcMarginal!(2, 0)();
     assert(m.total == 300 && m.total == f.total);
     assert(m.counts.shape == [4, 2]);
     assert(m.axis!0.bin(0).low == 20 && m.axis!1.bin(0).low == 0);
@@ -3287,7 +3280,7 @@ unittest
         assert(f.underflowRelativeFrequency!(double, 1) == 12.0 / 45);
         const frozen = f;
         assert(frozen.total == 45 && frozen.relativeFrequency(0, 0) == 5.0 / 45);
-        auto marginal = f.marginal!0();
+        auto marginal = f.rcMarginal!0();
         assert(marginal.total == 45 && marginal.counts == [6u, 15u, 24u]);
         marginal.put(0);
         assert(marginal.total == 46 && f.total == 45);
@@ -3531,7 +3524,7 @@ unittest
     assert(bins.length == 15 && saved.length == 15 && middle.length == 6);
     assert(f.bins!(BinCoverage.all)()[6].count == 1);
 
-    auto marginal = f.marginal!0();
+    auto marginal = f.rcMarginal!0();
     assert(marginal.total == 4 && marginal.relativeFrequency(0) == 0.25);
     marginal.put(0);
     assert(marginal.total == 5 && f.total == 4);
@@ -3991,7 +3984,7 @@ unittest
     rejects(() { f.putWeighted(0.0, 0.5, 3.0); });
     assert(f.total == 0.5 && f.counts[0][1] == 0.5);
     assert(f.counts[0][0] == 0 && f.counts[1][0] == 0 && f.counts[1][1] == 0);
-    auto m = f.marginal!1();
+    auto m = f.rcMarginal!1();
     assert(m.total == 0.5 && m.counts == [0.0, 0.5]);
     f.put(f);
     assert(f.total == 1 && f.counts[0][1] == 1);

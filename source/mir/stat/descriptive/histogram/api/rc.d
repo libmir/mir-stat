@@ -45,6 +45,58 @@ private auto allocateCells(T)(ref NoAllocationContext context, size_t length)
 }
 private mixin AxisHistogramFactory!allocateCells axisImplementation;
 
+/++
+Project a histogram onto selected axes using fresh reference-counted storage.
+Axis selection, underflow/overflow treatment, counter types, and relative
+frequency totals follow $(REF marginal, mir, stat, descriptive, histogram, api, gc).
+The source allocation strategy does not affect the result's ownership.
+Owning axis boundaries remain owned; borrowed boundaries must remain valid.
+Use h.rcMarginal!dimension() through UFCS; this is the replacement for calls
+to the former marginal member that require reference-counted results.
+Params:
+    dimensions = source axes to retain, in result order
+    source = numeric histogram or relative frequency accumulator
++/
+template rcMarginal(dimensions...)
+{
+    import mir.stat.descriptive.histogram.api.factory: acceptsMarginal;
+    auto rcMarginal(H)(auto ref const H source)
+        if (acceptsMarginal!(H, dimensions))
+    {
+        NoAllocationContext context;
+        return source.projectMarginal!(axisImplementation.axisFactory, null,
+            NoAllocationContext, dimensions)(context);
+    }
+}
+
+/++
+Combine server-specific request counts into a temperature summary with RC storage.
+The summary keeps its count buffer alive independently of the original histogram.
++/
+version(mir_stat_test)
+@safe pure nothrow @nogc
+unittest
+{
+    import mir.stat.descriptive.histogram.axis: IntegralAxis, AxisOptions;
+    import mir.rc.array: RCI;
+    alias A = IntegralAxis!(int, AxisOptions());
+    auto requests = rchistogram(A(2, 0), A(2, 0));
+    requests.put(0, 0);
+    requests.put(0, 1);
+    auto byTemperature = requests.rcMarginal!0();
+    static assert(is(typeof(byTemperature.counts.iterator) == RCI!size_t));
+    requests = typeof(requests).init;
+    assert(byTemperature.counts == [2, 0]);
+}
+
+version(mir_stat_test)
+@safe pure nothrow @nogc
+unittest
+{
+    import mir.stat.descriptive.histogram.api.factory: testMarginalFactory;
+    testMarginalFactory!rcMarginal();
+}
+
 // Retain the existing construction entry point.
 auto rchistogramImplBasic(Data, Axis)(Data data, Axis axis)
 {

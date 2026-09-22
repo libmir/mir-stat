@@ -44,6 +44,107 @@ package template areHistogramAxes(Axes...)
     enum areHistogramAxes = Axes.length > 0 && allSatisfy!(isAxis, Axes);
 }
 
+package template acceptsMarginal(H, dimensions...)
+{
+    import std.traits: Unqual, isNumeric;
+    import mir.stat.descriptive.histogram.accumulator: HistogramAccumulator;
+    import mir.stat.descriptive.histogram.relative_frequency: RelativeFrequencyAccumulator;
+    import mir.stat.descriptive.histogram.internal.projection: validMarginalAxes;
+    static if (is(Unqual!H == HistogramAccumulator!Args, Args...))
+        enum acceptsMarginal = isNumeric!(H.CountType) &&
+            validMarginalAxes!(Args.length - 1, dimensions);
+    else static if (is(Unqual!H == RelativeFrequencyAccumulator!Args, Args...))
+        enum acceptsMarginal = isNumeric!(H.CountType) &&
+            validMarginalAxes!(Args.length - 1, dimensions);
+    else
+        enum acceptsMarginal = false;
+}
+
+// Projection semantics are shared; allocation attributes are checked by callers.
+version(mir_stat_test)
+package void testMarginalFactory(alias project, alias dispose = null)()
+{
+    import mir.stat.descriptive.histogram.accumulator: HistogramAccumulator;
+    import mir.stat.descriptive.histogram.relative_frequency: RelativeFrequencyAccumulator;
+    import mir.stat.descriptive.histogram.axis: IntegralAxis, AxisOptions;
+    import mir.ndslice.slice: sliced;
+    import mir.ndslice.dynamic: transposed;
+    alias A = IntegralAxis!(int, AxisOptions());
+    uint[8] data = [1, 2, 3, 4, 5, 6, 7, 8];
+    auto storage = data[].sliced(2, 2, 2);
+    const source = HistogramAccumulator!(typeof(storage), A, A, A)(
+        storage, A(2, 0), A(2, 0), A(2, 0));
+    auto h = project!(2, 0)(source);
+    static if (!is(typeof(dispose) == typeof(null)))
+        scope(exit) dispose(h);
+    assert(h.counts.shape == [2, 2]);
+    assert(h.counts[0, 0] == 4 && h.counts[0, 1] == 12);
+    assert(h.counts[1, 0] == 6 && h.counts[1, 1] == 14);
+    h.put(0, 0);
+    assert(data[0] == 1);
+    data[0] = 100;
+    assert(h.counts[0, 0] == 5);
+    static assert(!__traits(compiles, project!()(source)));
+    static assert(!__traits(compiles, project!(0, 0)(source)));
+    static assert(!__traits(compiles, project!3(source)));
+    static assert(!__traits(compiles, project!(0, 1, 2)(source)));
+
+    alias Flow = IntegralAxis!(int, AxisOptions(false, true, true));
+    double[9] counts = [1, 2, 3, 4, 5, 6, 7, 8, 9];
+    auto strided = counts[].sliced(3, 3).transposed;
+    auto f = RelativeFrequencyAccumulator!(typeof(strided), Flow, Flow)(
+        strided, Flow(1, 0), Flow(1, 0));
+    const readOnly = f;
+    auto rf = project!0(readOnly);
+    static if (!is(typeof(dispose) == typeof(null)))
+        scope(exit) dispose(rf);
+    assert(rf.counts == [12.0, 15.0, 18.0]);
+    assert(rf.total == 45.0);
+    assert(rf.relativeFrequency(0) == 15.0 / 45.0);
+    f.put(0, 0);
+    assert(rf.total == 45.0 && rf.counts[1] == 15.0);
+    rf.put(0);
+    assert(rf.total == 46.0 && f.total == 46.0);
+    assert(counts[4] == 6.0);
+
+    version(mir_stat_test_lifetime)
+    static if (is(typeof(dispose) == typeof(null)))
+    {
+        import mir.stat.descriptive.histogram.axis: VariableAxis;
+        alias X = VariableAxis!(double*, AxisOptions());
+        // A borrowed count buffer is consumed, not retained in the result.
+        auto fromLocalCounts() @safe
+        {
+            uint[2][2] local = [[1u, 2u], [3u, 4u]];
+            auto source = HistogramAccumulator!(typeof(local), A, A)(local, A(2, 0), A(2, 0));
+            return project!0(source);
+        }
+        assert(fromLocalCounts().counts == [3u, 7u]);
+        {
+            double[3] edges = [0.0, 1.0, 2.0];
+            uint[2][2] local = [[1u, 2u], [3u, 4u]];
+            auto borrowedSource = HistogramAccumulator!(typeof(local), X, A)(
+                local, X(edges[].sliced), A(2, 0));
+            auto borrowed = project!0(borrowedSource);
+            assert(borrowed.counts == [3u, 7u]);
+        }
+        static assert(!__traits(compiles, () @safe {
+            double[3] edges = [0.0, 1.0, 2.0];
+            uint[2][2] local;
+            auto source = HistogramAccumulator!(typeof(local), X, A)(
+                local, X(edges[].sliced), A(2, 0));
+            return project!0(source);
+        }));
+        static assert(!__traits(compiles, () @safe {
+            double[3] edges = [0.0, 1.0, 2.0];
+            uint[2][2] local;
+            auto source = RelativeFrequencyAccumulator!(typeof(local), X, A)(
+                local, X(edges[].sliced), A(2, 0));
+            return project!0(source);
+        }));
+    }
+}
+
 // Allocation callbacks return normally initialized, one-dimensional storage.
 // Keep this separate from data-driven factories, which initialize numeric counts.
 package mixin template AxisHistogramFactory(alias allocate, alias release = null)

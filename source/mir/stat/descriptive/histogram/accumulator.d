@@ -17,6 +17,9 @@ T4=$(TR $(TDNW $(LREF $1)) $(TD $2) $(TD $3) $(TD $4))
 
 module mir.stat.descriptive.histogram.accumulator;
 
+version(mir_stat_test)
+private import mir.stat.descriptive.histogram.api.rc: rcMarginal;
+
 private import mir.stat.descriptive.histogram.traits: ordinaryBinCount;
 
 import mir.primitives: DeepElementType;
@@ -289,29 +292,12 @@ public:
     /// All stored cells, including enabled underflow/overflow bins.
     Storage counts;
 
-    /++
-    Sum over discarded axes to create a marginal histogram.
-
-    Retain at least one axis and fewer than N axes, without duplicates. The
-    template argument order becomes the result's axis order. All stored bins
-    on discarded axes contribute, including underflow/overflow bins; retained
-    axes keep their existing definitions and enabled underflow/overflow bins.
-
-    The result owns fresh reference-counted count storage, independent of later
-    source updates. The counter type is preserved and must accommodate the sums.
-    Axes are copied with mir.qualifier.lightConst: owning boundary handles are
-    retained, but borrowed boundaries must remain alive and unchanged. As with
-    bin views, scope-bound sources with borrowed axis data are rejected in @safe
-    code; use owning axes when such a source must support marginalization.
-
-    Params:
-        dimensions = zero-based source axes to retain, in result order
-    +/
-    auto marginal(dimensions...)() const
+    // Shared projection implementation for GC, RC, and custom API factories.
+    package(mir.stat.descriptive.histogram)
+    auto projectMarginal(alias make, alias release, Context, dimensions...)(ref Context context) const
         if (isNumeric!CountType && validMarginalAxes!(N, dimensions))
     {
         import std.meta: staticMap;
-        import mir.ndslice.allocation: rcslice;
         import mir.stat.descriptive.histogram.internal.projection: projectCounts;
 
         template SelectedAxis(size_t dimension)
@@ -325,22 +311,16 @@ public:
             sourceShape[i] = axisStorageExtent(axis[i]);
         validateStorageShape(counts, sourceShape);
 
-        size_t[dimensions.length] shape;
-        size_t length = 1;
         static foreach (i, dimension; dimensions)
         {
-            shape[i] = sourceShape[dimension];
-            assert(length <= size_t.max / shape[i],
-                "HistogramAccumulator.marginal: result size overflows size_t");
-            length *= shape[i];
             selected[i] = lightConst(axis[dimension]);
         }
-        // Explicit zero initialization also supports floating-point counters,
-        // whose default initialization is NaN.
-        auto result = rcslice!(Unqual!CountType)(shape, 0);
+        auto result = make!(Unqual!CountType)(context, selected);
+        static if (!is(typeof(release) == typeof(null)))
+            scope(failure) release(context, result.counts);
         enum selectedDimensions = [dimensions];
-        projectCounts!(N, selectedDimensions)(result, counts);
-        return HistogramAccumulator!(typeof(result), SelectedAxes)(result, selected);
+        projectCounts!(N, selectedDimensions)(result.counts, counts);
+        return result;
     }
 
     /++
@@ -877,7 +857,7 @@ unittest
     static assert(!__traits(compiles, h.putWeightedSample(1.0, 2.0, 0.5, 0.5)));
     static assert(!__traits(compiles, h.put(0.5, 0.5)));
     static assert(!__traits(compiles, h.putWeighted(1.0, 0.5, 0.5)));
-    static assert(!__traits(compiles, h.marginal!0));
+    static assert(!__traits(compiles, h.rcMarginal!0));
     static assert(!__traits(compiles, all[0].count));
 }
 
@@ -1523,18 +1503,19 @@ version(mir_stat_test)
 @safe pure nothrow
 unittest
 {
+    import mir.stat.descriptive.histogram.api.rc: rcMarginal;
     import mir.stat.descriptive.histogram.axis: IntegralAxis, AxisOptions;
     alias A = IntegralAxis!(int, AxisOptions());
     auto joint = HistogramAccumulator!(uint[][], A, A)(
         [[1u, 4u, 2u], [0u, 3u, 1u]], A(2, 0), A(3, 10));
 
     // Keep axis zero: each result count is the sum of one source row.
-    auto first = joint.marginal!0();
+    auto first = joint.rcMarginal!0();
     assert(first.counts == [7u, 4u]);
     assert(first.bins.front.bin.low == 0);
 
     // Keep axis one instead: sum down each column, preserving that axis.
-    auto second = joint.marginal!1();
+    auto second = joint.rcMarginal!1();
     assert(second.counts == [1u, 7u, 3u]);
     assert(second.bins.front.bin.low == 10);
 
@@ -1550,11 +1531,12 @@ version(mir_stat_test)
 @safe pure nothrow
 unittest
 {
+    import mir.stat.descriptive.histogram.api.rc: rcMarginal;
     import mir.stat.descriptive.histogram.axis: IntegralAxis, AxisOptions;
     alias A = IntegralAxis!(int, AxisOptions(false, true, true));
     auto joint = HistogramAccumulator!(uint[][], A, A)(
         [[1u, 2u, 3u], [4u, 5u, 6u], [7u, 8u, 9u]], A(1, 0), A(1, 0));
-    auto marginal = joint.marginal!0();
+    auto marginal = joint.rcMarginal!0();
 
     // Each row includes underflow, ordinary, and overflow on the discarded axis.
     // Retained-axis end bins remain distinct, so the corner counts are not lost.
@@ -3802,8 +3784,8 @@ unittest
         data, A(2, 0), A(3, 10), A(4, 20));
     const slices = HistogramAccumulator!(typeof(strided), A, A, A)(
         strided, A(2, 0), A(3, 10), A(4, 20));
-    auto a = arrays.marginal!(2, 0)();
-    auto b = slices.marginal!(2, 0)();
+    auto a = arrays.rcMarginal!(2, 0)();
+    auto b = slices.rcMarginal!(2, 0)();
     assert(a.counts.shape == [4, 2]);
     assert(a.axis[0].bin(0).low == 20 && a.axis[1].bin(0).low == 0);
     uint sum;
@@ -3816,15 +3798,15 @@ unittest
             sum += expected;
         }
     assert(sum == 300);
-    static assert(!__traits(compiles, arrays.marginal!()()));
-    static assert(!__traits(compiles, arrays.marginal!(0, 0)()));
-    static assert(!__traits(compiles, arrays.marginal!(0, 1, 2)()));
-    static assert(!__traits(compiles, arrays.marginal!3()));
-    static assert(!__traits(compiles, arrays.marginal!(-1)()));
-    static assert(!__traits(compiles, arrays.marginal!double()));
-    static assert(!__traits(compiles, arrays.marginal!(0.5)()));
-    static assert(!__traits(compiles, a.marginal!(0, 1)()));
-    static assert(!__traits(compiles, a.marginal!0().marginal!0()));
+    static assert(!__traits(compiles, arrays.rcMarginal!()()));
+    static assert(!__traits(compiles, arrays.rcMarginal!(0, 0)()));
+    static assert(!__traits(compiles, arrays.rcMarginal!(0, 1, 2)()));
+    static assert(!__traits(compiles, arrays.rcMarginal!3()));
+    static assert(!__traits(compiles, arrays.rcMarginal!(-1)()));
+    static assert(!__traits(compiles, arrays.rcMarginal!double()));
+    static assert(!__traits(compiles, arrays.rcMarginal!(0.5)()));
+    static assert(!__traits(compiles, a.rcMarginal!(0, 1)()));
+    static assert(!__traits(compiles, a.rcMarginal!0().rcMarginal!0()));
 }
 
 
@@ -3844,7 +3826,7 @@ unittest
         auto boundaries = rcslice!double(values[]);
         uint[2][2] data = [[1u, 2u], [3u, 4u]];
         const h = HistogramAccumulator!(typeof(data), X, Y)(data, X(boundaries), Y(2, 0));
-        return h.marginal!0();
+        return h.rcMarginal!0();
     }
     auto result = makeMarginal();
     assert(result.counts == [3u, 7u]);
@@ -3866,14 +3848,14 @@ unittest
     uint[2][2] data = [[1u, 2u], [3u, 4u]];
     const h = HistogramAccumulator!(typeof(data), X, Y)(
         data, X(boundaries[].sliced), Y(2, 0));
-    auto result = h.marginal!0();
+    auto result = h.rcMarginal!0();
     static assert(is(typeof(result.axis[0]) == VariableAxis!(const(double)*, AxisOptions())));
     assert(result.axis[0].bin(1).low == 1 && result.axis[0].bin(1).high == 4);
     result.put(2.0);
     assert(result.counts == [3u, 8u]);
 }
 
-// Owning counts can escape stack-backed sources; scope-bound borrowed axes are rejected.
+// Owning counts can escape stack-backed sources; borrowed axis data cannot escape.
 version(mir_stat_test_lifetime)
 @safe @nogc
 unittest
@@ -3885,7 +3867,7 @@ unittest
     {
         uint[2][2] data = [[1u, 2u], [3u, 4u]];
         auto h = HistogramAccumulator!(typeof(data), A, A)(data, A(2, 0), A(2, 0));
-        return h.marginal!0();
+        return h.rcMarginal!0();
     }
     assert(makeMarginal().counts == [3u, 7u]);
     // A borrowed count slice is consumed during the call, not retained.
@@ -3894,7 +3876,7 @@ unittest
         uint[4] data = [1u, 2u, 3u, 4u];
         auto storage = data[].sliced(2, 2);
         auto h = HistogramAccumulator!(typeof(storage), A, A)(storage, A(2, 0), A(2, 0));
-        return h.marginal!1();
+        return h.rcMarginal!1();
     }
     assert(fromSlice().counts == [4u, 6u]);
 
@@ -3904,9 +3886,7 @@ unittest
         uint[2][2] data;
         auto h = HistogramAccumulator!(typeof(data), X, A)(
             data, X(boundaries[].sliced), A(2, 0));
-        // Rejection occurs at the call: marginal does not permit a scope-bound
-        // source with borrowed axis data to escape through its result.
-        auto marginal = h.marginal!0();
+        return h.rcMarginal!0();
     }));
 }
 
@@ -3922,7 +3902,7 @@ unittest
     auto data = [[1u, 2u], [3u, 4u]];
     auto h = HistogramAccumulator!(typeof(data), A, A)(data, A(2, 0), A(2, 0));
     data[1] = [3u];
-    assertThrown!AssertError(h.marginal!0());
+    assertThrown!AssertError(h.rcMarginal!0());
 }
 
 
@@ -3943,9 +3923,9 @@ unittest
     alias C = CategoryAxis!(Label, AxisOptions(false, true));
     uint[3][2] data = [[1u, 2u, 3u], [4u, 5u, 6u]];
     auto h = HistogramAccumulator!(typeof(data), CountOnlyAxis, C)(data, CountOnlyAxis(), C());
-    auto numeric = h.marginal!0();
+    auto numeric = h.rcMarginal!0();
     assert(numeric.counts == [6u, 15u]);
-    auto category = h.marginal!1();
+    auto category = h.rcMarginal!1();
     assert(category.counts == [5u, 7u, 9u]);
     assert(category.bins.front.bin.slot == Label.first);
     assert(category.overflow == 9);
@@ -3969,7 +3949,7 @@ unittest
         assert(h.underflow!1 == 12 && h.overflow!1 == 18);
         const frozen = h;
         assert(frozen.underflow == 6 && frozen.overflow!1 == 18);
-        auto marginal = h.marginal!0();
+        auto marginal = h.rcMarginal!0();
         assert(marginal.counts == [6u, 15u, 24u]);
         marginal.put(0);
         assert(marginal.counts[1] == 16);
@@ -4035,7 +4015,7 @@ unittest
     h.putWeighted(0.5, 0.25, 1.25);
     h.putWeighted(2.0, -1.0, 3.0);
     assert(h.counts[1][2] == 0.5 && h.counts[0][3] == 2);
-    auto marginal = h.marginal!0();
+    auto marginal = h.rcMarginal!0();
     assert(marginal.counts == [2.0, 0.5, 0, 0]);
     double[16] raw = 0;
     auto view = raw[].sliced(4, 4).transposed;
