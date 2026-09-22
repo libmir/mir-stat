@@ -826,15 +826,15 @@ private bool hasStrictBoundaries(Axis)(scope ref const Axis axis)
 private size_t locateBoundaryBin(bool rightClosed, Axis, Value, Scaled)(
     scope ref const Axis axis, Value x, Scaled scaled)
 {
-    import mir.math.common: floor;
-
     const n = cast(size_t) axis.N_bin;
     size_t candidate;
     if (scaled >= n)
         candidate = n - 1;
     else if (scaled > 0) // Zero, negative, or NaN estimates fall back from bin zero.
     {
-        candidate = floatingBinIndex!size_t(floor(scaled));
+        // The estimate is positive and below n, so truncation gives the same
+        // integer as floor without a separate rounding operation.
+        candidate = floatingBinIndex!size_t(scaled);
         static if (rightClosed)
             if (scaled == candidate)
                 --candidate;
@@ -870,6 +870,33 @@ private size_t locateBoundaryBin(bool rightClosed, Axis, Value, Scaled)(
     }
     assert(first < n, "Axis.index: no bin contains the observation");
     return first;
+}
+
+// Fractional estimates truncate; invalid estimates avoid conversion entirely.
+version(mir_stat_test)
+@safe pure nothrow @nogc
+unittest
+{
+    import std.meta: AliasSeq;
+    import std.math: nextDown, nextUp;
+    static foreach (T; AliasSeq!(float, double, real))
+    static foreach (rightClosed; [false, true])
+    {{
+        auto axis = RegularAxis!(size_t, T, AxisOptions(rightClosed))(4, T(0), T(4));
+        T[8] values = [T(0.25), nextDown(T(1)), T(1), nextUp(T(1)),
+            T(1.25), T(2.75), T(3), nextDown(T(4))];
+        foreach (x; values)
+        {
+            size_t expected = cast(size_t) x;
+            static if (rightClosed)
+                if (x == expected) --expected;
+            assert(locateBoundaryBin!rightClosed(axis, x, x) == expected);
+            // Deliberately inaccurate estimates exercise boundary correction.
+            foreach (scaled; [T.nan, -T.infinity, T(-0.5), T(0), T(0.25),
+                nextDown(T(1)), T(1), nextUp(T(1)), T(1.25), T(4), T.infinity])
+                assert(locateBoundaryBin!rightClosed(axis, x, scaled) == expected);
+        }
+    }}
 }
 
 /++
