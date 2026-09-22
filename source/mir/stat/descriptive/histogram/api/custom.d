@@ -412,6 +412,15 @@ unittest
     }
     CountingAllocator allocator;
     bool rejected;
+    {
+        import std.experimental.allocator: dispose;
+        CountingAllocator validAllocator;
+        auto h = makeHistogram!uint(validAllocator, Axis(1));
+        h.put(0);
+        assert(h.counts[0] == 1);
+        validAllocator.dispose(h.counts.field);
+        assert(validAllocator.allocations == 1 && validAllocator.releases == 1);
+    }
     try { auto h = makeHistogram!uint(allocator, Axis(size_t.max)); }
     catch (AssertError) { rejected = true; }
     assert(rejected);
@@ -467,8 +476,73 @@ unittest
     uint[2][2] counts;
     auto source = HistogramAccumulator!(typeof(counts), Axis, Axis)(
         counts, Axis(&allocated), Axis(&allocated));
+    source.put(0, 0);
+    assert(source.counts[0][0] == 1);
     assertThrown!Exception(makeMarginal!0(allocator, source));
     assert(allocator.base.allocations == 2 && allocator.base.releases == 2);
+}
+
+// Projection succeeds, but copying its axes into the RF wrapper can still fail.
+version(mir_stat_test)
+@system pure
+unittest
+{
+    import mir.stat.descriptive.histogram.accumulator: HistogramAccumulator;
+    import mir.stat.descriptive.histogram.relative_frequency: RelativeFrequencyAccumulator;
+    import std.exception: assertThrown;
+    import std.experimental.allocator: dispose;
+    static struct State { uint* counts; }
+    static struct Allocator
+    {
+        CountingAllocator base;
+        State* state;
+        enum alignment = CountingAllocator.alignment;
+        void[] allocate(size_t bytes) @system pure nothrow @nogc
+        {
+            auto memory = base.allocate(bytes);
+            state.counts = cast(uint*) memory.ptr;
+            return memory;
+        }
+        bool deallocate(void[] memory) @system pure nothrow @nogc
+        {
+            state.counts = null;
+            return base.deallocate(memory);
+        }
+    }
+    static struct Axis
+    {
+        alias BinType = int;
+        enum N_bin = 1;
+        const(State)* state;
+        Axis lightConst() const @safe pure nothrow @nogc { return Axis(state); }
+        size_t index(int value) const @safe pure nothrow @nogc { return 0; }
+        this(this) @safe pure
+        {
+            if (state.counts !is null && *state.counts != 0)
+                throw new Exception("axis copy after projection");
+        }
+    }
+    State state;
+    Allocator allocator;
+    allocator.state = &state;
+    uint[1][1] counts;
+    auto source = HistogramAccumulator!(typeof(counts), Axis, Axis)(
+        counts, Axis(&state), Axis(&state));
+    source.put(0, 0);
+    auto relative = RelativeFrequencyAccumulator!(typeof(counts), Axis, Axis)(
+        source.counts, source.axis);
+
+    // The same axis and allocator successfully produce an ordinary marginal.
+    auto projected = makeMarginal!0(allocator, source);
+    assert(projected.counts[0] == 1);
+    allocator.dispose(projected.counts.field);
+    assert(allocator.base.allocations == 1 && allocator.base.releases == 1);
+
+    // Only the subsequent wrapper construction copies the populated axis.
+    assertThrown!Exception(makeMarginal!0(allocator, relative));
+    assert(allocator.base.allocations == 2 && allocator.base.releases == 2);
+    assert(state.counts is null);
+    assert(relative.total == 1 && relative.counts[0][0] == 1);
 }
 
 // Safety depends on the allocator's contract, including its release operation.
