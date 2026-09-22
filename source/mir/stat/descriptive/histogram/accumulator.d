@@ -523,7 +523,8 @@ public:
     Axes are compared using equality. All axes and both storage shapes are
     checked before any counts change.
 
-    The source can be const. No allocation is performed. Each destination bin
+    The source can be const. Histogram merging allocates no storage itself;
+    a custom cell's merge operation may allocate. Each destination bin
     must have distinct storage; source storage may overlap the destination
     only at corresponding bin positions. Self-merging doubles numeric counts;
     accumulator cells must support merging their own state.
