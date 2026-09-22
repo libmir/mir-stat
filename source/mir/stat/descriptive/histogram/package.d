@@ -19,5 +19,5 @@ public import mir.stat.descriptive.histogram.traits;
 public import mir.stat.descriptive.histogram.api;
 
 // Possible later extensions
-// - Support per-bin accumulators, such as MeanAccumulator.
+// - Add allocating factories and marginalization for per-bin accumulators.
 // - Add counters that widen dynamically when their current representation fills.

@@ -40,16 +40,15 @@ package template acceptsHistogramWeight(C, W)
 private template isJointStorage(Storage, size_t rank)
 {
     static if (isSlice!Storage)
-        enum isJointStorage = Storage.N == rank && isNumeric!(DeepElementType!Storage);
+        enum isJointStorage = Storage.N == rank;
     else
-        enum isJointStorage = JointArrayInfo!Storage.rank == rank &&
-            isNumeric!(JointArrayInfo!Storage.Element);
+        enum isJointStorage = JointArrayInfo!Storage.rank == rank;
 }
 
 /++
-Accumulator used to generate histogram.
+Accumulator for numeric counts or per-bin statistical accumulators.
 
-With one axis, each argument to put records an observation. With multiple
+With numeric cells and one axis, each argument to put records an observation. With multiple
 axes, put(x, y, ...) increments one joint bin. Storage must be an ndslice or
 rectangular nested built-in array, with one dimension per axis.
 Nested static arrays are copied into the accumulator; dynamic arrays and
@@ -67,10 +66,53 @@ Use putWeighted(weight, coordinates...) to accumulate weights instead of unit
 counts. Bin counts then represent sums of weights; this accumulator maintains
 neither a separate observation count nor a running total.
 
+Per-bin accumulators group observations by their coordinates and compute a
+statistic from the samples in each group. As an example, use a Summator for more
+sophisticated summation algorithms, MeanAccumulator for a mean, or
+WMeanAccumulator for a weighted mean. The sample may represent a different
+quantity from the coordinates: for example, grouping purchases by customer age
+and accumulating purchase amounts gives total sales revenue for each age group.
+
+Use putSample(sample, coordinates...) or
+putWeightedSample(weight, sample, coordinates...) to update the selected cell.
+Caller-provided cells retain their existing state, including their normal default
+initialization. Numeric counting operations and marginalization require numeric
+cells; sample operations forward to the stored accumulator's put method.
+
+Storage requirements:
+Storage is a built-in array or Mir ndslice whose elements are the bin cells.
+One axis requires one-dimensional storage; multiple axes require a slice of
+matching rank or rectangular nested arrays, including mixtures of static and
+dynamic arrays. Strided ndslices are supported. Every dimension must match its
+axis's storage extent, including enabled underflow/overflow bins. Construction
+checks these extents and retains the supplied cell values; it does not reset them.
+
+Cell requirements depend on the operation used:
+$(UL
+    $(LI Numeric cells support ordinary counting. Weighted counting additionally
+        requires a real numeric weight implicitly convertible to the counter type.)
+    $(LI putSample(sample, coordinates...) requires a nonnumeric cell with a
+        callable cell.put(sample).)
+    $(LI putWeightedSample(weight, sample, coordinates...) requires a nonnumeric
+        cell with a callable cell.put(sample, weight).)
+    $(LI Histogram merging requires matching cell and axis types. A cell must
+        accept put(sourceCell) or += sourceCell with a const source cell;
+        put takes precedence for nonnumeric cells.)
+)
+There is no required accumulator base type or fixed sample type. Custom cells
+can implement only the operations they need. Updating requires mutable cells;
+read-only storage can be used for bin views when the axes support bin descriptions
+and the cells support const copying. Cell operations determine their own sample
+and weight validity, allocation behavior, and function attributes.
+
+Marginalization and the underflow/overflow total members currently require
+numeric cells. Accumulator end bins can be read through bins!(BinCoverage.all).
+
 If the `Axis` has an `options` member, the histogram may optionally allow
 for overflow and underflow members.
 
 Params:
+    Storage = array or ndslice containing one numeric value or accumulator per stored bin
     Axis = the type of the axis used to create the histogram bins
 
 See_also:
@@ -94,12 +136,14 @@ struct HistogramAccumulator(Storage, Axis...)
     else
         private alias StoredCountType = DeepElementType!Storage;
 
-    /// Type of one count value, independently of storage mutability.
+    /// Type of one cell, independently of storage mutability; also see ValueType.
     alias CountType = Unqual!StoredCountType;
+    /// Type of one stored numeric value or accumulator.
+    alias ValueType = CountType;
     static if (Axis.length > 1)
     {
         static assert(isJointStorage!(Storage, Axis.length),
-            "HistogramAccumulator: joint storage must be a numeric ndslice or nested array with one dimension per axis");
+            "HistogramAccumulator: joint storage must be an ndslice or nested array with one dimension per axis");
     }
 private:
     import mir.stat.descriptive.histogram.traits: axisStorageExtent = storageExtent;
@@ -143,7 +187,8 @@ private:
         static if (is(Unqual!H == HistogramAccumulator!Args, Args...))
             enum acceptsMerge =
                 is(Unqual!H == HistogramAccumulator!(Args[0], Axis)) &&
-                is(Unqual!(H.CountType) == Unqual!CountType);
+                is(Unqual!(H.CountType) == Unqual!CountType) &&
+                acceptsCellMerge;
         else
             enum acceptsMerge = false;
     }
@@ -165,10 +210,42 @@ private:
         foreach (i; 0 .. destination.length)
         {
             static if (depth + 1 == N)
-                destination[i] += source[i];
+            {
+                static if (acceptsSamples!(const CountType))
+                    destination[i].put(source[i]);
+                else
+                    destination[i] += source[i];
+            }
             else
                 mergeStorage!(depth + 1)(destination[i], source[i]);
         }
+    }
+
+    private enum acceptsCellMerge = acceptsSamples!(const CountType) ||
+        __traits(compiles, {
+            StoredCountType cell;
+            const CountType source;
+            cell += source;
+        });
+
+    // Probe only the cell operation; coordinate checking is shared with counting.
+    private template acceptsSamples(Samples...)
+    {
+        enum acceptsSamples = !isNumeric!CountType && __traits(compiles, {
+            StoredCountType cell;
+            Samples samples;
+            cell.put(samples);
+        });
+    }
+
+    // Keep nested static arrays as references, and preserve ndslice strides.
+    private static void putArraySample(size_t depth = 0, S, Samples...)(
+        ref S storage, const ref size_t[N] indices, auto ref Samples samples)
+    {
+        static if (depth + 1 == N)
+            storage[indices[depth]].put(samples);
+        else
+            putArraySample!(depth + 1)(storage[indices[depth]], indices, samples);
     }
 
     // Recurse by reference so nested static arrays are updated in place.
@@ -209,7 +286,7 @@ public:
     ///
     Axis axis;
 
-    /// All stored counts, including enabled underflow/overflow bins.
+    /// All stored cells, including enabled underflow/overflow bins.
     Storage counts;
 
     /++
@@ -231,7 +308,7 @@ public:
         dimensions = zero-based source axes to retain, in result order
     +/
     auto marginal(dimensions...)() const
-        if (validMarginalAxes!(N, dimensions))
+        if (isNumeric!CountType && validMarginalAxes!(N, dimensions))
     {
         import std.meta: staticMap;
         import mir.ndslice.allocation: rcslice;
@@ -267,7 +344,12 @@ public:
     }
 
     /++
-    Read-only random-access view of bins and their counts.
+    Read-only random-access view of bins and their values.
+
+    Numeric entries expose both value and count. Accumulator entries expose
+    value as a const copy of their state; any referenced data remains shared
+    and const-qualified. Copying an entry does not deep-copy owned or borrowed
+    resources. Its referenced data must remain valid while the entry is used.
 
     The view copies the axis and storage handles, sharing the count buffer.
     Subsequent count updates are visible when an element is read. Replacing
@@ -339,7 +421,7 @@ public:
 
     ///
     void put(Range)(Range r)
-        if (N == 1 &&
+        if (isNumeric!CountType && N == 1 &&
             isIterable!Range &&
             !(isCategoryAxis!(Axis[0]) && isSomeString!Range))
     {
@@ -370,7 +452,7 @@ public:
     supply exactly one compatible coordinate per axis for a single observation.
     +/
     void put(T...)(T x)
-        if (acceptsArguments!T)
+        if (isNumeric!CountType && acceptsArguments!T)
     {
         static if (N == 1)
         {
@@ -387,6 +469,48 @@ public:
             else
                 updateArray!false(counts, indices);
         }
+    }
+
+    /++
+    Record a sample in the accumulator selected by one coordinate per axis.
+    For example, bin by temperature while accumulating mean response time.
+    All coordinates are checked before the cell is updated. The cell's put
+    method determines sample validity, attributes, and any allocation behavior.
+
+    Params:
+        sample = value passed to the selected cell's put method
+        coordinates = one compatible coordinate per axis
+    +/
+    void putSample(S, T...)(auto ref S sample, T coordinates)
+        if (T.length == N && acceptsArguments!T && acceptsSamples!S)
+    {
+        const indices = storageIndices(coordinates);
+        static if (isSlice!Storage)
+            counts[indices].put(sample);
+        else
+            putArraySample(counts, indices, sample);
+    }
+
+    /++
+    Record a weighted sample in the selected accumulator.
+    Weight comes first, as in putWeighted; the cell receives put(sample, weight).
+    The cell determines weight validity and semantics, including zero weights.
+    No separate histogram count or total is maintained. All coordinates are
+    checked before the cell is updated.
+
+    Params:
+        weight = weight passed to the cell after the sample
+        sample = value being accumulated
+        coordinates = one compatible coordinate per axis
+    +/
+    void putWeightedSample(W, S, T...)(auto ref W weight, auto ref S sample, T coordinates)
+        if (T.length == N && acceptsArguments!T && acceptsSamples!(S, W))
+    {
+        const indices = storageIndices(coordinates);
+        static if (isSlice!Storage)
+            counts[indices].put(sample, weight);
+        else
+            putArraySample(counts, indices, sample, weight);
     }
 
     /++
@@ -423,15 +547,19 @@ public:
     }
 
     /++
-    Merge counts from a histogram with matching axes and counter type.
-    Corresponding ordinary and underflow/overflow bins are added. Source and
+    Merge cells from a histogram with matching axes and value type.
+    Accumulator cells receive put(sourceCell) when supported; otherwise cells
+    merge through +=, as numeric counters and Summator do. This merges full
+    state rather than adding reported statistics such as means.
+    Corresponding ordinary and underflow/overflow bins are merged. Source and
     destination storage may use different array nesting or ndslice layouts.
     Axes are compared using equality. All axes and both storage shapes are
     checked before any counts change.
 
     The source can be const. No allocation is performed. Each destination bin
     must have distinct storage; source storage may overlap the destination
-    only at corresponding bin positions. Self-merging doubles each count.
+    only at corresponding bin positions. Self-merging doubles numeric counts;
+    accumulator cells must support merging their own state.
     Other overlapping layouts require a separate copy of the source first.
 
     Params:
@@ -461,7 +589,7 @@ public:
         dimension = zero-based axis number; overflow must be enabled on this axis
     +/
     CountType overflow(size_t dimension = 0)() const
-        if (dimension < N && includeOverflow!(Axis[dimension]))
+        if (isNumeric!CountType && dimension < N && includeOverflow!(Axis[dimension]))
     {
         return axisEndTotal!dimension(counts, axisStorageExtent(axis[dimension]) - 1);
     }
@@ -478,11 +606,279 @@ public:
         dimension = zero-based axis number; underflow must be enabled on this axis
     +/
     CountType underflow(size_t dimension = 0)() const
-        if (dimension < N && includeUnderflow!(Axis[dimension]))
+        if (isNumeric!CountType && dimension < N && includeUnderflow!(Axis[dimension]))
     {
         return axisEndTotal!dimension(counts, 0);
     }
 
+}
+
+/++
+Accumulate sales revenue by customer age to compare how much each age group
+spends. Each purchase amount updates the Summator in the customer's age bin.
+The caller selects the summation algorithm used within each bin.
++/
+version(mir_stat_test)
+@safe pure nothrow @nogc
+unittest
+{
+    import mir.math.sum: Summator, Summation;
+    import mir.stat.descriptive.histogram.axis: RegularAxis, AxisOptions;
+
+    alias Cell = Summator!(double, Summation.pairwise);
+    alias Age = RegularAxis!(double, AxisOptions());
+    Cell[2] revenue;
+    auto sales = HistogramAccumulator!(Cell[], Age)(revenue[], Age(2, 20.0, 60.0));
+    sales.putSample(30.0, 25.0);
+    sales.putSample(50.0, 35.0);
+    sales.putSample(120.0, 45.0);
+
+    // Ages [20,40) account for 80; ages [40,60) account for 120.
+    // The view reports accumulator state, not a numeric observation count.
+    auto bins = sales.bins;
+    assert(bins[0].value.sum == 80.0);
+    assert(bins[1].value.sum == 120.0);
+}
+
+/++
+Compare service response times across machine temperatures to assess how
+temperature relates to latency. Temperature selects the bin, and response time
+updates its MeanAccumulator. Each bin reports the mean latency and request count.
++/
+version(mir_stat_test)
+@safe pure nothrow @nogc
+unittest
+{
+    import mir.math.sum: Summation;
+    import mir.stat.descriptive.univariate: MeanAccumulator;
+    import mir.stat.descriptive.histogram.axis: RegularAxis, AxisOptions;
+    import mir.ndslice.slice: sliced;
+
+    alias Cell = MeanAccumulator!(double, Summation.pairwise);
+    alias Temperature = RegularAxis!(double, AxisOptions());
+    Cell[2] buffer;
+    auto storage = buffer[].sliced;
+    auto timings = HistogramAccumulator!(typeof(storage), Temperature)(
+        storage, Temperature(2, 20.0, 60.0));
+    timings.putSample(100.0, 25.0);
+    timings.putSample(200.0, 35.0);
+    timings.putSample(400.0, 45.0);
+
+    // The cooler bin has two requests averaging 150 ms; the warmer bin has one.
+    auto bins = timings.bins;
+    assert(bins[0].value.count == 2);
+    assert(bins[0].value.mean == 150.0);
+    assert(bins[1].value.mean == 400.0);
+
+    // Reading a bin copies its current state. The view itself sees later updates.
+    auto previous = bins[0];
+    timings.putSample(300.0, 30.0);
+    assert(previous.value.mean == 150.0);
+    assert(bins[0].value.mean == 200.0);
+}
+
+/++
+Regional sensor reports may each summarize a different number of readings.
+Weight each report's mean by its reading count to recover the regional mean;
+averaging report means without weights would give small reports too much influence.
++/
+version(mir_stat_test)
+@safe pure nothrow @nogc
+unittest
+{
+    import mir.math.sum: Summation;
+    import mir.stat.descriptive.weighted: WMeanAccumulator, AssumeWeights;
+    import mir.stat.descriptive.histogram.axis: RegularAxis, AxisOptions;
+
+    alias Cell = WMeanAccumulator!(double, Summation.pairwise, AssumeWeights.primary);
+    alias Coordinate = RegularAxis!(double, AxisOptions());
+    Cell[2][2] storage;
+    auto readings = HistogramAccumulator!(typeof(storage), Coordinate, Coordinate)(
+        storage, Coordinate(2, 0.0, 2.0), Coordinate(2, 0.0, 2.0));
+
+    // Weight first, then the reported mean, then latitude and longitude.
+    readings.putWeightedSample(2.0, 10.0, 0.5, 1.5);
+    readings.putWeightedSample(6.0, 30.0, 0.5, 1.5);
+    assert(readings.counts[0][1].weight == 8.0);
+    assert(readings.counts[0][1].wmean == 25.0);
+    // Nested static storage is copied into the histogram, so inspect its cells.
+    assert(storage[0][1].weight == 0.0);
+}
+
+// Sum and weighted-mean cells merge their full state across array and slice storage.
+version(mir_stat_test)
+@safe pure nothrow @nogc
+unittest
+{
+    import std.meta: AliasSeq;
+    import mir.math.sum: Summator, Summation;
+    import mir.stat.descriptive.weighted: WMeanAccumulator, AssumeWeights;
+    import mir.stat.descriptive.histogram.axis: IntegralAxis, AxisOptions;
+    import mir.ndslice.slice: sliced;
+    alias A = IntegralAxis!(int, AxisOptions());
+    alias Sum = Summator!(double, Summation.pairwise);
+    alias Mean = WMeanAccumulator!(double, Summation.pairwise, AssumeWeights.primary);
+
+    static foreach (Cell; AliasSeq!(Sum, Mean))
+    {{
+        Cell[2] buffer, otherBuffer;
+        auto h = HistogramAccumulator!(Cell[], A)(buffer[], A(2, 0));
+        auto storage = otherBuffer[].sliced;
+        auto other = HistogramAccumulator!(typeof(storage), A)(storage, A(2, 0));
+        static if (is(Cell == Sum))
+        {
+            h.putSample(10.0, 0);
+            other.putSample(30.0, 0);
+        }
+        else
+        {
+            h.putWeightedSample(2.0, 10.0, 0);
+            other.putWeightedSample(6.0, 30.0, 0);
+        }
+        h.put(other);
+        static if (is(Cell == Sum))
+            assert(h.bins.front.value.sum == 40.0);
+        else
+        {
+            assert(h.bins.front.value.weight == 8.0);
+            assert(h.bins.front.value.wmean == 25.0);
+        }
+        // Self-merging doubles the state, not the resulting mean.
+        h.put(h);
+        static if (is(Cell == Sum))
+            assert(h.bins.front.value.sum == 80.0);
+        else
+        {
+            assert(h.bins.front.value.weight == 16.0);
+            assert(h.bins.front.value.wmean == 25.0);
+        }
+    }}
+}
+
+// A view must not expose mutable references held inside a custom cell.
+version(mir_stat_test)
+@safe pure nothrow @nogc
+unittest
+{
+    import mir.stat.descriptive.histogram.axis: IntegralAxis, AxisOptions;
+    static struct Cell
+    {
+        int[] data;
+        void put(int sample) @safe pure nothrow @nogc { data[0] += sample; }
+    }
+    alias A = IntegralAxis!(int, AxisOptions());
+    int[1] data;
+    Cell[1] storage = [Cell(data[])];
+    auto h = HistogramAccumulator!(Cell[], A)(storage[], A(1, 0));
+    auto view = h.bins;
+    auto entry = view.front;
+    static assert(!__traits(compiles, { entry.value.data[0] = 10; }));
+    static assert(!__traits(compiles, h.put(h))); // No cell merge operation.
+    h.putSample(3, 0);
+    assert(entry.value.data[0] == 3); // Referenced data is shared, not deep-copied.
+}
+
+// Rejected coordinates and incompatible axes leave accumulator cells untouched.
+// Catching assertion failures requires @system; the successful paths are tested @safe.
+version(mir_stat_test)
+@system pure nothrow @nogc
+unittest
+{
+    import core.exception: AssertError;
+    import mir.math.sum: Summation;
+    import mir.stat.descriptive.univariate: MeanAccumulator;
+    import mir.stat.descriptive.histogram.axis: IntegralAxis, AxisOptions;
+    alias Cell = MeanAccumulator!(double, Summation.pairwise);
+    alias A = IntegralAxis!(int, AxisOptions());
+    Cell[2] row0, row1;
+    Cell[][2] rows = [row0[], row1[]];
+    auto h = HistogramAccumulator!(Cell[][], A, A)(rows[], A(2, 0), A(2, 0));
+    bool rejected;
+    try { h.putSample(1.0, 0, 2); }
+    catch (AssertError) { rejected = true; }
+    assert(rejected);
+    assert(row0[0].count == 0);
+    auto other = HistogramAccumulator!(Cell[][], A, A)(rows[], A(2, 1), A(2, 0));
+    rejected = false;
+    try { h.put(other); }
+    catch (AssertError) { rejected = true; }
+    assert(rejected);
+    assert(row0[0].count == 0);
+    h.putSample(7.0, 1, 0);
+    assert(row1[0].mean == 7.0);
+    assert(h.bins[2].value.mean == 7.0);
+}
+
+version(mir_stat_test_lifetime)
+@safe pure nothrow @nogc
+unittest
+{
+    import mir.math.sum: Summation;
+    import mir.stat.descriptive.univariate: MeanAccumulator;
+    import mir.stat.descriptive.histogram.axis: IntegralAxis, AxisOptions;
+    alias Cell = MeanAccumulator!(double, Summation.pairwise);
+    alias A = IntegralAxis!(int, AxisOptions());
+    alias Storage = Cell[2];
+    alias H = HistogramAccumulator!(Storage, A);
+    H h = H(Storage.init, A(2, 0));
+    auto borrowed = h.bins;
+    h.putSample(12.0, 0);
+    assert(borrowed.front.value.mean == 12.0);
+    static assert(!__traits(compiles, () @safe {
+        H local = H(Storage.init, A(2, 0));
+        return local.bins;
+    }));
+}
+
+version(mir_stat_test)
+@safe pure nothrow @nogc
+unittest
+{
+    import mir.math.sum: Summation;
+    import mir.stat.descriptive.univariate: MeanAccumulator;
+    import mir.stat.descriptive.histogram.axis: IntegralAxis, AxisOptions;
+    import mir.ndslice.slice: sliced;
+    import mir.ndslice.dynamic: transposed;
+
+    alias Cell = MeanAccumulator!(double, Summation.pairwise);
+    alias A = IntegralAxis!(double, AxisOptions(false, true, true));
+    Cell[16] buffer;
+    // Preserve an existing cell, then merge from a different storage layout.
+    buffer[4].put(10.0);
+    auto storage = buffer[].sliced(4, 4).transposed;
+    auto h = HistogramAccumulator!(typeof(storage), A, A)(storage, A(2, 0), A(2, 0));
+    h.putSample(30.0, -1.0, 0.5);
+    h.putSample(80.0, 2.0, 2.0);
+    assert(h.counts[0, 1].mean == 20.0);
+    assert(h.counts[3, 3].mean == 80.0);
+
+    Cell[4][4] otherStorage;
+    auto other = HistogramAccumulator!(typeof(otherStorage), A, A)(
+        otherStorage, A(2, 0), A(2, 0));
+    other.putSample(50.0, -1.0, 0.5);
+    const source = other;
+    h.put(source);
+    assert(h.counts[0, 1].count == 3);
+    assert(h.counts[0, 1].mean == 30.0);
+    assert(h.counts[3, 3].mean == 80.0);
+
+    import mir.stat.descriptive.histogram.accumulator: BinCoverage;
+    auto all = h.bins!(BinCoverage.all);
+    assert(all[1].isUnderflow!0);
+    assert(all[1].value.mean == 30.0);
+    assert(all.back.isOverflow!0 && all.back.isOverflow!1);
+    assert(all.back.value.mean == 80.0);
+    const readOnly = h;
+    assert(readOnly.bins!(BinCoverage.all)[1].value.count == 3);
+    static assert(!__traits(compiles, readOnly.putSample(1.0, 0.5, 0.5)));
+    static assert(!__traits(compiles, all[1].value.put(1.0)));
+    static assert(!__traits(compiles, h.putSample(1.0, 0.5)));
+    static assert(!__traits(compiles, h.putSample(1.0, "bad", 0.5)));
+    static assert(!__traits(compiles, h.putWeightedSample(1.0, 2.0, 0.5, 0.5)));
+    static assert(!__traits(compiles, h.put(0.5, 0.5)));
+    static assert(!__traits(compiles, h.putWeighted(1.0, 0.5, 0.5)));
+    static assert(!__traits(compiles, h.marginal!0));
+    static assert(!__traits(compiles, all[0].count));
 }
 
 /// Accumulate weights in bins without maintaining a separate total.
@@ -1228,16 +1624,18 @@ enum BinCoverage
 }
 
 /++
-Axis-specific descriptions and the count read when a bin was accessed.
+Axis-specific descriptions and the value read when a bin was accessed.
 
 Indices refer to the original ordinary bins, including after slicing.
 For underflow/overflow coordinates, index and bin assert; inspect isOrdinary,
 isUnderflow, or isOverflow before accessing ordinary-bin metadata.
-Elements are returned by value; assigning count does not change the histogram.
+Elements are returned by value; assigning a numeric count does not change the
+histogram. Accumulator values returned by views are const; referenced resources
+remain shared rather than being deep-copied.
 Select an axis with index!dimension or bin!dimension; dimension defaults to zero.
 
 Params:
-    Count = histogram count type
+    Count = stored numeric value or accumulator type
     BinDescriptions = description type for each axis
 +/
 struct HistogramBin(Count, BinDescriptions...)
@@ -1249,7 +1647,9 @@ struct HistogramBin(Count, BinDescriptions...)
     private Tuple!BinDescriptions _bins;
 
     /++
-    Write bin coordinates and the recorded count to an output range.
+    Write bin coordinates and the recorded value to an output range.
+    Numeric values use the label count; accumulator values use value and must
+    support Mir formatting when this method is called.
     Numeric coordinates use labeled bounds because descriptions do not retain
     endpoint-closure options. Joint coordinates appear in axis order.
     Underflow/overflow coordinates use their names instead of ordinary bounds.
@@ -1266,7 +1666,10 @@ struct HistogramBin(Count, BinDescriptions...)
         // also supports the character-only writer used by std.format.
         auto buffer = scopedBuffer!(char, 256);
         formatCoordinates(buffer);
-        print(buffer, ": count=", count);
+        static if (isNumeric!Count)
+            print(buffer, ": count=", count);
+        else
+            print(buffer, ": value=", value);
         put(writer, buffer.data);
     }
 
@@ -1307,8 +1710,12 @@ struct HistogramBin(Count, BinDescriptions...)
         put(writer, ")");
     }
 
-    /// Count at the time this element was read.
-    Count count;
+    /// Stored value at the time this element was read.
+    Count value;
+
+    /// Numeric count; an alias for value.
+    static if (isNumeric!Count)
+        alias count = value;
 
     /// Whether this coordinate is an ordinary bin; dimension defaults to zero.
     bool isOrdinary(size_t dimension = 0)() const @property
@@ -1585,9 +1992,13 @@ struct HistogramBinView(Storage, BinCoverage coverage, Axis...)
     private size_t _end;
 
     static if (isSlice!ReadOnlyStorage)
-        private alias Count = Unqual!(DeepElementType!ReadOnlyStorage);
+        private alias StoredValue = DeepElementType!ReadOnlyStorage;
     else
-        private alias Count = Unqual!(JointArrayInfo!ReadOnlyStorage.Element);
+        private alias StoredValue = JointArrayInfo!ReadOnlyStorage.Element;
+    static if (isNumeric!StoredValue)
+        private alias Count = Unqual!StoredValue;
+    else
+        private alias Count = const(Unqual!StoredValue);
 
     /// Type of each returned value.
     alias Element = HistogramBin!(Count, staticMap!(DescriptionOf, ReadOnlyAxes));
@@ -1722,10 +2133,10 @@ struct HistogramBinView(Storage, BinCoverage coverage, Axis...)
             }
         }}
         static if (isSlice!S)
-            result.count = counts[storageIndices];
+            return Element(result._kinds, result._indices, result._bins, counts[storageIndices]);
         else
-            result.count = readArrayCount(counts, storageIndices);
-        return result;
+            return Element(result._kinds, result._indices, result._bins,
+                readArrayCount(counts, storageIndices));
     }
 
     /// Return a subrange; element indices still refer to the original histogram.

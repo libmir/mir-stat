@@ -8,10 +8,9 @@ Copyright: 2026 Mir Stat Authors.
 module mir.stat.descriptive.histogram.internal.view;
 
 import mir.ndslice.slice: isSlice;
-import mir.primitives: DeepElementType;
 import mir.qualifier: lightConst;
 import mir.stat.descriptive.histogram.traits: isAxis;
-import std.traits: isArray, isDynamicArray, isNumeric;
+import std.traits: isArray, isDynamicArray;
 import std.meta: allSatisfy;
 
 package(mir.stat.descriptive.histogram) template JointArrayInfo(Storage)
@@ -41,11 +40,9 @@ private template supportsAxisBin(Axis)
 package(mir.stat.descriptive.histogram) template supportsBinView(Storage, Axis...)
 {
     static if (isDynamicArray!Storage)
-        private enum supportedStorage = JointArrayInfo!Storage.rank == Axis.length &&
-            isNumeric!(JointArrayInfo!Storage.Element);
+        private enum supportedStorage = JointArrayInfo!Storage.rank == Axis.length;
     else static if (isSlice!Storage)
-        private enum supportedStorage = Storage.N == Axis.length &&
-            isNumeric!(DeepElementType!Storage);
+        private enum supportedStorage = Storage.N == Axis.length;
     else
         private enum supportedStorage = false;
 
