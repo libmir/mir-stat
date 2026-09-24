@@ -38,6 +38,13 @@ template benchmarkValues(fun...)
     }
 }
 
+// Warm up once before measurement, and rotate only among enabled algorithms.
+package(mir) struct BenchmarkSchedule
+{
+    size_t warmup;
+    size_t firstAlgorithm;
+}
+
 // Prepare one dataset per iteration and check every result outside timing.
 // Each function receives the same arguments; callers should provide read-only
 // views when sharing input buffers across algorithms.
@@ -46,32 +53,53 @@ template benchmarkPrepared(fun...)
 {
     Duration[fun.length] benchmarkPrepared(T, Prepare, Check, Args...)(
         size_t n, out T[fun.length] values, const bool[fun.length] enabled,
-        scope Prepare prepare, scope Check check, Args args)
+        BenchmarkSchedule schedule, scope Prepare prepare, scope Check check, Args args)
     {
         import std.datetime.stopwatch: StopWatch;
         import std.exception: enforce;
         enforce(n > 0, "Benchmark needs at least one iteration");
-        import std.algorithm: any;
-        enforce(enabled[].any, "Benchmark needs at least one selected algorithm");
+        size_t[fun.length] active;
+        size_t count;
+        foreach (i, include; enabled)
+            if (include)
+                active[count++] = i;
+        enforce(count > 0, "Benchmark needs at least one selected algorithm");
+        auto first = schedule.firstAlgorithm % count;
         values[] = 0;
         Duration[fun.length] elapsed;
         StopWatch sw;
-        foreach (iteration; 0 .. n)
+        void iteration(bool timed)()
         {
             prepare();
-            foreach (i, operation; fun)
+            foreach (offset; 0 .. count)
             {
-                if (!enabled[i])
-                    continue;
-                sw.reset();
-                sw.start();
-                auto value = operation(args);
-                sw.stop();
-                elapsed[i] += sw.peek();
-                check(i, value);
-                values[i] += value;
+                auto index = active[(first + offset) % count];
+                // Dispatch before starting the clock, preserving direct calls.
+                foreach (i, operation; fun)
+                {
+                    if (index == i)
+                    {
+                        static if (timed)
+                        {
+                            sw.reset();
+                            sw.start();
+                        }
+                        auto value = operation(args);
+                        static if (timed)
+                        {
+                            sw.stop();
+                            elapsed[i] += sw.peek();
+                            values[i] += value;
+                        }
+                        check(i, value);
+                    }
+                }
             }
         }
+        foreach (i; 0 .. schedule.warmup)
+            iteration!false();
+        foreach (i; 0 .. n)
+            iteration!true();
         foreach (ref value; values)
             value /= n;
         return elapsed;
@@ -105,24 +133,24 @@ unittest
         ++checks;
     }
     double[2] values;
-    benchmarkPrepared!(first, second)(3, values, [true, true], &prepare, &check, cast(const(int)[]) data[]);
+    benchmarkPrepared!(first, second)(3, values, [true, true], BenchmarkSchedule.init, &prepare, &check, cast(const(int)[]) data[]);
     assert(preparations == 3 && checks == 6 && calls == 6);
     assert(values == [2.0, 2.0]);
-    assertThrown!Exception(benchmarkPrepared!(first, second)(0, values, [true, true], &prepare, &check, data[]));
+    assertThrown!Exception(benchmarkPrepared!(first, second)(0, values, [true, true], BenchmarkSchedule.init, &prepare, &check, data[]));
     assert(preparations == 3 && checks == 6 && calls == 6);
 
     void failPreparation() { throw new Exception("preparation failed"); }
-    assertThrown!Exception(benchmarkPrepared!(first, second)(1, values, [true, true], &failPreparation, &check, data[]));
+    assertThrown!Exception(benchmarkPrepared!(first, second)(1, values, [true, true], BenchmarkSchedule.init, &failPreparation, &check, data[]));
     assert(calls == 6);
 
     preparations = checks = calls = 0;
     void failCheck(size_t index, double value) { throw new Exception("incorrect result"); }
-    assertThrown!Exception(benchmarkPrepared!(first, second)(3, values, [true, true], &prepare, &failCheck, data[]));
+    assertThrown!Exception(benchmarkPrepared!(first, second)(3, values, [true, true], BenchmarkSchedule.init, &prepare, &failCheck, data[]));
     assert(preparations == 1 && calls == 1);
 
     preparations = checks = calls = 0;
     int failOperation(const(int)[] input) { throw new Exception("operation failed"); }
-    assertThrown!Exception(benchmarkPrepared!(failOperation, second)(1, values, [true, true], &prepare, &check, data[]));
+    assertThrown!Exception(benchmarkPrepared!(failOperation, second)(1, values, [true, true], BenchmarkSchedule.init, &prepare, &check, data[]));
     assert(preparations == 1 && checks == 0 && calls == 0);
 }
 
@@ -141,12 +169,50 @@ unittest
         ++checks;
     }
     double[2] values;
-    auto elapsed = benchmarkPrepared!(skipped, selected)(3, values, [false, true], &prepare, &check);
+    auto elapsed = benchmarkPrepared!(skipped, selected)(3, values, [false, true], BenchmarkSchedule.init, &prepare, &check);
     assert(preparations == 3 && checks == 3 && skippedCalls == 0);
     assert(values == [0.0, 12.0]);
     assert(elapsed[0] == Duration.zero);
-    assertThrown!Exception(benchmarkPrepared!(skipped, selected)(3, values, [false, false], &prepare, &check));
+    assertThrown!Exception(benchmarkPrepared!(skipped, selected)(3, values, [false, false], BenchmarkSchedule.init, &prepare, &check));
     assert(preparations == 3 && checks == 3 && skippedCalls == 0);
+}
+
+version(mir_stat_test)
+@safe
+unittest
+{
+    import std.exception: assertThrown;
+    size_t preparations, checks, skippedCalls;
+    size_t[10] order;
+    void prepare() { ++preparations; }
+    double first() { return cast(double) preparations; }
+    double skipped() { ++skippedCalls; return -1; }
+    double last() { return 10.0 * preparations; }
+    void check(size_t index, double value)
+    {
+        order[checks++] = index;
+        assert(value == (index == 0 ? 1.0 : 10.0) * preparations);
+    }
+    double[3] values;
+    // Rotate across the two enabled entries, ignoring the disabled middle one.
+    benchmarkPrepared!(first, skipped, last)(3, values, [true, false, true],
+        BenchmarkSchedule(2, 1), &prepare, &check);
+    assert(preparations == 5 && checks == 10 && skippedCalls == 0);
+    assert(order == [2, 0, 2, 0, 2, 0, 2, 0, 2, 0]);
+    assert(values == [4.0, 0.0, 40.0]); // Warm-up values 1 and 2 were excluded.
+
+    preparations = checks = 0;
+    assertThrown!Exception(benchmarkPrepared!(first, skipped, last)(0, values,
+        [true, false, true], BenchmarkSchedule(2, 1), &prepare, &check));
+    assert(preparations == 0 && checks == 0);
+    void rejectWarmup(size_t index, double value)
+    {
+        ++checks;
+        throw new Exception("warm-up check failed");
+    }
+    assertThrown!Exception(benchmarkPrepared!(first, skipped, last)(3, values,
+        [true, false, true], BenchmarkSchedule(2, 1), &prepare, &rejectWarmup));
+    assert(preparations == 1 && checks == 1);
 }
 
 package(mir)

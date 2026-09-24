@@ -9,7 +9,7 @@ Copyright: 2026 Mir Stat Authors.
 module mir.stat.benchmark.cases;
 
 import core.time: Duration;
-import mir.math.internal.benchmark: benchmarkPrepared;
+import mir.math.internal.benchmark: benchmarkPrepared, BenchmarkSchedule;
 import mir.math.sum: Summation;
 import mir.stat.descriptive.univariate: skewness, kurtosis, SkewnessAlgo, KurtosisAlgo;
 import mir.stat.descriptive.multivariate: covariance, correlation, CovarianceAlgo, CorrelationAlgo;
@@ -78,15 +78,18 @@ struct Result
     double value;
     Duration elapsed;
     Transform transform;
+    size_t round; // One-based measured round.
+    size_t position; // One-based execution position within this round.
 }
 
-void validateFunction(string name, size_t iterations, size_t size, Transform transform = Transform.none, string[] selected = null)
+void validateFunction(string name, size_t iterations, size_t size, Transform transform = Transform.none, string[] selected = null, size_t rounds = 1, size_t warmup = 0)
 {
     import std.algorithm: canFind;
     import std.exception: enforce;
     enforce(functionNames.canFind(name), "Unknown benchmark function: " ~ name);
     enforce(transform == Transform.none || transform == Transform.center ||
         transform == Transform.standardize, "Unknown transform");
+    enforce(rounds > 0, "Benchmark needs at least one measured round");
     enforce(iterations > 0, "Benchmark needs at least one iteration");
     auto minimum = name == "kurtosis" ? 4 : name == "skewness" ? 3 : 2;
     enforce(size >= minimum, "Input size is too small for " ~ name);
@@ -100,15 +103,15 @@ void validateFunction(string name, size_t iterations, size_t size, Transform tra
 }
 
 // Cases return results; presentation and command-line handling belong to the runner.
-Result[] runFunction(string name, size_t iterations, size_t size, ulong seed = 5489, Transform transform = Transform.none, string[] selected = null)
+Result[] runFunction(string name, size_t iterations, size_t size, ulong seed = 5489, Transform transform = Transform.none, string[] selected = null, size_t rounds = 1, size_t warmup = 0)
 {
-    validateFunction(name, iterations, size, transform, selected);
+    validateFunction(name, iterations, size, transform, selected, rounds, warmup);
     switch (name)
     {
-    case "skewness": return measureInput!(skewness, SkewnessAlgo)(name, iterations, size, seed, transform, selected);
-    case "kurtosis": return measureInput!(kurtosis, KurtosisAlgo)(name, iterations, size, seed, transform, selected);
-    case "covariance": return measureInput!(covariance, CovarianceAlgo)(name, iterations, size, seed, transform, selected);
-    case "correlation": return measureInput!(correlation, CorrelationAlgo)(name, iterations, size, seed, transform, selected);
+    case "skewness": return measureInput!(skewness, SkewnessAlgo)(name, iterations, size, seed, transform, selected, rounds, warmup);
+    case "kurtosis": return measureInput!(kurtosis, KurtosisAlgo)(name, iterations, size, seed, transform, selected, rounds, warmup);
+    case "covariance": return measureInput!(covariance, CovarianceAlgo)(name, iterations, size, seed, transform, selected, rounds, warmup);
+    case "correlation": return measureInput!(correlation, CorrelationAlgo)(name, iterations, size, seed, transform, selected, rounds, warmup);
     default: assert(0);
     }
 }
@@ -121,20 +124,20 @@ private template algorithms(alias operation, Choices...)
 }
 
 private Result[] measureInput(alias operation, Choices)(string name, size_t iterations,
-    size_t size, ulong seed, Transform transform, string[] selected)
+    size_t size, ulong seed, Transform transform, string[] selected, size_t rounds, size_t warmup)
 {
     final switch (transform)
     {
     case Transform.none:
-        return measure!(operation, Choices, Transform.none)(name, iterations, size, seed, selected);
+        return measure!(operation, Choices, Transform.none)(name, iterations, size, seed, selected, rounds, warmup);
     case Transform.center:
-        return measure!(operation, Choices, Transform.center)(name, iterations, size, seed, selected);
+        return measure!(operation, Choices, Transform.center)(name, iterations, size, seed, selected, rounds, warmup);
     case Transform.standardize:
-        return measure!(operation, Choices, Transform.standardize)(name, iterations, size, seed, selected);
+        return measure!(operation, Choices, Transform.standardize)(name, iterations, size, seed, selected, rounds, warmup);
     }
 }
 
-private Result[] measure(alias operation, Choices, Transform mode)(string name, size_t iterations, size_t size, ulong seed, string[] selected)
+private Result[] measure(alias operation, Choices, Transform mode)(string name, size_t iterations, size_t size, ulong seed, string[] selected, size_t rounds, size_t warmup)
 {
     import mir.ndslice.allocation: stdcUninitSlice, stdcFreeSlice;
     import mir.ndslice.slice: Slice;
@@ -204,19 +207,32 @@ private Result[] measure(alias operation, Choices, Transform mode)(string name, 
 
     // All algorithms see the same prepared buffers, through read-only views.
     Slice!(const(double)*) inputX = x;
-    double[functions.length] values;
     static if (paired)
-    {
         Slice!(const(double)*) inputY = y;
-        auto times = benchmarkPrepared!functions(iterations, values, enabled, &prepare, &check, inputX, inputY);
-    }
-    else
-        auto times = benchmarkPrepared!functions(iterations, values, enabled, &prepare, &check, inputX);
-
+    import std.algorithm: count;
+    auto activeCount = enabled[].count(true);
     Result[] results;
-    static foreach (i, choice; choices)
-        if (enabled[i])
-            results ~= Result(name, __traits(identifier, choice), values[i], times[i], mode);
+    foreach (round; 0 .. rounds)
+    {
+        double[functions.length] values;
+        auto first = round % activeCount;
+        auto schedule = BenchmarkSchedule(round == 0 ? warmup : 0, first);
+        static if (paired)
+            auto times = benchmarkPrepared!functions(iterations, values, enabled, schedule, &prepare, &check, inputX, inputY);
+        else
+            auto times = benchmarkPrepared!functions(iterations, values, enabled, schedule, &prepare, &check, inputX);
+
+        size_t ordinal;
+        static foreach (i, choice; choices)
+        {
+            if (enabled[i])
+            {
+                auto position = (ordinal + activeCount - first) % activeCount + 1;
+                results ~= Result(name, __traits(identifier, choice), values[i], times[i], mode, round + 1, position);
+                ++ordinal;
+            }
+        }
+    }
     return results;
 }
 
@@ -396,4 +412,39 @@ unittest
     assertThrown!Exception(runFunction("skewness", 1, 32, 123, Transform.standardize, ["assumeStandardized"]));
     assertThrown!Exception(runFunction("correlation", 1, 32, 123, Transform.none, ["unknown"]));
     assertThrown!Exception(runFunction("correlation", 1, 32, 123, Transform.none, ["online", "online"]));
+}
+
+@system
+unittest
+{
+    import std.exception: assertThrown;
+    foreach (name; functionNames)
+    foreach (transform; EnumMembers!Transform)
+    {
+        auto first = runFunction(name, 2, 32, 123, transform, ["online", "twoPass"], 3, 2);
+        auto repeated = runFunction(name, 2, 32, 123, transform, ["online", "twoPass"], 3, 2);
+        assert(first.length == 6);
+        foreach (i; 0 .. first.length)
+        {
+            assert(first[i].round == i / 2 + 1);
+            assert(first[i].position == (i % 2 + 2 - (i / 2) % 2) % 2 + 1);
+            assert(first[i].value == repeated[i].value);
+            assert(first[i].algorithm == repeated[i].algorithm);
+        }
+        // The RNG stream continues across rounds. Warm-up consumes only its
+        // initial observations and is not repeated at each round boundary.
+        auto singleIterations = runFunction(name, 1, 32, 123, transform, ["online", "twoPass"], 8, 0);
+        foreach (round; 0 .. 3)
+        foreach (algorithm; 0 .. 2)
+        {
+            auto start = (2 + round * 2) * 2 + algorithm;
+            auto expected = (singleIterations[start].value + singleIterations[start + 2].value) / 2;
+            assert(first[round * 2 + algorithm].value == expected);
+        }
+        assertThrown!Exception(runFunction(name, 2, 32, 123, transform, null, 0, 2));
+    }
+    auto single = runFunction("correlation", 2, 32, 5489, Transform.standardize,
+        ["assumeStandardized"], 3, 1);
+    foreach (i, result; single)
+        assert(result.round == i + 1 && result.position == 1);
 }
