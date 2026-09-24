@@ -1605,6 +1605,14 @@ one-dimensional.
 By default, if `F` is not floating point type, then the result will have a
 `double` type if `F` is implicitly convertible to a floating point type.
 
+For inputs already centered or standardized, use assumeZeroMean to skip
+centering. Both sample and population z-scores satisfy this assumption; no
+input standardization option is needed. isPopulation selects the output
+normalization independently: false divides the sum of products by n - 1,
+true by n. The result is covariance in the supplied coordinates, not the
+original unscaled data. Inputs must have mean zero over the complete dataset;
+this assumption is not validated.
+
 Params:
     F = controls type of output
     covarianceAlgo = algorithm for calculating covariance (default: CovarianceAlgo.hybrid)
@@ -1671,6 +1679,73 @@ template covariance(F, string covarianceAlgo, string summation = "appropriate")
 template covariance(string covarianceAlgo, string summation = "appropriate")
 {
     mixin("alias covariance = .covariance!(CovarianceAlgo." ~ covarianceAlgo ~ ", Summation." ~ summation ~ ");");
+}
+
+/++
+Reuse standardized columns when calculating covariance, without centering them
+again. Matching covariance normalization to the z-score convention gives the
+correlation; choosing the other normalization changes the result's scale.
++/
+version(mir_stat_test)
+@safe pure nothrow @nogc
+unittest
+{
+    import mir.stat.transform: zscore;
+    import mir.math.common: approxEqual;
+    double[3] x = [10, 20, 30];
+    double[3] y = [20, 30, 10];
+
+    // Default z-scores use sample standard deviations.
+    auto sx = x[].zscore;
+    auto sy = y[].zscore;
+    assert(covariance!"assumeZeroMean"(sx, sy).approxEqual(-0.5));
+    assert(covariance!"assumeZeroMean"(sx, sy, true).approxEqual(-1.0 / 3));
+
+    // Population z-scores use the same covariance API.
+    auto px = x[].zscore(true);
+    auto py = y[].zscore(true);
+    assert(covariance!"assumeZeroMean"(px, py, true).approxEqual(-0.5));
+    assert(covariance!"assumeZeroMean"(px, py).approxEqual(-0.75));
+}
+
+// Free covariance agrees with standardized correlation accumulation for either
+// input convention, independently of the requested covariance normalization.
+version(mir_stat_test)
+@safe pure nothrow @nogc
+unittest
+{
+    import std.meta: AliasSeq;
+    import mir.stat.transform: zscore;
+    import mir.math.common: approxEqual;
+    static foreach (T; AliasSeq!(float, double, real))
+    static foreach (method; AliasSeq!(Summation.naive, Summation.pairwise, Summation.kahan))
+    static foreach (convention; AliasSeq!(InputStandardization.sample, InputStandardization.population))
+    {{
+        T[3] x = [T(10), 20, 30];
+        T[3] y = [T(20), 30, 10];
+        enum populationInput = convention == InputStandardization.population;
+        auto zx = x[].zscore(populationInput);
+        auto zy = y[].zscore(populationInput);
+        alias A = CorrelationAccumulator!(T, CorrelationAlgo.assumeStandardized, method, convention);
+        const accumulator = A(zx, zy);
+        foreach (populationOutput; [false, true])
+        {
+            T expected = populationInput
+                ? (populationOutput ? T(-0.5) : T(-0.75))
+                : (populationOutput ? T(-1) / 3 : T(-0.5));
+            auto result = covariance!(CovarianceAlgo.assumeZeroMean, method)(zx, zy, populationOutput);
+            assert(result.approxEqual(expected));
+            assert(result.approxEqual(accumulator.covariance(populationOutput)));
+            assert(covariance!(T, CovarianceAlgo.assumeZeroMean, method)(zx, zy, populationOutput)
+                .approxEqual(expected));
+            assert(covariance!("assumeZeroMean", "pairwise")(zx, zy, populationOutput)
+                .approxEqual(expected));
+            assert(covariance!(T, "assumeZeroMean", "pairwise")(zx, zy, populationOutput)
+                .approxEqual(expected));
+        }
+        assert(covariance!(CovarianceAlgo.assumeZeroMean, method)(zx, zy, populationInput)
+            .approxEqual(accumulator.correlation));
+    }}
 }
 
 /// Covariance of vectors
