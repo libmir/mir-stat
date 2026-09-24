@@ -146,7 +146,7 @@ unittest
     assert(firstCalls == 0 && secondCalls == 0);
 }
 
-// These helpers require mir-random, supplied by the unittest-perf configuration.
+// These helpers require mir-random, supplied by the unittest-benchmark configuration.
 version (mir_stat_test_benchmark)
 @system
 unittest

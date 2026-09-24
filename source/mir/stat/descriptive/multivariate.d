@@ -1889,39 +1889,6 @@ unittest
     x.covariance(y).shouldApprox == -5.5 / 11;
 }
 
-// compile with dub test --build=unittest-perf --config=unittest-perf --compiler=ldc2
-version(mir_stat_test_cov_performance)
-unittest
-{
-    import mir.math.sum: Summation;
-    import mir.math.internal.benchmark;
-    import std.stdio: writeln;
-    import std.traits: EnumMembers;
-
-    template staticMap(alias fun, alias S, args...)
-    {
-        import std.meta: AliasSeq;
-        alias staticMap = AliasSeq!();
-        static foreach (arg; args)
-            staticMap = AliasSeq!(staticMap, fun!(double, arg, S));
-    }
-
-    size_t n = 10_000;
-    size_t m = 1_000;
-
-    alias S = Summation.fast;
-    alias E = EnumMembers!CovarianceAlgo;
-    alias fs = staticMap!(covariance, S, E);
-    double[fs.length] output;
-
-    auto e = [E];
-    auto time = benchmarkRandom2!(fs)(n, m, output);
-    writeln("Covariance performance test");
-    foreach (size_t i; 0 .. fs.length) {
-        writeln("Function ", i + 1, ", Algo: ", e[i], ", Output: ", output[i], ", Elapsed time: ", time[i]);
-    }
-    writeln();
-}
 
 /++
 Correlation algorithms.
@@ -4325,52 +4292,4 @@ unittest
     y[] = b;
 
     x.correlation(y).shouldApprox == -0.0623684;
-}
-
-// compile with dub test --build=unittest-perf --config=unittest-perf --compiler=ldc2
-version(mir_stat_test_cor_performance)
-unittest
-{
-    import mir.math.sum: Summation;
-    import mir.math.internal.benchmark;
-    import std.stdio: writeln;
-    import std.traits: EnumMembers;
-
-    template staticMap(alias fun, alias S, args...)
-    {
-        import std.meta: AliasSeq;
-        alias staticMap = AliasSeq!();
-        static foreach (arg; args)
-            staticMap = AliasSeq!(staticMap, fun!(double, arg, S));
-    }
-
-    size_t n = 10_000;
-    size_t m = 1_000;
-
-    alias S = Summation.fast;
-    alias E = EnumMembers!CorrelationAlgo;
-    alias fs = staticMap!(correlation, S, E);
-    double[fs.length] output;
-
-    auto e = [E];
-    // Every variant sees sample-standardized inputs. This makes the assumptions
-    // of assumeZeroMean and assumeStandardized valid without timing preparation.
-    static void standardize(R)(R x, R y)
-    {
-        import mir.stat.transform: zscore;
-        auto zx = x.zscore;
-        auto zy = y.zscore;
-        foreach (i; 0 .. x.length)
-        {
-            x[i] = zx[i];
-            y[i] = zy[i];
-        }
-    }
-    import mir.ndslice.slice: Slice;
-    auto time = benchmarkRandom2!(fs)(n, m, output, &standardize!(Slice!(double*)));
-    writeln("Correlation performance test");
-    foreach (size_t i; 0 .. fs.length) {
-        writeln("Function ", i + 1, ", Algo: ", e[i], ", Output: ", output[i], ", Elapsed time: ", time[i]);
-    }
-    writeln();
 }

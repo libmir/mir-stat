@@ -7987,40 +7987,6 @@ unittest
     assert(y.skewness!"assumeZeroMean"(true).approxEqual(1.000083));
 }
 
-// compile with dub test --build=unittest-perf --config=unittest-perf --compiler=ldc2
-version(mir_stat_test_skew_performance)
-unittest
-{
-    import mir.math.sum: Summation;
-    import mir.math.internal.benchmark;
-    import std.stdio: writeln;
-    import std.traits: EnumMembers;
-
-    template staticMap(alias fun, alias S, args...)
-    {
-        import std.meta: AliasSeq;
-        alias staticMap = AliasSeq!();
-        static foreach (arg; args)
-            staticMap = AliasSeq!(staticMap, fun!(double, arg, S));
-    }
-
-    size_t n = 10_000;
-    size_t m = 1_000;
-
-    alias S = Summation.fast;
-    alias E = EnumMembers!SkewnessAlgo;
-    alias fs = staticMap!(skewness, S, E);
-    double[fs.length] output;
-
-    auto e = [E];
-    auto time = benchmarkRandom!(fs)(n, m, output);
-    writeln("Skewness performance test");
-    foreach (size_t i; 0 .. fs.length) {
-        writeln("Function ", i + 1, ", Algo: ", e[i], ", Output: ", output[i], ", Elapsed time: ", time[i]);
-    }
-    writeln();
-}
-
 /++
 Kurtosis algorithms.
 
@@ -10361,40 +10327,6 @@ unittest
     assert(y.kurtosis!"assumeZeroMean"(false, true).approxEqual(4.006470));
     assert(y.kurtosis!"assumeZeroMean"(true).approxEqual(0.171904));
     assert(y.kurtosis!"assumeZeroMean"(true, true).approxEqual(3.171904));
-}
-
-// compile with dub test --build=unittest-perf --config=unittest-perf --compiler=ldc2
-version(mir_stat_test_kurt_performance)
-unittest
-{
-    import mir.math.sum: Summation;
-    import mir.math.internal.benchmark;
-    import std.stdio: writeln;
-    import std.traits: EnumMembers;
-
-    template staticMap(alias fun, alias S, args...)
-    {
-        import std.meta: AliasSeq;
-        alias staticMap = AliasSeq!();
-        static foreach (arg; args)
-            staticMap = AliasSeq!(staticMap, fun!(double, arg, S));
-    }
-
-    size_t n = 10_000;
-    size_t m = 1_000;
-
-    alias S = Summation.fast;
-    alias E = EnumMembers!KurtosisAlgo;
-    alias fs = staticMap!(kurtosis, S, E);
-    double[fs.length] output;
-
-    auto e = [E];
-    auto time = benchmarkRandom!(fs)(n, m, output);
-    writeln("Kurtosis performance test");
-    foreach (size_t i; 0 .. fs.length) {
-        writeln("Function ", i + 1, ", Algo: ", e[i], ", Output: ", output[i], ", Elapsed time: ", time[i]);
-    }
-    writeln();
 }
 
 ///

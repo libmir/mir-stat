@@ -9,6 +9,8 @@ dependency "mir-algorithm" version=">=3.20.1"
 
 toolchainRequirements frontend=">=2.097"
 
+subPackage "benchmarks"
+
 configuration "library" {
     targetType "library"
     # default or user specified mir-lapack sub-configuration is used
@@ -28,17 +30,10 @@ buildType "docs-check" {
     buildOptions "syntaxOnly" "warningsAsErrors"
     dflags "-Dddocs"
 }
-configuration "unittest-perf" {
+// Tests for internal benchmark helpers, without running performance cases.
+configuration "unittest-benchmark" {
     versions "mir_stat_test_benchmark"
     dependency "mir-random" version=">=2.2.19"
-}
-buildType "unittest-perf" {
-    buildOptions "unittests" "releaseMode" "optimize" "inline"
-    dflags "-mcpu=native"
-    versions "mir_stat_test_skew_performance"
-    versions "mir_stat_test_kurt_performance"
-    versions "mir_stat_test_cov_performance"
-    versions "mir_stat_test_cor_performance"
 }
 buildType "unittest-dip1008" {
     buildOptions "unittests" "debugMode" "debugInfo"
