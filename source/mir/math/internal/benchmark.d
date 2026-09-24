@@ -38,6 +38,117 @@ template benchmarkValues(fun...)
     }
 }
 
+// Prepare one dataset per iteration and check every result outside timing.
+// Each function receives the same arguments; callers should provide read-only
+// views when sharing input buffers across algorithms.
+package(mir)
+template benchmarkPrepared(fun...)
+{
+    Duration[fun.length] benchmarkPrepared(T, Prepare, Check, Args...)(
+        size_t n, out T[fun.length] values, const bool[fun.length] enabled,
+        scope Prepare prepare, scope Check check, Args args)
+    {
+        import std.datetime.stopwatch: StopWatch;
+        import std.exception: enforce;
+        enforce(n > 0, "Benchmark needs at least one iteration");
+        import std.algorithm: any;
+        enforce(enabled[].any, "Benchmark needs at least one selected algorithm");
+        values[] = 0;
+        Duration[fun.length] elapsed;
+        StopWatch sw;
+        foreach (iteration; 0 .. n)
+        {
+            prepare();
+            foreach (i, operation; fun)
+            {
+                if (!enabled[i])
+                    continue;
+                sw.reset();
+                sw.start();
+                auto value = operation(args);
+                sw.stop();
+                elapsed[i] += sw.peek();
+                check(i, value);
+                values[i] += value;
+            }
+        }
+        foreach (ref value; values)
+            value /= n;
+        return elapsed;
+    }
+}
+
+version(mir_stat_test)
+@safe
+unittest
+{
+    import std.exception: assertThrown;
+    size_t preparations, checks, calls;
+    int[1] data;
+    void prepare() { data[0] = cast(int) ++preparations; }
+    int first(const(int)[] input)
+    {
+        assert(checks == 2 * (preparations - 1));
+        ++calls;
+        return input[0];
+    }
+    int second(const(int)[] input)
+    {
+        assert(checks == 2 * preparations - 1);
+        ++calls;
+        return input[0];
+    }
+    void check(size_t index, double value)
+    {
+        assert(index == checks % 2);
+        assert(value == preparations);
+        ++checks;
+    }
+    double[2] values;
+    benchmarkPrepared!(first, second)(3, values, [true, true], &prepare, &check, cast(const(int)[]) data[]);
+    assert(preparations == 3 && checks == 6 && calls == 6);
+    assert(values == [2.0, 2.0]);
+    assertThrown!Exception(benchmarkPrepared!(first, second)(0, values, [true, true], &prepare, &check, data[]));
+    assert(preparations == 3 && checks == 6 && calls == 6);
+
+    void failPreparation() { throw new Exception("preparation failed"); }
+    assertThrown!Exception(benchmarkPrepared!(first, second)(1, values, [true, true], &failPreparation, &check, data[]));
+    assert(calls == 6);
+
+    preparations = checks = calls = 0;
+    void failCheck(size_t index, double value) { throw new Exception("incorrect result"); }
+    assertThrown!Exception(benchmarkPrepared!(first, second)(3, values, [true, true], &prepare, &failCheck, data[]));
+    assert(preparations == 1 && calls == 1);
+
+    preparations = checks = calls = 0;
+    int failOperation(const(int)[] input) { throw new Exception("operation failed"); }
+    assertThrown!Exception(benchmarkPrepared!(failOperation, second)(1, values, [true, true], &prepare, &check, data[]));
+    assert(preparations == 1 && checks == 0 && calls == 0);
+}
+
+version(mir_stat_test)
+@safe
+unittest
+{
+    import std.exception: assertThrown;
+    size_t preparations, checks, skippedCalls;
+    void prepare() { ++preparations; }
+    int skipped() { ++skippedCalls; return -1; }
+    int selected() { return 12; }
+    void check(size_t index, double value)
+    {
+        assert(index == 1 && value == 12);
+        ++checks;
+    }
+    double[2] values;
+    auto elapsed = benchmarkPrepared!(skipped, selected)(3, values, [false, true], &prepare, &check);
+    assert(preparations == 3 && checks == 3 && skippedCalls == 0);
+    assert(values == [0.0, 12.0]);
+    assert(elapsed[0] == Duration.zero);
+    assertThrown!Exception(benchmarkPrepared!(skipped, selected)(3, values, [false, false], &prepare, &check));
+    assert(preparations == 3 && checks == 3 && skippedCalls == 0);
+}
+
 package(mir)
 template benchmarkRandom(fun...)
 {
