@@ -80,7 +80,8 @@ template benchmarkRandom(fun...)
 package(mir)
 template benchmarkRandom2(fun...)
 {
-    Duration[fun.length] benchmarkRandom2(T)(size_t n, size_t m, out T[fun.length] values)
+    Duration[fun.length] benchmarkRandom2(T, Prepare = typeof(null))(
+        size_t n, size_t m, out T[fun.length] values, scope Prepare prepare = null)
         if (isMutable!T)
     {
         import mir.ndslice.allocation: stdcFreeSlice, stdcUninitSlice;
@@ -110,6 +111,9 @@ template benchmarkRandom2(fun...)
                     r1[k] = rv(gen);
                     r2[k] = r1[k] + rv(gen);
                 }
+                // Prepare inputs required by specialized algorithms outside timing.
+                static if (!is(Prepare == typeof(null)))
+                    prepare(r1, r2);
                 sw.start();
                 values[i] += fun[i](r1, r2);
             }
@@ -181,6 +185,30 @@ unittest
     alias throwingTwo = (r1, r2) => fail();
     assertThrown!Exception(benchmarkRandom!throwingOne(1, 4, values));
     assertThrown!Exception(benchmarkRandom2!throwingTwo(1, 4, values));
+
+    import mir.ndslice.slice: Slice;
+    size_t preparations;
+    void prepare(Slice!(double*) x, Slice!(double*) y)
+    {
+        ++preparations;
+        x[] = 6.0;
+        y[] = 12.0;
+    }
+    alias preparedInput = (x, y) {
+        ++calls;
+        assert(x[0] == 6.0 && y[0] == 12.0);
+        return x[0] + y[0];
+    };
+    benchmarkRandom2!preparedInput(3, 4, values, &prepare);
+    assert(preparations == 3 && calls == 3 && values[0] == 18.0);
+    assertThrown!Exception(benchmarkRandom2!preparedInput(0, 4, values, &prepare));
+    assert(preparations == 3 && calls == 3);
+    static void failPreparation(Slice!(double*) x, Slice!(double*) y)
+    {
+        throw new Exception("benchmark preparation");
+    }
+    assertThrown!Exception(benchmarkRandom2!preparedInput(1, 4, values, &failPreparation));
+    assert(calls == 3);
 }
 
 // Collector counters cover the process, so use a quiet, single-workload process.
