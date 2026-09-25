@@ -148,6 +148,7 @@ jobs:
       uses: codecov/codecov-action@v7
       with:
         token: ${{ secrets.CODECOV_TOKEN }}
+        use_legacy_upload_endpoint: true
         files: ${{ steps.general-upload-reports.outputs.files }}
         disable_search: true
         plugins: noop
@@ -184,6 +185,7 @@ jobs:
       uses: codecov/codecov-action@v7
       with:
         token: ${{ secrets.CODECOV_TOKEN }}
+        use_legacy_upload_endpoint: true
         files: ${{ steps.blas-upload-reports.outputs.files }}
         disable_search: true
         plugins: noop
