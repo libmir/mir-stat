@@ -77,6 +77,48 @@ jobs:
     - name: Smoke test release benchmarks with standardized inputs and CSV output
       run: dub -q run mir-stat:benchmarks --build=release -- --function=all --transform=standardize --algorithms=all --iterations=2 --rounds=2 --warmup=1 --size=32 --format=csv
 
+  # Optimized compilation dominates runtime; run it alongside the other suites.
+  release:
+    name: Release tests
+    permissions:
+      contents: read
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+        dc: [ldc-latest, ldc-beta, dmd-latest, dmd-beta]
+    runs-on: ${{ matrix.os }}
+
+    steps:
+    - uses: actions/checkout@v3.3.0
+
+    - name: D Compiler Installation
+      uses: dlang-community/setup-dlang@v2.0.0
+      with:
+        compiler: ${{ matrix.dc }}
+
+    # setup-dlang v2 sets DC to windows/bin/dmd, bypassing bin64 on PATH.
+    - name: Select 64-bit Windows DMD
+      if: runner.os == 'Windows' && startsWith(matrix.dc, 'dmd-')
+      shell: pwsh
+      run: |
+        $compiler = Join-Path (Split-Path (Split-Path $env:DC -Parent) -Parent) 'bin64/dmd.exe'
+        if (!(Test-Path -LiteralPath $compiler -PathType Leaf)) { throw "Missing 64-bit DMD: $compiler" }
+        "DC=$compiler" >> $env:GITHUB_ENV
+
+    - name: Report toolchain versions
+      shell: pwsh
+      run: |
+        Write-Output "DC=$env:DC"
+        & $env:DC --version
+        if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+        dub --version
+        if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
+    - name: Run optimized release tests
+      # Keep build/link/run markers so CI log timestamps separate build and test time.
+      run: dub test --build=unittest-release
+
   test:
     name: Dub Tests
     permissions:
@@ -138,10 +180,6 @@ jobs:
 
     - name: Run DIP1000 lifetime tests
       run: dub -q test --build=unittest-dip1000
-
-    - name: Run optimized release tests
-      # Keep build/link/run markers so CI log timestamps separate build and test time.
-      run: dub test --build=unittest-release
 
     - name: Install Lapack
       if: contains( matrix.os, 'ubuntu')
