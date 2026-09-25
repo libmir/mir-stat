@@ -447,10 +447,10 @@ unittest
         size_t index(double value) const @safe pure nothrow @nogc;
         enum bool isOverflow = false;
     }
-    rejects(() { ordinaryBinCount(Axis!int(0)); });
-    rejects(() { ordinaryBinCount(Axis!int(-1)); });
-    rejects(() { storageExtent(Axis!size_t(size_t.max)); });
+    rejects(() { cast(void) ordinaryBinCount(Axis!int(0)); });
+    rejects(() { cast(void) ordinaryBinCount(Axis!int(-1)); });
+    rejects(() { cast(void) storageExtent(Axis!size_t(size_t.max)); });
     assert(storageExtent(Axis!size_t(size_t.max - 1)) == size_t.max);
     static if (size_t.sizeof < ulong.sizeof)
-        rejects(() { ordinaryBinCount(Axis!ulong(ulong.max)); });
+        rejects(() { cast(void) ordinaryBinCount(Axis!ulong(ulong.max)); });
 }
