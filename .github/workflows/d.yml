@@ -6,6 +6,11 @@ on:
   pull_request:
     branches: [ master ]
 
+# Replace outdated PR runs, but give every master push its own coverage run.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event_name }}-${{ github.event.pull_request.number || github.run_id }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
 jobs:
   docs:
     name: Ddoc validation
@@ -46,6 +51,15 @@ jobs:
         $compiler = Join-Path (Split-Path (Split-Path $env:DC -Parent) -Parent) 'bin64/dmd.exe'
         if (!(Test-Path -LiteralPath $compiler -PathType Leaf)) { throw "Missing 64-bit DMD: $compiler" }
         "DC=$compiler" >> $env:GITHUB_ENV
+
+    - name: Report toolchain versions
+      shell: pwsh
+      run: |
+        Write-Output "DC=$env:DC"
+        & $env:DC --version
+        if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+        dub --version
+        if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 
     - name: Test benchmark helpers
       run: dub -q test --config=unittest-benchmark
@@ -91,6 +105,15 @@ jobs:
         if (!(Test-Path -LiteralPath $compiler -PathType Leaf)) { throw "Missing 64-bit DMD: $compiler" }
         "DC=$compiler" >> $env:GITHUB_ENV
 
+    - name: Report toolchain versions
+      shell: pwsh
+      run: |
+        Write-Output "DC=$env:DC"
+        & $env:DC --version
+        if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+        dub --version
+        if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
     - name: Run tests with coverage
       run: dub -q test --build=unittest-cov
 
@@ -117,7 +140,8 @@ jobs:
       run: dub -q test --build=unittest-dip1000
 
     - name: Run optimized release tests
-      run: dub -q test --build=unittest-release
+      # Keep build/link/run markers so CI log timestamps separate build and test time.
+      run: dub test --build=unittest-release
 
     - name: Install Lapack
       if: contains( matrix.os, 'ubuntu')
