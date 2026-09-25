@@ -120,3 +120,8 @@ dub test --config=unittest-benchmark --compiler=dmd
 The subpackage tests run small cases and check results and input validation,
 without asserting timing thresholds. The parent configuration tests the shared
 benchmark helpers alongside the normal library tests.
+
+CI runs these tests with stable DMD and LDC on Linux and Windows. Short release
+runs exercise all functions and applicable algorithms with untransformed,
+centered, and standardized inputs, including CSV output. These are correctness
+checks; CI does not compare timings or enforce performance thresholds.
