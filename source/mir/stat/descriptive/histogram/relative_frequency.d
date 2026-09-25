@@ -1969,49 +1969,58 @@ unittest
 version(mir_stat_test)
 unittest
 {
-    import std.stdio: writeln, writefln;
-    import std.format: format;
+    import std.stdio: File, stdout;
+    import std.string: chomp;
     import mir.stat.descriptive.histogram.axis: IntegralAxis, AxisOptions;
 
     alias A = IntegralAxis!(double, AxisOptions());
     auto f = RelativeFrequencyAccumulator!(uint[], A)([1u, 3u], A(2, 0.0));
 
-    // Call printFrequencies(f) to write to stdout. The helper is compiled but
-    // deliberately not called here, keeping documentation tests silent.
-    void printFrequencies(typeof(f) frequencies)
+    // Call printFrequencies(f, stdout) to write to the console.
+    // A caller can also supply a file, as this test does to remain silent.
+    void printFrequencies(typeof(f) frequencies, File output)
     {
         // bins() exposes the underlying counts without relative frequency statistics.
-        writeln(frequencies.bins());
-        writefln("Histogram: %s", frequencies.bins());
-        writeln(frequencies.relativeFrequencyBins());
-        writefln("Frequencies: %s", frequencies.relativeFrequencyBins());
+        output.writeln(frequencies.bins());
+        output.writefln("Histogram: %s", frequencies.bins());
+        output.writeln(frequencies.relativeFrequencyBins());
+        output.writefln("Frequencies: %s", frequencies.relativeFrequencyBins());
         foreach (entry; frequencies.relativeFrequencyBins())
         {
-            writeln(entry);
+            output.writeln(entry);
             // Format fields individually to control their numeric precision.
-            writefln("low=%.2f, high=%.2f: count=%s, relativeFrequency=%.2f",
+            output.writefln("low=%.2f, high=%.2f: count=%s, relativeFrequency=%.2f",
                 entry.bin.low, entry.bin.high, entry.count, entry.relativeFrequency);
         }
         // Cumulative entries also include running counts and relative frequencies.
-        writefln("Cumulative frequencies: %s", frequencies.cumulativeRelativeFrequencyBins());
+        output.writefln("Cumulative frequencies: %s", frequencies.cumulativeRelativeFrequencyBins());
     }
 
-    // Check the corresponding text without performing console I/O.
     enum expectedHistogram = "[bin(low=0.0, high=1.0): count=1, " ~
         "bin(low=1.0, high=2.0): count=3]";
-    assert(format("%s", f.bins()) == expectedHistogram);
-    assert(format("Histogram: %s", f.bins()) == "Histogram: " ~ expectedHistogram);
     enum expected = "[bin(low=0.0, high=1.0): count=1, relativeFrequency=0.25, " ~
         "bin(low=1.0, high=2.0): count=3, relativeFrequency=0.75]";
-    assert(format("%s", f.relativeFrequencyBins()) == expected);
-    assert(format("Frequencies: %s", f.relativeFrequencyBins()) == "Frequencies: " ~ expected);
-    auto entry = f.relativeFrequencyBins().front;
-    assert(format("low=%.2f, high=%.2f: count=%s, relativeFrequency=%.2f",
-        entry.bin.low, entry.bin.high, entry.count, entry.relativeFrequency) ==
-        "low=0.00, high=1.00: count=1, relativeFrequency=0.25");
-    assert(format("Cumulative frequencies: %s", f.cumulativeRelativeFrequencyBins()) ==
+    string[] expectedLines = [
+        expectedHistogram,
+        "Histogram: " ~ expectedHistogram,
+        expected,
+        "Frequencies: " ~ expected,
+        "bin(low=0.0, high=1.0): count=1, relativeFrequency=0.25",
+        "low=0.00, high=1.00: count=1, relativeFrequency=0.25",
+        "bin(low=1.0, high=2.0): count=3, relativeFrequency=0.75",
+        "low=1.00, high=2.00: count=3, relativeFrequency=0.75",
         "Cumulative frequencies: [bin(low=0.0, high=1.0): count=1, cumulativeCount=1, cumulativeRelativeFrequency=0.25, " ~
-        "bin(low=1.0, high=2.0): count=3, cumulativeCount=4, cumulativeRelativeFrequency=1.0]");
+            "bin(low=1.0, high=2.0): count=3, cumulativeCount=4, cumulativeRelativeFrequency=1.0]",
+    ];
+
+    // Exercise the actual printing calls and verify every line without stdout output.
+    auto output = File.tmpfile();
+    scope(exit) output.close();
+    printFrequencies(f, output);
+    output.rewind();
+    foreach (expectedLine; expectedLines)
+        assert(output.readln().chomp == expectedLine);
+    assert(output.readln().length == 0);
 }
 
 // Mir formatting preserves GC-free output for all relative frequency precisions.
