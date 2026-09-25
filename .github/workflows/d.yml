@@ -58,7 +58,6 @@ jobs:
     name: Dub Tests
     permissions:
       contents: read
-      id-token: write
     strategy:
       fail-fast: false
       matrix:
@@ -129,25 +128,91 @@ jobs:
         Write-Output "Preserved $($reports.Count) BLAS coverage reports"
 
     # Upload completed suites even if an unrelated later test failed.
-    # OIDC authenticates trusted runs; the action uses tokenless uploads for forks.
-    - name: Upload general coverage
+    # Authenticate with the repository token; fork PRs use tokenless uploads.
+    # Codecov's D detector requires the report to end with "covered", without a newline.
+    # Trim only upload copies; keep the preserved reports unchanged.
+    # Remove this workaround once https://github.com/codecov/umbrella/issues/2332 is fixed and deployed.
+    - name: Prepare general coverage for upload
+      id: general-upload-reports
       if: ${{ !cancelled() && steps.general-coverage.outcome == 'success' }}
+      shell: pwsh
+      run: |
+        $source = Join-Path $env:RUNNER_TEMP 'coverage/general'
+        $reports = @(Get-ChildItem -LiteralPath $source -Filter 'source-*.lst' -File)
+        if ($reports.Count -eq 0) { throw 'No preserved general coverage reports found' }
+        foreach ($report in $reports) {
+          $content = [IO.File]::ReadAllBytes($report.FullName)
+          $length = $content.Length
+          while ($length -gt 0 -and ($content[$length - 1] -eq 10 -or $content[$length - 1] -eq 13)) {
+            $length--
+          }
+          [Array]::Resize([ref]$content, $length)
+          [IO.File]::WriteAllBytes((Join-Path $env:GITHUB_WORKSPACE $report.Name), $content)
+        }
+        "files=$($reports.Name -join ',')" >> $env:GITHUB_OUTPUT
+
+    - name: Upload general coverage
+      if: ${{ !cancelled() && steps.general-upload-reports.outcome == 'success' }}
       uses: codecov/codecov-action@v7
       with:
-        use_oidc: true
-        directory: ${{ runner.temp }}/coverage/general
+        token: ${{ secrets.CODECOV_TOKEN }}
+        version: "v11.3.1"
+        files: ${{ steps.general-upload-reports.outputs.files }}
+        disable_search: true
         plugins: noop
         flags: general
         name: general-${{ matrix.os }}-${{ matrix.dc }}
         fail_ci_if_error: true
 
-    - name: Upload BLAS coverage
+    - name: Remove restored general coverage
+      if: ${{ always() && steps.general-upload-reports.outcome == 'success' }}
+      shell: pwsh
+      run: |
+        $source = Join-Path $env:RUNNER_TEMP 'coverage/general'
+        foreach ($report in Get-ChildItem -LiteralPath $source -Filter 'source-*.lst' -File) {
+          Remove-Item -LiteralPath (Join-Path $env:GITHUB_WORKSPACE $report.Name)
+        }
+
+    # Codecov's D detector requires the report to end with "covered", without a newline.
+    # Trim only upload copies; keep the preserved reports unchanged.
+    # Remove this workaround once https://github.com/codecov/umbrella/issues/2332 is fixed and deployed.
+    - name: Prepare BLAS coverage for upload
+      id: blas-upload-reports
       if: ${{ !cancelled() && steps.blas-coverage.outcome == 'success' }}
+      shell: pwsh
+      run: |
+        $source = Join-Path $env:RUNNER_TEMP 'coverage/blas'
+        $reports = @(Get-ChildItem -LiteralPath $source -Filter 'source-*.lst' -File)
+        if ($reports.Count -eq 0) { throw 'No preserved BLAS coverage reports found' }
+        foreach ($report in $reports) {
+          $content = [IO.File]::ReadAllBytes($report.FullName)
+          $length = $content.Length
+          while ($length -gt 0 -and ($content[$length - 1] -eq 10 -or $content[$length - 1] -eq 13)) {
+            $length--
+          }
+          [Array]::Resize([ref]$content, $length)
+          [IO.File]::WriteAllBytes((Join-Path $env:GITHUB_WORKSPACE $report.Name), $content)
+        }
+        "files=$($reports.Name -join ',')" >> $env:GITHUB_OUTPUT
+
+    - name: Upload BLAS coverage
+      if: ${{ !cancelled() && steps.blas-upload-reports.outcome == 'success' }}
       uses: codecov/codecov-action@v7
       with:
-        use_oidc: true
-        directory: ${{ runner.temp }}/coverage/blas
+        token: ${{ secrets.CODECOV_TOKEN }}
+        version: "v11.3.1"
+        files: ${{ steps.blas-upload-reports.outputs.files }}
+        disable_search: true
         plugins: noop
         flags: blas
         name: blas-${{ matrix.os }}-${{ matrix.dc }}
         fail_ci_if_error: true
+
+    - name: Remove restored BLAS coverage
+      if: ${{ always() && steps.blas-upload-reports.outcome == 'success' }}
+      shell: pwsh
+      run: |
+        $source = Join-Path $env:RUNNER_TEMP 'coverage/blas'
+        foreach ($report in Get-ChildItem -LiteralPath $source -Filter 'source-*.lst' -File) {
+          Remove-Item -LiteralPath (Join-Path $env:GITHUB_WORKSPACE $report.Name)
+        }
