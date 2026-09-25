@@ -131,6 +131,7 @@ jobs:
     # Authenticate with the repository token; fork PRs use tokenless uploads.
     # Codecov's D detector requires the report to end with "covered", without a newline.
     # Trim only upload copies; keep the preserved reports unchanged.
+    # Remove this workaround once https://github.com/codecov/umbrella/issues/2332 is fixed and deployed.
     - name: Restore general coverage for upload
       id: general-upload-reports
       if: ${{ !cancelled() && steps.general-coverage.outcome == 'success' }}
@@ -175,6 +176,7 @@ jobs:
 
     # Codecov's D detector requires the report to end with "covered", without a newline.
     # Trim only upload copies; keep the preserved reports unchanged.
+    # Remove this workaround once https://github.com/codecov/umbrella/issues/2332 is fixed and deployed.
     - name: Restore BLAS coverage for upload
       id: blas-upload-reports
       if: ${{ !cancelled() && steps.blas-coverage.outcome == 'success' }}
