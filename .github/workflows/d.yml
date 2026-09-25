@@ -130,7 +130,7 @@ jobs:
 
     # Upload completed suites even if an unrelated later test failed.
     # Diagnostic comparison with the previously used uploader.
-    # v3 has no OIDC input; exercise its public-PR authentication path.
+    # v3 uses the repository token; fork PRs cannot access this secret.
     # Restore unchanged reports to the checkout to test relative upload paths.
     - name: Restore general coverage for upload
       id: general-upload-reports
@@ -149,6 +149,7 @@ jobs:
       if: ${{ !cancelled() && steps.general-upload-reports.outcome == 'success' }}
       uses: codecov/codecov-action@v3.1.1
       with:
+        token: ${{ secrets.CODECOV_TOKEN }}
         files: ${{ steps.general-upload-reports.outputs.files }}
         functionalities: search
         verbose: true
@@ -183,6 +184,7 @@ jobs:
       if: ${{ !cancelled() && steps.blas-upload-reports.outcome == 'success' }}
       uses: codecov/codecov-action@v3.1.1
       with:
+        token: ${{ secrets.CODECOV_TOKEN }}
         files: ${{ steps.blas-upload-reports.outputs.files }}
         functionalities: search
         verbose: true
