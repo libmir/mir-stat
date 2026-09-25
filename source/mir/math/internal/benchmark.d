@@ -66,8 +66,7 @@ template benchmarkPrepared(fun...)
         enforce(count > 0, "Benchmark needs at least one selected algorithm");
         auto first = schedule.firstAlgorithm % count;
         values[] = 0;
-        Duration[fun.length] elapsed;
-        StopWatch sw;
+        StopWatch[fun.length] watches;
         void iteration(bool timed)()
         {
             prepare();
@@ -80,15 +79,11 @@ template benchmarkPrepared(fun...)
                     if (index == i)
                     {
                         static if (timed)
-                        {
-                            sw.reset();
-                            sw.start();
-                        }
+                            watches[i].start();
                         auto value = operation(args);
                         static if (timed)
                         {
-                            sw.stop();
-                            elapsed[i] += sw.peek();
+                            watches[i].stop();
                             values[i] += value;
                         }
                         check(i, value);
@@ -100,8 +95,14 @@ template benchmarkPrepared(fun...)
             iteration!false();
         foreach (i; 0 .. n)
             iteration!true();
-        foreach (ref value; values)
+        Duration[fun.length] elapsed;
+        foreach (i, ref value; values)
+        {
             value /= n;
+            // Preserve native clock ticks across calls; Duration conversion
+            // rounds to 100 ns, so convert only once per algorithm.
+            elapsed[i] = watches[i].peek();
+        }
         return elapsed;
     }
 }

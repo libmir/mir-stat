@@ -22,7 +22,9 @@ zero warm-up is allowed.
 Skewness requires at least three observations, kurtosis four, and covariance
 and correlation two. Each result records the round's mean computed value and
 total elapsed time, excluding input generation, preparation, reference checks,
-and warm-up. Warm-up still runs correctness checks.
+and warm-up. Each algorithm accumulates native clock ticks across calls before
+converting the round total to `Duration`, avoiding per-call rounding to 100 ns.
+Warm-up still runs correctness checks.
 Inputs are generated once per iteration and shared through read-only views
 across all algorithms. `--seed` selects a local MT19937-64 engine's seed
 (default 5489); it does not use or modify the thread-local random engine.
