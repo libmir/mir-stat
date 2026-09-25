@@ -17,7 +17,7 @@ jobs:
     runs-on: ubuntu-latest
 
     steps:
-    - uses: actions/checkout@v3.3.0
+    - uses: actions/checkout@v7.0.1
 
     - name: D Compiler Installation
       uses: dlang-community/setup-dlang@v2.0.0
@@ -36,7 +36,7 @@ jobs:
     runs-on: ${{ matrix.os }}
 
     steps:
-    - uses: actions/checkout@v3.3.0
+    - uses: actions/checkout@v7.0.1
 
     - name: D Compiler Installation
       uses: dlang-community/setup-dlang@v2.0.0
@@ -90,7 +90,7 @@ jobs:
     runs-on: ${{ matrix.os }}
 
     steps:
-    - uses: actions/checkout@v3.3.0
+    - uses: actions/checkout@v7.0.1
 
     - name: D Compiler Installation
       uses: dlang-community/setup-dlang@v2.0.0
@@ -131,7 +131,7 @@ jobs:
     runs-on: ${{ matrix.os }}
 
     steps:
-    - uses: actions/checkout@v3.3.0
+    - uses: actions/checkout@v7.0.1
 
     - name: D Compiler Installation
       uses: dlang-community/setup-dlang@v2.0.0
