@@ -1766,37 +1766,49 @@ version(mir_stat_test)
 @safe
 unittest
 {
-    import std.stdio: writeln, writefln;
-    import std.format: format;
+    import std.stdio: File, stdout;
+    import std.string: chomp;
     import mir.stat.descriptive.histogram.axis: IntegralAxis, AxisOptions;
 
     alias A = IntegralAxis!(double, AxisOptions());
     auto h = HistogramAccumulator!(uint[], A)([2u, 1u], A(2, 0.0));
 
-    // Call printHistogram(h) to write to stdout. The helper is compiled but
-    // deliberately not called here, keeping documentation tests silent.
-    void printHistogram(typeof(h) histogram)
+    // Call printHistogram(h, stdout) to write to the console.
+    // A caller can also supply a file, as this test does to remain silent.
+    void printHistogram(typeof(h) histogram, File output)
     {
-        writeln(histogram.bins());
-        writefln("Histogram: %s", histogram.bins());
+        output.writeln(histogram.bins());
+        output.writefln("Histogram: %s", histogram.bins());
         foreach (entry; histogram.bins())
         {
-            writeln(entry);
+            output.writeln(entry);
             // Format fields individually to control their numeric precision.
-            writefln("low=%.2f, high=%.2f: count=%s",
+            output.writefln("low=%.2f, high=%.2f: count=%s",
                 entry.bin.low, entry.bin.high, entry.count);
         }
     }
 
-    // Check the corresponding text without performing console I/O.
-    assert(format("%s", h.bins()) ==
-        "[bin(low=0.0, high=1.0): count=2, bin(low=1.0, high=2.0): count=1]");
-    assert(format("Histogram: %s", h.bins()) ==
-        "Histogram: [bin(low=0.0, high=1.0): count=2, bin(low=1.0, high=2.0): count=1]");
-    auto entry = h.bins().front;
-    assert(format("low=%.2f, high=%.2f: count=%s",
-        entry.bin.low, entry.bin.high, entry.count) ==
-        "low=0.00, high=1.00: count=2");
+    enum expected = "[bin(low=0.0, high=1.0): count=2, bin(low=1.0, high=2.0): count=1]";
+    string[] expectedLines = [
+        expected,
+        "Histogram: " ~ expected,
+        "bin(low=0.0, high=1.0): count=2",
+        "low=0.00, high=1.00: count=2",
+        "bin(low=1.0, high=2.0): count=1",
+        "low=1.00, high=2.00: count=1",
+    ];
+
+    // Exercise the actual printing calls and verify every line without stdout output.
+    auto output = File.tmpfile();
+    scope(exit) output.close();
+    printHistogram(h, output);
+    output.rewind();
+    // Older Phobos marks readln @system. This reads from our open file and
+    // returns an allocated string; no caller-owned buffer or pointer escapes.
+    string readLine() @trusted { return output.readln(); }
+    foreach (expectedLine; expectedLines)
+        assert(readLine().chomp == expectedLine);
+    assert(readLine().length == 0);
 }
 
 // Joint coordinates and end-bin labels do not require ordinary-bin metadata.
@@ -1843,11 +1855,6 @@ unittest
             assert(length + text.length <= buffer.length);
             buffer[length .. length + text.length] = text;
             length += text.length;
-        }
-        void put(char value) @safe pure nothrow @nogc
-        {
-            assert(length < buffer.length);
-            buffer[length++] = value;
         }
     }
     Writer writer;
@@ -1898,11 +1905,6 @@ unittest
             assert(length + text.length <= buffer.length);
             buffer[length .. length + text.length] = text;
             length += text.length;
-        }
-        void put(char value) @safe pure nothrow @nogc
-        {
-            assert(length < buffer.length);
-            buffer[length++] = value;
         }
     }
     alias A = IntegralAxis!(double, AxisOptions());
