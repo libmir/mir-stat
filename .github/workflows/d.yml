@@ -38,6 +38,15 @@ jobs:
       with:
         compiler: ${{ matrix.dc }}
 
+    # setup-dlang v2 sets DC to windows/bin/dmd, bypassing bin64 on PATH.
+    - name: Select 64-bit Windows DMD
+      if: runner.os == 'Windows' && startsWith(matrix.dc, 'dmd-')
+      shell: pwsh
+      run: |
+        $compiler = Join-Path (Split-Path (Split-Path $env:DC -Parent) -Parent) 'bin64/dmd.exe'
+        if (!(Test-Path -LiteralPath $compiler -PathType Leaf)) { throw "Missing 64-bit DMD: $compiler" }
+        "DC=$compiler" >> $env:GITHUB_ENV
+
     - name: Test benchmark helpers
       run: dub -q test --config=unittest-benchmark
 
@@ -72,6 +81,15 @@ jobs:
       uses: dlang-community/setup-dlang@v2.0.0
       with:
         compiler: ${{ matrix.dc }}
+
+    # setup-dlang v2 sets DC to windows/bin/dmd, bypassing bin64 on PATH.
+    - name: Select 64-bit Windows DMD
+      if: runner.os == 'Windows' && startsWith(matrix.dc, 'dmd-')
+      shell: pwsh
+      run: |
+        $compiler = Join-Path (Split-Path (Split-Path $env:DC -Parent) -Parent) 'bin64/dmd.exe'
+        if (!(Test-Path -LiteralPath $compiler -PathType Leaf)) { throw "Missing 64-bit DMD: $compiler" }
+        "DC=$compiler" >> $env:GITHUB_ENV
 
     - name: Run tests with coverage
       run: dub -q test --build=unittest-cov
