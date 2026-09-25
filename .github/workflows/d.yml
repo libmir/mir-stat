@@ -145,9 +145,10 @@ jobs:
 
     - name: Upload general coverage
       if: ${{ !cancelled() && steps.general-upload-reports.outcome == 'success' }}
-      uses: codecov/codecov-action@v7
+      uses: codecov/codecov-action@v4
       with:
         token: ${{ secrets.CODECOV_TOKEN }}
+        version: "v11.3.1"
         use_legacy_upload_endpoint: true
         files: ${{ steps.general-upload-reports.outputs.files }}
         disable_search: true
@@ -182,9 +183,10 @@ jobs:
 
     - name: Upload BLAS coverage
       if: ${{ !cancelled() && steps.blas-upload-reports.outcome == 'success' }}
-      uses: codecov/codecov-action@v7
+      uses: codecov/codecov-action@v4
       with:
         token: ${{ secrets.CODECOV_TOKEN }}
+        version: "v11.3.1"
         use_legacy_upload_endpoint: true
         files: ${{ steps.blas-upload-reports.outputs.files }}
         disable_search: true
