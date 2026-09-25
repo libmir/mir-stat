@@ -1605,6 +1605,14 @@ one-dimensional.
 By default, if `F` is not floating point type, then the result will have a
 `double` type if `F` is implicitly convertible to a floating point type.
 
+For inputs already centered or standardized, use assumeZeroMean to skip
+centering. Both sample and population z-scores satisfy this assumption; no
+input standardization option is needed. isPopulation selects the output
+normalization independently: false divides the sum of products by n - 1,
+true by n. The result is covariance in the supplied coordinates, not the
+original unscaled data. Inputs must have mean zero over the complete dataset;
+this assumption is not validated.
+
 Params:
     F = controls type of output
     covarianceAlgo = algorithm for calculating covariance (default: CovarianceAlgo.hybrid)
@@ -1671,6 +1679,73 @@ template covariance(F, string covarianceAlgo, string summation = "appropriate")
 template covariance(string covarianceAlgo, string summation = "appropriate")
 {
     mixin("alias covariance = .covariance!(CovarianceAlgo." ~ covarianceAlgo ~ ", Summation." ~ summation ~ ");");
+}
+
+/++
+Reuse standardized columns when calculating covariance, without centering them
+again. Matching covariance normalization to the z-score convention gives the
+correlation; choosing the other normalization changes the result's scale.
++/
+version(mir_stat_test)
+@safe pure nothrow @nogc
+unittest
+{
+    import mir.stat.transform: zscore;
+    import mir.math.common: approxEqual;
+    double[3] x = [10, 20, 30];
+    double[3] y = [20, 30, 10];
+
+    // Default z-scores use sample standard deviations.
+    auto sx = x[].zscore;
+    auto sy = y[].zscore;
+    assert(covariance!"assumeZeroMean"(sx, sy).approxEqual(-0.5));
+    assert(covariance!"assumeZeroMean"(sx, sy, true).approxEqual(-1.0 / 3));
+
+    // Population z-scores use the same covariance API.
+    auto px = x[].zscore(true);
+    auto py = y[].zscore(true);
+    assert(covariance!"assumeZeroMean"(px, py, true).approxEqual(-0.5));
+    assert(covariance!"assumeZeroMean"(px, py).approxEqual(-0.75));
+}
+
+// Free covariance agrees with standardized correlation accumulation for either
+// input convention, independently of the requested covariance normalization.
+version(mir_stat_test)
+@safe pure nothrow @nogc
+unittest
+{
+    import std.meta: AliasSeq;
+    import mir.stat.transform: zscore;
+    import mir.math.common: approxEqual;
+    static foreach (T; AliasSeq!(float, double, real))
+    static foreach (method; AliasSeq!(Summation.naive, Summation.pairwise, Summation.kahan))
+    static foreach (convention; AliasSeq!(InputStandardization.sample, InputStandardization.population))
+    {{
+        T[3] x = [T(10), 20, 30];
+        T[3] y = [T(20), 30, 10];
+        enum populationInput = convention == InputStandardization.population;
+        auto zx = x[].zscore(populationInput);
+        auto zy = y[].zscore(populationInput);
+        alias A = CorrelationAccumulator!(T, CorrelationAlgo.assumeStandardized, method, convention);
+        const accumulator = A(zx, zy);
+        foreach (populationOutput; [false, true])
+        {
+            T expected = populationInput
+                ? (populationOutput ? T(-0.5) : T(-0.75))
+                : (populationOutput ? T(-1) / 3 : T(-0.5));
+            auto result = covariance!(CovarianceAlgo.assumeZeroMean, method)(zx, zy, populationOutput);
+            assert(result.approxEqual(expected));
+            assert(result.approxEqual(accumulator.covariance(populationOutput)));
+            assert(covariance!(T, CovarianceAlgo.assumeZeroMean, method)(zx, zy, populationOutput)
+                .approxEqual(expected));
+            assert(covariance!("assumeZeroMean", "pairwise")(zx, zy, populationOutput)
+                .approxEqual(expected));
+            assert(covariance!(T, "assumeZeroMean", "pairwise")(zx, zy, populationOutput)
+                .approxEqual(expected));
+        }
+        assert(covariance!(CovarianceAlgo.assumeZeroMean, method)(zx, zy, populationInput)
+            .approxEqual(accumulator.correlation));
+    }}
 }
 
 /// Covariance of vectors
@@ -1884,8 +1959,9 @@ enum CorrelationAlgo
     assumeZeroMean,
 
     /++
-    Calculates correlation assuming the mean of the inputs is zero and standard
-    deviation is one.
+    Calculates correlation from inputs already standardized to mean zero and
+    standard deviation one. InputStandardization selects sample (default) or
+    population standardization. No means or variances are calculated.
     +/
     assumeStandardized,
 
@@ -1894,6 +1970,304 @@ enum CorrelationAlgo
     algorithm. When an individual data-point is added, uses the online algorithm.
     +/
     hybrid
+}
+
+/++
+Convention used to standardize inputs to CorrelationAlgo.assumeStandardized.
+This describes the input data, not a choice of sample or population correlation.
++/
+enum InputStandardization
+{
+    /// Squared standardized values sum to n - 1, as with zscore's default.
+    sample,
+    /// Squared standardized values sum to n, as with zscore(true).
+    population,
+}
+
+/++
+Accumulate correlation when input standardization has already been performed,
+for example when reusing standardized columns in several pairwise comparisons.
+Only the observation count and sum of products are stored. Correlation divides
+the sum of products by n - 1 for sample-standardized inputs or by n for
+population-standardized inputs. There is no centering, variance calculation,
+square root, or validation that the inputs are standardized.
+
+Both inputs must use the same convention and be standardized over the complete
+dataset being accumulated. Chunks of that dataset may be inserted or merged;
+independently standardizing each chunk does not satisfy this contract. Read
+correlation and inferred moments only after all chunks have been accumulated.
+At least two observations with nonzero original variance are required.
+
+covariance(isPopulation) describes the standardized input coordinates, not the
+original unscaled data. Its output normalization is independent of the input
+standardization convention.
+
+Params:
+    T = stored product type
+    correlationAlgo = CorrelationAlgo.assumeStandardized
+    summation = summation algorithm
+    inputStandardization = input z-score convention, sample by default
++/
+struct CorrelationAccumulator(T, CorrelationAlgo correlationAlgo, Summation summation,
+    InputStandardization inputStandardization = InputStandardization.sample)
+    if (isMutable!T && correlationAlgo == CorrelationAlgo.assumeStandardized &&
+        (inputStandardization == InputStandardization.sample ||
+         inputStandardization == InputStandardization.population))
+{
+    import mir.math.sum: elementType;
+    import mir.ndslice.slice: Slice, SliceKind, isConvertibleToSlice, isSlice;
+    import mir.primitives: isInputRange, front, empty, popFront;
+
+    private size_t _count;
+    /// Product summation state.
+    Summator!(T, summation) centeredSummatorOfProducts;
+
+    /// Construct from paired ranges.
+    this(RangeX, RangeY)(RangeX x, RangeY y)
+        if (isInputRange!RangeX && isInputRange!RangeY)
+    {
+        put(x, y);
+    }
+
+    /// Construct from one pair; add the remaining standardized observations before reading correlation.
+    this()(T x, T y) { put(x, y); }
+
+    /// Add paired slices, preserving their layouts.
+    void put(IX, IY, SliceKind kx, SliceKind ky)(Slice!(IX, 1, kx) x, Slice!(IY, 1, ky) y)
+    {
+        import mir.ndslice.topology: zip, map;
+        assert(x.length == y.length, "CorrelationAccumulator.put: lengths must match");
+        _count += x.length;
+        centeredSummatorOfProducts.put(x.zip(y).map!"a * b");
+    }
+
+    /// Add built-in arrays or other slice-convertible inputs.
+    void put(X, Y)(X x, Y y)
+        if (isConvertibleToSlice!X && !isSlice!X && isConvertibleToSlice!Y && !isSlice!Y)
+    {
+        import mir.ndslice.slice: toSlice;
+        put(x.toSlice, y.toSlice);
+    }
+
+    /// Add paired input ranges; empty ranges add no observations.
+    void put(X, Y)(X x, Y y)
+        if (isInputRange!X && !isConvertibleToSlice!X && is(elementType!X : T) &&
+            isInputRange!Y && !isConvertibleToSlice!Y && is(elementType!Y : T))
+    {
+        while (!x.empty && !y.empty)
+        {
+            put(x.front, y.front);
+            x.popFront;
+            y.popFront;
+        }
+        assert(x.empty && y.empty, "CorrelationAccumulator.put: lengths must match");
+    }
+
+    /// Add one standardized observation pair.
+    void put()(T x, T y)
+    {
+        ++_count;
+        centeredSummatorOfProducts.put(x * y);
+    }
+
+    /// Merge chunks standardized together, using the same input convention.
+    void put(U, Summation otherSummation)(
+        const CorrelationAccumulator!(U, correlationAlgo, otherSummation, inputStandardization) other)
+    {
+        _count += other.count;
+        centeredSummatorOfProducts.put(other.centeredSumOfProducts!T);
+    }
+
+const:
+    /// Number of accumulated pairs.
+    size_t count() @property { return _count; }
+    /// Zero by the input standardization assumption.
+    F sumLeft(F = T)() @property { return 0; }
+    /// ditto
+    F sumRight(F = T)() @property { return 0; }
+    /// ditto
+    F meanLeft(F = T)() @property { return 0; }
+    /// ditto
+    F meanRight(F = T)() @property { return 0; }
+    /// Accumulated sum of products.
+    F centeredSumOfProducts(F = T)() @property
+    {
+        return cast(F) centeredSummatorOfProducts.sum;
+    }
+    /// Inferred from the count and standardization convention, not measured.
+    F centeredSumOfSquaresLeft(F = T)() @property
+    {
+        // Adjust the integer count before converting. DMD 2.113 with -O -inline
+        // can miscompile the conditional floating-point result for empty state.
+        // https://github.com/dlang/dmd/issues/23918
+        auto n = count;
+        static if (inputStandardization == InputStandardization.sample)
+            if (n)
+                --n;
+        return cast(F) n;
+    }
+    /// ditto
+    F centeredSumOfSquaresRight(F = T)() @property
+    {
+        return centeredSumOfSquaresLeft!F;
+    }
+    /++
+    Covariance of the standardized coordinates.
+    Params:
+        isPopulation = true divides by n, false divides by n - 1
+    +/
+    F covariance(F = T)(bool isPopulation) @property
+    {
+        assert(count > (isPopulation ? 0 : 1), "Insufficient observations for covariance");
+        return centeredSumOfProducts!F / (isPopulation ? count : count - 1);
+    }
+    /// Pearson correlation using the input standardization convention.
+    F correlation(F = T)() @property
+    {
+        assert(count > 1, "Standardized correlation requires at least two observations");
+        return centeredSumOfProducts!F / centeredSumOfSquaresLeft!F;
+    }
+}
+
+/++
+Reuse columns that have already been standardized, avoiding repeated centering
+and variance calculations when computing their correlation. zscore defaults to
+sample standardization, matching assumeStandardized's default convention.
++/
+version(mir_stat_test)
+@safe pure nothrow @nogc
+unittest
+{
+    import mir.stat.transform: zscore;
+    import mir.math.common: approxEqual;
+    import mir.math.sum: Summation;
+    double[3] x = [10, 20, 30];
+    double[3] y = [20, 30, 10];
+    auto standardizedX = x[].zscore;
+    auto standardizedY = y[].zscore;
+    alias A = CorrelationAccumulator!(double, CorrelationAlgo.assumeStandardized, Summation.pairwise);
+    A first, second;
+    // These are chunks of the same standardized columns, not separately scaled chunks.
+    first.put(standardizedX[0 .. 1], standardizedY[0 .. 1]);
+    second.put(standardizedX[1 .. $], standardizedY[1 .. $]);
+    first.put(second);
+    assert(first.count == 3 && first.correlation.approxEqual(-0.5));
+    assert(first.covariance(false).approxEqual(-0.5));
+    assert(first.covariance(true).approxEqual(-1.0 / 3));
+}
+
+/++
+For population z-scores, select population input standardization explicitly.
+The correlation is unchanged; the sum of products has a different scale.
++/
+version(mir_stat_test)
+@safe pure nothrow @nogc
+unittest
+{
+    import mir.stat.transform: zscore;
+    import mir.math.common: approxEqual;
+    import mir.math.sum: Summation;
+    double[3] x = [10, 20, 30];
+    double[3] y = [20, 30, 10];
+    auto zx = x[].zscore(true);
+    auto zy = y[].zscore(true);
+    alias A = CorrelationAccumulator!(double, CorrelationAlgo.assumeStandardized,
+        Summation.pairwise, InputStandardization.population);
+    const accumulator = A(zx, zy);
+    assert(accumulator.correlation.approxEqual(-0.5));
+    assert(accumulator.covariance(true).approxEqual(-0.5));
+    assert(accumulator.covariance(false).approxEqual(-0.75));
+}
+
+version(mir_stat_test)
+@safe pure nothrow @nogc
+unittest
+{
+    import std.meta: AliasSeq;
+    import std.algorithm: map;
+    import std.range: iota;
+    import mir.ndslice.slice: sliced;
+    import mir.ndslice.topology: stride;
+    import mir.math.common: approxEqual;
+    static foreach (T; AliasSeq!(float, double, real))
+    static foreach (method; AliasSeq!(Summation.naive, Summation.pairwise, Summation.kahan))
+    {{
+        alias A = CorrelationAccumulator!(T, CorrelationAlgo.assumeStandardized, method);
+        T[3] x = [T(-1), 0, 1];
+        T[3] y = [T(0), 1, -1];
+        const arrayResult = A(x[], y[]);
+        assert(arrayResult.count == 3 && arrayResult.correlation == T(-0.5));
+        assert(arrayResult.centeredSumOfProducts == -1);
+        assert(arrayResult.centeredSumOfSquaresLeft == 2);
+        assert(arrayResult.centeredSumOfSquaresRight == 2);
+        assert(arrayResult.sumLeft == 0 && arrayResult.sumRight == 0);
+        assert(arrayResult.meanLeft == 0 && arrayResult.meanRight == 0);
+        assert(arrayResult.correlation!double == -0.5);
+
+        A scalar = A(x[0], y[0]);
+        assert(scalar.centeredSumOfSquaresLeft == 0);
+        assert(scalar.centeredSumOfSquaresRight == 0);
+        scalar.put(x[1], y[1]);
+        scalar.put(x[2], y[2]);
+        assert(scalar.correlation == T(-0.5));
+        A ranges;
+        ranges.put(x[0 .. 0], y[0 .. 0]);
+        ranges.put(iota(0, 0).map!(i => T(i - 1)), iota(0, 0).map!(i => T(i == 2 ? -1 : i)));
+        assert(ranges.count == 0 && ranges.centeredSumOfProducts == 0);
+        assert(ranges.centeredSumOfSquaresLeft == 0);
+        assert(ranges.centeredSumOfSquaresRight == 0);
+        assert(ranges.centeredSumOfSquaresLeft!double == 0);
+        ranges.put(iota(0, 3).map!(i => T(i - 1)), iota(0, 3).map!(i => T(i == 2 ? -1 : i)));
+        assert(ranges.correlation == T(-0.5));
+        T[6] bx = [T(-1), 99, 0, 99, 1, 99];
+        T[6] by = [T(0), 99, 1, 99, -1, 99];
+        auto stridedResult = A(bx[].sliced.stride(2), by[].sliced.stride(2));
+        assert(stridedResult.correlation == T(-0.5));
+        A merged = A(x[0 .. 1], y[0 .. 1]);
+        const other = CorrelationAccumulator!(T, CorrelationAlgo.assumeStandardized,
+            Summation.naive)(x[1 .. $], y[1 .. $]);
+        merged.put(other);
+        assert(merged.count == 3 && merged.correlation == T(-0.5));
+        alias P = CorrelationAccumulator!(T, CorrelationAlgo.assumeStandardized, method,
+            InputStandardization.population);
+        static assert(!__traits(compiles, scalar.put(P.init)));
+        P emptyPopulation;
+        assert(emptyPopulation.centeredSumOfSquaresLeft == 0);
+        assert(emptyPopulation.centeredSumOfSquaresRight == 0);
+        const singlePopulation = P(x[0], y[0]);
+        assert(singlePopulation.centeredSumOfSquaresLeft == 1);
+        assert(singlePopulation.centeredSumOfSquaresRight == 1);
+        // A different assumption changes the divisor; it does not normalize data.
+        const population = P(x[], y[]);
+        assert(population.centeredSumOfSquaresLeft == 3);
+        assert(population.correlation.approxEqual(T(-1) / 3));
+    }}
+}
+
+// Invalid lengths and insufficient observations must be diagnosed.
+version(mir_stat_test)
+@system pure nothrow @nogc
+unittest
+{
+    import core.exception: AssertError;
+    import std.range: iota;
+    import std.algorithm: map;
+    alias A = CorrelationAccumulator!(double, CorrelationAlgo.assumeStandardized, Summation.naive);
+    A a;
+    void rejects(scope void delegate() pure nothrow @nogc operation)
+    {
+        bool rejected;
+        try { operation(); } catch (AssertError) { rejected = true; }
+        assert(rejected);
+    }
+    rejects(() { auto r = a.correlation; });
+    rejects(() { auto r = a.covariance(true); });
+    a.put(0, 0);
+    rejects(() { auto r = a.correlation; });
+    rejects(() { auto r = a.covariance(false); });
+    double[2] x;
+    rejects(() { a.put(x[], x[0 .. 1]); });
+    rejects(() { a.put(iota(0, 2).map!(i => double(i)), iota(0, 1).map!(i => double(i))); });
 }
 
 ///
@@ -3685,17 +4059,27 @@ Calculates the correlation of the inputs.
 If `x` and `y` are both slices or convertible to slices, then they must be
 one-dimensional.
 
+With assumeStandardized, inputs must already have mean zero and unit standard
+deviation over the complete dataset. Select the input z-score convention with
+inputStandardization; the default matches zscore's sample convention. Both
+inputs must use the same convention, and at least two observations are required.
+The function does not standardize or validate the input values.
+
 Params:
     F = controls type of output
     correlationAlgo = algorithm for calculating correlation (default: CorrelationAlgo.hybrid)
     summation = algorithm for calculating sums (default: Summation.appropriate)
+    inputStandardization = sample or population z-scores for assumeStandardized;
+        other algorithms use the default only
 Returns:
     The correlation of the inputs
 +/
 template correlation(F,
                      CorrelationAlgo correlationAlgo = CorrelationAlgo.hybrid,
-                     Summation summation = Summation.appropriate)
-    if (isFloatingPoint!F)
+                     Summation summation = Summation.appropriate,
+                     InputStandardization inputStandardization = InputStandardization.sample)
+    if (isFloatingPoint!F && (correlationAlgo == CorrelationAlgo.assumeStandardized ||
+        inputStandardization == InputStandardization.sample))
 {
     import mir.math.common: fmamath;
     import mir.primitives: isInputRange;
@@ -3710,7 +4094,13 @@ template correlation(F,
     {
         import core.lifetime: move;
 
-        auto correlationAccumulator = CorrelationAccumulator!(F, correlationAlgo, ResolveSummationType!(summation, RangeX, F))(x.move, y.move);
+        static if (correlationAlgo == CorrelationAlgo.assumeStandardized)
+            alias Accumulator = CorrelationAccumulator!(F, correlationAlgo,
+                ResolveSummationType!(summation, RangeX, F), inputStandardization);
+        else
+            alias Accumulator = CorrelationAccumulator!(F, correlationAlgo,
+                ResolveSummationType!(summation, RangeX, F));
+        auto correlationAccumulator = Accumulator(x.move, y.move);
         return correlationAccumulator.correlation();
     }
 }
@@ -3718,7 +4108,10 @@ template correlation(F,
 /// ditto
 template correlation(
     CorrelationAlgo correlationAlgo = CorrelationAlgo.hybrid,
-    Summation summation = Summation.appropriate)
+    Summation summation = Summation.appropriate,
+    InputStandardization inputStandardization = InputStandardization.sample)
+    if (correlationAlgo == CorrelationAlgo.assumeStandardized ||
+        inputStandardization == InputStandardization.sample)
 {
     import mir.math.common: fmamath;
     import mir.primitives: isInputRange;
@@ -3735,20 +4128,62 @@ template correlation(
         import core.lifetime: move;
 
         alias F = typeof(return);
-        return .correlation!(F, correlationAlgo, summation)(x.move, y.move);
+        return .correlation!(F, correlationAlgo, summation, inputStandardization)(x.move, y.move);
     }
 }
 
 /// ditto
-template correlation(F, string correlationAlgo, string summation = "appropriate")
+template correlation(F, string correlationAlgo, string summation = "appropriate",
+    InputStandardization inputStandardization = InputStandardization.sample)
 {
-    mixin("alias correlation = .correlation!(F, CorrelationAlgo." ~ correlationAlgo ~ ", Summation." ~ summation ~ ");");
+    mixin("alias correlation = .correlation!(F, CorrelationAlgo." ~ correlationAlgo ~ ", Summation." ~ summation ~ ", inputStandardization);");
 }
 
 /// ditto
-template correlation(string correlationAlgo, string summation = "appropriate")
+template correlation(string correlationAlgo, string summation = "appropriate",
+    InputStandardization inputStandardization = InputStandardization.sample)
 {
-    mixin("alias correlation = .correlation!(CorrelationAlgo." ~ correlationAlgo ~ ", Summation." ~ summation ~ ");");
+    mixin("alias correlation = .correlation!(CorrelationAlgo." ~ correlationAlgo ~ ", Summation." ~ summation ~ ", inputStandardization);");
+}
+
+/++
+Reuse standardized columns to compute correlation without repeating centering
+and variance calculations. Match the input convention to the zscore call.
++/
+version(mir_stat_test)
+@safe pure nothrow @nogc
+unittest
+{
+    import mir.stat.transform: zscore;
+    import mir.math.common: approxEqual;
+    double[3] x = [10, 20, 30];
+    double[3] y = [20, 30, 10];
+    // zscore and assumeStandardized both default to sample standardization.
+    assert(correlation!"assumeStandardized"(x[].zscore, y[].zscore).approxEqual(-0.5));
+    // Population z-scores require the population input convention explicitly.
+    assert(correlation!("assumeStandardized", "pairwise", InputStandardization.population)(
+        x[].zscore(true), y[].zscore(true)).approxEqual(-0.5));
+}
+
+version(mir_stat_test)
+@safe pure nothrow @nogc
+unittest
+{
+    import std.meta: AliasSeq;
+    import mir.math.common: approxEqual;
+    static foreach (T; AliasSeq!(float, double, real))
+    static foreach (method; AliasSeq!(Summation.naive, Summation.pairwise, Summation.kahan))
+    {{
+        T[3] x = [T(-1), 0, 1];
+        T[3] y = [T(0), 1, -1];
+        assert(correlation!(double, "assumeStandardized")(x[], y[]) == -0.5);
+        assert(correlation!(CorrelationAlgo.assumeStandardized, method)(x[], y[]) == T(-0.5));
+        // Selecting a different convention changes the divisor, not the inputs.
+        assert(correlation!(T, CorrelationAlgo.assumeStandardized, method,
+            InputStandardization.population)(x[], y[]).approxEqual(T(-1) / 3));
+        assert(correlation!(T, "assumeStandardized", "pairwise",
+            InputStandardization.population)(x[], y[]).approxEqual(T(-1) / 3));
+    }}
 }
 
 /// Correlation of vectors
@@ -3918,7 +4353,21 @@ unittest
     double[fs.length] output;
 
     auto e = [E];
-    auto time = benchmarkRandom2!(fs)(n, m, output);
+    // Every variant sees sample-standardized inputs. This makes the assumptions
+    // of assumeZeroMean and assumeStandardized valid without timing preparation.
+    static void standardize(R)(R x, R y)
+    {
+        import mir.stat.transform: zscore;
+        auto zx = x.zscore;
+        auto zy = y.zscore;
+        foreach (i; 0 .. x.length)
+        {
+            x[i] = zx[i];
+            y[i] = zy[i];
+        }
+    }
+    import mir.ndslice.slice: Slice;
+    auto time = benchmarkRandom2!(fs)(n, m, output, &standardize!(Slice!(double*)));
     writeln("Correlation performance test");
     foreach (size_t i; 0 .. fs.length) {
         writeln("Function ", i + 1, ", Algo: ", e[i], ", Output: ", output[i], ", Elapsed time: ", time[i]);
