@@ -2018,9 +2018,12 @@ unittest
     scope(exit) output.close();
     printFrequencies(f, output);
     output.rewind();
+    // Older Phobos marks readln @system. This reads from our open file and
+    // returns an allocated string; no caller-owned buffer or pointer escapes.
+    string readLine() @trusted { return output.readln(); }
     foreach (expectedLine; expectedLines)
-        assert(output.readln().chomp == expectedLine);
-    assert(output.readln().length == 0);
+        assert(readLine().chomp == expectedLine);
+    assert(readLine().length == 0);
 }
 
 // Mir formatting preserves GC-free output for all relative frequency precisions.
