@@ -129,7 +129,8 @@ jobs:
         Write-Output "Preserved $($reports.Count) BLAS coverage reports"
 
     # Upload completed suites even if an unrelated later test failed.
-    # OIDC authenticates trusted runs; the action uses tokenless uploads for forks.
+    # Diagnostic comparison with the previously used uploader.
+    # v3 has no OIDC input; exercise its public-PR authentication path.
     # Restore unchanged reports to the checkout to test relative upload paths.
     - name: Restore general coverage for upload
       id: general-upload-reports
@@ -146,12 +147,11 @@ jobs:
 
     - name: Upload general coverage
       if: ${{ !cancelled() && steps.general-upload-reports.outcome == 'success' }}
-      uses: codecov/codecov-action@v7
+      uses: codecov/codecov-action@v3.1.1
       with:
-        use_oidc: true
         files: ${{ steps.general-upload-reports.outputs.files }}
-        disable_search: true
-        plugins: noop
+        functionalities: search
+        verbose: true
         flags: general
         name: general-${{ matrix.os }}-${{ matrix.dc }}
         fail_ci_if_error: true
@@ -181,12 +181,11 @@ jobs:
 
     - name: Upload BLAS coverage
       if: ${{ !cancelled() && steps.blas-upload-reports.outcome == 'success' }}
-      uses: codecov/codecov-action@v7
+      uses: codecov/codecov-action@v3.1.1
       with:
-        use_oidc: true
         files: ${{ steps.blas-upload-reports.outputs.files }}
-        disable_search: true
-        plugins: noop
+        functionalities: search
+        verbose: true
         flags: blas
         name: blas-${{ matrix.os }}-${{ matrix.dc }}
         fail_ci_if_error: true
