@@ -130,24 +130,72 @@ jobs:
 
     # Upload completed suites even if an unrelated later test failed.
     # OIDC authenticates trusted runs; the action uses tokenless uploads for forks.
-    - name: Upload general coverage
+    # Restore unchanged reports to the checkout to test relative upload paths.
+    - name: Restore general coverage for upload
+      id: general-upload-reports
       if: ${{ !cancelled() && steps.general-coverage.outcome == 'success' }}
+      shell: pwsh
+      run: |
+        $source = Join-Path $env:RUNNER_TEMP 'coverage/general'
+        $reports = @(Get-ChildItem -LiteralPath $source -Filter 'source-*.lst' -File)
+        if ($reports.Count -eq 0) { throw 'No preserved general coverage reports found' }
+        foreach ($report in $reports) {
+          Copy-Item -LiteralPath $report.FullName -Destination . -Force
+        }
+        "files=$($reports.Name -join ',')" >> $env:GITHUB_OUTPUT
+
+    - name: Upload general coverage
+      if: ${{ !cancelled() && steps.general-upload-reports.outcome == 'success' }}
       uses: codecov/codecov-action@v7
       with:
         use_oidc: true
-        directory: ${{ runner.temp }}/coverage/general
+        files: ${{ steps.general-upload-reports.outputs.files }}
+        disable_search: true
         plugins: noop
         flags: general
         name: general-${{ matrix.os }}-${{ matrix.dc }}
         fail_ci_if_error: true
 
-    - name: Upload BLAS coverage
+    - name: Remove restored general coverage
+      if: ${{ always() && steps.general-upload-reports.outcome == 'success' }}
+      shell: pwsh
+      run: |
+        $source = Join-Path $env:RUNNER_TEMP 'coverage/general'
+        foreach ($report in Get-ChildItem -LiteralPath $source -Filter 'source-*.lst' -File) {
+          Remove-Item -LiteralPath (Join-Path $env:GITHUB_WORKSPACE $report.Name)
+        }
+
+    # Restore unchanged reports to the checkout to test relative upload paths.
+    - name: Restore BLAS coverage for upload
+      id: blas-upload-reports
       if: ${{ !cancelled() && steps.blas-coverage.outcome == 'success' }}
+      shell: pwsh
+      run: |
+        $source = Join-Path $env:RUNNER_TEMP 'coverage/blas'
+        $reports = @(Get-ChildItem -LiteralPath $source -Filter 'source-*.lst' -File)
+        if ($reports.Count -eq 0) { throw 'No preserved BLAS coverage reports found' }
+        foreach ($report in $reports) {
+          Copy-Item -LiteralPath $report.FullName -Destination . -Force
+        }
+        "files=$($reports.Name -join ',')" >> $env:GITHUB_OUTPUT
+
+    - name: Upload BLAS coverage
+      if: ${{ !cancelled() && steps.blas-upload-reports.outcome == 'success' }}
       uses: codecov/codecov-action@v7
       with:
         use_oidc: true
-        directory: ${{ runner.temp }}/coverage/blas
+        files: ${{ steps.blas-upload-reports.outputs.files }}
+        disable_search: true
         plugins: noop
         flags: blas
         name: blas-${{ matrix.os }}-${{ matrix.dc }}
         fail_ci_if_error: true
+
+    - name: Remove restored BLAS coverage
+      if: ${{ always() && steps.blas-upload-reports.outcome == 'success' }}
+      shell: pwsh
+      run: |
+        $source = Join-Path $env:RUNNER_TEMP 'coverage/blas'
+        foreach ($report in Get-ChildItem -LiteralPath $source -Filter 'source-*.lst' -File) {
+          Remove-Item -LiteralPath (Join-Path $env:GITHUB_WORKSPACE $report.Name)
+        }
