@@ -132,7 +132,7 @@ jobs:
     # Codecov's D detector requires the report to end with "covered", without a newline.
     # Trim only upload copies; keep the preserved reports unchanged.
     # Remove this workaround once https://github.com/codecov/umbrella/issues/2332 is fixed and deployed.
-    - name: Restore general coverage for upload
+    - name: Prepare general coverage for upload
       id: general-upload-reports
       if: ${{ !cancelled() && steps.general-coverage.outcome == 'success' }}
       shell: pwsh
@@ -160,7 +160,6 @@ jobs:
         files: ${{ steps.general-upload-reports.outputs.files }}
         disable_search: true
         plugins: noop
-        verbose: true
         flags: general
         name: general-${{ matrix.os }}-${{ matrix.dc }}
         fail_ci_if_error: true
@@ -177,7 +176,7 @@ jobs:
     # Codecov's D detector requires the report to end with "covered", without a newline.
     # Trim only upload copies; keep the preserved reports unchanged.
     # Remove this workaround once https://github.com/codecov/umbrella/issues/2332 is fixed and deployed.
-    - name: Restore BLAS coverage for upload
+    - name: Prepare BLAS coverage for upload
       id: blas-upload-reports
       if: ${{ !cancelled() && steps.blas-coverage.outcome == 'success' }}
       shell: pwsh
@@ -205,7 +204,6 @@ jobs:
         files: ${{ steps.blas-upload-reports.outputs.files }}
         disable_search: true
         plugins: noop
-        verbose: true
         flags: blas
         name: blas-${{ matrix.os }}-${{ matrix.dc }}
         fail_ci_if_error: true
