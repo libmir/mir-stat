@@ -56,7 +56,11 @@ jobs:
 
   test:
     name: Dub Tests
+    permissions:
+      contents: read
+      id-token: write
     strategy:
+      fail-fast: false
       matrix:
         os: [ubuntu-latest, windows-latest]
         dc: [ldc-latest, ldc-beta, dmd-latest, dmd-beta]
@@ -72,6 +76,21 @@ jobs:
 
     - name: Run tests with coverage
       run: dub -q test --build=unittest-cov
+
+    # The BLAS build writes the same filenames; move the general reports first.
+    - name: Preserve general coverage
+      id: general-coverage
+      shell: pwsh
+      run: |
+        $reports = @(Get-ChildItem -LiteralPath . -Filter 'source-*.lst' -File)
+        if ($reports.Count -eq 0) { throw 'No general coverage reports found' }
+        $destination = Join-Path $env:RUNNER_TEMP 'coverage/general'
+        New-Item -ItemType Directory -Path $destination -Force | Out-Null
+        foreach ($report in $reports) {
+          if ($report.Length -eq 0) { throw "Empty coverage report: $($report.Name)" }
+          Move-Item -LiteralPath $report.FullName -Destination $destination
+        }
+        Write-Output "Preserved $($reports.Count) general coverage reports"
 
     - name: Run slow numerical tests
       if: matrix.dc == 'dmd-latest' || matrix.dc == 'ldc-latest'
@@ -94,5 +113,41 @@ jobs:
       if: contains( matrix.os, 'ubuntu')
       run: dub -q test --build=unittest-cov-blas --config=openblas
 
-    - name: Codecov
-      uses: codecov/codecov-action@v3.1.1
+    - name: Preserve BLAS coverage
+      id: blas-coverage
+      if: contains(matrix.os, 'ubuntu')
+      shell: pwsh
+      run: |
+        $reports = @(Get-ChildItem -LiteralPath . -Filter 'source-*.lst' -File)
+        if ($reports.Count -eq 0) { throw 'No BLAS coverage reports found' }
+        $destination = Join-Path $env:RUNNER_TEMP 'coverage/blas'
+        New-Item -ItemType Directory -Path $destination -Force | Out-Null
+        foreach ($report in $reports) {
+          if ($report.Length -eq 0) { throw "Empty coverage report: $($report.Name)" }
+          Move-Item -LiteralPath $report.FullName -Destination $destination
+        }
+        Write-Output "Preserved $($reports.Count) BLAS coverage reports"
+
+    # Upload completed suites even if an unrelated later test failed.
+    # OIDC authenticates trusted runs; the action uses tokenless uploads for forks.
+    - name: Upload general coverage
+      if: ${{ !cancelled() && steps.general-coverage.outcome == 'success' }}
+      uses: codecov/codecov-action@v7
+      with:
+        use_oidc: true
+        directory: ${{ runner.temp }}/coverage/general
+        plugins: noop
+        flags: general
+        name: general-${{ matrix.os }}-${{ matrix.dc }}
+        fail_ci_if_error: true
+
+    - name: Upload BLAS coverage
+      if: ${{ !cancelled() && steps.blas-coverage.outcome == 'success' }}
+      uses: codecov/codecov-action@v7
+      with:
+        use_oidc: true
+        directory: ${{ runner.temp }}/coverage/blas
+        plugins: noop
+        flags: blas
+        name: blas-${{ matrix.os }}-${{ matrix.dc }}
+        fail_ci_if_error: true
