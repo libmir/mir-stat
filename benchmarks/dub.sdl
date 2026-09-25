@@ -1,0 +1,8 @@
+name "benchmarks"
+description "Command-line statistical benchmarks for mir-stat"
+license "Apache-2.0"
+targetType "executable"
+mainSourceFile "source/mir/stat/benchmark/runner.d"
+targetPath "../build/benchmarks"
+dependency "mir-stat" path=".."
+dependency "mir-random" version=">=2.2.19"

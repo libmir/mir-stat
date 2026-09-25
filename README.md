@@ -51,3 +51,8 @@ void main()
     y.dAgostinoPearsonTest(p).shouldApprox == 4.151936053369771;
 }
 ```
+
+#### Benchmarks
+
+See [the benchmark subpackage](benchmarks/README.md) for selectable statistical
+benchmarks and their command-line runner.

@@ -22,6 +22,38 @@ jobs:
     - name: Build documentation with warnings as errors
       run: dub build --build=docs-check --compiler=dmd
 
+  benchmarks:
+    name: Benchmark tests
+    strategy:
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+        dc: [dmd-latest, ldc-latest]
+    runs-on: ${{ matrix.os }}
+
+    steps:
+    - uses: actions/checkout@v3.3.0
+
+    - name: D Compiler Installation
+      uses: dlang-community/setup-dlang@v1.3.0
+      with:
+        compiler: ${{ matrix.dc }}
+
+    - name: Test benchmark helpers
+      run: dub -q test --config=unittest-benchmark
+
+    - name: Test benchmark cases and reporting
+      run: dub -q test mir-stat:benchmarks
+
+    # Check correctness and CLI integration, not performance on shared runners.
+    - name: Smoke test release benchmarks with untransformed inputs
+      run: dub -q run mir-stat:benchmarks --build=release -- --function=all --transform=none --algorithms=all --iterations=2 --rounds=2 --warmup=1 --size=32
+
+    - name: Smoke test release benchmarks with centered inputs
+      run: dub -q run mir-stat:benchmarks --build=release -- --function=all --transform=center --algorithms=all --iterations=2 --rounds=2 --warmup=1 --size=32
+
+    - name: Smoke test release benchmarks with standardized inputs and CSV output
+      run: dub -q run mir-stat:benchmarks --build=release -- --function=all --transform=standardize --algorithms=all --iterations=2 --rounds=2 --warmup=1 --size=32 --format=csv
+
   test:
     name: Dub Tests
     strategy:
