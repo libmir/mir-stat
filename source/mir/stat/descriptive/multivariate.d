@@ -2097,10 +2097,14 @@ const:
     /// Inferred from the count and standardization convention, not measured.
     F centeredSumOfSquaresLeft(F = T)() @property
     {
+        // Adjust the integer count before converting. DMD 2.113 with -O -inline
+        // can miscompile the conditional floating-point result for empty state.
+        // https://github.com/dlang/dmd/issues/23918
+        auto n = count;
         static if (inputStandardization == InputStandardization.sample)
-            return count ? cast(F)(count - 1) : F(0);
-        else
-            return cast(F) count;
+            if (n)
+                --n;
+        return cast(F) n;
     }
     /// ditto
     F centeredSumOfSquaresRight(F = T)() @property
@@ -2199,6 +2203,8 @@ unittest
         assert(arrayResult.correlation!double == -0.5);
 
         A scalar = A(x[0], y[0]);
+        assert(scalar.centeredSumOfSquaresLeft == 0);
+        assert(scalar.centeredSumOfSquaresRight == 0);
         scalar.put(x[1], y[1]);
         scalar.put(x[2], y[2]);
         assert(scalar.correlation == T(-0.5));
@@ -2207,6 +2213,8 @@ unittest
         ranges.put(iota(0, 0).map!(i => T(i - 1)), iota(0, 0).map!(i => T(i == 2 ? -1 : i)));
         assert(ranges.count == 0 && ranges.centeredSumOfProducts == 0);
         assert(ranges.centeredSumOfSquaresLeft == 0);
+        assert(ranges.centeredSumOfSquaresRight == 0);
+        assert(ranges.centeredSumOfSquaresLeft!double == 0);
         ranges.put(iota(0, 3).map!(i => T(i - 1)), iota(0, 3).map!(i => T(i == 2 ? -1 : i)));
         assert(ranges.correlation == T(-0.5));
         T[6] bx = [T(-1), 99, 0, 99, 1, 99];
@@ -2221,6 +2229,12 @@ unittest
         alias P = CorrelationAccumulator!(T, CorrelationAlgo.assumeStandardized, method,
             InputStandardization.population);
         static assert(!__traits(compiles, scalar.put(P.init)));
+        P emptyPopulation;
+        assert(emptyPopulation.centeredSumOfSquaresLeft == 0);
+        assert(emptyPopulation.centeredSumOfSquaresRight == 0);
+        const singlePopulation = P(x[0], y[0]);
+        assert(singlePopulation.centeredSumOfSquaresLeft == 1);
+        assert(singlePopulation.centeredSumOfSquaresRight == 1);
         // A different assumption changes the divisor; it does not normalize data.
         const population = P(x[], y[]);
         assert(population.centeredSumOfSquaresLeft == 3);
