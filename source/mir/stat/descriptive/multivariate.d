@@ -2140,6 +2140,7 @@ unittest
 {
     import mir.stat.transform: zscore;
     import mir.math.common: approxEqual;
+    import mir.math.sum: Summation;
     double[3] x = [10, 20, 30];
     double[3] y = [20, 30, 10];
     auto standardizedX = x[].zscore;
@@ -2165,6 +2166,7 @@ unittest
 {
     import mir.stat.transform: zscore;
     import mir.math.common: approxEqual;
+    import mir.math.sum: Summation;
     double[3] x = [10, 20, 30];
     double[3] y = [20, 30, 10];
     auto zx = x[].zscore(true);
