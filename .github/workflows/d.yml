@@ -58,7 +58,6 @@ jobs:
     name: Dub Tests
     permissions:
       contents: read
-      id-token: write
     strategy:
       fail-fast: false
       matrix:
@@ -129,8 +128,7 @@ jobs:
         Write-Output "Preserved $($reports.Count) BLAS coverage reports"
 
     # Upload completed suites even if an unrelated later test failed.
-    # Diagnostic comparison with the previously used uploader.
-    # v3 uses the repository token; fork PRs cannot access this secret.
+    # Authenticate with the repository token; fork PRs use tokenless uploads.
     # Restore unchanged reports to the checkout to test relative upload paths.
     - name: Restore general coverage for upload
       id: general-upload-reports
@@ -147,11 +145,12 @@ jobs:
 
     - name: Upload general coverage
       if: ${{ !cancelled() && steps.general-upload-reports.outcome == 'success' }}
-      uses: codecov/codecov-action@v3.1.1
+      uses: codecov/codecov-action@v7
       with:
         token: ${{ secrets.CODECOV_TOKEN }}
         files: ${{ steps.general-upload-reports.outputs.files }}
-        functionalities: search
+        disable_search: true
+        plugins: noop
         verbose: true
         flags: general
         name: general-${{ matrix.os }}-${{ matrix.dc }}
@@ -182,11 +181,12 @@ jobs:
 
     - name: Upload BLAS coverage
       if: ${{ !cancelled() && steps.blas-upload-reports.outcome == 'success' }}
-      uses: codecov/codecov-action@v3.1.1
+      uses: codecov/codecov-action@v7
       with:
         token: ${{ secrets.CODECOV_TOKEN }}
         files: ${{ steps.blas-upload-reports.outputs.files }}
-        functionalities: search
+        disable_search: true
+        plugins: noop
         verbose: true
         flags: blas
         name: blas-${{ matrix.os }}-${{ matrix.dc }}
