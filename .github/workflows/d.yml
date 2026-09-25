@@ -129,7 +129,8 @@ jobs:
 
     # Upload completed suites even if an unrelated later test failed.
     # Authenticate with the repository token; fork PRs use tokenless uploads.
-    # Restore unchanged reports to the checkout to test relative upload paths.
+    # Codecov's D detector requires the report to end with "covered", without a newline.
+    # Trim only upload copies; keep the preserved reports unchanged.
     - name: Restore general coverage for upload
       id: general-upload-reports
       if: ${{ !cancelled() && steps.general-coverage.outcome == 'success' }}
@@ -139,17 +140,22 @@ jobs:
         $reports = @(Get-ChildItem -LiteralPath $source -Filter 'source-*.lst' -File)
         if ($reports.Count -eq 0) { throw 'No preserved general coverage reports found' }
         foreach ($report in $reports) {
-          Copy-Item -LiteralPath $report.FullName -Destination . -Force
+          $content = [IO.File]::ReadAllBytes($report.FullName)
+          $length = $content.Length
+          while ($length -gt 0 -and ($content[$length - 1] -eq 10 -or $content[$length - 1] -eq 13)) {
+            $length--
+          }
+          [Array]::Resize([ref]$content, $length)
+          [IO.File]::WriteAllBytes((Join-Path $env:GITHUB_WORKSPACE $report.Name), $content)
         }
         "files=$($reports.Name -join ',')" >> $env:GITHUB_OUTPUT
 
     - name: Upload general coverage
       if: ${{ !cancelled() && steps.general-upload-reports.outcome == 'success' }}
-      uses: codecov/codecov-action@v4
+      uses: codecov/codecov-action@v7
       with:
         token: ${{ secrets.CODECOV_TOKEN }}
         version: "v11.3.1"
-        use_legacy_upload_endpoint: true
         files: ${{ steps.general-upload-reports.outputs.files }}
         disable_search: true
         plugins: noop
@@ -167,7 +173,8 @@ jobs:
           Remove-Item -LiteralPath (Join-Path $env:GITHUB_WORKSPACE $report.Name)
         }
 
-    # Restore unchanged reports to the checkout to test relative upload paths.
+    # Codecov's D detector requires the report to end with "covered", without a newline.
+    # Trim only upload copies; keep the preserved reports unchanged.
     - name: Restore BLAS coverage for upload
       id: blas-upload-reports
       if: ${{ !cancelled() && steps.blas-coverage.outcome == 'success' }}
@@ -177,17 +184,22 @@ jobs:
         $reports = @(Get-ChildItem -LiteralPath $source -Filter 'source-*.lst' -File)
         if ($reports.Count -eq 0) { throw 'No preserved BLAS coverage reports found' }
         foreach ($report in $reports) {
-          Copy-Item -LiteralPath $report.FullName -Destination . -Force
+          $content = [IO.File]::ReadAllBytes($report.FullName)
+          $length = $content.Length
+          while ($length -gt 0 -and ($content[$length - 1] -eq 10 -or $content[$length - 1] -eq 13)) {
+            $length--
+          }
+          [Array]::Resize([ref]$content, $length)
+          [IO.File]::WriteAllBytes((Join-Path $env:GITHUB_WORKSPACE $report.Name), $content)
         }
         "files=$($reports.Name -join ',')" >> $env:GITHUB_OUTPUT
 
     - name: Upload BLAS coverage
       if: ${{ !cancelled() && steps.blas-upload-reports.outcome == 'success' }}
-      uses: codecov/codecov-action@v4
+      uses: codecov/codecov-action@v7
       with:
         token: ${{ secrets.CODECOV_TOKEN }}
         version: "v11.3.1"
-        use_legacy_upload_endpoint: true
         files: ${{ steps.blas-upload-reports.outputs.files }}
         disable_search: true
         plugins: noop
