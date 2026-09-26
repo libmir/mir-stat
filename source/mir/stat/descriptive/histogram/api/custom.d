@@ -7,6 +7,81 @@ Copyright: 2026 Mir Stat Authors.
 +/
 module mir.stat.descriptive.histogram.api.custom;
 
+private import mir.stat.descriptive.histogram.api.factory: SampleHistogramFactory, isSampleCellSelection;
+private mixin SampleHistogramFactory!(allocateCounts, releaseCounts) sampleImplementation;
+
+version(mir_stat_test)
+@system pure nothrow @nogc
+unittest
+{
+    import mir.stat.descriptive.histogram.api.factory: testSampleFactories;
+    import std.experimental.allocator.mallocator: Mallocator;
+    import std.experimental.allocator: dispose;
+    static auto factory(Cell, Args...)(auto ref Args args)
+    {
+        return makeHistogram!Cell(Mallocator.instance, args);
+    }
+    static auto weightedFactory(Cell, Args...)(auto ref Args args)
+    {
+        return makeWeightedHistogram!Cell(Mallocator.instance, args);
+    }
+    static void release(H)(ref H h) { Mallocator.instance.dispose(h.counts.field); }
+    testSampleFactories!(factory, weightedFactory, release)();
+}
+
+// A safe allocator preserves safe construction; ref samples reach the cell
+// without a copy, just as they do with direct putSample calls.
+version(mir_stat_test)
+@safe pure nothrow
+unittest
+{
+    import mir.stat.descriptive.histogram.axis: IntegralAxis, AxisOptions;
+    import std.experimental.allocator: dispose;
+    static struct Cell
+    {
+        int sum;
+        void put(ref int sample) @safe pure nothrow @nogc
+        {
+            sum += sample;
+            sample = 0;
+        }
+    }
+    int[2] samples = [3, 7], coordinates = [0, 0];
+    SafeAllocator allocator;
+    auto h = makeHistogram!Cell(allocator, samples, coordinates,
+        IntegralAxis!(int, AxisOptions())(1, 0));
+    assert(h.counts[0].sum == 10);
+    assert(samples == [0, 0]);
+    allocator.dispose(h.counts.field);
+    assert(allocator.allocations == 1 && allocator.releases == 1);
+}
+
+// Release partially populated custom storage when either insertion path throws.
+version(mir_stat_test)
+@system pure
+unittest
+{
+    import mir.stat.descriptive.histogram.axis: IntegralAxis, AxisOptions;
+    import std.exception: assertThrown;
+    static struct Cell
+    {
+        int sum;
+        void put(int sample) @safe pure
+        {
+            if (sample < 0) throw new Exception("invalid sample");
+            sum += sample;
+        }
+        void put(int sample, int weight) @safe pure { put(sample * weight); }
+    }
+    alias A = IntegralAxis!(int, AxisOptions());
+    int[2] samples = [3, -1], coordinates = [0, 0], weights = [1, 1];
+    CountingAllocator allocator;
+    assertThrown!Exception(makeHistogram!Cell(allocator, samples, coordinates, A(1, 0)));
+    assert(allocator.allocations == 1 && allocator.releases == 1);
+    assertThrown!Exception(makeWeightedHistogram!Cell(allocator, samples, weights, coordinates, A(1, 0)));
+    assert(allocator.allocations == 2 && allocator.releases == 2);
+}
+
 private import mir.stat.descriptive.histogram.api.factory: HistogramFactory;
 private mixin HistogramFactory!(allocateCounts, releaseCounts) implementation;
 private import mir.stat.descriptive.histogram.api.factory: AxisHistogramFactory, areHistogramAxes;
@@ -42,6 +117,11 @@ Cell defaults to size_t. Numeric cells start at zero; accumulator structs retain
 their default initialization. Dispose of counts.field through the same allocator
 to destroy cells and release storage when no histogram or view uses it.
 
+To summarize recorded samples, use makeHistogram!Cell(allocator, samples,
+coordinates, axis), with one coordinate collection per axis followed by explicit
+axis instances. Input shapes, cell insertion, and sample lifetime rules follow
+$(REF histogram, mir, stat, descriptive, histogram, api, gc).
+
 The allocator follows $(REF makeSlice, mir, ndslice, allocation) conventions.
 It is passed by reference and is not stored in the result. The returned count
 slice does not own its allocation: the caller must keep the storage valid and
@@ -53,7 +133,7 @@ counts. Attributes are inferred from allocation, cleanup, and insertion;
 allocators with `@system` deallocation make this factory `@system` as well.
 
 Params:
-    Options = axis template/type, counter/coordinate types, transforms, rules, and options
+    Options = axis template/type, counter/coordinate types, transforms, rules, and options, or an accumulator cell type
 +/
 template makeHistogram(Options...)
 {
@@ -94,7 +174,7 @@ template makeHistogram(Options...)
     /++
     Params:
         allocator = allocator instance providing allocation and deallocation
-        args = axis instances, or an observation slice followed by axis construction arguments
+        args = axis instances, an observation slice followed by axis construction arguments, or samples and coordinate collections followed by axis instances
     +/
     auto makeHistogram(Allocator, Args...)(ref Allocator allocator, auto ref Args args)
         if (areHistogramAxes!Args || !(Args.length == 2 && isAxis!(Args[1]) &&
@@ -105,6 +185,8 @@ template makeHistogram(Options...)
             static assert(Options.length <= 1, "Axis-only construction accepts one cell type");
             return axisImplementation.axisFactory!Options(allocator, args);
         }
+        else static if (isSampleCellSelection!Options)
+            return sampleImplementation.sampleFactory!(Options[0], false)(allocator, args);
         else static if (Options.length)
             return implementation.factory!Options(allocator, args);
         else
@@ -941,11 +1023,25 @@ axis instance or concrete axis type. Axes never select counter storage.
 Integral counters require integral weights. Counts must accommodate their sums.
 Bin-count rules operate on observations, without weighting the rule itself.
 Axis ownership and explicit count disposal follow $(LREF makeHistogram).
+
+With an accumulator Cell type, makeWeightedHistogram!Cell(allocator, samples,
+weights, coordinates, axis) summarizes weighted measurements. Supply one
+coordinate collection per axis and then explicit axis instances. Argument
+ordering, cell insertion, shape, and lifetime rules follow
+$(REF weightedHistogram, mir, stat, descriptive, histogram, api, gc).
 +/
 template makeWeightedHistogram(Options...)
 {
+    auto makeWeightedHistogram(Allocator, Data, Weights, Args...)(ref Allocator allocator, auto ref Data data,
+        auto ref Weights weights, auto ref Args args)
+        if (isSampleCellSelection!Options)
+    {
+        return sampleImplementation.sampleFactory!(Options[0], true)(allocator, weights, data, args);
+    }
+
     auto makeWeightedHistogram(Allocator, Data, Weights, Args...)(ref Allocator allocator,
         scope auto ref Data data, scope auto ref Weights weights, auto ref Args args)
+        if (!isSampleCellSelection!Options)
     {
         return weightedImplementation.weightedFactory!Options(allocator, data, weights, args);
     }
@@ -965,6 +1061,42 @@ unittest
         Mallocator.instance, observations, weights, 2u, 0.0, 2.0);
     scope(exit) Mallocator.instance.dispose(h.counts.field);
     assert(h.counts == [2.0, 2.0]);
+}
+
+/++
+Populate weighted accumulator cells with
+`makeWeightedHistogram!Cell(allocator, samples, weights, coordinates..., axes...)`.
+Supply one coordinate collection per axis. Corresponding elements select a
+joint bin and update its cell with the sample and weight.
+
+For example, combine sensor reports on a two-dimensional grid. Each measurement
+is a report's mean reading, and its weight is the number of readings represented.
+The integer latitude and longitude coordinates identify grid cells. At (0, 1),
+the combined mean is (2 * 10 + 6 * 30) / (2 + 6) = 25; at (1, 0), it is 50.
+WMeanAccumulator retains the total weight and weighted sum for each cell.
+Allocate the cells with Mallocator and dispose of the entire cell buffer after
+all uses of the histogram and its views have finished.
++/
+version(mir_stat_test)
+@system pure nothrow @nogc
+unittest
+{
+    import mir.stat.descriptive.weighted: WMeanAccumulator, AssumeWeights;
+    import mir.math.sum: Summation;
+    import mir.stat.descriptive.histogram.axis: IntegralAxis, AxisOptions;
+    import std.experimental.allocator.mallocator: Mallocator;
+    import std.experimental.allocator: dispose;
+    double[3] weights = [2, 6, 1];
+    double[3] measurements = [10, 30, 50];
+    int[3] latitude = [0, 0, 1], longitude = [1, 1, 0];
+    alias A = IntegralAxis!(int, AxisOptions());
+    alias Cell = WMeanAccumulator!(double, Summation.pairwise, AssumeWeights.primary);
+    auto readings = makeWeightedHistogram!Cell(
+        Mallocator.instance, measurements, weights, latitude, longitude,
+        A(2, 0), A(2, 0));
+    scope(exit) Mallocator.instance.dispose(readings.counts.field);
+    assert(readings.counts[0, 1].wmean == 25);
+    assert(readings.counts[1, 0].wmean == 50);
 }
 
 /++

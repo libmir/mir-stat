@@ -7,6 +7,17 @@ Copyright: 2026 Mir Stat Authors.
 +/
 module mir.stat.descriptive.histogram.api.gc;
 
+private import mir.stat.descriptive.histogram.api.factory: SampleHistogramFactory, isSampleCellSelection;
+private mixin SampleHistogramFactory!(allocateCounts) sampleImplementation;
+
+version(mir_stat_test)
+@safe pure nothrow
+unittest
+{
+    import mir.stat.descriptive.histogram.api.factory: testSampleFactories;
+    testSampleFactories!(histogram, weightedHistogram)();
+}
+
 import mir.stat.descriptive.histogram.api.factory: HistogramFactory, NoAllocationContext;
 
 private auto allocateCounts(T)(ref NoAllocationContext context, size_t length) @safe pure nothrow
@@ -34,6 +45,18 @@ start at zero; accumulator structs retain their default initialization.
 No observations are inserted. Use putSample or putWeightedSample to accumulate
 measurements in nonnumeric cells.
 
+To summarize recorded measurements, supply an accumulator Cell type followed by
+samples, one coordinate collection per axis, then explicit axis instances:
+histogram!Cell(samples, coordinates, axis). For example, use Summator to total
+purchase amounts by customer age, or MeanAccumulator to average request latency
+by temperature. Joint histograms accept additional coordinate collections and axes.
+Built-in arrays and Mir slices are accepted. All input shapes must match;
+multidimensional slices are paired elementwise, including strided views.
+Empty inputs leave cells in their default state. Cells receive put(sample),
+which determines sample validity and inferred attributes. Samples are passed
+by reference where supported; cells retaining sample references require those
+samples to outlive the result.
+
 Count allocation does not change axis boundary ownership: borrowed variable-axis
 boundaries must still outlive the histogram. Construction allocates GC memory;
 subsequent counting can be `@nogc`.
@@ -50,6 +73,8 @@ template histogram(Options...)
             static assert(Options.length <= 1, "Axis-only construction accepts one cell type");
             return axisImplementation.axisFactory!Options(context, args);
         }
+        else static if (isSampleCellSelection!Options)
+            return sampleImplementation.sampleFactory!(Options[0], false)(context, args);
         else static if (Options.length)
             return implementation.factory!Options(context, args);
         else
@@ -71,14 +96,6 @@ unittest
     static assert(is(typeof(h.counts.iterator) == size_t*));
 }
 
-version(mir_stat_test)
-@safe pure nothrow
-unittest
-{
-    import mir.stat.descriptive.histogram.api.factory: testAxisOnlyFactory;
-    testAxisOnlyFactory!histogram();
-}
-
 /// Override the counter type and include underflow and overflow bins.
 version(mir_stat_test)
 @safe pure nothrow
@@ -92,6 +109,14 @@ unittest
     assert(h.counts == [1UL, 2, 2, 1]);
     assert(h.underflow == 1 && h.overflow == 1);
     static assert(is(h.CountType == ulong));
+}
+
+version(mir_stat_test)
+@safe pure nothrow
+unittest
+{
+    import mir.stat.descriptive.histogram.api.factory: testAxisOnlyFactory;
+    testAxisOnlyFactory!histogram();
 }
 
 /// Build a relative frequency accumulator sharing the histogram's GC-backed counts.
@@ -130,6 +155,31 @@ unittest
     sales.putSample(50.0, 35.0);
     assert(sales.bins.front.value.sum == 80.0);
     assert(sales.bins.back.value.sum == 0.0);
+}
+
+/++
+Populate accumulator cells from existing arrays with
+`histogram!Cell(samples, coordinates, axis)`. Corresponding elements form one
+observation: the coordinate selects the bin, and the sample updates its cell.
+
+For example, total purchase amounts by customer age. Ages select the intervals
+[20, 40) and [40, 60), while a Summator in each bin adds the purchase amounts
+using pairwise summation. The first two purchases contribute 30 + 50 to the
+first bin; the remaining purchase contributes 120 to the second.
++/
+version(mir_stat_test)
+@safe pure nothrow
+unittest
+{
+    import mir.math.sum: Summator, Summation;
+    import mir.stat.descriptive.histogram.axis: RegularAxis, AxisOptions;
+    alias Cell = Summator!(double, Summation.pairwise);
+    double[3] purchases = [30, 50, 120];
+    double[] ages = [25, 35, 45];
+    auto sales = histogram!Cell(purchases, ages,
+        RegularAxis!(double, AxisOptions())(2, 20, 60));
+    assert(sales.bins[0].value.sum == 80);
+    assert(sales.bins[1].value.sum == 120);
 }
 
 
@@ -208,11 +258,30 @@ axis instance or concrete axis type. Axes never select counter storage.
 Integral counters require integral weights. Counts must accommodate their sums.
 Bin-count rules operate on observations, without weighting the rule itself.
 Axis ownership and count ownership follow $(LREF histogram).
+
+An explicit accumulator Cell type summarizes weighted samples:
+weightedHistogram!Cell(samples, weights, coordinates, axis). Supply one coordinate
+collection per axis, followed by explicit axis instances. Samples precede weights,
+matching the data-first ordering of numeric weighted factories. For example,
+WMeanAccumulator computes weighted mean measurements by location. Input shapes
+must match as described for $(LREF histogram). Insertion calls
+putWeightedSample(weight, sample, coordinates...), so cells receive put(sample, weight).
+The cell determines weight validity, attributes, and reference lifetimes;
+no separate numeric count or total is maintained.
 +/
 template weightedHistogram(Options...)
 {
+    auto weightedHistogram(Data, Weights, Args...)(auto ref Data data,
+        auto ref Weights weights, auto ref Args args)
+        if (isSampleCellSelection!Options)
+    {
+        NoAllocationContext context;
+        return sampleImplementation.sampleFactory!(Options[0], true)(context, weights, data, args);
+    }
+
     auto weightedHistogram(Data, Weights, Args...)(
         scope auto ref Data data, scope auto ref Weights weights, auto ref Args args)
+        if (!isSampleCellSelection!Options)
     {
         NoAllocationContext context;
         return weightedImplementation.weightedFactory!Options(context, data, weights, args);

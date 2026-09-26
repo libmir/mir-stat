@@ -160,6 +160,7 @@ package void testAccumulatorMarginal(alias project, alias dispose = null)()
     import mir.ndslice.slice: sliced;
     import mir.ndslice.dynamic: transposed;
     alias A = IntegralAxis!(int, AxisOptions(false, true, true));
+    import mir.ndslice.slice: sliced;
     alias Sum = Summator!(double, Summation.pairwise);
     alias Mean = MeanAccumulator!(double, Summation.pairwise);
     alias Weighted = WMeanAccumulator!(double, Summation.pairwise, AssumeWeights.primary);
@@ -1648,4 +1649,262 @@ package void insertWeighted(H, Data, Weights)(ref H h, scope Data data, scope We
         else
             insertWeighted(h, data[i], weights[i]);
     }
+}
+
+// Keep sample insertion separate from numeric counting and axis construction.
+package mixin template SampleHistogramFactory(alias allocate, alias release = null)
+{
+    private mixin AxisHistogramFactory!(allocate, release) sampleAxes;
+
+    auto sampleFactory(Cell, bool weighted, Context, Args...)(
+        ref Context context, auto ref Args args)
+    {
+        import mir.stat.descriptive.histogram.api.factory: validateSampleShapes, insertSampleInputs;
+        enum extra = weighted ? 2 : 1;
+        static assert(Args.length > extra && (Args.length - extra) % 2 == 0,
+            "Supply samples, one coordinate collection per axis, then axis instances; weighted factories prepend weights");
+        enum dimensions = (Args.length - extra) / 2;
+        enum collections = dimensions + extra;
+        static assert(areHistogramAxes!(Args[collections .. $]),
+            "Sample histogram factories require explicit axis instances");
+        validateSampleShapes(args[0 .. collections]);
+        auto h = sampleAxes.axisFactory!Cell(context, args[collections .. $]);
+        static if (!is(typeof(release) == typeof(null)))
+            scope(failure) release(context, h.counts);
+        insertSampleInputs!(weighted, 0)(h, args[0 .. collections]);
+        return h;
+    }
+}
+
+private auto sampleBatchView(T)(return scope auto ref T input)
+{
+    import mir.ndslice.slice: isSlice, sliced;
+    static if (isSlice!T)
+        return input;
+    else
+        return input[].sliced;
+}
+
+package void validateSampleShapes(Inputs...)(scope auto ref Inputs inputs)
+{
+    scope auto first = sampleBatchView(inputs[0]);
+    static foreach (i; 1 .. Inputs.length)
+    {
+    {
+        scope auto other = sampleBatchView(inputs[i]);
+        static assert(typeof(first).N == typeof(other).N,
+            "Sample histogram inputs must have matching ranks");
+        assert(first.shape == other.shape,
+            "Sample histogram inputs must have matching shapes");
+    }
+    }
+}
+
+package void insertSampleInputs(bool weighted, size_t column, H, Inputs...)(
+    ref H h, auto ref Inputs inputs)
+{
+    static if (column < Inputs.length)
+        insertSampleInputs!(weighted, column + 1)(h, inputs[0 .. column],
+            sampleBatchView(inputs[column]), inputs[column + 1 .. $]);
+    else
+        insertSampleBatch!weighted(h, inputs);
+}
+
+private void insertSampleBatch(bool weighted, H, Inputs...)(ref H h, auto ref Inputs inputs)
+{
+    foreach (i; 0 .. inputs[0].length)
+        insertSampleRow!(weighted, 0, Inputs.length)(h, i, inputs);
+}
+
+// Expand a heterogeneous row without copying its sample: cells may accept ref
+// samples, and nested slices must retain their logical strides and pairing.
+private void insertSampleRow(bool weighted, size_t column, size_t columns, H, Args...)(
+    ref H h, size_t index, auto ref Args args)
+{
+    static if (column < columns)
+        insertSampleRow!(weighted, column + 1, columns)(h, index, args, args[column][index]);
+    else static if (Args[0].N > 1)
+        insertSampleBatch!weighted(h, args[columns .. $]);
+    else static if (weighted)
+        h.putWeightedSample(args[columns .. $]);
+    else
+        h.putSample(args[columns .. $]);
+}
+
+version(mir_stat_test)
+package void testSampleFactories(alias factory, alias weightedFactory, alias release = null)()
+{
+    import mir.math.sum: Summator, Summation;
+    import mir.stat.descriptive.histogram.axis: IntegralAxis, AxisOptions;
+    import mir.stat.descriptive.weighted: WMeanAccumulator, AssumeWeights;
+    import mir.ndslice.slice: sliced;
+    import mir.ndslice.topology: stride;
+    alias Cell = Summator!(double, Summation.pairwise);
+    alias WeightedCell = WMeanAccumulator!(double, Summation.pairwise, AssumeWeights.primary);
+    alias A = IntegralAxis!(int, AxisOptions(false, true, true));
+    // Noncontiguous, const two-dimensional inputs are paired by logical position.
+    const double[8] backing = [10, -1, 20, -1, 30, -1, 40, -1];
+    const int[4] x = [-1, 0, 1, 2], y = [0, 1, 0, 1];
+    auto samples = backing[].sliced.stride(2).sliced(2, 2);
+    auto xs = x[].sliced(2, 2), ys = y[].sliced(2, 2);
+    {
+        auto h = factory!Cell(samples, xs, ys, A(2, 0), A(2, 0));
+        scope(exit) { static if (!is(typeof(release) == typeof(null))) release(h); }
+        assert(h.counts[0, 1].sum == 10); // Underflow on the first axis.
+        assert(h.counts[1, 2].sum == 20);
+        assert(h.counts[2, 1].sum == 30);
+        assert(h.counts[3, 2].sum == 40); // Overflow on the first axis.
+        assert(h.counts[1, 1].sum == 0);
+    }
+    {
+        const double[4] weights = [2, 6, 1, 3];
+        const int[4] same = [0, 0, 0, 0];
+        auto h = weightedFactory!WeightedCell(samples, weights[].sliced(2, 2),
+            same[].sliced(2, 2), A(2, 0));
+        scope(exit) { static if (!is(typeof(release) == typeof(null))) release(h); }
+        assert(h.counts[1].wmean == 290.0 / 12);
+    }
+    {
+        double[0] empty;
+        int[0] coordinates;
+        auto h = factory!Cell(empty, coordinates, A(2, 0));
+        scope(exit) { static if (!is(typeof(release) == typeof(null))) release(h); }
+        foreach (cell; h.counts)
+            assert(cell.sum == 0);
+    }
+    static assert(!__traits(compiles, factory!Cell(samples, x[], A(2, 0))));
+    static assert(!__traits(compiles, factory!Cell(samples, xs, 2)));
+    static assert(!__traits(compiles, factory!uint(samples, xs, A(2, 0))));
+    static assert(!__traits(compiles, weightedFactory!Cell(samples, samples, xs, A(2, 0))));
+}
+
+version(mir_stat_test_lifetime)
+@safe pure nothrow
+unittest
+{
+    import mir.stat.descriptive.histogram.api.gc: histogram;
+    import mir.stat.descriptive.histogram.api.rc: rchistogram;
+    import mir.stat.descriptive.histogram.axis: IntegralAxis, AxisOptions;
+    import mir.math.sum: Summator, Summation;
+    import mir.ndslice.slice: sliced;
+    alias A = IntegralAxis!(int, AxisOptions());
+    static struct BorrowingCell
+    {
+        const(int)[] data;
+        void put(return scope const(int)[] sample) @safe pure nothrow @nogc
+        {
+            data = sample;
+        }
+    }
+    static void check(alias factory)() @safe pure nothrow
+    {
+        static auto owned() @safe pure nothrow
+        {
+            double[2] samples = [3, 7];
+            int[2] coordinates = [0, 0];
+            return factory!(Summator!(double, Summation.pairwise))(
+                samples[].sliced, coordinates[].sliced, A(1, 0));
+        }
+        assert(owned().counts[0].sum == 10);
+        auto data = [7];
+        auto samples = [data[]];
+        int[1] coordinates = [0];
+        auto h = factory!BorrowingCell(samples, coordinates, A(1, 0));
+        data[0] = 9;
+        assert(h.counts[0].data[0] == 9);
+        static assert(!__traits(compiles, () @safe {
+            int[1] local = [7];
+            int[][1] samples = [local[]];
+            int[1] coordinates = [0];
+            return factory!BorrowingCell(samples, coordinates, A(1, 0));
+        }));
+    }
+    check!histogram();
+    check!rchistogram();
+}
+
+version(mir_stat_test)
+@system pure nothrow @nogc
+unittest
+{
+    import mir.stat.descriptive.histogram.api.rc: rchistogram, rcWeightedHistogram;
+    import mir.math.sum: Summator, Summation;
+    import mir.stat.descriptive.weighted: WMeanAccumulator, AssumeWeights;
+    import mir.stat.descriptive.histogram.axis: IntegralAxis, AxisOptions;
+    import mir.ndslice.slice: sliced;
+    import core.exception: AssertError;
+    alias Cell = Summator!(double, Summation.pairwise);
+    alias WeightedCell = WMeanAccumulator!(double, Summation.pairwise, AssumeWeights.primary);
+    alias A = IntegralAxis!(int, AxisOptions());
+    double[8] samples;
+    int[8] coordinates;
+    static void rejects(scope void delegate() pure nothrow @nogc operation) pure nothrow @nogc
+    {
+        bool rejected;
+        try { operation(); } catch (AssertError) { rejected = true; }
+        assert(rejected);
+    }
+    rejects(() { auto h = rchistogram!Cell(samples[], coordinates[0 .. 4], A(2, 0)); });
+    rejects(() { auto h = rcWeightedHistogram!WeightedCell(samples[], samples[0 .. 4], coordinates[], A(2, 0)); });
+    rejects(() { auto h = rchistogram!Cell(samples[].sliced(2, 4), coordinates[].sliced(4, 2), A(2, 0)); });
+}
+
+package template isSampleCellSelection(Options...)
+{
+    import mir.stat.descriptive.histogram.traits: isAxis;
+    static if (Options.length == 1 && is(Options[0]))
+        enum isSampleCellSelection = is(Options[0] == struct) && !isAxis!(Options[0]);
+    else
+        enum isSampleCellSelection = false;
+}
+
+version(mir_stat_test_lifetime)
+@safe pure nothrow
+unittest
+{
+    import mir.stat.descriptive.histogram.api.gc: histogram, weightedHistogram;
+    import mir.stat.descriptive.histogram.api.rc: rchistogram, rcWeightedHistogram;
+    import mir.stat.descriptive.histogram.axis: IntegralAxis, AxisOptions;
+    import mir.math.sum: Summator, Summation;
+    import mir.stat.descriptive.weighted: WMeanAccumulator, AssumeWeights;
+    alias A = IntegralAxis!(int, AxisOptions());
+    import mir.ndslice.slice: sliced;
+    alias Sum = Summator!(double, Summation.pairwise);
+    alias Mean = WMeanAccumulator!(double, Summation.pairwise, AssumeWeights.primary);
+    static struct BorrowingCell
+    {
+        const(int)[] data;
+        void put(return scope const(int)[] sample, uint weight) @safe pure nothrow @nogc
+        {
+            data = sample;
+        }
+    }
+    static void check(alias factory, alias weightedFactory)() @safe pure nothrow
+    {
+        int[2] coordinates = [0, 0];
+        double[2] samples = [10, 30], weights = [2, 6];
+        auto counts = factory(coordinates[].sliced, A(1, 0));
+        assert(counts.counts[0] == 2);
+        auto empty = factory!Sum(A(1, 0));
+        assert(empty.counts[0].sum == 0);
+        auto summary = factory!Sum(samples, coordinates, A(1, 0));
+        assert(summary.counts[0].sum == 40);
+        auto weighted = weightedFactory!Mean(samples, weights, coordinates, A(1, 0));
+        assert(weighted.counts[0].wmean == 25);
+        auto data = [7];
+        auto references = [data[]];
+        uint[1] masses = [1];
+        int[1] locations = [0];
+        auto retained = weightedFactory!BorrowingCell(references, masses, locations, A(1, 0));
+        assert(retained.counts[0].data[0] == 7);
+        static assert(!__traits(compiles, () @safe {
+            int[1] local = [7];
+            int[][1] references = [local[]];
+            uint[1] masses = [1];
+            int[1] locations = [0];
+            return weightedFactory!BorrowingCell(references, masses, locations, A(1, 0));
+        }));
+    }
+    check!(histogram, weightedHistogram)();
+    check!(rchistogram, rcWeightedHistogram)();
 }

@@ -20,6 +20,17 @@ T4=$(TR $(TDNW $(LREF $1)) $(TD $2) $(TD $3) $(TD $4))
 
 module mir.stat.descriptive.histogram.api.rc;
 
+private import mir.stat.descriptive.histogram.api.factory: SampleHistogramFactory, isSampleCellSelection;
+private mixin SampleHistogramFactory!(allocateCells) sampleImplementation;
+
+version(mir_stat_test)
+@safe pure nothrow @nogc
+unittest
+{
+    import mir.stat.descriptive.histogram.api.factory: testSampleFactories;
+    testSampleFactories!(rchistogram, rcWeightedHistogram)();
+}
+
 import mir.ndslice.slice: Slice, SliceKind;
 import mir.rc.array: RCI;
 import mir.stat.descriptive.histogram.accumulator: HistogramAccumulator;
@@ -98,6 +109,12 @@ start at zero; accumulator structs retain their default initialization.
 No observations are inserted. Use putSample or putWeightedSample to accumulate
 measurements in nonnumeric cells. Cell storage is reference-counted; borrowed
 axis boundaries must still outlive the histogram and its views.
+
+With an accumulator Cell type, rchistogram!Cell(samples, coordinates, axis)
+populates cells from recorded measurements. Supply one coordinate collection
+per axis, followed by explicit axis instances. Arrays, Mir slices, matching
+shapes, and sample lifetime rules follow
+$(REF histogram, mir, stat, descriptive, histogram, api, gc).
 +/
 template rchistogram(Options...)
 {
@@ -111,6 +128,8 @@ template rchistogram(Options...)
             static assert(Options.length <= 1, "Axis-only construction accepts one cell type");
             return axisImplementation.axisFactory!Options(context, args);
         }
+        else static if (isSampleCellSelection!Options)
+            return sampleImplementation.sampleFactory!(Options[0], false)(context, args);
         else static if (Options.length)
             return implementation.factory!Options(context, args);
         else
@@ -131,6 +150,39 @@ unittest
     auto h = data.rchistogram!RegularAxis(2u, 0.0, 4.0);
     assert(h.counts == [2u, 2]);
     static assert(is(typeof(h.counts.iterator) == RCI!size_t));
+}
+
+/// Regular Axis example
+version(mir_stat_test)
+@safe pure nothrow @nogc
+unittest
+{
+    import mir.ndslice.allocation: rcslice;
+    import mir.primitives: DeepElementType;
+    import mir.stat.descriptive.histogram.axis: RegularAxis, regularAxis;
+    import mir.stat.descriptive.histogram.breaks: sturges;
+
+    static immutable a = [0.0, 1, 4, 5, 6, 9, 10, 13, 14];
+    static immutable b = [3, 3, 3];
+    static immutable c = [2, 2, 1, 2, 2];
+
+    auto x = rcslice!double(a);
+    auto result1 = rcslice!size_t(b);
+    auto result2 = rcslice!size_t(c);
+
+    auto h1 = x.rchistogram!RegularAxis(3u, 0.0, 15.0);
+    assert(h1.counts == result1);
+    static assert(is(h1.CountType == size_t));
+
+    // Pass axis directly
+    auto regularAxis2 = regularAxis(3u, 0.0, 15.0);
+    auto h2 = x.rchistogram(regularAxis2);
+    assert(h2.counts == result1);
+
+    // Use function to calculate N_bin
+    auto regularAxis3 = x.regularAxis!sturges(0.0, 15.0);
+    auto h3 = rchistogram(x, regularAxis3);
+    assert(h3.counts == result2);
 }
 
 version(mir_stat_test)
@@ -168,39 +220,6 @@ unittest
         assert(view.length == 2);
     }
     assert(destructionCount[0] == 2);
-}
-
-/// Regular Axis example
-version(mir_stat_test)
-@safe pure nothrow @nogc
-unittest
-{
-    import mir.ndslice.allocation: rcslice;
-    import mir.primitives: DeepElementType;
-    import mir.stat.descriptive.histogram.axis: RegularAxis, regularAxis;
-    import mir.stat.descriptive.histogram.breaks: sturges;
-
-    static immutable a = [0.0, 1, 4, 5, 6, 9, 10, 13, 14];
-    static immutable b = [3, 3, 3];
-    static immutable c = [2, 2, 1, 2, 2];
-
-    auto x = rcslice!double(a);
-    auto result1 = rcslice!size_t(b);
-    auto result2 = rcslice!size_t(c);
-
-    auto h1 = x.rchistogram!RegularAxis(3u, 0.0, 15.0);
-    assert(h1.counts == result1);
-    static assert(is(h1.CountType == size_t));
-
-    // Pass axis directly
-    auto regularAxis2 = regularAxis(3u, 0.0, 15.0);
-    auto h2 = x.rchistogram(regularAxis2);
-    assert(h2.counts == result1);
-
-    // Use function to calculate N_bin
-    auto regularAxis3 = x.regularAxis!sturges(0.0, 15.0);
-    auto h3 = rchistogram(x, regularAxis3);
-    assert(h3.counts == result2);
 }
 
 /// Integral Axis example
@@ -360,34 +379,6 @@ unittest
     assert(h.counts == [2, 2, 1, 2, 2]);
 }
 
-// A locally evaluated capturing rule need not allocate a GC closure. Keep
-// observations in static storage to test the factory rather than array setup.
-version(mir_stat_test)
-@safe pure nothrow @nogc
-unittest
-{
-    import mir.ndslice.slice: sliced;
-    import mir.stat.descriptive.histogram.axis: RegularAxis;
-
-    static immutable double[8] values = [0, 1, 2, 3, 4, 5, 6, 7];
-    auto data = values[].sliced;
-    size_t observationsPerBin = 2;
-    // scope prevents the captured setting from requiring a GC closure.
-    scope auto rule = (typeof(data) observations) => observations.length / observationsPerBin;
-    auto first = data.rchistogram!RegularAxis(rule(data), 0.0, 8.0);
-    assert(first.axis[0].N_bin == 4);
-    foreach (i; 0 .. 4)
-        assert(first.counts[i] == 2);
-
-    // Changing the captured setting affects the next evaluation, not the
-    // histogram already built from the previous result.
-    observationsPerBin = 4;
-    auto second = data.rchistogram!RegularAxis(rule(data), 0.0, 8.0);
-    assert(second.axis[0].N_bin == 2);
-    assert(second.counts[0] == 4 && second.counts[1] == 4);
-    assert(first.axis[0].N_bin == 4 && first.counts[0] == 2);
-}
-
 /// Transform Axis example
 version(mir_stat_test)
 @safe pure nothrow @nogc
@@ -445,6 +436,34 @@ unittest
     auto h8 = x.rchistogram(regularAxis5);
     assert(h8.counts == result2);
 
+}
+
+// A locally evaluated capturing rule need not allocate a GC closure. Keep
+// observations in static storage to test the factory rather than array setup.
+version(mir_stat_test)
+@safe pure nothrow @nogc
+unittest
+{
+    import mir.ndslice.slice: sliced;
+    import mir.stat.descriptive.histogram.axis: RegularAxis;
+
+    static immutable double[8] values = [0, 1, 2, 3, 4, 5, 6, 7];
+    auto data = values[].sliced;
+    size_t observationsPerBin = 2;
+    // scope prevents the captured setting from requiring a GC closure.
+    scope auto rule = (typeof(data) observations) => observations.length / observationsPerBin;
+    auto first = data.rchistogram!RegularAxis(rule(data), 0.0, 8.0);
+    assert(first.axis[0].N_bin == 4);
+    foreach (i; 0 .. 4)
+        assert(first.counts[i] == 2);
+
+    // Changing the captured setting affects the next evaluation, not the
+    // histogram already built from the previous result.
+    observationsPerBin = 4;
+    auto second = data.rchistogram!RegularAxis(rule(data), 0.0, 8.0);
+    assert(second.axis[0].N_bin == 2);
+    assert(second.counts[0] == 4 && second.counts[1] == 4);
+    assert(first.axis[0].N_bin == 4 && first.counts[0] == 2);
 }
 
 /// Choose logarithmic bins using a rule evaluated in logarithmic coordinates.
@@ -585,6 +604,35 @@ unittest
     assert(timings.bins.front.value.mean == 150.0);
 }
 
+/++
+Populate accumulator cells from Mir slices with
+`rchistogram!Cell(samples, coordinates, axis)`. Corresponding elements form one
+observation: the coordinate selects the bin, and the sample updates its cell.
+
+For example, compare average request latency across temperature bands. Each
+latency measurement has a corresponding temperature. Temperatures select the
+intervals [20, 40) and [40, 60); MeanAccumulator cells summarize the latencies.
+The first bin averages 100 and 200 to give 150, while the second contains only
+the measurement 400. Cell storage is reference-counted.
++/
+version(mir_stat_test)
+@safe pure nothrow @nogc
+unittest
+{
+    import mir.stat.descriptive.univariate: MeanAccumulator;
+    import mir.math.sum: Summation;
+    import mir.ndslice.slice: sliced;
+    import mir.stat.descriptive.histogram.axis: RegularAxis, AxisOptions;
+    double[3] latency = [100, 200, 400];
+    double[3] temperature = [25, 35, 45];
+    auto timings = rchistogram!(MeanAccumulator!(double, Summation.pairwise))(
+        latency[].sliced, temperature[].sliced,
+        RegularAxis!(double, AxisOptions())(2, 20, 60));
+    assert(timings.bins[0].value.count == 2);
+    assert(timings.bins[0].value.mean == 150);
+    assert(timings.bins[1].value.mean == 400);
+}
+
 
 // The result owns counts independently of the factory's local observations.
 version(mir_stat_test)
@@ -661,11 +709,26 @@ axis instance or concrete axis type. Axes never select counter storage.
 Integral counters require integral weights. Counts must accommodate their sums.
 Bin-count rules operate on observations, without weighting the rule itself.
 Axis ownership and count ownership follow $(LREF rchistogram).
+
+With an accumulator Cell type, rcWeightedHistogram!Cell(samples, weights,
+coordinates, axis) summarizes weighted measurements. Supply one coordinate
+collection per axis and then explicit axis instances. Argument ordering,
+cell insertion, shape, and lifetime rules follow
+$(REF weightedHistogram, mir, stat, descriptive, histogram, api, gc).
 +/
 template rcWeightedHistogram(Options...)
 {
+    auto rcWeightedHistogram(Data, Weights, Args...)(auto ref Data data,
+        auto ref Weights weights, auto ref Args args)
+        if (isSampleCellSelection!Options)
+    {
+        NoAllocationContext context;
+        return sampleImplementation.sampleFactory!(Options[0], true)(context, weights, data, args);
+    }
+
     auto rcWeightedHistogram(Data, Weights, Args...)(
         scope auto ref Data data, scope auto ref Weights weights, auto ref Args args)
+        if (!isSampleCellSelection!Options)
     {
         NoAllocationContext context;
         return weightedImplementation.weightedFactory!Options(context, data, weights, args);
