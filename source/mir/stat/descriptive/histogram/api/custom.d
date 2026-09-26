@@ -7,6 +7,31 @@ Copyright: 2026 Mir Stat Authors.
 +/
 module mir.stat.descriptive.histogram.api.custom;
 
+// Arrays preserve counting, counter selection, and observation/axis lifetimes.
+version(mir_stat_test)
+@safe pure nothrow
+unittest
+{
+    import mir.stat.descriptive.histogram.api.factory: testArrayHistogramFactories;
+    template factory(Options...)
+    {
+        static auto factory(Args...)(auto ref Args args)
+        {
+            SafeAllocator allocator;
+            return makeHistogram!Options(allocator, args);
+        }
+    }
+    template relativeFactory(Options...)
+    {
+        static auto relativeFactory(Args...)(auto ref Args args)
+        {
+            SafeAllocator allocator;
+            return makeRelativeFrequencyHistogram!Options(allocator, args);
+        }
+    }
+    testArrayHistogramFactories!(factory, relativeFactory)();
+}
+
 private import mir.stat.descriptive.histogram.api.factory: SampleHistogramFactory, isSampleCellSelection;
 private mixin SampleHistogramFactory!(allocateCounts, releaseCounts) sampleImplementation;
 
@@ -102,7 +127,7 @@ private void releaseCounts(Allocator, Storage)(ref Allocator allocator, Storage 
 
 /++
 Allocate counts with a caller-selected allocator.
-Use makeHistogram(allocator, data, axis) to count a Mir slice into an existing
+Use makeHistogram(allocator, data, axis) to count a built-in array or Mir slice into an existing
 axis. Each observation increments its selected bin. Release counts.field through
 the same allocator after the histogram and its views are no longer used.
 Accepts the same axis instances, axis templates, counter/coordinate overrides,
@@ -140,7 +165,7 @@ template makeHistogram(Options...)
 {
     import mir.ndslice.slice: Slice, SliceKind;
     import mir.stat.descriptive.histogram.traits: isAxis;
-    import std.traits: isNumeric, Unqual;
+    import std.traits: isArray, isNumeric, Unqual;
 
     // Preserve the direct construction path for an explicitly supplied axis.
     // Shared overload dispatch is only needed when the axis must be deduced.
@@ -169,13 +194,23 @@ template makeHistogram(Options...)
         return initializeHistogram(counts, axis, observations);
     }
 
+    /// ditto
+    auto makeHistogram(Allocator, Data, Axis)(ref Allocator allocator,
+        scope auto ref Data observations, Axis axis)
+        if (isArray!Data && isAxis!Axis && (!Options.length ||
+            (Options.length == 1 && is(Options[0]) && isNumeric!(Options[0]))))
+    {
+        import mir.ndslice.slice: sliced;
+        return makeHistogram(allocator, observations[].sliced, axis);
+    }
+
     // Borrow lvalue handles without an extra RC copy. Pass arguments directly:
     // core.lifetime.forward can hide borrowed-memory escapes from DIP1000.
     // Value arguments match the shared overloads and preserve escape inference.
     /++
     Params:
         allocator = allocator instance providing allocation and deallocation
-        args = axis instances, an observation slice followed by axis construction arguments, or samples and coordinate collections followed by axis instances
+        args = axis instances, an observation array or slice followed by axis construction arguments, or samples and coordinate collections followed by axis instances
     +/
     auto makeHistogram(Allocator, Args...)(ref Allocator allocator, auto ref Args args)
         if (areHistogramAxes!Args || !(Args.length == 2 && isAxis!(Args[1]) &&
@@ -212,6 +247,27 @@ unittest
     assert(h.counts == [2u, 2]);
     h.put(0.5);
     assert(h.counts == [3u, 2]);
+}
+
+/++
+Pass built-in static or dynamic arrays directly, including const observations.
+Construction reads the observations and owns fresh counts; no conversion to a
+Mir slice is needed at the call site.
++/
+version(mir_stat_test)
+@system pure nothrow @nogc
+unittest
+{
+    import mir.stat.descriptive.histogram.axis: RegularAxis;
+    import std.experimental.allocator.mallocator: Mallocator;
+    import std.experimental.allocator: dispose;
+    const double[4] values = [0, 1, 1, 3];
+    auto fromStatic = makeHistogram!RegularAxis(Mallocator.instance, values, 2u, 0.0, 4.0);
+    scope(exit) Mallocator.instance.dispose(fromStatic.counts.field);
+    auto fromDynamic = makeHistogram!RegularAxis(Mallocator.instance, values[], 2u, 0.0, 4.0);
+    scope(exit) Mallocator.instance.dispose(fromDynamic.counts.field);
+    assert(fromStatic.counts == [3, 1]);
+    assert(fromDynamic.counts == fromStatic.counts);
 }
 
 // Exercise shared empty-axis construction checks with caller-allocated cells.
@@ -843,7 +899,7 @@ unittest
 /++
 Construct a relative-frequency accumulator with caller-allocated count storage.
 Accepts the numeric-count forms and axis options of $(LREF makeHistogram).
-Pass observations as a Mir slice to populate a one-axis histogram, or supply
+Pass observations as a built-in array or Mir slice to populate a one-axis histogram, or supply
 only axis instances to allocate an empty one-dimensional or joint histogram.
 Accumulator-valued cells, such as MeanAccumulator, are not supported: relative
 frequencies require numeric counts that can be summed and normalized.

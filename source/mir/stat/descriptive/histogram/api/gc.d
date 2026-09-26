@@ -7,6 +7,15 @@ Copyright: 2026 Mir Stat Authors.
 +/
 module mir.stat.descriptive.histogram.api.gc;
 
+// Arrays preserve counting, counter selection, and observation/axis lifetimes.
+version(mir_stat_test)
+@safe pure nothrow
+unittest
+{
+    import mir.stat.descriptive.histogram.api.factory: testArrayHistogramFactories;
+    testArrayHistogramFactories!(histogram, relativeFrequencyHistogram)();
+}
+
 private import mir.stat.descriptive.histogram.api.factory: SampleHistogramFactory, isSampleCellSelection;
 private mixin SampleHistogramFactory!(allocateCounts) sampleImplementation;
 
@@ -34,7 +43,7 @@ private mixin AxisHistogramFactory!allocateCounts axisImplementation;
 /++
 Construct a histogram with garbage-collected count storage.
 For equal-width bins, use data.histogram!RegularAxis(n, low, high), where data
-is a Mir slice. Each observation increments its selected bin. Counters default
+is a built-in array or Mir slice. Each observation increments its selected bin. Counters default
 to size_t. Supply an existing axis with data.histogram(axis).
 Accepts the same axes, bin-count rules, type overrides, and options as
 $(REF rchistogram, mir, stat, descriptive, histogram, api, rc).
@@ -99,6 +108,23 @@ unittest
     assert(h.counts == [3u, 2]);
     h.put(3.5);
     assert(h.counts == [3u, 3]);
+}
+
+/++
+Pass built-in static or dynamic arrays directly, including const observations.
+Construction reads the observations and owns fresh counts; no conversion to a
+Mir slice is needed at the call site.
++/
+version(mir_stat_test)
+@safe pure nothrow
+unittest
+{
+    import mir.stat.descriptive.histogram.axis: RegularAxis;
+    const double[4] values = [0, 1, 1, 3];
+    auto fromStatic = values.histogram!RegularAxis(2u, 0.0, 4.0);
+    auto fromDynamic = values[].histogram!RegularAxis(2u, 0.0, 4.0);
+    assert(fromStatic.counts == [3, 1]);
+    assert(fromDynamic.counts == fromStatic.counts);
 }
 
 /// Override the counter type and include underflow and overflow bins.
@@ -215,7 +241,7 @@ unittest
 /++
 Construct a relative-frequency accumulator with garbage-collected count storage.
 Accepts the numeric-count forms and axis options of $(LREF histogram).
-Pass observations as a Mir slice to populate a one-axis histogram, or supply
+Pass observations as a built-in array or Mir slice to populate a one-axis histogram, or supply
 only axis instances to allocate an empty one-dimensional or joint histogram.
 Accumulator-valued cells, such as MeanAccumulator, are not supported: relative
 frequencies require numeric counts that can be summed and normalized.

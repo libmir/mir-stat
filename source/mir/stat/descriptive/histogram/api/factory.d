@@ -450,6 +450,18 @@ package mixin template HistogramFactory(alias allocate, alias release = null, bo
 
     template factory(Options...)
     {
+        import std.traits: isArray;
+
+        // Borrow built-in arrays only for counting; axis arguments retain their
+        // existing ownership and lifetime rules.
+        auto factory(Context, Data, Args...)(ref Context context,
+            scope auto ref Data data, auto ref Args args)
+            if (isArray!Data)
+        {
+            import mir.ndslice.slice: sliced;
+            return factory(context, data[].sliced, args);
+        }
+
         auto factory(Context, Iterator, size_t N, SliceKind kind, Args...)(
             ref Context context, Slice!(Iterator, N, kind) data, auto ref Args args)
         {
@@ -479,6 +491,61 @@ package mixin template HistogramFactory(alias allocate, alias release = null, bo
             }
         }
     }
+}
+
+// Built-in observation arrays reuse slice-based axis selection and counting.
+version(mir_stat_test)
+package void testArrayHistogramFactories(alias factory, alias relativeFactory)()
+{
+    import std.meta: AliasSeq;
+    import mir.ndslice.slice: sliced;
+    import mir.stat.descriptive.histogram.axis: RegularAxis, VariableAxis, AxisOptions;
+    import mir.stat.descriptive.histogram.breaks: sturges;
+    alias A = RegularAxis!(double, AxisOptions());
+    const double[4] values = [0, 1, 1, 3];
+    immutable double[4] immutableValues = [0, 1, 1, 3];
+    static foreach (make; AliasSeq!(factory, relativeFactory))
+    {{
+        auto fromStatic = make!RegularAxis(values, 2u, 0.0, 4.0);
+        auto fromDynamic = make!uint(values[], A(2, 0, 4));
+        auto fromImmutable = make!RegularAxis(immutableValues, 2u, 0.0, 4.0);
+        auto fromSlice = make!RegularAxis(values[].sliced, 2u, 0.0, 4.0);
+        assert(fromStatic.counts == [3, 1]);
+        assert(fromStatic.counts == fromDynamic.counts);
+        assert(fromStatic.counts == fromImmutable.counts);
+        assert(fromStatic.counts == fromSlice.counts);
+        static assert(is(fromDynamic.CountType == uint));
+        static if (__traits(hasMember, typeof(fromStatic), "total"))
+            assert(fromStatic.total == 4);
+
+        double[0] empty;
+        auto zero = make!RegularAxis(empty, 2u, 0.0, 4.0);
+        auto rule = make!(RegularAxis, sturges)(values, 0.0, 4.0);
+        const double[3] edges = [0, 2, 4];
+        auto variable = make!VariableAxis(values, edges[].sliced);
+        assert(zero.counts == [0, 0]);
+        assert(rule.counts.length == 3);
+        assert(variable.counts == [3, 1]);
+
+        // Observation storage is not retained after construction.
+        static auto fromLocal()
+        {
+            double[4] local = [0, 1, 1, 3];
+            return make!RegularAxis(local, 2u, 0.0, 4.0);
+        }
+        auto owned = fromLocal();
+        assert(owned.counts == [3, 1]);
+
+        version(mir_stat_test_lifetime)
+        {
+            // Axis boundaries still must outlive the returned histogram.
+            static assert(!__traits(compiles, () @safe {
+                double[3] localEdges = [0, 2, 4];
+                double[1] local = [1];
+                return make!VariableAxis(local, localEdges[].sliced);
+            }));
+        }
+    }}
 }
 
 // Axis selection has no knowledge of counter storage or allocation policy.
