@@ -20,110 +20,13 @@ private import mir.stat.descriptive.histogram.api.factory: AxisHistogramFactory,
 private mixin AxisHistogramFactory!allocateCounts axisImplementation;
 
 /++
-Project a histogram onto selected axes using fresh garbage-collected storage.
-Retain at least one axis and fewer than the source rank, without duplicates.
-The template argument order becomes the result's axis order. All stored counts
-on discarded axes contribute, including underflow/overflow bins; retained axes
-keep their definitions and enabled end bins. Cell types are preserved.
-
-Numeric cells are added. Accumulator cells merge their full state through
-put(sourceCell), or through += when that put operation is unavailable. For
-example, MeanAccumulator combines counts and sums, so a marginal mean weights
-each contributing bin by its observation count rather than averaging bin means.
-WMeanAccumulator similarly combines weighted sums and total weights.
-
-Accumulator cells start in their normal default state, which must represent
-an empty accumulator. Custom merge operations must combine contributions without
-modifying the source. The result has fresh cell storage; references retained by
-custom cells follow their merge semantics and are not automatically deep-copied.
-Empty bins retain the accumulator's usual empty-state behavior.
-
-Works with HistogramAccumulator and RelativeFrequencyAccumulator. A relative
-frequency result recomputes its total from the projected counts. Source and
-result numeric counts are independent. Axes must support mir.qualifier.lightConst.
-Owning axis boundaries remain owned; borrowed
-boundaries must outlive the result and its views. Counts must accommodate the
-resulting sums and total.
-
-Use h.marginal!dimension() through UFCS. For reference-counted or custom storage,
-use rcMarginal or makeMarginal. This replaces the former RC-only marginal member.
-Params:
-    dimensions = source axes to retain, in result order
-    source = histogram with mergeable cells, or relative frequency accumulator
-+/
-template marginal(dimensions...)
-{
-    import mir.stat.descriptive.histogram.api.factory: acceptsMarginal;
-    auto marginal(H)(auto ref const H source)
-        if (acceptsMarginal!(H, dimensions))
-    {
-        NoAllocationContext context;
-        return source.projectMarginal!(axisImplementation.axisFactory, null,
-            NoAllocationContext, dimensions)(context);
-    }
-}
-
-/++
-Combine sensor-report summaries across longitude to compare latitude bands.
-Each report represents a different number of readings. Marginalization preserves
-those weights when combining the regional weighted means.
-+/
-version(mir_stat_test)
-@safe pure nothrow
-unittest
-{
-    import mir.math.sum: Summation;
-    import mir.stat.descriptive.weighted: WMeanAccumulator, AssumeWeights;
-    import mir.stat.descriptive.histogram.axis: RegularAxis, AxisOptions;
-    alias Cell = WMeanAccumulator!(double, Summation.pairwise, AssumeWeights.primary);
-    auto coordinate = RegularAxis!(double, AxisOptions())(2, 0.0, 2.0);
-    auto reports = histogram!Cell(coordinate, coordinate);
-    reports.putWeightedSample(2.0, 10.0, 0.5, 0.5);
-    reports.putWeightedSample(6.0, 30.0, 0.5, 1.5);
-
-    auto byLatitude = reports.marginal!0();
-    assert(byLatitude.counts[0].weight == 8.0);
-    assert(byLatitude.counts[0].wmean == 25.0);
-    // Averaging the two regional means would incorrectly give 20.
-    assert(byLatitude.counts[1].weight == 0.0);
-    // WMeanAccumulator requires a nonzero weight before reading wmean.
-}
-
-/++
-Summarize request counts by temperature after recording temperature and server
-jointly. Keep using GC storage for the summary; its counts are independent of
-later requests recorded in the original histogram.
-+/
-version(mir_stat_test)
-@safe pure nothrow
-unittest
-{
-    import mir.stat.descriptive.histogram.axis: IntegralAxis, AxisOptions;
-    alias A = IntegralAxis!(int, AxisOptions());
-    auto requests = histogram(A(2, 0), A(2, 0));
-    requests.put(0, 0);
-    requests.put(0, 1);
-    requests.put(1, 1);
-    auto byTemperature = requests.marginal!0();
-    static assert(is(typeof(byTemperature.counts.iterator) == size_t*));
-    assert(byTemperature.counts == [2, 1]);
-    requests.put(0, 0);
-    assert(byTemperature.counts == [2, 1]);
-}
-
-version(mir_stat_test)
-@safe pure nothrow
-unittest
-{
-    import mir.stat.descriptive.histogram.api.factory: testMarginalFactory;
-    testMarginalFactory!marginal();
-}
-
-/++
 Construct a histogram with garbage-collected count storage.
+For equal-width bins, use data.histogram!RegularAxis(n, low, high), where data
+is a Mir slice. Each observation increments its selected bin. Counters default
+to size_t. Supply an existing axis with data.histogram(axis).
 Accepts the same axes, bin-count rules, type overrides, and options as
 $(REF rchistogram, mir, stat, descriptive, histogram, api, rc).
-Counts, including enabled underflow/overflow bins, start at zero.
+Counts start at zero before insertion, including enabled underflow/overflow bins.
 
 Supply only axis instances to allocate an empty one-dimensional or joint
 histogram: histogram!Cell(axis, ...). Cell defaults to size_t. Numeric cells
@@ -154,33 +57,6 @@ template histogram(Options...)
     }
 }
 
-/++
-Track sales revenue by customer age as purchases arrive. GC storage initializes
-each Summator before insertion, and each purchase updates its age group's total.
-+/
-version(mir_stat_test)
-@safe pure nothrow
-unittest
-{
-    import mir.math.sum: Summator, Summation;
-    import mir.stat.descriptive.histogram.axis: RegularAxis, AxisOptions;
-    alias Cell = Summator!(double, Summation.pairwise);
-    auto ages = RegularAxis!(double, AxisOptions())(2, 20.0, 60.0);
-    auto sales = histogram!Cell(ages);
-    sales.putSample(30.0, 25.0);
-    sales.putSample(50.0, 35.0);
-    assert(sales.bins.front.value.sum == 80.0);
-    assert(sales.bins.back.value.sum == 0.0);
-}
-
-version(mir_stat_test)
-@safe pure nothrow
-unittest
-{
-    import mir.stat.descriptive.histogram.api.factory: testAxisOnlyFactory;
-    testAxisOnlyFactory!histogram();
-}
-
 /// Construct two equal-width bins from observations.
 version(mir_stat_test)
 @safe pure nothrow
@@ -193,6 +69,14 @@ unittest
     auto h = data.histogram!RegularAxis(2u, 0.0, 4.0);
     assert(h.counts == [2u, 2]);
     static assert(is(typeof(h.counts.iterator) == size_t*));
+}
+
+version(mir_stat_test)
+@safe pure nothrow
+unittest
+{
+    import mir.stat.descriptive.histogram.api.factory: testAxisOnlyFactory;
+    testAxisOnlyFactory!histogram();
 }
 
 /// Override the counter type and include underflow and overflow bins.
@@ -227,6 +111,25 @@ unittest
     f.put(1.0);
     assert(f.total == 5);
     assert(h.counts == [3u, 2]); // The count storage is shared.
+}
+
+/++
+Track sales revenue by customer age as purchases arrive. GC storage initializes
+each Summator before insertion, and each purchase updates its age group's total.
++/
+version(mir_stat_test)
+@safe pure nothrow
+unittest
+{
+    import mir.math.sum: Summator, Summation;
+    import mir.stat.descriptive.histogram.axis: RegularAxis, AxisOptions;
+    alias Cell = Summator!(double, Summation.pairwise);
+    auto ages = RegularAxis!(double, AxisOptions())(2, 20.0, 60.0);
+    auto sales = histogram!Cell(ages);
+    sales.putSample(30.0, 25.0);
+    sales.putSample(50.0, 35.0);
+    assert(sales.bins.front.value.sum == 80.0);
+    assert(sales.bins.back.value.sum == 0.0);
 }
 
 
@@ -290,10 +193,107 @@ unittest
     assert(f.relativeFrequency(1) == 0.4);
 }
 
+private import mir.stat.descriptive.histogram.api.factory: WeightedHistogramFactory;
+private mixin WeightedHistogramFactory!(allocateCounts) weightedImplementation;
+
+/++
+Construct a weighted histogram with garbage-collected counts.
+Supply observations, weights, and the usual histogram axis arguments.
+Built-in arrays and Mir slices are accepted. Their shapes must match; matching
+multidimensional slices are traversed elementwise into a one-axis histogram.
+Weights must be finite, nonnegative, and implicitly convertible to the counter
+type. Axis templates default to `double` counters, independently of the bin-count
+argument. An explicit leading counter type overrides this default, including with a supplied
+axis instance or concrete axis type. Axes never select counter storage.
+Integral counters require integral weights. Counts must accommodate their sums.
+Bin-count rules operate on observations, without weighting the rule itself.
+Axis ownership and count ownership follow $(LREF histogram).
++/
+template weightedHistogram(Options...)
+{
+    auto weightedHistogram(Data, Weights, Args...)(
+        scope auto ref Data data, scope auto ref Weights weights, auto ref Args args)
+    {
+        NoAllocationContext context;
+        return weightedImplementation.weightedFactory!Options(context, data, weights, args);
+    }
+}
+
+/// Total observation weights in two equal-width bins.
+version(mir_stat_test)
+@safe pure nothrow
+unittest
+{
+    import mir.stat.descriptive.histogram.axis: RegularAxis;
+    double[3] observations = [0.25, 0.75, 1.25];
+    double[3] weights = [0.5, 1.5, 2.0];
+    auto h = weightedHistogram!RegularAxis(
+        observations, weights, 2u, 0.0, 2.0);
+    assert(h.counts == [2.0, 2.0]);
+}
+
+/++
+Construct relative frequencies from weighted counts. Accepts the arguments and
+counter-type choices of $(LREF weightedHistogram). The total is the sum of
+stored weights, including enabled underflow/overflow bins. Normalization and
+subsequent weighted insertion use the existing relative-frequency accumulator.
++/
+template weightedRelativeFrequencyHistogram(Options...)
+{
+    auto weightedRelativeFrequencyHistogram(Args...)(auto ref Args args)
+    {
+        import mir.stat.descriptive.histogram.accumulator: HistogramAccumulator;
+        import mir.stat.descriptive.histogram.relative_frequency: RelativeFrequencyAccumulator;
+        auto h = weightedHistogram!Options(args);
+        static if (is(typeof(h) == HistogramAccumulator!Types, Types...))
+            return RelativeFrequencyAccumulator!Types(h.counts, h.axis);
+    }
+}
+
+/// Construct weighted counts and relative frequencies from built-in arrays.
+version(mir_stat_test)
+@safe pure nothrow
+unittest
+{
+    import mir.stat.descriptive.histogram.axis: RegularAxis;
+    double[3] observations = [0.25, 0.75, 1.25];
+    double[3] weights = [0.5, 1.5, 2.0];
+    auto h = weightedHistogram!RegularAxis(observations, weights, 2u, 0.0, 2.0);
+    assert(h.counts == [2.0, 2.0]);
+    auto f = weightedRelativeFrequencyHistogram!RegularAxis(observations, weights, 2u, 0.0, 2.0);
+    assert(f.total == 4.0);
+    assert(f.relativeFrequency(0) == 0.5);
+}
+
+version(mir_stat_test)
+@system pure nothrow
+unittest
+{
+    import core.exception: AssertError;
+    import mir.stat.descriptive.histogram.axis: RegularAxis;
+    double[1] data = [0.5];
+    double[1] weights;
+    foreach (weight; [-1.0, double.nan, double.infinity, -double.infinity])
+    {
+        weights[0] = weight;
+        bool rejected;
+        try { auto h = weightedHistogram!RegularAxis(data, weights, 2u, 0.0, 2.0); }
+        catch (AssertError) { rejected = true; }
+        assert(rejected);
+    }
+    weights[0] = 0;
+    auto f = weightedRelativeFrequencyHistogram!RegularAxis(data, weights, 2u, 0.0, 2.0);
+    assert(f.total == 0 && f.counts == [0, 0]);
+}
+
 /++
 Construct a percentogram using quantile boundaries and observed relative frequencies.
 Returns a relative-frequency accumulator with GC-owned boundaries and counts.
 Use `density` or `densityBins` for bar heights: area represents observed probability.
+
+Omitting probabilities requests `ceil(cuberoot(n))` ordinary bins for `n` observations,
+with equally spaced probabilities from zero to one. This is a sample-size heuristic.
+Tied boundaries can reduce the number of ordinary bins.
 
 Observations must be nonempty and finite and are not modified. Supply a positive
 bin count or strictly increasing probabilities within zero to one. The default
@@ -315,10 +315,6 @@ By default they remain in the normalization total. Use `Normalization.ordinary`
 on relative-frequency, density, or cumulative accessors to exclude them from the
 probability distribution. With ties, actual retained counts can differ from the
 requested probability span.
-
-Omitting probabilities requests `ceil(cuberoot(n))` ordinary bins for `n` observations,
-with equally spaced probabilities from zero to one. This is a sample-size heuristic.
-Tied boundaries can reduce the number of ordinary bins.
 
 Params:
     data = one-dimensional observations, as an array or slice
@@ -363,21 +359,6 @@ unittest
     assert(quartiles.density(0) == 0.25 / 1.75);
 }
 
-/// Select probability intervals explicitly using Mir slices.
-version(mir_stat_test)
-@safe pure nothrow
-unittest
-{
-    import mir.ndslice.slice: sliced;
-    double[8] observations = [0, 1, 2, 3, 4, 8, 12, 16];
-    const double[3] levels = [0, 0.25, 1];
-    // These Mir slices borrow the input arrays; the result owns its storage.
-    auto p = percentogram(observations[].sliced, levels[].sliced);
-    assert(p.total == 8 && p.counts == [0, 2, 6, 0]);
-    assert(p.relativeFrequency(0) == 0.25);
-    assert(p.relativeFrequency(1) == 0.75);
-}
-
 /// Built-in dynamic arrays can be passed directly, without conversion to Mir slices.
 version(mir_stat_test)
 @safe pure nothrow
@@ -393,6 +374,21 @@ unittest
     // Mutating the original data does not change the stored boundaries or counts.
     data[] = -1;
     assert(p.bins()[0].bin.low == 0 && p.counts == [0, 2, 2, 0]);
+}
+
+/// Select probability intervals explicitly using Mir slices.
+version(mir_stat_test)
+@safe pure nothrow
+unittest
+{
+    import mir.ndslice.slice: sliced;
+    double[8] observations = [0, 1, 2, 3, 4, 8, 12, 16];
+    const double[3] levels = [0, 0.25, 1];
+    // These Mir slices borrow the input arrays; the result owns its storage.
+    auto p = percentogram(observations[].sliced, levels[].sliced);
+    assert(p.total == 8 && p.counts == [0, 2, 6, 0]);
+    assert(p.relativeFrequency(0) == 0.25);
+    assert(p.relativeFrequency(1) == 0.75);
 }
 
 // Boundaries and counts survive local inputs; tied boundaries are combined.
@@ -507,82 +503,102 @@ unittest
     assert(strided.counts == [0, 3, 3, 3, 0]);
 }
 
-private import mir.stat.descriptive.histogram.api.factory: WeightedHistogramFactory;
-private mixin WeightedHistogramFactory!(allocateCounts) weightedImplementation;
-
 /++
-Construct a weighted histogram with garbage-collected counts.
-Supply observations, weights, and the usual histogram axis arguments.
-Built-in arrays and Mir slices are accepted. Their shapes must match; matching
-multidimensional slices are traversed elementwise into a one-axis histogram.
-Weights must be finite, nonnegative, and implicitly convertible to the counter
-type. Axis templates default to `double` counters, independently of the bin-count
-argument. An explicit leading counter type overrides this default, including with a supplied
-axis instance or concrete axis type. Axes never select counter storage.
-Integral counters require integral weights. Counts must accommodate their sums.
-Bin-count rules operate on observations, without weighting the rule itself.
-Axis ownership and count ownership follow $(LREF histogram).
+Project a histogram onto selected axes using fresh garbage-collected storage.
+Retain at least one axis and fewer than the source rank, without duplicates.
+The template argument order becomes the result's axis order. All stored counts
+on discarded axes contribute, including underflow/overflow bins; retained axes
+keep their definitions and enabled end bins. Cell types are preserved.
+
+Numeric cells are added. Accumulator cells merge their full state through
+put(sourceCell), or through += when that put operation is unavailable. For
+example, MeanAccumulator combines counts and sums, so a marginal mean weights
+each contributing bin by its observation count rather than averaging bin means.
+WMeanAccumulator similarly combines weighted sums and total weights.
+
+Accumulator cells start in their normal default state, which must represent
+an empty accumulator. Custom merge operations must combine contributions without
+modifying the source. The result has fresh cell storage; references retained by
+custom cells follow their merge semantics and are not automatically deep-copied.
+Empty bins retain the accumulator's usual empty-state behavior.
+
+Works with HistogramAccumulator and RelativeFrequencyAccumulator. A relative
+frequency result recomputes its total from the projected counts. Source and
+result numeric counts are independent. Axes must support mir.qualifier.lightConst.
+Owning axis boundaries remain owned; borrowed
+boundaries must outlive the result and its views. Counts must accommodate the
+resulting sums and total.
+
+Use h.marginal!dimension() through UFCS. For reference-counted or custom storage,
+use rcMarginal or makeMarginal. This replaces the former RC-only marginal member.
+Params:
+    dimensions = source axes to retain, in result order
+    source = histogram with mergeable cells, or relative frequency accumulator
 +/
-template weightedHistogram(Options...)
+template marginal(dimensions...)
 {
-    auto weightedHistogram(Data, Weights, Args...)(
-        scope auto ref Data data, scope auto ref Weights weights, auto ref Args args)
+    import mir.stat.descriptive.histogram.api.factory: acceptsMarginal;
+    auto marginal(H)(auto ref const H source)
+        if (acceptsMarginal!(H, dimensions))
     {
         NoAllocationContext context;
-        return weightedImplementation.weightedFactory!Options(context, data, weights, args);
+        return source.projectMarginal!(axisImplementation.axisFactory, null,
+            NoAllocationContext, dimensions)(context);
     }
 }
 
 /++
-Construct relative frequencies from weighted counts. Accepts the arguments and
-counter-type choices of $(LREF weightedHistogram). The total is the sum of
-stored weights, including enabled underflow/overflow bins. Normalization and
-subsequent weighted insertion use the existing relative-frequency accumulator.
+Summarize request counts by temperature after recording temperature and server
+jointly. Keep using GC storage for the summary; its counts are independent of
+later requests recorded in the original histogram.
 +/
-template weightedRelativeFrequencyHistogram(Options...)
-{
-    auto weightedRelativeFrequencyHistogram(Args...)(auto ref Args args)
-    {
-        import mir.stat.descriptive.histogram.accumulator: HistogramAccumulator;
-        import mir.stat.descriptive.histogram.relative_frequency: RelativeFrequencyAccumulator;
-        auto h = weightedHistogram!Options(args);
-        static if (is(typeof(h) == HistogramAccumulator!Types, Types...))
-            return RelativeFrequencyAccumulator!Types(h.counts, h.axis);
-    }
-}
-
-/// Construct weighted counts and relative frequencies from built-in arrays.
 version(mir_stat_test)
 @safe pure nothrow
 unittest
 {
-    import mir.stat.descriptive.histogram.axis: RegularAxis;
-    double[3] observations = [0.25, 0.75, 1.25];
-    double[3] weights = [0.5, 1.5, 2.0];
-    auto h = weightedHistogram!RegularAxis(observations, weights, 2u, 0.0, 2.0);
-    assert(h.counts == [2.0, 2.0]);
-    auto f = weightedRelativeFrequencyHistogram!RegularAxis(observations, weights, 2u, 0.0, 2.0);
-    assert(f.total == 4.0);
-    assert(f.relativeFrequency(0) == 0.5);
+    import mir.stat.descriptive.histogram.axis: IntegralAxis, AxisOptions;
+    alias A = IntegralAxis!(int, AxisOptions());
+    auto requests = histogram(A(2, 0), A(2, 0));
+    requests.put(0, 0);
+    requests.put(0, 1);
+    requests.put(1, 1);
+    auto byTemperature = requests.marginal!0();
+    static assert(is(typeof(byTemperature.counts.iterator) == size_t*));
+    assert(byTemperature.counts == [2, 1]);
+    requests.put(0, 0);
+    assert(byTemperature.counts == [2, 1]);
+}
+
+/++
+Combine sensor-report summaries across longitude to compare latitude bands.
+Each report represents a different number of readings. Marginalization preserves
+those weights when combining the regional weighted means.
++/
+version(mir_stat_test)
+@safe pure nothrow
+unittest
+{
+    import mir.math.sum: Summation;
+    import mir.stat.descriptive.weighted: WMeanAccumulator, AssumeWeights;
+    import mir.stat.descriptive.histogram.axis: RegularAxis, AxisOptions;
+    alias Cell = WMeanAccumulator!(double, Summation.pairwise, AssumeWeights.primary);
+    auto coordinate = RegularAxis!(double, AxisOptions())(2, 0.0, 2.0);
+    auto reports = histogram!Cell(coordinate, coordinate);
+    reports.putWeightedSample(2.0, 10.0, 0.5, 0.5);
+    reports.putWeightedSample(6.0, 30.0, 0.5, 1.5);
+
+    auto byLatitude = reports.marginal!0();
+    assert(byLatitude.counts[0].weight == 8.0);
+    assert(byLatitude.counts[0].wmean == 25.0);
+    // Averaging the two regional means would incorrectly give 20.
+    assert(byLatitude.counts[1].weight == 0.0);
+    // WMeanAccumulator requires a nonzero weight before reading wmean.
 }
 
 version(mir_stat_test)
-@system pure nothrow
+@safe pure nothrow
 unittest
 {
-    import core.exception: AssertError;
-    import mir.stat.descriptive.histogram.axis: RegularAxis;
-    double[1] data = [0.5];
-    double[1] weights;
-    foreach (weight; [-1.0, double.nan, double.infinity, -double.infinity])
-    {
-        weights[0] = weight;
-        bool rejected;
-        try { auto h = weightedHistogram!RegularAxis(data, weights, 2u, 0.0, 2.0); }
-        catch (AssertError) { rejected = true; }
-        assert(rejected);
-    }
-    weights[0] = 0;
-    auto f = weightedRelativeFrequencyHistogram!RegularAxis(data, weights, 2u, 0.0, 2.0);
-    assert(f.total == 0 && f.counts == [0, 0]);
+    import mir.stat.descriptive.histogram.api.factory: testMarginalFactory;
+    testMarginalFactory!marginal();
 }
