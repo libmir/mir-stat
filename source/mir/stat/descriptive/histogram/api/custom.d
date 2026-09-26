@@ -10,6 +10,7 @@ module mir.stat.descriptive.histogram.api.custom;
 private import mir.stat.descriptive.histogram.api.factory: SampleHistogramFactory, isSampleCellSelection;
 private mixin SampleHistogramFactory!(allocateCounts, releaseCounts) sampleImplementation;
 
+// Exercise shared batch insertion checks with caller-allocated cells and explicit disposal.
 version(mir_stat_test)
 @system pure nothrow @nogc
 unittest
@@ -213,6 +214,7 @@ unittest
     assert(h.counts == [3u, 2]);
 }
 
+// Exercise shared empty-axis construction checks with caller-allocated cells.
 version(mir_stat_test)
 @system pure nothrow @nogc
 unittest
@@ -364,6 +366,7 @@ unittest
     assert(allocator.allocations == 1 && allocator.releases == 1);
 }
 
+// A safe allocator supports joint construction and marginalization with balanced releases.
 version(mir_stat_test)
 @safe pure nothrow
 unittest
@@ -649,6 +652,7 @@ unittest
 
 // Borrowed boundaries cannot escape; a local allocator handle is not retained.
 version(mir_stat_test)
+// Check borrowed and owning axis lifetimes with a safe custom allocator.
 version(mir_stat_test_lifetime)
 @safe pure nothrow
 unittest
@@ -775,6 +779,7 @@ unittest
 
 // Convenience construction borrows stack boundaries for the result's lifetime.
 version(mir_stat_test)
+// Borrowed boundaries support local updates but cannot escape through the factory.
 version(mir_stat_test_lifetime)
 @safe pure nothrow
 unittest
@@ -837,12 +842,18 @@ unittest
 
 /++
 Construct a relative-frequency accumulator with caller-allocated count storage.
-Accepts the same arguments and axis options as $(LREF makeHistogram).
+Accepts the numeric-count forms and axis options of $(LREF makeHistogram).
+Pass observations as a Mir slice to populate a one-axis histogram, or supply
+only axis instances to allocate an empty one-dimensional or joint histogram.
+Accumulator-valued cells, such as MeanAccumulator, are not supported: relative
+frequencies require numeric counts that can be summed and normalized.
 The total is calculated from the stored counts, including enabled underflow
 and overflow bins. Out-of-range observations follow the underlying histogram
 factory's axis rules. This scans the bins once without allocating another count
 buffer. Axis ownership is unchanged.
 Counter types must accommodate both each bin and the total.
+Use relativeFrequency!(double, Normalization.ordinary) to exclude underflow and
+overflow counts from the denominator; total continues to include those counts.
 
 The caller owns the count allocation and must release it through the same
 allocator after all uses of the accumulator and its views. The allocator is
@@ -878,6 +889,31 @@ unittest
     f.put(3.5);
     assert(f.total == 5);
     assert(f.relativeFrequency(1) == 0.4);
+}
+
+/++
+Supply two axis instances to start with empty joint counts, then insert coordinate
+pairs. Each insertion updates one bin and the total used for relative frequencies.
+An explicit double counter type also permits later fractional-weight updates.
++/
+version(mir_stat_test)
+@system pure nothrow @nogc
+unittest
+{
+    import mir.stat.descriptive.histogram.axis: IntegralAxis, AxisOptions;
+    import std.experimental.allocator.mallocator: Mallocator;
+    alias A = IntegralAxis!(int, AxisOptions());
+    auto f = makeRelativeFrequencyHistogram!double(Mallocator.instance, A(2, 0), A(2, 0));
+    // Counts are read-only; cast only for final manual deallocation.
+    scope(exit) Mallocator.instance.deallocate(cast(void[]) f.counts.field);
+    assert(f.total == 0);
+    f.put(0, 1);
+    f.put(1, 0);
+    assert(f.total == 2);
+    assert(f.relativeFrequency(0, 1) == 0.5);
+    f.putWeighted(0.5, 0, 1);
+    assert(f.total == 2.5);
+    assert(f.relativeFrequency(0, 1) == 0.6);
 }
 
 version(mir_stat_test)
@@ -1100,10 +1136,15 @@ unittest
 }
 
 /++
-Construct relative frequencies from weighted counts. Accepts the arguments and
+Construct relative frequencies from weighted counts. Accepts the numeric-count arguments and
 counter-type choices of $(LREF makeWeightedHistogram). The total is the sum of
 stored weights, including enabled underflow/overflow bins. Normalization and
 subsequent weighted insertion use the existing relative-frequency accumulator.
+Built-in arrays and Mir slices are accepted. Accumulator-valued cells are not
+supported. Multidimensional input slices contribute to a one-axis histogram;
+they do not define a joint histogram.
+Use relativeFrequency!(double, Normalization.ordinary) to normalize by ordinary
+bin weights only, without discarding the underflow/overflow counts.
 +/
 template makeWeightedRelativeFrequencyHistogram(Options...)
 {
@@ -1118,7 +1159,7 @@ template makeWeightedRelativeFrequencyHistogram(Options...)
     }
 }
 
-/// Construct weighted counts and relative frequencies with explicit disposal.
+/// Construct weighted relative frequencies, then release the caller-allocated counts.
 version(mir_stat_test)
 @system pure nothrow @nogc
 unittest
@@ -1128,16 +1169,18 @@ unittest
     import std.experimental.allocator: dispose;
     double[3] observations = [0.25, 0.75, 1.25];
     double[3] weights = [0.5, 1.5, 2.0];
-    auto h = makeWeightedHistogram!RegularAxis(Mallocator.instance, observations, weights, 2u, 0.0, 2.0);
-    scope(exit) Mallocator.instance.dispose(h.counts.field);
-    assert(h.counts == [2.0, 2.0]);
     auto f = makeWeightedRelativeFrequencyHistogram!RegularAxis(Mallocator.instance, observations, weights, 2u, 0.0, 2.0);
     // Counts are read-only; cast only for final manual deallocation.
     scope(exit) Mallocator.instance.deallocate(cast(void[]) f.counts.field);
     assert(f.total == 4.0);
     assert(f.relativeFrequency(0) == 0.5);
+    // Later weighted observations update both the bin and the denominator.
+    f.putWeighted(2.0, 0.25);
+    assert(f.total == 6.0);
+    assert(f.relativeFrequency(0) == 2.0 / 3);
 }
 
+// A safe allocator supports weighted counting and releases the count buffer once.
 version(mir_stat_test)
 @safe pure nothrow
 unittest
@@ -1603,6 +1646,7 @@ unittest
     assert(summary.counts == [2, 0]);
 }
 
+// Exercise shared marginalization checks with caller-allocated result storage.
 version(mir_stat_test)
 @system pure nothrow @nogc
 unittest

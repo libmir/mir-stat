@@ -23,6 +23,7 @@ module mir.stat.descriptive.histogram.api.rc;
 private import mir.stat.descriptive.histogram.api.factory: SampleHistogramFactory, isSampleCellSelection;
 private mixin SampleHistogramFactory!(allocateCells) sampleImplementation;
 
+// Exercise shared batch insertion checks with reference-counted cells.
 version(mir_stat_test)
 @safe pure nothrow @nogc
 unittest
@@ -137,7 +138,7 @@ template rchistogram(Options...)
     }
 }
 
-/// Construct two equal-width bins from observations.
+/// Construct two equal-width bins, then count additional observations.
 version(mir_stat_test)
 @safe pure nothrow
 unittest
@@ -150,9 +151,26 @@ unittest
     auto h = data.rchistogram!RegularAxis(2u, 0.0, 4.0);
     assert(h.counts == [2u, 2]);
     static assert(is(typeof(h.counts.iterator) == RCI!size_t));
+    h.put(0.5);
+    assert(h.counts == [3u, 2]);
+    h.put(3.5);
+    assert(h.counts == [3u, 3]);
 }
 
-/// Regular Axis example
+/// Supply an existing axis to reuse its bin boundaries when counting observations.
+version(mir_stat_test)
+@safe pure nothrow @nogc
+unittest
+{
+    import mir.ndslice.slice: sliced;
+    import mir.stat.descriptive.histogram.axis: regularAxis;
+    double[4] observations = [0, 1, 1, 3];
+    auto axis = regularAxis(2u, 0.0, 4.0);
+    auto h = rchistogram(observations[].sliced, axis);
+    assert(h.counts == [3, 1]);
+}
+
+// Compare axis-template construction, explicit axes, and a bin-count rule.
 version(mir_stat_test)
 @safe pure nothrow @nogc
 unittest
@@ -185,6 +203,7 @@ unittest
     assert(h3.counts == result2);
 }
 
+// Exercise shared empty-axis construction checks with reference-counted cells.
 version(mir_stat_test)
 @safe pure nothrow @nogc
 unittest
@@ -659,12 +678,18 @@ unittest
 
 /++
 Construct a relative-frequency accumulator with reference-counted count storage.
-Accepts the same arguments and axis options as $(LREF rchistogram).
+Accepts the numeric-count forms and axis options of $(LREF rchistogram).
+Pass observations as a Mir slice to populate a one-axis histogram, or supply
+only axis instances to allocate an empty one-dimensional or joint histogram.
+Accumulator-valued cells, such as MeanAccumulator, are not supported: relative
+frequencies require numeric counts that can be summed and normalized.
 The total is calculated from the stored counts, including enabled underflow
 and overflow bins. Out-of-range observations follow the underlying histogram
 factory's axis rules. This scans the bins once without allocating another count
 buffer. Axis ownership is unchanged.
 Counter types must accommodate both each bin and the total.
+Use relativeFrequency!(double, Normalization.ordinary) to exclude underflow and
+overflow counts from the denominator; total continues to include those counts.
 +/
 template rcRelativeFrequencyHistogram(Options...)
 {
@@ -686,12 +711,34 @@ unittest
     import mir.ndslice.slice: sliced;
     import mir.stat.descriptive.histogram.axis: RegularAxis;
     double[4] values = [0, 1, 1, 3];
-    auto f = rcRelativeFrequencyHistogram!RegularAxis(values[].sliced, 2u, 0.0, 4.0);
+    auto f = values[].sliced.rcRelativeFrequencyHistogram!RegularAxis(2u, 0.0, 4.0);
     assert(f.total == 4);
     assert(f.relativeFrequency(0) == 0.75);
     f.put(3.5);
     assert(f.total == 5);
     assert(f.relativeFrequency(1) == 0.4);
+}
+
+/++
+Supply two axis instances to start with empty joint counts, then insert coordinate
+pairs. Each insertion updates one bin and the total used for relative frequencies.
+An explicit double counter type also permits later fractional-weight updates.
++/
+version(mir_stat_test)
+@safe pure nothrow @nogc
+unittest
+{
+    import mir.stat.descriptive.histogram.axis: IntegralAxis, AxisOptions;
+    alias A = IntegralAxis!(int, AxisOptions());
+    auto f = rcRelativeFrequencyHistogram!double(A(2, 0), A(2, 0));
+    assert(f.total == 0);
+    f.put(0, 1);
+    f.put(1, 0);
+    assert(f.total == 2);
+    assert(f.relativeFrequency(0, 1) == 0.5);
+    f.putWeighted(0.5, 0, 1);
+    assert(f.total == 2.5);
+    assert(f.relativeFrequency(0, 1) == 0.6);
 }
 
 private import mir.stat.descriptive.histogram.api.factory: WeightedHistogramFactory;
@@ -748,24 +795,6 @@ unittest
     assert(h.counts == [2.0, 2.0]);
 }
 
-/++
-Construct relative frequencies from weighted counts. Accepts the arguments and
-counter-type choices of $(LREF rcWeightedHistogram). The total is the sum of
-stored weights, including enabled underflow/overflow bins. Normalization and
-subsequent weighted insertion use the existing relative-frequency accumulator.
-+/
-template rcWeightedRelativeFrequencyHistogram(Options...)
-{
-    auto rcWeightedRelativeFrequencyHistogram(Args...)(auto ref Args args)
-    {
-        import mir.stat.descriptive.histogram.accumulator: HistogramAccumulator;
-        import mir.stat.descriptive.histogram.relative_frequency: RelativeFrequencyAccumulator;
-        auto h = rcWeightedHistogram!Options(args);
-        static if (is(typeof(h) == HistogramAccumulator!Types, Types...))
-            return RelativeFrequencyAccumulator!Types(h.counts, h.axis);
-    }
-}
-
 /// Integral weights still default to double counters, allowing fractional updates later.
 version(mir_stat_test)
 @safe pure nothrow @nogc
@@ -812,6 +841,29 @@ unittest
     static assert(!__traits(compiles, h.putWeighted(0.5, 0.25)));
 }
 
+/++
+Construct relative frequencies from weighted counts. Accepts the numeric-count arguments and
+counter-type choices of $(LREF rcWeightedHistogram). The total is the sum of
+stored weights, including enabled underflow/overflow bins. Normalization and
+subsequent weighted insertion use the existing relative-frequency accumulator.
+Built-in arrays and Mir slices are accepted. Accumulator-valued cells are not
+supported. Multidimensional input slices contribute to a one-axis histogram;
+they do not define a joint histogram.
+Use relativeFrequency!(double, Normalization.ordinary) to normalize by ordinary
+bin weights only, without discarding the underflow/overflow counts.
++/
+template rcWeightedRelativeFrequencyHistogram(Options...)
+{
+    auto rcWeightedRelativeFrequencyHistogram(Args...)(auto ref Args args)
+    {
+        import mir.stat.descriptive.histogram.accumulator: HistogramAccumulator;
+        import mir.stat.descriptive.histogram.relative_frequency: RelativeFrequencyAccumulator;
+        auto h = rcWeightedHistogram!Options(args);
+        static if (is(typeof(h) == HistogramAccumulator!Types, Types...))
+            return RelativeFrequencyAccumulator!Types(h.counts, h.axis);
+    }
+}
+
 /// Relative frequencies divide bin weights by their total, not by the number of observations.
 version(mir_stat_test)
 @safe pure nothrow @nogc
@@ -825,6 +877,33 @@ unittest
     assert(f.total == 4.0);
     assert(f.relativeFrequency(0) == 0.5);
     assert(f.relativeFrequency(1) == 0.5);
+    // Later weighted observations update both the bin and the denominator.
+    f.putWeighted(2.0, 0.25);
+    assert(f.total == 6.0);
+    assert(f.relativeFrequency(0) == 2.0 / 3);
+}
+
+/++
+Keep out-of-range observations in underflow/overflow bins, then choose whether
+those weights contribute to normalization. The ordinary bins contain weights
+2 and 3, while the tails contain 1 and 4. Excluding the tails changes the first
+bin's relative frequency from 2 / 10 to 2 / 5 without changing the stored counts.
++/
+version(mir_stat_test)
+@safe pure nothrow @nogc
+unittest
+{
+    import mir.stat.descriptive.histogram.axis: RegularAxis, AxisOptions;
+    import mir.stat.descriptive.histogram.relative_frequency: Normalization;
+    double[4] observations = [-1, 0.5, 1.5, 2];
+    double[4] weights = [1, 2, 3, 4];
+    enum options = AxisOptions(false, true, true);
+    auto f = rcWeightedRelativeFrequencyHistogram!(RegularAxis, options)(
+        observations, weights, 2u, 0.0, 2.0);
+    assert(f.relativeFrequency(0) == 0.2);
+    assert(f.relativeFrequency!(double, Normalization.ordinary)(0) == 0.4);
+    assert(f.total == 10);
+    assert(f.counts == [1, 2, 3, 4]);
 }
 
 // Weighted construction preserves logical pairing, qualifiers, and axis options.
@@ -889,6 +968,7 @@ unittest
     assert(f.counts == [0.5, 1.5] && f.total == 2);
 }
 
+// Check weighted counter selection, conversion constraints, and supported axis types.
 version(mir_stat_test)
 @safe pure nothrow @nogc
 unittest
@@ -919,6 +999,7 @@ unittest
     assert(categorized.counts == [0.5, 1.5]);
 }
 
+// Borrowed variable-axis boundaries must not escape their source lifetime.
 version(mir_stat_test_lifetime)
 @safe pure nothrow @nogc
 unittest
@@ -982,6 +1063,7 @@ private void testWeightedFactoryViews()()
     }}
 }
 
+// Check weighted views with DIP1000 safety checking, or the legacy system fallback.
 version(mir_stat_test_lifetime)
 @safe pure nothrow @nogc
 unittest
@@ -1249,6 +1331,7 @@ unittest
     assert(p.cumulativeRelativeFrequency!(double, Normalization.ordinary)(1) == 1);
 }
 
+// Check restricted probability intervals and tail normalization.
 version(mir_stat_test)
 @safe pure nothrow @nogc
 unittest
@@ -1361,6 +1444,7 @@ unittest
     assert(timings.counts[0, 0].count == 2);
 }
 
+// Exercise shared marginalization checks with reference-counted result storage.
 version(mir_stat_test)
 @safe pure nothrow @nogc
 unittest
