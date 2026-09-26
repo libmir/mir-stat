@@ -93,7 +93,8 @@ unittest
 /++
 Construct a histogram with reference-counted count storage.
 For equal-width bins, use data.rchistogram!RegularAxis(n, low, high), where data
-is a built-in array or Mir slice. Each observation increments its selected bin. Counters default
+is a built-in array or Mir slice. Each observation increments its selected bin.
+Counters default
 to size_t. Counts start at zero before insertion, including enabled
 underflow/overflow bins. Axis boundaries retain the caller's ownership policy.
 
@@ -705,8 +706,8 @@ unittest
 /++
 Construct a relative-frequency accumulator with reference-counted count storage.
 Accepts the numeric-count forms and axis options of $(LREF rchistogram).
-Pass observations as a built-in array or Mir slice to populate a one-axis histogram, or supply
-only axis instances to allocate an empty one-dimensional or joint histogram.
+Pass observations as a built-in array or Mir slice to populate a one-axis
+histogram, or supply only axis instances to allocate an empty one-dimensional or joint histogram.
 Accumulator-valued cells, such as MeanAccumulator, are not supported: relative
 frequencies require numeric counts that can be summed and normalized.
 The total is calculated from the stored counts, including enabled underflow
@@ -716,6 +717,11 @@ buffer. Axis ownership is unchanged.
 Counter types must accommodate both each bin and the total.
 Use relativeFrequency!(double, Normalization.ordinary) to exclude underflow and
 overflow counts from the denominator; total continues to include those counts.
+The result provides relativeFrequency and relativeFrequencyBins, plus cumulative
+relative-frequency accessors for one-dimensional histograms. Numeric axes with
+supported bin geometry also provide density and densityBins. Updates through
+put and putWeighted keep the total synchronized.
+A zero normalization total produces NaN relative frequencies.
 +/
 template rcRelativeFrequencyHistogram(Options...)
 {
@@ -868,8 +874,8 @@ unittest
 }
 
 /++
-Construct relative frequencies from weighted counts. Accepts the numeric-count arguments and
-counter-type choices of $(LREF rcWeightedHistogram). The total is the sum of
+Construct relative frequencies from weighted counts. Accepts the numeric-count
+arguments and counter-type choices of $(LREF rcWeightedHistogram). The total is the sum of
 stored weights, including enabled underflow/overflow bins. Normalization and
 subsequent weighted insertion use the existing relative-frequency accumulator.
 Built-in arrays and Mir slices are accepted. Accumulator-valued cells are not
@@ -877,6 +883,10 @@ supported. Multidimensional input slices contribute to a one-axis histogram;
 they do not define a joint histogram.
 Use relativeFrequency!(double, Normalization.ordinary) to normalize by ordinary
 bin weights only, without discarding the underflow/overflow counts.
+The result supports the same relative-frequency, cumulative, and density accessors
+as the unweighted relative-frequency factory. Use putWeighted(weight, coordinates...)
+for subsequent weighted observations; put adds unit weight. Both update the total.
+If the selected normalization total is zero, relative frequencies are NaN.
 +/
 template rcWeightedRelativeFrequencyHistogram(Options...)
 {
