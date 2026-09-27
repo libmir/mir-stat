@@ -7,83 +7,190 @@ Copyright: 2026 Mir Stat Authors.
 +/
 module mir.stat.descriptive.histogram.api.custom;
 
-private import mir.stat.descriptive.histogram.api.factory: HistogramFactory;
-private mixin HistogramFactory!(allocateCounts, releaseCounts) implementation;
-private import mir.stat.descriptive.histogram.api.factory: AxisHistogramFactory, areHistogramAxes;
-private mixin AxisHistogramFactory!(allocateCounts, releaseCounts) axisImplementation;
-
-/++
-Project a histogram onto selected axes using a caller-selected allocator.
-Axis selection, cell merging, underflow/overflow treatment, and relative
-frequency totals follow $(REF marginal, mir, stat, descriptive, histogram, api, gc).
-The allocator is not retained. Dispose of result.counts.field through the same
-allocator after all uses of the result and its views have finished. For relative
-frequency results, counts are exposed read-only. At final disposal, use
-allocator.dispose(cast(typeof(result).CountType[]) result.counts.field) to release
-the mutable allocation created by this factory. Do not use that cast to modify
-counts while the relative frequency accumulator is in use.
-Borrowed axis boundaries remain borrowed; owning boundary handles are retained.
-If construction or projection throws, the allocated result storage is released.
-Params:
-    dimensions = source axes to retain, in result order
-    allocator = allocator providing allocation and deallocation
-    source = histogram with mergeable cells, or relative frequency accumulator
-+/
-template makeMarginal(dimensions...)
+// Joint numeric batches preserve pairing, numeric types, and axis lifetimes.
+version(mir_stat_test)
+@safe pure nothrow
+unittest
 {
-    import mir.stat.descriptive.histogram.api.factory: acceptsMarginal;
-    auto makeMarginal(Allocator, H)(ref Allocator allocator, auto ref const H source)
-        if (acceptsMarginal!(H, dimensions))
+    import mir.stat.descriptive.histogram.api.factory: testJointNumericFactories;
+    template makeHistogramAdapter(Options...)
     {
-        return source.projectMarginal!(axisImplementation.axisFactory, releaseCounts,
-            Allocator, dimensions)(allocator);
+        static auto makeHistogramAdapter(Args...)(auto ref Args args)
+        {
+            SafeAllocator allocator;
+            return makeHistogram!Options(allocator, args);
+        }
     }
+    template makeWeightedHistogramAdapter(Options...)
+    {
+        static auto makeWeightedHistogramAdapter(Args...)(auto ref Args args)
+        {
+            SafeAllocator allocator;
+            return makeWeightedHistogram!Options(allocator, args);
+        }
+    }
+    template makeRelativeFrequencyHistogramAdapter(Options...)
+    {
+        static auto makeRelativeFrequencyHistogramAdapter(Args...)(auto ref Args args)
+        {
+            SafeAllocator allocator;
+            return makeRelativeFrequencyHistogram!Options(allocator, args);
+        }
+    }
+    template makeWeightedRelativeFrequencyHistogramAdapter(Options...)
+    {
+        static auto makeWeightedRelativeFrequencyHistogramAdapter(Args...)(auto ref Args args)
+        {
+            SafeAllocator allocator;
+            return makeWeightedRelativeFrequencyHistogram!Options(allocator, args);
+        }
+    }
+    testJointNumericFactories!(makeHistogramAdapter, makeWeightedHistogramAdapter)();
+    testJointNumericFactories!(makeRelativeFrequencyHistogramAdapter, makeWeightedRelativeFrequencyHistogramAdapter)();
 }
 
-/++
-Allocate a temperature summary with the same custom allocator used for joint
-request counts. Source and summary have separate buffers; dispose of both after
-their final use.
-+/
+// Joint shape failures precede allocation; insertion exceptions release counts.
+version(mir_stat_test)
+@system pure
+unittest
+{
+    import std.meta: AliasSeq;
+    import std.exception: assertThrown;
+    import core.exception: AssertError;
+    import mir.ndslice.slice: sliced;
+    import mir.ndslice.topology: map;
+    import mir.stat.descriptive.histogram.axis: IntegralAxis, AxisOptions;
+    alias A = IntegralAxis!(int, AxisOptions());
+    int[2] x = [0, 1], y = [0, 1], weights = [1, 2];
+    int[1] shortInput = [0];
+    static int fail(int value) @safe pure { throw new Exception("coordinate insertion"); }
+    CountingAllocator allocator;
+    static foreach (make; AliasSeq!(makeHistogram, makeRelativeFrequencyHistogram))
+    {
+        assertThrown!AssertError(make(allocator, x, shortInput, A(2, 0), A(2, 0)));
+    }
+    static foreach (make; AliasSeq!(makeWeightedHistogram, makeWeightedRelativeFrequencyHistogram))
+    {
+        assertThrown!AssertError(make(allocator, weights, x, shortInput, A(2, 0), A(2, 0)));
+        assertThrown!AssertError(make(allocator, shortInput, x, y, A(2, 0), A(2, 0)));
+    }
+    assert(allocator.allocations == 0);
+    static foreach (make; AliasSeq!(makeHistogram, makeRelativeFrequencyHistogram))
+    {
+        assertThrown!Exception(make(allocator, x, y[].sliced.map!fail, A(2, 0), A(2, 0)));
+    }
+    static foreach (make; AliasSeq!(makeWeightedHistogram, makeWeightedRelativeFrequencyHistogram))
+    {
+        assertThrown!Exception(make(allocator, weights, x, y[].sliced.map!fail, A(2, 0), A(2, 0)));
+    }
+    assert(allocator.allocations == 4 && allocator.releases == 4);
+}
+
+// Arrays preserve counting, counter selection, and observation/axis lifetimes.
+version(mir_stat_test)
+@safe pure nothrow
+unittest
+{
+    import mir.stat.descriptive.histogram.api.factory: testArrayHistogramFactories;
+    template factory(Options...)
+    {
+        static auto factory(Args...)(auto ref Args args)
+        {
+            SafeAllocator allocator;
+            return makeHistogram!Options(allocator, args);
+        }
+    }
+    template relativeFactory(Options...)
+    {
+        static auto relativeFactory(Args...)(auto ref Args args)
+        {
+            SafeAllocator allocator;
+            return makeRelativeFrequencyHistogram!Options(allocator, args);
+        }
+    }
+    testArrayHistogramFactories!(factory, relativeFactory)();
+}
+
+private import mir.stat.descriptive.histogram.api.factory: HistogramBatchFactory, HistogramBatchKind, isSampleCellSelection;
+private mixin HistogramBatchFactory!(allocateCounts, releaseCounts) batchImplementation;
+
+// Exercise shared batch insertion checks with caller-allocated cells and explicit disposal.
 version(mir_stat_test)
 @system pure nothrow @nogc
+unittest
+{
+    import mir.stat.descriptive.histogram.api.factory: testSampleFactories;
+    import std.experimental.allocator.mallocator: Mallocator;
+    import std.experimental.allocator: dispose;
+    static auto factory(Cell, Args...)(auto ref Args args)
+    {
+        return makeHistogram!Cell(Mallocator.instance, args);
+    }
+    static auto weightedFactory(Cell, Args...)(auto ref Args args)
+    {
+        return makeWeightedHistogram!Cell(Mallocator.instance, args);
+    }
+    static void release(H)(ref H h) { Mallocator.instance.dispose(h.counts.field); }
+    testSampleFactories!(factory, weightedFactory, release)();
+}
+
+// A safe allocator preserves safe construction; ref samples reach the cell
+// without a copy, just as they do with direct putSample calls.
+version(mir_stat_test)
+@safe pure nothrow
 unittest
 {
     import mir.stat.descriptive.histogram.axis: IntegralAxis, AxisOptions;
     import std.experimental.allocator: dispose;
-    import std.experimental.allocator.mallocator: Mallocator;
-    alias A = IntegralAxis!(int, AxisOptions());
-    auto requests = makeHistogram(Mallocator.instance, A(2, 0), A(2, 0));
-    scope(exit) Mallocator.instance.dispose(requests.counts.field);
-    requests.put(0, 0);
-    requests.put(0, 1);
-    auto summary = makeMarginal!0(Mallocator.instance, requests);
-    scope(exit) Mallocator.instance.dispose(summary.counts.field);
-    assert(summary.counts == [2, 0]);
-}
-
-version(mir_stat_test)
-@system pure nothrow @nogc
-unittest
-{
-    import mir.stat.descriptive.histogram.api.factory: testMarginalFactory;
-    import std.experimental.allocator: dispose;
-    import std.experimental.allocator.mallocator: Mallocator;
-    template project(dimensions...)
+    static struct Cell
     {
-        static auto project(H)(auto ref const H source)
+        int sum;
+        void put(ref int sample) @safe pure nothrow @nogc
         {
-            return makeMarginal!dimensions(Mallocator.instance, source);
+            sum += sample;
+            sample = 0;
         }
     }
-    static void release(H)(ref H h)
-    {
-        // Custom allocation creates mutable numeric cells; the RF wrapper exposes
-        // only a const view. Recover the allocation type solely for disposal.
-        Mallocator.instance.dispose(cast(H.CountType[]) h.counts.field);
-    }
-    testMarginalFactory!(project, release)();
+    int[2] samples = [3, 7], coordinates = [0, 0];
+    SafeAllocator allocator;
+    auto h = makeHistogram!Cell(allocator, samples, coordinates,
+        IntegralAxis!(int, AxisOptions())(1, 0));
+    assert(h.counts[0].sum == 10);
+    assert(samples == [0, 0]);
+    allocator.dispose(h.counts.field);
+    assert(allocator.allocations == 1 && allocator.releases == 1);
 }
+
+// Release partially populated custom storage when either insertion path throws.
+version(mir_stat_test)
+@system pure
+unittest
+{
+    import mir.stat.descriptive.histogram.axis: IntegralAxis, AxisOptions;
+    import std.exception: assertThrown;
+    static struct Cell
+    {
+        int sum;
+        void put(int sample) @safe pure
+        {
+            if (sample < 0) throw new Exception("invalid sample");
+            sum += sample;
+        }
+        void put(int sample, int weight) @safe pure { put(sample * weight); }
+    }
+    alias A = IntegralAxis!(int, AxisOptions());
+    int[2] samples = [3, -1], coordinates = [0, 0], weights = [1, 1];
+    CountingAllocator allocator;
+    assertThrown!Exception(makeHistogram!Cell(allocator, samples, coordinates, A(1, 0)));
+    assert(allocator.allocations == 1 && allocator.releases == 1);
+    assertThrown!Exception(makeWeightedHistogram!Cell(allocator, weights, samples, coordinates, A(1, 0)));
+    assert(allocator.allocations == 2 && allocator.releases == 2);
+}
+
+private import mir.stat.descriptive.histogram.api.factory: HistogramFactory;
+private mixin HistogramFactory!(allocateCounts, releaseCounts) implementation;
+private import mir.stat.descriptive.histogram.api.factory: AxisHistogramFactory, areHistogramAxes;
+private mixin AxisHistogramFactory!(allocateCounts, releaseCounts) axisImplementation;
 
 private auto allocateCounts(T, Allocator)(ref Allocator allocator, size_t extent)
 {
@@ -99,18 +206,33 @@ private void releaseCounts(Allocator, Storage)(ref Allocator allocator, Storage 
 
 /++
 Allocate counts with a caller-selected allocator.
+Use makeHistogram(allocator, data, axis) to count a built-in array or Mir slice
+into an existing
+axis. Each observation increments its selected bin. Release counts.field through
+the same allocator after the histogram and its views are no longer used.
 Accepts the same axis instances, axis templates, counter/coordinate overrides,
 transforms, rules, and axis options as
 $(REF rchistogram, mir, stat, descriptive, histogram, api, rc), with the allocator
 as the first function argument.
 Counts start at zero, including enabled underflow/overflow bins. All elements
-of the observation slice are inserted into the one-dimensional histogram.
+of the observation array or slice are inserted into the one-dimensional histogram;
+a multidimensional slice is not interpreted as joint coordinates.
+
+To populate numeric joint counts, use makeHistogram(allocator, x, y, xAxis, yAxis),
+with one coordinate collection per explicit axis. Arrays and Mir slices must
+have matching ranks and shapes; strided slices are paired by logical position.
+An optional leading numeric template argument selects the counter type.
 
 Supply only axis instances after the allocator to allocate an empty histogram:
 makeHistogram!Cell(allocator, axis, ...). Multiple axes produce joint storage.
 Cell defaults to size_t. Numeric cells start at zero; accumulator structs retain
 their default initialization. Dispose of counts.field through the same allocator
 to destroy cells and release storage when no histogram or view uses it.
+
+To summarize recorded samples, use makeHistogram!Cell(allocator, samples,
+coordinates, axis), with one coordinate collection per axis followed by explicit
+axis instances. Input shapes, cell insertion, and sample lifetime rules follow
+$(REF histogram, mir, stat, descriptive, histogram, api, gc).
 
 The allocator follows $(REF makeSlice, mir, ndslice, allocation) conventions.
 It is passed by reference and is not stored in the result. The returned count
@@ -123,13 +245,13 @@ counts. Attributes are inferred from allocation, cleanup, and insertion;
 allocators with `@system` deallocation make this factory `@system` as well.
 
 Params:
-    Options = axis template/type, counter/coordinate types, transforms, rules, and options
+    Options = axis template/type, counter/coordinate types, transforms, rules, and options, or an accumulator cell type
 +/
 template makeHistogram(Options...)
 {
     import mir.ndslice.slice: Slice, SliceKind;
     import mir.stat.descriptive.histogram.traits: isAxis;
-    import std.traits: isNumeric, Unqual;
+    import std.traits: isArray, isNumeric, Unqual;
 
     // Preserve the direct construction path for an explicitly supplied axis.
     // Shared overload dispatch is only needed when the axis must be deduced.
@@ -158,13 +280,23 @@ template makeHistogram(Options...)
         return initializeHistogram(counts, axis, observations);
     }
 
+    /// ditto
+    auto makeHistogram(Allocator, Data, Axis)(ref Allocator allocator,
+        scope auto ref Data observations, Axis axis)
+        if (isArray!Data && isAxis!Axis && (!Options.length ||
+            (Options.length == 1 && is(Options[0]) && isNumeric!(Options[0]))))
+    {
+        import mir.ndslice.slice: sliced;
+        return makeHistogram(allocator, observations[].sliced, axis);
+    }
+
     // Borrow lvalue handles without an extra RC copy. Pass arguments directly:
     // core.lifetime.forward can hide borrowed-memory escapes from DIP1000.
     // Value arguments match the shared overloads and preserve escape inference.
     /++
     Params:
         allocator = allocator instance providing allocation and deallocation
-        args = axis instances, or an observation slice followed by axis construction arguments
+        args = axis instances, an observation array or slice followed by axis construction arguments, or samples and coordinate collections followed by axis instances
     +/
     auto makeHistogram(Allocator, Args...)(ref Allocator allocator, auto ref Args args)
         if (areHistogramAxes!Args || !(Args.length == 2 && isAxis!(Args[1]) &&
@@ -175,11 +307,107 @@ template makeHistogram(Options...)
             static assert(Options.length <= 1, "Axis-only construction accepts one cell type");
             return axisImplementation.axisFactory!Options(allocator, args);
         }
+        else static if (isSampleCellSelection!Options)
+            return batchImplementation.batchFactory!(Options[0], HistogramBatchKind.samples)(allocator, args);
         else static if (Options.length)
             return implementation.factory!Options(allocator, args);
         else
             return implementation.factory(allocator, args);
     }
+}
+
+/// Allocate and count without using the GC, then release the count storage.
+version(mir_stat_test)
+@system pure nothrow @nogc
+unittest
+{
+    import mir.ndslice.slice: sliced;
+    import mir.stat.descriptive.histogram.axis: RegularAxis, AxisOptions;
+    import std.experimental.allocator.mallocator: Mallocator;
+    import std.experimental.allocator: dispose;
+
+    double[4] data = [0, 1, 2, 3];
+    auto axis = RegularAxis!(double, AxisOptions())(2u, 0.0, 4.0);
+    auto h = makeHistogram(Mallocator.instance, data[].sliced, axis);
+    scope(exit) Mallocator.instance.dispose(h.counts.field);
+    assert(h.counts == [2u, 2]);
+    h.put(0.5);
+    assert(h.counts == [3u, 2]);
+}
+
+/++
+Pass built-in static or dynamic arrays directly, including const observations.
+Construction reads the observations and owns fresh counts; no conversion to a
+Mir slice is needed at the call site.
++/
+version(mir_stat_test)
+@system pure nothrow @nogc
+unittest
+{
+    import mir.stat.descriptive.histogram.axis: RegularAxis;
+    import std.experimental.allocator.mallocator: Mallocator;
+    import std.experimental.allocator: dispose;
+    const double[4] values = [0, 1, 1, 3];
+    auto fromStatic = makeHistogram!RegularAxis(Mallocator.instance, values, 2u, 0.0, 4.0);
+    scope(exit) Mallocator.instance.dispose(fromStatic.counts.field);
+    auto fromDynamic = makeHistogram!RegularAxis(Mallocator.instance, values[], 2u, 0.0, 4.0);
+    scope(exit) Mallocator.instance.dispose(fromDynamic.counts.field);
+    assert(fromStatic.counts == [3, 1]);
+    assert(fromDynamic.counts == fromStatic.counts);
+}
+
+/++
+Pair coordinate collections elementwise to populate a joint histogram. Each
+pair selects one bin; the first two pairs below both select (0, 1).
++/
+version(mir_stat_test)
+@system pure nothrow @nogc
+unittest
+{
+    import mir.stat.descriptive.histogram.axis: IntegralAxis, AxisOptions;
+    import std.experimental.allocator.mallocator: Mallocator;
+    import std.experimental.allocator: dispose;
+    alias A = IntegralAxis!(int, AxisOptions());
+    int[3] x = [0, 0, 1], y = [1, 1, 0];
+    auto h = makeHistogram(Mallocator.instance, x, y, A(2, 0), A(2, 0));
+    scope(exit) Mallocator.instance.dispose(h.counts.field);
+    assert(h.counts[0, 1] == 2);
+    assert(h.counts[1, 0] == 1);
+    assert(h.counts[0, 0] == 0);
+}
+
+// Exercise shared empty-axis construction checks with caller-allocated cells.
+version(mir_stat_test)
+@system pure nothrow @nogc
+unittest
+{
+    import mir.stat.descriptive.histogram.api.factory: testAxisOnlyFactory;
+    import std.experimental.allocator: dispose;
+    import std.experimental.allocator.mallocator: Mallocator;
+    static auto factory(Cell = size_t, Axes...)(Axes axes)
+    {
+        return makeHistogram!Cell(Mallocator.instance, axes);
+    }
+    static void release(H)(ref H h) { Mallocator.instance.dispose(h.counts.field); }
+    testAxisOnlyFactory!(factory, release)();
+}
+
+/// Select an axis template while retaining caller-controlled allocation.
+version(mir_stat_test)
+@system pure nothrow @nogc
+unittest
+{
+    import mir.ndslice.slice: sliced;
+    import mir.stat.descriptive.histogram.axis: RegularAxis, AxisOptions;
+    import std.experimental.allocator.mallocator: Mallocator;
+    import std.experimental.allocator: dispose;
+
+    double[5] values = [-1, 0, 1, 2, 4];
+    enum options = AxisOptions(false, true, true);
+    auto h = makeHistogram!(ulong, double, RegularAxis, options)(
+        Mallocator.instance, values[].sliced, 2u, 0.0, 4.0);
+    scope(exit) Mallocator.instance.dispose(h.counts.field);
+    assert(h.counts == [1UL, 2, 1, 1]);
 }
 
 /++
@@ -204,58 +432,6 @@ unittest
     readings.putWeightedSample(2.0, 10.0, 0.5, 1.5);
     readings.putWeightedSample(6.0, 30.0, 0.5, 1.5);
     assert(readings.counts[0, 1].wmean == 25.0);
-}
-
-version(mir_stat_test)
-@system pure nothrow @nogc
-unittest
-{
-    import mir.stat.descriptive.histogram.api.factory: testAxisOnlyFactory;
-    import std.experimental.allocator: dispose;
-    import std.experimental.allocator.mallocator: Mallocator;
-    static auto factory(Cell = size_t, Axes...)(Axes axes)
-    {
-        return makeHistogram!Cell(Mallocator.instance, axes);
-    }
-    static void release(H)(ref H h) { Mallocator.instance.dispose(h.counts.field); }
-    testAxisOnlyFactory!(factory, release)();
-}
-
-/// Allocate and count without using the GC, then release the count storage.
-version(mir_stat_test)
-@system pure nothrow @nogc
-unittest
-{
-    import mir.ndslice.slice: sliced;
-    import mir.stat.descriptive.histogram.axis: RegularAxis, AxisOptions;
-    import std.experimental.allocator.mallocator: Mallocator;
-    import std.experimental.allocator: dispose;
-
-    double[4] data = [0, 1, 2, 3];
-    auto axis = RegularAxis!(double, AxisOptions())(2u, 0.0, 4.0);
-    auto h = makeHistogram(Mallocator.instance, data[].sliced, axis);
-    scope(exit) Mallocator.instance.dispose(h.counts.field);
-    assert(h.counts == [2u, 2]);
-    h.put(0.5);
-    assert(h.counts == [3u, 2]);
-}
-
-/// Select an axis template while retaining caller-controlled allocation.
-version(mir_stat_test)
-@system pure nothrow @nogc
-unittest
-{
-    import mir.ndslice.slice: sliced;
-    import mir.stat.descriptive.histogram.axis: RegularAxis, AxisOptions;
-    import std.experimental.allocator.mallocator: Mallocator;
-    import std.experimental.allocator: dispose;
-
-    double[5] values = [-1, 0, 1, 2, 4];
-    enum options = AxisOptions(false, true, true);
-    auto h = makeHistogram!(ulong, double, RegularAxis, options)(
-        Mallocator.instance, values[].sliced, 2u, 0.0, 4.0);
-    scope(exit) Mallocator.instance.dispose(h.counts.field);
-    assert(h.counts == [1UL, 2, 1, 1]);
 }
 
 version(mir_stat_test)
@@ -352,6 +528,7 @@ unittest
     assert(allocator.allocations == 1 && allocator.releases == 1);
 }
 
+// A safe allocator supports joint construction and marginalization with balanced releases.
 version(mir_stat_test)
 @safe pure nothrow
 unittest
@@ -637,6 +814,7 @@ unittest
 
 // Borrowed boundaries cannot escape; a local allocator handle is not retained.
 version(mir_stat_test)
+// Check borrowed and owning axis lifetimes with a safe custom allocator.
 version(mir_stat_test_lifetime)
 @safe pure nothrow
 unittest
@@ -763,6 +941,7 @@ unittest
 
 // Convenience construction borrows stack boundaries for the result's lifetime.
 version(mir_stat_test)
+// Borrowed boundaries support local updates but cannot escape through the factory.
 version(mir_stat_test_lifetime)
 @safe pure nothrow
 unittest
@@ -825,13 +1004,30 @@ unittest
 
 /++
 Construct a relative-frequency accumulator with caller-allocated count storage.
-Accepts the same arguments and axis options as $(LREF makeHistogram).
+Accepts the numeric-count forms and axis options of $(LREF makeHistogram).
+Pass observations as a built-in array or Mir slice to populate a one-axis
+histogram. Supply one coordinate collection per explicit axis to populate joint
+counts, or only axis instances to allocate empty counts. The argument order
+and shape requirements follow the underlying histogram factory.
+Accumulator-valued cells, such as MeanAccumulator, are not supported: relative
+frequencies require numeric counts that can be summed and normalized.
 The total is calculated from the stored counts, including enabled underflow
 and overflow bins. Out-of-range observations follow the underlying histogram
 factory's axis rules. This scans the bins once without allocating another count
 buffer. Axis ownership is unchanged.
 Counter types must accommodate both each bin and the total.
+Use relativeFrequency!(double, Normalization.ordinary) to exclude underflow and
+overflow counts from the denominator; total continues to include those counts.
+The result provides relativeFrequency and relativeFrequencyBins, plus cumulative
+relative-frequency accessors for one-dimensional histograms. Numeric axes with
+supported bin geometry also provide density and densityBins. Updates through
+put and putWeighted keep the total synchronized.
+A zero normalization total produces NaN relative frequencies.
 
+Counts are exposed read-only to prevent updates that bypass the running total.
+For final disposal, recover the allocated element type with
+allocator.dispose(cast(typeof(result).CountType[]) result.counts.field).
+Use that cast only for cleanup after the result and its views are no longer used.
 The caller owns the count allocation and must release it through the same
 allocator after all uses of the accumulator and its views. The allocator is
 not retained. Construction failure releases allocated counts.
@@ -866,6 +1062,31 @@ unittest
     f.put(3.5);
     assert(f.total == 5);
     assert(f.relativeFrequency(1) == 0.4);
+}
+
+/++
+Supply two axis instances to start with empty joint counts, then insert coordinate
+pairs. Each insertion updates one bin and the total used for relative frequencies.
+An explicit double counter type also permits later fractional-weight updates.
++/
+version(mir_stat_test)
+@system pure nothrow @nogc
+unittest
+{
+    import mir.stat.descriptive.histogram.axis: IntegralAxis, AxisOptions;
+    import std.experimental.allocator.mallocator: Mallocator;
+    alias A = IntegralAxis!(int, AxisOptions());
+    auto f = makeRelativeFrequencyHistogram!double(Mallocator.instance, A(2, 0), A(2, 0));
+    // Counts are read-only; cast only for final manual deallocation.
+    scope(exit) Mallocator.instance.deallocate(cast(void[]) f.counts.field);
+    assert(f.total == 0);
+    f.put(0, 1);
+    f.put(1, 0);
+    assert(f.total == 2);
+    assert(f.relativeFrequency(0, 1) == 0.5);
+    f.putWeighted(0.5, 0, 1);
+    assert(f.total == 2.5);
+    assert(f.relativeFrequency(0, 1) == 0.6);
 }
 
 version(mir_stat_test)
@@ -944,12 +1165,12 @@ unittest
     assert(allocator.allocations == 2 && allocator.releases == 2);
 
     uint[1] weights = [2];
-    auto weighted = makeWeightedHistogram(allocator, values, weights, ThrowingCopyAxis());
+    auto weighted = makeWeightedHistogram(allocator, weights, values, ThrowingCopyAxis());
     assert(weighted.counts[0] == 2);
     allocator.deallocate(cast(void[]) weighted.counts.field);
     assert(allocator.allocations == 3 && allocator.releases == 3);
     assertThrown!Exception(makeWeightedRelativeFrequencyHistogram(
-        allocator, values, weights, ThrowingCopyAxis()));
+        allocator, weights, values, ThrowingCopyAxis()));
     assert(allocator.allocations == 4 && allocator.releases == 4);
 }
 
@@ -996,10 +1217,229 @@ struct AllocatedPercentogram(Histogram, BoundaryStorage, CountStorage)
     }
 }
 
+private import mir.stat.descriptive.histogram.api.factory: WeightedHistogramFactory;
+private mixin WeightedHistogramFactory!(allocateCounts, releaseCounts) weightedImplementation;
+
+/++
+Construct a weighted histogram with caller-allocated counts.
+Supply weights, observations, and the usual histogram axis arguments after the allocator.
+Built-in arrays and Mir slices are accepted. Their shapes must match; matching
+multidimensional slices are traversed elementwise into a one-axis histogram.
+For joint counts, use makeWeightedHistogram(allocator, weights, x, y, xAxis, yAxis).
+Supply one coordinate collection per explicit axis. All coordinate collections
+and weights must have matching ranks and shapes. The default counter type
+remains double; an explicit leading numeric type overrides it.
+Weights must be finite, nonnegative, and implicitly convertible to the counter
+type. Axis templates default to `double` counters, independently of the bin-count
+argument. An explicit leading counter type overrides this default, including with a supplied
+axis instance or concrete axis type. Axes never select counter storage.
+Integral counters require integral weights. Counts must accommodate their sums.
+Bin-count rules operate on observations, without weighting the rule itself.
+Axis ownership and explicit count disposal follow $(LREF makeHistogram).
+
+With an accumulator Cell type, makeWeightedHistogram!Cell(allocator, weights,
+samples, coordinates, axis) summarizes weighted measurements. Supply one
+coordinate collection per axis and then explicit axis instances. Argument
+ordering, cell insertion, shape, and lifetime rules follow
+$(REF weightedHistogram, mir, stat, descriptive, histogram, api, gc).
++/
+template makeWeightedHistogram(Options...)
+{
+    auto makeWeightedHistogram(Allocator, Weights, Data, Args...)(ref Allocator allocator, auto ref Weights weights,
+        auto ref Data data, auto ref Args args)
+        if (isSampleCellSelection!Options)
+    {
+        return batchImplementation.batchFactory!(Options[0], HistogramBatchKind.weightedSamples)(allocator, weights, data, args);
+    }
+
+    auto makeWeightedHistogram(Allocator, Weights, Data, Args...)(ref Allocator allocator,
+        scope auto ref Weights weights, scope auto ref Data data, auto ref Args args)
+        if (!isSampleCellSelection!Options)
+    {
+        return weightedImplementation.weightedFactory!Options(allocator, weights, data, args);
+    }
+}
+
+/// Total observation weights in two equal-width bins.
+version(mir_stat_test)
+@system pure nothrow @nogc
+unittest
+{
+    import mir.stat.descriptive.histogram.axis: RegularAxis;
+    import std.experimental.allocator.mallocator: Mallocator;
+    import std.experimental.allocator: dispose;
+    double[3] observations = [0.25, 0.75, 1.25];
+    double[3] weights = [0.5, 1.5, 2.0];
+    auto h = makeWeightedHistogram!RegularAxis(
+        Mallocator.instance, weights, observations, 2u, 0.0, 2.0);
+    scope(exit) Mallocator.instance.dispose(h.counts.field);
+    assert(h.counts == [2.0, 2.0]);
+}
+
+/++
+Populate weighted accumulator cells with
+`makeWeightedHistogram!Cell(allocator, weights, samples, coordinates..., axes...)`.
+Supply one coordinate collection per axis. Corresponding elements select a
+joint bin and update its cell with the sample and weight.
+
+For example, combine sensor reports on a two-dimensional grid. Each measurement
+is a report's mean reading, and its weight is the number of readings represented.
+The integer latitude and longitude coordinates identify grid cells. At (0, 1),
+the combined mean is (2 * 10 + 6 * 30) / (2 + 6) = 25; at (1, 0), it is 50.
+WMeanAccumulator retains the total weight and weighted sum for each cell.
+Allocate the cells with Mallocator and dispose of the entire cell buffer after
+all uses of the histogram and its views have finished.
++/
+version(mir_stat_test)
+@system pure nothrow @nogc
+unittest
+{
+    import mir.stat.descriptive.weighted: WMeanAccumulator, AssumeWeights;
+    import mir.math.sum: Summation;
+    import mir.stat.descriptive.histogram.axis: IntegralAxis, AxisOptions;
+    import std.experimental.allocator.mallocator: Mallocator;
+    import std.experimental.allocator: dispose;
+    double[3] weights = [2, 6, 1];
+    double[3] measurements = [10, 30, 50];
+    int[3] latitude = [0, 0, 1], longitude = [1, 1, 0];
+    alias A = IntegralAxis!(int, AxisOptions());
+    alias Cell = WMeanAccumulator!(double, Summation.pairwise, AssumeWeights.primary);
+    auto readings = makeWeightedHistogram!Cell(
+        Mallocator.instance, weights, measurements, latitude, longitude,
+        A(2, 0), A(2, 0));
+    scope(exit) Mallocator.instance.dispose(readings.counts.field);
+    assert(readings.counts[0, 1].wmean == 25);
+    assert(readings.counts[1, 0].wmean == 50);
+}
+
+/++
+For weighted joint counts, pass weights first, then all coordinate collections
+and axis instances. Each bin stores
+the sum of weights for its coordinate pairs.
++/
+version(mir_stat_test)
+@system pure nothrow @nogc
+unittest
+{
+    import mir.stat.descriptive.histogram.axis: IntegralAxis, AxisOptions;
+    import std.experimental.allocator.mallocator: Mallocator;
+    import std.experimental.allocator: dispose;
+    alias A = IntegralAxis!(int, AxisOptions());
+    int[3] x = [0, 0, 1], y = [1, 1, 0];
+    double[3] weights = [0.5, 1.5, 3.0];
+    auto h = makeWeightedHistogram(Mallocator.instance, weights, x, y, A(2, 0), A(2, 0));
+    scope(exit) Mallocator.instance.dispose(h.counts.field);
+    assert(h.counts[0, 1] == 2.0);
+    assert(h.counts[1, 0] == 3.0);
+    assert(h.counts[0, 0] == 0);
+}
+
+/++
+Construct relative frequencies from weighted counts. Accepts the numeric-count
+arguments and counter-type choices of $(LREF makeWeightedHistogram). The total is the sum of
+stored weights, including enabled underflow/overflow bins. Normalization and
+subsequent weighted insertion use the existing relative-frequency accumulator.
+Built-in arrays and Mir slices are accepted. Accumulator-valued cells are not
+supported. A single observation collection populates one axis. For joint counts,
+use the weighted histogram factory's coordinate/weight ordering and explicit axes.
+Use relativeFrequency!(double, Normalization.ordinary) to normalize by ordinary
+bin weights only, without discarding the underflow/overflow counts.
+The result supports the same relative-frequency, cumulative, and density accessors
+as the unweighted relative-frequency factory. Use putWeighted(weight, coordinates...)
+for subsequent weighted observations; put adds unit weight. Both update the total.
+If the selected normalization total is zero, relative frequencies are NaN.
+Count ownership and final disposal of the read-only count view follow
+$(LREF makeRelativeFrequencyHistogram).
++/
+template makeWeightedRelativeFrequencyHistogram(Options...)
+{
+    auto makeWeightedRelativeFrequencyHistogram(Allocator, Args...)(ref Allocator allocator, auto ref Args args)
+    {
+        import mir.stat.descriptive.histogram.accumulator: HistogramAccumulator;
+        import mir.stat.descriptive.histogram.relative_frequency: RelativeFrequencyAccumulator;
+        auto h = makeWeightedHistogram!Options(allocator, args);
+        scope(failure) releaseCounts(allocator, h.counts);
+        static if (is(typeof(h) == HistogramAccumulator!Types, Types...))
+            return RelativeFrequencyAccumulator!Types(h.counts, h.axis);
+    }
+}
+
+/// Construct weighted relative frequencies, then release the caller-allocated counts.
+version(mir_stat_test)
+@system pure nothrow @nogc
+unittest
+{
+    import mir.stat.descriptive.histogram.axis: RegularAxis;
+    import std.experimental.allocator.mallocator: Mallocator;
+    import std.experimental.allocator: dispose;
+    double[3] observations = [0.25, 0.75, 1.25];
+    double[3] weights = [0.5, 1.5, 2.0];
+    auto f = makeWeightedRelativeFrequencyHistogram!RegularAxis(Mallocator.instance, weights, observations, 2u, 0.0, 2.0);
+    // Counts are read-only; cast only for final manual deallocation.
+    scope(exit) Mallocator.instance.deallocate(cast(void[]) f.counts.field);
+    assert(f.total == 4.0);
+    assert(f.relativeFrequency(0) == 0.5);
+    // Later weighted observations update both the bin and the denominator.
+    f.putWeighted(2.0, 0.25);
+    assert(f.total == 6.0);
+    assert(f.relativeFrequency(0) == 2.0 / 3);
+}
+
+// A safe allocator supports weighted counting and releases the count buffer once.
+version(mir_stat_test)
+@safe pure nothrow
+unittest
+{
+    import mir.stat.descriptive.histogram.axis: RegularAxis;
+    import std.experimental.allocator: dispose;
+    SafeAllocator allocator;
+    double[2] data = [0.5, 1.5];
+    uint[2] weights = [1, 2];
+    auto h = makeWeightedHistogram!RegularAxis(allocator, weights, data, 2u, 0.0, 2.0);
+    assert(h.counts == [1, 2]);
+    allocator.dispose(h.counts.field);
+    assert(allocator.allocations == 1 && allocator.releases == 1);
+}
+
+// Reject mismatched shapes before allocation, and release counts on insertion failure.
+version(mir_stat_test)
+@system pure
+unittest
+{
+    import mir.ndslice.slice: sliced;
+    import mir.ndslice.topology: map;
+    import mir.stat.descriptive.histogram.axis: RegularAxis;
+    import std.exception: assertThrown;
+    import core.exception: AssertError;
+    CountingAllocator allocator;
+    double[4] data = [0, 1, 2, 3];
+    double[4] weights = [1, 2, 3, 4];
+    assertThrown!AssertError(makeWeightedHistogram!RegularAxis(
+        allocator, weights[0 .. 3], data, 4u, 0.0, 4.0));
+    assertThrown!AssertError(makeWeightedHistogram!RegularAxis(
+        allocator, weights[].sliced(1, 4), data[].sliced(2, 2), 4u, 0.0, 4.0));
+    assert(allocator.allocations == 0 && allocator.releases == 0);
+    static double failOnTwo(double x) @safe pure
+    {
+        if (x == 2) throw new Exception("weighted insertion failure");
+        return x;
+    }
+    assertThrown!Exception(makeWeightedHistogram!RegularAxis(
+        allocator, weights, data[].sliced.map!failOnTwo, 4u, 0.0, 4.0));
+    assert(allocator.allocations == 1 && allocator.releases == 1);
+    assertThrown!Exception(makeWeightedRelativeFrequencyHistogram!RegularAxis(
+        allocator, weights[].sliced.map!failOnTwo, data, 4u, 0.0, 4.0));
+    assert(allocator.allocations == 2 && allocator.releases == 2);
+}
+
 /++
 Construct a percentogram with caller-selected allocation for scratch, boundaries,
 and counts. Accepts the same observations and bin count or probabilities as
 $(REF percentogram, mir, stat, descriptive, histogram, api, gc).
+Omitting probabilities requests `ceil(cuberoot(n))` ordinary bins for `n` observations,
+with equally spaced probabilities from zero to one. This is a sample-size heuristic.
+Tied boundaries can reduce the number of ordinary bins.
+
 The result exposes a `histogram` and must be disposed through the same allocator.
 Generated probabilities and quantile scratch are released before return.
 Exceptions during construction release completed allocations. Invalid-input
@@ -1007,10 +1447,6 @@ assertions are contract violations; recovery through nothrow code is not support
 Deallocation must not throw.
 Only the active boundary slice is compacted: the full original allocation is
 retained for cleanup. Attributes depend on the allocator.
-
-Omitting probabilities requests `ceil(cuberoot(n))` ordinary bins for `n` observations,
-with equally spaced probabilities from zero to one. This is a sample-size heuristic.
-Tied boundaries can reduce the number of ordinary bins.
 
 Params:
     allocator = allocator providing allocation and nonthrowing deallocation
@@ -1365,112 +1801,76 @@ unittest
     assert(strided.histogram.counts == [0, 3, 3, 3, 0]);
 }
 
-private import mir.stat.descriptive.histogram.api.factory: WeightedHistogramFactory;
-private mixin WeightedHistogramFactory!(allocateCounts, releaseCounts) weightedImplementation;
-
 /++
-Construct a weighted histogram with caller-allocated counts.
-Supply observations, weights, and the usual histogram axis arguments after the allocator.
-Built-in arrays and Mir slices are accepted. Their shapes must match; matching
-multidimensional slices are traversed elementwise into a one-axis histogram.
-Weights must be finite, nonnegative, and implicitly convertible to the counter
-type. Axis templates default to `double` counters, independently of the bin-count
-argument. An explicit leading counter type overrides this default, including with a supplied
-axis instance or concrete axis type. Axes never select counter storage.
-Integral counters require integral weights. Counts must accommodate their sums.
-Bin-count rules operate on observations, without weighting the rule itself.
-Axis ownership and explicit count disposal follow $(LREF makeHistogram).
+Project a histogram onto selected axes using a caller-selected allocator.
+Axis selection, cell merging, underflow/overflow treatment, and relative
+frequency totals follow $(REF marginal, mir, stat, descriptive, histogram, api, gc).
+The allocator is not retained. Dispose of result.counts.field through the same
+allocator after all uses of the result and its views have finished. For relative
+frequency results, counts are exposed read-only. At final disposal, use
+allocator.dispose(cast(typeof(result).CountType[]) result.counts.field) to release
+the mutable allocation created by this factory. Do not use that cast to modify
+counts while the relative frequency accumulator is in use.
+Borrowed axis boundaries remain borrowed; owning boundary handles are retained.
+If construction or projection throws, the allocated result storage is released.
+Params:
+    dimensions = source axes to retain, in result order
+    allocator = allocator providing allocation and deallocation
+    source = histogram with mergeable cells, or relative frequency accumulator
 +/
-template makeWeightedHistogram(Options...)
+template makeMarginal(dimensions...)
 {
-    auto makeWeightedHistogram(Allocator, Data, Weights, Args...)(ref Allocator allocator,
-        scope auto ref Data data, scope auto ref Weights weights, auto ref Args args)
+    import mir.stat.descriptive.histogram.api.factory: acceptsMarginal;
+    auto makeMarginal(Allocator, H)(ref Allocator allocator, auto ref const H source)
+        if (acceptsMarginal!(H, dimensions))
     {
-        return weightedImplementation.weightedFactory!Options(allocator, data, weights, args);
+        return source.projectMarginal!(axisImplementation.axisFactory, releaseCounts,
+            Allocator, dimensions)(allocator);
     }
 }
 
 /++
-Construct relative frequencies from weighted counts. Accepts the arguments and
-counter-type choices of $(LREF makeWeightedHistogram). The total is the sum of
-stored weights, including enabled underflow/overflow bins. Normalization and
-subsequent weighted insertion use the existing relative-frequency accumulator.
+Allocate a temperature summary with the same custom allocator used for joint
+request counts. Source and summary have separate buffers; dispose of both after
+their final use.
 +/
-template makeWeightedRelativeFrequencyHistogram(Options...)
-{
-    auto makeWeightedRelativeFrequencyHistogram(Allocator, Args...)(ref Allocator allocator, auto ref Args args)
-    {
-        import mir.stat.descriptive.histogram.accumulator: HistogramAccumulator;
-        import mir.stat.descriptive.histogram.relative_frequency: RelativeFrequencyAccumulator;
-        auto h = makeWeightedHistogram!Options(allocator, args);
-        scope(failure) releaseCounts(allocator, h.counts);
-        static if (is(typeof(h) == HistogramAccumulator!Types, Types...))
-            return RelativeFrequencyAccumulator!Types(h.counts, h.axis);
-    }
-}
-
-/// Construct weighted counts and relative frequencies with explicit disposal.
 version(mir_stat_test)
 @system pure nothrow @nogc
 unittest
 {
-    import mir.stat.descriptive.histogram.axis: RegularAxis;
+    import mir.stat.descriptive.histogram.axis: IntegralAxis, AxisOptions;
+    import std.experimental.allocator: dispose;
     import std.experimental.allocator.mallocator: Mallocator;
-    import std.experimental.allocator: dispose;
-    double[3] observations = [0.25, 0.75, 1.25];
-    double[3] weights = [0.5, 1.5, 2.0];
-    auto h = makeWeightedHistogram!RegularAxis(Mallocator.instance, observations, weights, 2u, 0.0, 2.0);
-    scope(exit) Mallocator.instance.dispose(h.counts.field);
-    assert(h.counts == [2.0, 2.0]);
-    auto f = makeWeightedRelativeFrequencyHistogram!RegularAxis(Mallocator.instance, observations, weights, 2u, 0.0, 2.0);
-    // Counts are read-only; cast only for final manual deallocation.
-    scope(exit) Mallocator.instance.deallocate(cast(void[]) f.counts.field);
-    assert(f.total == 4.0);
-    assert(f.relativeFrequency(0) == 0.5);
+    alias A = IntegralAxis!(int, AxisOptions());
+    auto requests = makeHistogram(Mallocator.instance, A(2, 0), A(2, 0));
+    scope(exit) Mallocator.instance.dispose(requests.counts.field);
+    requests.put(0, 0);
+    requests.put(0, 1);
+    auto summary = makeMarginal!0(Mallocator.instance, requests);
+    scope(exit) Mallocator.instance.dispose(summary.counts.field);
+    assert(summary.counts == [2, 0]);
 }
 
+// Exercise shared marginalization checks with caller-allocated result storage.
 version(mir_stat_test)
-@safe pure nothrow
+@system pure nothrow @nogc
 unittest
 {
-    import mir.stat.descriptive.histogram.axis: RegularAxis;
+    import mir.stat.descriptive.histogram.api.factory: testMarginalFactory;
     import std.experimental.allocator: dispose;
-    SafeAllocator allocator;
-    double[2] data = [0.5, 1.5];
-    uint[2] weights = [1, 2];
-    auto h = makeWeightedHistogram!RegularAxis(allocator, data, weights, 2u, 0.0, 2.0);
-    assert(h.counts == [1, 2]);
-    allocator.dispose(h.counts.field);
-    assert(allocator.allocations == 1 && allocator.releases == 1);
-}
-
-// Reject mismatched shapes before allocation, and release counts on insertion failure.
-version(mir_stat_test)
-@system pure
-unittest
-{
-    import mir.ndslice.slice: sliced;
-    import mir.ndslice.topology: map;
-    import mir.stat.descriptive.histogram.axis: RegularAxis;
-    import std.exception: assertThrown;
-    import core.exception: AssertError;
-    CountingAllocator allocator;
-    double[4] data = [0, 1, 2, 3];
-    double[4] weights = [1, 2, 3, 4];
-    assertThrown!AssertError(makeWeightedHistogram!RegularAxis(
-        allocator, data, weights[0 .. 3], 4u, 0.0, 4.0));
-    assertThrown!AssertError(makeWeightedHistogram!RegularAxis(
-        allocator, data[].sliced(2, 2), weights[].sliced(1, 4), 4u, 0.0, 4.0));
-    assert(allocator.allocations == 0 && allocator.releases == 0);
-    static double failOnTwo(double x) @safe pure
+    import std.experimental.allocator.mallocator: Mallocator;
+    template project(dimensions...)
     {
-        if (x == 2) throw new Exception("weighted insertion failure");
-        return x;
+        static auto project(H)(auto ref const H source)
+        {
+            return makeMarginal!dimensions(Mallocator.instance, source);
+        }
     }
-    assertThrown!Exception(makeWeightedHistogram!RegularAxis(
-        allocator, data[].sliced.map!failOnTwo, weights, 4u, 0.0, 4.0));
-    assert(allocator.allocations == 1 && allocator.releases == 1);
-    assertThrown!Exception(makeWeightedRelativeFrequencyHistogram!RegularAxis(
-        allocator, data, weights[].sliced.map!failOnTwo, 4u, 0.0, 4.0));
-    assert(allocator.allocations == 2 && allocator.releases == 2);
+    static void release(H)(ref H h)
+    {
+        // Custom allocation creates mutable numeric cells; the RF wrapper exposes
+        // only a const view. Recover the allocation type solely for disposal.
+        Mallocator.instance.dispose(cast(H.CountType[]) h.counts.field);
+    }
+    testMarginalFactory!(project, release)();
 }

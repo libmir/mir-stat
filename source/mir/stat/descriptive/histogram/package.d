@@ -19,5 +19,4 @@ public import mir.stat.descriptive.histogram.traits;
 public import mir.stat.descriptive.histogram.api;
 
 // Possible later extensions
-// - Add batch sample factories for per-bin accumulators.
 // - Add counters that widen dynamically when their current representation fills.
