@@ -11,27 +11,64 @@ import std.traits: Unqual, isNumeric;
 
 package(mir.stat.descriptive.histogram):
 
-// Detect numeric reading independently of mutation, including const proxies.
-// The dedicated operation distinguishes counts from an accumulator's value.
-template isCountProxy(Cell)
+// Reading is independent of mutation. get() may return a value or a reference;
+// readCount below always produces an independent numeric snapshot.
+template isReadableCount(Cell)
 {
-    enum isCountProxy = __traits(compiles, {
+    enum isReadableCount = isNumeric!Cell || __traits(compiles, {
         const Cell cell = Cell.init;
-        static assert(isNumeric!(typeof(cell.histogramValue)));
+        static assert(isNumeric!(typeof(cell.get())));
     });
 }
 
-template CellValueType(Cell)
+template CountValueType(Cell)
+    if (isReadableCount!Cell)
 {
-    static if (isCountProxy!Cell)
-        alias CellValueType = Unqual!(typeof((const Cell).init.histogramValue));
+    static if (isNumeric!Cell)
+        alias CountValueType = Unqual!Cell;
     else
-        alias CellValueType = Unqual!Cell;
+        alias CountValueType = Unqual!(typeof((const Cell).init.get()));
+}
+
+CountValueType!Cell readCount(Cell)(auto ref const Cell cell)
+    if (isReadableCount!Cell)
+{
+    static if (isNumeric!Cell)
+        return cell;
+    else
+        return cell.get();
+}
+
+// Check the actual indexed increment. Nested built-in arrays yield lvalues;
+// ndslice indexing may instead return a temporary proxy.
+template isIncrementableCountStorage(Storage, size_t dimensions = 1)
+    if (dimensions > 0)
+{
+    import mir.ndslice.slice: isSlice;
+    import std.traits: isArray;
+    static if (isSlice!Storage)
+        enum isIncrementableCountStorage = __traits(compiles, {
+            Storage storage;
+            size_t[dimensions] indices;
+            storage[indices]++;
+        });
+    else static if (dimensions == 1)
+        enum isIncrementableCountStorage = __traits(compiles, {
+            Storage storage;
+            storage[0]++;
+        });
+    else static if (isArray!Storage)
+        enum isIncrementableCountStorage = __traits(compiles, {
+            Storage storage;
+            static assert(isIncrementableCountStorage!(typeof(storage[0]), dimensions - 1));
+        });
+    else
+        enum isIncrementableCountStorage = false;
 }
 
 template acceptsCellSamples(Cell, Samples...)
 {
-    enum acceptsCellSamples = !isNumeric!(Unqual!Cell) && __traits(compiles, {
+    enum acceptsCellSamples = !isReadableCount!Cell && __traits(compiles, {
         Cell cell;
         Samples samples;
         cell.put(samples);
@@ -40,12 +77,13 @@ template acceptsCellSamples(Cell, Samples...)
 
 template acceptsCellMerge(Cell)
 {
-    enum acceptsCellMerge = acceptsCellSamples!(Cell, const(Unqual!Cell)) ||
+    enum acceptsCellMerge = (isNumeric!Cell || !isReadableCount!Cell) &&
+        (acceptsCellSamples!(Cell, const(Unqual!Cell)) ||
         __traits(compiles, {
             Cell destination;
             const(Unqual!Cell) source;
             destination += source;
-        });
+        }));
 }
 
 // Both histogram merging and projection must combine full accumulator state.
@@ -92,21 +130,37 @@ version(mir_stat_test)
 unittest
 {
     struct Plain { ulong value; }
-    struct WrongValue { string histogramValue; }
+    struct WrongValue { string get() const { return ""; } }
     struct MutableRead {
-        ulong histogramValue() @property { return 0; }
+        ulong get() { return 0; }
     }
     struct Good {
-        ulong histogramValue() const @property { return 0; }
+        ulong get() const { return 0; }
     }
     struct Floating {
-        double histogramValue() const @property { return 0; }
+        double get() const { return 0; }
     }
-    static assert(!isCountProxy!ulong && !isCountProxy!Plain);
-    static assert(!isCountProxy!WrongValue && !isCountProxy!MutableRead);
-    static assert(isCountProxy!Good && isCountProxy!(const Good));
-    static assert(is(CellValueType!(const Good) == ulong));
-    static assert(is(CellValueType!Floating == double));
-    static assert(is(CellValueType!(const uint) == uint));
-    static assert(is(CellValueType!(const Plain) == Plain));
+    static assert(isReadableCount!ulong && !isReadableCount!Plain);
+    static assert(!isReadableCount!WrongValue && !isReadableCount!MutableRead);
+    static assert(isReadableCount!Good && isReadableCount!(const Good));
+    static assert(is(CountValueType!(const Good) == ulong));
+    static assert(is(CountValueType!Floating == double));
+    static assert(is(CountValueType!(const ubyte) == ubyte));
+    static assert(!__traits(compiles, CountValueType!Plain));
+    assert(readCount(Good()) == 0);
+    assert(readCount(Floating()) == 0);
+    const ubyte narrow = 3;
+    assert(readCount(narrow) == 3);
+    struct Reference {
+        ulong value;
+        ref const(ulong) get() const return { return value; }
+    }
+    Reference cell = Reference(7);
+    auto snapshot = readCount(cell);
+    static assert(is(typeof(snapshot) == ulong));
+    cell.value = 9;
+    assert(snapshot == 7);
+    static assert(isIncrementableCountStorage!(ulong[2][3], 2));
+    static assert(!isIncrementableCountStorage!(const(ulong)[2][3], 2));
+    static assert(!isIncrementableCountStorage!(Good[]));
 }

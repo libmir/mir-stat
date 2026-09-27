@@ -27,7 +27,8 @@ import mir.stat.descriptive.histogram.traits: isAxis;
 import mir.stat.descriptive.histogram.internal.view: supportsBinView, JointArrayInfo;
 import mir.stat.descriptive.histogram.internal.projection: validMarginalAxes;
 private import mir.stat.descriptive.histogram.internal.cell:
-    acceptsCellSamples, acceptsCellMerge, mergeCell, isCountProxy, CellValueType;
+    acceptsCellSamples, acceptsCellMerge, mergeCell,
+    isReadableCount, CountValueType, readCount, isIncrementableCountStorage;
 import mir.qualifier: lightConst;
 import std.meta: allSatisfy;
 import std.traits: isNumeric, Unqual, isStaticArray;
@@ -113,11 +114,12 @@ and weight validity, allocation behavior, and function attributes.
 
 Count proxies:
 A storage element supports reading counts when its const-readable
-histogramValue property returns a numeric value. The count type is inferred
+get() operation returns a numeric value. The count type is inferred
 from that operation; no type alias is required. Its ++ operation must
 update the backing counter, including when indexing returns a temporary proxy.
 CountType and ValueType then describe the numeric snapshot, while counts still
-exposes the original proxy storage. Bin entries copy histogramValue; an existing
+exposes the original proxy storage. Bin entries copy the result of get(), even
+if get() returns a reference; an existing
 bin view reads the current values each time it is indexed.
 
 Proxy storage must still meet the array/ndslice shape requirements above. The
@@ -161,7 +163,10 @@ struct HistogramAccumulator(Storage, Axis...)
         private alias StoredCountType = DeepElementType!Storage;
 
     /// Numeric snapshot type for count proxies; otherwise the unqualified cell type.
-    alias CountType = CellValueType!StoredCountType;
+    static if (isReadableCount!StoredCountType)
+        alias CountType = CountValueType!StoredCountType;
+    else
+        alias CountType = Unqual!StoredCountType;
     /// Type of a numeric snapshot or accumulator value; equals CountType.
     alias ValueType = CountType;
     static if (Axis.length > 1)
@@ -212,7 +217,7 @@ private:
             enum acceptsMerge =
                 is(Unqual!H == HistogramAccumulator!(Args[0], Axis)) &&
                 is(Unqual!(H.CountType) == Unqual!CountType) &&
-                !isCountProxy!StoredCountType && acceptsCellMerge!StoredCountType;
+                acceptsCellMerge!StoredCountType;
         else
             enum acceptsMerge = false;
     }
@@ -243,22 +248,13 @@ private:
     // Probe only the cell operation; coordinate checking is shared with counting.
     private template acceptsSamples(Samples...)
     {
-        enum acceptsSamples = !isCountProxy!StoredCountType &&
-            acceptsCellSamples!(StoredCountType, Samples);
+        enum acceptsSamples = acceptsCellSamples!(StoredCountType, Samples);
     }
 
     // Check the indexed expression, including proxies returned by value.
     // Readable storage need not support mutation (for example const counters).
-    private enum acceptsCounting = isNumeric!CountType && __traits(compiles, {
-        Storage storage;
-        size_t[N] indices;
-        static if (N == 1)
-            storage[0]++;
-        else static if (isSlice!Storage)
-            storage[indices]++;
-        else
-            updateArray!false(storage, indices);
-    });
+    private enum acceptsCounting = isReadableCount!StoredCountType &&
+        isIncrementableCountStorage!(Storage, N);
 
     // Keep nested static arrays as references, and preserve ndslice strides.
     private static void putArraySample(size_t depth = 0, S, Samples...)(
@@ -291,12 +287,7 @@ private:
         auto ref const S storage, size_t position)
     {
         static if (depth == N)
-        {
-            static if (isCountProxy!S)
-                return storage.histogramValue;
-            else
-                return storage;
-        }
+            return readCount(storage);
         else static if (depth == dimension)
             return axisEndTotal!(dimension, depth + 1)(storage[position], position);
         else
@@ -319,7 +310,7 @@ public:
     // Shared projection implementation for GC, RC, and custom API factories.
     package(mir.stat.descriptive.histogram)
     auto projectMarginal(alias make, alias release, Context, dimensions...)(ref Context context) const
-        if (!isCountProxy!StoredCountType && acceptsCellMerge!CountType &&
+        if (acceptsCellMerge!(Unqual!StoredCountType) &&
             validMarginalAxes!(N, dimensions))
     {
         import std.meta: staticMap;
@@ -2006,8 +1997,8 @@ struct HistogramBinView(Storage, BinCoverage coverage, Axis...)
         private alias StoredValue = DeepElementType!ReadOnlyStorage;
     else
         private alias StoredValue = JointArrayInfo!ReadOnlyStorage.Element;
-    static if (isNumeric!StoredValue || isCountProxy!StoredValue)
-        private alias Count = CellValueType!StoredValue;
+    static if (isReadableCount!StoredValue)
+        private alias Count = CountValueType!StoredValue;
     else
         private alias Count = const(Unqual!StoredValue);
 
@@ -2052,8 +2043,8 @@ struct HistogramBinView(Storage, BinCoverage coverage, Axis...)
     {
         static if (depth + 1 == N)
         {
-            static if (isCountProxy!(typeof(counts[indices[depth]])))
-                return counts[indices[depth]].histogramValue;
+            static if (isReadableCount!(typeof(counts[indices[depth]])))
+                return readCount(counts[indices[depth]]);
             else
                 return counts[indices[depth]];
         }
@@ -2150,9 +2141,9 @@ struct HistogramBinView(Storage, BinCoverage coverage, Axis...)
         }}
         static if (isSlice!S)
         {
-            static if (isCountProxy!(DeepElementType!S))
+            static if (isReadableCount!(DeepElementType!S))
                 return Element(result._kinds, result._indices, result._bins,
-                    counts[storageIndices].histogramValue);
+                    readCount(counts[storageIndices]));
             else
                 return Element(result._kinds, result._indices, result._bins, counts[storageIndices]);
         }
@@ -4089,7 +4080,7 @@ version(mir_stat_test)
 private struct TestCountProxy(T)
 {
     T* pointer;
-    ulong histogramValue() const @property @safe pure nothrow @nogc
+    ulong get() const @safe pure nothrow @nogc
     {
         return *pointer;
     }
