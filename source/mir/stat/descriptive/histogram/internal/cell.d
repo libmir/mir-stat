@@ -11,6 +11,24 @@ import std.traits: Unqual, isNumeric;
 
 package(mir.stat.descriptive.histogram):
 
+// Detect numeric reading independently of mutation, including const proxies.
+// The dedicated operation distinguishes counts from an accumulator's value.
+template isCountProxy(Cell)
+{
+    enum isCountProxy = __traits(compiles, {
+        const Cell cell = Cell.init;
+        static assert(isNumeric!(typeof(cell.histogramValue)));
+    });
+}
+
+template CellValueType(Cell)
+{
+    static if (isCountProxy!Cell)
+        alias CellValueType = Unqual!(typeof((const Cell).init.histogramValue));
+    else
+        alias CellValueType = Unqual!Cell;
+}
+
 template acceptsCellSamples(Cell, Samples...)
 {
     enum acceptsCellSamples = !isNumeric!(Unqual!Cell) && __traits(compiles, {
@@ -66,4 +84,29 @@ unittest
     mergeCell(destination, source);
     assert(destination.value == 7 && source.value == 7);
     static assert(!acceptsCellMerge!(const Cell));
+}
+
+// Infer the count type from const-readable operations, without a type alias.
+version(mir_stat_test)
+@safe pure nothrow @nogc
+unittest
+{
+    struct Plain { ulong value; }
+    struct WrongValue { string histogramValue; }
+    struct MutableRead {
+        ulong histogramValue() @property { return 0; }
+    }
+    struct Good {
+        ulong histogramValue() const @property { return 0; }
+    }
+    struct Floating {
+        double histogramValue() const @property { return 0; }
+    }
+    static assert(!isCountProxy!ulong && !isCountProxy!Plain);
+    static assert(!isCountProxy!WrongValue && !isCountProxy!MutableRead);
+    static assert(isCountProxy!Good && isCountProxy!(const Good));
+    static assert(is(CellValueType!(const Good) == ulong));
+    static assert(is(CellValueType!Floating == double));
+    static assert(is(CellValueType!(const uint) == uint));
+    static assert(is(CellValueType!(const Plain) == Plain));
 }

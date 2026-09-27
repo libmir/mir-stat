@@ -27,7 +27,7 @@ import mir.stat.descriptive.histogram.traits: isAxis;
 import mir.stat.descriptive.histogram.internal.view: supportsBinView, JointArrayInfo;
 import mir.stat.descriptive.histogram.internal.projection: validMarginalAxes;
 private import mir.stat.descriptive.histogram.internal.cell:
-    acceptsCellSamples, acceptsCellMerge, mergeCell;
+    acceptsCellSamples, acceptsCellMerge, mergeCell, isCountProxy, CellValueType;
 import mir.qualifier: lightConst;
 import std.meta: allSatisfy;
 import std.traits: isNumeric, Unqual, isStaticArray;
@@ -111,7 +111,25 @@ read-only storage can be used for bin views when the axes support bin descriptio
 and the cells support const copying. Cell operations determine their own sample
 and weight validity, allocation behavior, and function attributes.
 
-The underflow/overflow total members currently require numeric cells.
+Count proxies:
+A storage element supports reading counts when its const-readable
+histogramValue property returns a numeric value. The count type is inferred
+from that operation; no type alias is required. Its ++ operation must
+update the backing counter, including when indexing returns a temporary proxy.
+CountType and ValueType then describe the numeric snapshot, while counts still
+exposes the original proxy storage. Bin entries copy histogramValue; an existing
+bin view reads the current values each time it is indexed.
+
+Proxy storage must still meet the array/ndslice shape requirements above. The
+storage is responsible for write-through access, const propagation, and the
+lifetime of borrowed counters; providing the operations does not create ownership.
+A const-backed proxy must not permit ++. Proxy operations determine attributes,
+just as ordinary accumulator operations do. This interface currently supports
+ordinary insertion, bin views, and underflow/overflow totals. Weighted insertion,
+sample insertion, histogram merging, and marginalization of proxies are not
+supported. There is no automatic widening or allocation in this interface.
+
+The underflow/overflow total members require numeric cells or count proxies.
 Accumulator end bins can be read through bins!(BinCoverage.all).
 
 If the `Axis` has an `options` member, the histogram may optionally allow
@@ -142,9 +160,9 @@ struct HistogramAccumulator(Storage, Axis...)
     else
         private alias StoredCountType = DeepElementType!Storage;
 
-    /// Type of one cell, independently of storage mutability; also see ValueType.
-    alias CountType = Unqual!StoredCountType;
-    /// Type of one stored numeric value or accumulator.
+    /// Numeric snapshot type for count proxies; otherwise the unqualified cell type.
+    alias CountType = CellValueType!StoredCountType;
+    /// Type of a numeric snapshot or accumulator value; equals CountType.
     alias ValueType = CountType;
     static if (Axis.length > 1)
     {
@@ -194,7 +212,7 @@ private:
             enum acceptsMerge =
                 is(Unqual!H == HistogramAccumulator!(Args[0], Axis)) &&
                 is(Unqual!(H.CountType) == Unqual!CountType) &&
-                acceptsCellMerge!StoredCountType;
+                !isCountProxy!StoredCountType && acceptsCellMerge!StoredCountType;
         else
             enum acceptsMerge = false;
     }
@@ -225,8 +243,22 @@ private:
     // Probe only the cell operation; coordinate checking is shared with counting.
     private template acceptsSamples(Samples...)
     {
-        enum acceptsSamples = acceptsCellSamples!(StoredCountType, Samples);
+        enum acceptsSamples = !isCountProxy!StoredCountType &&
+            acceptsCellSamples!(StoredCountType, Samples);
     }
+
+    // Check the indexed expression, including proxies returned by value.
+    // Readable storage need not support mutation (for example const counters).
+    private enum acceptsCounting = isNumeric!CountType && __traits(compiles, {
+        Storage storage;
+        size_t[N] indices;
+        static if (N == 1)
+            storage[0]++;
+        else static if (isSlice!Storage)
+            storage[indices]++;
+        else
+            updateArray!false(storage, indices);
+    });
 
     // Keep nested static arrays as references, and preserve ndslice strides.
     private static void putArraySample(size_t depth = 0, S, Samples...)(
@@ -259,7 +291,12 @@ private:
         auto ref const S storage, size_t position)
     {
         static if (depth == N)
-            return storage;
+        {
+            static if (isCountProxy!S)
+                return storage.histogramValue;
+            else
+                return storage;
+        }
         else static if (depth == dimension)
             return axisEndTotal!(dimension, depth + 1)(storage[position], position);
         else
@@ -282,7 +319,8 @@ public:
     // Shared projection implementation for GC, RC, and custom API factories.
     package(mir.stat.descriptive.histogram)
     auto projectMarginal(alias make, alias release, Context, dimensions...)(ref Context context) const
-        if (acceptsCellMerge!CountType && validMarginalAxes!(N, dimensions))
+        if (!isCountProxy!StoredCountType && acceptsCellMerge!CountType &&
+            validMarginalAxes!(N, dimensions))
     {
         import std.meta: staticMap;
         import mir.stat.descriptive.histogram.internal.projection: projectCells;
@@ -388,7 +426,7 @@ public:
 
     ///
     void put(Range)(Range r)
-        if (isNumeric!CountType && N == 1 &&
+        if (acceptsCounting && N == 1 &&
             isIterable!Range &&
             !(isCategoryAxis!(Axis[0]) && isSomeString!Range))
     {
@@ -419,7 +457,7 @@ public:
     supply exactly one compatible coordinate per axis for a single observation.
     +/
     void put(T...)(T x)
-        if (isNumeric!CountType && acceptsArguments!T)
+        if (acceptsCounting && acceptsArguments!T)
     {
         static if (N == 1)
         {
@@ -494,7 +532,8 @@ public:
         coordinates = one compatible coordinate per axis
     +/
     void putWeighted(W, T...)(W weight, T coordinates)
-        if (acceptsHistogramWeight!(CountType, W) && T.length == N && acceptsArguments!T)
+        if (isNumeric!StoredCountType && acceptsHistogramWeight!(CountType, W) &&
+            T.length == N && acceptsArguments!T)
     {
         import std.traits: isFloatingPoint;
         import std.math: isFinite;
@@ -1967,8 +2006,8 @@ struct HistogramBinView(Storage, BinCoverage coverage, Axis...)
         private alias StoredValue = DeepElementType!ReadOnlyStorage;
     else
         private alias StoredValue = JointArrayInfo!ReadOnlyStorage.Element;
-    static if (isNumeric!StoredValue)
-        private alias Count = Unqual!StoredValue;
+    static if (isNumeric!StoredValue || isCountProxy!StoredValue)
+        private alias Count = CellValueType!StoredValue;
     else
         private alias Count = const(Unqual!StoredValue);
 
@@ -2012,7 +2051,12 @@ struct HistogramBinView(Storage, BinCoverage coverage, Axis...)
         const ref size_t[N] indices)
     {
         static if (depth + 1 == N)
-            return counts[indices[depth]];
+        {
+            static if (isCountProxy!(typeof(counts[indices[depth]])))
+                return counts[indices[depth]].histogramValue;
+            else
+                return counts[indices[depth]];
+        }
         else
             return readArrayCount!(depth + 1)(counts[indices[depth]], indices);
     }
@@ -2105,7 +2149,13 @@ struct HistogramBinView(Storage, BinCoverage coverage, Axis...)
             }
         }}
         static if (isSlice!S)
-            return Element(result._kinds, result._indices, result._bins, counts[storageIndices]);
+        {
+            static if (isCountProxy!(DeepElementType!S))
+                return Element(result._kinds, result._indices, result._bins,
+                    counts[storageIndices].histogramValue);
+            else
+                return Element(result._kinds, result._indices, result._bins, counts[storageIndices]);
+        }
         else
             return Element(result._kinds, result._indices, result._bins,
                 readArrayCount(counts, storageIndices));
@@ -4031,4 +4081,144 @@ unittest
     static assert(!__traits(compiles, h.putWeighted(1u, 0.5, 1.5)));
     static assert(!__traits(compiles, h.putWeighted(1u)));
     static assert(!__traits(compiles, h.putWeighted(1u, "invalid coordinate")));
+}
+
+// A borrowed write-through proxy exercises the storage interface without
+// ownership or widening machinery. Const backing storage cannot be incremented.
+version(mir_stat_test)
+private struct TestCountProxy(T)
+{
+    T* pointer;
+    ulong histogramValue() const @property @safe pure nothrow @nogc
+    {
+        return *pointer;
+    }
+    void opUnary(string op)() @safe pure nothrow @nogc
+        if (op == "++" && is(T == ulong))
+    {
+        ++*pointer;
+    }
+}
+
+version(mir_stat_test)
+private auto testCountProxy(T)(return ref T value) @trusted pure nothrow @nogc
+{
+    // The pointer borrows exactly the caller's reference, without changing its
+    // qualification. return ref preserves that lifetime under DIP1000. Older
+    // compilers without DIP1000 require trust for taking a ref parameter's address.
+    return TestCountProxy!T(&value);
+}
+
+// Proxy insertion updates the original cells, while bin entries are snapshots.
+version(mir_stat_test)
+@safe pure nothrow @nogc
+unittest
+{
+    import mir.ndslice.slice: sliced;
+    import mir.ndslice.topology: map, stride;
+    import mir.stat.descriptive.histogram.axis: IntegralAxis, AxisOptions;
+    alias A = IntegralAxis!(int, AxisOptions());
+    ulong[8] data;
+    auto storage = data[].sliced.stride(2).sliced(2, 2).map!testCountProxy;
+    auto h = HistogramAccumulator!(typeof(storage), A, A)(storage, A(2, 0), A(2, 0));
+    static assert(is(h.CountType == ulong));
+    auto view = h.bins;
+    auto snapshot = view[1];
+    static assert(is(typeof(snapshot.count) == ulong));
+    h.put(0, 1);
+    h.put(0, 1);
+    assert(data[2] == 2 && data[1] == 0 && data[3] == 0);
+    assert(view[1].count == 2 && snapshot.count == 0);
+    auto copy = h;
+    copy.put(1, 0);
+    assert(h.bins[2].count == 1 && data[4] == 1);
+    const readOnly = h;
+    assert(readOnly.bins[1].count == 2);
+    static assert(!__traits(compiles, readOnly.put(0, 1)));
+    static assert(!__traits(compiles, h.putWeighted(2u, 0, 1)));
+    static assert(!__traits(compiles, h.putSample(2u, 0, 1)));
+    static assert(!__traits(compiles, h.put(h)));
+    const ulong[2] frozen = [3, 4];
+    auto frozenStorage = frozen[].sliced.map!testCountProxy;
+    auto frozenHistogram = HistogramAccumulator!(typeof(frozenStorage), A)(frozenStorage, A(2, 0));
+    assert(frozenHistogram.bins.front.count == 3);
+    static assert(!__traits(compiles, frozenHistogram.put(0)));
+}
+
+// One-axis range insertion, end-bin totals, and formatting read proxy values.
+version(mir_stat_test)
+@safe pure nothrow @nogc
+unittest
+{
+    import mir.ndslice.slice: sliced;
+    import mir.ndslice.topology: map;
+    import mir.stat.descriptive.histogram.axis: IntegralAxis, AxisOptions;
+    import mir.appender: scopedBuffer;
+    import mir.format: print;
+    alias A = IntegralAxis!(int, AxisOptions(false, true, true));
+    ulong[4] data;
+    auto storage = data[].sliced.map!testCountProxy;
+    auto h = HistogramAccumulator!(typeof(storage), A)(storage, A(2, 0));
+    int[5] observations = [-1, 0, 0, 1, 2];
+    h.put(observations[]);
+    assert(data[] == [1UL, 2, 1, 1]);
+    assert(h.underflow == 1 && h.overflow == 1);
+    auto writer = scopedBuffer!(char, 256);
+    print(writer, h.bins.front);
+    assert(writer.data == "bin(low=0, high=1): count=2");
+    static assert(!__traits(compiles, h.putWeighted(1u, 0)));
+
+    // Nested arrays of proxies use the same value/snapshot contract.
+    TestCountProxy!ulong[2][2] cells = [
+        [testCountProxy(data[0]), testCountProxy(data[1])],
+        [testCountProxy(data[2]), testCountProxy(data[3])]];
+    alias B = IntegralAxis!(int, AxisOptions());
+    auto nested = HistogramAccumulator!(typeof(cells[]), B, B)(cells[], B(2, 0), B(2, 0));
+    nested.put(1, 1);
+    assert(data[3] == 2 && nested.bins[3].count == 2);
+    static assert(!__traits(compiles, nested.rcMarginal!0()));
+
+    // Joint end-bin totals include corners and read through each proxy.
+    ulong[16] jointData;
+    auto jointStorage = jointData[].sliced(4, 4).map!testCountProxy;
+    auto joint = HistogramAccumulator!(typeof(jointStorage), A, A)(
+        jointStorage, A(2, 0), A(2, 0));
+    joint.put(-1, -1);
+    joint.put(-1, 0);
+    joint.put(0, 2);
+    assert(joint.underflow!0 == 2 && joint.underflow!1 == 1);
+    assert(joint.overflow!0 == 0 && joint.overflow!1 == 1);
+}
+
+// Numeric snapshots may escape local backing storage; proxy views may not.
+version(mir_stat_test)
+@safe pure nothrow @nogc
+unittest
+{
+    import mir.ndslice.slice: sliced;
+    import mir.ndslice.topology: map;
+    import mir.stat.descriptive.histogram.axis: IntegralAxis, AxisOptions;
+    alias A = IntegralAxis!(int, AxisOptions());
+    static auto snapshot() @safe pure nothrow @nogc
+    {
+        ulong[2] local = [2, 3];
+        auto storage = local[].sliced.map!testCountProxy;
+        auto h = HistogramAccumulator!(typeof(storage), A)(storage, A(2, 0));
+        return h.bins[1];
+    }
+    assert(snapshot().count == 3);
+    version(mir_stat_test_lifetime)
+    {
+        static assert(!__traits(compiles, () @safe {
+            ulong[2] local;
+            auto storage = local[].sliced.map!testCountProxy;
+            return HistogramAccumulator!(typeof(storage), A)(storage, A(2, 0));
+        }));
+        static assert(!__traits(compiles, () @safe {
+            ulong[2] local;
+            auto storage = local[].sliced.map!testCountProxy;
+            auto h = HistogramAccumulator!(typeof(storage), A)(storage, A(2, 0));
+            return h.bins;
+        }));
+    }
 }
