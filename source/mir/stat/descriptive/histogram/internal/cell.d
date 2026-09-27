@@ -50,12 +50,12 @@ template isIncrementableCountStorage(Storage, size_t dimensions = 1)
         enum isIncrementableCountStorage = __traits(compiles, {
             Storage storage;
             size_t[dimensions] indices;
-            storage[indices]++;
+            ++storage[indices];
         });
     else static if (dimensions == 1)
         enum isIncrementableCountStorage = __traits(compiles, {
             Storage storage;
-            storage[0]++;
+            ++storage[0];
         });
     else static if (isArray!Storage)
         enum isIncrementableCountStorage = __traits(compiles, {

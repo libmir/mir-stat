@@ -275,7 +275,7 @@ private:
             static if (weighted)
                 storage[indices[depth]] += weight;
             else
-                storage[indices[depth]]++;
+                ++storage[indices[depth]];
         }
         else
             updateArray!(weighted, depth + 1)(storage[indices[depth]], indices, weight);
@@ -450,10 +450,12 @@ public:
     void put(T...)(T x)
         if (acceptsCounting && acceptsArguments!T)
     {
+        // No previous value is needed. Prefix increment also lets proxy-backed
+        // ndslices dispatch directly to their indexed increment operation.
         static if (N == 1)
         {
             static foreach (i; 0 .. T.length)
-                counts[storageIndex!0(x[i])]++;
+                ++counts[storageIndex!0(x[i])];
         }
         else
         {
@@ -461,7 +463,7 @@ public:
             // an axis rejects an observation or returns an invalid index.
             const indices = storageIndices(x);
             static if (isSlice!Storage)
-                counts[indices]++;
+                ++counts[indices];
             else
                 updateArray!false(counts, indices);
         }
