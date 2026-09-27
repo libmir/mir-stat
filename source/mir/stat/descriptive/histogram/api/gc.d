@@ -7,6 +7,16 @@ Copyright: 2026 Mir Stat Authors.
 +/
 module mir.stat.descriptive.histogram.api.gc;
 
+// Joint numeric batches preserve pairing, numeric types, and axis lifetimes.
+version(mir_stat_test)
+@safe pure nothrow
+unittest
+{
+    import mir.stat.descriptive.histogram.api.factory: testJointNumericFactories;
+    testJointNumericFactories!(histogram, weightedHistogram)();
+    testJointNumericFactories!(relativeFrequencyHistogram, weightedRelativeFrequencyHistogram)();
+}
+
 // Arrays preserve counting, counter selection, and observation/axis lifetimes.
 version(mir_stat_test)
 @safe pure nothrow
@@ -16,8 +26,8 @@ unittest
     testArrayHistogramFactories!(histogram, relativeFrequencyHistogram)();
 }
 
-private import mir.stat.descriptive.histogram.api.factory: SampleHistogramFactory, isSampleCellSelection;
-private mixin SampleHistogramFactory!(allocateCounts) sampleImplementation;
+private import mir.stat.descriptive.histogram.api.factory: HistogramBatchFactory, HistogramBatchKind, isSampleCellSelection;
+private mixin HistogramBatchFactory!(allocateCounts) batchImplementation;
 
 // Exercise shared batch insertion checks with GC-owned cells.
 version(mir_stat_test)
@@ -51,6 +61,11 @@ $(REF rchistogram, mir, stat, descriptive, histogram, api, rc).
 Counts start at zero before insertion, including enabled underflow/overflow bins.
 All elements of a multidimensional observation slice contribute to the same
 one-axis histogram; they are not interpreted as joint coordinates.
+
+To populate numeric joint counts, use histogram(x, y, xAxis, yAxis),
+with one coordinate collection per explicit axis. Arrays and Mir slices must
+have matching ranks and shapes; strided slices are paired by logical position.
+An optional leading numeric template argument selects the counter type.
 
 Supply only axis instances to allocate an empty one-dimensional or joint
 histogram: histogram!Cell(axis, ...). Cell defaults to size_t. Numeric cells
@@ -87,7 +102,7 @@ template histogram(Options...)
             return axisImplementation.axisFactory!Options(context, args);
         }
         else static if (isSampleCellSelection!Options)
-            return sampleImplementation.sampleFactory!(Options[0], false)(context, args);
+            return batchImplementation.batchFactory!(Options[0], HistogramBatchKind.samples)(context, args);
         else static if (Options.length)
             return implementation.factory!Options(context, args);
         else
@@ -128,6 +143,23 @@ unittest
     auto fromDynamic = values[].histogram!RegularAxis(2u, 0.0, 4.0);
     assert(fromStatic.counts == [3, 1]);
     assert(fromDynamic.counts == fromStatic.counts);
+}
+
+/++
+Pair coordinate collections elementwise to populate a joint histogram. Each
+pair selects one bin; the first two pairs below both select (0, 1).
++/
+version(mir_stat_test)
+@safe pure nothrow
+unittest
+{
+    import mir.stat.descriptive.histogram.axis: IntegralAxis, AxisOptions;
+    alias A = IntegralAxis!(int, AxisOptions());
+    int[3] x = [0, 0, 1], y = [1, 1, 0];
+    auto h = histogram(x, y, A(2, 0), A(2, 0));
+    assert(h.counts[0, 1] == 2);
+    assert(h.counts[1, 0] == 1);
+    assert(h.counts[0, 0] == 0);
 }
 
 /// Override the counter type and include underflow and overflow bins.
@@ -245,7 +277,9 @@ unittest
 Construct a relative-frequency accumulator with garbage-collected count storage.
 Accepts the numeric-count forms and axis options of $(LREF histogram).
 Pass observations as a built-in array or Mir slice to populate a one-axis
-histogram, or supply only axis instances to allocate an empty one-dimensional or joint histogram.
+histogram. Supply one coordinate collection per explicit axis to populate joint
+counts, or only axis instances to allocate empty counts. The argument order
+and shape requirements follow the underlying histogram factory.
 Accumulator-valued cells, such as MeanAccumulator, are not supported: relative
 frequencies require numeric counts that can be summed and normalized.
 The total is calculated from the stored counts, including enabled underflow
@@ -316,9 +350,13 @@ private mixin WeightedHistogramFactory!(allocateCounts) weightedImplementation;
 
 /++
 Construct a weighted histogram with garbage-collected counts.
-Supply observations, weights, and the usual histogram axis arguments.
+Supply weights, observations, and the usual histogram axis arguments.
 Built-in arrays and Mir slices are accepted. Their shapes must match; matching
 multidimensional slices are traversed elementwise into a one-axis histogram.
+For joint counts, use weightedHistogram(weights, x, y, xAxis, yAxis).
+Supply one coordinate collection per explicit axis. All coordinate collections
+and weights must have matching ranks and shapes. The default counter type
+remains double; an explicit leading numeric type overrides it.
 Weights must be finite, nonnegative, and implicitly convertible to the counter
 type. Axis templates default to `double` counters, independently of the bin-count
 argument. An explicit leading counter type overrides this default, including with a supplied
@@ -328,9 +366,9 @@ Bin-count rules operate on observations, without weighting the rule itself.
 Axis ownership and count ownership follow $(LREF histogram).
 
 An explicit accumulator Cell type summarizes weighted samples:
-weightedHistogram!Cell(samples, weights, coordinates, axis). Supply one coordinate
-collection per axis, followed by explicit axis instances. Samples precede weights,
-matching the data-first ordering of numeric weighted factories. For example,
+weightedHistogram!Cell(weights, samples, coordinates, axis). Supply one coordinate
+collection per axis, followed by explicit axis instances. Weights precede samples,
+matching putWeightedSample and the numeric weighted factories. For example,
 WMeanAccumulator computes weighted mean measurements by location. Input shapes
 must match as described for $(LREF histogram). Insertion calls
 putWeightedSample(weight, sample, coordinates...), so cells receive put(sample, weight).
@@ -339,20 +377,20 @@ no separate numeric count or total is maintained.
 +/
 template weightedHistogram(Options...)
 {
-    auto weightedHistogram(Data, Weights, Args...)(auto ref Data data,
-        auto ref Weights weights, auto ref Args args)
+    auto weightedHistogram(Weights, Data, Args...)(auto ref Weights weights,
+        auto ref Data data, auto ref Args args)
         if (isSampleCellSelection!Options)
     {
         NoAllocationContext context;
-        return sampleImplementation.sampleFactory!(Options[0], true)(context, weights, data, args);
+        return batchImplementation.batchFactory!(Options[0], HistogramBatchKind.weightedSamples)(context, weights, data, args);
     }
 
-    auto weightedHistogram(Data, Weights, Args...)(
-        scope auto ref Data data, scope auto ref Weights weights, auto ref Args args)
+    auto weightedHistogram(Weights, Data, Args...)(
+        scope auto ref Weights weights, scope auto ref Data data, auto ref Args args)
         if (!isSampleCellSelection!Options)
     {
         NoAllocationContext context;
-        return weightedImplementation.weightedFactory!Options(context, data, weights, args);
+        return weightedImplementation.weightedFactory!Options(context, weights, data, args);
     }
 }
 
@@ -365,8 +403,27 @@ unittest
     double[3] observations = [0.25, 0.75, 1.25];
     double[3] weights = [0.5, 1.5, 2.0];
     auto h = weightedHistogram!RegularAxis(
-        observations, weights, 2u, 0.0, 2.0);
+        weights, observations, 2u, 0.0, 2.0);
     assert(h.counts == [2.0, 2.0]);
+}
+
+/++
+For weighted joint counts, pass weights first, then all coordinate collections
+and axis instances. Each bin stores
+the sum of weights for its coordinate pairs.
++/
+version(mir_stat_test)
+@safe pure nothrow
+unittest
+{
+    import mir.stat.descriptive.histogram.axis: IntegralAxis, AxisOptions;
+    alias A = IntegralAxis!(int, AxisOptions());
+    int[3] x = [0, 0, 1], y = [1, 1, 0];
+    double[3] weights = [0.5, 1.5, 3.0];
+    auto h = weightedHistogram(weights, x, y, A(2, 0), A(2, 0));
+    assert(h.counts[0, 1] == 2.0);
+    assert(h.counts[1, 0] == 3.0);
+    assert(h.counts[0, 0] == 0);
 }
 
 /++
@@ -375,8 +432,8 @@ arguments and counter-type choices of $(LREF weightedHistogram). The total is th
 stored weights, including enabled underflow/overflow bins. Normalization and
 subsequent weighted insertion use the existing relative-frequency accumulator.
 Built-in arrays and Mir slices are accepted. Accumulator-valued cells are not
-supported. Multidimensional input slices contribute to a one-axis histogram;
-they do not define a joint histogram.
+supported. A single observation collection populates one axis. For joint counts,
+use the weighted histogram factory's coordinate/weight ordering and explicit axes.
 Use relativeFrequency!(double, Normalization.ordinary) to normalize by ordinary
 bin weights only, without discarding the underflow/overflow counts.
 The result supports the same relative-frequency, cumulative, and density accessors
@@ -404,7 +461,7 @@ unittest
     import mir.stat.descriptive.histogram.axis: RegularAxis;
     double[3] observations = [0.25, 0.75, 1.25];
     double[3] weights = [0.5, 1.5, 2.0];
-    auto f = weightedRelativeFrequencyHistogram!RegularAxis(observations, weights, 2u, 0.0, 2.0);
+    auto f = weightedRelativeFrequencyHistogram!RegularAxis(weights, observations, 2u, 0.0, 2.0);
     assert(f.total == 4.0);
     assert(f.relativeFrequency(0) == 0.5);
     // Later weighted observations update both the bin and the denominator.
@@ -426,12 +483,12 @@ unittest
     {
         weights[0] = weight;
         bool rejected;
-        try { auto h = weightedHistogram!RegularAxis(data, weights, 2u, 0.0, 2.0); }
+        try { auto h = weightedHistogram!RegularAxis(weights, data, 2u, 0.0, 2.0); }
         catch (AssertError) { rejected = true; }
         assert(rejected);
     }
     weights[0] = 0;
-    auto f = weightedRelativeFrequencyHistogram!RegularAxis(data, weights, 2u, 0.0, 2.0);
+    auto f = weightedRelativeFrequencyHistogram!RegularAxis(weights, data, 2u, 0.0, 2.0);
     assert(f.total == 0 && f.counts == [0, 0]);
 }
 

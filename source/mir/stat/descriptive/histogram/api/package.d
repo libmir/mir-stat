@@ -16,8 +16,10 @@ Start with observations and an axis template or instance to count values into
 one axis. Built-in arrays and Mir slices are accepted. Supply only axis instances
 to histogram or relative-frequency factories to create empty counts, including
 joint counts for multiple axes, then insert observations through put or putWeighted.
-Numeric batch construction currently populates one axis; a multidimensional
-observation slice does not select multiple histogram axes.
+Populate numeric joint counts by passing one coordinate collection per explicit
+axis: histogram(x, y, xAxis, yAxis). Weighted construction uses
+weightedHistogram(weights, x, y, xAxis, yAxis). All input shapes must match.
+A single multidimensional observation slice still contributes to one axis.
 
 For per-bin summaries, choose an accumulator cell type such as Summator or
 MeanAccumulator. Histogram factories can allocate empty cells or populate them

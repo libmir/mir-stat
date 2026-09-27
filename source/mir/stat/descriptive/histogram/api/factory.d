@@ -433,8 +433,11 @@ package void testAxisOnlyFactory(alias factory, alias dispose = null)()
 // Shared overloads keep allocation policy independent of axis construction.
 package mixin template HistogramFactory(alias allocate, alias release = null, bool insert = true)
 {
+    import mir.stat.descriptive.histogram.api.factory: HistogramBatchFactory, HistogramBatchKind,
+        areJointHistogramArguments;
     import mir.ndslice.slice: Slice, SliceKind;
     import mir.stat.descriptive.histogram.traits: isAxis, storageExtent, DefaultCountType;
+    private mixin HistogramBatchFactory!(allocate, release) jointImplementation;
 
     // Counter storage is selected here, independently of the axis metadata.
     auto factoryImplBasic(CountType = DefaultCountType, Context, Data, Axis)(
@@ -476,7 +479,14 @@ package mixin template HistogramFactory(alias allocate, alias release = null, bo
                 alias CountType = DefaultCountType;
                 alias AxisSelection = Options;
             }
-            static if (AxisSelection.length == 0)
+            static if (areJointHistogramArguments!(typeof(data), Args))
+            {
+                static assert(AxisSelection.length == 0,
+                    "Joint numeric batches accept only an optional counter type and explicit axis instances");
+                return jointImplementation.batchFactory!(CountType, HistogramBatchKind.counts)(
+                    context, data, args);
+            }
+            else static if (AxisSelection.length == 0)
             {
                 static assert(Args.length == 1 && isAxis!(Args[0]),
                     "Histogram factory: supply an axis instance or select an axis template");
@@ -1665,42 +1675,64 @@ package void testPercentogramIntervals(alias factory, alias release = null)()
     assert(data[] == [0.0, 1, 2, 3, 4, 5, 6, 7, 8]);
 }
 
-// Reuse axis dispatch without first performing unweighted insertion. Observations
-// remain available to bin-count rules; only the final insertion step differs.
+// Joint batches use the shared batch lifecycle. One-axis batches reuse axis
+// dispatch without unweighted insertion, retaining observations for bin-count rules.
 package mixin template WeightedHistogramFactory(alias allocate, alias release = null)
 {
+    import mir.stat.descriptive.histogram.api.factory: areJointHistogramArguments,
+        HistogramBatchFactory, HistogramBatchKind;
+    private mixin HistogramBatchFactory!(allocate, release) jointImplementation;
     private mixin HistogramFactory!(allocate, release, false) emptyImplementation;
 
     template weightedFactory(Options...)
     {
-        auto weightedFactory(Context, Data, Weights, Args...)(
-            ref Context context, scope auto ref Data data,
-            scope auto ref Weights weights, auto ref Args args)
+        auto weightedFactory(Context, Weights, Data, Args...)(
+            ref Context context, scope auto ref Weights weights,
+            scope auto ref Data data, auto ref Args args)
         {
-            import mir.ndslice.slice: isSlice, sliced;
-            static if (isSlice!Data)
-                scope auto observations = data.lightScope;
+            static if (areJointHistogramArguments!(Data, Args))
+            {
+                import std.traits: isNumeric, Unqual;
+                static assert(Options.length <= 1,
+                    "Joint numeric batches accept only an optional counter type and explicit axis instances");
+                static if (Options.length)
+                {
+                    static assert(is(Options[0]) && isNumeric!(Options[0]),
+                        "Joint weighted batches require a numeric counter type");
+                    alias CountType = Unqual!(Options[0]);
+                }
+                else
+                    alias CountType = double;
+                return jointImplementation.batchFactory!(CountType, HistogramBatchKind.weightedCounts)(
+                    context, weights, data, args);
+            }
             else
-                scope auto observations = data[].sliced;
-            static if (isSlice!Weights)
-                scope auto masses = weights.lightScope;
-            else
-                scope auto masses = weights[].sliced;
-            static assert(observations.N == masses.N,
-                "Weighted histogram observations and weights must have matching ranks");
-            assert(observations.shape == masses.shape,
-                "Weighted histogram observations and weights must have matching shapes");
+            {
+                import mir.ndslice.slice: isSlice, sliced;
+                static if (isSlice!Data)
+                    scope auto observations = data.lightScope;
+                else
+                    scope auto observations = data[].sliced;
+                static if (isSlice!Weights)
+                    scope auto masses = weights.lightScope;
+                else
+                    scope auto masses = weights[].sliced;
+                static assert(observations.N == masses.N,
+                    "Weighted histogram observations and weights must have matching ranks");
+                assert(observations.shape == masses.shape,
+                    "Weighted histogram observations and weights must have matching shapes");
 
-            import mir.stat.descriptive.histogram.api.factory: insertWeighted;
-            import std.traits: isNumeric;
-            static if (Options.length && is(Options[0]) && isNumeric!(Options[0]))
-                auto h = emptyImplementation.factory!Options(context, observations, args);
-            else
-                auto h = emptyImplementation.factory!(double, Options)(context, observations, args);
-            static if (!is(typeof(release) == typeof(null)))
-                scope(failure) release(context, h.counts);
-            insertWeighted(h, observations, masses);
-            return h;
+                import mir.stat.descriptive.histogram.api.factory: insertWeighted;
+                import std.traits: isNumeric;
+                static if (Options.length && is(Options[0]) && isNumeric!(Options[0]))
+                    auto h = emptyImplementation.factory!Options(context, observations, args);
+                else
+                    auto h = emptyImplementation.factory!(double, Options)(context, observations, args);
+                static if (!is(typeof(release) == typeof(null)))
+                    scope(failure) release(context, h.counts);
+                insertWeighted(h, observations, masses);
+                return h;
+            }
         }
     }
 }
@@ -1718,32 +1750,198 @@ package void insertWeighted(H, Data, Weights)(ref H h, scope Data data, scope We
     }
 }
 
-// Keep sample insertion separate from numeric counting and axis construction.
-package mixin template SampleHistogramFactory(alias allocate, alias release = null)
+// Two or more coordinate collections followed by the same number of axes.
+// A single-axis batch keeps the existing axis-template/rule overloads.
+package template areJointHistogramArguments(Args...)
 {
-    private mixin AxisHistogramFactory!(allocate, release) sampleAxes;
+    static if (Args.length >= 4 && Args.length % 2 == 0)
+        enum areJointHistogramArguments = areHistogramAxes!(Args[Args.length / 2 .. $]);
+    else
+        enum areJointHistogramArguments = false;
+}
 
-    auto sampleFactory(Cell, bool weighted, Context, Args...)(
+version(mir_stat_test)
+package void testJointNumericFactories(alias factory, alias weightedFactory)()
+{
+    import mir.stat.descriptive.histogram.axis: IntegralAxis, RegularAxis, VariableAxis, AxisOptions;
+    import mir.ndslice.slice: sliced;
+    import mir.ndslice.topology: stride;
+    alias X = IntegralAxis!(int, AxisOptions(false, true, true));
+    alias Y = RegularAxis!(double, AxisOptions());
+    const int[8] xStorage = [-1, 99, 0, 99, 1, 99, 2, 99];
+    const double[4] ys = [0.5, 1.5, 0.5, 1.5];
+    const double[4] weights = [1, 2, 3, 4];
+    auto x = xStorage[].sliced.stride(2).sliced(2, 2);
+    auto y = ys[].sliced(2, 2);
+    auto h = factory!uint(x, y, X(2, 0), Y(2, 0, 2));
+    static assert(is(h.CountType == uint));
+    assert(h.counts[0, 0] == 1 && h.counts[1, 1] == 1);
+    assert(h.counts[2, 0] == 1 && h.counts[3, 1] == 1);
+    assert(h.counts[1, 0] == 0);
+    auto w = weightedFactory(weights[].sliced(2, 2), x, y, X(2, 0), Y(2, 0, 2));
+    static assert(is(w.CountType == double));
+    assert(w.counts[0, 0] == 1 && w.counts[1, 1] == 2);
+    assert(w.counts[2, 0] == 3 && w.counts[3, 1] == 4);
+    static if (__traits(hasMember, typeof(h), "total"))
+    {
+        import mir.stat.descriptive.histogram.relative_frequency: Normalization;
+        assert(h.total == 4 && w.total == 10);
+        assert(w.relativeFrequency(0, 1) == 0.2);
+        assert(w.relativeFrequency!(double, Normalization.ordinary)(0, 1) == 0.4);
+    }
+    int[0] empty;
+    auto zero = factory(empty, empty, X(2, 0), X(2, 0));
+    auto weightedZero = weightedFactory(empty, empty, empty, X(2, 0), X(2, 0));
+    assert(zero.counts[1, 1] == 0 && weightedZero.counts[1, 1] == 0);
+    int[2] same = [0, 0];
+    uint[2] integralWeights = [2, 3];
+    auto three = factory(same, same[], same, X(2, 0), X(2, 0), X(2, 0));
+    assert(three.counts[1, 1, 1] == 2);
+    auto integral = weightedFactory!uint(integralWeights, same, same[], X(2, 0), X(2, 0));
+    assert(integral.counts[1, 1] == 5);
+    static assert(is(integral.CountType == uint));
+    auto weightedThree = weightedFactory(integralWeights, same, same, same,
+        X(2, 0), X(2, 0), X(2, 0));
+    assert(weightedThree.counts[1, 1, 1] == 5);
+    static assert(!__traits(compiles, factory(x, ys[], X(2, 0), Y(2, 0, 2))));
+    static assert(!__traits(compiles, weightedFactory!uint(weights[].sliced(2, 2), x, y, X(2, 0), Y(2, 0, 2))));
+    static assert(!__traits(compiles, factory!RegularAxis(same, same, X(2, 0), X(2, 0))));
+
+    static auto fromLocal()
+    {
+        int[2] a = [0, 0], b = [0, 1];
+        return factory(a, b, X(2, 0), X(2, 0));
+    }
+    auto owned = fromLocal();
+    assert(owned.counts[1, 1] == 1 && owned.counts[1, 2] == 1);
+    static auto weightedFromLocal()
+    {
+        int[2] a = [0, 0], b = [0, 1];
+        double[2] localWeights = [0.5, 1.5];
+        return weightedFactory(localWeights, a, b, X(2, 0), X(2, 0));
+    }
+    auto weightedOwned = weightedFromLocal();
+    assert(weightedOwned.counts[1, 1] == 0.5 && weightedOwned.counts[1, 2] == 1.5);
+    version(mir_stat_test_lifetime)
+    {
+        static assert(!__traits(compiles, () @safe {
+            double[3] edges = [0, 1, 2];
+            int[2] a = [0, 1];
+            auto axis = VariableAxis!(double*, AxisOptions())(edges[].sliced);
+            return factory(a, a, axis, X(2, 0));
+        }));
+        static assert(!__traits(compiles, () @safe {
+            double[3] edges = [0, 1, 2];
+            int[2] a = [0, 1], localWeights = [1, 2];
+            auto axis = VariableAxis!(double*, AxisOptions())(edges[].sliced);
+            return weightedFactory(localWeights, a, a, axis, X(2, 0));
+        }));
+    }
+}
+
+// Select the input layout and cell update together, at compile time. Keeping
+// them under one kind prevents a caller from pairing the wrong layout/method.
+package enum HistogramBatchKind
+{
+    counts,
+    weightedCounts,
+    samples,
+    weightedSamples,
+}
+
+/+
+Shared construction for numeric joint batches and accumulator-cell batches.
+Public factories select the cell type, batch kind, and allocation callbacks;
+this helper owns the common validation, allocation, and insertion sequence.
+
+Arguments are ordered as leading value collections, coordinate collections,
+then explicit axis instances. For D axes:
+
+    kind              leading collections    row update
+    counts            none                   put(coordinates...)
+    weightedCounts    weights                putWeighted(weight, coordinates...)
+    samples           samples                putSample(sample, coordinates...)
+    weightedSamples   weights, samples       putWeightedSample(weight, sample, coordinates...)
+
+There are D coordinate collections and D axes. For example, a weighted sample
+batch with (weights, samples, x, y, xAxis, yAxis) has leadingCollections = 2,
+dimensions = 2, and collections = 4. Each logical position across the first
+four arguments forms one update; the last two arguments describe the axes.
+Input rank is independent of D: equally shaped multidimensional slices are
+traversed by logical position, not interpreted as additional histogram axes.
+
+Construction proceeds in this order:
+1. Check argument layout and axis types at compile time, then input ranks
+   and shapes before allocating. Rank checks are static; shape checks are
+   assertions, as in the other factories.
+2. Delegate extent checks, allocation, numeric zero initialization, and
+   histogram construction to AxisHistogramFactory. Struct cells retain their
+   default state, so their allocation callback must initialize them normally.
+3. Insert each row using the selected method. If insertion throws, release
+   custom storage through the supplied callback. AxisHistogramFactory handles
+   failures before it returns; this helper handles failures after that return.
+   GC/RC storage uses its own lifetime policy and needs no release callback.
+
+The same context is passed by reference to allocation and cleanup. On success,
+ownership follows the public factory: GC, reference counted, or caller managed.
+Arguments are forwarded directly with auto ref, without building a runtime
+argument tuple or flattened copies. This preserves ref sample updates and
+avoids extra owning-handle copies. Cells can retain sample references and axes
+can borrow boundaries; forwarding must preserve their inferred lifetime rules.
+
+One-axis numeric construction remains in HistogramFactory and
+WeightedHistogramFactory because it also supports axis templates and bin-count
+rules computed from observations. Axis-only construction uses AxisHistogramFactory.
+When extending batch kinds, define both the leading collection count and row
+method here and retain the shared validation/cleanup path. Test ref/lifetime
+behavior and all allocation policies as well as the resulting cell values.
++/
+package mixin template HistogramBatchFactory(alias allocate, alias release = null)
+{
+    import mir.stat.descriptive.histogram.api.factory: AxisHistogramFactory,
+        HistogramBatchKind, areHistogramAxes, validateHistogramShapes, insertHistogramInputs;
+    private mixin AxisHistogramFactory!(allocate, release) batchAxes;
+
+    auto batchFactory(Cell, HistogramBatchKind kind, Context, Args...)(
         ref Context context, auto ref Args args)
     {
-        import mir.stat.descriptive.histogram.api.factory: validateSampleShapes, insertSampleInputs;
-        enum extra = weighted ? 2 : 1;
-        static assert(Args.length > extra && (Args.length - extra) % 2 == 0,
-            "Supply samples, one coordinate collection per axis, then axis instances; weighted factories prepend weights");
-        enum dimensions = (Args.length - extra) / 2;
-        enum collections = dimensions + extra;
+        static if (kind == HistogramBatchKind.counts)
+        {
+            enum leadingCollections = 0;
+            enum method = "put";
+        }
+        else static if (kind == HistogramBatchKind.weightedCounts)
+        {
+            enum leadingCollections = 1;
+            enum method = "putWeighted";
+        }
+        else static if (kind == HistogramBatchKind.samples)
+        {
+            enum leadingCollections = 1;
+            enum method = "putSample";
+        }
+        else
+        {
+            static assert(kind == HistogramBatchKind.weightedSamples);
+            enum leadingCollections = 2;
+            enum method = "putWeightedSample";
+        }
+        static assert(Args.length > leadingCollections && (Args.length - leadingCollections) % 2 == 0,
+            "Supply leading weights/samples when required, one coordinate collection per axis, then axis instances");
+        enum dimensions = (Args.length - leadingCollections) / 2;
+        enum collections = dimensions + leadingCollections;
         static assert(areHistogramAxes!(Args[collections .. $]),
-            "Sample histogram factories require explicit axis instances");
-        validateSampleShapes(args[0 .. collections]);
-        auto h = sampleAxes.axisFactory!Cell(context, args[collections .. $]);
+            "Histogram batches require explicit axis instances");
+        validateHistogramShapes(args[0 .. collections]);
+        auto h = batchAxes.axisFactory!Cell(context, args[collections .. $]);
         static if (!is(typeof(release) == typeof(null)))
             scope(failure) release(context, h.counts);
-        insertSampleInputs!(weighted, 0)(h, args[0 .. collections]);
+        insertHistogramInputs!(method, 0)(h, args[0 .. collections]);
         return h;
     }
 }
 
-private auto sampleBatchView(T)(return scope auto ref T input)
+private auto histogramBatchView(T)(return scope auto ref T input)
 {
     import mir.ndslice.slice: isSlice, sliced;
     static if (isSlice!T)
@@ -1752,50 +1950,50 @@ private auto sampleBatchView(T)(return scope auto ref T input)
         return input[].sliced;
 }
 
-package void validateSampleShapes(Inputs...)(scope auto ref Inputs inputs)
+package void validateHistogramShapes(Inputs...)(scope auto ref Inputs inputs)
 {
-    scope auto first = sampleBatchView(inputs[0]);
+    scope auto first = histogramBatchView(inputs[0]);
     static foreach (i; 1 .. Inputs.length)
     {
     {
-        scope auto other = sampleBatchView(inputs[i]);
+        scope auto other = histogramBatchView(inputs[i]);
         static assert(typeof(first).N == typeof(other).N,
-            "Sample histogram inputs must have matching ranks");
+            "Histogram batch inputs must have matching ranks");
         assert(first.shape == other.shape,
-            "Sample histogram inputs must have matching shapes");
+            "Histogram batch inputs must have matching shapes");
     }
     }
 }
 
-package void insertSampleInputs(bool weighted, size_t column, H, Inputs...)(
+// Convert built-in arrays to borrowed slices one argument at a time. Existing
+// slices keep their layout; recursive forwarding preserves ref sample access.
+package void insertHistogramInputs(string method, size_t column, H, Inputs...)(
     ref H h, auto ref Inputs inputs)
 {
     static if (column < Inputs.length)
-        insertSampleInputs!(weighted, column + 1)(h, inputs[0 .. column],
-            sampleBatchView(inputs[column]), inputs[column + 1 .. $]);
+        insertHistogramInputs!(method, column + 1)(h, inputs[0 .. column],
+            histogramBatchView(inputs[column]), inputs[column + 1 .. $]);
     else
-        insertSampleBatch!weighted(h, inputs);
+        insertHistogramBatch!method(h, inputs);
 }
 
-private void insertSampleBatch(bool weighted, H, Inputs...)(ref H h, auto ref Inputs inputs)
+private void insertHistogramBatch(string method, H, Inputs...)(ref H h, auto ref Inputs inputs)
 {
     foreach (i; 0 .. inputs[0].length)
-        insertSampleRow!(weighted, 0, Inputs.length)(h, i, inputs);
+        insertHistogramRow!(method, 0, Inputs.length)(h, i, inputs);
 }
 
 // Expand a heterogeneous row without copying its sample: cells may accept ref
 // samples, and nested slices must retain their logical strides and pairing.
-private void insertSampleRow(bool weighted, size_t column, size_t columns, H, Args...)(
+private void insertHistogramRow(string method, size_t column, size_t columns, H, Args...)(
     ref H h, size_t index, auto ref Args args)
 {
     static if (column < columns)
-        insertSampleRow!(weighted, column + 1, columns)(h, index, args, args[column][index]);
+        insertHistogramRow!(method, column + 1, columns)(h, index, args, args[column][index]);
     else static if (Args[0].N > 1)
-        insertSampleBatch!weighted(h, args[columns .. $]);
-    else static if (weighted)
-        h.putWeightedSample(args[columns .. $]);
+        insertHistogramBatch!method(h, args[columns .. $]);
     else
-        h.putSample(args[columns .. $]);
+        __traits(getMember, h, method)(args[columns .. $]);
 }
 
 version(mir_stat_test)
@@ -1826,7 +2024,7 @@ package void testSampleFactories(alias factory, alias weightedFactory, alias rel
     {
         const double[4] weights = [2, 6, 1, 3];
         const int[4] same = [0, 0, 0, 0];
-        auto h = weightedFactory!WeightedCell(samples, weights[].sliced(2, 2),
+        auto h = weightedFactory!WeightedCell(weights[].sliced(2, 2), samples,
             same[].sliced(2, 2), A(2, 0));
         scope(exit) { static if (!is(typeof(release) == typeof(null))) release(h); }
         assert(h.counts[1].wmean == 290.0 / 12);
@@ -1912,7 +2110,7 @@ unittest
         assert(rejected);
     }
     rejects(() { auto h = rchistogram!Cell(samples[], coordinates[0 .. 4], A(2, 0)); });
-    rejects(() { auto h = rcWeightedHistogram!WeightedCell(samples[], samples[0 .. 4], coordinates[], A(2, 0)); });
+    rejects(() { auto h = rcWeightedHistogram!WeightedCell(samples[0 .. 4], samples[], coordinates[], A(2, 0)); });
     rejects(() { auto h = rchistogram!Cell(samples[].sliced(2, 4), coordinates[].sliced(4, 2), A(2, 0)); });
 }
 
@@ -1956,20 +2154,20 @@ unittest
         assert(empty.counts[0].sum == 0);
         auto summary = factory!Sum(samples, coordinates, A(1, 0));
         assert(summary.counts[0].sum == 40);
-        auto weighted = weightedFactory!Mean(samples, weights, coordinates, A(1, 0));
+        auto weighted = weightedFactory!Mean(weights, samples, coordinates, A(1, 0));
         assert(weighted.counts[0].wmean == 25);
         auto data = [7];
         auto references = [data[]];
         uint[1] masses = [1];
         int[1] locations = [0];
-        auto retained = weightedFactory!BorrowingCell(references, masses, locations, A(1, 0));
+        auto retained = weightedFactory!BorrowingCell(masses, references, locations, A(1, 0));
         assert(retained.counts[0].data[0] == 7);
         static assert(!__traits(compiles, () @safe {
             int[1] local = [7];
             int[][1] references = [local[]];
             uint[1] masses = [1];
             int[1] locations = [0];
-            return weightedFactory!BorrowingCell(references, masses, locations, A(1, 0));
+            return weightedFactory!BorrowingCell(masses, references, locations, A(1, 0));
         }));
     }
     check!(histogram, weightedHistogram)();
