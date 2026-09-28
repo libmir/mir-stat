@@ -111,7 +111,7 @@ unittest
     testArrayHistogramFactories!(factory, relativeFactory)();
 }
 
-private import mir.stat.descriptive.histogram.api.factory: HistogramBatchFactory, HistogramBatchKind, isSampleCellSelection;
+private import mir.stat.descriptive.histogram.api.factory: HistogramBatchFactory, HistogramBatchKind, isSampleCellSelection, isAdaptiveCountSelection;
 private mixin HistogramBatchFactory!(allocateCounts, releaseCounts) batchImplementation;
 
 // Exercise shared batch insertion checks with caller-allocated cells and explicit disposal.
@@ -195,17 +195,34 @@ private mixin AxisHistogramFactory!(allocateCounts, releaseCounts) axisImplement
 private auto allocateCounts(T, Allocator)(ref Allocator allocator, size_t extent)
 {
     import mir.ndslice.allocation: makeSlice;
-    return makeSlice!T(allocator, extent);
+    import mir.stat.descriptive.histogram.traits: AdaptiveCounts;
+    static if (is(T == AdaptiveCounts!Initial, Initial))
+    {
+        import mir.stat.descriptive.histogram.internal.shared_counts: sharedCountSlice;
+        return sharedCountSlice!Initial(extent);
+    }
+    else
+        return makeSlice!T(allocator, extent);
 }
 
 private void releaseCounts(Allocator, Storage)(ref Allocator allocator, Storage counts)
 {
     import std.experimental.allocator: dispose;
-    allocator.dispose(counts.field);
+    import mir.stat.descriptive.histogram.internal.shared_counts: isSharedCountStorage;
+    // Adaptive counts release their own RC owner, including during unwinding.
+    static if (!isSharedCountStorage!Storage)
+        allocator.dispose(counts.field);
 }
 
 /++
-Allocate counts with a caller-selected allocator.
+Allocate fixed counts with a caller-selected allocator.
+AdaptiveCounts is an explicit exception: it uses reference-counted state and
+buffers, independent of the supplied allocator. Do not dispose adaptive counts
+through that allocator. Their proxies and views retain RC ownership. Use
+makeHistogram!(AdaptiveCounts!(), RegularAxis)(allocator, data, n, low, high), or
+makeHistogram!(AdaptiveCounts!())(allocator, axis, ...), to select this policy.
+The allocation/disposal rules below apply to fixed counter and accumulator cells.
+
 Use makeHistogram(allocator, data, axis) to count a built-in array or Mir slice
 into an existing
 axis. Each observation increments its selected bin. Release counts.field through
@@ -264,19 +281,17 @@ template makeHistogram(Options...)
     auto makeHistogram(Allocator, Iterator, size_t N, SliceKind kind, Axis)(
         ref Allocator allocator, Slice!(Iterator, N, kind) observations, Axis axis)
         if (isAxis!Axis && (!Options.length ||
-            (Options.length == 1 && is(Options[0]) && isNumeric!(Options[0]))))
+            (Options.length == 1 && is(Options[0]) && (isNumeric!(Options[0]) || isAdaptiveCountSelection!Options))))
     {
-        import mir.ndslice.allocation: makeSlice;
         import mir.stat.descriptive.histogram.traits: storageExtent;
         import mir.stat.descriptive.histogram.api.factory: initializeHistogram;
-        import std.experimental.allocator: dispose;
 
         static if (Options.length)
             alias CountType = Unqual!(Options[0]);
         else
             alias CountType = size_t;
-        auto counts = makeSlice!CountType(allocator, storageExtent(axis));
-        scope(failure) allocator.dispose(counts.field);
+        auto counts = allocateCounts!CountType(allocator, storageExtent(axis));
+        scope(failure) releaseCounts(allocator, counts);
         return initializeHistogram(counts, axis, observations);
     }
 
@@ -284,7 +299,7 @@ template makeHistogram(Options...)
     auto makeHistogram(Allocator, Data, Axis)(ref Allocator allocator,
         scope auto ref Data observations, Axis axis)
         if (isArray!Data && isAxis!Axis && (!Options.length ||
-            (Options.length == 1 && is(Options[0]) && isNumeric!(Options[0]))))
+            (Options.length == 1 && is(Options[0]) && (isNumeric!(Options[0]) || isAdaptiveCountSelection!Options))))
     {
         import mir.ndslice.slice: sliced;
         return makeHistogram(allocator, observations[].sliced, axis);
@@ -300,7 +315,7 @@ template makeHistogram(Options...)
     +/
     auto makeHistogram(Allocator, Args...)(ref Allocator allocator, auto ref Args args)
         if (areHistogramAxes!Args || !(Args.length == 2 && isAxis!(Args[1]) &&
-            (!Options.length || (Options.length == 1 && is(Options[0]) && isNumeric!(Options[0])))))
+            (!Options.length || (Options.length == 1 && is(Options[0]) && (isNumeric!(Options[0]) || isAdaptiveCountSelection!Options)))))
     {
         static if (areHistogramAxes!Args)
         {
@@ -374,6 +389,57 @@ unittest
     assert(h.counts[0, 1] == 2);
     assert(h.counts[1, 0] == 1);
     assert(h.counts[0, 0] == 0);
+}
+
+/++
+Select AdaptiveCounts!() when counts must widen automatically. This selection uses
+RC-owned state and buffers, so the supplied allocator is not used for counts.
+Do not dispose these counts through the allocator: their lifetime is automatic,
+including saved proxies and views. Fixed counter types still use the allocator.
++/
+version(mir_stat_test)
+@safe pure nothrow @nogc
+unittest
+{
+    import mir.stat.descriptive.histogram.traits: AdaptiveCounts;
+    import mir.stat.descriptive.histogram.axis: IntegralAxis, AxisOptions;
+    import std.experimental.allocator.mallocator: Mallocator;
+    alias A = IntegralAxis!(int, AxisOptions());
+    int[255] values;
+    auto h = makeHistogram!(AdaptiveCounts!())(Mallocator.instance, values, A(2, 0));
+    auto saved = h.counts[0];
+    h.put(0);
+    assert(saved.count() == 256 && h.bins[0].count == 256);
+    // No allocator.dispose: h and saved retain RC ownership.
+}
+
+// Adaptive custom-factory calls do not borrow or invoke the allocator.
+version(mir_stat_test)
+@safe pure nothrow @nogc
+unittest
+{
+    import mir.stat.descriptive.histogram.api.factory: testAdaptiveFactory;
+    import mir.stat.descriptive.histogram.traits: AdaptiveCounts;
+    import mir.stat.descriptive.histogram.axis: IntegralAxis, AxisOptions;
+    static struct UnusedAllocator
+    {
+        void[] allocate(size_t) @system { assert(0, "Unexpected custom allocation"); }
+        bool deallocate(void[]) @system { assert(0, "Unexpected custom disposal"); }
+    }
+    template factory(Options...)
+    {
+        static auto factory(Args...)(auto ref Args args)
+        {
+            UnusedAllocator allocator;
+            return makeHistogram!Options(allocator, args);
+        }
+    }
+    testAdaptiveFactory!factory();
+    UnusedAllocator allocator;
+    alias A = IntegralAxis!(int, AxisOptions());
+    int[1] data;
+    static assert(!__traits(compiles, makeWeightedHistogram!(AdaptiveCounts!())(allocator, data, data, A(2, 0))));
+    static assert(!__traits(compiles, makeRelativeFrequencyHistogram!(AdaptiveCounts!())(allocator, data, A(2, 0))));
 }
 
 // Exercise shared empty-axis construction checks with caller-allocated cells.
@@ -1034,6 +1100,8 @@ not retained. Construction failure releases allocated counts.
 +/
 template makeRelativeFrequencyHistogram(Options...)
 {
+    static assert(!isAdaptiveCountSelection!Options,
+        "AdaptiveCounts supports only unweighted histogram construction");
     auto makeRelativeFrequencyHistogram(Allocator, Args...)(ref Allocator allocator, auto ref Args args)
     {
         import mir.stat.descriptive.histogram.accumulator: HistogramAccumulator;
@@ -1245,6 +1313,8 @@ $(REF weightedHistogram, mir, stat, descriptive, histogram, api, gc).
 +/
 template makeWeightedHistogram(Options...)
 {
+    static assert(!isAdaptiveCountSelection!Options,
+        "AdaptiveCounts supports only unweighted histogram construction");
     auto makeWeightedHistogram(Allocator, Weights, Data, Args...)(ref Allocator allocator, auto ref Weights weights,
         auto ref Data data, auto ref Args args)
         if (isSampleCellSelection!Options)
@@ -1353,6 +1423,8 @@ $(LREF makeRelativeFrequencyHistogram).
 +/
 template makeWeightedRelativeFrequencyHistogram(Options...)
 {
+    static assert(!isAdaptiveCountSelection!Options,
+        "AdaptiveCounts supports only unweighted histogram construction");
     auto makeWeightedRelativeFrequencyHistogram(Allocator, Args...)(ref Allocator allocator, auto ref Args args)
     {
         import mir.stat.descriptive.histogram.accumulator: HistogramAccumulator;
@@ -1873,4 +1945,27 @@ unittest
         Mallocator.instance.dispose(cast(H.CountType[]) h.counts.field);
     }
     testMarginalFactory!(project, release)();
+}
+
+// Failed adaptive construction unwinds RC storage without custom deallocation.
+version(mir_stat_test)
+@safe pure
+unittest
+{
+    import mir.stat.descriptive.histogram.traits: AdaptiveCounts;
+    import mir.stat.descriptive.histogram.axis: IntegralAxis, AxisOptions;
+    import mir.ndslice.slice: sliced;
+    import mir.ndslice.topology: map;
+    import std.exception: assertThrown;
+    static struct UnusedAllocator
+    {
+        void[] allocate(size_t) @system { assert(0, "Unexpected custom allocation"); }
+        bool deallocate(void[]) @system { assert(0, "Unexpected custom disposal"); }
+    }
+    static int reject(int value) @safe pure { throw new Exception("input failure"); }
+    UnusedAllocator allocator;
+    int[1] input;
+    alias A = IntegralAxis!(int, AxisOptions());
+    assertThrown!Exception(makeHistogram!(AdaptiveCounts!())(allocator, input[].sliced.map!reject, A(2, 0)));
+    assertThrown!Exception(makeHistogram!(AdaptiveCounts!())(allocator, input[], input[].sliced.map!reject, A(2, 0), A(2, 0)));
 }

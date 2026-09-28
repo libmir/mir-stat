@@ -17,6 +17,3 @@ public import mir.stat.descriptive.histogram.accumulator;
 public import mir.stat.descriptive.histogram.axis;
 public import mir.stat.descriptive.histogram.traits;
 public import mir.stat.descriptive.histogram.api;
-
-// Possible later extensions
-// - Add counters that widen dynamically when their current representation fills.

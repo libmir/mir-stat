@@ -39,7 +39,7 @@ unittest
     testArrayHistogramFactories!(rchistogram, rcRelativeFrequencyHistogram)();
 }
 
-private import mir.stat.descriptive.histogram.api.factory: HistogramBatchFactory, HistogramBatchKind, isSampleCellSelection;
+private import mir.stat.descriptive.histogram.api.factory: HistogramBatchFactory, HistogramBatchKind, isSampleCellSelection, isAdaptiveCountSelection;
 private mixin HistogramBatchFactory!(allocateCells) batchImplementation;
 
 // Exercise shared batch insertion checks with reference-counted cells.
@@ -64,7 +64,14 @@ import mir.stat.descriptive.histogram.api.factory: HistogramFactory, NoAllocatio
 
 private auto allocateRC(T)(ref NoAllocationContext context, size_t length)
 {
-    return mininitRcslice!T(length);
+    import mir.stat.descriptive.histogram.traits: AdaptiveCounts;
+    static if (is(T == AdaptiveCounts!Initial, Initial))
+    {
+        import mir.stat.descriptive.histogram.internal.shared_counts: sharedCountSlice;
+        return sharedCountSlice!Initial(length);
+    }
+    else
+        return mininitRcslice!T(length);
 }
 
 private mixin HistogramFactory!allocateRC implementation;
@@ -72,7 +79,14 @@ private import mir.stat.descriptive.histogram.api.factory: AxisHistogramFactory,
 private auto allocateCells(T)(ref NoAllocationContext context, size_t length)
 {
     import mir.ndslice.allocation: rcslice;
-    return rcslice!T(length);
+    import mir.stat.descriptive.histogram.traits: AdaptiveCounts;
+    static if (is(T == AdaptiveCounts!Initial, Initial))
+    {
+        import mir.stat.descriptive.histogram.internal.shared_counts: sharedCountSlice;
+        return sharedCountSlice!Initial(length);
+    }
+    else
+        return rcslice!T(length);
 }
 private mixin AxisHistogramFactory!allocateCells axisImplementation;
 
@@ -107,6 +121,13 @@ is a built-in array or Mir slice. Each observation increments its selected bin.
 Counters default
 to size_t. Counts start at zero before insertion, including enabled
 underflow/overflow bins. Axis boundaries retain the caller's ownership policy.
+
+Use AdaptiveCounts!() in place of an explicit counter type for unweighted counters
+that widen together from the selected unsigned type to ulong.
+Use AdaptiveCounts!ushort to start wider when larger counts are expected. Read numeric values through bins or
+counts[index].count(); counts are not assignable numeric cells. Promotion
+preserves saved proxies and views. Both state and buffers use RC ownership;
+construction and insertion remain @nogc.
 
 Supply an axis instance as `data.rchistogram(axis)`, or select an axis template:
 $(UL
@@ -260,6 +281,65 @@ unittest
     auto regularAxis3 = x.regularAxis!sturges(0.0, 15.0);
     auto h3 = rchistogram(x, regularAxis3);
     assert(h3.counts == result2);
+}
+
+/++
+Adaptive counts avoid allocating wide counters for every bin when most bins
+receive few observations. Select AdaptiveCounts!() to start small and widen when
+needed; saved proxies and bin views continue to refer to the same counts.
++/
+version(mir_stat_test)
+@safe pure nothrow @nogc
+unittest
+{
+    import mir.stat.descriptive.histogram.traits: AdaptiveCounts;
+    import mir.stat.descriptive.histogram.axis: IntegralAxis, AxisOptions;
+    import mir.ndslice.slice: sliced;
+    alias A = IntegralAxis!(int, AxisOptions());
+    int[255] values;
+    auto h = values[].sliced.rchistogram!(AdaptiveCounts!())(A(2, 0));
+    auto saved = h.counts[0];
+    auto bins = h.bins;
+    assert(saved.count() == 255);
+    h.put(0); // Widen the count buffer from ubyte to ushort.
+    assert(saved.count() == 256 && bins[0].count == 256);
+    assert(bins[1].count == 0);
+}
+
+/++
+Start with ushort when bins are expected to receive hundreds of observations.
+This avoids the first promotion and copy, while still allowing counts to grow
+beyond ushort.max. The initial type changes storage, not the ulong read type.
++/
+version(mir_stat_test)
+@safe pure nothrow @nogc
+unittest
+{
+    import mir.stat.descriptive.histogram.traits: AdaptiveCounts;
+    import mir.stat.descriptive.histogram.axis: RegularAxis;
+    import mir.ndslice.slice: sliced;
+    double[300] values;
+    values[] = 0.5;
+    auto h = values[].sliced.rchistogram!(AdaptiveCounts!ushort, RegularAxis)(2u, 0.0, 2.0);
+    static assert(is(h.CountType == ulong));
+    assert(h.bins[0].count == 300);
+    h.put(1.5);
+    assert(h.bins[1].count == 1);
+}
+
+// Shared factory coverage also checks the ownership-specific attributes.
+version(mir_stat_test)
+@safe pure nothrow @nogc
+unittest
+{
+    import mir.stat.descriptive.histogram.api.factory: testAdaptiveFactory;
+    import mir.stat.descriptive.histogram.traits: AdaptiveCounts;
+    import mir.stat.descriptive.histogram.axis: IntegralAxis, AxisOptions;
+    alias A = IntegralAxis!(int, AxisOptions());
+    testAdaptiveFactory!rchistogram();
+    int[1] data;
+    static assert(!__traits(compiles, rcWeightedHistogram!(AdaptiveCounts!())(data, data, A(2, 0))));
+    static assert(!__traits(compiles, rcRelativeFrequencyHistogram!(AdaptiveCounts!())(data, A(2, 0))));
 }
 
 // Exercise shared empty-axis construction checks with reference-counted cells.
@@ -759,6 +839,8 @@ A zero normalization total produces NaN relative frequencies.
 +/
 template rcRelativeFrequencyHistogram(Options...)
 {
+    static assert(!isAdaptiveCountSelection!Options,
+        "AdaptiveCounts supports only unweighted histogram construction");
     auto rcRelativeFrequencyHistogram(Args...)(auto ref Args args)
     {
         import mir.stat.descriptive.histogram.accumulator: HistogramAccumulator;
@@ -835,6 +917,8 @@ $(REF weightedHistogram, mir, stat, descriptive, histogram, api, gc).
 +/
 template rcWeightedHistogram(Options...)
 {
+    static assert(!isAdaptiveCountSelection!Options,
+        "AdaptiveCounts supports only unweighted histogram construction");
     auto rcWeightedHistogram(Weights, Data, Args...)(auto ref Weights weights,
         auto ref Data data, auto ref Args args)
         if (isSampleCellSelection!Options)
@@ -947,6 +1031,8 @@ If the selected normalization total is zero, relative frequencies are NaN.
 +/
 template rcWeightedRelativeFrequencyHistogram(Options...)
 {
+    static assert(!isAdaptiveCountSelection!Options,
+        "AdaptiveCounts supports only unweighted histogram construction");
     auto rcWeightedRelativeFrequencyHistogram(Args...)(auto ref Args args)
     {
         import mir.stat.descriptive.histogram.accumulator: HistogramAccumulator;

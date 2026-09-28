@@ -27,8 +27,11 @@ package auto initializeHistogram(bool insert = true, Storage, Axis, Data)(Storag
     import mir.stat.descriptive.histogram.accumulator: HistogramAccumulator;
     auto h = HistogramAccumulator!(Storage, Axis)(counts, axis);
     // Floating-point .init is NaN; every counter must instead start at zero.
-    foreach (ref count; h.counts)
-        count = 0;
+    import mir.stat.descriptive.histogram.internal.shared_counts: isSharedCountStorage;
+    // Adaptive allocation already zeroes counts; proxies are read/increment only.
+    static if (!isSharedCountStorage!Storage)
+        foreach (ref count; h.counts)
+            count = 0;
     static if (insert)
         h.put(data);
     return h;
@@ -469,7 +472,8 @@ package mixin template HistogramFactory(alias allocate, alias release = null, bo
             ref Context context, Slice!(Iterator, N, kind) data, auto ref Args args)
         {
             import std.traits: isNumeric, Unqual;
-            static if (Options.length && is(Options[0]) && isNumeric!(Options[0]))
+            static if (Options.length && is(Options[0]) &&
+                (isNumeric!(Options[0]) || isAdaptiveCountSelection!Options))
             {
                 alias CountType = Unqual!(Options[0]);
                 alias AxisSelection = Options[1 .. $];
@@ -2122,7 +2126,8 @@ package template isSampleCellSelection(Options...)
 {
     import mir.stat.descriptive.histogram.traits: isAxis;
     static if (Options.length == 1 && is(Options[0]))
-        enum isSampleCellSelection = is(Options[0] == struct) && !isAxis!(Options[0]);
+        enum isSampleCellSelection = is(Options[0] == struct) && !isAxis!(Options[0]) &&
+            !isAdaptiveCountSelection!Options;
     else
         enum isSampleCellSelection = false;
 }
@@ -2200,4 +2205,127 @@ unittest
     validateHistogramShapes(xs,ys);
     foreach (i; 0 .. 5) insertHistogramInputs!("put",0)(h,xs,ys);
     foreach (i; 0 .. 4) assert(storage[i].count() == 320);
+}
+
+// A storage selection is not an accumulator cell type.
+package template isAdaptiveCountSelection(Options...)
+{
+    import mir.stat.descriptive.histogram.traits: AdaptiveCounts;
+    static if (Options.length)
+        enum isAdaptiveCountSelection = is(Options[0] == AdaptiveCounts!Initial, Initial);
+    else
+        enum isAdaptiveCountSelection = false;
+}
+
+// Adaptive factory selection preserves axis/layout handling and promotion.
+version(mir_stat_test)
+package void testAdaptiveFactory(alias factory)()
+{
+    testAdaptiveAxisSelection!factory();
+    import mir.stat.descriptive.histogram.traits: AdaptiveCounts;
+    import mir.stat.descriptive.histogram.axis: IntegralAxis, RegularAxis, AxisOptions, variableAxis;
+    import mir.ndslice.slice: sliced;
+    import mir.ndslice.topology: stride;
+    alias A = IntegralAxis!(int, AxisOptions(false, true, true));
+    int[300] data;
+    import std.meta: AliasSeq;
+    static foreach (Initial; AliasSeq!(ubyte, ushort, uint, ulong))
+    {{
+        auto selected = factory!(AdaptiveCounts!Initial)(data, A(2, 0));
+        assert(selected.counts[1].count() == 300);
+        selected.put(0);
+        assert(selected.bins[0].count == 301);
+        auto jointStart = factory!(AdaptiveCounts!Initial)(data[], data[], A(2, 0), A(2, 0));
+        assert(jointStart.counts[1, 1].count() == 300);
+        auto emptyStart = factory!(AdaptiveCounts!Initial)(A(2, 0));
+        assert(emptyStart.bins[0].count == 0);
+    }}
+    static foreach (Invalid; AliasSeq!(byte, short, int, long, float, double, bool, const(ushort)))
+        static assert(!__traits(compiles, { alias Bad = AdaptiveCounts!Invalid; }));
+    static assert(is(AdaptiveCounts!() == AdaptiveCounts!ubyte));
+    auto h = factory!(AdaptiveCounts!())(data, A(2, 0));
+    assert(h.bins[0].count == 300 && h.bins[1].count == 0);
+    h.put(-1); h.put(2);
+    assert(h.underflow == 1 && h.overflow == 1);
+    auto proxy = h.counts[1];
+    auto view = h.bins;
+    auto copy = h;
+    copy.put(0);
+    assert(proxy.count() == 301 && view[0].count == 301);
+    static assert(!__traits(compiles, h.putWeighted(2, 0)));
+    const frozen = h;
+    assert(frozen.bins[0].count == 301);
+    static assert(!__traits(compiles, frozen.put(0)));
+    auto empty = factory!(AdaptiveCounts!())(A(2, 0), A(2, 0));
+    assert(empty.counts.shape == [4, 4]);
+    empty.put(0, 1);
+    assert(empty.counts[1, 2].count() == 1);
+    auto joint = factory!(AdaptiveCounts!())(data[].sliced(10, 30), data[].sliced(10, 30), A(2, 0), A(2, 0));
+    assert(joint.counts[1, 1].count() == 300);
+    auto strided = factory!(AdaptiveCounts!())(data[].sliced.stride(2), A(2, 0));
+    assert(strided.bins[0].count == 150);
+    double[300] observations;
+    observations[] = 0;
+    auto regular = factory!(AdaptiveCounts!(), RegularAxis)(observations, 2u, 0.0, 2.0);
+    assert(regular.bins[0].count == 300);
+    auto none = factory!(AdaptiveCounts!())(data[0 .. 0], A(2, 0));
+    assert(none.bins[0].count == 0);
+    double[3] edges = [0, 1, 2];
+    auto borrowed = factory!(AdaptiveCounts!())(observations, variableAxis(edges[].sliced));
+    assert(borrowed.counts[0].count() == 300);
+    version(mir_stat_test_lifetime)
+        static assert(!__traits(compiles, () @safe {
+            double[3] local = [0, 1, 2];
+            import mir.stat.descriptive.histogram.axis: VariableAxis;
+            auto axis = VariableAxis!(double*, AxisOptions())(local[].sliced);
+            return factory!(AdaptiveCounts!())(axis);
+        }));
+}
+
+// A leading storage selection must not displace axis types, rules, or transforms.
+// Each public factory calls this through its existing attribute-checked tests.
+version(mir_stat_test)
+private void testAdaptiveAxisSelection(alias factory)()
+{
+    import mir.stat.descriptive.histogram.traits: AdaptiveCounts;
+    import mir.stat.descriptive.histogram.axis: IntegralAxis, RegularAxis,
+        VariableAxis, TransformAxis, EnumAxis, CategoryAxis, AxisOptions,
+        inverseTransformMapping;
+    import mir.stat.descriptive.histogram.breaks: sturges;
+    import mir.math.common: log10;
+    import mir.ndslice.slice: sliced;
+
+    alias Counts = AdaptiveCounts!ushort;
+    double[4] data = [1, 1, 2, 3];
+    auto integral = factory!(Counts, IntegralAxis)(data, 4u, 0.0);
+    assert(integral.bins[1].count == 2 && integral.bins[3].count == 1);
+
+    alias Axis = RegularAxis!(double, AxisOptions());
+    auto concrete = factory!(Counts, Axis)(data, 4u, 0.0, 4.0);
+    auto typed = factory!(Counts, double, RegularAxis)(data, 4u, 0.0, 4.0);
+    assert(concrete.bins[1].count == 2 && typed.bins[1].count == 2);
+    static assert(is(typeof(typed.axis[0]) == Axis));
+    static assert(is(typed.CountType == ulong));
+
+    auto ruled = factory!(Counts, RegularAxis, sturges)(data, 0.0, 4.0);
+    assert(ruled.axis[0].N_bin == 3);
+    assert(ruled.bins[0].count == 2 && ruled.bins[1].count == 1 && ruled.bins[2].count == 1);
+
+    double[3] edges = [0, 2, 4];
+    auto variable = factory!(Counts, VariableAxis)(data, edges[].sliced);
+    // Read borrowed-axis counts directly, without copying a scoped RC bin view.
+    assert(variable.counts[0].count() == 2 && variable.counts[1].count() == 2);
+    auto transformed = factory!(Counts, TransformAxis, log10,
+        inverseTransformMapping!log10)(data, 2u, 1.0, 10.0);
+    assert(transformed.bins[0].count == 4 && transformed.bins[1].count == 0);
+
+    enum Label { a, b }
+    Label[3] labels = [Label.a, Label.b, Label.a];
+    auto enumeration = factory!(Counts, EnumAxis)(labels);
+    auto category = factory!(Counts, CategoryAxis)(labels);
+    assert(enumeration.bins[0].count == 2 && enumeration.bins[1].count == 1);
+    assert(category.bins[0].count == 2 && category.bins[1].count == 1);
+    string[3] names = ["a", "b", "a"];
+    auto named = factory!(Counts, Label, CategoryAxis)(names[].sliced);
+    assert(named.bins[0].count == 2 && named.bins[1].count == 1);
 }
