@@ -3994,10 +3994,14 @@ auto quantileImpl(F, QuantileAlgo quantileAlgo, Iterator, G)(Slice!Iterator slic
 /++
 Algorithms for weighted quantile estimation.
 
-Weights represent relative probability masses, not a request to replicate
-observations and apply the unweighted default algorithm. They need not sum to
-one. These algorithms have their own definitions; they do not select R's
-unweighted quantile types.
+By default, weights represent relative probability masses and need not sum to
+one. The probability-weight algorithms have their own definitions, documented
+below; they do not simply replicate observations and apply an unweighted type.
+
+$(LREF frequencyType7) and $(LREF frequencyType8) instead interpret weights as
+whole-number occurrence counts. They reproduce the corresponding ordinary
+quantile types for the conceptual expanded sample without allocating it.
+Select the interpretation through the algorithm, not the weights' numeric type.
 +/
 enum WeightedQuantileAlgo
 {
