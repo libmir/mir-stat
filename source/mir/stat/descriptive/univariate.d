@@ -4734,7 +4734,8 @@ template weightedQuantile(F, WeightedQuantileAlgo algorithm = WeightedQuantileAl
 {
     /++
     Params:
-        weights = relative probability masses
+        weights = relative probability masses, or nonnegative whole-number occurrence counts
+            for $(LREF WeightedQuantileAlgo.frequencyType7) and $(LREF WeightedQuantileAlgo.frequencyType8)
         data = observations corresponding to the weights
         probabilities = scalar, array/slice, or variadic probabilities; omitted for quartiles
     +/
@@ -4753,7 +4754,8 @@ template weightedQuantile(WeightedQuantileAlgo algorithm = WeightedQuantileAlgo.
 {
     /++
     Params:
-        weights = relative probability masses
+        weights = relative probability masses, or nonnegative whole-number occurrence counts
+            for $(LREF WeightedQuantileAlgo.frequencyType7) and $(LREF WeightedQuantileAlgo.frequencyType8)
         data = observations corresponding to the weights
         probabilities = scalar, array/slice, or variadic probabilities; omitted for quartiles
     +/
@@ -4867,7 +4869,8 @@ template rcWeightedQuantile(F, WeightedQuantileAlgo algorithm = WeightedQuantile
 {
     /++
     Params:
-        weights = relative probability masses
+        weights = relative probability masses, or nonnegative whole-number occurrence counts
+            for $(LREF WeightedQuantileAlgo.frequencyType7) and $(LREF WeightedQuantileAlgo.frequencyType8)
         data = observations corresponding to the weights
         probabilities = scalar, array/slice, or variadic probabilities; omitted for quartiles
     +/
@@ -4886,7 +4889,8 @@ template rcWeightedQuantile(WeightedQuantileAlgo algorithm = WeightedQuantileAlg
 {
     /++
     Params:
-        weights = relative probability masses
+        weights = relative probability masses, or nonnegative whole-number occurrence counts
+            for $(LREF WeightedQuantileAlgo.frequencyType7) and $(LREF WeightedQuantileAlgo.frequencyType8)
         data = observations corresponding to the weights
         probabilities = scalar, array/slice, or variadic probabilities; omitted for quartiles
     +/
@@ -4932,7 +4936,8 @@ template makeWeightedQuantile(F, WeightedQuantileAlgo algorithm = WeightedQuanti
     /++
     Params:
         allocator = allocator for scratch and result storage
-        weights = relative probability masses
+        weights = relative probability masses, or nonnegative whole-number occurrence counts
+            for $(LREF WeightedQuantileAlgo.frequencyType7) and $(LREF WeightedQuantileAlgo.frequencyType8)
         data = observations corresponding to the weights
         probabilities = scalar, array/slice, or variadic probabilities; omitted for quartiles
     +/
@@ -4951,7 +4956,8 @@ template makeWeightedQuantile(WeightedQuantileAlgo algorithm = WeightedQuantileA
     /++
     Params:
         allocator = allocator for scratch and result storage
-        weights = relative probability masses
+        weights = relative probability masses, or nonnegative whole-number occurrence counts
+            for $(LREF WeightedQuantileAlgo.frequencyType7) and $(LREF WeightedQuantileAlgo.frequencyType8)
         data = observations corresponding to the weights
         probabilities = scalar, array/slice, or variadic probabilities; omitted for quartiles
     +/
