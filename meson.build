@@ -35,6 +35,7 @@ sources_list = [
     'mir/stat/descriptive/histogram/internal/density',
     'mir/stat/descriptive/histogram/internal/projection',
     'mir/stat/descriptive/histogram/internal/cell',
+    'mir/stat/descriptive/histogram/internal/shared_counts',
     'mir/stat/internal/borrow',
     'mir/stat/descriptive/histogram/package',
     'mir/stat/descriptive/histogram/api/rc',
