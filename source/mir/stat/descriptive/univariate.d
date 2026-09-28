@@ -4004,6 +4004,12 @@ enum WeightedQuantileAlgo
     /++
     Inverse weighted empirical cumulative distribution function.
 
+    Use this to select an observed outcome at a cumulative probability threshold.
+    For example, after reweighting simulated outcomes, the 90th percentile is
+    the smallest outcome at or below which at least 90 percent of the weight
+    lies. This is the default when the weighted empirical distribution itself
+    is the object of interest and no interpolation is wanted.
+
     After ignoring zero weights, sort observations by value. For probability
     $(TT 0 < p <= 1), return the smallest observed value whose cumulative weight
     is at least $(TT p * totalWeight). At $(TT p = 0), return the smallest
@@ -4017,6 +4023,12 @@ enum WeightedQuantileAlgo
     inverseCDF,
     /++
     Weighted Harrell-Davis smoothing estimator following Akinshin.
+
+    Use this when estimating quantiles that should change smoothly as observation
+    weights change. For example, a time series can give more weight to recent
+    measurements and gradually less weight to older ones. Averaging contributions
+    across observations avoids the abrupt switches between observed values made
+    by inverseCDF, but can make the estimate sensitive to extreme observations.
 
     Let $(TT t_i) be cumulative normalized weights of sorted observations, with
     $(TT t_0 = 0) and $(TT t_n = 1). Compute Kish effective sample size
@@ -4050,6 +4062,13 @@ enum WeightedQuantileAlgo
     /++
     Trimmed weighted Harrell-Davis estimator following Akinshin.
 
+    Use this when Harrell-Davis smoothing is useful but extreme observations
+    should have less opportunity to influence a central estimate. For example,
+    an unusually large measurement can affect an HD median even with a small
+    weight; trimming can exclude its contribution. This is an optional estimate
+    with restricted contributions, not a guarantee that outliers are excluded
+    at every requested probability.
+
     Use the effective sample size and beta shapes of $(LREF harrellDavis).
     Choose the interval [L, R] of width $(TT 1 / sqrt(nEff)) that contains
     the greatest beta probability. Intersect each observation's cumulative
@@ -4074,6 +4093,13 @@ enum WeightedQuantileAlgo
     trimmedHarrellDavis,
     /++
     Weighted type 7 using Akinshin's effective-size uniform interval.
+
+    Use this for probability or importance weights when ordinary type 7 is the
+    desired equal-weight convention. For example, simulated outcomes can start
+    with equal weights and later be reweighted to represent another scenario.
+    This provides interpolation using arithmetic interval overlaps, without the
+    beta-function evaluations required by Harrell-Davis. For weights recording
+    how many times each outcome occurred, use $(LREF frequencyType7).
 
     Compute $(TT nEff = (sum w)^2 / sum(w^2)) from the original positive-weight
     rows. Set $(TT h = (nEff - 1)*p + 1), clamped to [1, nEff]. Each sorted
@@ -4100,8 +4126,17 @@ enum WeightedQuantileAlgo
     +/
     type7,
     /++
-    Weighted type 8 using the same uniform-interval construction as
-    $(LREF type7), with $(TT h = (nEff + 1/3)*p + 1/3), clamped to [1, nEff].
+    Weighted type 8 using Akinshin's effective-size uniform interval.
+
+    Use this for probability or importance weights when ordinary type 8 is the
+    desired equal-weight convention. Like $(LREF type7), it offers arithmetic
+    interpolation as weights change, without beta-function evaluations. For
+    example, use it when reweighting simulated outcomes whose original quantiles
+    were calculated with type 8. Use $(LREF frequencyType8) when the weights
+    instead count repeated observations.
+
+    Uses the same uniform-interval construction as $(LREF type7), with
+    $(TT h = (nEff + 1/3)*p + 1/3), clamped to [1, nEff].
 
     Equal weights recover $(LREF QuantileAlgo.type8). The approximate
     median-unbiasedness of unweighted type 8 is not promised for arbitrary
@@ -4112,6 +4147,12 @@ enum WeightedQuantileAlgo
     type8,
     /++
     Inverse weighted empirical CDF with averaging at exact boundaries.
+
+    Use this when an empirical quantile should use the midpoint if the requested
+    probability falls exactly between two distinct outcomes. For example, when
+    half the total weight belongs to values at or below 0 and the next observed
+    value is 10, this convention gives a median of 5. Away from an exact boundary
+    it selects an observed value, so it does not provide continuous smoothing.
 
     Treat equal observations as one value with their combined weight. As with
     $(LREF inverseCDF), select the first value whose cumulative weight reaches
