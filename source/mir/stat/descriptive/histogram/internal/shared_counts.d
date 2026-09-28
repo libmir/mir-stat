@@ -7,8 +7,8 @@ model. Counting and promotion are shared, with no runtime ownership dispatch.
 Mutation attributes are inferred from the allocation policy: RC remains @nogc,
 while GC insertion may allocate when widening. Neither variant synchronizes access.
 
-Counters start as ubyte and the entire buffer widens to ushort, uint, then
-ulong when an increment requires it. Reads always return a ulong snapshot.
+Counters start at the selected unsigned width (ubyte by default) and the entire
+buffer widens through ushort, uint, then ulong when an increment requires it. Reads always return a ulong snapshot.
 Widening preserves the shape, indices, and existing proxy/view ownership;
 it temporarily needs both the old and new buffers and copies every counter.
 The storage does not shrink. Incrementing ulong.max is an unrecoverable error,
@@ -98,11 +98,17 @@ public:
     // when one copy replaces a shared counter buffer during promotion.
     @disable this(ref const AdaptiveCountState);
 
-    this(size_t length)
+    this(size_t length, Width initialWidth = Width.byte_)
     {
         this.length = length;
-        bytes = Buffers.allocate!ubyte(length);
-        bytes[] = 0;
+        width = initialWidth;
+        final switch (width)
+        {
+        case Width.byte_: bytes = Buffers.allocate!ubyte(length); bytes[] = 0; break;
+        case Width.short_: shorts = Buffers.allocate!ushort(length); shorts[] = 0; break;
+        case Width.int_: ints = Buffers.allocate!uint(length); ints[] = 0; break;
+        case Width.long_: longs = Buffers.allocate!ulong(length); longs[] = 0; break;
+        }
     }
 
     ulong count(size_t index) const @safe pure nothrow @nogc
@@ -190,18 +196,24 @@ public:
     }
 }
 
-auto sharedCountSlice(size_t length) @safe pure nothrow @nogc
+auto sharedCountSlice(Initial = ubyte)(size_t length) @safe pure nothrow @nogc
+    if (is(Initial == ubyte) || is(Initial == ushort) || is(Initial == uint) || is(Initial == ulong))
 {
-    auto owner = createRC!SharedCountState(length);
+    import std.meta: staticIndexOf;
+    enum initialWidth = cast(SharedCountState.Width) staticIndexOf!(Initial, ubyte, ushort, uint, ulong);
+    auto owner = createRC!SharedCountState(length, initialWidth);
     auto field = SharedCountField!SharedCountState(owner);
     return FieldIterator!(typeof(field))(0, field).sliced(length);
 }
 
 // Both the stable state and every counter buffer are GC-managed. Saved proxies
 // retain a pointer to the state so replacement never invalidates their indices.
-auto gcSharedCountSlice(size_t length) @safe pure nothrow
+auto gcSharedCountSlice(Initial = ubyte)(size_t length) @safe pure nothrow
+    if (is(Initial == ubyte) || is(Initial == ushort) || is(Initial == uint) || is(Initial == ulong))
 {
-    auto owner = new GCCountState(length);
+    import std.meta: staticIndexOf;
+    enum initialWidth = cast(GCCountState.Width) staticIndexOf!(Initial, ubyte, ushort, uint, ulong);
+    auto owner = new GCCountState(length, initialWidth);
     auto field = SharedCountField!(GCCountState, GCCountState*)(owner);
     return FieldIterator!(typeof(field))(0, field).sliced(length);
 }
@@ -855,4 +867,51 @@ unittest
     ++proxy;
     GC.collect();
     assert(proxy.count() == 257 && view[1].count == 1);
+}
+
+// Starting wider allocates only the selected buffer; later promotion is unchanged.
+version(mir_stat_test)
+private void testInitialCountWidth(alias make)()
+{
+    import std.meta: AliasSeq, staticIndexOf;
+    static foreach (T; AliasSeq!(ubyte, ushort, uint, ulong))
+    {{
+        auto counts = make!T(2);
+        auto owner = counts.iterator._field.owner;
+        alias W = typeof(owner.width);
+        assert(owner.width == cast(W) staticIndexOf!(T, ubyte, ushort, uint, ulong));
+        assert(owner.bytes.length == (is(T == ubyte) ? 2 : 0));
+        assert(owner.shorts.length == (is(T == ushort) ? 2 : 0));
+        assert(owner.ints.length == (is(T == uint) ? 2 : 0));
+        assert(owner.longs.length == (is(T == ulong) ? 2 : 0));
+        assert(counts[0].count() == 0 && counts[1].count() == 0);
+        auto saved = counts[0];
+        enum ulong initial = is(T == ulong) ? ulong.max - 1 : T.max;
+        static if (is(T == ubyte)) owner.bytes[0] = initial;
+        else static if (is(T == ushort)) owner.shorts[0] = initial;
+        else static if (is(T == uint)) owner.ints[0] = initial;
+        else owner.longs[0] = initial;
+        ++counts[0];
+        assert(saved.count() == initial + 1 && counts[1].count() == 0);
+        static if (!is(T == ulong))
+            assert(owner.width == cast(W)(staticIndexOf!(T, ubyte, ushort, uint, ulong) + 1));
+        else
+            assert(owner.width == W.long_);
+        auto empty = make!T(0);
+        assert(empty.length == 0);
+    }}
+}
+
+version(mir_stat_test)
+@safe pure nothrow @nogc
+unittest
+{
+    testInitialCountWidth!sharedCountSlice();
+}
+
+version(mir_stat_test)
+@safe pure nothrow
+unittest
+{
+    testInitialCountWidth!gcSharedCountSlice();
 }

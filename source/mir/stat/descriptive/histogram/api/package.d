@@ -29,8 +29,9 @@ that can be summed and normalized.
 
 GC and RC factories manage their count storage automatically. The make factories
 take an allocator first and require explicit cleanup for fixed storage.
-Select AdaptiveCounts in histogram, rchistogram, or makeHistogram to use
-unweighted counters that widen from ubyte to ulong. histogram uses GC ownership;
+Select AdaptiveCounts!() in histogram, rchistogram, or makeHistogram to use
+unweighted counters that widen from ubyte to ulong. Select AdaptiveCounts!ushort
+(or uint or ulong) to start at a wider type. histogram uses GC ownership;
 rchistogram and makeHistogram use RC ownership for these adaptive counts.
 Adaptive counts require no custom disposal and do not support weighted or
 relative-frequency construction. Ordinary custom histograms

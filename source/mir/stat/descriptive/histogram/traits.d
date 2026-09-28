@@ -24,9 +24,12 @@ alias DefaultCountType = size_t;
 
 /++
 Opt-in storage selection for unweighted histogram factories. Use in place of
-an explicit counter type, for example histogram!(AdaptiveCounts, RegularAxis).
-Counters start as ubyte and widen together to ushort, uint, then ulong as
-needed. Reads through counts[index].count() or bins return ulong snapshots.
+an explicit counter type, for example histogram!(AdaptiveCounts!(), RegularAxis).
+Initial selects ubyte (the default), ushort, uint, or ulong. Counters start at
+that width and widen together through the remaining larger types as needed.
+For example, AdaptiveCounts!ushort avoids the initial ubyte allocation and
+promotion when larger counts are expected, at the cost of more initial memory.
+Reads through counts[index].count() or bins return ulong snapshots.
 Saved proxies and bin views follow promotion; copied histograms share counts.
 Promotion allocates a wider buffer and temporarily retains both buffers.
 Storage does not shrink. Incrementing ulong.max is an unrecoverable error.
@@ -36,7 +39,11 @@ state and buffers; adaptive counts must not be disposed through a custom
 allocator. Axis ownership is unchanged. Weighted and relative-frequency
 factories do not accept this selection.
 +/
-struct AdaptiveCounts {}
+struct AdaptiveCounts(Initial = ubyte)
+    if (is(Initial == ubyte) || is(Initial == ushort) ||
+        is(Initial == uint) || is(Initial == ulong))
+{
+}
 
 package
 void checkUnderflow(BinType, AxisOptions axisOptions)(BinType x, BinType low)

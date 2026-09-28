@@ -196,10 +196,10 @@ private auto allocateCounts(T, Allocator)(ref Allocator allocator, size_t extent
 {
     import mir.ndslice.allocation: makeSlice;
     import mir.stat.descriptive.histogram.traits: AdaptiveCounts;
-    static if (is(T == AdaptiveCounts))
+    static if (is(T == AdaptiveCounts!Initial, Initial))
     {
         import mir.stat.descriptive.histogram.internal.shared_counts: sharedCountSlice;
-        return sharedCountSlice(extent);
+        return sharedCountSlice!Initial(extent);
     }
     else
         return makeSlice!T(allocator, extent);
@@ -219,8 +219,8 @@ Allocate fixed counts with a caller-selected allocator.
 AdaptiveCounts is an explicit exception: it uses reference-counted state and
 buffers, independent of the supplied allocator. Do not dispose adaptive counts
 through that allocator. Their proxies and views retain RC ownership. Use
-makeHistogram!(AdaptiveCounts, RegularAxis)(allocator, data, n, low, high), or
-makeHistogram!AdaptiveCounts(allocator, axis, ...), to select this policy.
+makeHistogram!(AdaptiveCounts!(), RegularAxis)(allocator, data, n, low, high), or
+makeHistogram!(AdaptiveCounts!())(allocator, axis, ...), to select this policy.
 The allocation/disposal rules below apply to fixed counter and accumulator cells.
 
 Use makeHistogram(allocator, data, axis) to count a built-in array or Mir slice
@@ -392,7 +392,7 @@ unittest
 }
 
 /++
-Select AdaptiveCounts when counts must widen automatically. This selection uses
+Select AdaptiveCounts!() when counts must widen automatically. This selection uses
 RC-owned state and buffers, so the supplied allocator is not used for counts.
 Do not dispose these counts through the allocator: their lifetime is automatic,
 including saved proxies and views. Fixed counter types still use the allocator.
@@ -406,7 +406,7 @@ unittest
     import std.experimental.allocator.mallocator: Mallocator;
     alias A = IntegralAxis!(int, AxisOptions());
     int[255] values;
-    auto h = makeHistogram!AdaptiveCounts(Mallocator.instance, values, A(2, 0));
+    auto h = makeHistogram!(AdaptiveCounts!())(Mallocator.instance, values, A(2, 0));
     auto saved = h.counts[0];
     h.put(0);
     assert(saved.count() == 256 && h.bins[0].count == 256);
@@ -438,8 +438,8 @@ unittest
     UnusedAllocator allocator;
     alias A = IntegralAxis!(int, AxisOptions());
     int[1] data;
-    static assert(!__traits(compiles, makeWeightedHistogram!AdaptiveCounts(allocator, data, data, A(2, 0))));
-    static assert(!__traits(compiles, makeRelativeFrequencyHistogram!AdaptiveCounts(allocator, data, A(2, 0))));
+    static assert(!__traits(compiles, makeWeightedHistogram!(AdaptiveCounts!())(allocator, data, data, A(2, 0))));
+    static assert(!__traits(compiles, makeRelativeFrequencyHistogram!(AdaptiveCounts!())(allocator, data, A(2, 0))));
 }
 
 // Exercise shared empty-axis construction checks with caller-allocated cells.
@@ -1966,6 +1966,6 @@ unittest
     UnusedAllocator allocator;
     int[1] input;
     alias A = IntegralAxis!(int, AxisOptions());
-    assertThrown!Exception(makeHistogram!AdaptiveCounts(allocator, input[].sliced.map!reject, A(2, 0)));
-    assertThrown!Exception(makeHistogram!AdaptiveCounts(allocator, input[], input[].sliced.map!reject, A(2, 0), A(2, 0)));
+    assertThrown!Exception(makeHistogram!(AdaptiveCounts!())(allocator, input[].sliced.map!reject, A(2, 0)));
+    assertThrown!Exception(makeHistogram!(AdaptiveCounts!())(allocator, input[], input[].sliced.map!reject, A(2, 0), A(2, 0)));
 }

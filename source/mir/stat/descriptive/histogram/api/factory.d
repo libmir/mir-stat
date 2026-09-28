@@ -2212,7 +2212,7 @@ package template isAdaptiveCountSelection(Options...)
 {
     import mir.stat.descriptive.histogram.traits: AdaptiveCounts;
     static if (Options.length)
-        enum isAdaptiveCountSelection = is(Options[0] == AdaptiveCounts);
+        enum isAdaptiveCountSelection = is(Options[0] == AdaptiveCounts!Initial, Initial);
     else
         enum isAdaptiveCountSelection = false;
 }
@@ -2227,7 +2227,22 @@ package void testAdaptiveFactory(alias factory)()
     import mir.ndslice.topology: stride;
     alias A = IntegralAxis!(int, AxisOptions(false, true, true));
     int[300] data;
-    auto h = factory!AdaptiveCounts(data, A(2, 0));
+    import std.meta: AliasSeq;
+    static foreach (Initial; AliasSeq!(ubyte, ushort, uint, ulong))
+    {{
+        auto selected = factory!(AdaptiveCounts!Initial)(data, A(2, 0));
+        assert(selected.counts[1].count() == 300);
+        selected.put(0);
+        assert(selected.bins[0].count == 301);
+        auto jointStart = factory!(AdaptiveCounts!Initial)(data[], data[], A(2, 0), A(2, 0));
+        assert(jointStart.counts[1, 1].count() == 300);
+        auto emptyStart = factory!(AdaptiveCounts!Initial)(A(2, 0));
+        assert(emptyStart.bins[0].count == 0);
+    }}
+    static foreach (Invalid; AliasSeq!(byte, short, int, long, float, double, bool, const(ushort)))
+        static assert(!__traits(compiles, { alias Bad = AdaptiveCounts!Invalid; }));
+    static assert(is(AdaptiveCounts!() == AdaptiveCounts!ubyte));
+    auto h = factory!(AdaptiveCounts!())(data, A(2, 0));
     assert(h.bins[0].count == 300 && h.bins[1].count == 0);
     h.put(-1); h.put(2);
     assert(h.underflow == 1 && h.overflow == 1);
@@ -2240,28 +2255,28 @@ package void testAdaptiveFactory(alias factory)()
     const frozen = h;
     assert(frozen.bins[0].count == 301);
     static assert(!__traits(compiles, frozen.put(0)));
-    auto empty = factory!AdaptiveCounts(A(2, 0), A(2, 0));
+    auto empty = factory!(AdaptiveCounts!())(A(2, 0), A(2, 0));
     assert(empty.counts.shape == [4, 4]);
     empty.put(0, 1);
     assert(empty.counts[1, 2].count() == 1);
-    auto joint = factory!AdaptiveCounts(data[].sliced(10, 30), data[].sliced(10, 30), A(2, 0), A(2, 0));
+    auto joint = factory!(AdaptiveCounts!())(data[].sliced(10, 30), data[].sliced(10, 30), A(2, 0), A(2, 0));
     assert(joint.counts[1, 1].count() == 300);
-    auto strided = factory!AdaptiveCounts(data[].sliced.stride(2), A(2, 0));
+    auto strided = factory!(AdaptiveCounts!())(data[].sliced.stride(2), A(2, 0));
     assert(strided.bins[0].count == 150);
     double[300] observations;
     observations[] = 0;
-    auto regular = factory!(AdaptiveCounts, RegularAxis)(observations, 2u, 0.0, 2.0);
+    auto regular = factory!(AdaptiveCounts!(), RegularAxis)(observations, 2u, 0.0, 2.0);
     assert(regular.bins[0].count == 300);
-    auto none = factory!AdaptiveCounts(data[0 .. 0], A(2, 0));
+    auto none = factory!(AdaptiveCounts!())(data[0 .. 0], A(2, 0));
     assert(none.bins[0].count == 0);
     double[3] edges = [0, 1, 2];
-    auto borrowed = factory!AdaptiveCounts(observations, variableAxis(edges[].sliced));
+    auto borrowed = factory!(AdaptiveCounts!())(observations, variableAxis(edges[].sliced));
     assert(borrowed.counts[0].count() == 300);
     version(mir_stat_test_lifetime)
         static assert(!__traits(compiles, () @safe {
             double[3] local = [0, 1, 2];
             import mir.stat.descriptive.histogram.axis: VariableAxis;
             auto axis = VariableAxis!(double*, AxisOptions())(local[].sliced);
-            return factory!AdaptiveCounts(axis);
+            return factory!(AdaptiveCounts!())(axis);
         }));
 }
