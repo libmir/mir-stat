@@ -2221,6 +2221,7 @@ package template isAdaptiveCountSelection(Options...)
 version(mir_stat_test)
 package void testAdaptiveFactory(alias factory)()
 {
+    testAdaptiveAxisSelection!factory();
     import mir.stat.descriptive.histogram.traits: AdaptiveCounts;
     import mir.stat.descriptive.histogram.axis: IntegralAxis, RegularAxis, AxisOptions, variableAxis;
     import mir.ndslice.slice: sliced;
@@ -2279,4 +2280,52 @@ package void testAdaptiveFactory(alias factory)()
             auto axis = VariableAxis!(double*, AxisOptions())(local[].sliced);
             return factory!(AdaptiveCounts!())(axis);
         }));
+}
+
+// A leading storage selection must not displace axis types, rules, or transforms.
+// Each public factory calls this through its existing attribute-checked tests.
+version(mir_stat_test)
+private void testAdaptiveAxisSelection(alias factory)()
+{
+    import mir.stat.descriptive.histogram.traits: AdaptiveCounts;
+    import mir.stat.descriptive.histogram.axis: IntegralAxis, RegularAxis,
+        VariableAxis, TransformAxis, EnumAxis, CategoryAxis, AxisOptions,
+        inverseTransformMapping;
+    import mir.stat.descriptive.histogram.breaks: sturges;
+    import mir.math.common: log10;
+    import mir.ndslice.slice: sliced;
+
+    alias Counts = AdaptiveCounts!ushort;
+    double[4] data = [1, 1, 2, 3];
+    auto integral = factory!(Counts, IntegralAxis)(data, 4u, 0.0);
+    assert(integral.bins[1].count == 2 && integral.bins[3].count == 1);
+
+    alias Axis = RegularAxis!(double, AxisOptions());
+    auto concrete = factory!(Counts, Axis)(data, 4u, 0.0, 4.0);
+    auto typed = factory!(Counts, double, RegularAxis)(data, 4u, 0.0, 4.0);
+    assert(concrete.bins[1].count == 2 && typed.bins[1].count == 2);
+    static assert(is(typeof(typed.axis[0]) == Axis));
+    static assert(is(typed.CountType == ulong));
+
+    auto ruled = factory!(Counts, RegularAxis, sturges)(data, 0.0, 4.0);
+    assert(ruled.axis[0].N_bin == 3);
+    assert(ruled.bins[0].count == 2 && ruled.bins[1].count == 1 && ruled.bins[2].count == 1);
+
+    double[3] edges = [0, 2, 4];
+    auto variable = factory!(Counts, VariableAxis)(data, edges[].sliced);
+    // Read borrowed-axis counts directly, without copying a scoped RC bin view.
+    assert(variable.counts[0].count() == 2 && variable.counts[1].count() == 2);
+    auto transformed = factory!(Counts, TransformAxis, log10,
+        inverseTransformMapping!log10)(data, 2u, 1.0, 10.0);
+    assert(transformed.bins[0].count == 4 && transformed.bins[1].count == 0);
+
+    enum Label { a, b }
+    Label[3] labels = [Label.a, Label.b, Label.a];
+    auto enumeration = factory!(Counts, EnumAxis)(labels);
+    auto category = factory!(Counts, CategoryAxis)(labels);
+    assert(enumeration.bins[0].count == 2 && enumeration.bins[1].count == 1);
+    assert(category.bins[0].count == 2 && category.bins[1].count == 1);
+    string[3] names = ["a", "b", "a"];
+    auto named = factory!(Counts, Label, CategoryAxis)(names[].sliced);
+    assert(named.bins[0].count == 2 && named.bins[1].count == 1);
 }
