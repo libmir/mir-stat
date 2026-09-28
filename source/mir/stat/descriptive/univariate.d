@@ -4110,13 +4110,40 @@ enum WeightedQuantileAlgo
     constant estimates over intervals of interior probabilities.
     +/
     type8,
+    /++
+    Inverse weighted empirical CDF with averaging at exact boundaries.
+
+    Treat equal observations as one value with their combined weight. As with
+    $(LREF inverseCDF), select the first value whose cumulative weight reaches
+    the target. If the target exactly equals the cumulative weight through
+    that entire group, average that value and the next distinct value.
+    Otherwise return the selected value. Zero-weight rows are ignored.
+
+    For equal positive weights this agrees mathematically with
+    $(LREF QuantileAlgo.type2). For example, the median of equally weighted
+    [0,10] is 5. A boundary inside a group of equal values does not trigger
+    averaging with the next distinct value. This estimator remains discontinuous
+    when probabilities or weights cross a cumulative-weight boundary.
+
+    p=0 and p=1 return the positive-weight minimum and maximum. Boundary
+    equality is tested on computed cumulative masses without a tolerance;
+    roundoff can affect whether averaging occurs. Integral observations infer
+    double output; floating observations retain their type. Explicit output
+    types must be floating-point. No effective sample size is used.
+    +/
+    averagedInverseCDF,
 }
+
+private enum weightedQuantileUsesEffectiveSize(WeightedQuantileAlgo algorithm) =
+    algorithm == WeightedQuantileAlgo.harrellDavis ||
+    algorithm == WeightedQuantileAlgo.trimmedHarrellDavis ||
+    algorithm == WeightedQuantileAlgo.type7 || algorithm == WeightedQuantileAlgo.type8;
 
 private struct WeightedQuantileEntry(T, WeightedQuantileAlgo algorithm)
 {
     T value;
     real cumulative;
-    static if (algorithm != WeightedQuantileAlgo.inverseCDF)
+    static if (weightedQuantileUsesEffectiveSize!algorithm)
         real upper;
 }
 
@@ -4293,7 +4320,8 @@ private auto weightedQuantileAt(F, WeightedQuantileAlgo algorithm, Workspace, P)
         return cast(F) workspace[$ - 1].value;
     static if (algorithm == WeightedQuantileAlgo.type7 || algorithm == WeightedQuantileAlgo.type8)
         return weightedUniformQuantileAt!(F, algorithm)(workspace, cast(real) probability, effectiveSize);
-    else static if (algorithm != WeightedQuantileAlgo.inverseCDF)
+    else static if (algorithm == WeightedQuantileAlgo.harrellDavis ||
+        algorithm == WeightedQuantileAlgo.trimmedHarrellDavis)
         return weightedHarrellDavisAt!(F, algorithm == WeightedQuantileAlgo.trimmedHarrellDavis)(workspace, cast(real) probability, effectiveSize);
     else
     {
@@ -4307,6 +4335,28 @@ private auto weightedQuantileAt(F, WeightedQuantileAlgo algorithm, Workspace, P)
                 low = mid + 1;
             else
                 high = mid;
+        }
+        static if (algorithm == WeightedQuantileAlgo.averagedInverseCDF)
+        {
+            // Locate the end of the equal-value group without changing scratch
+            // storage or adding a linear scan per probability.
+            size_t next = low + 1, end = workspace.length;
+            while (next < end)
+            {
+                const mid = next + (end - next) / 2;
+                if (workspace[mid].value == workspace[low].value)
+                    next = mid + 1;
+                else
+                    end = mid;
+            }
+            if (next < workspace.length && workspace[next - 1].cumulative == target)
+            {
+                const a = cast(real) workspace[low].value;
+                const b = cast(real) workspace[next].value;
+                // Same-sign subtraction and opposite-sign addition cannot
+                // overflow. Avoid halving each operand, which loses subnormals.
+                return cast(F) ((a < 0) != (b < 0) ? (a + b) / 2 : a + (b - a) / 2);
+            }
         }
         return cast(F) workspace[low].value;
     }
@@ -4323,6 +4373,7 @@ private auto allocatedWeightedQuantile(F, WeightedQuantileAlgo algorithm,
     import std.math: isFinite;
 
     static assert(algorithm == WeightedQuantileAlgo.inverseCDF ||
+        algorithm == WeightedQuantileAlgo.averagedInverseCDF ||
         algorithm == WeightedQuantileAlgo.harrellDavis ||
         algorithm == WeightedQuantileAlgo.trimmedHarrellDavis ||
         algorithm == WeightedQuantileAlgo.type7 || algorithm == WeightedQuantileAlgo.type8,
@@ -4367,7 +4418,7 @@ private auto allocatedWeightedQuantile(F, WeightedQuantileAlgo algorithm,
     // to equal floating-point values. Order tied masses consistently as well.
     sort!((a, b) => a.value < b.value ||
         (a.value == b.value && a.cumulative < b.cumulative))(workspace);
-    static if (algorithm != WeightedQuantileAlgo.inverseCDF)
+    static if (weightedQuantileUsesEffectiveSize!algorithm)
     {
         Summator!(real, Summation.kahan) suffix, squares;
         foreach_reverse (i; 0 .. workspace.length)
@@ -4386,7 +4437,7 @@ private auto allocatedWeightedQuantile(F, WeightedQuantileAlgo algorithm,
         workspace[i].cumulative = cumulative.sum;
     }
     real effectiveSize = 1;
-    static if (algorithm != WeightedQuantileAlgo.inverseCDF)
+    static if (weightedQuantileUsesEffectiveSize!algorithm)
     {
         effectiveSize = cumulative.sum * cumulative.sum / squares.sum;
         if (effectiveSize < 1) effectiveSize = 1;
@@ -4464,7 +4515,7 @@ bitwise-identical results. Endpoints select the extrema of positive-weight data.
 Signed zeros compare equal; the sign of a selected zero is unspecified.
 
 A paired workspace is sorted once. For n observations and k probabilities,
-inverseCDF takes $(TT O(n log n + k log n)) time. Harrell-Davis takes
+inverseCDF and averagedInverseCDF take $(TT O(n log n + k log n)) time. Harrell-Davis takes
 $(TT O(n log n + k*n)) time, including beta CDF evaluations, and reuses effective
 sample size and cumulative masses across probabilities. Trimmed Harrell-Davis
 adds a bounded interval search per probability and skips excluded intervals.
@@ -4579,6 +4630,19 @@ unittest
     assert(reweighted[0].approxEqual(25.0));
     assert(reweighted[1].approxEqual(375.0 / 13));
     assert(reweighted[2].approxEqual(30.0));
+}
+
+/// Averaging gives the midpoint when half the weight lies on either side.
+/// A cumulative boundary inside tied observations still returns their value.
+version(mir_stat_test)
+@safe pure nothrow
+unittest
+{
+    const int[4] values = [0, 0, 10, 20], weights = [1, 1, 1, 1];
+    auto q = weightedQuantile!(WeightedQuantileAlgo.averagedInverseCDF)(
+        weights, values, [0.25, 0.5, 0.75]);
+    assert(q == [0.0, 5.0, 15.0]);
+    assert(weightedQuantile(weights, values, 0.5) == 0);
 }
 
 /++
@@ -4901,7 +4965,7 @@ unittest
 {
     static foreach (algorithm; [WeightedQuantileAlgo.harrellDavis,
         WeightedQuantileAlgo.trimmedHarrellDavis, WeightedQuantileAlgo.type7,
-        WeightedQuantileAlgo.type8])
+        WeightedQuantileAlgo.type8, WeightedQuantileAlgo.averagedInverseCDF])
     {{
         import mir.math.common: approxEqual;
         import std.math: isFinite;
@@ -4963,7 +5027,7 @@ unittest
 {
     static foreach (algorithm; [WeightedQuantileAlgo.harrellDavis,
         WeightedQuantileAlgo.trimmedHarrellDavis, WeightedQuantileAlgo.type7,
-        WeightedQuantileAlgo.type8])
+        WeightedQuantileAlgo.type8, WeightedQuantileAlgo.averagedInverseCDF])
     {{
         import mir.math.common: approxEqual;
         import std.experimental.allocator: dispose;
@@ -5090,6 +5154,40 @@ unittest
         const int[4] multiValues = [0, 10, 20, 40], multiWeights = [3, 1, 1, 4];
         assert(q(multiWeights, multiValues, 0.5).approxEqual(70.0 / 3));
     }}
+}
+
+// Boundary behavior, ties, zeros, rescaling, and agreement with ordinary type 2.
+version(mir_stat_test)
+@safe pure nothrow @nogc
+unittest
+{
+    import mir.math.common: approxEqual;
+    import std.math: nextafter;
+    alias q = rcWeightedQuantile!(WeightedQuantileAlgo.averagedInverseCDF);
+    const int[4] values = [0, 0, 10, 20], weights = [1, 1, 1, 1];
+    assert(q(weights, values, nextafter(0.5, 0.0)) == 0);
+    assert(q(weights, values, 0.5) == 5);
+    assert(q(weights, values, nextafter(0.5, 1.0)) == 10);
+    const int[3] combinedValues = [0, 10, 20], combinedWeights = [2, 1, 1];
+    const int[3] scaled = [8, 4, 4];
+    const int[5] zeroWeights = [1, 0, 1, 1, 1];
+    const double[5] zeroValues = [0, double.nan, 0, 10, 20];
+    foreach (i; 0 .. 17)
+    {
+        const p = i / 16.0;
+        const result = q(weights, values, p);
+        assert(result == q(combinedWeights, combinedValues, p));
+        assert(result == q(scaled, combinedValues, p));
+        assert(result == q(zeroWeights, zeroValues, p));
+        assert(result.approxEqual(rcquantile!(double, QuantileAlgo.type2)(values, p)));
+    }
+    const int[2] equal = [1, 1];
+    const real[2] negative = [-real.max, -real.max / 2];
+    assert((q(equal, negative, 0.5) / real.max).approxEqual(-0.75L));
+    // Neighboring same-sign values at the bottom of the representable range.
+    const real tiny = nextafter(0.0L, 1.0L);
+    const real[2] subnormal = [tiny, 3 * tiny];
+    assert(q(equal, subnormal, 0.5) == 2 * tiny);
 }
 
 private enum QuantileAllocation { gc, rc, custom }
