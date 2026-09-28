@@ -4047,13 +4047,38 @@ enum WeightedQuantileAlgo
         $(LINK2 https://arxiv.org/abs/2304.07265, Akinshin (2023), Weighted quantile estimators).
     +/
     harrellDavis,
+    /++
+    Trimmed weighted Harrell-Davis estimator following Akinshin.
+
+    Use the effective sample size and beta shapes of $(LREF harrellDavis).
+    Choose the interval [L, R] of width $(TT 1 / sqrt(nEff)) that contains
+    the greatest beta probability. Intersect each observation's cumulative
+    weight interval with [L, R], integrate the beta density over that
+    intersection, and normalize the retained coefficients to sum to one.
+    The width is measured on the cumulative probability axis; it is not
+    the amount of beta probability retained.
+
+    Observations outside this interval contribute nothing to the estimate.
+    This can reduce outlier influence, but upper or lower quantiles may still
+    include extreme observations. Renormalization can increase their influence
+    when they remain inside the interval. This does not trim histogram tails.
+
+    Equal weights recover trimmed ordinary Harrell-Davis with this width.
+    Effective size is computed before combining ties, so splitting a row can
+    change the result. Weight rescaling, output types, and the explicit p=0/1
+    minimum/maximum extension follow $(LREF harrellDavis).
+
+    References:
+        $(LINK2 https://arxiv.org/abs/2304.07265, Akinshin (2023), Weighted quantile estimators).
+    +/
+    trimmedHarrellDavis,
 }
 
 private struct WeightedQuantileEntry(T, WeightedQuantileAlgo algorithm)
 {
     T value;
     real cumulative;
-    static if (algorithm == WeightedQuantileAlgo.harrellDavis)
+    static if (algorithm != WeightedQuantileAlgo.inverseCDF)
         real upper;
 }
 
@@ -4062,15 +4087,42 @@ private template WeightedQuantileResult(Data, WeightedQuantileAlgo algorithm)
     import mir.primitives: DeepElementType;
     import std.traits: Unqual;
     alias Element = Unqual!(DeepElementType!(typeof(quantileSlice(Data.init))));
-    static if (algorithm == WeightedQuantileAlgo.harrellDavis)
+    static if (algorithm != WeightedQuantileAlgo.inverseCDF)
         alias WeightedQuantileResult = quantileType!(Element, QuantileAlgo.type7);
     else
         alias WeightedQuantileResult = Element;
 }
 
+// Fixed-width maximum-mass interval for the beta shapes reachable here:
+// a+b=nEff+1>=2, so both shapes cannot be below one. Boundary modes have
+// one-sided intervals; interior modes have equal endpoint densities.
+private real weightedTrimmedHDLower(real a, real b, real width)
+    @safe pure nothrow @nogc
+{
+    import std.algorithm: min, max;
+    import std.math: log1p;
+    if (width >= 1 || a <= 1) return 0;
+    if (b <= 1) return 1 - width;
+    if (a == b) return (1 - width) / 2;
+    const mode = (a - 1) / (a + b - 2);
+    real low = max(0.0L, mode - width), high = min(mode, 1 - width);
+    // Stop when the bracket has no representable midpoint. A bound also
+    // handles roots very close to zero without a long subnormal search.
+    foreach (_; 0 .. 256)
+    {
+        const mid = low + (high - low) / 2;
+        if (mid == low || mid == high) break;
+        const difference = (a - 1) * log1p(-width / (mid + width))
+            + (b - 1) * log1p(width / (1 - mid - width));
+        if (difference < 0) low = mid;
+        else high = mid;
+    }
+    return low + (high - low) / 2;
+}
+
 // Both prefixes and suffixes were accumulated independently. Subtracting a
 // rounded prefix from one would lose precisely the small upper masses we need.
-private auto weightedHarrellDavisAt(F, Workspace)(scope Workspace workspace,
+private auto weightedHarrellDavisAt(F, bool trimmed, Workspace)(scope Workspace workspace,
     real probability, real effectiveSize)
 {
     import mir.stat.distribution.beta: betaCDF;
@@ -4084,20 +4136,51 @@ private auto weightedHarrellDavisAt(F, Workspace)(scope Workspace workspace,
     const b = (effectiveSize + 1) * (1 - probability);
     const total = workspace[$ - 1].cumulative;
     Summator!(real, Summation.kahan) coefficients, estimate;
+    static if (trimmed)
+    {
+        import std.algorithm: min, max;
+        import std.math: sqrt;
+        const width = min(1.0L, 1 / sqrt(effectiveSize));
+        const lower = weightedTrimmedHDLower(a, b, width);
+        const upper = min(1.0L, lower + width);
+    }
     real lowerCDF = 0;
     foreach (i; 0 .. workspace.length)
     {
-        const upperCDF = i + 1 == workspace.length ? 1.0L :
-            betaCDF(workspace[i].cumulative / total, a, b);
+        static if (trimmed)
+        {
+            const left = i == 0 ? 0.0L : workspace[i - 1].cumulative / total;
+            const right = i + 1 == workspace.length ? 1.0L : workspace[i].cumulative / total;
+            const clippedLeft = max(left, lower), clippedRight = min(right, upper);
+            // Preserve independently accumulated suffixes for unclipped edges.
+            const leftTail = left >= lower ? workspace[i].upper / total : 1 - lower;
+            const rightTail = right <= upper ?
+                (i + 1 == workspace.length ? 0.0L : workspace[i + 1].upper / total) : 1 - upper;
+            // Equal rounded prefixes may still enclose a nonzero upper mass.
+            if (clippedRight <= clippedLeft && rightTail >= leftTail) continue;
+            lowerCDF = betaCDF(clippedLeft, a, b);
+            const upperCDF = betaCDF(clippedRight, a, b);
+        }
+        else
+            const upperCDF = i + 1 == workspace.length ? 1.0L :
+                betaCDF(workspace[i].cumulative / total, a, b);
         real coefficient;
         if (upperCDF <= 0.5L)
             coefficient = upperCDF - lowerCDF;
         else
         {
-            const upperTail = i + 1 == workspace.length ? 0.0L :
-                betaCDF(workspace[i + 1].upper / total, b, a);
+            static if (trimmed)
+                const upperTail = betaCDF(rightTail, b, a);
+            else
+                const upperTail = i + 1 == workspace.length ? 0.0L :
+                    betaCDF(workspace[i + 1].upper / total, b, a);
             if (lowerCDF >= 0.5L)
-                coefficient = betaCDF(workspace[i].upper / total, b, a) - upperTail;
+            {
+                static if (trimmed)
+                    coefficient = betaCDF(leftTail, b, a) - upperTail;
+                else
+                    coefficient = betaCDF(workspace[i].upper / total, b, a) - upperTail;
+            }
             else
                 coefficient = 1 - lowerCDF - upperTail;
         }
@@ -4128,8 +4211,8 @@ private auto weightedQuantileAt(F, WeightedQuantileAlgo algorithm, Workspace, P)
         return cast(F) workspace[0].value;
     if (probability == 1)
         return cast(F) workspace[$ - 1].value;
-    static if (algorithm == WeightedQuantileAlgo.harrellDavis)
-        return weightedHarrellDavisAt!F(workspace, cast(real) probability, effectiveSize);
+    static if (algorithm != WeightedQuantileAlgo.inverseCDF)
+        return weightedHarrellDavisAt!(F, algorithm == WeightedQuantileAlgo.trimmedHarrellDavis)(workspace, cast(real) probability, effectiveSize);
     else
     {
         const target = cast(real) probability * workspace[$ - 1].cumulative;
@@ -4158,7 +4241,8 @@ private auto allocatedWeightedQuantile(F, WeightedQuantileAlgo algorithm,
     import std.math: isFinite;
 
     static assert(algorithm == WeightedQuantileAlgo.inverseCDF ||
-        algorithm == WeightedQuantileAlgo.harrellDavis,
+        algorithm == WeightedQuantileAlgo.harrellDavis ||
+        algorithm == WeightedQuantileAlgo.trimmedHarrellDavis,
         "Unsupported weighted quantile algorithm");
     scope auto values = quantileSlice(data);
     scope auto masses = quantileSlice(weights);
@@ -4200,7 +4284,7 @@ private auto allocatedWeightedQuantile(F, WeightedQuantileAlgo algorithm,
     // to equal floating-point values. Order tied masses consistently as well.
     sort!((a, b) => a.value < b.value ||
         (a.value == b.value && a.cumulative < b.cumulative))(workspace);
-    static if (algorithm == WeightedQuantileAlgo.harrellDavis)
+    static if (algorithm != WeightedQuantileAlgo.inverseCDF)
     {
         Summator!(real, Summation.kahan) suffix, squares;
         foreach_reverse (i; 0 .. workspace.length)
@@ -4219,7 +4303,7 @@ private auto allocatedWeightedQuantile(F, WeightedQuantileAlgo algorithm,
         workspace[i].cumulative = cumulative.sum;
     }
     real effectiveSize = 1;
-    static if (algorithm == WeightedQuantileAlgo.harrellDavis)
+    static if (algorithm != WeightedQuantileAlgo.inverseCDF)
     {
         effectiveSize = cumulative.sum * cumulative.sum / squares.sum;
         if (effectiveSize < 1) effectiveSize = 1;
@@ -4284,8 +4368,8 @@ Inputs are never modified. A scalar probability returns a scalar. A probability
 array/slice or multiple probabilities returns an owning slice. Omitting
 probabilities requests $(TT [0, 0.25, 0.5, 0.75, 1]). For inverseCDF the inferred
 output type is the unqualified observation type, including integral types.
-Harrell-Davis promotes integral observations to double and preserves floating
-observation types. An explicit F selects the result type; Harrell-Davis requires
+Both Harrell-Davis algorithms promote integral observations to double and preserves floating
+observation types. An explicit F selects the result type; both require
 a floating-point F.
 
 The mathematical result is invariant to positive rescaling of all weights.
@@ -4299,7 +4383,9 @@ Signed zeros compare equal; the sign of a selected zero is unspecified.
 A paired workspace is sorted once. For n observations and k probabilities,
 inverseCDF takes $(TT O(n log n + k log n)) time. Harrell-Davis takes
 $(TT O(n log n + k*n)) time, including beta CDF evaluations, and reuses effective
-sample size and cumulative masses across probabilities. Both use $(TT O(n + k))
+sample size and cumulative masses across probabilities. Trimmed Harrell-Davis
+adds a bounded interval search per probability and skips excluded intervals.
+All algorithms use $(TT O(n + k))
 storage. Scratch storage is needed even for a scalar result.
 
 Harrell-Davis evaluates coefficients using lower or upper tails to reduce
@@ -4316,7 +4402,7 @@ See_also:
     $(LREF WeightedQuantileAlgo), $(LREF rcWeightedQuantile), $(LREF makeWeightedQuantile)
 +/
 template weightedQuantile(F, WeightedQuantileAlgo algorithm = WeightedQuantileAlgo.inverseCDF)
-    if (algorithm != WeightedQuantileAlgo.harrellDavis || isFloatingPoint!F)
+    if (algorithm == WeightedQuantileAlgo.inverseCDF || isFloatingPoint!F)
 {
     /++
     Params:
@@ -4372,6 +4458,24 @@ unittest
     assert(smooth.approxEqual(29.450762222351227));
 }
 
+/// Trimmed smoothing can exclude extreme outcomes from a central estimate.
+/// The same outlier can still contribute to quantiles near the upper tail.
+version(mir_stat_test)
+@safe pure nothrow
+unittest
+{
+    import mir.math.common: approxEqual;
+    import mir.ndslice.slice: sliced;
+    const double[4] values = [1, 2, 3, 10000];
+    const double[4] weights = [1, 4, 4, 1];
+    auto median = weightedQuantile!(WeightedQuantileAlgo.trimmedHarrellDavis)(
+        weights[].sliced, values[].sliced, 0.5);
+    assert(median.approxEqual(2.5));
+    assert(weightedQuantile(weights, values, 0.5) == 2);
+    auto smooth = weightedQuantile!(WeightedQuantileAlgo.harrellDavis)(weights, values, 0.5);
+    assert(smooth.approxEqual(292.59361886338557));
+}
+
 /++
 Compute weighted quantiles with reference-counted scratch and result storage.
 Uses the definitions, input requirements, and numerical rules of $(LREF weightedQuantile).
@@ -4384,7 +4488,7 @@ Params:
     algorithm = weighted quantile definition, default inverseCDF
 +/
 template rcWeightedQuantile(F, WeightedQuantileAlgo algorithm = WeightedQuantileAlgo.inverseCDF)
-    if (algorithm != WeightedQuantileAlgo.harrellDavis || isFloatingPoint!F)
+    if (algorithm == WeightedQuantileAlgo.inverseCDF || isFloatingPoint!F)
 {
     /++
     Params:
@@ -4448,7 +4552,7 @@ Params:
     algorithm = weighted quantile definition, default inverseCDF
 +/
 template makeWeightedQuantile(F, WeightedQuantileAlgo algorithm = WeightedQuantileAlgo.inverseCDF)
-    if (algorithm != WeightedQuantileAlgo.harrellDavis || isFloatingPoint!F)
+    if (algorithm == WeightedQuantileAlgo.inverseCDF || isFloatingPoint!F)
 {
     /++
     Params:
@@ -4690,29 +4794,33 @@ version(mir_stat_test)
 @safe pure nothrow @nogc
 unittest
 {
-    import mir.math.common: approxEqual;
-    import std.math: isFinite;
-    alias hd = rcWeightedQuantile!(WeightedQuantileAlgo.harrellDavis);
-    const real[2] weights = [real.max, real.max];
-    const real[2] extreme = [-real.max, real.max];
-    const real[2] positive = [real.max / 2, real.max];
-    auto mid = hd(weights, extreme, 0.5);
-    assert(isFinite(mid) && (mid / real.max).approxEqual(0.0L, 0.0L, 1e-14L));
-    auto positiveMid = hd(weights, positive, 0.5);
-    assert(isFinite(positiveMid) && (positiveMid / real.max).approxEqual(0.75L));
-    const real[2] constant = [real.max, real.max];
-    assert(hd(weights, constant, 0.25) == real.max);
-    const double[3] singleValues = [double.nan, 7, double.infinity];
-    const int[3] singleWeights = [0, 1, 0];
-    assert(hd(singleWeights, singleValues) == [7.0, 7, 7, 7, 7]);
-    const int[2] integerValues = [0, 10];
-    const int[2] integerWeights = [1, 1];
-    static assert(is(typeof(hd(integerWeights, integerValues, 0.5)) == double));
-    const float[2] floatValues = [0, 10];
-    static assert(is(typeof(hd(integerWeights, floatValues, 0.5)) == float));
-    static assert(!__traits(compiles,
-        rcWeightedQuantile!(int, WeightedQuantileAlgo.harrellDavis)(integerWeights, integerValues, 0.5)));
-    assert(hd(integerWeights, integerValues, 0.0, 1.0) == [0.0, 10]);
+    static foreach (algorithm; [WeightedQuantileAlgo.harrellDavis,
+        WeightedQuantileAlgo.trimmedHarrellDavis])
+    {{
+        import mir.math.common: approxEqual;
+        import std.math: isFinite;
+        alias hd = rcWeightedQuantile!algorithm;
+        const real[2] weights = [real.max, real.max];
+        const real[2] extreme = [-real.max, real.max];
+        const real[2] positive = [real.max / 2, real.max];
+        auto mid = hd(weights, extreme, 0.5);
+        assert(isFinite(mid) && (mid / real.max).approxEqual(0.0L, 0.0L, 1e-14L));
+        auto positiveMid = hd(weights, positive, 0.5);
+        assert(isFinite(positiveMid) && (positiveMid / real.max).approxEqual(0.75L));
+        const real[2] constant = [real.max, real.max];
+        assert(hd(weights, constant, 0.25) == real.max);
+        const double[3] singleValues = [double.nan, 7, double.infinity];
+        const int[3] singleWeights = [0, 1, 0];
+        assert(hd(singleWeights, singleValues) == [7.0, 7, 7, 7, 7]);
+        const int[2] integerValues = [0, 10];
+        const int[2] integerWeights = [1, 1];
+        static assert(is(typeof(hd(integerWeights, integerValues, 0.5)) == double));
+        const float[2] floatValues = [0, 10];
+        static assert(is(typeof(hd(integerWeights, floatValues, 0.5)) == float));
+        static assert(!__traits(compiles,
+            rcWeightedQuantile!(int, algorithm)(integerWeights, integerValues, 0.5)));
+        assert(hd(integerWeights, integerValues, 0.0, 1.0) == [0.0, 10]);
+    }}
 }
 
 // Invariants and monotonicity on interior probabilities, plus rescaled weights.
@@ -4720,21 +4828,25 @@ version(mir_stat_test)
 @safe pure nothrow @nogc
 unittest
 {
-    import mir.math.common: approxEqual;
-    alias hd = rcWeightedQuantile!(WeightedQuantileAlgo.harrellDavis);
-    const double[4] weights = [1, 1, 1, 97];
-    const double[4] scaled = [1e200, 1e200, 1e200, 97e200];
-    const int[4] values = [0, 10, 20, 30];
-    double[21] levels;
-    foreach (i; 0 .. levels.length) levels[i] = i / 20.0;
-    auto result = hd(weights, values, levels);
-    auto scaledResult = hd(scaled, values, levels);
-    foreach (i; 0 .. levels.length)
-    {
-        assert(result[i] >= 0 && result[i] <= 30);
-        assert(result[i].approxEqual(scaledResult[i], 1e-12, 1e-12));
-        if (i) assert(result[i] >= result[i - 1]);
-    }
+    static foreach (algorithm; [WeightedQuantileAlgo.harrellDavis,
+        WeightedQuantileAlgo.trimmedHarrellDavis])
+    {{
+        import mir.math.common: approxEqual;
+        alias hd = rcWeightedQuantile!algorithm;
+        const double[4] weights = [1, 1, 1, 97];
+        const double[4] scaled = [1e200, 1e200, 1e200, 97e200];
+        const int[4] values = [0, 10, 20, 30];
+        double[21] levels;
+        foreach (i; 0 .. levels.length) levels[i] = i / 20.0;
+        auto result = hd(weights, values, levels);
+        auto scaledResult = hd(scaled, values, levels);
+        foreach (i; 0 .. levels.length)
+        {
+            assert(result[i] >= 0 && result[i] <= 30);
+            assert(result[i].approxEqual(scaledResult[i], 1e-12, 1e-12));
+            if (i) assert(result[i] >= result[i - 1]);
+        }
+    }}
 }
 
 // All allocation factories use the same smoothing kernel and release scratch.
@@ -4742,28 +4854,77 @@ version(mir_stat_test)
 @system pure nothrow
 unittest
 {
+    static foreach (algorithm; [WeightedQuantileAlgo.harrellDavis,
+        WeightedQuantileAlgo.trimmedHarrellDavis])
+    {{
+        import mir.math.common: approxEqual;
+        import std.experimental.allocator: dispose;
+        import mir.ndslice.slice: sliced;
+        import mir.ndslice.dynamic: transposed;
+        const int[6] data = [30, -1, 0, -1, 10, -1];
+        const int[6] weights = [1, -1, 1, -1, 2, -1];
+        const double[3] levels = [0, 0.5, 1];
+        auto values = data[].sliced(3, 2).transposed[0];
+        auto masses = weights[].sliced(3, 2).transposed[0];
+        auto gc = weightedQuantile!algorithm(masses, values, levels);
+        auto rc = rcWeightedQuantile!algorithm(masses, values, levels);
+        QuantileTestAllocator!() allocator;
+        auto custom = makeWeightedQuantile!(double, algorithm)(allocator, masses, values, levels);
+        assert(allocator.allocations == 2 && allocator.releases == 1);
+        foreach (i; 0 .. levels.length)
+            assert(gc[i].approxEqual(rc[i]) && gc[i].approxEqual(custom[i]));
+        allocator.dispose(custom.field);
+        assert(allocator.releases == 2);
+        auto scalar = makeWeightedQuantile!algorithm(allocator, masses, values, 0.5);
+        assert(scalar.approxEqual(algorithm == WeightedQuantileAlgo.harrellDavis ?
+            11.680673694094532 : 10.753130990579251));
+        assert(allocator.allocations == 3 && allocator.releases == 3);
+    }}
+}
+
+// Trimmed-HD reference values from 80-digit beta integration, including ties,
+// vanishing weights, and a tail that trimming does not remove.
+version(mir_stat_test)
+@safe pure nothrow @nogc
+unittest
+{
     import mir.math.common: approxEqual;
-    import std.experimental.allocator: dispose;
-    import mir.ndslice.slice: sliced;
-    import mir.ndslice.dynamic: transposed;
-    enum algorithm = WeightedQuantileAlgo.harrellDavis;
-    const int[6] data = [30, -1, 0, -1, 10, -1];
-    const int[6] weights = [1, -1, 1, -1, 2, -1];
-    const double[3] levels = [0, 0.5, 1];
-    auto values = data[].sliced(3, 2).transposed[0];
-    auto masses = weights[].sliced(3, 2).transposed[0];
-    auto gc = weightedQuantile!algorithm(masses, values, levels);
-    auto rc = rcWeightedQuantile!algorithm(masses, values, levels);
-    QuantileTestAllocator!() allocator;
-    auto custom = makeWeightedQuantile!(double, algorithm)(allocator, masses, values, levels);
-    assert(allocator.allocations == 2 && allocator.releases == 1);
-    foreach (i; 0 .. levels.length)
-        assert(gc[i].approxEqual(rc[i]) && gc[i].approxEqual(custom[i]));
-    allocator.dispose(custom.field);
-    assert(allocator.releases == 2);
-    auto scalar = makeWeightedQuantile!algorithm(allocator, masses, values, 0.5);
-    assert(scalar.approxEqual(11.680673694094532));
-    assert(allocator.allocations == 3 && allocator.releases == 3);
+    alias thd = rcWeightedQuantile!(WeightedQuantileAlgo.trimmedHarrellDavis);
+    const double[3] values = [0, 10, 100];
+    const double[3] zero = [1, 0, 1], tiny = [1, 0.000001, 1];
+    assert(thd(zero, values, 0.5).approxEqual(50.0));
+    assert(thd(tiny, values, 0.5).approxEqual(49.999968881235418, 1e-12, 1e-12));
+    assert(thd(tiny, values, 0.4).approxEqual(24.518539568626075, 1e-12, 1e-12));
+    const int[3] tiedWeights = [1, 2, 1], tiedValues = [0, 10, 30];
+    const int[4] splitWeights = [1, 1, 1, 1], splitValues = [0, 10, 10, 30];
+    assert(thd(tiedWeights, tiedValues, 0.5).approxEqual(10.753130990579251));
+    assert(thd(splitWeights, splitValues, 0.5).approxEqual(10.0));
+    const double[3] tailValues = [0, 1, 1e12], tailWeights = [1, 1, 1e-12];
+    assert(thd(tailWeights, tailValues, 0.5).approxEqual(0.500000000000389, 1e-12, 1e-12));
+    assert(thd(tailWeights, tailValues, 0.75).approxEqual(1193.996801217712, 1e-12, 1e-12));
+    // Prefixes round to one, but the independently summed suffix retains mass.
+    const double[3] roundedValues = [0, 1, 1e30], roundedWeights = [1, 1, 1e-30];
+    assert(thd(roundedWeights, roundedValues, 0.99).approxEqual(1.2890527282600647e29, 1e-12, 0));
+}
+
+// The interval is fixed-width, with boundary modes and symmetric/asymmetric
+// interior modes. These checks exercise the interval solver independently.
+version(mir_stat_test)
+@safe pure nothrow @nogc
+unittest
+{
+    import mir.math.common: approxEqual;
+    import std.math: log;
+    assert(weightedTrimmedHDLower(1, 1, 1) == 0);
+    assert(weightedTrimmedHDLower(0.5L, 3, 0.5L) == 0);
+    assert(weightedTrimmedHDLower(3, 0.5L, 0.5L) == 0.5L);
+    assert(weightedTrimmedHDLower(3, 3, 0.5L) == 0.25L);
+    const left = weightedTrimmedHDLower(2, 5, 0.25L);
+    const right = left + 0.25L;
+    assert(left > 0 && right < 1);
+    assert((log(left) + 4 * log(1-left)).approxEqual(
+        log(right) + 4 * log(1-right), 1e-13L, 1e-13L));
+    assert(weightedTrimmedHDLower(5, 2, 0.25L).approxEqual(1-right, 1e-13L, 1e-13L));
 }
 
 private enum QuantileAllocation { gc, rc, custom }
@@ -10170,7 +10331,6 @@ unittest
     assert(v.centeredSumOfQuarts.approxEqual(792.784119));
     assert(v.centeredSumOfSquares.approxEqual(54.765625));
 }
-
 
 // check scaledSumOfCubes/scaledSumOfQuarts/skewness
 version(mir_stat_test)
