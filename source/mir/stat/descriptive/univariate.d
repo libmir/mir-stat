@@ -3992,7 +3992,7 @@ auto quantileImpl(F, QuantileAlgo quantileAlgo, Iterator, G)(Slice!Iterator slic
 }
 
 /++
-Algorithms for quantiles of a weighted empirical distribution.
+Algorithms for weighted quantile estimation.
 
 Weights represent relative probability masses, not a request to replicate
 observations and apply the unweighted default algorithm. They need not sum to
@@ -4015,15 +4015,110 @@ enum WeightedQuantileAlgo
     Quantiles can jump when a probability crosses a cumulative-weight boundary.
     +/
     inverseCDF,
+    /++
+    Weighted Harrell-Davis smoothing estimator following Akinshin.
+
+    Let $(TT t_i) be cumulative normalized weights of sorted observations, with
+    $(TT t_0 = 0) and $(TT t_n = 1). Compute Kish effective sample size
+    $(TT nEff = (sum w)^2 / sum(w^2)) from the original positive-weight rows.
+    For $(TT 0 < p < 1), set $(TT a = (nEff + 1)*p) and
+    $(TT b = (nEff + 1)*(1-p)). Observation i receives coefficient
+    $(TT I(t_i; a, b) - I(t_(i-1); a, b)), where I is the regularized
+    incomplete beta CDF. The estimate is the sum of coefficient times value.
+
+    This smooths across observations rather than selecting an exact empirical
+    quantile. Equal weights recover ordinary Harrell-Davis, not type7.
+    Small changes in weights give continuous estimates at interior probabilities,
+    but extreme observations can have substantial influence. It is not a robust
+    replacement for inverseCDF and does not promise greater statistical efficiency
+    for every distribution.
+
+    Do not combine tied rows before calculating nEff: splitting a weight between
+    identical observations changes nEff and can change the estimate, even though
+    the empirical distribution is unchanged. Rescaling every weight by the same
+    positive constant does not change the mathematical estimate.
+
+    As an explicit endpoint extension, p=0 and p=1 return the positive-weight
+    minimum and maximum. These endpoint values need not be continuous as a
+    weight reaches zero. Integral observations infer double output; floating
+    observations retain their type. An explicit output type must be floating-point.
+
+    References:
+        $(LINK2 https://arxiv.org/abs/2304.07265, Akinshin (2023), Weighted quantile estimators).
+    +/
+    harrellDavis,
 }
 
-private struct WeightedQuantileEntry(T)
+private struct WeightedQuantileEntry(T, WeightedQuantileAlgo algorithm)
 {
     T value;
     real cumulative;
+    static if (algorithm == WeightedQuantileAlgo.harrellDavis)
+        real upper;
 }
 
-private auto weightedQuantileAt(F, Workspace, P)(scope Workspace workspace, P probability)
+private template WeightedQuantileResult(Data, WeightedQuantileAlgo algorithm)
+{
+    import mir.primitives: DeepElementType;
+    import std.traits: Unqual;
+    alias Element = Unqual!(DeepElementType!(typeof(quantileSlice(Data.init))));
+    static if (algorithm == WeightedQuantileAlgo.harrellDavis)
+        alias WeightedQuantileResult = quantileType!(Element, QuantileAlgo.type7);
+    else
+        alias WeightedQuantileResult = Element;
+}
+
+// Both prefixes and suffixes were accumulated independently. Subtracting a
+// rounded prefix from one would lose precisely the small upper masses we need.
+private auto weightedHarrellDavisAt(F, Workspace)(scope Workspace workspace,
+    real probability, real effectiveSize)
+{
+    import mir.stat.distribution.beta: betaCDF;
+    import std.math: fabs;
+    const lowValue = cast(real) workspace[0].value;
+    const highValue = cast(real) workspace[$ - 1].value;
+    if (workspace[0].value == workspace[$ - 1].value)
+        return cast(F) workspace[0].value;
+    const scale = fabs(lowValue) > fabs(highValue) ? fabs(lowValue) : fabs(highValue);
+    const a = (effectiveSize + 1) * probability;
+    const b = (effectiveSize + 1) * (1 - probability);
+    const total = workspace[$ - 1].cumulative;
+    Summator!(real, Summation.kahan) coefficients, estimate;
+    real lowerCDF = 0;
+    foreach (i; 0 .. workspace.length)
+    {
+        const upperCDF = i + 1 == workspace.length ? 1.0L :
+            betaCDF(workspace[i].cumulative / total, a, b);
+        real coefficient;
+        if (upperCDF <= 0.5L)
+            coefficient = upperCDF - lowerCDF;
+        else
+        {
+            const upperTail = i + 1 == workspace.length ? 0.0L :
+                betaCDF(workspace[i + 1].upper / total, b, a);
+            if (lowerCDF >= 0.5L)
+                coefficient = betaCDF(workspace[i].upper / total, b, a) - upperTail;
+            else
+                coefficient = 1 - lowerCDF - upperTail;
+        }
+        // Roundoff in nearly identical beta evaluations must not create a
+        // negative averaging weight. Renormalize the resulting coefficients.
+        if (coefficient < 0)
+            coefficient = 0;
+        coefficients.put(coefficient);
+        estimate.put(coefficient * (cast(real) workspace[i].value / scale));
+        lowerCDF = upperCDF;
+    }
+    assert(coefficients.sum > 0, "weightedQuantile: invalid Harrell-Davis coefficients");
+    auto normalized = estimate.sum / coefficients.sum;
+    const low = lowValue / scale, high = highValue / scale;
+    if (normalized < low) normalized = low;
+    if (normalized > high) normalized = high;
+    return cast(F) (normalized * scale);
+}
+
+private auto weightedQuantileAt(F, WeightedQuantileAlgo algorithm, Workspace, P)(
+    scope Workspace workspace, P probability, real effectiveSize)
 {
     import std.math: isFinite;
     static assert(isFloatingPoint!P, "Probabilities must be floating-point values");
@@ -4033,18 +4128,23 @@ private auto weightedQuantileAt(F, Workspace, P)(scope Workspace workspace, P pr
         return cast(F) workspace[0].value;
     if (probability == 1)
         return cast(F) workspace[$ - 1].value;
-    const target = cast(real) probability * workspace[$ - 1].cumulative;
-    size_t low = 0;
-    size_t high = workspace.length - 1;
-    while (low < high)
+    static if (algorithm == WeightedQuantileAlgo.harrellDavis)
+        return weightedHarrellDavisAt!F(workspace, cast(real) probability, effectiveSize);
+    else
     {
-        const mid = low + (high - low) / 2;
-        if (workspace[mid].cumulative < target)
-            low = mid + 1;
-        else
-            high = mid;
+        const target = cast(real) probability * workspace[$ - 1].cumulative;
+        size_t low = 0;
+        size_t high = workspace.length - 1;
+        while (low < high)
+        {
+            const mid = low + (high - low) / 2;
+            if (workspace[mid].cumulative < target)
+                low = mid + 1;
+            else
+                high = mid;
+        }
+        return cast(F) workspace[low].value;
     }
-    return cast(F) workspace[low].value;
 }
 
 private auto allocatedWeightedQuantile(F, WeightedQuantileAlgo algorithm,
@@ -4057,7 +4157,8 @@ private auto allocatedWeightedQuantile(F, WeightedQuantileAlgo algorithm,
     import std.traits: Unqual, isNumeric;
     import std.math: isFinite;
 
-    static assert(algorithm == WeightedQuantileAlgo.inverseCDF,
+    static assert(algorithm == WeightedQuantileAlgo.inverseCDF ||
+        algorithm == WeightedQuantileAlgo.harrellDavis,
         "Unsupported weighted quantile algorithm");
     scope auto values = quantileSlice(data);
     scope auto masses = quantileSlice(weights);
@@ -4085,19 +4186,31 @@ private auto allocatedWeightedQuantile(F, WeightedQuantileAlgo algorithm,
             maximum = w;
     }
     assert(count != 0, "weightedQuantile: at least one positive weight is required");
-    auto scratch = allocateQuantiles!(WeightedQuantileEntry!Element, allocation)(context, count);
+    alias Entry = WeightedQuantileEntry!(Element, algorithm);
+    auto scratch = allocateQuantiles!(Entry, allocation)(context, count);
     static if (allocation == QuantileAllocation.custom)
         scope(exit) releaseQuantiles(context, scratch);
     scope auto workspace = scratch.lightScope;
     size_t j;
     foreach (i; 0 .. masses.length)
         if (masses[i] > 0)
-            workspace[j++] = WeightedQuantileEntry!Element(values[i], cast(real) masses[i]);
+            workspace[j++] = Entry(values[i], cast(real) masses[i]);
 
     // Keep observations in their original type: large integers must not collapse
     // to equal floating-point values. Order tied masses consistently as well.
     sort!((a, b) => a.value < b.value ||
         (a.value == b.value && a.cumulative < b.cumulative))(workspace);
+    static if (algorithm == WeightedQuantileAlgo.harrellDavis)
+    {
+        Summator!(real, Summation.kahan) suffix, squares;
+        foreach_reverse (i; 0 .. workspace.length)
+        {
+            const mass = workspace[i].cumulative / maximum;
+            suffix.put(mass);
+            squares.put(mass * mass);
+            workspace[i].upper = suffix.sum;
+        }
+    }
     Summator!(real, Summation.kahan) cumulative;
     foreach (i; 0 .. workspace.length)
     {
@@ -4105,9 +4218,20 @@ private auto allocatedWeightedQuantile(F, WeightedQuantileAlgo algorithm,
         cumulative.put(workspace[i].cumulative / maximum);
         workspace[i].cumulative = cumulative.sum;
     }
+    real effectiveSize = 1;
+    static if (algorithm == WeightedQuantileAlgo.harrellDavis)
+    {
+        effectiveSize = cumulative.sum * cumulative.sum / squares.sum;
+        if (effectiveSize < 1) effectiveSize = 1;
+        if (effectiveSize > count) effectiveSize = count;
+        // Separate accumulation directions may round differently at the edges.
+        foreach (i; 0 .. workspace.length)
+            if (workspace[i].upper > cumulative.sum)
+                workspace[i].upper = cumulative.sum;
+    }
 
     static if (isFloatingPoint!(Unqual!P))
-        return weightedQuantileAt!F(workspace, probabilities);
+        return weightedQuantileAt!(F, algorithm)(workspace, probabilities, effectiveSize);
     else
     {
         scope auto levels = quantileSlice(probabilities);
@@ -4116,7 +4240,7 @@ private auto allocatedWeightedQuantile(F, WeightedQuantileAlgo algorithm,
         static if (allocation == QuantileAllocation.custom)
             scope(failure) releaseQuantiles(context, result);
         foreach (i; 0 .. levels.length)
-            result[i] = weightedQuantileAt!F(workspace, levels[i]);
+            result[i] = weightedQuantileAt!(F, algorithm)(workspace, levels[i], effectiveSize);
         return result;
     }
 }
@@ -4144,7 +4268,7 @@ private auto dispatchWeightedQuantile(F, WeightedQuantileAlgo algorithm,
 }
 
 /++
-Compute weighted empirical quantiles with GC-allocated scratch and results.
+Compute weighted quantile estimates with GC-allocated scratch and results.
 
 Use weights to change the probability mass assigned to observations, for example
 when reweighting simulated outcomes. $(LREF WeightedQuantileAlgo.inverseCDF)
@@ -4158,9 +4282,11 @@ These requirements are checked with assertions.
 
 Inputs are never modified. A scalar probability returns a scalar. A probability
 array/slice or multiple probabilities returns an owning slice. Omitting
-probabilities requests $(TT [0, 0.25, 0.5, 0.75, 1]). The inferred output type is
-the unqualified observation type, including integral types. An explicit F casts
-selected values to that type.
+probabilities requests $(TT [0, 0.25, 0.5, 0.75, 1]). For inverseCDF the inferred
+output type is the unqualified observation type, including integral types.
+Harrell-Davis promotes integral observations to double and preserves floating
+observation types. An explicit F selects the result type; Harrell-Davis requires
+a floating-point F.
 
 The mathematical result is invariant to positive rescaling of all weights.
 Cumulative masses use compensated summation in $(TT real), after dividing by the
@@ -4170,9 +4296,18 @@ probabilities close to a boundary; arbitrary rescaling is not promised to give
 bitwise-identical results. Endpoints select the extrema of positive-weight data.
 Signed zeros compare equal; the sign of a selected zero is unspecified.
 
-A paired workspace is sorted once, then each probability uses a binary search:
-$(TT O(n log n + k log n)) time and $(TT O(n + k)) storage for n observations
-and k probabilities. Scratch storage is needed even for a scalar result.
+A paired workspace is sorted once. For n observations and k probabilities,
+inverseCDF takes $(TT O(n log n + k log n)) time. Harrell-Davis takes
+$(TT O(n log n + k*n)) time, including beta CDF evaluations, and reuses effective
+sample size and cumulative masses across probabilities. Both use $(TT O(n + k))
+storage. Scratch storage is needed even for a scalar result.
+
+Harrell-Davis evaluates coefficients using lower or upper tails to reduce
+cancellation. Computed negative coefficients are clipped to zero and the
+coefficient sum is normalized to correct roundoff. Values are scaled during
+accumulation to avoid overflow; roundoff outside the input range is clamped.
+Arithmetic uses real, whose precision depends on the compiler and platform.
+These safeguards do not guarantee uniform accuracy in extreme beta tails.
 
 Params:
     F = explicit result type; inferred from observations when omitted
@@ -4181,6 +4316,7 @@ See_also:
     $(LREF WeightedQuantileAlgo), $(LREF rcWeightedQuantile), $(LREF makeWeightedQuantile)
 +/
 template weightedQuantile(F, WeightedQuantileAlgo algorithm = WeightedQuantileAlgo.inverseCDF)
+    if (algorithm != WeightedQuantileAlgo.harrellDavis || isFloatingPoint!F)
 {
     /++
     Params:
@@ -4211,9 +4347,7 @@ template weightedQuantile(WeightedQuantileAlgo algorithm = WeightedQuantileAlgo.
         scope auto ref Weights weights, scope auto ref Data data,
         scope auto ref P probabilities)
     {
-        import mir.primitives: DeepElementType;
-        import std.traits: Unqual;
-        alias F = Unqual!(DeepElementType!(typeof(quantileSlice(data))));
+        alias F = WeightedQuantileResult!(Data, algorithm);
         QuantileContext context;
         return dispatchWeightedQuantile!(F, algorithm, QuantileAllocation.gc)(
             context, weights, data, probabilities);
@@ -4221,6 +4355,7 @@ template weightedQuantile(WeightedQuantileAlgo algorithm = WeightedQuantileAlgo.
 }
 
 /// Increasing an outcome's probability mass moves the median toward it.
+/// Harrell-Davis optionally smooths across outcomes instead of selecting one.
 version(mir_stat_test)
 @safe pure nothrow
 unittest
@@ -4231,6 +4366,10 @@ unittest
     assert(weightedQuantile(equal, values, 0.5) == 10);
     assert(weightedQuantile(reweighted, values, 0.5) == 30);
     assert(weightedQuantile(reweighted, values) == [0, 30, 30, 30, 30]);
+    import mir.math.common: approxEqual;
+    auto smooth = weightedQuantile!(WeightedQuantileAlgo.harrellDavis)(reweighted, values, 0.5);
+    static assert(is(typeof(smooth) == double));
+    assert(smooth.approxEqual(29.450762222351227));
 }
 
 /++
@@ -4245,6 +4384,7 @@ Params:
     algorithm = weighted quantile definition, default inverseCDF
 +/
 template rcWeightedQuantile(F, WeightedQuantileAlgo algorithm = WeightedQuantileAlgo.inverseCDF)
+    if (algorithm != WeightedQuantileAlgo.harrellDavis || isFloatingPoint!F)
 {
     /++
     Params:
@@ -4275,9 +4415,7 @@ template rcWeightedQuantile(WeightedQuantileAlgo algorithm = WeightedQuantileAlg
         scope auto ref Weights weights, scope auto ref Data data,
         scope auto ref P probabilities)
     {
-        import mir.primitives: DeepElementType;
-        import std.traits: Unqual;
-        alias F = Unqual!(DeepElementType!(typeof(quantileSlice(data))));
+        alias F = WeightedQuantileResult!(Data, algorithm);
         QuantileContext context;
         return dispatchWeightedQuantile!(F, algorithm, QuantileAllocation.rc)(
             context, weights, data, probabilities);
@@ -4310,6 +4448,7 @@ Params:
     algorithm = weighted quantile definition, default inverseCDF
 +/
 template makeWeightedQuantile(F, WeightedQuantileAlgo algorithm = WeightedQuantileAlgo.inverseCDF)
+    if (algorithm != WeightedQuantileAlgo.harrellDavis || isFloatingPoint!F)
 {
     /++
     Params:
@@ -4341,9 +4480,7 @@ template makeWeightedQuantile(WeightedQuantileAlgo algorithm = WeightedQuantileA
         ref Allocator allocator, scope auto ref Weights weights, scope auto ref Data data,
         scope auto ref P probabilities)
     {
-        import mir.primitives: DeepElementType;
-        import std.traits: Unqual;
-        alias F = Unqual!(DeepElementType!(typeof(quantileSlice(data))));
+        alias F = WeightedQuantileResult!(Data, algorithm);
         return dispatchWeightedQuantile!(F, algorithm, QuantileAllocation.custom)(
             allocator, weights, data, probabilities);
     }
@@ -4506,6 +4643,127 @@ unittest
     QuantileTestAllocator!() invalid;
     assertThrown!AssertError(makeWeightedQuantile(invalid, weights, data, 0.0, 2.0));
     assert(invalid.allocations == 2 && invalid.releases == 2);
+}
+
+// High-precision reference values, including tails and effective-size semantics.
+version(mir_stat_test)
+@safe pure nothrow @nogc
+unittest
+{
+    import mir.math.common: approxEqual;
+    alias hd = rcWeightedQuantile!(WeightedQuantileAlgo.harrellDavis);
+    const double[3] values = [0, 10, 100];
+    const double[3] zero = [1, 0, 1];
+    const double[3] tiny = [1, 0.000001, 1];
+    assert(hd(zero, values, 0.5).approxEqual(50.0));
+    assert(hd(tiny, values, 0.5).approxEqual(49.999974535212, 1e-12, 1e-12));
+    assert(hd(tiny, values, 0.4).approxEqual(34.43961434178727, 1e-12, 1e-12));
+    const double[3] splitValues = [0, 10, 30];
+    const double[3] splitWeights = [1, 2, 1];
+    const double[4] duplicateValues = [0, 10, 10, 30];
+    const double[4] equal = [1, 1, 1, 1];
+    assert(hd(splitWeights, splitValues, 0.5).approxEqual(11.680673694094532));
+    assert(hd(equal, duplicateValues, 0.5).approxEqual(11.265849975501613));
+
+    const double[3] tailValues = [0, 1, 1e12];
+    const double[3] tailWeights = [1, 1, 1e-12];
+    assert(hd(tailWeights, tailValues, 0.75).approxEqual(1142.889745000284, 1e-12, 1e-12));
+    assert(hd(tailWeights, tailValues, 0.5).approxEqual(0.5000006002111957, 1e-12, 1e-12));
+    // The difficult beta tail is less accurate on platforms with double-sized real.
+    assert(hd(tailWeights, tailValues, 1 - 1e-8).approxEqual(999999195275.2699, 1e-10, 0));
+    const double[4] outlier = [1, 2, 3, 10000];
+    const double[4] outlierWeights = [1, 4, 4, 1];
+    assert(hd(outlierWeights, outlier, 0.5).approxEqual(292.59361886338557));
+    double[64] regularValues, regularWeights;
+    foreach (i; 0 .. regularValues.length)
+    {
+        regularValues[i] = cast(double) i * i;
+        regularWeights[i] = 1;
+    }
+    assert(hd(regularWeights, regularValues, 0.5).approxEqual(1007.8484848484848, 1e-12, 1e-12));
+    assert(hd(tailWeights, tailValues, 1e-8).approxEqual(2.044415538269786e-9, 1e-12, 1e-22));
+}
+
+// Equal-weight HD with two values has a beta(1.5,1.5) median of their midpoint.
+// Scaling observations protects finite extreme values from intermediate overflow.
+version(mir_stat_test)
+@safe pure nothrow @nogc
+unittest
+{
+    import mir.math.common: approxEqual;
+    import std.math: isFinite;
+    alias hd = rcWeightedQuantile!(WeightedQuantileAlgo.harrellDavis);
+    const real[2] weights = [real.max, real.max];
+    const real[2] extreme = [-real.max, real.max];
+    const real[2] positive = [real.max / 2, real.max];
+    auto mid = hd(weights, extreme, 0.5);
+    assert(isFinite(mid) && (mid / real.max).approxEqual(0.0L, 0.0L, 1e-14L));
+    auto positiveMid = hd(weights, positive, 0.5);
+    assert(isFinite(positiveMid) && (positiveMid / real.max).approxEqual(0.75L));
+    const real[2] constant = [real.max, real.max];
+    assert(hd(weights, constant, 0.25) == real.max);
+    const double[3] singleValues = [double.nan, 7, double.infinity];
+    const int[3] singleWeights = [0, 1, 0];
+    assert(hd(singleWeights, singleValues) == [7.0, 7, 7, 7, 7]);
+    const int[2] integerValues = [0, 10];
+    const int[2] integerWeights = [1, 1];
+    static assert(is(typeof(hd(integerWeights, integerValues, 0.5)) == double));
+    const float[2] floatValues = [0, 10];
+    static assert(is(typeof(hd(integerWeights, floatValues, 0.5)) == float));
+    static assert(!__traits(compiles,
+        rcWeightedQuantile!(int, WeightedQuantileAlgo.harrellDavis)(integerWeights, integerValues, 0.5)));
+    assert(hd(integerWeights, integerValues, 0.0, 1.0) == [0.0, 10]);
+}
+
+// Invariants and monotonicity on interior probabilities, plus rescaled weights.
+version(mir_stat_test)
+@safe pure nothrow @nogc
+unittest
+{
+    import mir.math.common: approxEqual;
+    alias hd = rcWeightedQuantile!(WeightedQuantileAlgo.harrellDavis);
+    const double[4] weights = [1, 1, 1, 97];
+    const double[4] scaled = [1e200, 1e200, 1e200, 97e200];
+    const int[4] values = [0, 10, 20, 30];
+    double[21] levels;
+    foreach (i; 0 .. levels.length) levels[i] = i / 20.0;
+    auto result = hd(weights, values, levels);
+    auto scaledResult = hd(scaled, values, levels);
+    foreach (i; 0 .. levels.length)
+    {
+        assert(result[i] >= 0 && result[i] <= 30);
+        assert(result[i].approxEqual(scaledResult[i], 1e-12, 1e-12));
+        if (i) assert(result[i] >= result[i - 1]);
+    }
+}
+
+// All allocation factories use the same smoothing kernel and release scratch.
+version(mir_stat_test)
+@system pure nothrow
+unittest
+{
+    import mir.math.common: approxEqual;
+    import std.experimental.allocator: dispose;
+    import mir.ndslice.slice: sliced;
+    import mir.ndslice.dynamic: transposed;
+    enum algorithm = WeightedQuantileAlgo.harrellDavis;
+    const int[6] data = [30, -1, 0, -1, 10, -1];
+    const int[6] weights = [1, -1, 1, -1, 2, -1];
+    const double[3] levels = [0, 0.5, 1];
+    auto values = data[].sliced(3, 2).transposed[0];
+    auto masses = weights[].sliced(3, 2).transposed[0];
+    auto gc = weightedQuantile!algorithm(masses, values, levels);
+    auto rc = rcWeightedQuantile!algorithm(masses, values, levels);
+    QuantileTestAllocator!() allocator;
+    auto custom = makeWeightedQuantile!(double, algorithm)(allocator, masses, values, levels);
+    assert(allocator.allocations == 2 && allocator.releases == 1);
+    foreach (i; 0 .. levels.length)
+        assert(gc[i].approxEqual(rc[i]) && gc[i].approxEqual(custom[i]));
+    allocator.dispose(custom.field);
+    assert(allocator.releases == 2);
+    auto scalar = makeWeightedQuantile!algorithm(allocator, masses, values, 0.5);
+    assert(scalar.approxEqual(11.680673694094532));
+    assert(allocator.allocations == 3 && allocator.releases == 3);
 }
 
 private enum QuantileAllocation { gc, rc, custom }
