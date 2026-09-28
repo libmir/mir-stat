@@ -4072,6 +4072,44 @@ enum WeightedQuantileAlgo
         $(LINK2 https://arxiv.org/abs/2304.07265, Akinshin (2023), Weighted quantile estimators).
     +/
     trimmedHarrellDavis,
+    /++
+    Weighted type 7 using Akinshin's effective-size uniform interval.
+
+    Compute $(TT nEff = (sum w)^2 / sum(w^2)) from the original positive-weight
+    rows. Set $(TT h = (nEff - 1)*p + 1), clamped to [1, nEff]. Each sorted
+    observation receives its normalized cumulative-weight interval's overlap
+    with $(TT [(h-1)/nEff, h/nEff]), divided by the width $(TT 1/nEff).
+    The estimate is the sum of these coefficients times observations.
+
+    Equal weights recover $(LREF QuantileAlgo.type7). Unequal weights can
+    give contributions from more than two observations. This definition uses
+    probability weights, not replication counts. Rescaling all weights has no
+    mathematical effect, while splitting a row can change nEff and the result.
+    Zero-weight rows are ignored; interior estimates vary continuously as
+    weights tend to zero. Do not combine ties before computing nEff.
+
+    At p=0 and p=1 this API explicitly returns the positive-weight extrema.
+    The interior limits need not equal these endpoints: for values [0,10,20]
+    and weights [1,1,8], the limit as p approaches zero is approximately 15.45,
+    while the value at p=0 is 0. This is part of the definition, not roundoff.
+    Integral observations infer double output; floating observations retain
+    their type. Explicit output types must be floating-point.
+
+    References:
+        $(LINK2 https://arxiv.org/abs/2304.07265, Akinshin (2023), Weighted quantile estimators).
+    +/
+    type7,
+    /++
+    Weighted type 8 using the same uniform-interval construction as
+    $(LREF type7), with $(TT h = (nEff + 1/3)*p + 1/3), clamped to [1, nEff].
+
+    Equal weights recover $(LREF QuantileAlgo.type8). The approximate
+    median-unbiasedness of unweighted type 8 is not promised for arbitrary
+    weights. The weight, output-type, and endpoint rules of $(LREF type7)
+    apply, including possible jumps at p=0 and p=1. Clamping h can produce
+    constant estimates over intervals of interior probabilities.
+    +/
+    type8,
 }
 
 private struct WeightedQuantileEntry(T, WeightedQuantileAlgo algorithm)
@@ -4200,6 +4238,48 @@ private auto weightedHarrellDavisAt(F, bool trimmed, Workspace)(scope Workspace 
     return cast(F) (normalized * scale);
 }
 
+// Uniform-window counterpart of the beta-weighted estimators. Use suffixes
+// for upper windows so small upper masses survive rounded cumulative prefixes.
+private auto weightedUniformQuantileAt(F, WeightedQuantileAlgo algorithm, Workspace)(
+    scope Workspace workspace, real probability, real effectiveSize)
+{
+    import std.algorithm: min, max;
+    import std.math: fabs;
+    const lowValue = cast(real) workspace[0].value;
+    const highValue = cast(real) workspace[$ - 1].value;
+    if (workspace[0].value == workspace[$ - 1].value)
+        return cast(F) workspace[0].value;
+    const scale = max(fabs(lowValue), fabs(highValue));
+    // Reflect upper probabilities before computing h, avoiding 1 - roundedCDF.
+    const reflected = probability > 0.5L;
+    const p = reflected ? 1 - probability : probability;
+    static if (algorithm == WeightedQuantileAlgo.type7)
+        const rawH = (effectiveSize - 1) * p + 1;
+    else
+        const rawH = (effectiveSize + 1.0L / 3) * p + 1.0L / 3;
+    const h = min(effectiveSize, max(1.0L, rawH));
+    const lower = (h - 1) / effectiveSize, upper = h / effectiveSize;
+    const total = workspace[$ - 1].cumulative;
+    Summator!(real, Summation.kahan) coefficients, estimate;
+    foreach (i; 0 .. workspace.length)
+    {
+        const left = reflected ?
+            (i + 1 == workspace.length ? 0.0L : workspace[i + 1].upper / total) :
+            (i == 0 ? 0.0L : workspace[i - 1].cumulative / total);
+        const right = reflected ? workspace[i].upper / total :
+            (i + 1 == workspace.length ? 1.0L : workspace[i].cumulative / total);
+        const overlap = min(right, upper) - max(left, lower);
+        if (overlap <= 0) continue;
+        // The common width cancels when normalizing the retained overlaps.
+        coefficients.put(overlap);
+        estimate.put(overlap * (cast(real) workspace[i].value / scale));
+    }
+    assert(coefficients.sum > 0, "weightedQuantile: invalid uniform coefficients");
+    const normalized = min(highValue / scale, max(lowValue / scale,
+        estimate.sum / coefficients.sum));
+    return cast(F) (normalized * scale);
+}
+
 private auto weightedQuantileAt(F, WeightedQuantileAlgo algorithm, Workspace, P)(
     scope Workspace workspace, P probability, real effectiveSize)
 {
@@ -4211,7 +4291,9 @@ private auto weightedQuantileAt(F, WeightedQuantileAlgo algorithm, Workspace, P)
         return cast(F) workspace[0].value;
     if (probability == 1)
         return cast(F) workspace[$ - 1].value;
-    static if (algorithm != WeightedQuantileAlgo.inverseCDF)
+    static if (algorithm == WeightedQuantileAlgo.type7 || algorithm == WeightedQuantileAlgo.type8)
+        return weightedUniformQuantileAt!(F, algorithm)(workspace, cast(real) probability, effectiveSize);
+    else static if (algorithm != WeightedQuantileAlgo.inverseCDF)
         return weightedHarrellDavisAt!(F, algorithm == WeightedQuantileAlgo.trimmedHarrellDavis)(workspace, cast(real) probability, effectiveSize);
     else
     {
@@ -4242,7 +4324,8 @@ private auto allocatedWeightedQuantile(F, WeightedQuantileAlgo algorithm,
 
     static assert(algorithm == WeightedQuantileAlgo.inverseCDF ||
         algorithm == WeightedQuantileAlgo.harrellDavis ||
-        algorithm == WeightedQuantileAlgo.trimmedHarrellDavis,
+        algorithm == WeightedQuantileAlgo.trimmedHarrellDavis ||
+        algorithm == WeightedQuantileAlgo.type7 || algorithm == WeightedQuantileAlgo.type8,
         "Unsupported weighted quantile algorithm");
     scope auto values = quantileSlice(data);
     scope auto masses = quantileSlice(weights);
@@ -4368,9 +4451,9 @@ Inputs are never modified. A scalar probability returns a scalar. A probability
 array/slice or multiple probabilities returns an owning slice. Omitting
 probabilities requests $(TT [0, 0.25, 0.5, 0.75, 1]). For inverseCDF the inferred
 output type is the unqualified observation type, including integral types.
-Both Harrell-Davis algorithms promote integral observations to double and preserves floating
-observation types. An explicit F selects the result type; both require
-a floating-point F.
+All other algorithms promote integral observations to double and preserve
+floating observation types. An explicit F selects the result type; algorithms
+other than inverseCDF require a floating-point F.
 
 The mathematical result is invariant to positive rescaling of all weights.
 Cumulative masses use compensated summation in $(TT real), after dividing by the
@@ -4385,8 +4468,9 @@ inverseCDF takes $(TT O(n log n + k log n)) time. Harrell-Davis takes
 $(TT O(n log n + k*n)) time, including beta CDF evaluations, and reuses effective
 sample size and cumulative masses across probabilities. Trimmed Harrell-Davis
 adds a bounded interval search per probability and skips excluded intervals.
-All algorithms use $(TT O(n + k))
-storage. Scratch storage is needed even for a scalar result.
+Weighted type 7 and type 8 also take $(TT O(n log n + k*n)) time, using
+arithmetic interval overlaps without beta evaluations or a root search.
+All algorithms use $(TT O(n + k)) storage. Scratch storage is needed even for a scalar result.
 
 Harrell-Davis evaluates coefficients using lower or upper tails to reduce
 cancellation. Computed negative coefficients are clipped to zero and the
@@ -4474,6 +4558,27 @@ unittest
     assert(weightedQuantile(weights, values, 0.5) == 2);
     auto smooth = weightedQuantile!(WeightedQuantileAlgo.harrellDavis)(weights, values, 0.5);
     assert(smooth.approxEqual(292.59361886338557));
+}
+
+/// Types 7 and 8 recover the corresponding ordinary quantiles with equal weights.
+/// Reweighting simulated outcomes changes the estimated quartiles.
+version(mir_stat_test)
+@safe pure nothrow
+unittest
+{
+    import mir.math.common: approxEqual;
+    import mir.ndslice.slice: sliced;
+    const int[4] values = [0, 10, 20, 30];
+    const int[4] equal = [1, 1, 1, 1], weights = [1, 1, 1, 7];
+    auto q7 = weightedQuantile!(WeightedQuantileAlgo.type7)(equal, values, 0.25);
+    auto q8 = weightedQuantile!(WeightedQuantileAlgo.type8)(equal, values, 0.25);
+    assert(q7.approxEqual(7.5));
+    assert(q8.approxEqual(25.0 / 6));
+    auto reweighted = weightedQuantile!(WeightedQuantileAlgo.type7)(
+        weights[].sliced, values[].sliced, [0.25, 0.5, 0.75]);
+    assert(reweighted[0].approxEqual(25.0));
+    assert(reweighted[1].approxEqual(375.0 / 13));
+    assert(reweighted[2].approxEqual(30.0));
 }
 
 /++
@@ -4795,7 +4900,8 @@ version(mir_stat_test)
 unittest
 {
     static foreach (algorithm; [WeightedQuantileAlgo.harrellDavis,
-        WeightedQuantileAlgo.trimmedHarrellDavis])
+        WeightedQuantileAlgo.trimmedHarrellDavis, WeightedQuantileAlgo.type7,
+        WeightedQuantileAlgo.type8])
     {{
         import mir.math.common: approxEqual;
         import std.math: isFinite;
@@ -4829,7 +4935,8 @@ version(mir_stat_test)
 unittest
 {
     static foreach (algorithm; [WeightedQuantileAlgo.harrellDavis,
-        WeightedQuantileAlgo.trimmedHarrellDavis])
+        WeightedQuantileAlgo.trimmedHarrellDavis, WeightedQuantileAlgo.type7,
+        WeightedQuantileAlgo.type8])
     {{
         import mir.math.common: approxEqual;
         alias hd = rcWeightedQuantile!algorithm;
@@ -4855,7 +4962,8 @@ version(mir_stat_test)
 unittest
 {
     static foreach (algorithm; [WeightedQuantileAlgo.harrellDavis,
-        WeightedQuantileAlgo.trimmedHarrellDavis])
+        WeightedQuantileAlgo.trimmedHarrellDavis, WeightedQuantileAlgo.type7,
+        WeightedQuantileAlgo.type8])
     {{
         import mir.math.common: approxEqual;
         import std.experimental.allocator: dispose;
@@ -4877,7 +4985,8 @@ unittest
         assert(allocator.releases == 2);
         auto scalar = makeWeightedQuantile!algorithm(allocator, masses, values, 0.5);
         assert(scalar.approxEqual(algorithm == WeightedQuantileAlgo.harrellDavis ?
-            11.680673694094532 : 10.753130990579251));
+            11.680673694094532 : algorithm == WeightedQuantileAlgo.trimmedHarrellDavis ?
+            10.753130990579251 : 10.0));
         assert(allocator.allocations == 3 && allocator.releases == 3);
     }}
 }
@@ -4925,6 +5034,62 @@ unittest
     assert((log(left) + 4 * log(1-left)).approxEqual(
         log(right) + 4 * log(1-right), 1e-13L, 1e-13L));
     assert(weightedTrimmedHDLower(5, 2, 0.25L).approxEqual(1-right, 1e-13L, 1e-13L));
+}
+
+// Equal-weight agreement across sample sizes and a probability grid, including
+// clamping at the boundaries and exact order-statistic positions.
+version(mir_stat_test)
+@safe pure nothrow @nogc
+unittest
+{
+    import mir.math.common: approxEqual;
+    static foreach (algorithm; [WeightedQuantileAlgo.type7, WeightedQuantileAlgo.type8])
+    {{
+        enum ordinary = algorithm == WeightedQuantileAlgo.type7 ? QuantileAlgo.type7 : QuantileAlgo.type8;
+        double[12] values, weights;
+        foreach (i; 0 .. values.length) { values[i] = cast(double) i*i - 7; weights[i] = 1; }
+        foreach (n; 1 .. values.length + 1)
+            foreach (k; 0 .. 41)
+            {
+                const p = k / 40.0;
+                const actual = rcWeightedQuantile!algorithm(weights[0 .. n], values[0 .. n], p);
+                const expected = n == 1 ? values[0] :
+                    rcquantile!(double, ordinary)(values[0 .. n], p);
+                assert(actual.approxEqual(expected, 1e-12, 1e-12));
+            }
+    }}
+}
+
+// Exact-rational reference cases: tiny weights, splitting tied rows, reflection,
+// endpoint jumps, and a weighted interval spanning more than two observations.
+version(mir_stat_test)
+@safe pure nothrow @nogc
+unittest
+{
+    import mir.math.common: approxEqual;
+    static foreach (algorithm; [WeightedQuantileAlgo.type7, WeightedQuantileAlgo.type8])
+    {{
+        alias q = rcWeightedQuantile!algorithm;
+        const double[4] values = [0, 1, 1, 100];
+        const double[4] zero = [1, 0, 0, 1], tiny = [1, 1e-6, 1e-6, 1];
+        assert(q(zero, values, 0.5).approxEqual(50.0));
+        assert(q(tiny, values, 0.5).approxEqual(49.999901999902, 1e-12, 1e-12));
+        const int[3] concentrated = [1, 1, 8], points = [0, 10, 20];
+        const int[3] reflected = [0, -10, -20];
+        const expected = algorithm == WeightedQuantileAlgo.type7 ? 15.454555757575758 : 170.0 / 11;
+        assert(q(concentrated, points, 1e-6).approxEqual(expected, 1e-12, 1e-12));
+        assert(q(concentrated, points, 0.0) == 0);
+        assert(q(concentrated, points, 1.0) == 20);
+        assert(q(concentrated, points, 0.25).approxEqual(-q(concentrated, reflected, 0.75)));
+        const int[3] unsplitValues = [0, 10, 30], unsplitWeights = [1, 2, 1];
+        const int[4] splitValues = [0, 10, 10, 30], splitWeights = [1, 1, 1, 1];
+        assert(q(unsplitWeights, unsplitValues, 0.01).approxEqual(
+            algorithm == WeightedQuantileAlgo.type7 ? 3.5 : 10.0 / 3));
+        assert(q(splitWeights, splitValues, 0.01).approxEqual(
+            algorithm == WeightedQuantileAlgo.type7 ? 0.3 : 0.0, 1e-12, 1e-12));
+        const int[4] multiValues = [0, 10, 20, 40], multiWeights = [3, 1, 1, 4];
+        assert(q(multiWeights, multiValues, 0.5).approxEqual(70.0 / 3));
+    }}
 }
 
 private enum QuantileAllocation { gc, rc, custom }
