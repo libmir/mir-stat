@@ -138,11 +138,11 @@ version(mir_stat_test)
 unittest
 {
     struct Plain { ulong value; }
-    struct GenericGetter { ulong get() const { return 0; } }
+    struct GenericGetter { ulong get() const; }
     static assert(!isReadableCount!GenericGetter);
-    struct WrongValue { string count() const { return ""; } }
+    struct WrongValue { string count() const; }
     struct MutableRead {
-        ulong count() { return 0; }
+        ulong count();
     }
     struct Good {
         ulong count() const { return 0; }

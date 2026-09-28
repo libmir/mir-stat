@@ -72,6 +72,10 @@ private:
         width = cast(Width)(width + 1);
     }
 public:
+    // Copy owning handles, not the state: separate width metadata would diverge
+    // when one copy replaces a shared counter buffer during promotion.
+    @disable this(ref const SharedCountState);
+
     this(size_t length) @safe pure nothrow @nogc
     {
         this.length = length;
@@ -671,4 +675,53 @@ unittest
     static assert(!canBatchCounts!(typeof(h), typeof(input)));
     h.put(input);
     assert(counts[0].count() == ubyte.max + 129);
+}
+
+// Short batches and the first typed batch preserve scalar results on promotion.
+version(mir_stat_test)
+@safe pure nothrow @nogc
+unittest
+{
+    import mir.stat.descriptive.histogram.accumulator: HistogramAccumulator;
+    import mir.stat.descriptive.histogram.axis: IntegralAxis, AxisOptions;
+    alias A = IntegralAxis!(uint, AxisOptions());
+    uint[65] values;
+    foreach (i; 0 .. values.length)
+        values[i] = cast(uint)(i % 2);
+    foreach (length; [1, 64, 65])
+    {
+        auto counts = sharedCountSlice(2);
+        auto reference = sharedCountSlice(2);
+        counts.iterator._field.owner.bytes[0] = ubyte.max;
+        reference.iterator._field.owner.bytes[0] = ubyte.max;
+        auto h = HistogramAccumulator!(typeof(counts), A)(counts, A(2, 0));
+        auto scalar = HistogramAccumulator!(typeof(reference), A)(reference, A(2, 0));
+        auto saved = counts[0];
+        h.put(values[0 .. length]);
+        foreach (value; values[0 .. length])
+            scalar.put(value);
+        assert(saved.count() == ubyte.max + (length + 1) / 2);
+        foreach (i; 0 .. 2)
+            assert(counts[i].count() == reference[i].count());
+    }
+}
+
+// State cannot be duplicated; histogram, field, and proxy handles share it instead.
+version(mir_stat_test)
+@safe pure nothrow @nogc
+unittest
+{
+    static assert(!__traits(compiles, {
+        auto state = SharedCountState(1);
+        auto copy = state;
+    }));
+    static assert(!__traits(compiles, {
+        auto state = SharedCountState(1);
+        auto other = SharedCountState(1);
+        other = state;
+    }));
+    static assert(!__traits(compiles, {
+        const state = SharedCountState(1);
+        auto copy = state;
+    }));
 }
