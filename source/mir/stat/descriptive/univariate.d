@@ -4132,6 +4132,55 @@ enum WeightedQuantileAlgo
     types must be floating-point. No effective sample size is used.
     +/
     averagedInverseCDF,
+    /++
+    Compute ordinary type 7 quantiles from observations stored with occurrence counts.
+
+    Use this when repeated observations have been summarized in a frequency
+    table, such as the number of customers giving each survey rating. A value
+    of 4 with frequency 12 represents twelve observations equal to 4. This
+    option gives the quantiles of the original sample without reconstructing it.
+    For example, values [0,10] with frequencies [2,2] represent [0,0,10,10];
+    the type 7 first quartile is 0.
+
+    Choose $(LREF type7) instead when weights describe relative probability or
+    importance rather than occurrence counts. That option gives 2.5 for the
+    same first-quartile example. Increasing every occurrence count changes the
+    sample size, whereas rescaling probability weights leaves their relative
+    contributions unchanged. Select the interpretation explicitly, regardless
+    of whether the weights are stored as integers or floating-point values.
+
+    Each weight must be a finite nonnegative whole number. Integer and
+    floating-point weight types are accepted, but their type never selects
+    this interpretation automatically. Zero counts are ignored. The positive
+    total N must not exceed the smaller of ulong.max and 2^^real.mant_dig,
+    so every cumulative count is exactly representable in the working precision.
+    Invalid counts and excessive totals are rejected with assertions.
+
+    Use the ordinary type 7 rank $(TT h = (N-1)*p + 1). Locate the adjacent
+    order statistics through cumulative integer counts and interpolate; no
+    expanded sample is allocated. Multiplying every frequency can change the
+    answer. Splitting or combining identical observations preserves the
+    conceptual sample. Floating-point rank arithmetic can round near boundaries.
+
+    p=0/1 return the positive-count extrema. Integral observations infer double;
+    floating observations retain their type. Explicit F must be floating-point.
+    +/
+    frequencyType7,
+    /++
+    Compute ordinary type 8 quantiles from observations stored with occurrence counts.
+
+    Use this for the same frequency-table inputs as $(LREF frequencyType7)
+    when the desired unweighted quantile convention is $(LREF QuantileAlgo.type8).
+    For example, if survey ratings are stored with the number of responses for
+    each rating, this produces type 8 quantiles of those responses without
+    allocating one observation per response. Choose $(LREF type8) when the
+    weights instead express relative probability or importance.
+
+    Uses rank $(TT h = (N + 1/3)*p + 1/3), clamped to [1,N], where N is the
+    total number of occurrences. The count validation, allocation, endpoint,
+    and output rules of $(LREF frequencyType7) apply.
+    +/
+    frequencyType8,
 }
 
 private enum weightedQuantileUsesEffectiveSize(WeightedQuantileAlgo algorithm) =
@@ -4139,10 +4188,22 @@ private enum weightedQuantileUsesEffectiveSize(WeightedQuantileAlgo algorithm) =
     algorithm == WeightedQuantileAlgo.trimmedHarrellDavis ||
     algorithm == WeightedQuantileAlgo.type7 || algorithm == WeightedQuantileAlgo.type8;
 
+private enum weightedQuantileUsesFrequencies(WeightedQuantileAlgo algorithm) =
+    algorithm == WeightedQuantileAlgo.frequencyType7 || algorithm == WeightedQuantileAlgo.frequencyType8;
+
+// Counts must also be exact in the floating-point rank calculation.
+static if (real.mant_dig < 64)
+    private enum ulong weightedQuantileMaxFrequency = 1UL << real.mant_dig;
+else
+    private enum ulong weightedQuantileMaxFrequency = ulong.max;
+
 private struct WeightedQuantileEntry(T, WeightedQuantileAlgo algorithm)
 {
     T value;
-    real cumulative;
+    static if (weightedQuantileUsesFrequencies!algorithm)
+        ulong cumulative;
+    else
+        real cumulative;
     static if (weightedQuantileUsesEffectiveSize!algorithm)
         real upper;
 }
@@ -4307,6 +4368,36 @@ private auto weightedUniformQuantileAt(F, WeightedQuantileAlgo algorithm, Worksp
     return cast(F) (normalized * scale);
 }
 
+private auto frequencyQuantileAt(F, WeightedQuantileAlgo algorithm, Workspace)(
+    scope Workspace workspace, real probability)
+{
+    import std.math: floor;
+    const total = workspace[$ - 1].cumulative;
+    static if (algorithm == WeightedQuantileAlgo.frequencyType7)
+        const rank = cast(real)(total - 1) * probability;
+    else
+        // Equivalent to (N+1/3)*p-2/3, with an exact zero correction at p=0.5.
+        const rank = cast(real)(total - 1) * probability + (4 * probability - 2) / 3;
+    if (rank <= 0) return cast(F) workspace[0].value;
+    if (rank >= cast(real)(total - 1)) return cast(F) workspace[$ - 1].value;
+    const index = cast(ulong) floor(rank);
+    const fraction = rank - index;
+    size_t first = 0, last = workspace.length - 1;
+    while (first < last)
+    {
+        const mid = first + (last - first) / 2;
+        if (workspace[mid].cumulative <= index) first = mid + 1;
+        else last = mid;
+    }
+    const a = cast(real) workspace[first].value;
+    if (fraction == 0 || workspace[first].cumulative > index + 1)
+        return cast(F) workspace[first].value;
+    // Every stored count is positive, so the next row owns the next rank.
+    const b = cast(real) workspace[first + 1].value;
+    return cast(F) ((a < 0) != (b < 0) ?
+        a * (1 - fraction) + b * fraction : a + (b - a) * fraction);
+}
+
 private auto weightedQuantileAt(F, WeightedQuantileAlgo algorithm, Workspace, P)(
     scope Workspace workspace, P probability, real effectiveSize)
 {
@@ -4318,7 +4409,9 @@ private auto weightedQuantileAt(F, WeightedQuantileAlgo algorithm, Workspace, P)
         return cast(F) workspace[0].value;
     if (probability == 1)
         return cast(F) workspace[$ - 1].value;
-    static if (algorithm == WeightedQuantileAlgo.type7 || algorithm == WeightedQuantileAlgo.type8)
+    static if (weightedQuantileUsesFrequencies!algorithm)
+        return frequencyQuantileAt!(F, algorithm)(workspace, cast(real) probability);
+    else static if (algorithm == WeightedQuantileAlgo.type7 || algorithm == WeightedQuantileAlgo.type8)
         return weightedUniformQuantileAt!(F, algorithm)(workspace, cast(real) probability, effectiveSize);
     else static if (algorithm == WeightedQuantileAlgo.harrellDavis ||
         algorithm == WeightedQuantileAlgo.trimmedHarrellDavis)
@@ -4374,6 +4467,7 @@ private auto allocatedWeightedQuantile(F, WeightedQuantileAlgo algorithm,
 
     static assert(algorithm == WeightedQuantileAlgo.inverseCDF ||
         algorithm == WeightedQuantileAlgo.averagedInverseCDF ||
+        weightedQuantileUsesFrequencies!algorithm ||
         algorithm == WeightedQuantileAlgo.harrellDavis ||
         algorithm == WeightedQuantileAlgo.trimmedHarrellDavis ||
         algorithm == WeightedQuantileAlgo.type7 || algorithm == WeightedQuantileAlgo.type8,
@@ -4389,12 +4483,28 @@ private auto allocatedWeightedQuantile(F, WeightedQuantileAlgo algorithm,
     assert(values.length == masses.length,
         "weightedQuantile: values and weights must have equal lengths");
     size_t count;
+    static if (weightedQuantileUsesFrequencies!algorithm) ulong frequencyTotal;
     real maximum = 0;
     foreach (i; 0 .. masses.length)
     {
         const w = cast(real) masses[i];
         assert(isFinite(w) && w >= 0,
             "weightedQuantile: weights must be finite and nonnegative");
+        static if (weightedQuantileUsesFrequencies!algorithm)
+        {
+            import std.traits: isIntegral;
+            import std.math: floor;
+            static if (isIntegral!Weight)
+                assert(masses[i] <= weightedQuantileMaxFrequency,
+                    "weightedQuantile: frequency is too large");
+            else
+                assert(w <= cast(real) weightedQuantileMaxFrequency && floor(w) == w,
+                    "weightedQuantile: frequencies must be representable whole numbers");
+            const frequency = cast(ulong) masses[i];
+            assert(frequency <= weightedQuantileMaxFrequency - frequencyTotal,
+                "weightedQuantile: total frequency is too large");
+            frequencyTotal += frequency;
+        }
         if (w == 0)
             continue;
         assert(isFinite(cast(real) values[i]),
@@ -4412,7 +4522,7 @@ private auto allocatedWeightedQuantile(F, WeightedQuantileAlgo algorithm,
     size_t j;
     foreach (i; 0 .. masses.length)
         if (masses[i] > 0)
-            workspace[j++] = Entry(values[i], cast(real) masses[i]);
+            workspace[j++] = Entry(values[i], cast(typeof(Entry.init.cumulative)) masses[i]);
 
     // Keep observations in their original type: large integers must not collapse
     // to equal floating-point values. Order tied masses consistently as well.
@@ -4429,12 +4539,24 @@ private auto allocatedWeightedQuantile(F, WeightedQuantileAlgo algorithm,
             workspace[i].upper = suffix.sum;
         }
     }
-    Summator!(real, Summation.kahan) cumulative;
-    foreach (i; 0 .. workspace.length)
+    static if (weightedQuantileUsesFrequencies!algorithm)
     {
-        // Scaling before accumulation avoids overflow in the raw weight sum.
-        cumulative.put(workspace[i].cumulative / maximum);
-        workspace[i].cumulative = cumulative.sum;
+        ulong cumulativeCount;
+        foreach (i; 0 .. workspace.length)
+        {
+            cumulativeCount += workspace[i].cumulative;
+            workspace[i].cumulative = cumulativeCount;
+        }
+    }
+    else
+    {
+        Summator!(real, Summation.kahan) cumulative;
+        foreach (i; 0 .. workspace.length)
+        {
+            // Scaling before accumulation avoids overflow in the raw weight sum.
+            cumulative.put(workspace[i].cumulative / maximum);
+            workspace[i].cumulative = cumulative.sum;
+        }
     }
     real effectiveSize = 1;
     static if (weightedQuantileUsesEffectiveSize!algorithm)
@@ -4506,8 +4628,11 @@ All other algorithms promote integral observations to double and preserve
 floating observation types. An explicit F selects the result type; algorithms
 other than inverseCDF require a floating-point F.
 
-The mathematical result is invariant to positive rescaling of all weights.
-Cumulative masses use compensated summation in $(TT real), after dividing by the
+Except for frequencyType7 and frequencyType8, the mathematical result is
+invariant to positive rescaling of all weights. Frequency algorithms instead
+use exact cumulative integer counts and the total frequency as sample size.
+For probability-weight algorithms, cumulative masses use compensated summation
+in $(TT real), after dividing by the
 largest weight to avoid raw-sum overflow. Boundary comparisons use the computed
 masses without a tolerance. Rounding and underflow can affect tiny masses or
 probabilities close to a boundary; arbitrary rescaling is not promised to give
@@ -4515,7 +4640,8 @@ bitwise-identical results. Endpoints select the extrema of positive-weight data.
 Signed zeros compare equal; the sign of a selected zero is unspecified.
 
 A paired workspace is sorted once. For n observations and k probabilities,
-inverseCDF and averagedInverseCDF take $(TT O(n log n + k log n)) time. Harrell-Davis takes
+inverseCDF, averagedInverseCDF, frequencyType7, and frequencyType8 take
+$(TT O(n log n + k log n)) time. Harrell-Davis takes
 $(TT O(n log n + k*n)) time, including beta CDF evaluations, and reuses effective
 sample size and cumulative masses across probabilities. Trimmed Harrell-Davis
 adds a bounded interval search per probability and skips excluded intervals.
@@ -4643,6 +4769,19 @@ unittest
         weights, values, [0.25, 0.5, 0.75]);
     assert(q == [0.0, 5.0, 15.0]);
     assert(weightedQuantile(weights, values, 0.5) == 0);
+}
+
+/// Frequency counts reproduce repeated observations without allocating them.
+/// Unlike probability weights, scaling frequencies can change a quantile.
+version(mir_stat_test)
+@safe pure nothrow
+unittest
+{
+    const int[2] values = [0, 10], counts = [2, 2], once = [1, 1];
+    alias frequency = weightedQuantile!(WeightedQuantileAlgo.frequencyType7);
+    assert(frequency(counts, values, 0.25) == 0);
+    assert(frequency(once, values, 0.25) == 2.5);
+    assert(weightedQuantile!(WeightedQuantileAlgo.type7)(counts, values, 0.25) == 2.5);
 }
 
 /++
@@ -5027,7 +5166,8 @@ unittest
 {
     static foreach (algorithm; [WeightedQuantileAlgo.harrellDavis,
         WeightedQuantileAlgo.trimmedHarrellDavis, WeightedQuantileAlgo.type7,
-        WeightedQuantileAlgo.type8, WeightedQuantileAlgo.averagedInverseCDF])
+        WeightedQuantileAlgo.type8, WeightedQuantileAlgo.averagedInverseCDF,
+        WeightedQuantileAlgo.frequencyType7, WeightedQuantileAlgo.frequencyType8])
     {{
         import mir.math.common: approxEqual;
         import std.experimental.allocator: dispose;
@@ -5188,6 +5328,75 @@ unittest
     const real tiny = nextafter(0.0L, 1.0L);
     const real[2] subnormal = [tiny, 3 * tiny];
     assert(q(equal, subnormal, 0.5) == 2 * tiny);
+}
+
+// Compare conceptual replication against genuinely expanded samples, including
+// unsorted values, ties, zero frequencies, and floating-point whole counts.
+version(mir_stat_test)
+@safe pure nothrow @nogc
+unittest
+{
+    import mir.math.common: approxEqual;
+    static foreach (algorithm; [WeightedQuantileAlgo.frequencyType7, WeightedQuantileAlgo.frequencyType8])
+    {{
+        alias q = rcWeightedQuantile!algorithm;
+        enum ordinary = algorithm == WeightedQuantileAlgo.frequencyType7 ? QuantileAlgo.type7 : QuantileAlgo.type8;
+        const int[4] values = [20, 0, 10, 10];
+        foreach (a; 0 .. 4) foreach (b; 0 .. 4) foreach (c; 1 .. 4)
+        {
+            int[4] counts = [a, b, c, 1];
+            double[4] floating = [a, b, c, 1];
+            int[10] expanded;
+            size_t n;
+            foreach (i; 0 .. 4) foreach (_; 0 .. counts[i]) expanded[n++] = values[i];
+            foreach (k; 0 .. 21)
+            {
+                const p = k / 20.0;
+                const expected = rcquantile!(double, ordinary)(expanded[0 .. n], p);
+                assert(q(counts, values, p).approxEqual(expected, 1e-12, 1e-12));
+                assert(q(floating, values, p).approxEqual(expected, 1e-12, 1e-12));
+            }
+        }
+        const int[2] ones = [1, 1];
+        const real[2] extremes = [-real.max, real.max];
+        assert(q(ones, extremes, 0.5) == 0);
+        const real[2] positive = [real.max / 2, real.max];
+        assert((q(ones, positive, 0.5) / real.max).approxEqual(0.75L));
+        const int[2] single = [0, 1], data = [0, 10];
+        assert(q(single, data) == [10.0, 10, 10, 10, 10]);
+        // Large counts stay compact; total equals the supported maximum.
+        const ulong[2] large = [weightedQuantileMaxFrequency - 1, 1];
+        assert(q(large, data, 0.5) == 0);
+        assert(q(large, data, 1.0) == 10);
+        static assert(is(typeof(q(ones, data, 0.5)) == double));
+        static assert(!__traits(compiles, rcWeightedQuantile!(int, algorithm)(ones, data, 0.5)));
+    }}
+}
+
+// Reject fractional counts and totals outside the exact working-count range.
+// Catching AssertError requires @system under DIP1000.
+version(mir_stat_test)
+@system pure
+unittest
+{
+    import std.exception: assertThrown;
+    import core.exception: AssertError;
+    static foreach (algorithm; [WeightedQuantileAlgo.frequencyType7, WeightedQuantileAlgo.frequencyType8])
+    {{
+        const int[2] data = [0, 10];
+        foreach (bad; [0.5, -1.0, double.nan, double.infinity, 18446744073709551616.0])
+        {
+            double[2] counts = [bad, 1];
+            assertThrown!AssertError(rcWeightedQuantile!algorithm(counts, data, 0.5));
+        }
+        const ulong[2] overflow = [weightedQuantileMaxFrequency, 1];
+        assertThrown!AssertError(rcWeightedQuantile!algorithm(overflow, data, 0.5));
+        static if (real.mant_dig < 64)
+        {
+            const ulong[2] tooLarge = [weightedQuantileMaxFrequency + 1, 0];
+            assertThrown!AssertError(rcWeightedQuantile!algorithm(tooLarge, data, 0.5));
+        }
+    }}
 }
 
 private enum QuantileAllocation { gc, rc, custom }
