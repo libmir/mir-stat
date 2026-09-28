@@ -4056,3 +4056,23 @@ unittest
         assert(f.relativeFrequency(1) == 2.0 / 3);
     }}
 }
+
+// Proxy capability constraints preserve fixed-count weighted insertion and const merging.
+version(mir_stat_test)
+@safe pure nothrow @nogc
+unittest
+{
+    import mir.stat.descriptive.histogram.axis: IntegralAxis, AxisOptions;
+    alias A = IntegralAxis!(int, AxisOptions());
+    alias F = RelativeFrequencyAccumulator!(double[2][2], A, A);
+    double[2][2] zeros = 0;
+    auto destination = F(zeros, A(2, 0), A(2, 0));
+    destination.putWeighted(0.5, 0, 1);
+    auto source = F(zeros, A(2, 0), A(2, 0));
+    source.putWeighted(1.5, 1, 0);
+    const frozen = source;
+    destination.put(frozen);
+    assert(destination.total == 2);
+    assert(destination.relativeFrequency(0, 1) == 0.25);
+    assert(destination.relativeFrequency(1, 0) == 0.75);
+}

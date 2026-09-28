@@ -2338,16 +2338,27 @@ package void testAdaptiveRelativeFactory(alias factory)()
     import mir.stat.descriptive.histogram.axis: IntegralAxis, AxisOptions;
     import mir.stat.descriptive.histogram.relative_frequency: Normalization;
     import mir.stat.descriptive.histogram.accumulator: BinCoverage;
+    import std.math: isNaN;
     alias A = IntegralAxis!(int, AxisOptions(false, true, true));
+    auto empty = factory!(AdaptiveCounts!())(A(2, 0));
+    assert(isNaN(empty.relativeFrequency(0)));
+    assert(isNaN(empty.relativeFrequency!(double, Normalization.ordinary)(0)));
+
     int[255] values;
     auto f = factory!(AdaptiveCounts!())(values, A(2, 0));
     auto bins = f.bins();
     version(mir_stat_test_lifetime)
+    {
         auto frequencies = f.relativeFrequencyBins();
+        auto densities = f.densityBins();
+    }
     f.put(0, 1, -1, 2);
     assert(f.total == 259 && bins[0].count == 256);
     version(mir_stat_test_lifetime)
+    {
         assert(frequencies[0].relativeFrequency == 256.0 / 259);
+        assert(densities[0].density == 256.0 / 259);
+    }
     assert(f.relativeFrequency!(double, Normalization.ordinary)(0) == 256.0 / 257);
     assert(f.cumulativeRelativeFrequency(1) == 258.0 / 259);
     assert(f.density(0) == 256.0 / 259);
@@ -2363,6 +2374,14 @@ package void testAdaptiveRelativeFactory(alias factory)()
     assert(all[0].count == 1 && all[3].count == 1);
     static assert(!__traits(compiles, f.putWeighted(1u, 0)));
     static assert(!__traits(compiles, f.put(f)));
+    static assert(!__traits(compiles, ++f.counts[0]));
+
+    // Cumulative snapshots own their values, unlike the live views above.
+    f.put(1);
+    assert(snapshot[1] == 258.0 / 259);
+    assert(f.cumulativeRelativeFrequency(1) == 259.0 / 260);
+    version(mir_stat_test_lifetime)
+        assert(densities[0].density == 256.0 / 260);
 
     auto joint = factory!(AdaptiveCounts!ushort)(A(2, 0), A(2, 0));
     joint.put(0, 1);
