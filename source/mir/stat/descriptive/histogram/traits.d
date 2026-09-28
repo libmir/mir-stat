@@ -22,6 +22,22 @@ import mir.stat.descriptive.histogram.axis: AxisOptions, IntegralAxis,
 
 alias DefaultCountType = size_t;
 
+/++
+Opt-in storage selection for unweighted histogram factories. Use in place of
+an explicit counter type, for example histogram!(AdaptiveCounts, RegularAxis).
+Counters start as ubyte and widen together to ushort, uint, then ulong as
+needed. Reads through counts[index].count() or bins return ulong snapshots.
+Saved proxies and bin views follow promotion; copied histograms share counts.
+Promotion allocates a wider buffer and temporarily retains both buffers.
+Storage does not shrink. Incrementing ulong.max is an unrecoverable error.
+
+GC factories use GC state and buffers. RC factories and makeHistogram use RC
+state and buffers; adaptive counts must not be disposed through a custom
+allocator. Axis ownership is unchanged. Weighted and relative-frequency
+factories do not accept this selection.
++/
+struct AdaptiveCounts {}
+
 package
 void checkUnderflow(BinType, AxisOptions axisOptions)(BinType x, BinType low)
 {
