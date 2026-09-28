@@ -88,9 +88,12 @@ foreach s : sources_list
     sources += 'source/' + s + '.d'
 endforeach
 
+# Meson interprets -lowmem as a linker library (-l...). Use LDC's long
+# spelling so its front-end garbage collector is actually enabled.
+lowmem = meson.get_compiler('d').get_id() == 'llvm' ? '--lowmem' : '-lowmem'
 add_project_arguments([
     '-preview=dip1008',
-    '-lowmem',
+    lowmem,
 ], language: 'd')
 
 required_deps = []
