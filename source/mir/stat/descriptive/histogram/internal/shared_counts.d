@@ -79,7 +79,7 @@ public:
         bytes[] = 0;
     }
 
-    ulong get(size_t index) const @safe pure nothrow @nogc
+    ulong count(size_t index) const @safe pure nothrow @nogc
     {
         final switch (width)
         {
@@ -122,9 +122,9 @@ private:
     mir_rcptr!State owner;
     size_t index;
 public:
-    ulong get() const @safe pure nothrow @nogc
+    ulong count() const @safe pure nothrow @nogc
     {
-        return owner.get(index);
+        return owner.count(index);
     }
 
     void opUnary(string op : "++")() @safe pure nothrow @nogc
@@ -196,19 +196,19 @@ unittest
     foreach (i; 1 .. 256) copy.put(0, 1);
     saved++;
     copy.put(0, 1);
-    assert(saved.get() == 258 && view[1].count == 258);
+    assert(saved.count() == 258 && view[1].count == 258);
     assert(snapshot.count == 1 && old[2] == 255);
-    assert(storage[1].get() == 0 && storage[3].get() == 0);
+    assert(storage[1].count() == 0 && storage[3].count() == 0);
     saved++;
     assert(view[1].count == 259 && old[2] == 255);
     const readOnly = h;
     assert(readOnly.bins[1].count == 259);
     static assert(!__traits(compiles, readOnly.put(0, 1)));
     auto frozen = joint.lightConst;
-    assert(frozen[0, 1].get() == 259);
+    assert(frozen[0, 1].count() == 259);
     static assert(!__traits(compiles, frozen[0, 1]++));
     auto independent = sharedCountSlice(8);
-    assert(independent[2].get() == 0);
+    assert(independent[2].count() == 0);
     auto empty = sharedCountSlice(0);
     assert(empty.length == 0);
 }
@@ -228,27 +228,27 @@ unittest
     state.bytes[0] = 7;
     state.bytes[1] = ubyte.max - 1;
     ++storage[1];
-    assert(saved.get() == ubyte.max && state.width == W.byte_);
+    assert(saved.count() == ubyte.max && state.width == W.byte_);
     ++storage[1];
-    assert(saved.get() == 256 && state.width == W.short_);
+    assert(saved.count() == 256 && state.width == W.short_);
     assert(state.bytes.length == 0);
     state.shorts[1] = ushort.max - 1;
     saved++;
-    assert(saved.get() == ushort.max && state.width == W.short_);
+    assert(saved.count() == ushort.max && state.width == W.short_);
     saved++;
-    assert(saved.get() == 65536 && state.width == W.int_);
+    assert(saved.count() == 65536 && state.width == W.int_);
     assert(state.shorts.length == 0);
     state.ints[1] = uint.max - 1;
     ++storage[1];
-    assert(saved.get() == uint.max && state.width == W.int_);
+    assert(saved.count() == uint.max && state.width == W.int_);
     ++storage[1];
-    assert(saved.get() == cast(ulong) uint.max + 1 && state.width == W.long_);
+    assert(saved.count() == cast(ulong) uint.max + 1 && state.width == W.long_);
     assert(state.ints.length == 0);
     state.longs[1] = ulong.max - 1;
     saved++;
-    assert(saved.get() == ulong.max);
-    assert(readOnly[1].get() == ulong.max);
-    assert(readOnly[0].get() == 7 && readOnly[2].get() == 0);
+    assert(saved.count() == ulong.max);
+    assert(readOnly[1].count() == ulong.max);
+    assert(readOnly[0].count() == 7 && readOnly[2].count() == 0);
 }
 
 // Overflow fails before mutation. Release builds may halt instead of throwing,
@@ -268,7 +268,7 @@ unittest
     bool rejected;
     try { ++storage[0]; }
     catch (AssertError) { rejected = true; }
-    assert(rejected && storage[0].get() == ulong.max);
+    assert(rejected && storage[0].count() == ulong.max);
     import mir.stat.descriptive.histogram.accumulator: HistogramAccumulator;
     import mir.stat.descriptive.histogram.axis: IntegralAxis, AxisOptions;
     alias A = IntegralAxis!(uint, AxisOptions());
@@ -277,7 +277,7 @@ unittest
     rejected = false;
     try { h.put(value[]); }
     catch (AssertError) { rejected = true; }
-    assert(rejected && storage[0].get() == ulong.max);
+    assert(rejected && storage[0].count() == ulong.max);
 }
 
 // Proxies and views own their state, so returning them needs no borrowed owner.
@@ -296,7 +296,7 @@ unittest
     }
     auto saved = cell();
     saved++;
-    assert(saved.get() == 2);
+    assert(saved.count() == 2);
     static auto bins() @safe pure nothrow @nogc
     {
         auto storage = sharedCountSlice(2);
@@ -491,8 +491,8 @@ unittest
     foreach (i; 0 .. 128) { x[i]=(i%8)/4; y[i]=(i%4)/2; z[i]=i%2; }
     foreach (i; 0 .. 20) insertSharedCounts(h, x, y, z);
     foreach (i; 0 .. 20)
-        assert(storage[i].get() == (i < 17 && i % 2 == 1 ? 320 : 0));
-    assert(saved.get() == 320);
+        assert(storage[i].count() == (i < 17 && i % 2 == 1 ? 320 : 0));
+    assert(saved.count() == 320);
 }
 
 // Reentrant axis insertion can widen; use the new buffer without replaying mapping.
@@ -530,7 +530,7 @@ unittest
         auto h = HistogramAccumulator!(typeof(storage), CallbackAxis)(storage, axis);
         const uint[128] values = 0;
         h.put(values[]);
-        assert(storage[0].get() == initial + 129);
+        assert(storage[0].count() == initial + 129);
         assert(h.axis[0].calls == 128);
     }}
 }
@@ -556,7 +556,7 @@ unittest
     h.put(empty);
     uint[0] emptyStatic;
     h.put(emptyStatic);
-    assert(storage[0].get() == 1 && storage[1].get() == 1);
+    assert(storage[0].count() == 1 && storage[1].count() == 1);
 }
 
 // Every promotion consumes its triggering row once, including offset storage.
@@ -584,9 +584,9 @@ unittest
         uint[128] x, y;
         foreach (i; 0 .. 128) { x[i]=cast(uint)(i%2); y[i]=x[i]; }
         insertSharedCounts(h, x[], y[]);
-        assert(saved.get() == initial + 64);
-        assert(storage[4].get() == initial + 64);
-        foreach (i; [0,2,3,5]) assert(storage[i].get() == initial);
+        assert(saved.count() == initial + 64);
+        assert(storage[4].count() == initial + 64);
+        foreach (i; [0,2,3,5]) assert(storage[i].count() == initial);
     }}
 }
 
@@ -616,8 +616,8 @@ unittest
     foreach (i; 0 .. 4)
         foreach (j; 0 .. 4)
         {
-            assert(h.counts[i,j].get() == 264);
-            assert(h.counts[i,j].get() == reference.counts[i,j].get());
+            assert(h.counts[i,j].count() == 264);
+            assert(h.counts[i,j].count() == reference.counts[i,j].count());
         }
 }
 // Contiguous joint batches flatten unequal extents and accept strided inputs.
@@ -644,7 +644,7 @@ unittest
     foreach (i; 0 .. 2)
         foreach (j; 0 .. 3)
             foreach (k; 0 .. 4)
-                assert(h.counts[i,j,k].get() == 264);
+                assert(h.counts[i,j,k].count() == 264);
 }
 // A custom input field can widen through an alias while producing coordinates.
 version(mir_stat_test)
@@ -670,5 +670,5 @@ unittest
     auto input = FieldIterator!Coordinates(0, Coordinates(owner)).sliced(128);
     static assert(!canBatchCounts!(typeof(h), typeof(input)));
     h.put(input);
-    assert(counts[0].get() == ubyte.max + 129);
+    assert(counts[0].count() == ubyte.max + 129);
 }

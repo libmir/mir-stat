@@ -2199,5 +2199,5 @@ unittest
     auto ys = y[].sliced.stride(2).sliced(2,128);
     validateHistogramShapes(xs,ys);
     foreach (i; 0 .. 5) insertHistogramInputs!("put",0)(h,xs,ys);
-    foreach (i; 0 .. 4) assert(storage[i].get() == 320);
+    foreach (i; 0 .. 4) assert(storage[i].count() == 320);
 }

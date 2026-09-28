@@ -11,13 +11,13 @@ import std.traits: Unqual, isNumeric;
 
 package(mir.stat.descriptive.histogram):
 
-// Reading is independent of mutation. get() may return a value or a reference;
+// Reading is independent of mutation. count() may return a value or a reference;
 // readCount below always produces an independent numeric snapshot.
 template isReadableCount(Cell)
 {
     enum isReadableCount = isNumeric!Cell || __traits(compiles, {
         const Cell cell = Cell.init;
-        static assert(isNumeric!(typeof(cell.get())));
+        static assert(isNumeric!(typeof(cell.count())));
     });
 }
 
@@ -27,7 +27,7 @@ template CountValueType(Cell)
     static if (isNumeric!Cell)
         alias CountValueType = Unqual!Cell;
     else
-        alias CountValueType = Unqual!(typeof((const Cell).init.get()));
+        alias CountValueType = Unqual!(typeof((const Cell).init.count()));
 }
 
 CountValueType!Cell readCount(Cell)(auto ref const Cell cell)
@@ -36,7 +36,7 @@ CountValueType!Cell readCount(Cell)(auto ref const Cell cell)
     static if (isNumeric!Cell)
         return cell;
     else
-        return cell.get();
+        return cell.count();
 }
 
 // Check the actual indexed increment. Nested built-in arrays yield lvalues;
@@ -68,7 +68,7 @@ template isIncrementableCountStorage(Storage, size_t dimensions = 1)
 
 template acceptsCellSamples(Cell, Samples...)
 {
-    enum acceptsCellSamples = !isReadableCount!Cell && __traits(compiles, {
+    enum acceptsCellSamples = !isNumeric!(Unqual!Cell) && __traits(compiles, {
         Cell cell;
         Samples samples;
         cell.put(samples);
@@ -77,13 +77,21 @@ template acceptsCellSamples(Cell, Samples...)
 
 template acceptsCellMerge(Cell)
 {
-    enum acceptsCellMerge = (isNumeric!Cell || !isReadableCount!Cell) &&
-        (acceptsCellSamples!(Cell, const(Unqual!Cell)) ||
+    enum acceptsCellMerge = (acceptsCellSamples!(Cell, const(Unqual!Cell)) ||
         __traits(compiles, {
             Cell destination;
             const(Unqual!Cell) source;
             destination += source;
         }));
+}
+
+// Cells with a sample interface or a full-state merge remain accumulator values.
+// Reading a count alone must not discard the rest of their state in bin views.
+template isCountValue(Cell)
+{
+    enum isCountValue = isNumeric!Cell ||
+        (isReadableCount!Cell && !__traits(hasMember, Cell, "put") &&
+            !acceptsCellMerge!(Unqual!Cell));
 }
 
 // Both histogram merging and projection must combine full accumulator state.
@@ -130,15 +138,17 @@ version(mir_stat_test)
 unittest
 {
     struct Plain { ulong value; }
-    struct WrongValue { string get() const { return ""; } }
+    struct GenericGetter { ulong get() const { return 0; } }
+    static assert(!isReadableCount!GenericGetter);
+    struct WrongValue { string count() const { return ""; } }
     struct MutableRead {
-        ulong get() { return 0; }
+        ulong count() { return 0; }
     }
     struct Good {
-        ulong get() const { return 0; }
+        ulong count() const { return 0; }
     }
     struct Floating {
-        double get() const { return 0; }
+        double count() const { return 0; }
     }
     static assert(isReadableCount!ulong && !isReadableCount!Plain);
     static assert(!isReadableCount!WrongValue && !isReadableCount!MutableRead);
@@ -153,7 +163,7 @@ unittest
     assert(readCount(narrow) == 3);
     struct Reference {
         ulong value;
-        ref const(ulong) get() const return { return value; }
+        ref const(ulong) count() const return { return value; }
     }
     Reference cell = Reference(7);
     auto snapshot = readCount(cell);

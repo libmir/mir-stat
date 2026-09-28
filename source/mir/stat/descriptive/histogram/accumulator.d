@@ -28,7 +28,7 @@ import mir.stat.descriptive.histogram.internal.view: supportsBinView, JointArray
 import mir.stat.descriptive.histogram.internal.projection: validMarginalAxes;
 private import mir.stat.descriptive.histogram.internal.cell:
     acceptsCellSamples, acceptsCellMerge, mergeCell,
-    isReadableCount, CountValueType, readCount, isIncrementableCountStorage;
+    isReadableCount, isCountValue, CountValueType, readCount, isIncrementableCountStorage;
 import mir.qualifier: lightConst;
 import std.meta: allSatisfy;
 import std.traits: isNumeric, Unqual, isStaticArray;
@@ -114,12 +114,13 @@ and weight validity, allocation behavior, and function attributes.
 
 Count proxies:
 A storage element supports reading counts when its const-readable
-get() operation returns a numeric value. The count type is inferred
+count() operation returns a numeric value. The count type is inferred
 from that operation; no type alias is required. Its ++ operation must
 update the backing counter, including when indexing returns a temporary proxy.
-CountType and ValueType then describe the numeric snapshot, while counts still
-exposes the original proxy storage. Bin entries copy the result of get(), even
-if get() returns a reference; an existing
+Cells with put or full-state merging retain their accumulator value in bin views.
+For count proxies, CountType and ValueType describe the numeric snapshot. counts
+exposes the original proxy storage. Bin entries copy the result of count(), even
+if count() returns a reference; an existing
 bin view reads the current values each time it is indexed.
 
 Proxy storage must still meet the array/ndslice shape requirements above. The
@@ -163,7 +164,7 @@ struct HistogramAccumulator(Storage, Axis...)
         private alias StoredCountType = DeepElementType!Storage;
 
     /// Numeric snapshot type for count proxies; otherwise the unqualified cell type.
-    static if (isReadableCount!StoredCountType)
+    static if (isCountValue!StoredCountType)
         alias CountType = CountValueType!StoredCountType;
     else
         alias CountType = Unqual!StoredCountType;
@@ -2008,7 +2009,7 @@ struct HistogramBinView(Storage, BinCoverage coverage, Axis...)
         private alias StoredValue = DeepElementType!ReadOnlyStorage;
     else
         private alias StoredValue = JointArrayInfo!ReadOnlyStorage.Element;
-    static if (isReadableCount!StoredValue)
+    static if (isCountValue!StoredValue)
         private alias Count = CountValueType!StoredValue;
     else
         private alias Count = const(Unqual!StoredValue);
@@ -2054,7 +2055,7 @@ struct HistogramBinView(Storage, BinCoverage coverage, Axis...)
     {
         static if (depth + 1 == N)
         {
-            static if (isReadableCount!(typeof(counts[indices[depth]])))
+            static if (isCountValue!(typeof(counts[indices[depth]])))
                 return readCount(counts[indices[depth]]);
             else
                 return counts[indices[depth]];
@@ -2152,7 +2153,7 @@ struct HistogramBinView(Storage, BinCoverage coverage, Axis...)
         }}
         static if (isSlice!S)
         {
-            static if (isReadableCount!(DeepElementType!S))
+            static if (isCountValue!(DeepElementType!S))
                 return Element(result._kinds, result._indices, result._bins,
                     readCount(counts[storageIndices]));
             else
@@ -4091,7 +4092,7 @@ version(mir_stat_test)
 private struct TestCountProxy(T)
 {
     T* pointer;
-    ulong get() const @safe pure nothrow @nogc
+    ulong count() const @safe pure nothrow @nogc
     {
         return *pointer;
     }
@@ -4223,4 +4224,45 @@ unittest
             return h.bins;
         }));
     }
+}
+
+// Reading a count does not remove sample insertion or full accumulator state.
+version(mir_stat_test)
+@safe pure nothrow @nogc
+unittest
+{
+    import mir.stat.descriptive.histogram.axis: IntegralAxis, AxisOptions;
+    static struct Cell
+    {
+        ulong total;
+        ulong observations;
+        void put(ulong sample) @safe pure nothrow @nogc
+        {
+            total += sample;
+            ++observations;
+        }
+        void put(ref const Cell other) @safe pure nothrow @nogc
+        {
+            total += other.total;
+            observations += other.observations;
+        }
+        ulong get() const @safe pure nothrow @nogc { return total; }
+        ulong count() const @safe pure nothrow @nogc { return observations; }
+    }
+    alias A = IntegralAxis!(uint, AxisOptions());
+    import mir.ndslice.allocation: rcslice;
+    auto cells = rcslice!Cell(2, 2);
+    alias H = HistogramAccumulator!(typeof(cells), A, A);
+    auto h = H(cells, A(2, 0), A(2, 0));
+    static assert(is(H.ValueType == Cell));
+    h.putSample(3UL, 0u, 0u);
+    auto other = H(rcslice!Cell(2, 2), A(2, 0), A(2, 0));
+    other.putSample(7UL, 0u, 1u);
+    h.put(other);
+    assert(h.bins[0].value.get() == 3);
+    assert(h.bins[0].value.count() == 1);
+    auto marginal = h.rcMarginal!0();
+    assert(marginal.bins[0].value.get() == 10);
+    assert(marginal.bins[0].value.count() == 2);
+    static assert(!__traits(compiles, h.put(0u, 0u)));
 }
