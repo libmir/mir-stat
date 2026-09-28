@@ -1979,8 +1979,12 @@ package void insertHistogramInputs(string method, size_t column, H, Inputs...)(
 
 private void insertHistogramBatch(string method, H, Inputs...)(ref H h, auto ref Inputs inputs)
 {
-    foreach (i; 0 .. inputs[0].length)
-        insertHistogramRow!(method, 0, Inputs.length)(h, i, inputs);
+    import mir.stat.descriptive.histogram.internal.shared_counts: isSharedCountStorage, insertSharedCounts;
+    static if (method == "put" && Inputs[0].N == 1 && isSharedCountStorage!(typeof(h.counts)))
+        insertSharedCounts(h, inputs);
+    else
+        foreach (i; 0 .. inputs[0].length)
+            insertHistogramRow!(method, 0, Inputs.length)(h, i, inputs);
 }
 
 // Expand a heterogeneous row without copying its sample: cells may accept ref
@@ -2172,4 +2176,28 @@ unittest
     }
     check!(histogram, weightedHistogram)();
     check!(rchistogram, rcWeightedHistogram)();
+}
+
+
+// Adaptive counts use typed leaf batches without changing nested traversal.
+version(mir_stat_test)
+@safe pure nothrow @nogc
+unittest
+{
+    import mir.stat.descriptive.histogram.internal.shared_counts: sharedCountSlice;
+    import mir.stat.descriptive.histogram.accumulator: HistogramAccumulator;
+    import mir.stat.descriptive.histogram.axis: IntegralAxis, AxisOptions;
+    import mir.ndslice.slice: sliced;
+    import mir.ndslice.topology: stride;
+    alias A = IntegralAxis!(uint, AxisOptions());
+    auto storage = sharedCountSlice(4);
+    auto counts = storage.sliced(2,2);
+    auto h = HistogramAccumulator!(typeof(counts), A, A)(counts,A(2,0),A(2,0));
+    uint[512] x = 99, y = 99;
+    foreach (i; 0 .. 256) { x[2*i]=i%2; y[2*i]=(i%4)/2; }
+    auto xs = x[].sliced.stride(2).sliced(2,128);
+    auto ys = y[].sliced.stride(2).sliced(2,128);
+    validateHistogramShapes(xs,ys);
+    foreach (i; 0 .. 5) insertHistogramInputs!("put",0)(h,xs,ys);
+    foreach (i; 0 .. 4) assert(storage[i].get() == 320);
 }

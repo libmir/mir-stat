@@ -177,7 +177,7 @@ struct HistogramAccumulator(Storage, Axis...)
 private:
     import mir.stat.descriptive.histogram.traits: axisStorageExtent = storageExtent;
 
-    size_t storageIndex(size_t i, T)(T value)
+    package(mir.stat.descriptive.histogram) size_t storageIndex(size_t i, T)(T value)
     {
         // Match one-axis classification precedence and circular endpoints.
         static if (includeOverflow!(Axis[i]))
@@ -421,6 +421,15 @@ public:
             isIterable!Range &&
             !(isCategoryAxis!(Axis[0]) && isSomeString!Range))
     {
+        import mir.stat.descriptive.histogram.internal.shared_counts: isSharedCountStorage, insertSharedCounts;
+        import std.traits: isArray;
+        // Other iterables may define foreach behavior that differs from indexing.
+        static if (isSharedCountStorage!Storage && (isArray!Range || isSlice!Range))
+            static if (acceptsAxisValue!(Axis[0], typeof(r[0])))
+            {
+                insertSharedCounts(this, r);
+                return;
+            }
         foreach(x; r)
         {
             put(x);
