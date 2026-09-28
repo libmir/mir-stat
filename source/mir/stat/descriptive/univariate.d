@@ -4298,7 +4298,7 @@ private auto weightedHarrellDavisAt(F, bool trimmed, Workspace)(scope Workspace 
     const highValue = cast(real) workspace[$ - 1].value;
     if (workspace[0].value == workspace[$ - 1].value)
         return cast(F) workspace[0].value;
-    const scale = fabs(lowValue) > fabs(highValue) ? fabs(lowValue) : fabs(highValue);
+    real scale = 0;
     const a = (effectiveSize + 1) * probability;
     const b = (effectiveSize + 1) * (1 - probability);
     const total = workspace[$ - 1].cumulative;
@@ -4310,7 +4310,22 @@ private auto weightedHarrellDavisAt(F, bool trimmed, Workspace)(scope Workspace 
         const width = min(1.0L, 1 / sqrt(effectiveSize));
         const lower = weightedTrimmedHDLower(a, b, width);
         const upper = min(1.0L, lower + width);
+        // Excluded observations must not set the scale: a huge excluded value
+        // could otherwise make every retained value underflow on division.
+        foreach (i; 0 .. workspace.length)
+        {
+            const left = i == 0 ? 0.0L : workspace[i - 1].cumulative / total;
+            const right = i + 1 == workspace.length ? 1.0L : workspace[i].cumulative / total;
+            const leftTail = left >= lower ? workspace[i].upper / total : 1 - lower;
+            const rightTail = right <= upper ?
+                (i + 1 == workspace.length ? 0.0L : workspace[i + 1].upper / total) : 1 - upper;
+            if (min(right, upper) <= max(left, lower) && rightTail >= leftTail) continue;
+            scale = max(scale, fabs(cast(real) workspace[i].value));
+        }
+        if (scale == 0) return cast(F) 0;
     }
+    else
+        scale = fabs(lowValue) > fabs(highValue) ? fabs(lowValue) : fabs(highValue);
     real lowerCDF = 0;
     foreach (i; 0 .. workspace.length)
     {
@@ -4367,6 +4382,18 @@ private auto weightedHarrellDavisAt(F, bool trimmed, Workspace)(scope Workspace 
     return cast(F) (normalized * scale);
 }
 
+private real weightedUniformOverlap(Workspace)(scope Workspace workspace,
+    size_t i, real lower, real upper, real total, bool reflected)
+{
+    import std.algorithm: min, max;
+    const left = reflected ?
+        (i + 1 == workspace.length ? 0.0L : workspace[i + 1].upper / total) :
+        (i == 0 ? 0.0L : workspace[i - 1].cumulative / total);
+    const right = reflected ? workspace[i].upper / total :
+        (i + 1 == workspace.length ? 1.0L : workspace[i].cumulative / total);
+    return min(right, upper) - max(left, lower);
+}
+
 // Uniform-window counterpart of the beta-weighted estimators. Use suffixes
 // for upper windows so small upper masses survive rounded cumulative prefixes.
 private auto weightedUniformQuantileAt(F, WeightedQuantileAlgo algorithm, Workspace)(
@@ -4378,7 +4405,6 @@ private auto weightedUniformQuantileAt(F, WeightedQuantileAlgo algorithm, Worksp
     const highValue = cast(real) workspace[$ - 1].value;
     if (workspace[0].value == workspace[$ - 1].value)
         return cast(F) workspace[0].value;
-    const scale = max(fabs(lowValue), fabs(highValue));
     // Reflect upper probabilities before computing h, avoiding 1 - roundedCDF.
     const reflected = probability > 0.5L;
     const p = reflected ? 1 - probability : probability;
@@ -4389,15 +4415,15 @@ private auto weightedUniformQuantileAt(F, WeightedQuantileAlgo algorithm, Worksp
     const h = min(effectiveSize, max(1.0L, rawH));
     const lower = (h - 1) / effectiveSize, upper = h / effectiveSize;
     const total = workspace[$ - 1].cumulative;
+    real scale = 0;
+    foreach (i; 0 .. workspace.length)
+        if (weightedUniformOverlap(workspace, i, lower, upper, total, reflected) > 0)
+            scale = max(scale, fabs(cast(real) workspace[i].value));
+    if (scale == 0) return cast(F) 0;
     Summator!(real, Summation.kahan) coefficients, estimate;
     foreach (i; 0 .. workspace.length)
     {
-        const left = reflected ?
-            (i + 1 == workspace.length ? 0.0L : workspace[i + 1].upper / total) :
-            (i == 0 ? 0.0L : workspace[i - 1].cumulative / total);
-        const right = reflected ? workspace[i].upper / total :
-            (i + 1 == workspace.length ? 1.0L : workspace[i].cumulative / total);
-        const overlap = min(right, upper) - max(left, lower);
+        const overlap = weightedUniformOverlap(workspace, i, lower, upper, total, reflected);
         if (overlap <= 0) continue;
         // The common width cancels when normalizing the retained overlaps.
         coefficients.put(overlap);
@@ -5438,6 +5464,40 @@ unittest
             assertThrown!AssertError(rcWeightedQuantile!algorithm(tooLarge, data, 0.5));
         }
     }}
+}
+
+// Excluded extremes cannot erase tiny contributing values during scaling.
+// Use real's full range so this exercises both extended and double-sized real.
+version(mir_stat_test)
+@safe pure nothrow @nogc
+unittest
+{
+    import mir.math.common: approxEqual;
+    const int[3] weights = [1, 1, 1];
+    const real tiny = real.min_normal;
+    const real[3] values = [tiny, 2*tiny, real.max];
+    const real[3] reflected = [-tiny, -2*tiny, -real.max];
+    const real[3] zeros = [0, 0, real.max];
+    static foreach (algorithm; [WeightedQuantileAlgo.type7, WeightedQuantileAlgo.type8])
+    {{
+        alias q = rcWeightedQuantile!algorithm;
+        assert((q(weights, values, 0.5) / tiny).approxEqual(2.0L));
+        assert((q(weights, reflected, 0.5) / tiny).approxEqual(-2.0L));
+        assert(q(weights, zeros, 0.5) == 0);
+        const real[5] upper = [-real.max, tiny, 2*tiny, 3*tiny, 4*tiny];
+        const int[5] equal = [1, 1, 1, 1, 1];
+        // Exercise the independently accumulated upper-mass path as well.
+        const expected = algorithm == WeightedQuantileAlgo.type7 ? 3.0L : 10.0L/3;
+        assert((q(equal, upper, 0.75) / tiny).approxEqual(expected));
+    }}
+    alias trimmed = rcWeightedQuantile!(WeightedQuantileAlgo.trimmedHarrellDavis);
+    const int[5] equal = [1, 1, 1, 1, 1];
+    const real[5] five = [tiny, 2*tiny, 3*tiny, 4*tiny, real.max];
+    const real[5] negative = [-tiny, -2*tiny, -3*tiny, -4*tiny, -real.max];
+    const real[5] retainedZero = [-real.max, 0, 0, 0, real.max];
+    assert((trimmed(equal, five, 0.5) / tiny).approxEqual(3.0L));
+    assert((trimmed(equal, negative, 0.5) / tiny).approxEqual(-3.0L));
+    assert(trimmed(equal, retainedZero, 0.5) == 0);
 }
 
 private enum QuantileAllocation { gc, rc, custom }
