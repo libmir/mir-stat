@@ -1,6 +1,12 @@
 /++
 Internal widening count storage accessed through stable state.
 
+RC storage uses reference-counted state and buffers; GC storage uses GC allocations
+for both. Proxies and views retain the stable state under the selected ownership
+model. Counting and promotion are shared, with no runtime ownership dispatch.
+Mutation attributes are inferred from the allocation policy: RC remains @nogc,
+while GC insertion may allocate when widening. Neither variant synchronizes access.
+
 Counters start as ubyte and the entire buffer widens to ushort, uint, then
 ulong when an increment requires it. Reads always return a ulong snapshot.
 Widening preserves the shape, indices, and existing proxy/view ownership;
@@ -25,14 +31,30 @@ import mir.ndslice.iterator: FieldIterator;
 import mir.ndslice.slice: Slice, sliced;
 import mir.rc.array: RCI;
 import mir.rc.ptr: mir_rcptr, createRC;
+import mir.qualifier: ownerLightConst = lightConst;
 import std.traits: isMutable;
 
 package(mir.stat.descriptive.histogram):
 
-// Keep the state at a stable address. Only it owns the current buffer; views
-// and proxies retain the state, never a pointer into a replaceable buffer.
-// Reference counting manages ownership, not concurrent access to counters.
-struct SharedCountState
+// Allocation policies preserve the existing RC layout and native GC slices.
+private struct RCCountBuffers
+{
+    alias Buffer(T) = Slice!(RCI!T);
+    static auto allocate(T)(size_t length) { return rcslice!T(length); }
+}
+
+private struct GCCountBuffers
+{
+    alias Buffer(T) = Slice!(T*);
+    static auto allocate(T)(size_t length) { return (new T[length]).sliced; }
+}
+
+// Buffer allocation is selected at compile time; promotion and indexing are shared.
+alias SharedCountState = AdaptiveCountState!RCCountBuffers;
+private alias GCCountState = AdaptiveCountState!GCCountBuffers;
+
+// Keep state at a stable address. Proxies never retain replaceable buffer pointers.
+private struct AdaptiveCountState(Buffers)
 {
 private:
     enum Width { byte_, short_, int_, long_ }
@@ -40,30 +62,30 @@ private:
     size_t length;
     // Only the selected buffer owns memory. Separate typed handles keep
     // allocation, destruction, and access @safe without a manually managed union.
-    Slice!(RCI!ubyte) bytes;
-    Slice!(RCI!ushort) shorts;
-    Slice!(RCI!uint) ints;
-    Slice!(RCI!ulong) longs;
+    Buffers.Buffer!ubyte bytes;
+    Buffers.Buffer!ushort shorts;
+    Buffers.Buffer!uint ints;
+    Buffers.Buffer!ulong longs;
 
-    void incrementBuffer(T, U)(ref Slice!(RCI!T) current,
-        ref Slice!(RCI!U) next, size_t index) @safe pure nothrow @nogc
+    void incrementBuffer(T, U)(ref Buffers.Buffer!T current,
+        ref Buffers.Buffer!U next, size_t index)
     {
         if (current[index] < T.max)
         {
             ++current[index];
             return;
         }
-        widenAndIncrement(current, next, index);
+        widenAndIncrement!(T, U)(current, next, index);
     }
 
     // Keep allocation and copying out of the ordinary increment path so that
     // the small check-and-increment helper can be inlined by the compiler.
-    void widenAndIncrement(T, U)(ref Slice!(RCI!T) current,
-        ref Slice!(RCI!U) next, size_t index) @safe pure nothrow @nogc
+    void widenAndIncrement(T, U)(ref Buffers.Buffer!T current,
+        ref Buffers.Buffer!U next, size_t index)
     {
         // Publish only after allocation and copying. The increment is applied
         // in the wider type, so the triggering count cannot wrap to zero.
-        auto replacement = rcslice!U(length);
+        auto replacement = Buffers.allocate!U(length);
         foreach (i; 0 .. length)
             replacement[i] = current[i];
         ++replacement[index];
@@ -74,12 +96,12 @@ private:
 public:
     // Copy owning handles, not the state: separate width metadata would diverge
     // when one copy replaces a shared counter buffer during promotion.
-    @disable this(ref const SharedCountState);
+    @disable this(ref const AdaptiveCountState);
 
-    this(size_t length) @safe pure nothrow @nogc
+    this(size_t length)
     {
         this.length = length;
-        bytes = rcslice!ubyte(length);
+        bytes = Buffers.allocate!ubyte(length);
         bytes[] = 0;
     }
 
@@ -96,7 +118,7 @@ public:
 
     // Keep the terminal width outside the general dispatcher so ordinary
     // ulong increments can inline without pulling in the narrower cases.
-    void increment(size_t index) @safe pure nothrow @nogc
+    void increment(size_t index)
     {
         if (width == Width.long_)
         {
@@ -108,22 +130,22 @@ public:
             incrementNarrow(index);
     }
 private:
-    void incrementNarrow(size_t index) @safe pure nothrow @nogc
+    void incrementNarrow(size_t index)
     {
         final switch (width)
         {
-        case Width.byte_: incrementBuffer(bytes, shorts, index); break;
-        case Width.short_: incrementBuffer(shorts, ints, index); break;
-        case Width.int_: incrementBuffer(ints, longs, index); break;
+        case Width.byte_: incrementBuffer!(ubyte, ushort)(bytes, shorts, index); break;
+        case Width.short_: incrementBuffer!(ushort, uint)(shorts, ints, index); break;
+        case Width.int_: incrementBuffer!(uint, ulong)(ints, longs, index); break;
         case Width.long_: assert(0, "Expected narrow counters");
         }
     }
 }
 
-struct SharedCountProxy(State)
+struct SharedCountProxy(State, Owner = mir_rcptr!State)
 {
 private:
-    mir_rcptr!State owner;
+    Owner owner;
     size_t index;
 public:
     ulong count() const @safe pure nothrow @nogc
@@ -131,7 +153,7 @@ public:
         return owner.count(index);
     }
 
-    void opUnary(string op : "++")() @safe pure nothrow @nogc
+    void opUnary(string op : "++")()
         if (isMutable!State)
     {
         owner.increment(index);
@@ -141,21 +163,21 @@ public:
 // FieldIterator supplies position arithmetic and ndslice integration. Field
 // indexing creates owning proxies; lightConst preserves the same state while
 // removing mutation capability, without copying the counters.
-struct SharedCountField(State)
+struct SharedCountField(State, Owner = mir_rcptr!State)
 {
 private:
-    mir_rcptr!State owner;
+    Owner owner;
 public:
     auto opIndex(ptrdiff_t index) @safe pure nothrow @nogc
     {
         assert(index >= 0 && cast(size_t) index < owner.length);
-        return SharedCountProxy!State(owner, cast(size_t) index);
+        return SharedCountProxy!(State, Owner)(owner, cast(size_t) index);
     }
 
     // FieldIterator forwards indexed increments here. The field already owns
     // the state for the duration of the call, so immediate insertion needs no
     // temporary owning proxy (and no extra reference-count updates).
-    void opIndexUnary(string op : "++")(ptrdiff_t index) @safe pure nothrow @nogc
+    void opIndexUnary(string op : "++")(ptrdiff_t index)
         if (isMutable!State)
     {
         assert(index >= 0 && cast(size_t) index < owner.length);
@@ -164,7 +186,7 @@ public:
 
     auto lightConst()() const @property @safe pure nothrow @nogc
     {
-        return SharedCountField!(const State)(owner.lightConst);
+        return SharedCountField!(const State, typeof(ownerLightConst(owner)))(ownerLightConst(owner));
     }
 }
 
@@ -175,6 +197,14 @@ auto sharedCountSlice(size_t length) @safe pure nothrow @nogc
     return FieldIterator!(typeof(field))(0, field).sliced(length);
 }
 
+// Both the stable state and every counter buffer are GC-managed. Saved proxies
+// retain a pointer to the state so replacement never invalidates their indices.
+auto gcSharedCountSlice(size_t length) @safe pure nothrow
+{
+    auto owner = new GCCountState(length);
+    auto field = SharedCountField!(GCCountState, GCCountState*)(owner);
+    return FieldIterator!(typeof(field))(0, field).sliced(length);
+}
 // Saved proxies and bin views follow replacement; snapshots stay independent.
 version(mir_stat_test)
 @safe pure nothrow @nogc
@@ -322,10 +352,17 @@ template isSharedCountStorage(S)
     else
         enum isSharedCountStorage = false;
 }
+// Restrict borrowed typed-buffer access to the two known ownership policies.
+private template isDirectCountIterator(I)
+{
+    enum isDirectCountIterator =
+        is(I == FieldIterator!(SharedCountField!SharedCountState)) ||
+        is(I == FieldIterator!(SharedCountField!(GCCountState, GCCountState*)));
+}
 private template isSharedCountIterator(I)
 {
     import mir.ndslice.iterator: StrideIterator;
-    static if (is(I == FieldIterator!(SharedCountField!SharedCountState)))
+    static if (isDirectCountIterator!I)
         enum isSharedCountIterator = true;
     else static if (is(I == StrideIterator!Inner, Inner))
         enum isSharedCountIterator = isSharedCountIterator!Inner;
@@ -359,7 +396,7 @@ private template canBatchCounts(H, Inputs...)
 {
     enum canBatchCounts = () {
         static if (typeof(H.init.counts).S != 0 ||
-            !is(typeof(H.init.counts.iterator) == FieldIterator!(SharedCountField!SharedCountState)))
+            !isDirectCountIterator!(typeof(H.init.counts.iterator)))
             return false;
         else
         {
@@ -384,8 +421,8 @@ private size_t countRowIndex(size_t column = 0, H, Inputs...)(
 }
 // No owning proxies, layout dispatch, or representation dispatch in this loop.
 // Inputs are descriptors copied once, not aliases reloaded after every increment.
-private size_t consumeTypedCounts(T, bool hasOffset, H, S, Inputs...)(
-    ref SharedCountState state, ref H h, S cells, size_t offset,
+private size_t consumeTypedCounts(T, bool hasOffset, State, H, S, Inputs...)(
+    ref State state, ref H h, S cells, size_t offset,
     size_t position, Inputs inputs)
 {
     for (; position < inputs[0].length; ++position)
@@ -408,7 +445,7 @@ private size_t consumeTypedCounts(T, bool hasOffset, H, S, Inputs...)(
     }
     return position;
 }
-private size_t consumeCountBuffer(T, H, S, Inputs...)(ref SharedCountState state,
+private size_t consumeCountBuffer(T, State, H, S, Inputs...)(ref State state,
     ref H h, S cells, size_t offset, size_t position, Inputs inputs)
 {
     if (offset == 0)
@@ -466,13 +503,13 @@ private void insertCountViews(H, Inputs...)(ref H h, auto ref Inputs inputs)
         {
             final switch (owner.width)
             {
-            case SharedCountState.Width.byte_:
+            case typeof(*owner).Width.byte_:
                 position = consumeCountBuffer!ubyte(*owner, h, owner.bytes.lightScope, offset, position, inputs); break;
-            case SharedCountState.Width.short_:
+            case typeof(*owner).Width.short_:
                 position = consumeCountBuffer!ushort(*owner, h, owner.shorts.lightScope, offset, position, inputs); break;
-            case SharedCountState.Width.int_:
+            case typeof(*owner).Width.int_:
                 position = consumeCountBuffer!uint(*owner, h, owner.ints.lightScope, offset, position, inputs); break;
-            case SharedCountState.Width.long_:
+            case typeof(*owner).Width.long_:
                 position = consumeCountBuffer!ulong(*owner, h, owner.longs.lightScope, offset, position, inputs); break;
             }
         }
@@ -724,4 +761,98 @@ unittest
         const state = SharedCountState(1);
         auto copy = state;
     }));
+}
+
+// GC ownership follows the same promotion rules, including offset typed batches.
+version(mir_stat_test)
+@safe pure nothrow
+unittest
+{
+    import mir.stat.descriptive.histogram.accumulator: HistogramAccumulator;
+    import mir.stat.descriptive.histogram.axis: IntegralAxis, AxisOptions;
+    import std.meta: AliasSeq;
+    alias A = IntegralAxis!(uint, AxisOptions());
+    static foreach (T; AliasSeq!(ubyte, ushort, uint, ulong))
+    {{
+        auto storage = gcSharedCountSlice(6);
+        auto owner = storage.iterator._field.owner;
+        enum ulong initial = is(T == ulong) ? 10 : T.max - 1;
+        owner.bytes = typeof(owner.bytes).init;
+        static if (is(T == ubyte)) { owner.bytes=GCCountBuffers.allocate!T(6); owner.bytes[]=initial; }
+        else static if (is(T == ushort)) { owner.shorts=GCCountBuffers.allocate!T(6); owner.shorts[]=initial; owner.width=GCCountState.Width.short_; }
+        else static if (is(T == uint)) { owner.ints=GCCountBuffers.allocate!T(6); owner.ints[]=initial; owner.width=GCCountState.Width.int_; }
+        else { owner.longs=GCCountBuffers.allocate!T(6); owner.longs[]=initial; owner.width=GCCountState.Width.long_; }
+        auto counts = storage[1 .. 5].sliced(2, 2);
+        auto h = HistogramAccumulator!(typeof(counts), A, A)(counts, A(2,0), A(2,0));
+        auto copy = h;
+        auto saved = storage[1];
+        auto view = h.bins;
+        auto snapshot = view[0];
+        uint[128] x, y;
+        foreach (i; 0 .. 128) { x[i]=cast(uint)(i%2); y[i]=x[i]; }
+        static assert(canBatchCounts!(typeof(h), typeof(x[].sliced), typeof(y[].sliced)));
+        insertSharedCounts(copy, x[], y[]);
+        assert(saved.count() == initial + 64 && view[0].count == initial + 64);
+        assert(snapshot.count == initial);
+        assert(storage[4].count() == initial + 64);
+        foreach (i; [0,2,3,5]) assert(storage[i].count() == initial);
+        const readOnly = h;
+        assert(readOnly.bins[0].count == initial + 64);
+        auto frozen = counts.lightConst;
+        assert(frozen[0,0].count() == initial + 64);
+        static assert(!__traits(compiles, frozen[0,0]++));
+        static assert(!__traits(compiles, readOnly.put(0u, 0u)));
+    }}
+    static assert(!__traits(compiles, { auto a = GCCountState(1); auto b = a; }));
+    assert(gcSharedCountSlice(0).length == 0);
+}
+
+// A strided GC histogram takes scalar insertion; aliases follow widening.
+version(mir_stat_test)
+@safe pure nothrow
+unittest
+{
+    import mir.stat.descriptive.histogram.accumulator: HistogramAccumulator;
+    import mir.stat.descriptive.histogram.axis: IntegralAxis, AxisOptions;
+    import mir.ndslice.topology: stride;
+    alias A = IntegralAxis!(uint, AxisOptions());
+    auto storage = gcSharedCountSlice(4);
+    auto counts = storage.stride(2);
+    auto h = HistogramAccumulator!(typeof(counts), A)(counts, A(2,0));
+    uint[600] input;
+    foreach (i; 0 .. input.length) input[i] = cast(uint)(i%2);
+    h.put(input[]);
+    assert(storage[0].count() == 300 && storage[2].count() == 300);
+    assert(storage[1].count() == 0 && storage[3].count() == 0);
+}
+
+// Saved proxies and views keep GC state reachable after the histogram is gone.
+version(mir_stat_test)
+@system
+unittest
+{
+    import core.memory: GC;
+    import mir.stat.descriptive.histogram.accumulator: HistogramAccumulator;
+    import mir.stat.descriptive.histogram.axis: IntegralAxis, AxisOptions;
+    alias A = IntegralAxis!(uint, AxisOptions());
+    static auto savedProxy() @safe pure nothrow
+    {
+        auto counts = gcSharedCountSlice(2);
+        foreach (i; 0 .. 256) ++counts[0];
+        return counts[0];
+    }
+    static auto savedView() @safe pure nothrow
+    {
+        auto counts = gcSharedCountSlice(2);
+        auto h = HistogramAccumulator!(typeof(counts), A)(counts, A(2,0));
+        h.put(1u);
+        return h.bins;
+    }
+    auto proxy = savedProxy();
+    auto view = savedView();
+    GC.collect();
+    assert(proxy.count() == 256 && view[1].count == 1);
+    ++proxy;
+    GC.collect();
+    assert(proxy.count() == 257 && view[1].count == 1);
 }
