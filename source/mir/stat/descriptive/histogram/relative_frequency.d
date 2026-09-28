@@ -22,6 +22,7 @@ version(mir_stat_test)
 private import mir.stat.descriptive.histogram.api.rc: rcMarginal;
 
 private import mir.stat.descriptive.histogram.traits: ordinaryBinCount;
+private import mir.stat.descriptive.histogram.internal.cell: readCount;
 
 import mir.internal.utility: isFloatingPoint;
 import std.meta: allSatisfy;
@@ -80,7 +81,9 @@ construction.
 Counts are exposed read-only. Arrays and slices retain their usual aliasing
 semantics: callers must not modify backing storage through external aliases or
 independently mutate copies of this wrapper that share storage. Counter types
-must be large enough for both bin counts and the total.
+must be large enough for both bin counts and the total. Adaptive count storage
+widens count storage up to ulong; its total is always ulong and must not
+overflow. It supports unweighted insertion, but not weighted insertion or merging.
 
 Relative frequencies divide by all recorded counts by default. Select
 `Normalization.ordinary` to condition on observations in ordinary bins on every
@@ -141,7 +144,7 @@ struct RelativeFrequencyAccumulator(Storage, Axis...)
         foreach (i; 0 .. storage.length)
         {
             static if (depth + 1 == N)
-                result += storage[i];
+                result += readCount(storage[i]);
             else
                 result += storageTotal!(depth + 1)(storage[i]);
         }
@@ -152,7 +155,7 @@ struct RelativeFrequencyAccumulator(Storage, Axis...)
         auto ref const S storage, const ref size_t[N] indices)
     {
         static if (depth + 1 == N)
-            return storage[indices[depth]];
+            return readCount(storage[indices[depth]]);
         else
             return storageCount!(depth + 1)(storage[indices[depth]], indices);
     }
@@ -398,7 +401,7 @@ struct RelativeFrequencyAccumulator(Storage, Axis...)
         static if (includeUnderflow!AxisType && normalization == Normalization.all)
             cumulative = histogramAccumulator.underflow;
         foreach (i; 0 .. index + 1)
-            cumulative += histogramAccumulator.counts[i + includeUnderflow!AxisType];
+            cumulative += readCount(histogramAccumulator.counts[i + includeUnderflow!AxisType]);
         return normalizeCount!RelativeFrequencyType(cumulative, normalization);
     }
 
@@ -463,7 +466,7 @@ struct RelativeFrequencyAccumulator(Storage, Axis...)
         const denominator = normalizationCount(normalization);
         foreach (i; 0 .. ordinaryBinCount(axis))
         {
-            cumulative += histogramAccumulator.counts[i + includeUnderflow!AxisType];
+            cumulative += readCount(histogramAccumulator.counts[i + includeUnderflow!AxisType]);
             destination[i] = divideCount!RelativeFrequencyType(cumulative, denominator);
         }
     }
@@ -476,7 +479,7 @@ struct RelativeFrequencyAccumulator(Storage, Axis...)
         foreach (i; 0 .. ordinaryBinCount(histogramAccumulator.axis[depth]))
         {
             static if (depth + 1 == N)
-                result += storage[i + offset];
+                result += readCount(storage[i + offset]);
             else
                 result += ordinaryCount!(depth + 1)(storage[i + offset]);
         }
@@ -642,7 +645,8 @@ struct RelativeFrequencyAccumulator(Storage, Axis...)
         coordinates = one compatible coordinate per axis
     +/
     void putWeighted(W, T...)(W weight, T coordinates)
-        if (acceptsHistogramWeight!(CountType, W) && T.length == N && acceptsArguments!T)
+        if (acceptsHistogramWeight!(CountType, W) && T.length == N && acceptsArguments!T &&
+            __traits(compiles, histogramAccumulator.putWeighted(W.init, T.init)))
     {
         histogramAccumulator.putWeighted(weight, coordinates);
         const CountType added = weight;
@@ -655,7 +659,8 @@ struct RelativeFrequencyAccumulator(Storage, Axis...)
         static if (is(Unqual!F == RelativeFrequencyAccumulator!Args, Args...))
             enum acceptsMerge =
                 is(Unqual!F == RelativeFrequencyAccumulator!(Args[0], Axis)) &&
-                is(Unqual!(F.CountType) == Unqual!CountType);
+                is(Unqual!(F.CountType) == Unqual!CountType) &&
+                __traits(compiles, histogramAccumulator.put(F.init.histogramAccumulator));
         else
             enum acceptsMerge = false;
     }
@@ -4050,4 +4055,24 @@ unittest
         assert(f.total == T(1.5) && f.counts[0] == weight);
         assert(f.relativeFrequency(1) == 2.0 / 3);
     }}
+}
+
+// Proxy capability constraints preserve fixed-count weighted insertion and const merging.
+version(mir_stat_test)
+@safe pure nothrow @nogc
+unittest
+{
+    import mir.stat.descriptive.histogram.axis: IntegralAxis, AxisOptions;
+    alias A = IntegralAxis!(int, AxisOptions());
+    alias F = RelativeFrequencyAccumulator!(double[2][2], A, A);
+    double[2][2] zeros = 0;
+    auto destination = F(zeros, A(2, 0), A(2, 0));
+    destination.putWeighted(0.5, 0, 1);
+    auto source = F(zeros, A(2, 0), A(2, 0));
+    source.putWeighted(1.5, 1, 0);
+    const frozen = source;
+    destination.put(frozen);
+    assert(destination.total == 2);
+    assert(destination.relativeFrequency(0, 1) == 0.25);
+    assert(destination.relativeFrequency(1, 0) == 0.75);
 }
