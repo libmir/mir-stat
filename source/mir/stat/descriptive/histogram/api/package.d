@@ -29,14 +29,15 @@ that can be summed and normalized.
 
 GC and RC factories manage their count storage automatically. The make factories
 take an allocator first and require explicit cleanup for fixed storage.
-Select AdaptiveCounts!() in histogram, rchistogram, or makeHistogram to use
+Select AdaptiveCounts!() in histogram, relative-frequency, or percentogram factories to use
 unweighted counters that widen from ubyte to ulong. Select AdaptiveCounts!ushort
-(or uint or ulong) to start at a wider type. histogram uses GC ownership;
-rchistogram and makeHistogram use RC ownership for these adaptive counts.
-Adaptive counts require no custom disposal and do not support weighted or
-relative-frequency construction. Ordinary custom histograms
+(or uint or ulong) to start at a wider type. GC factories use GC ownership;
+RC and custom factories use RC ownership for these adaptive counts.
+Adaptive counts require no custom disposal and do not support weighted updates
+or merging. Relative-frequency totals remain ulong and must not overflow. Ordinary custom histograms
 expose caller-allocated counts; makePercentogram returns a wrapper whose dispose
-method releases both boundaries and counts. Allocating counts does not take
+method releases boundaries and fixed counts through the allocator; adaptive
+counts are released automatically. Allocating counts does not take
 ownership of borrowed axis boundaries.
 
 See $(REF rc, mir, stat, descriptive, histogram, api) for axis-selection examples,

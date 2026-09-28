@@ -247,7 +247,6 @@ unittest
     testAdaptiveFactory!histogram();
     int[1] data;
     static assert(!__traits(compiles, weightedHistogram!(AdaptiveCounts!())(data, data, A(2, 0))));
-    static assert(!__traits(compiles, relativeFrequencyHistogram!(AdaptiveCounts!())(data, A(2, 0))));
 }
 
 // Exercise shared empty-axis construction checks with GC-owned cells.
@@ -367,11 +366,14 @@ relative-frequency accessors for one-dimensional histograms. Numeric axes with
 supported bin geometry also provide density and densityBins. Updates through
 put and putWeighted keep the total synchronized.
 A zero normalization total produces NaN relative frequencies.
+
+Select AdaptiveCounts!() (or AdaptiveCounts!ushort, !uint, or !ulong) in place
+of a fixed counter type for automatically widening unweighted counts. Counts use
+GC ownership; the total remains ulong and must fit in that type. Weighted
+insertion and merging are unavailable for adaptive counts.
 +/
 template relativeFrequencyHistogram(Options...)
 {
-    static assert(!isAdaptiveCountSelection!Options,
-        "AdaptiveCounts supports only unweighted histogram construction");
     auto relativeFrequencyHistogram(Args...)(auto ref Args args)
     {
         import mir.stat.descriptive.histogram.accumulator: HistogramAccumulator;
@@ -396,6 +398,21 @@ unittest
     f.put(3.5);
     assert(f.total == 5);
     assert(f.relativeFrequency(1) == 0.4);
+}
+
+/// Use adaptive counts when collecting an unknown number of observations.
+version(mir_stat_test)
+@safe pure nothrow
+unittest
+{
+    import mir.stat.descriptive.histogram.traits: AdaptiveCounts;
+    import mir.ndslice.slice: sliced;
+    import mir.stat.descriptive.histogram.axis: RegularAxis;
+    double[4] values = [0, 1, 2, 3];
+    auto f = values[].sliced.relativeFrequencyHistogram!(AdaptiveCounts!(), RegularAxis)(2u, 0.0, 4.0);
+    foreach (i; 0 .. 254) f.put(1.0);
+    assert(f.bins()[0].count == 256 && f.total == 258);
+    assert(f.relativeFrequency(0) == 256.0 / 258);
 }
 
 /++
@@ -601,22 +618,28 @@ on relative-frequency, density, or cumulative accessors to exclude them from the
 probability distribution. With ties, actual retained counts can differ from the
 requested probability span.
 
+Use percentogram!(AdaptiveCounts!()) to widen counts automatically, or select
+a larger initial width such as AdaptiveCounts!ushort. Boundaries retain their
+usual allocation policy; only the count storage selection changes. The default
+remains fixed size_t counts.
+
 Params:
+    Counts = fixed counter type (size_t by default), or an AdaptiveCounts selection
     data = one-dimensional observations, as an array or slice
     probabilities = positive bin count or probability array/slice
 +/
-auto percentogram(Data, P)(scope auto ref Data data, scope auto ref P probabilities)
+auto percentogram(Counts = size_t, Data, P)(scope auto ref Data data, scope auto ref P probabilities)
 {
     import mir.stat.descriptive.univariate: quantile;
     import mir.stat.descriptive.histogram.api.factory: buildPercentogram;
-    return buildPercentogram!(allocateCounts, quantile, relativeFrequencyHistogram)(data, probabilities);
+    return buildPercentogram!(allocateCounts, quantile, relativeFrequencyHistogram, Counts)(data, probabilities);
 }
 
 /// ditto
-auto percentogram(Data)(scope auto ref Data data)
+auto percentogram(Counts = size_t, Data)(scope auto ref Data data)
 {
     import mir.stat.descriptive.histogram.api.factory: defaultPercentogramBinCount;
-    return percentogram(data, defaultPercentogramBinCount(data.length));
+    return percentogram!Counts(data, defaultPercentogramBinCount(data.length));
 }
 
 /// Choose the bin count from the sample size and use density as bar height.
@@ -642,6 +665,20 @@ unittest
     assert(quartiles.counts == [0, 2, 2, 2, 2, 0]);
     assert(quartiles.relativeFrequency(0) == 0.25);
     assert(quartiles.density(0) == 0.25 / 1.75);
+}
+
+/// Keep quantile boundaries fixed while adaptive counts grow with later observations.
+version(mir_stat_test)
+@safe pure nothrow
+unittest
+{
+    import mir.stat.descriptive.histogram.traits: AdaptiveCounts;
+    import mir.ndslice.slice: sliced;
+    double[5] values = [0, 0, 1, 2, 2];
+    auto p = percentogram!(AdaptiveCounts!ushort)(values[].sliced, 2);
+    p.put(0.0);
+    assert(p.total == 6 && p.bins()[0].count == 3);
+    assert(p.relativeFrequency(0) == 0.5);
 }
 
 /// Built-in dynamic arrays can be passed directly, without conversion to Mir slices.
@@ -888,4 +925,14 @@ unittest
 {
     import mir.stat.descriptive.histogram.api.factory: testMarginalFactory;
     testMarginalFactory!marginal();
+}
+
+// Adaptive selection preserves relative-frequency and percentogram behavior.
+version(mir_stat_test)
+@safe pure nothrow
+unittest
+{
+    import mir.stat.descriptive.histogram.api.factory: testAdaptiveRelativeFactory, testAdaptivePercentogram;
+    testAdaptiveRelativeFactory!relativeFrequencyHistogram();
+    testAdaptivePercentogram!percentogram();
 }

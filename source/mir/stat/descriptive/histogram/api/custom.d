@@ -439,7 +439,6 @@ unittest
     alias A = IntegralAxis!(int, AxisOptions());
     int[1] data;
     static assert(!__traits(compiles, makeWeightedHistogram!(AdaptiveCounts!())(allocator, data, data, A(2, 0))));
-    static assert(!__traits(compiles, makeRelativeFrequencyHistogram!(AdaptiveCounts!())(allocator, data, A(2, 0))));
 }
 
 // Exercise shared empty-axis construction checks with caller-allocated cells.
@@ -1091,17 +1090,21 @@ put and putWeighted keep the total synchronized.
 A zero normalization total produces NaN relative frequencies.
 
 Counts are exposed read-only to prevent updates that bypass the running total.
-For final disposal, recover the allocated element type with
+For fixed counts, recover the allocated element type for final disposal with
 allocator.dispose(cast(typeof(result).CountType[]) result.counts.field).
 Use that cast only for cleanup after the result and its views are no longer used.
 The caller owns the count allocation and must release it through the same
 allocator after all uses of the accumulator and its views. The allocator is
 not retained. Construction failure releases allocated counts.
+
+Select AdaptiveCounts!() (or AdaptiveCounts!ushort, !uint, or !ulong) in place
+of a fixed counter type for automatically widening unweighted counts. Counts use
+RC ownership; the total remains ulong and must fit in that type. Weighted
+insertion and merging are unavailable for adaptive counts.
+The allocator is not used for adaptive counts, which require no explicit disposal.
 +/
 template makeRelativeFrequencyHistogram(Options...)
 {
-    static assert(!isAdaptiveCountSelection!Options,
-        "AdaptiveCounts supports only unweighted histogram construction");
     auto makeRelativeFrequencyHistogram(Allocator, Args...)(ref Allocator allocator, auto ref Args args)
     {
         import mir.stat.descriptive.histogram.accumulator: HistogramAccumulator;
@@ -1130,6 +1133,22 @@ unittest
     f.put(3.5);
     assert(f.total == 5);
     assert(f.relativeFrequency(1) == 0.4);
+}
+
+/// Use adaptive counts when collecting an unknown number of observations.
+version(mir_stat_test)
+@safe pure nothrow @nogc
+unittest
+{
+    import mir.stat.descriptive.histogram.traits: AdaptiveCounts;
+    import mir.ndslice.slice: sliced;
+    import std.experimental.allocator.mallocator: Mallocator;
+    import mir.stat.descriptive.histogram.axis: RegularAxis;
+    double[4] values = [0, 1, 2, 3];
+    auto f = makeRelativeFrequencyHistogram!(AdaptiveCounts!(), RegularAxis)(Mallocator.instance, values[].sliced, 2u, 0.0, 4.0);
+    foreach (i; 0 .. 254) f.put(1.0);
+    assert(f.bins()[0].count == 256 && f.total == 258);
+    assert(f.relativeFrequency(0) == 256.0 / 258);
 }
 
 /++
@@ -1247,7 +1266,9 @@ A manually managed percentogram and the original allocations backing it.
 Use `histogram` for counts, relative frequencies, densities, and traversal.
 Call `dispose` exactly once across all copies, through the original allocator,
 after all aliases and borrowed views have finished using either allocation.
-The allocator is not retained and there is no automatic destructor cleanup.
+The allocator is not retained; boundaries and fixed counts have no automatic
+destructor cleanup. Adaptive counts have automatic RC cleanup, but boundaries
+still require dispose.
 Copies share storage; do not update independent copies of the accumulator.
 +/
 struct AllocatedPercentogram(Histogram, BoundaryStorage, CountStorage)
@@ -1267,7 +1288,8 @@ struct AllocatedPercentogram(Histogram, BoundaryStorage, CountStorage)
     }
 
     /++
-    Release counts and the original boundary allocation through the same allocator.
+    Release fixed counts and the original boundary allocation through the same allocator.
+    Adaptive counts release their RC ownership automatically.
     Duplicate compaction does not shorten the allocation passed to cleanup.
     Repeated disposal of this instance is harmless; other copies become invalid.
     Deallocation must not throw. Attributes follow the allocator's operations.
@@ -1276,7 +1298,7 @@ struct AllocatedPercentogram(Histogram, BoundaryStorage, CountStorage)
     {
         import std.experimental.allocator: dispose;
         if (!active) return;
-        allocator.dispose(counts.field);
+        releaseCounts(allocator, counts);
         allocator.dispose(boundaries.field);
         counts = CountStorage.init;
         boundaries = BoundaryStorage.init;
@@ -1520,12 +1542,20 @@ Deallocation must not throw.
 Only the active boundary slice is compacted: the full original allocation is
 retained for cleanup. Attributes depend on the allocator.
 
+Use makePercentogram!(AdaptiveCounts!()) to widen counts automatically, or select
+a larger initial width such as AdaptiveCounts!ushort. Boundaries retain their
+usual allocation policy; only the count storage selection changes. The default
+remains fixed size_t counts.
+Adaptive counts use RC ownership. Call dispose to release the caller-allocated
+boundaries; adaptive count ownership is released automatically by the wrapper.
+
 Params:
+    Counts = fixed counter type (size_t by default), or an AdaptiveCounts selection
     allocator = allocator providing allocation and nonthrowing deallocation
     data = one-dimensional observations, as an array or Mir slice
     probabilities = positive bin count or probability array/slice within zero to one
 +/
-auto makePercentogram(Allocator, Data, P)(ref Allocator allocator,
+auto makePercentogram(Counts = size_t, Allocator, Data, P)(ref Allocator allocator,
     scope auto ref Data data, scope auto ref P probabilities)
 {
     import std.traits: isIntegral;
@@ -1546,7 +1576,7 @@ auto makePercentogram(Allocator, Data, P)(ref Allocator allocator,
         scope(exit) allocator.dispose(levels.field);
         foreach (i; 0 .. levels.length)
             levels[i] = cast(double) i / probabilities;
-        return makePercentogram(allocator, data, levels);
+        return makePercentogram!Counts(allocator, data, levels);
     }
     else
     {
@@ -1559,7 +1589,7 @@ auto makePercentogram(Allocator, Data, P)(ref Allocator allocator,
         scope(failure) allocator.dispose(edges.field);
         const distinct = preparePercentogramEdges(edges);
         auto axis = variableAxis!(AxisOptions(false, true, true))(edges[0 .. distinct]);
-        auto h = makeHistogram(allocator,
+        auto h = makeHistogram!Counts(allocator,
             observations.as!(DeepElementType!(typeof(edges))), axis);
         static if (is(typeof(h) == HistogramAccumulator!Args, Args...))
         {
@@ -1570,10 +1600,10 @@ auto makePercentogram(Allocator, Data, P)(ref Allocator allocator,
 }
 
 /// ditto
-auto makePercentogram(Allocator, Data)(ref Allocator allocator, scope auto ref Data data)
+auto makePercentogram(Counts = size_t, Allocator, Data)(ref Allocator allocator, scope auto ref Data data)
 {
     import mir.stat.descriptive.histogram.api.factory: defaultPercentogramBinCount;
-    return makePercentogram(allocator, data, defaultPercentogramBinCount(data.length));
+    return makePercentogram!Counts(allocator, data, defaultPercentogramBinCount(data.length));
 }
 
 /// Choose the bin count from the sample size without the GC; explicitly release the result.
@@ -1596,6 +1626,22 @@ unittest
     assert(quartiles.histogram.counts == [0, 2, 2, 2, 2, 0]);
     assert(quartiles.histogram.relativeFrequency(0) == 0.25);
     assert(quartiles.histogram.density(0) == 0.25 / 1.75);
+}
+
+/// Keep quantile boundaries fixed while adaptive counts grow with later observations.
+version(mir_stat_test)
+@system pure nothrow @nogc
+unittest
+{
+    import mir.stat.descriptive.histogram.traits: AdaptiveCounts;
+    import mir.ndslice.slice: sliced;
+    import std.experimental.allocator.mallocator: Mallocator;
+    double[5] values = [0, 0, 1, 2, 2];
+    auto p = makePercentogram!(AdaptiveCounts!ushort)(Mallocator.instance, values[].sliced, 2);
+    scope(exit) p.dispose(Mallocator.instance); // Releases boundaries and drops the RC counts.
+    p.histogram.put(0.0);
+    assert(p.histogram.total == 6 && p.histogram.bins()[0].count == 3);
+    assert(p.histogram.relativeFrequency(0) == 0.5);
 }
 
 /// Mir slices and built-in dynamic arrays support explicit probability intervals.
@@ -1968,4 +2014,82 @@ unittest
     alias A = IntegralAxis!(int, AxisOptions());
     assertThrown!Exception(makeHistogram!(AdaptiveCounts!())(allocator, input[].sliced.map!reject, A(2, 0)));
     assertThrown!Exception(makeHistogram!(AdaptiveCounts!())(allocator, input[], input[].sliced.map!reject, A(2, 0), A(2, 0)));
+}
+
+// Adaptive relative counts do not use the allocator; percentogram boundaries do.
+version(mir_stat_test)
+@system pure nothrow @nogc
+unittest
+{
+    import std.experimental.allocator.mallocator: Mallocator;
+    import mir.stat.descriptive.histogram.api.factory: testAdaptiveRelativeFactory;
+    import mir.stat.descriptive.histogram.traits: AdaptiveCounts;
+    template relative(Options...)
+    {
+        static auto relative(Args...)(auto ref Args args)
+        {
+            return makeRelativeFrequencyHistogram!Options(Mallocator.instance, args);
+        }
+    }
+    testAdaptiveRelativeFactory!relative();
+    double[5] data = [0, 0, 1, 2, 2];
+    const double[3] levels = [0, 0.5, 1];
+    auto p = makePercentogram!(AdaptiveCounts!())(Mallocator.instance, data, levels);
+    foreach (i; 0 .. 254) p.histogram.put(0.0);
+    assert(p.histogram.total == 259 && p.histogram.bins()[0].count == 256);
+    p.dispose(Mallocator.instance);
+    p.dispose(Mallocator.instance);
+    auto inferred = makePercentogram!(AdaptiveCounts!ushort)(Mallocator.instance, data);
+    scope(exit) inferred.dispose(Mallocator.instance);
+    auto explicit = makePercentogram!(AdaptiveCounts!uint)(Mallocator.instance, data, 2);
+    scope(exit) explicit.dispose(Mallocator.instance);
+    assert(inferred.histogram.total == 5 && explicit.histogram.total == 5);
+}
+
+// Adaptive percentograms release only caller-owned allocations through the allocator.
+version(mir_stat_test)
+@system pure nothrow @nogc
+unittest
+{
+    import mir.stat.descriptive.histogram.traits: AdaptiveCounts;
+    double[5] values = [0, 0, 1, 2, 2];
+    PercentogramAllocator!() allocator;
+    auto p = makePercentogram!(AdaptiveCounts!())(allocator, values, 4);
+    // Generated probabilities and quantile scratch have already been released.
+    assert(allocator.allocations == 3 && allocator.releases == 2);
+    assert(p.histogram.axis.N_bin == 2);
+    p.dispose(allocator);
+    assert(allocator.releases == 3);
+    p.dispose(allocator);
+    assert(allocator.releases == 3);
+}
+
+// Safe allocators retain safe boundary construction and disposal with adaptive counts.
+version(mir_stat_test)
+@safe pure nothrow
+unittest
+{
+    import mir.stat.descriptive.histogram.traits: AdaptiveCounts;
+    SafeAllocator allocator;
+    int[3] values = [0, 1, 2];
+    auto p = makePercentogram!(AdaptiveCounts!())(allocator, values, 2);
+    p.dispose(allocator);
+    assert(allocator.allocations == allocator.releases);
+}
+
+// Adaptive selection still unwinds quantile allocation failures completely.
+version(mir_stat_test)
+@system pure
+unittest
+{
+    import mir.stat.descriptive.histogram.traits: AdaptiveCounts;
+    import std.exception: assertThrown;
+    double[3] values = [0, 1, 2];
+    foreach (failure; 1 .. 4)
+    {
+        PercentogramAllocator!true allocator;
+        allocator.failAt = failure;
+        assertThrown!Exception(makePercentogram!(AdaptiveCounts!())(allocator, values, 2));
+        assert(allocator.allocations == failure && allocator.releases == failure - 1);
+    }
 }

@@ -1445,7 +1445,7 @@ unittest
 
 // Quantile and count allocation policies stay paired: both results own their storage.
 package auto buildPercentogram(alias allocate, alias quantiles, alias histogram,
-    Data, P)(scope auto ref Data data, scope auto ref P probabilities)
+    Counts, Data, P)(scope auto ref Data data, scope auto ref P probabilities)
 {
     import mir.ndslice.slice: isSlice, sliced;
     import mir.stat.descriptive.histogram.axis: variableAxis, AxisOptions;
@@ -1459,7 +1459,7 @@ package auto buildPercentogram(alias allocate, alias quantiles, alias histogram,
         auto levels = allocate!double(context, cast(size_t) probabilities + 1);
         foreach (i; 0 .. levels.length)
             levels[i] = cast(double) i / probabilities;
-        return buildPercentogram!(allocate, quantiles, histogram)(data, levels);
+        return buildPercentogram!(allocate, quantiles, histogram, Counts)(data, levels);
     }
     else
     {
@@ -1481,7 +1481,7 @@ package auto buildPercentogram(alias allocate, alias quantiles, alias histogram,
         import mir.ndslice.topology: as;
         import mir.primitives: DeepElementType;
         auto axis = variableAxis!(AxisOptions(false, true, true))(edges);
-        return histogram(observations.as!(DeepElementType!(typeof(edges))), axis);
+        return histogram!Counts(observations.as!(DeepElementType!(typeof(edges))), axis);
     }
 }
 
@@ -2328,4 +2328,77 @@ private void testAdaptiveAxisSelection(alias factory)()
     string[3] names = ["a", "b", "a"];
     auto named = factory!(Counts, Label, CategoryAxis)(names[].sliced);
     assert(named.bins[0].count == 2 && named.bins[1].count == 1);
+}
+
+// All owning factory policies must preserve totals and views across promotion.
+version(mir_stat_test)
+package void testAdaptiveRelativeFactory(alias factory)()
+{
+    import mir.stat.descriptive.histogram.traits: AdaptiveCounts;
+    import mir.stat.descriptive.histogram.axis: IntegralAxis, AxisOptions;
+    import mir.stat.descriptive.histogram.relative_frequency: Normalization;
+    import mir.stat.descriptive.histogram.accumulator: BinCoverage;
+    alias A = IntegralAxis!(int, AxisOptions(false, true, true));
+    int[255] values;
+    auto f = factory!(AdaptiveCounts!())(values, A(2, 0));
+    auto bins = f.bins();
+    version(mir_stat_test_lifetime)
+        auto frequencies = f.relativeFrequencyBins();
+    f.put(0, 1, -1, 2);
+    assert(f.total == 259 && bins[0].count == 256);
+    version(mir_stat_test_lifetime)
+        assert(frequencies[0].relativeFrequency == 256.0 / 259);
+    assert(f.relativeFrequency!(double, Normalization.ordinary)(0) == 256.0 / 257);
+    assert(f.cumulativeRelativeFrequency(1) == 258.0 / 259);
+    assert(f.density(0) == 256.0 / 259);
+    version(mir_stat_test_lifetime)
+    {
+        auto cumulative = f.cumulativeRelativeFrequencyBins();
+        cumulative.popFront();
+        assert(cumulative.front.cumulativeRelativeFrequency == 258.0 / 259);
+    }
+    auto snapshot = f.cumulativeRelativeFrequencies();
+    assert(snapshot[1] == 258.0 / 259);
+    auto all = f.bins!(BinCoverage.all)();
+    assert(all[0].count == 1 && all[3].count == 1);
+    static assert(!__traits(compiles, f.putWeighted(1u, 0)));
+    static assert(!__traits(compiles, f.put(f)));
+
+    auto joint = factory!(AdaptiveCounts!ushort)(A(2, 0), A(2, 0));
+    joint.put(0, 1);
+    joint.put(-1, 1);
+    assert(joint.total == 2);
+    assert(joint.relativeFrequency!(double, Normalization.ordinary)(0, 1) == 1);
+    assert(joint.relativeFrequency(0, 1) == 0.5);
+    const frozen = joint;
+    assert(frozen.bins()[1].count == 1);
+}
+
+// Probability arrays, explicit bin counts and inferred bin counts share selection.
+version(mir_stat_test)
+package void testAdaptivePercentogram(alias factory)()
+{
+    import mir.stat.descriptive.histogram.traits: AdaptiveCounts;
+    import mir.stat.descriptive.histogram.relative_frequency: Normalization;
+    double[5] data = [0, 0, 1, 2, 2];
+    const double[3] levels = [0, 0.5, 1];
+    auto fixed = factory!uint(data, levels);
+    static assert(is(typeof(fixed).CountType == uint));
+    assert(fixed.total == 5);
+    auto p = factory!(AdaptiveCounts!())(data, levels);
+    auto bins = p.bins();
+    foreach (i; 0 .. 254) p.put(0.0);
+    assert(p.total == 259 && bins[0].count == 256);
+    assert(p.relativeFrequency(0) == 256.0 / 259);
+    assert(p.cumulativeRelativeFrequency(1) == 1);
+    assert(p.density(0) == 256.0 / 259);
+    auto inferred = factory!(AdaptiveCounts!ushort)(data);
+    auto explicit = factory!(AdaptiveCounts!uint)(data, 2);
+    assert(inferred.total == 5 && explicit.total == 5);
+    assert(explicit.bins()[0].count == 2);
+    const double[3] trimmedLevels = [0.25, 0.5, 0.75];
+    double[5] unique = [0, 1, 2, 3, 4];
+    auto trimmed = factory!(AdaptiveCounts!())(unique, trimmedLevels);
+    assert(trimmed.underflow == 1 && trimmed.overflow == 1);
+    assert(trimmed.relativeFrequency!(double, Normalization.ordinary)(0) == 1.0 / 3);
 }
