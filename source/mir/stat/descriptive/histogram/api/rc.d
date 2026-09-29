@@ -20,6 +20,8 @@ T4=$(TR $(TDNW $(LREF $1)) $(TD $2) $(TD $3) $(TD $4))
 
 module mir.stat.descriptive.histogram.api.rc;
 
+private import mir.stat.descriptive.univariate: WeightedQuantileAlgo;
+
 // Joint numeric batches preserve pairing, numeric types, and axis lifetimes.
 version(mir_stat_test)
 @safe pure nothrow @nogc
@@ -1677,4 +1679,134 @@ unittest
     import mir.stat.descriptive.histogram.api.factory: testAdaptiveRelativeFactory, testAdaptivePercentogram;
     testAdaptiveRelativeFactory!rcRelativeFrequencyHistogram();
     testAdaptivePercentogram!rcpercentogram();
+}
+
+/++
+Construct a weighted percentogram with RC-owned boundaries and counts.
+Uses the algorithms, input requirements, bin-count heuristic, and boundary
+rules of $(REF weightedPercentogram, mir, stat, descriptive, histogram, api, gc).
+The result owns its storage independently of the inputs and supports @nogc use.
+
+Params:
+    Counts = numeric counter type, double by default
+    algorithm = weighted quantile definition, inverseCDF by default
+    weights = probability masses, or occurrence counts for frequency algorithms
+    data = one-dimensional observations, as an array or Mir slice
+    probabilities = positive bin count or probability array/slice
++/
+auto rcWeightedPercentogram(Counts = double, WeightedQuantileAlgo algorithm = WeightedQuantileAlgo.inverseCDF,
+    Weights, Data, P)(scope auto ref Weights weights, scope auto ref Data data,
+    scope auto ref P probabilities)
+{
+    import mir.stat.descriptive.univariate: rcWeightedQuantile;
+    import mir.stat.descriptive.histogram.api.factory: buildWeightedPercentogram;
+    return buildWeightedPercentogram!(allocateRC, rcWeightedQuantile, rcRelativeFrequencyHistogram, Counts, algorithm)(
+        weights, data, probabilities);
+}
+
+/// ditto
+auto rcWeightedPercentogram(Counts = double, WeightedQuantileAlgo algorithm = WeightedQuantileAlgo.inverseCDF,
+    Weights, Data)(scope auto ref Weights weights, scope auto ref Data data)
+{
+    import mir.stat.descriptive.histogram.api.factory: weightedPercentogramBinCount;
+    return rcWeightedPercentogram!(Counts, algorithm)(weights, data, weightedPercentogramBinCount(weights));
+}
+
+/// Reweighting outcomes changes the median boundary and the observed bin masses.
+version(mir_stat_test)
+@safe pure nothrow @nogc
+unittest
+{
+    import mir.ndslice.slice: sliced;
+    const double[4] values = [0, 10, 20, 30];
+    const double[4] equal = [1, 1, 1, 1], weights = [1, 1, 6, 2];
+    auto original = rcWeightedPercentogram(equal, values, 2);
+    auto reweighted = rcWeightedPercentogram(weights[].sliced, values[].sliced, 2);
+    assert(original.bins()[0].bin.high == 10);
+    assert(reweighted.bins()[0].bin.high == 20);
+    assert(reweighted.counts == [0.0, 2, 8, 0]);
+    assert(reweighted.relativeFrequency(1) == 0.8);
+    reweighted.putWeighted(2.0, 15.0);
+    assert(reweighted.total == 12 && reweighted.counts[1] == 4);
+}
+
+/// Select the quantile definition explicitly; frequency algorithms treat weights as counts.
+version(mir_stat_test)
+@safe pure nothrow @nogc
+unittest
+{
+    import mir.stat.descriptive.univariate: WeightedQuantileAlgo;
+    const int[2] values = [0, 10], weights = [2, 2];
+    const double[3] levels = [0, 0.25, 1];
+    auto probability = rcWeightedPercentogram!(double, WeightedQuantileAlgo.type7)(weights, values, levels);
+    auto frequency = rcWeightedPercentogram!(uint, WeightedQuantileAlgo.frequencyType7)(weights, values, levels);
+    assert(probability.bins()[0].bin.high == 2.5);
+    assert(probability.axis.N_bin == 2);
+    // The repeated sample [0,0,10,10] has first quartile 0; duplicate edges collapse.
+    assert(frequency.axis.N_bin == 1 && frequency.total == 4);
+}
+
+// Each definition selects the same boundaries as its weighted-quantile API.
+version(mir_stat_test)
+@safe pure nothrow @nogc
+unittest
+{
+    import mir.stat.descriptive.univariate: rcWeightedQuantile;
+    const double[4] values = [0, 10, 20, 30];
+    const int[4] weights = [1, 2, 3, 4];
+    const double[3] levels = [0, 0.5, 1];
+    static foreach (algorithm; __traits(allMembers, WeightedQuantileAlgo))
+    {{
+        enum choice = __traits(getMember, WeightedQuantileAlgo, algorithm);
+        auto p = rcWeightedPercentogram!(double, choice)(weights, values, levels);
+        assert(p.bins()[0].bin.high == rcWeightedQuantile!choice(weights, values, 0.5));
+        assert(p.total == 10);
+    }}
+    static auto fromLocal()
+    {
+        float[2] x = [0, 10];
+        int[2] w = [1, 1];
+        return rcWeightedPercentogram(w, x, 1);
+    }
+    auto owned = fromLocal();
+    static assert(is(typeof(owned.bins()[0].bin.low) == float));
+    assert(owned.total == 2);
+}
+
+// Invalid weights, shapes, levels, and degenerate boundaries are rejected.
+version(mir_stat_test)
+@system pure nothrow @nogc
+unittest
+{
+    import core.exception: AssertError;
+    static void rejects(scope void delegate() @system pure nothrow @nogc operation)
+    {
+        bool rejected;
+        try { operation(); } catch (AssertError) { rejected = true; }
+        assert(rejected);
+    }
+    const double[3] values = [0, 10, 20], weights = [1, 2, 1];
+    rejects(() { rcWeightedPercentogram(weights[0 .. 2], values, 2); });
+    rejects(() { rcWeightedPercentogram(weights, values, 0); });
+    rejects(() { rcWeightedPercentogram(weights, values, size_t.max); });
+    rejects(() { double[3] zero = [0, 0, 0]; rcWeightedPercentogram(zero, values); });
+    foreach (bad; [-1.0, double.nan, double.infinity])
+    {
+        double[3] w = [1, bad, 1];
+        rejects(() { rcWeightedPercentogram(w, values); });
+    }
+    rejects(() { double[2] levels = [0.5, 0.5]; rcWeightedPercentogram(weights, values, levels); });
+    rejects(() { double[3] same = [1, 1, 1]; rcWeightedPercentogram(weights, same, 2); });
+    const int[2] integers = [0, 10];
+    const double[2] fractional = [0.5, 1.5];
+    static assert(!__traits(compiles, rcWeightedPercentogram!uint(fractional, integers, 1)));
+}
+
+// Weighted boundaries, ties, tails, zero weights, and strided inputs.
+version(mir_stat_test)
+@safe pure nothrow @nogc
+unittest
+{
+    import mir.stat.descriptive.histogram.api.factory: testWeightedPercentograms;
+    testWeightedPercentograms!rcWeightedPercentogram();
 }

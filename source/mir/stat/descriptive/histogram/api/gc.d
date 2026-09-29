@@ -7,6 +7,8 @@ Copyright: 2026 Mir Stat Authors.
 +/
 module mir.stat.descriptive.histogram.api.gc;
 
+private import mir.stat.descriptive.univariate: WeightedQuantileAlgo;
+
 // Joint numeric batches preserve pairing, numeric types, and axis lifetimes.
 version(mir_stat_test)
 @safe pure nothrow
@@ -935,4 +937,89 @@ unittest
     import mir.stat.descriptive.histogram.api.factory: testAdaptiveRelativeFactory, testAdaptivePercentogram;
     testAdaptiveRelativeFactory!relativeFrequencyHistogram();
     testAdaptivePercentogram!percentogram();
+}
+
+/++
+Construct a percentogram whose boundaries and bin totals both account for weights.
+For example, reweight simulated outcomes to represent a different scenario:
+the weights move the quantile boundaries as well as changing the bar areas.
+Returns a relative-frequency accumulator with GC-owned boundaries and counts.
+
+The default inverseCDF algorithm selects observed quantiles. Select another
+WeightedQuantileAlgo explicitly; frequencyType7 and frequencyType8 interpret
+weights as occurrence counts. All algorithms use the supplied weights for bin
+totals. Counts default to double; integral counters require integral weights.
+Counts and their total must accommodate the sums. AdaptiveCounts is unsupported.
+
+Supply a positive bin count or strictly increasing probabilities in [0,1].
+Omitting probabilities requests ceil(cuberoot(n)) bins, where n is the number
+of positive-weight rows, including for frequency algorithms. This heuristic
+is invariant to weight rescaling; it does not use the sum of the weights.
+
+Weights and observations must be one-dimensional arrays or Mir slices with
+matching lengths. Weighted-quantile input rules apply: finite nonnegative
+weights, at least one positive weight, and finite positive-weight observations.
+Zero-weight observations are ignored, including nonfinite values. Inputs are
+not modified. Integral observations use double boundaries, so large integers
+may lose precision. Floating observations retain their boundary type.
+
+Equal boundaries are combined; at least two distinct finite boundaries are
+required. Ties and discrete weights can prevent equal bin weights. Bins are
+left-closed and right-open, with the final edge extended by one representable
+step to include its cutoff. Both underflow and overflow are enabled. Tail
+weights remain in the default normalization; use Normalization.ordinary to
+exclude them. These boundary and density rules follow $(LREF percentogram).
+Use density or densityBins for bar heights whose areas represent probability.
+Later putWeighted calls update bin weights and the total without moving edges.
+
+Params:
+    Counts = numeric counter type, double by default
+    algorithm = weighted quantile definition, inverseCDF by default
+    weights = probability masses, or occurrence counts for frequency algorithms
+    data = one-dimensional observations, as an array or Mir slice
+    probabilities = positive bin count or probability array/slice
++/
+auto weightedPercentogram(Counts = double, WeightedQuantileAlgo algorithm = WeightedQuantileAlgo.inverseCDF,
+    Weights, Data, P)(scope auto ref Weights weights, scope auto ref Data data,
+    scope auto ref P probabilities)
+{
+    import mir.stat.descriptive.univariate: weightedQuantile;
+    import mir.stat.descriptive.histogram.api.factory: buildWeightedPercentogram;
+    return buildWeightedPercentogram!(allocateCounts, weightedQuantile, relativeFrequencyHistogram, Counts, algorithm)(
+        weights, data, probabilities);
+}
+
+/// ditto
+auto weightedPercentogram(Counts = double, WeightedQuantileAlgo algorithm = WeightedQuantileAlgo.inverseCDF,
+    Weights, Data)(scope auto ref Weights weights, scope auto ref Data data)
+{
+    import mir.stat.descriptive.histogram.api.factory: weightedPercentogramBinCount;
+    return weightedPercentogram!(Counts, algorithm)(weights, data, weightedPercentogramBinCount(weights));
+}
+
+/// Reweighting outcomes changes the median boundary and the observed bin masses.
+version(mir_stat_test)
+@safe pure nothrow
+unittest
+{
+    import mir.ndslice.slice: sliced;
+    const double[4] values = [0, 10, 20, 30];
+    const double[4] equal = [1, 1, 1, 1], weights = [1, 1, 6, 2];
+    auto original = weightedPercentogram(equal, values, 2);
+    auto reweighted = weightedPercentogram(weights[].sliced, values[].sliced, 2);
+    assert(original.bins()[0].bin.high == 10);
+    assert(reweighted.bins()[0].bin.high == 20);
+    assert(reweighted.counts == [0.0, 2, 8, 0]);
+    assert(reweighted.relativeFrequency(1) == 0.8);
+    reweighted.putWeighted(2.0, 15.0);
+    assert(reweighted.total == 12 && reweighted.counts[1] == 4);
+}
+
+// Weighted boundaries, ties, tails, zero weights, and strided inputs.
+version(mir_stat_test)
+@safe pure nothrow
+unittest
+{
+    import mir.stat.descriptive.histogram.api.factory: testWeightedPercentograms;
+    testWeightedPercentograms!weightedPercentogram();
 }

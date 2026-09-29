@@ -1574,6 +1574,16 @@ package void testPercentogramDuplicates(alias factory)()
 }
 
 // Keep statistical rules shared without coupling custom allocation to GC/RC ownership.
+package void validatePercentogramLevels(Levels)(scope Levels levels)
+{
+    static assert(Levels.N == 1, "percentogram: probabilities must be one-dimensional");
+    assert(levels.length >= 2, "percentogram: at least two probabilities are required");
+    assert(levels[0] >= 0 && levels[$ - 1] <= 1,
+        "percentogram: probabilities must lie between zero and one");
+    foreach (i; 1 .. levels.length)
+        assert(levels[i] > levels[i - 1], "percentogram: probabilities must strictly increase");
+}
+
 package void validatePercentogramInputs(Observations, Levels)(scope Observations observations, scope Levels levels)
 {
     import std.traits: isIntegral;
@@ -1586,12 +1596,133 @@ package void validatePercentogramInputs(Observations, Levels)(scope Observations
         static if (!isIntegral!(typeof(x)))
             assert(isFinite(x), "percentogram: observations must be finite");
     }
-    assert(levels.length >= 2, "percentogram: at least two probabilities are required");
-    assert(levels[0] >= 0 && levels[$ - 1] <= 1,
-        "percentogram: probabilities must lie between zero and one");
-    foreach (i; 1 .. levels.length)
-        assert(levels[i] > levels[i - 1], "percentogram: probabilities must strictly increase");
+    validatePercentogramLevels(levels);
+}
 
+// Preserve floating observation precision; integral quantiles need floating
+// boundaries for widths and the final nextUp endpoint, even for inverseCDF.
+package template WeightedPercentogramBoundary(Data)
+{
+    import mir.primitives: DeepElementType;
+    import std.traits: Unqual, isFloatingPoint;
+    alias Element = Unqual!(DeepElementType!Data);
+    static if (isFloatingPoint!Element) alias WeightedPercentogramBoundary = Element;
+    else alias WeightedPercentogramBoundary = double;
+}
+
+// The automatic-bin heuristic counts positive-weight rows, not their total
+// weight. It is therefore unchanged by rescaling probability weights.
+package size_t weightedPercentogramBinCount(Weights)(scope auto ref Weights weights)
+{
+    import mir.ndslice.slice: isSlice, sliced;
+    import std.math: isFinite;
+    static if (isSlice!Weights) scope auto masses = weights;
+    else scope auto masses = weights[].sliced;
+    static assert(typeof(masses).N == 1, "percentogram: weights must be one-dimensional");
+    size_t n;
+    foreach (w; masses)
+    {
+        assert(isFinite(cast(real) w) && w >= 0, "percentogram: invalid weight");
+        if (w > 0) ++n;
+    }
+    return defaultPercentogramBinCount(n);
+}
+
+// Quantile validation has already checked shapes, weights, and positive-weight
+// values. Skip zero weights before reading their possibly nonfinite values.
+package void fillWeightedPercentogram(H, Weights, Data)(ref H histogram,
+    scope auto ref Weights weights, scope auto ref Data data)
+{
+    import mir.ndslice.slice: isSlice, sliced;
+    static if (isSlice!Weights) scope auto masses = weights;
+    else scope auto masses = weights[].sliced;
+    static if (isSlice!Data) scope auto values = data;
+    else scope auto values = data[].sliced;
+    alias Boundary = WeightedPercentogramBoundary!Data;
+    foreach (i; 0 .. masses.length)
+        if (masses[i] > 0)
+            histogram.putWeighted(masses[i], cast(Boundary) values[i]);
+}
+
+package auto buildWeightedPercentogram(alias allocate, alias quantiles, alias histogram,
+    Counts, alias algorithm, Weights, Data, P)(scope auto ref Weights weights,
+    scope auto ref Data data, scope auto ref P probabilities)
+{
+    import mir.ndslice.slice: isSlice, sliced;
+    import mir.stat.descriptive.histogram.axis: variableAxis, AxisOptions;
+    import std.traits: isIntegral;
+    static if (isIntegral!P)
+    {
+        assert(probabilities > 0 && probabilities < size_t.max,
+            "percentogram: bin count must be positive and leave room for an extra boundary");
+        NoAllocationContext context;
+        auto levels = allocate!double(context, cast(size_t) probabilities + 1);
+        foreach (i; 0 .. levels.length) levels[i] = cast(double) i / probabilities;
+        return buildWeightedPercentogram!(allocate, quantiles, histogram, Counts, algorithm)(weights, data, levels);
+    }
+    else
+    {
+        static if (isSlice!P) scope auto levels = probabilities;
+        else scope auto levels = probabilities[].sliced;
+        validatePercentogramLevels(levels);
+        auto edges = quantiles!(WeightedPercentogramBoundary!Data, algorithm)(weights, data, levels);
+        const distinct = preparePercentogramEdges(edges);
+        auto axis = variableAxis!(AxisOptions(false, true, true))(edges[0 .. distinct]);
+        auto result = histogram!Counts(axis);
+        fillWeightedPercentogram(result, weights, data);
+        return result;
+    }
+}
+
+// Exercise the same weighted distribution across all allocation policies.
+version(mir_stat_test)
+package void testWeightedPercentograms(alias factory, alias release = null)()
+{
+    import mir.ndslice.slice: sliced;
+    import mir.ndslice.topology: stride;
+    import mir.stat.descriptive.histogram.relative_frequency: Normalization;
+    import std.math: nextUp;
+    static ref auto histogramOf(T)(return ref T value)
+    {
+        static if (__traits(hasMember, T, "histogram")) return value.histogram;
+        else return value;
+    }
+    // A zero-weight nonfinite value neither affects boundaries nor gets indexed.
+    const double[5] data = [double.nan, 0, 10, 20, 30];
+    const double[5] weights = [0, 1, 1, 6, 2], scaled = [0, 2, 2, 12, 4];
+    const double[3] levels = [0, 0.5, 1];
+    auto result = factory(weights, data, levels);
+    scope(exit) { static if (!is(typeof(release) == typeof(null))) release(result); }
+    auto p = histogramOf(result);
+    assert(p.counts == [0.0, 2, 8, 0] && p.total == 10);
+    assert(p.bins()[0].bin.high == 20 && p.bins()[1].bin.high == nextUp(30.0));
+    assert(p.density(0) * 20 == 0.2);
+    auto rescaled = factory(scaled, data, 2);
+    scope(exit) { static if (!is(typeof(release) == typeof(null))) release(rescaled); }
+    assert(histogramOf(rescaled).bins()[0].bin.high == 20);
+    assert(histogramOf(rescaled).relativeFrequency(1) == p.relativeFrequency(1));
+    auto automatic = factory(weights, data);
+    scope(exit) { static if (!is(typeof(release) == typeof(null))) release(automatic); }
+    assert(histogramOf(automatic).counts == p.counts);
+    // Restrict the quantile interval: both tails retain their weights.
+    const int[5] x = [0, 1, 2, 3, 4], w = [1, 1, 1, 1, 1];
+    const double[3] middle = [0.25, 0.5, 0.75];
+    auto trimmed = factory(w, x, middle);
+    scope(exit) { static if (!is(typeof(release) == typeof(null))) release(trimmed); }
+    auto t = histogramOf(trimmed);
+    assert(t.counts == [1.0, 1, 2, 1]);
+    assert(t.relativeFrequency!(double, Normalization.ordinary)(1) == 2.0 / 3);
+    // Ties compact boundaries while preserving all weighted observations.
+    const int[5] tied = [0, 0, 0, 10, 20];
+    auto compact = factory(w, tied, 4);
+    scope(exit) { static if (!is(typeof(release) == typeof(null))) release(compact); }
+    assert(histogramOf(compact).axis.N_bin == 2);
+    assert(histogramOf(compact).counts == [0.0, 3, 2, 0]);
+    const double[8] backing = [0, -1, 10, -1, 20, -1, 30, -1];
+    const double[8] massBacking = [1, -1, 1, -1, 6, -1, 2, -1];
+    auto strided = factory(massBacking[].sliced.stride(2), backing[].sliced.stride(2), levels[].sliced);
+    scope(exit) { static if (!is(typeof(release) == typeof(null))) release(strided); }
+    assert(histogramOf(strided).counts == p.counts);
 }
 
 // Compact in place but retain the complete allocation handle for manual cleanup.
