@@ -7,7 +7,8 @@ Copyright: 2026 Mir Stat Authors.
 +/
 module mir.stat.descriptive.histogram.api.custom;
 
-private import mir.stat.descriptive.univariate: WeightedQuantileAlgo;
+private import mir.stat.descriptive.univariate: WeightedQuantileAlgo, QuantileAlgo;
+private import mir.stat.descriptive.histogram.axis: isQuantileAxis;
 
 // Joint numeric batches preserve pairing, numeric types, and axis lifetimes.
 version(mir_stat_test)
@@ -475,6 +476,36 @@ unittest
         Mallocator.instance, values[].sliced, 2u, 0.0, 4.0);
     scope(exit) Mallocator.instance.dispose(h.counts.field);
     assert(h.counts == [1UL, 2, 1, 1]);
+}
+
+
+/// Compute quantile boundaries separately to count observations in equal-probability intervals.
+version(mir_stat_test)
+@system pure nothrow @nogc
+unittest
+{
+    import mir.ndslice.slice: sliced;
+    import mir.stat.descriptive.univariate: makeQuantile;
+    import mir.stat.descriptive.histogram.axis: VariableAxis;
+    import std.math: nextUp;
+    import std.experimental.allocator.mallocator: Mallocator;
+    import std.experimental.allocator: dispose;
+
+    double[8] values = [0, 1, 2, 3, 4, 8, 12, 16];
+    double[5] levels = [0, 0.25, 0.5, 0.75, 1];
+    // Replace this calculation with your preferred quantiles or supplied edges.
+    auto boundaries = makeQuantile(Mallocator.instance, values[].sliced, levels[].sliced);
+    scope(exit) Mallocator.instance.dispose(boundaries.field);
+    assert(boundaries == [0.0, 1.75, 3.5, 9.0, 16.0]);
+    // Combine duplicate quantiles first if the data contain ties.
+    // Include the maximum in the final left-closed, right-open bin.
+    boundaries[$ - 1] = nextUp(boundaries[$ - 1]);
+    auto h = makeHistogram!VariableAxis(Mallocator.instance, values[].sliced, boundaries);
+    // Release counts before boundaries; neither may be used after disposal.
+    scope(exit) Mallocator.instance.dispose(h.counts.field);
+    assert(h.counts == [2, 2, 2, 2]);
+    h.put(1.0);
+    assert(h.counts == [3, 2, 2, 2]);
 }
 
 /++
@@ -1137,6 +1168,41 @@ unittest
     assert(f.relativeFrequency(1) == 0.4);
 }
 
+
+/// Use your own quantile boundaries for percentogram densities.
+version(mir_stat_test)
+@system pure nothrow @nogc
+unittest
+{
+    import mir.ndslice.slice: sliced;
+    import mir.stat.descriptive.univariate: makeQuantile;
+    import mir.stat.descriptive.histogram.axis: VariableAxis;
+    import std.math: nextUp;
+    import std.experimental.allocator.mallocator: Mallocator;
+    import std.experimental.allocator: dispose;
+
+    double[8] values = [0, 1, 2, 3, 4, 8, 12, 16];
+    double[5] levels = [0, 0.25, 0.5, 0.75, 1];
+    // Replace this calculation with your preferred quantiles or supplied edges.
+    auto boundaries = makeQuantile(Mallocator.instance, values[].sliced, levels[].sliced);
+    scope(exit) Mallocator.instance.dispose(boundaries.field);
+    assert(boundaries == [0.0, 1.75, 3.5, 9.0, 16.0]);
+    // Combine duplicate quantiles first if the data contain ties.
+    // Include the maximum in the final left-closed, right-open bin.
+    boundaries[$ - 1] = nextUp(boundaries[$ - 1]);
+    auto f = makeRelativeFrequencyHistogram!VariableAxis(Mallocator.instance, values[].sliced, boundaries);
+    // Release counts before boundaries; neither may be used after disposal.
+    scope(exit) Mallocator.instance.dispose(cast(typeof(f).CountType[]) f.counts.field);
+    assert(f.counts == [2, 2, 2, 2]);
+    assert(f.total == 8);
+    assert(f.relativeFrequency(0) == 0.25);
+    assert(f.density(0) == 0.25 / 1.75);
+    // Density is the bar height: width times height is probability.
+    f.put(1.0);
+    assert(f.total == 9 && f.counts[0] == 3);
+    // Updates change counts and normalization, but retain the original edges.
+}
+
 /// Use adaptive counts when collecting an unknown number of observations.
 version(mir_stat_test)
 @safe pure nothrow @nogc
@@ -1532,6 +1598,11 @@ unittest
 Construct a percentogram with caller-selected allocation for scratch, boundaries,
 and counts. Accepts the same observations and bin count or probabilities as
 $(REF percentogram, mir, stat, descriptive, histogram, api, gc).
+For precomputed quantile boundaries, use $(LREF makeQuantileAxisFromBoundaries)
+and pass its axis to makePercentogram, or use $(LREF makeRelativeFrequencyHistogram)
+with a variable axis, or $(LREF makeHistogram) for raw counts. Their documented
+examples show how to release the separately allocated boundaries and counts.
+
 Omitting probabilities requests `ceil(cuberoot(n))` ordinary bins for `n` observations,
 with equally spaced probabilities from zero to one. This is a sample-size heuristic.
 Tied boundaries can reduce the number of ordinary bins.
@@ -1559,45 +1630,26 @@ Params:
 +/
 auto makePercentogram(Counts = size_t, Allocator, Data, P)(ref Allocator allocator,
     scope auto ref Data data, scope auto ref P probabilities)
+    if (!isQuantileAxis!P)
 {
-    import std.traits: isIntegral;
-    import std.experimental.allocator: dispose;
     import mir.ndslice.slice: isSlice, sliced;
     import mir.ndslice.topology: as;
-    import mir.primitives: DeepElementType;
-    import mir.stat.descriptive.univariate: makeQuantile;
-    import mir.stat.descriptive.histogram.axis: variableAxis, AxisOptions;
+    import mir.stat.descriptive.histogram.axis: preparedQuantileAxis;
     import mir.stat.descriptive.histogram.accumulator: HistogramAccumulator;
     import mir.stat.descriptive.histogram.relative_frequency: RelativeFrequencyAccumulator;
-    import mir.stat.descriptive.histogram.api.factory: validatePercentogramInputs, preparePercentogramEdges;
-    static if (isIntegral!P)
+    import mir.stat.descriptive.histogram.api.factory: computeQuantileAxisEdges;
+    auto edges = computeQuantileAxisEdges!(
+        allocateCounts, computeAxisQuantiles!(QuantileAlgo.type7), releaseCounts)(
+        allocator, data, probabilities);
+    scope(failure) releaseCounts(allocator, edges);
+    auto axis = preparedQuantileAxis(edges);
+    static if (isSlice!Data) scope auto observations = data;
+    else scope auto observations = data[].sliced;
+    auto h = makeHistogram!Counts(allocator, observations.as!(typeof(axis).BinType), axis);
+    static if (is(typeof(h) == HistogramAccumulator!Args, Args...))
     {
-        assert(probabilities > 0 && probabilities < size_t.max,
-            "percentogram: bin count must be positive and leave room for an extra boundary");
-        auto levels = allocateCounts!double(allocator, cast(size_t) probabilities + 1);
-        scope(exit) allocator.dispose(levels.field);
-        foreach (i; 0 .. levels.length)
-            levels[i] = cast(double) i / probabilities;
-        return makePercentogram!Counts(allocator, data, levels);
-    }
-    else
-    {
-        static if (isSlice!Data) scope auto observations = data;
-        else scope auto observations = data[].sliced;
-        static if (isSlice!P) scope auto levels = probabilities;
-        else scope auto levels = probabilities[].sliced;
-        validatePercentogramInputs(observations, levels);
-        auto edges = makeQuantile(allocator, observations, levels);
-        scope(failure) allocator.dispose(edges.field);
-        const distinct = preparePercentogramEdges(edges);
-        auto axis = variableAxis!(AxisOptions(false, true, true))(edges[0 .. distinct]);
-        auto h = makeHistogram!Counts(allocator,
-            observations.as!(DeepElementType!(typeof(edges))), axis);
-        static if (is(typeof(h) == HistogramAccumulator!Args, Args...))
-        {
-            auto f = RelativeFrequencyAccumulator!Args(h.counts, h.axis);
-            return AllocatedPercentogram!(typeof(f), typeof(edges), typeof(h.counts))(f, edges, h.counts);
-        }
+        auto f = RelativeFrequencyAccumulator!Args(h.counts, h.axis);
+        return AllocatedPercentogram!(typeof(f), typeof(edges), typeof(h.counts))(f, edges, h.counts);
     }
 }
 
@@ -2119,43 +2171,24 @@ auto makeWeightedPercentogram(Counts = double,
     WeightedQuantileAlgo algorithm = WeightedQuantileAlgo.inverseCDF, Allocator, Weights, Data, P)(
     ref Allocator allocator, scope auto ref Weights weights, scope auto ref Data data,
     scope auto ref P probabilities)
+    if (!isQuantileAxis!P)
 {
-    import std.traits: isIntegral;
-    import std.experimental.allocator: dispose;
-    import mir.ndslice.slice: isSlice, sliced;
-    import mir.stat.descriptive.univariate: makeWeightedQuantile;
-    import mir.stat.descriptive.histogram.axis: variableAxis, AxisOptions;
-    import mir.stat.descriptive.histogram.api.factory: validatePercentogramLevels,
-        preparePercentogramEdges, WeightedPercentogramBoundary, fillWeightedPercentogram;
-    static if (isIntegral!P)
+    import mir.stat.descriptive.histogram.axis: preparedQuantileAxis;
+    import mir.stat.descriptive.histogram.api.factory: computeQuantileAxisEdges, fillWeightedPercentogram;
+    import mir.stat.descriptive.histogram.accumulator: HistogramAccumulator;
+    import mir.stat.descriptive.histogram.relative_frequency: RelativeFrequencyAccumulator;
+    auto edges = computeQuantileAxisEdges!(
+        allocateCounts, computeWeightedAxisQuantiles!algorithm, releaseCounts)(
+        allocator, weights, data, probabilities);
+    scope(failure) releaseCounts(allocator, edges);
+    auto axis = preparedQuantileAxis(edges);
+    auto h = makeHistogram!Counts(allocator, axis);
+    scope(failure) releaseCounts(allocator, h.counts);
+    static if (is(typeof(h) == HistogramAccumulator!Args, Args...))
     {
-        assert(probabilities > 0 && probabilities < size_t.max,
-            "percentogram: bin count must be positive and leave room for an extra boundary");
-        auto levels = allocateCounts!double(allocator, cast(size_t) probabilities + 1);
-        scope(exit) allocator.dispose(levels.field);
-        foreach (i; 0 .. levels.length) levels[i] = cast(double) i / probabilities;
-        return makeWeightedPercentogram!(Counts, algorithm)(allocator, weights, data, levels);
-    }
-    else
-    {
-        static if (isSlice!P) scope auto levels = probabilities;
-        else scope auto levels = probabilities[].sliced;
-        validatePercentogramLevels(levels);
-        auto edges = makeWeightedQuantile!(WeightedPercentogramBoundary!Data, algorithm)(
-            allocator, weights, data, levels);
-        scope(failure) allocator.dispose(edges.field);
-        const distinct = preparePercentogramEdges(edges);
-        auto axis = variableAxis!(AxisOptions(false, true, true))(edges[0 .. distinct]);
-        import mir.stat.descriptive.histogram.accumulator: HistogramAccumulator;
-        import mir.stat.descriptive.histogram.relative_frequency: RelativeFrequencyAccumulator;
-        auto h = makeHistogram!Counts(allocator, axis);
-        scope(failure) releaseCounts(allocator, h.counts);
-        static if (is(typeof(h) == HistogramAccumulator!Args, Args...))
-        {
-            auto f = RelativeFrequencyAccumulator!Args(h.counts, h.axis);
-            fillWeightedPercentogram(f, weights, data);
-            return AllocatedPercentogram!(typeof(f), typeof(edges), typeof(h.counts))(f, edges, h.counts);
-        }
+        auto f = RelativeFrequencyAccumulator!Args(h.counts, h.axis);
+        fillWeightedPercentogram(f, weights, data);
+        return AllocatedPercentogram!(typeof(f), typeof(edges), typeof(h.counts))(f, edges, h.counts);
     }
 }
 
@@ -2257,4 +2290,338 @@ unittest
     }
     static void release(T)(ref T value) { value.dispose(Mallocator.instance); }
     testWeightedPercentograms!(make, release)();
+}
+
+
+/++
+Choose quantile boundaries once, then reuse them to compare samples against the
+same reference distribution. Returns caller-allocated boundaries in a prepared quantile axis.
+Supply probability levels or a positive bin count for equally spaced levels.
+Inputs are unchanged; the selected quantile algorithm defaults to type7.
+Equal boundaries are combined and the upper endpoint extended once to include
+its quantile value. Both underflow and overflow are enabled.
+The result exposes axis; call dispose with the same allocator after all users
+of its boundaries are finished.
++/
+auto makeQuantileAxis(QuantileAlgo algorithm = QuantileAlgo.type7, Allocator, Data, P)(
+    ref Allocator allocator, scope auto ref Data data, scope auto ref P probabilities)
+{
+    import mir.stat.descriptive.histogram.api.factory: computeQuantileAxisEdges;
+    import mir.stat.descriptive.histogram.axis: preparedQuantileAxis;
+    auto edges = computeQuantileAxisEdges!(allocateCounts, computeAxisQuantiles!algorithm, releaseCounts)(
+        allocator, data, probabilities);
+    return ownQuantileAxis(allocator, edges);
+}
+
+/// Compare a later sample with fixed reference quantile intervals.
+version(mir_stat_test)
+@system pure nothrow @nogc
+unittest
+{
+    import mir.ndslice.slice: sliced;
+    import std.experimental.allocator.mallocator: Mallocator;
+    import std.experimental.allocator: dispose;
+
+    double[5] reference = [0, 1, 2, 3, 4];
+    double[3] levels = [0, 0.5, 1];
+    double[4] later = [-1, 1, 3, 5];
+    auto prepared = makeQuantileAxis(Mallocator.instance, reference[].sliced, levels);
+    scope(exit) prepared.dispose(Mallocator.instance);
+    auto p = makePercentogram(Mallocator.instance, later, prepared.axis);
+    scope(exit) Mallocator.instance.dispose(cast(typeof(p).CountType[]) p.counts.field);
+    assert(p.counts == [1, 1, 1, 1]);
+    assert(p.relativeFrequency(0) == 0.25);
+    assert(p.density(0) == 0.125);
+    p.put(2.5);
+    assert(p.total == 5 && p.counts[2] == 2);
+}
+
+/++
+Copy precomputed quantile boundaries into caller-allocated storage.
+Use this when another calculation supplies the quantiles. Input boundaries must
+be finite and nondecreasing, with at least two distinct values. Duplicates are
+combined and the maximum extended by one representable step; it must have a
+finite successor. The input is unchanged. Integral boundaries use double and sufficiently large
+integers may lose precision or become coincident boundaries.
+The result exposes axis; dispose its full boundary allocation only after all
+borrowed axes, histograms, and bin views are no longer used.
++/
+auto makeQuantileAxisFromBoundaries(Allocator, Data)(ref Allocator allocator, scope auto ref Data boundaries)
+{
+    import mir.stat.descriptive.histogram.api.factory: copyQuantileAxisEdges;
+    import mir.stat.descriptive.histogram.axis: preparedQuantileAxis;
+    auto edges = copyQuantileAxisEdges!(allocateCounts, releaseCounts)(allocator, boundaries);
+    return ownQuantileAxis(allocator, edges);
+}
+
+/// Use quantiles supplied by another calculation without modifying its boundary array.
+version(mir_stat_test)
+@system pure nothrow @nogc
+unittest
+{
+    import mir.ndslice.slice: sliced;
+    import std.math: nextUp;
+    import std.experimental.allocator.mallocator: Mallocator;
+    import std.experimental.allocator: dispose;
+    const double[5] edges = [0, 0, 1, 2, 2];
+    auto prepared = makeQuantileAxisFromBoundaries(Mallocator.instance, edges[].sliced);
+    scope(exit) prepared.dispose(Mallocator.instance);
+    assert(prepared.axis.N_bin == 2);
+    assert(prepared.axis.high == nextUp(2.0));
+    assert(edges == [0, 0, 1, 2, 2]); // Compaction and nextUp affect only the copy.
+    double[5] values = [0, 0, 1, 2, 2];
+    auto p = makePercentogram(Mallocator.instance, values, prepared.axis);
+    scope(exit) Mallocator.instance.dispose(cast(typeof(p).CountType[]) p.counts.field);
+    assert(p.counts == [0, 2, 3, 0]);
+    assert(p.axis.high == nextUp(2.0)); // Reusing the axis does not extend it again.
+}
+
+/++
+Caller-owned quantile boundaries and their prepared axis. Histograms constructed
+from axis borrow these boundaries. Call dispose exactly once across copies with
+the original allocator, after all axes and views have finished using them.
+Compaction preserves the full allocation handle for cleanup. There is no
+automatic destructor cleanup and the allocator is not retained.
++/
+struct AllocatedQuantileAxis(Axis, Storage)
+{
+    /// Prepared axis; do not replace it while its storage is in use.
+    Axis axis;
+    private Storage storage;
+    private bool active;
+
+    private this(Axis value, Storage allocation)
+    {
+        axis = value;
+        storage = allocation;
+        active = true;
+    }
+
+    /// Release the original full allocation; other copies and views become invalid.
+    void dispose(Allocator)(ref Allocator allocator)
+    {
+        import std.experimental.allocator: dispose;
+        if (!active) return;
+        allocator.dispose(storage.field);
+        axis = Axis.init;
+        storage = Storage.init;
+        active = false;
+    }
+}
+
+private auto ownQuantileAxis(Allocator, Storage)(ref Allocator allocator, Storage edges)
+{
+    import mir.stat.descriptive.histogram.axis: preparedQuantileAxis;
+    scope(failure) releaseCounts(allocator, edges);
+    auto axis = preparedQuantileAxis(edges);
+    return AllocatedQuantileAxis!(typeof(axis), Storage)(axis, edges);
+}
+
+private template computeAxisQuantiles(QuantileAlgo algorithm)
+{
+    auto computeAxisQuantiles(Allocator, Data, P)(
+        ref Allocator allocator, scope auto ref Data data, scope auto ref P probabilities)
+    {
+        import mir.stat.descriptive.univariate: makeQuantile;
+        import mir.stat.descriptive.histogram.api.factory: QuantileBoundaryType;
+        return makeQuantile!(QuantileBoundaryType!Data, algorithm)(allocator, data, probabilities);
+    }
+}
+
+/++
+Count observations against an already-prepared quantile axis. Boundaries are
+reused without recalculating quantiles, compacting them, or extending the endpoint.
+The result exposes relative frequencies and densities. Empty counting samples
+are allowed; subsequent put calls retain the same axis.
+Only count storage is allocated here; boundary ownership stays with the caller.
+The result is a relative-frequency accumulator, not AllocatedPercentogram.
+Dispose its fixed counts as for makeRelativeFrequencyHistogram; do not dispose
+the separately owned axis until every user is finished.
++/
+auto makePercentogram(Counts = size_t, Allocator, Data, Axis)(
+    ref Allocator allocator, scope auto ref Data data, Axis axis)
+    if (isQuantileAxis!Axis)
+{
+    import mir.stat.descriptive.histogram.api.factory: percentogramOnAxis;
+    return percentogramOnAxis!(makeRelativeFrequencyHistogram, Counts)(data, axis, allocator);
+}
+
+/++
+Choose fixed quantile boundaries from a weighted reference sample. Weights come
+before observations. Algorithm semantics are those of WeightedQuantileAlgo;
+the default is inverseCDF. Supply probability levels or a positive bin count.
+Zero-weight observations are ignored. Inputs are unchanged.
+The axis can subsequently count a different sample with different weights.
+The result exposes axis and requires dispose with the same allocator after
+all borrowed axes, histograms, and views are finished.
++/
+auto makeWeightedQuantileAxis(WeightedQuantileAlgo algorithm = WeightedQuantileAlgo.inverseCDF,
+    Allocator, Weights, Data, P)(ref Allocator allocator, scope auto ref Weights weights,
+    scope auto ref Data data, scope auto ref P probabilities)
+{
+    import mir.stat.descriptive.histogram.api.factory: computeQuantileAxisEdges;
+    import mir.stat.descriptive.histogram.axis: preparedQuantileAxis;
+    auto edges = computeQuantileAxisEdges!(allocateCounts, computeWeightedAxisQuantiles!algorithm, releaseCounts)(
+        allocator, weights, data, probabilities);
+    return ownQuantileAxis(allocator, edges);
+}
+
+/// Reuse a weighted reference median when comparing a later sample.
+version(mir_stat_test)
+@system pure nothrow @nogc
+unittest
+{
+    import std.experimental.allocator.mallocator: Mallocator;
+    import std.experimental.allocator: dispose;
+    double[4] reference = [0, 10, 20, 30], weights = [1, 1, 6, 2];
+    auto prepared = makeWeightedQuantileAxis(Mallocator.instance, weights, reference, 2);
+    scope(exit) prepared.dispose(Mallocator.instance);
+    assert(prepared.axis.bin(0).high == 20);
+    double[3] later = [double.nan, 10, 25], laterWeights = [0, 3, 1];
+    auto p = makeWeightedPercentogram(Mallocator.instance, laterWeights, later, prepared.axis);
+    scope(exit) Mallocator.instance.dispose(cast(typeof(p).CountType[]) p.counts.field);
+    assert(p.counts == [0, 3, 1, 0] && p.total == 4);
+    assert(p.relativeFrequency(0) == 0.75);
+}
+
+private template computeWeightedAxisQuantiles(WeightedQuantileAlgo algorithm)
+{
+    auto computeWeightedAxisQuantiles(Allocator, Weights, Data, P)(
+        ref Allocator allocator, scope auto ref Weights weights,
+        scope auto ref Data data, scope auto ref P probabilities)
+    {
+        import mir.stat.descriptive.univariate: makeWeightedQuantile;
+        import mir.stat.descriptive.histogram.api.factory: QuantileBoundaryType;
+        return makeWeightedQuantile!(QuantileBoundaryType!Data, algorithm)(
+            allocator, weights, data, probabilities);
+    }
+}
+
+/++
+Accumulate weights against a prepared quantile axis without recalculating boundaries.
+The counting weights need not be those used to construct the axis. They must be
+finite and nonnegative; zero-weight observations are ignored, including nonfinite
+values. Positive-weight observations must be finite. Shapes must match.
+No quantile algorithm is selected here because the boundaries are already fixed.
+Only counts are allocated here. Dispose fixed counts as for
+makeWeightedRelativeFrequencyHistogram; boundary ownership stays with the caller.
++/
+auto makeWeightedPercentogram(Counts = double, Allocator, Weights, Data, Axis)(
+    ref Allocator allocator, scope auto ref Weights weights, scope auto ref Data data, Axis axis)
+    if (isQuantileAxis!Axis)
+{
+    import mir.stat.descriptive.histogram.api.factory: weightedPercentogramOnAxis;
+    return weightedPercentogramOnAxis!(makeHistogram, Counts, releaseCounts)(
+        weights, data, axis, allocator);
+}
+
+// Safe allocation preserves const input, read-only views, and independent ownership.
+version(mir_stat_test)
+@safe pure nothrow
+unittest
+{
+    import mir.stat.descriptive.histogram.traits: AdaptiveCounts;
+    import mir.stat.descriptive.histogram.axis: isQuantileAxis;
+    SafeAllocator allocator;
+    const int[5] values = [0, 0, 1, 2, 2];
+    auto owner = makeQuantileAxis(allocator, values, 4);
+    auto readOnly = owner.axis.lightConst;
+    static assert(isQuantileAxis!(typeof(readOnly)));
+    auto p = makePercentogram!(AdaptiveCounts!ushort)(allocator, values, readOnly);
+    assert(p.total == 5 && p.bins()[1].count == 3);
+    assert(allocator.allocations - allocator.releases == 1); // Only boundaries remain.
+    // Drop all users before disposing custom boundaries; counts own separate RC storage.
+    p = typeof(p).init;
+    readOnly = typeof(readOnly).init;
+    owner.dispose(allocator);
+    assert(allocator.allocations == allocator.releases);
+    owner.dispose(allocator); // This owner's repeated disposal is harmless.
+    assert(allocator.allocations == allocator.releases);
+}
+
+// Duplicate compaction must not change the allocation passed to deallocate.
+version(mir_stat_test)
+@system pure nothrow @nogc
+unittest
+{
+    import std.experimental.allocator.mallocator: Mallocator;
+    struct ExactAllocator
+    {
+        enum alignment = Mallocator.alignment;
+        size_t bytes;
+        void[] allocate(size_t n) @safe pure nothrow @nogc
+        {
+            bytes = n;
+            return Mallocator.instance.allocate(n);
+        }
+        bool deallocate(void[] memory) @system pure nothrow @nogc
+        {
+            assert(memory.length == bytes);
+            bytes = 0;
+            return Mallocator.instance.deallocate(memory);
+        }
+    }
+    ExactAllocator allocator;
+    const double[5] edges = [0, 0, 1, 2, 2];
+    auto owner = makeQuantileAxisFromBoundaries(allocator, edges);
+    assert(owner.axis.N_bin == 2 && allocator.bytes == 5 * double.sizeof);
+    owner.dispose(allocator);
+    assert(allocator.bytes == 0);
+}
+
+// Allocation and lazy-input failures release scratch and partially built results.
+version(mir_stat_test)
+@system pure
+unittest
+{
+    import mir.ndslice.slice: sliced;
+    import mir.ndslice.topology: map;
+    import std.experimental.allocator.mallocator: Mallocator;
+    import std.exception: assertThrown;
+    struct FailingAllocator
+    {
+        enum alignment = Mallocator.alignment;
+        size_t failAt, calls, live;
+        void[] allocate(size_t n)
+        {
+            if (++calls == failAt) throw new Exception("axis allocation");
+            auto result = Mallocator.instance.allocate(n);
+            ++live;
+            return result;
+        }
+        bool deallocate(void[] memory) nothrow @nogc
+        {
+            --live;
+            return Mallocator.instance.deallocate(memory);
+        }
+    }
+    double[3] values = [0, 1, 2], weights = [1, 1, 1];
+    foreach (failure; 1 .. 4)
+    {
+        FailingAllocator allocator = FailingAllocator(failure);
+        assertThrown!Exception(makeQuantileAxis(allocator, values, 2));
+        assert(allocator.live == 0);
+        allocator = FailingAllocator(failure);
+        assertThrown!Exception(makeWeightedQuantileAxis(allocator, weights, values, 2));
+        assert(allocator.live == 0);
+    }
+    FailingAllocator allocator;
+    static double fail(double x) { throw new Exception("boundary copy"); }
+    assertThrown!Exception(makeQuantileAxisFromBoundaries(allocator, values[].sliced.map!fail));
+    assert(allocator.live == 0);
+    auto owner = makeQuantileAxisFromBoundaries(allocator, values);
+    size_t calls;
+    double duringInsertion(double x)
+    {
+        if (++calls == 4) throw new Exception("count insertion");
+        return x;
+    }
+    assertThrown!Exception(makePercentogram(allocator, values[].sliced.map!duringInsertion, owner.axis));
+    assert(allocator.live == 1); // Supplied axis ownership was not taken by the factory.
+    calls = 0;
+    assertThrown!Exception(makeWeightedPercentogram(allocator, weights,
+        values[].sliced.map!duringInsertion, owner.axis));
+    assert(allocator.live == 1);
+    owner.dispose(allocator);
+    assert(allocator.live == 0);
 }

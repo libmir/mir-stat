@@ -1448,41 +1448,15 @@ package auto buildPercentogram(alias allocate, alias quantiles, alias histogram,
     Counts, Data, P)(scope auto ref Data data, scope auto ref P probabilities)
 {
     import mir.ndslice.slice: isSlice, sliced;
-    import mir.stat.descriptive.histogram.axis: variableAxis, AxisOptions;
-    import std.traits: isIntegral;
-
-    static if (isIntegral!P)
-    {
-        assert(probabilities > 0 && probabilities < size_t.max,
-            "percentogram: bin count must be positive and leave room for an extra boundary");
-        NoAllocationContext context;
-        auto levels = allocate!double(context, cast(size_t) probabilities + 1);
-        foreach (i; 0 .. levels.length)
-            levels[i] = cast(double) i / probabilities;
-        return buildPercentogram!(allocate, quantiles, histogram, Counts)(data, levels);
-    }
-    else
-    {
-        static if (isSlice!Data)
-            scope auto observations = data;
-        else
-            scope auto observations = data[].sliced;
-        static if (isSlice!P)
-            scope auto levels = probabilities;
-        else
-            scope auto levels = probabilities[].sliced;
-        validatePercentogramInputs(observations, levels);
-
-        auto edges = quantiles(observations, levels);
-        const distinct = preparePercentogramEdges(edges);
-        edges = edges[0 .. distinct];
-        // Quantiles may promote integral observations to floating-point boundaries.
-        // Match the axis value type lazily without another observation buffer.
-        import mir.ndslice.topology: as;
-        import mir.primitives: DeepElementType;
-        auto axis = variableAxis!(AxisOptions(false, true, true))(edges);
-        return histogram!Counts(observations.as!(DeepElementType!(typeof(edges))), axis);
-    }
+    import mir.ndslice.topology: as;
+    import mir.stat.descriptive.histogram.axis: preparedQuantileAxis;
+    NoAllocationContext context;
+    auto edges = computeQuantileAxisEdges!(allocate, quantiles)(context, data, probabilities);
+    auto axis = preparedQuantileAxis(edges);
+    static if (isSlice!Data) scope auto observations = data;
+    else scope auto observations = data[].sliced;
+    // Match the axis coordinate type without allocating another observation buffer.
+    return histogram!Counts(observations.as!(typeof(axis).BinType), axis);
 }
 
 version(mir_stat_test)
@@ -1601,13 +1575,13 @@ package void validatePercentogramInputs(Observations, Levels)(scope Observations
 
 // Preserve floating observation precision; integral quantiles need floating
 // boundaries for widths and the final nextUp endpoint, even for inverseCDF.
-package template WeightedPercentogramBoundary(Data)
+package template QuantileBoundaryType(Data)
 {
     import mir.primitives: DeepElementType;
     import std.traits: Unqual, isFloatingPoint;
     alias Element = Unqual!(DeepElementType!Data);
-    static if (isFloatingPoint!Element) alias WeightedPercentogramBoundary = Element;
-    else alias WeightedPercentogramBoundary = double;
+    static if (isFloatingPoint!Element) alias QuantileBoundaryType = Element;
+    else alias QuantileBoundaryType = double;
 }
 
 // The automatic-bin heuristic counts positive-weight rows, not their total
@@ -1638,40 +1612,24 @@ package void fillWeightedPercentogram(H, Weights, Data)(ref H histogram,
     else scope auto masses = weights[].sliced;
     static if (isSlice!Data) scope auto values = data;
     else scope auto values = data[].sliced;
-    alias Boundary = WeightedPercentogramBoundary!Data;
+    // A prepared axis may use a different coordinate type than the new observations.
+    alias Boundary = typeof(histogram.axis).BinType;
     foreach (i; 0 .. masses.length)
         if (masses[i] > 0)
             histogram.putWeighted(masses[i], cast(Boundary) values[i]);
 }
 
 package auto buildWeightedPercentogram(alias allocate, alias quantiles, alias histogram,
-    Counts, alias algorithm, Weights, Data, P)(scope auto ref Weights weights,
+    Counts, Weights, Data, P)(scope auto ref Weights weights,
     scope auto ref Data data, scope auto ref P probabilities)
 {
-    import mir.ndslice.slice: isSlice, sliced;
-    import mir.stat.descriptive.histogram.axis: variableAxis, AxisOptions;
-    import std.traits: isIntegral;
-    static if (isIntegral!P)
-    {
-        assert(probabilities > 0 && probabilities < size_t.max,
-            "percentogram: bin count must be positive and leave room for an extra boundary");
-        NoAllocationContext context;
-        auto levels = allocate!double(context, cast(size_t) probabilities + 1);
-        foreach (i; 0 .. levels.length) levels[i] = cast(double) i / probabilities;
-        return buildWeightedPercentogram!(allocate, quantiles, histogram, Counts, algorithm)(weights, data, levels);
-    }
-    else
-    {
-        static if (isSlice!P) scope auto levels = probabilities;
-        else scope auto levels = probabilities[].sliced;
-        validatePercentogramLevels(levels);
-        auto edges = quantiles!(WeightedPercentogramBoundary!Data, algorithm)(weights, data, levels);
-        const distinct = preparePercentogramEdges(edges);
-        auto axis = variableAxis!(AxisOptions(false, true, true))(edges[0 .. distinct]);
-        auto result = histogram!Counts(axis);
-        fillWeightedPercentogram(result, weights, data);
-        return result;
-    }
+    import mir.stat.descriptive.histogram.axis: preparedQuantileAxis;
+    NoAllocationContext context;
+    auto edges = computeQuantileAxisEdges!(allocate, quantiles)(context, weights, data, probabilities);
+    auto axis = preparedQuantileAxis(edges);
+    auto result = histogram!Counts(axis);
+    fillWeightedPercentogram(result, weights, data);
+    return result;
 }
 
 // Exercise the same weighted distribution across all allocation policies.
@@ -1723,25 +1681,6 @@ package void testWeightedPercentograms(alias factory, alias release = null)()
     auto strided = factory(massBacking[].sliced.stride(2), backing[].sliced.stride(2), levels[].sliced);
     scope(exit) { static if (!is(typeof(release) == typeof(null))) release(strided); }
     assert(histogramOf(strided).counts == p.counts);
-}
-
-// Compact in place but retain the complete allocation handle for manual cleanup.
-package size_t preparePercentogramEdges(Edges)(scope Edges edges)
-{
-    import std.math: isFinite, nextUp;
-    size_t distinct = 0;
-    foreach (i; 0 .. edges.length)
-    {
-        assert(isFinite(edges[i]), "percentogram: quantile boundaries must be finite");
-        if (distinct == 0 || edges[i] > edges[distinct - 1])
-            edges[distinct++] = edges[i];
-        else
-            assert(edges[i] == edges[distinct - 1], "percentogram: boundaries must not decrease");
-    }
-    assert(distinct >= 2, "percentogram: at least two distinct boundaries are required");
-    edges[distinct - 1] = nextUp(edges[distinct - 1]);
-    assert(isFinite(edges[distinct - 1]), "percentogram: maximum requires a finite successor");
-    return distinct;
 }
 
 // Test the same restricted intervals for owning and explicitly disposed results.
@@ -2551,4 +2490,192 @@ package void testAdaptivePercentogram(alias factory)()
     auto trimmed = factory!(AdaptiveCounts!())(unique, trimmedLevels);
     assert(trimmed.underflow == 1 && trimmed.overflow == 1);
     assert(trimmed.relativeFrequency!(double, Normalization.ordinary)(0) == 1.0 / 3);
+}
+
+// Copy precomputed boundaries so compaction and endpoint adjustment cannot mutate
+// caller storage. Integral boundaries use double, just as percentogram factories do.
+package auto copyQuantileAxisEdges(alias allocate, alias release = null, Context, Data)(
+    ref Context context, scope auto ref Data data)
+{
+    import mir.ndslice.slice: isSlice, sliced;
+    static if (isSlice!Data) scope auto values = data;
+    else scope auto values = data[].sliced;
+    static assert(typeof(values).N == 1, "quantile axis: boundaries must be one-dimensional");
+    auto edges = allocate!(QuantileBoundaryType!Data)(context, values.length);
+    scope(failure) { static if (!is(typeof(release) == typeof(null))) release(context, edges); }
+    foreach (i; 0 .. values.length) edges[i] = values[i];
+    return edges;
+}
+
+// The last argument is either an explicit level collection or a positive bin count.
+// Computation accepts (data, levels) or (weights, data, levels).
+// Shared by standalone quantile axes and one-step percentograms. Validate inputs
+// here before computing boundaries; custom probability buffers are released here too.
+package auto computeQuantileAxisEdges(alias allocate, alias compute, alias release = null,
+    Context, Args...)(ref Context context, scope auto ref Args args)
+{
+    import std.traits: isIntegral;
+    import mir.ndslice.slice: isSlice, sliced;
+    alias P = Args[$ - 1];
+    static if (isIntegral!P)
+    {
+        auto count = args[$ - 1];
+        assert(count > 0 && count < size_t.max,
+            "quantile axis: bin count must be positive and leave room for a boundary");
+        auto levels = allocate!double(context, cast(size_t) count + 1);
+        scope(exit) { static if (!is(typeof(release) == typeof(null))) release(context, levels); }
+        foreach (i; 0 .. levels.length) levels[i] = cast(double) i / count;
+        return computeQuantileAxisEdges!(allocate, compute, release)(
+            context, args[0 .. $ - 1], levels);
+    }
+    else
+    {
+        static if (isSlice!P) scope auto levels = args[$ - 1];
+        else scope auto levels = args[$ - 1][].sliced;
+        static if (Args.length == 2)
+        {
+            static if (isSlice!(Args[0])) scope auto values = args[0];
+            else scope auto values = args[0][].sliced;
+            validatePercentogramInputs(values, levels);
+        }
+        else validatePercentogramLevels(levels);
+        return compute(context, args[0 .. $ - 1], levels);
+    }
+}
+
+// Prepared axes use the existing insertion machinery, including lazy conversion
+// from integral observations to floating-point boundary values.
+package auto percentogramOnAxis(alias histogram, Counts, Data, Axis, Context...)(
+    scope auto ref Data data, Axis axis, auto ref Context context)
+{
+    import mir.ndslice.slice: isSlice, sliced;
+    import mir.ndslice.topology: as;
+    import std.math: isFinite;
+    static if (isSlice!Data) scope auto values = data;
+    else scope auto values = data[].sliced;
+    static assert(typeof(values).N == 1, "percentogram: observations must be one-dimensional");
+    foreach (x; values) assert(isFinite(cast(real) x), "percentogram: observations must be finite");
+    return histogram!Counts(context, values.as!(Axis.BinType), axis.lightConst);
+}
+
+package auto weightedPercentogramOnAxis(alias histogram, Counts, alias release = null,
+    Weights, Data, Axis, Context...)(scope auto ref Weights weights,
+    scope auto ref Data data, Axis axis, auto ref Context context)
+{
+    import mir.ndslice.slice: isSlice, sliced;
+    import std.math: isFinite;
+    import mir.stat.descriptive.histogram.accumulator: HistogramAccumulator;
+    import mir.stat.descriptive.histogram.relative_frequency: RelativeFrequencyAccumulator;
+    static if (isSlice!Weights) scope auto masses = weights;
+    else scope auto masses = weights[].sliced;
+    static if (isSlice!Data) scope auto values = data;
+    else scope auto values = data[].sliced;
+    static assert(typeof(values).N == 1 && typeof(masses).N == 1,
+        "percentogram: weights and observations must be one-dimensional");
+    assert(masses.length == values.length, "percentogram: weights and observations must match");
+    foreach (i; 0 .. masses.length)
+    {
+        assert(isFinite(cast(real) masses[i]) && masses[i] >= 0, "percentogram: invalid weight");
+        if (masses[i] > 0) assert(isFinite(cast(real) values[i]), "percentogram: invalid observation");
+    }
+    auto h = histogram!Counts(context, axis.lightConst);
+    scope(failure) { static if (!is(typeof(release) == typeof(null))) release(context, h.counts); }
+    static if (is(typeof(h) == HistogramAccumulator!Args, Args...))
+    {
+        auto f = RelativeFrequencyAccumulator!Args(h.counts, h.axis);
+        fillWeightedPercentogram(f, masses, values);
+        return f;
+    }
+}
+
+// Prepared axes retain geometry and ownership across the standard factory paths.
+version(mir_stat_test)
+package void testQuantileAxes(alias create, alias copy, alias make, alias counts,
+    alias weightedCreate, alias weightedMake)()
+{
+    import mir.ndslice.slice: sliced;
+    import mir.ndslice.topology: stride, as;
+    import mir.stat.descriptive.histogram.axis: isQuantileAxis;
+    import mir.stat.descriptive.histogram.traits: AdaptiveCounts, isAxis;
+    import mir.stat.descriptive.univariate: QuantileAlgo, WeightedQuantileAlgo;
+    import std.math: nextUp;
+    const int[5] values = [0, 0, 1, 2, 2];
+    const double[5] levels = [0, 0.25, 0.5, 0.75, 1];
+    auto axis = create(values, 4);
+    static assert(isAxis!(typeof(axis)) && isQuantileAxis!(typeof(axis)));
+    assert(axis.N_bin == 2 && axis.high == nextUp(2.0));
+    auto p = make(values, axis);
+    auto original = make(values, levels);
+    static assert(isQuantileAxis!(typeof(original.axis)));
+    assert(p.counts == original.counts);
+    const frozen = axis;
+    auto readOnly = frozen.lightConst;
+    static assert(isQuantileAxis!(typeof(readOnly)));
+    auto again = make(values, frozen);
+    assert(again.axis.high == axis.high);
+    assert(again.bins()[1].bin.high == axis.high);
+    auto raw = counts(values[].sliced.as!double, axis);
+    assert(raw.counts == p.counts);
+    auto adaptive = make!(AdaptiveCounts!ushort)(values, axis);
+    foreach (i; 0 .. axis.N_bin) assert(adaptive.bins()[i].count == p.bins()[i].count);
+    int[0] empty;
+    auto later = make(empty, axis);
+    later.put(2.0);
+    assert(later.total == 1 && later.counts[2] == 1);
+
+    const float[6] backing = [0, -9, 1, -9, 2, -9];
+    auto fromStrided = copy(backing[].sliced.stride(2));
+    static assert(is(typeof(fromStrided).BinType == float));
+    assert(fromStrided.high == nextUp(2.0f) && backing[4] == 2);
+    const double[3] mixedValues = [0.5, 1.5, 2.0];
+    const uint[3] mixedWeights = [2, 3, 4];
+    auto mixed = weightedMake(mixedWeights, mixedValues, fromStrided);
+    assert(mixed.total == 9 && mixed.counts == [0, 2, 7, 0]);
+
+    auto alternate = create!(QuantileAlgo.type1)(values, levels);
+    assert(alternate.N_bin == 2);
+
+    const double[5] weights = [1, 1, 1, 1, 1];
+    static foreach (algo; [WeightedQuantileAlgo.inverseCDF, WeightedQuantileAlgo.type7,
+        WeightedQuantileAlgo.frequencyType8])
+    {{
+        auto wa = weightedCreate!algo(weights, values, levels);
+        auto wf = weightedMake(weights, values, wa);
+        auto reference = weightedMake!(double, algo)(weights, values, levels);
+        assert(wf.counts == reference.counts && wf.total == 5);
+    }}
+    double[2] zero = [0, 0], missing = [double.nan, double.infinity];
+    auto zeroMass = weightedMake(zero, missing, axis);
+    assert(zeroMass.total == 0);
+
+}
+
+
+// Contract-violation catches are deliberately separate from the @safe usage tests.
+version(mir_stat_test)
+package void testQuantileAxisRejections(alias create, alias copy, alias make, alias weightedMake)()
+{
+    import core.exception: AssertError;
+    static void rejects(F)(scope F action)
+    {
+        bool failed;
+        try { action(); } catch (AssertError) { failed = true; }
+        assert(failed);
+    }
+    const int[5] values = [0, 0, 1, 2, 2];
+    double[5] weights = [1, 1, 1, 1, 1];
+    double[2] missing = [double.nan, double.infinity];
+    auto axis = create(values, 2);
+    double[2] badWeights = [-1, 1], two = [0, 1];
+    rejects(() { weightedMake(badWeights, two, axis); });
+    rejects(() { weightedMake(weights, two, axis); });
+    rejects(() { make(missing, axis); });
+    rejects(() { create(values, 0); });
+    rejects(() { create(values, size_t.max); });
+    const double[2] reverse = [2, 1], same = [1, 1];
+    rejects(() { copy(reverse); });
+    rejects(() { copy(same); });
+    rejects(() { copy(missing); });
+    const double[2] noSuccessor = [0, double.max];
+    rejects(() { copy(noSuccessor); });
 }

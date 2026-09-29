@@ -3739,3 +3739,133 @@ unittest
     rejects(() { auto a = regularAxis!double(n, 0.0, 1.0); });
     rejects(() { auto a = transformAxis!(double, "a", "a")(n, 0.0, 1.0); });
 }
+
+/++
+An axis with prepared quantile boundaries. Indexing and bin geometry follow
+$(LREF VariableAxis), with underflow and overflow enabled. Equal boundaries have
+been combined and the upper endpoint extended to include its quantile value.
+
+Construct it through quantileAxis, rcQuantileAxis, or makeQuantileAxis in the
+histogram API modules, or their FromBoundaries variants for precomputed quantiles.
+Boundaries stay fixed when histograms receive new observations. Requested
+probabilities and source samples are not retained, and bins need not have equal
+observed probability, particularly with ties or different counting samples.
+
+Boundary ownership follows the underlying axis: GC and RC storage survive axis
+copies; caller-allocated boundaries must outlive every axis copy and bin view.
++/
+struct QuantileAxis(Axis)
+{
+    private Axis _axis;
+
+    /// Boundary value type.
+    alias BinType = Axis.BinType;
+    /// Left-closed bins with both tail counters enabled.
+    alias options = Axis.options;
+
+    /// Number of ordinary bins after combining duplicate boundaries.
+    size_t N_bin()() const { return _axis.N_bin; }
+    /// Lower boundary.
+    auto low()() const { return _axis.low; }
+    /// Adjusted upper boundary.
+    auto high()() const { return _axis.high; }
+    /// Classify an observation below the ordinary bins.
+    bool isUnderflow()(BinType x) const { return _axis.isUnderflow(x); }
+    /// Classify an observation above the ordinary bins.
+    bool isOverflow()(BinType x) const { return _axis.isOverflow(x); }
+    /// Find the ordinary-bin index, following VariableAxis semantics.
+    size_t index()(BinType x) { return _axis.index(x); }
+    /// Return a snapshot of a bin's boundaries.
+    auto bin()(size_t i) const { return _axis.bin(i); }
+
+    package(mir.stat.descriptive.histogram) this(Axis axis)
+    {
+        import core.lifetime: move;
+        _axis = move(axis);
+    }
+
+    /// Preserve the quantile-axis type and ownership in read-only views.
+    auto lightConst()() const @property
+    {
+        auto view = _axis.lightConst;
+        return QuantileAxis!(typeof(view))(view);
+    }
+}
+
+/// Classify later response times using a reference sample's quantile intervals.
+version(mir_stat_test)
+@safe pure nothrow @nogc
+unittest
+{
+    import mir.stat.descriptive.histogram.api.rc: rcQuantileAxis;
+    import std.math: nextUp;
+
+    double[5] reference = [0, 10, 20, 30, 40];
+    double[3] probabilities = [0, 0.5, 1];
+    auto axis = rcQuantileAxis(reference, probabilities);
+    assert(axis.N_bin == 2);
+    assert(axis.low == 0 && axis.high == nextUp(40.0));
+    assert(axis.bin(0).low == 0 && axis.bin(0).high == 20);
+    assert(axis.index(15.0) == 0 && axis.index(25.0) == 1);
+    assert(axis.index(40.0) == 1); // The reference maximum is included.
+    // Check tails before requesting an ordinary-bin index.
+    assert(axis.isUnderflow(-1.0) && axis.isOverflow(41.0));
+
+    const frozen = axis;
+    auto readOnly = frozen.lightConst;
+    assert(readOnly.index(25.0) == 1);
+    // Copies retain RC boundary ownership; no reference observations are retained.
+}
+
+/// Whether T is a prepared quantile-axis wrapper.
+template isQuantileAxis(T)
+{
+    import std.traits: Unqual;
+    enum isQuantileAxis = is(Unqual!T == QuantileAxis!A, A);
+}
+
+/// Distinguish prepared quantile axes from ordinary variable axes at compile time.
+version(mir_stat_test)
+@safe pure nothrow @nogc
+unittest
+{
+    import mir.ndslice.slice: sliced;
+    import mir.stat.descriptive.histogram.api.rc: rcQuantileAxisFromBoundaries;
+
+    double[3] boundaries = [0, 1, 2];
+    auto prepared = rcQuantileAxisFromBoundaries(boundaries);
+    auto ordinary = variableAxis(boundaries[].sliced);
+    static assert(isQuantileAxis!(typeof(prepared)));
+    static assert(isQuantileAxis!(const(typeof(prepared))));
+    static assert(isQuantileAxis!(typeof(prepared.lightConst)));
+    static assert(!isQuantileAxis!(typeof(ordinary)));
+    static assert(!isQuantileAxis!double);
+}
+
+// Accept only newly allocated, privately owned writable edges here. Public
+// copying factories preserve caller input; the custom owner keeps the full handle.
+package(mir.stat.descriptive.histogram) auto preparedQuantileAxis(Edges)(Edges edges)
+{
+    const distinct = prepareQuantileEdges(edges);
+    auto axis = variableAxis!(AxisOptions(false, true, true))(edges[0 .. distinct]);
+    return QuantileAxis!(typeof(axis))(axis);
+}
+
+// Compact in place but retain the complete allocation handle for manual cleanup.
+package(mir.stat.descriptive.histogram) size_t prepareQuantileEdges(Edges)(scope Edges edges)
+{
+    import std.math: isFinite, nextUp;
+    size_t distinct = 0;
+    foreach (i; 0 .. edges.length)
+    {
+        assert(isFinite(edges[i]), "percentogram: quantile boundaries must be finite");
+        if (distinct == 0 || edges[i] > edges[distinct - 1])
+            edges[distinct++] = edges[i];
+        else
+            assert(edges[i] == edges[distinct - 1], "percentogram: boundaries must not decrease");
+    }
+    assert(distinct >= 2, "percentogram: at least two distinct boundaries are required");
+    edges[distinct - 1] = nextUp(edges[distinct - 1]);
+    assert(isFinite(edges[distinct - 1]), "percentogram: maximum requires a finite successor");
+    return distinct;
+}

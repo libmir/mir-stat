@@ -10,6 +10,9 @@ $(TR $(TD Weighted counts or accumulator cells) $(TD weightedHistogram) $(TD rcW
 $(TR $(TD Weighted relative frequencies) $(TD weightedRelativeFrequencyHistogram) $(TD rcWeightedRelativeFrequencyHistogram) $(TD makeWeightedRelativeFrequencyHistogram))
 $(TR $(TD Quantile-based bins) $(TD percentogram) $(TD rcpercentogram) $(TD makePercentogram))
 $(TR $(TD Weighted quantile-based bins) $(TD weightedPercentogram) $(TD rcWeightedPercentogram) $(TD makeWeightedPercentogram))
+$(TR $(TD Quantile axis from observations) $(TD quantileAxis) $(TD rcQuantileAxis) $(TD makeQuantileAxis))
+$(TR $(TD Quantile axis from weighted observations) $(TD weightedQuantileAxis) $(TD rcWeightedQuantileAxis) $(TD makeWeightedQuantileAxis))
+$(TR $(TD Quantile axis from supplied boundaries) $(TD quantileAxisFromBoundaries) $(TD rcQuantileAxisFromBoundaries) $(TD makeQuantileAxisFromBoundaries))
 $(TR $(TD Projection onto selected axes) $(TD marginal) $(TD rcMarginal) $(TD makeMarginal))
 )
 
@@ -45,6 +48,23 @@ Weighted percentograms use weights both to choose quantile boundaries and to
 accumulate bin masses. Pass weights before observations; select a WeightedQuantileAlgo
 explicitly to change the default inverseCDF definition. They use fixed numeric
 counters and the same GC, RC, or explicit-disposal ownership policies as percentograms.
+
+To compare samples using the same boundaries, first construct a quantile axis from
+a reference sample and probability levels or a bin count. Pass it to percentogram
+or weightedPercentogram with the observations to count. Use the FromBoundaries
+factories when another calculation supplies the quantiles. Preparation copies or
+allocates boundaries, combines duplicates, and includes the upper quantile endpoint;
+subsequent reuse leaves those boundaries unchanged. The existing convenience
+percentogram factories also expose a prepared QuantileAxis that can be reused.
+
+Quantile axes work with histogram and relative-frequency factories as ordinary
+explicit axes. Their coordinate type is floating-point; direct histogram insertion
+requires matching coordinates, while percentogram overloads convert integral inputs.
+Counts use the selected histogram factory's allocation policy independently of the
+axis's boundary policy. Custom quantile-axis factories return an owner exposing axis
+and dispose. A makePercentogram call with that axis allocates only counts and returns
+a relative-frequency accumulator: dispose its fixed counts separately, and dispose
+the boundary owner only after all histograms and views are finished using it.
 
 See $(REF rc, mir, stat, descriptive, histogram, api) for axis-selection examples,
 $(REF gc, mir, stat, descriptive, histogram, api) for GC factories, and

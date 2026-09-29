@@ -20,7 +20,8 @@ T4=$(TR $(TDNW $(LREF $1)) $(TD $2) $(TD $3) $(TD $4))
 
 module mir.stat.descriptive.histogram.api.rc;
 
-private import mir.stat.descriptive.univariate: WeightedQuantileAlgo;
+private import mir.stat.descriptive.univariate: WeightedQuantileAlgo, QuantileAlgo;
+private import mir.stat.descriptive.histogram.axis: isQuantileAxis;
 
 // Joint numeric batches preserve pairing, numeric types, and axis lifetimes.
 version(mir_stat_test)
@@ -871,6 +872,36 @@ unittest
     assert(f.relativeFrequency(1) == 0.4);
 }
 
+
+/// Use your own quantile boundaries for percentogram densities.
+version(mir_stat_test)
+@safe pure nothrow
+unittest
+{
+    import mir.ndslice.slice: sliced;
+    import mir.stat.descriptive.univariate: rcquantile;
+    import mir.stat.descriptive.histogram.axis: VariableAxis;
+    import std.math: nextUp;
+
+    double[8] values = [0, 1, 2, 3, 4, 8, 12, 16];
+    double[5] levels = [0, 0.25, 0.5, 0.75, 1];
+    // Replace this calculation with your preferred quantiles or supplied edges.
+    auto boundaries = values[].sliced.rcquantile(levels[].sliced);
+    assert(boundaries == [0.0, 1.75, 3.5, 9.0, 16.0]);
+    // Combine duplicate quantiles first if the data contain ties.
+    // Include the maximum in the final left-closed, right-open bin.
+    boundaries[$ - 1] = nextUp(boundaries[$ - 1]);
+    auto f = values[].sliced.rcRelativeFrequencyHistogram!VariableAxis(boundaries);
+    assert(f.counts == [2, 2, 2, 2]);
+    assert(f.total == 8);
+    assert(f.relativeFrequency(0) == 0.25);
+    assert(f.density(0) == 0.25 / 1.75);
+    // Density is the bar height: width times height is probability.
+    f.put(1.0);
+    assert(f.total == 9 && f.counts[0] == 3);
+    // Updates change counts and normalization, but retain the original edges.
+}
+
 /// Use adaptive counts when collecting an unknown number of observations.
 version(mir_stat_test)
 @safe pure nothrow @nogc
@@ -1350,6 +1381,12 @@ Returns a relative-frequency accumulator with RC-owned boundaries and counts.
 Construction supports `@nogc` for ordinary numeric inputs.
 Use `density` or `densityBins` for bar heights: area represents observed probability.
 
+The probabilities argument supplies probability levels, not precomputed quantile
+boundaries. Alternatively, pass an axis from $(LREF rcQuantileAxis) or
+$(LREF rcQuantileAxisFromBoundaries) to reuse prepared boundaries. For direct control
+of variable-axis boundaries, the $(LREF rcRelativeFrequencyHistogram) examples show
+the individual preparation steps. Use $(LREF rchistogram) for raw counts.
+
 Omitting probabilities requests `ceil(cuberoot(n))` ordinary bins for `n` observations,
 with equally spaced probabilities from zero to one. This is a sample-size heuristic.
 Tied boundaries can reduce the number of ordinary bins.
@@ -1386,10 +1423,11 @@ Params:
     probabilities = positive bin count or probability array/slice
 +/
 auto rcpercentogram(Counts = size_t, Data, P)(scope auto ref Data data, scope auto ref P probabilities)
+    if (!isQuantileAxis!P)
 {
-    import mir.stat.descriptive.univariate: rcquantile;
     import mir.stat.descriptive.histogram.api.factory: buildPercentogram;
-    return buildPercentogram!(allocateRC, rcquantile, rcRelativeFrequencyHistogram, Counts)(data, probabilities);
+    return buildPercentogram!(allocateCells, computeAxisQuantiles!(QuantileAlgo.type7),
+        rcRelativeFrequencyHistogram, Counts)(data, probabilities);
 }
 
 /// ditto
@@ -1697,11 +1735,11 @@ Params:
 auto rcWeightedPercentogram(Counts = double, WeightedQuantileAlgo algorithm = WeightedQuantileAlgo.inverseCDF,
     Weights, Data, P)(scope auto ref Weights weights, scope auto ref Data data,
     scope auto ref P probabilities)
+    if (!isQuantileAxis!P)
 {
-    import mir.stat.descriptive.univariate: rcWeightedQuantile;
     import mir.stat.descriptive.histogram.api.factory: buildWeightedPercentogram;
-    return buildWeightedPercentogram!(allocateRC, rcWeightedQuantile, rcRelativeFrequencyHistogram, Counts, algorithm)(
-        weights, data, probabilities);
+    return buildWeightedPercentogram!(allocateCells, computeWeightedAxisQuantiles!algorithm,
+        rcRelativeFrequencyHistogram, Counts)(weights, data, probabilities);
 }
 
 /// ditto
@@ -1809,4 +1847,203 @@ unittest
 {
     import mir.stat.descriptive.histogram.api.factory: testWeightedPercentograms;
     testWeightedPercentograms!rcWeightedPercentogram();
+}
+
+
+/++
+Choose quantile boundaries once, then reuse them to compare samples against the
+same reference distribution. Returns reference-counted boundaries in a prepared quantile axis.
+Supply probability levels or a positive bin count for equally spaced levels.
+Inputs are unchanged; the selected quantile algorithm defaults to type7.
+Equal boundaries are combined and the upper endpoint extended once to include
+its quantile value. Both underflow and overflow are enabled.
++/
+auto rcQuantileAxis(QuantileAlgo algorithm = QuantileAlgo.type7, Data, P)(
+    scope auto ref Data data, scope auto ref P probabilities)
+{
+    import mir.stat.descriptive.histogram.api.factory: computeQuantileAxisEdges;
+    import mir.stat.descriptive.histogram.axis: preparedQuantileAxis;
+    NoAllocationContext context;
+    auto edges = computeQuantileAxisEdges!(allocateCells, computeAxisQuantiles!algorithm)(
+        context, data, probabilities);
+    return preparedQuantileAxis(edges);
+}
+
+/// Compare a later sample with fixed reference quantile intervals.
+version(mir_stat_test)
+@safe pure nothrow @nogc
+unittest
+{
+    import mir.ndslice.slice: sliced;
+
+    double[5] reference = [0, 1, 2, 3, 4];
+    double[3] levels = [0, 0.5, 1];
+    double[4] later = [-1, 1, 3, 5];
+    auto prepared = rcQuantileAxis(reference[].sliced, levels);
+    auto p = rcpercentogram(later, prepared);
+    assert(p.counts == [1, 1, 1, 1]);
+    assert(p.relativeFrequency(0) == 0.25);
+    assert(p.density(0) == 0.125);
+    p.put(2.5);
+    assert(p.total == 5 && p.counts[2] == 2);
+}
+
+/++
+Copy precomputed quantile boundaries into reference-counted storage.
+Use this when another calculation supplies the quantiles. Input boundaries must
+be finite and nondecreasing, with at least two distinct values. Duplicates are
+combined and the maximum extended by one representable step; it must have a
+finite successor. The input is unchanged. Integral boundaries use double and sufficiently large
+integers may lose precision or become coincident boundaries.
++/
+auto rcQuantileAxisFromBoundaries(Data)(scope auto ref Data boundaries)
+{
+    import mir.stat.descriptive.histogram.api.factory: copyQuantileAxisEdges;
+    import mir.stat.descriptive.histogram.axis: preparedQuantileAxis;
+    NoAllocationContext context;
+    auto edges = copyQuantileAxisEdges!(allocateCells)(context, boundaries);
+    return preparedQuantileAxis(edges);
+}
+
+/// Use quantiles supplied by another calculation without modifying its boundary array.
+version(mir_stat_test)
+@safe pure nothrow @nogc
+unittest
+{
+    import mir.ndslice.slice: sliced;
+    import std.math: nextUp;
+    const double[5] edges = [0, 0, 1, 2, 2];
+    auto prepared = rcQuantileAxisFromBoundaries(edges[].sliced);
+    assert(prepared.N_bin == 2);
+    assert(prepared.high == nextUp(2.0));
+    assert(edges == [0, 0, 1, 2, 2]); // Compaction and nextUp affect only the copy.
+    double[5] values = [0, 0, 1, 2, 2];
+    auto p = rcpercentogram(values, prepared);
+    assert(p.counts == [0, 2, 3, 0]);
+    assert(p.axis.high == nextUp(2.0)); // Reusing the axis does not extend it again.
+}
+
+private template computeAxisQuantiles(QuantileAlgo algorithm)
+{
+    auto computeAxisQuantiles(Data, P)(
+        ref NoAllocationContext context, scope auto ref Data data, scope auto ref P probabilities)
+    {
+        import mir.stat.descriptive.univariate: rcquantile;
+        import mir.stat.descriptive.histogram.api.factory: QuantileBoundaryType;
+        return rcquantile!(QuantileBoundaryType!Data, algorithm)(data, probabilities);
+    }
+}
+
+/++
+Count observations against an already-prepared quantile axis. Boundaries are
+reused without recalculating quantiles, compacting them, or extending the endpoint.
+The result exposes relative frequencies and densities. Empty counting samples
+are allowed; subsequent put calls retain the same axis.
++/
+auto rcpercentogram(Counts = size_t, Data, Axis)(
+    scope auto ref Data data, Axis axis)
+    if (isQuantileAxis!Axis)
+{
+    import mir.stat.descriptive.histogram.api.factory: percentogramOnAxis;
+    return percentogramOnAxis!(rcRelativeFrequencyHistogram, Counts)(data, axis);
+}
+
+/++
+Choose fixed quantile boundaries from a weighted reference sample. Weights come
+before observations. Algorithm semantics are those of WeightedQuantileAlgo;
+the default is inverseCDF. Supply probability levels or a positive bin count.
+Zero-weight observations are ignored. Inputs are unchanged.
+The axis can subsequently count a different sample with different weights.
++/
+auto rcWeightedQuantileAxis(WeightedQuantileAlgo algorithm = WeightedQuantileAlgo.inverseCDF,
+    Weights, Data, P)(scope auto ref Weights weights,
+    scope auto ref Data data, scope auto ref P probabilities)
+{
+    import mir.stat.descriptive.histogram.api.factory: computeQuantileAxisEdges;
+    import mir.stat.descriptive.histogram.axis: preparedQuantileAxis;
+    NoAllocationContext context;
+    auto edges = computeQuantileAxisEdges!(allocateCells, computeWeightedAxisQuantiles!algorithm)(
+        context, weights, data, probabilities);
+    return preparedQuantileAxis(edges);
+}
+
+/// Reuse a weighted reference median when comparing a later sample.
+version(mir_stat_test)
+@safe pure nothrow @nogc
+unittest
+{
+    double[4] reference = [0, 10, 20, 30], weights = [1, 1, 6, 2];
+    auto prepared = rcWeightedQuantileAxis(weights, reference, 2);
+    assert(prepared.bin(0).high == 20);
+    double[3] later = [double.nan, 10, 25], laterWeights = [0, 3, 1];
+    auto p = rcWeightedPercentogram(laterWeights, later, prepared);
+    assert(p.counts == [0, 3, 1, 0] && p.total == 4);
+    assert(p.relativeFrequency(0) == 0.75);
+}
+
+private template computeWeightedAxisQuantiles(WeightedQuantileAlgo algorithm)
+{
+    auto computeWeightedAxisQuantiles(Weights, Data, P)(
+        ref NoAllocationContext context, scope auto ref Weights weights,
+        scope auto ref Data data, scope auto ref P probabilities)
+    {
+        import mir.stat.descriptive.univariate: rcWeightedQuantile;
+        import mir.stat.descriptive.histogram.api.factory: QuantileBoundaryType;
+        return rcWeightedQuantile!(QuantileBoundaryType!Data, algorithm)(
+            weights, data, probabilities);
+    }
+}
+
+/++
+Accumulate weights against a prepared quantile axis without recalculating boundaries.
+The counting weights need not be those used to construct the axis. They must be
+finite and nonnegative; zero-weight observations are ignored, including nonfinite
+values. Positive-weight observations must be finite. Shapes must match.
+No quantile algorithm is selected here because the boundaries are already fixed.
++/
+auto rcWeightedPercentogram(Counts = double, Weights, Data, Axis)(
+    scope auto ref Weights weights, scope auto ref Data data, Axis axis)
+    if (isQuantileAxis!Axis)
+{
+    import mir.stat.descriptive.histogram.api.factory: weightedPercentogramOnAxis;
+    return weightedPercentogramOnAxis!(rchistogram, Counts)(
+        weights, data, axis);
+}
+
+// Reuse prepared axes across counts, densities, weights, and read-only views.
+version(mir_stat_test)
+@safe pure nothrow @nogc
+unittest
+{
+    import mir.stat.descriptive.histogram.api.factory: testQuantileAxes;
+    testQuantileAxes!(rcQuantileAxis, rcQuantileAxisFromBoundaries, rcpercentogram, rchistogram, rcWeightedQuantileAxis, rcWeightedPercentogram)();
+}
+
+// RC axes and bin views keep local construction storage alive.
+version(mir_stat_test)
+@safe pure nothrow @nogc
+unittest
+{
+    static auto build()
+    {
+        double[3] edges = [0, 1, 2];
+        return rcQuantileAxisFromBoundaries(edges);
+    }
+    auto axis = build();
+    static auto view()
+    {
+        double[3] data = [0, 1, 2];
+        return rcpercentogram(data, build()).bins();
+    }
+    auto bins = view();
+    assert(bins[1].count == 2 && axis.index(1.5) == 1);
+}
+
+// Invalid input is rejected before counting; catches require @system.
+version(mir_stat_test)
+@system pure nothrow @nogc
+unittest
+{
+    import mir.stat.descriptive.histogram.api.factory: testQuantileAxisRejections;
+    testQuantileAxisRejections!(rcQuantileAxis, rcQuantileAxisFromBoundaries, rcpercentogram, rcWeightedPercentogram)();
 }
