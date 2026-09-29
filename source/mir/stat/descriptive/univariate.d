@@ -3895,13 +3895,6 @@ private struct QuantileParts(T, G)
 {
     T low, high;
     G fraction;
-
-    auto value(F)() const
-    {
-        if (fraction == 0) return cast(F) low;
-        if (fraction == 1) return cast(F) high;
-        return interpolateQuantile!(F)(low, high, fraction);
-    }
 }
 
 // Splitting 64-bit integers before conversion preserves cancellation such as the
@@ -3939,14 +3932,14 @@ auto quantileImpl(F, QuantileAlgo quantileAlgo, Iterator, G)(Slice!Iterator slic
     if ((isFloatingPoint!F || quantileAlgo == QuantileAlgo.type1 ||
          quantileAlgo == QuantileAlgo.type3) && isFloatingPoint!G)
 {
-    static if (quantileAlgo == QuantileAlgo.type1 || quantileAlgo == QuantileAlgo.type3)
-        return cast(F) quantileParts!quantileAlgo(slice, p).low;
-    else
-        return quantileParts!quantileAlgo(slice, p).value!F;
+    return selectQuantile!(quantileAlgo, F)(slice, p);
 }
 
+// Share rank calculation and partitioning, but select the result representation
+// at compile time. Scalar callers interpolate directly; callers such as integral
+// IQR retain the endpoints and fraction until after subtracting the quantiles.
 @fmamath private @safe pure nothrow @nogc
-auto quantileParts(QuantileAlgo quantileAlgo, Iterator, G)(Slice!Iterator slice, G p)
+auto selectQuantile(QuantileAlgo quantileAlgo, F = void, Iterator, G)(Slice!Iterator slice, G p)
     if (isFloatingPoint!G)
 {
     assert(p >= 0 && p <= 1, "quantileImpl: p must be between 0 and 1");
@@ -3960,7 +3953,7 @@ auto quantileParts(QuantileAlgo quantileAlgo, Iterator, G)(Slice!Iterator slice,
     alias T = Unqual!(DeepElementType!(typeof(slice)));
 
     alias GG = CommonType!(Unqual!G, double);
-    alias Parts = QuantileParts!(T, GG);
+    static if (is(F == void)) alias Parts = QuantileParts!(T, GG);
     const GG probability = p;
 
     GG m;
@@ -4034,18 +4027,44 @@ auto quantileParts(QuantileAlgo quantileAlgo, Iterator, G)(Slice!Iterator slice,
 
     if (gamma == 0) {
         partitionAt(slice, j);
-        return Parts(slice[j], slice[j], 0);
+        static if (is(F == void)) return Parts(slice[j], slice[j], 0);
+        else return cast(F) slice[j];
     } else if (gamma == 1) {
         partitionAt(slice, j_1);
-        return Parts(slice[j_1], slice[j_1], 0);
+        static if (is(F == void)) return Parts(slice[j_1], slice[j_1], 0);
+        else return cast(F) slice[j_1];
     } else if (j != j_1) {
         partitionAt(slice, j_1);
         partitionAt(slice[0 .. j_1], j);
-        return Parts(slice[j], slice[j_1], gamma);
+        static if (is(F == void)) return Parts(slice[j], slice[j_1], gamma);
+        else return interpolateQuantile!F(slice[j], slice[j_1], gamma);
     } else {
         partitionAt(slice, j);
-        return Parts(slice[j], slice[j], 0);
+        static if (is(F == void)) return Parts(slice[j], slice[j], 0);
+        else return cast(F) slice[j];
     }
+}
+
+// Returning a scalar directly must preserve tiny floating-point observations
+// and the midpoint rounding safeguards for each supported floating type.
+version(mir_stat_test)
+@safe pure nothrow @nogc
+unittest
+{
+    import mir.ndslice.slice: sliced;
+    import std.meta: AliasSeq;
+    static foreach (T; AliasSeq!(float, double, real))
+    {{
+        const T tiny = T.min_normal * T.epsilon;
+        T[2] equal = [tiny, tiny];
+        assert((quantileImpl!(T, QuantileAlgo.type7)(equal[].sliced, 0.5)) == tiny);
+        T[2] mixed = [-tiny, 2 * tiny];
+        assert((quantileImpl!(T, QuantileAlgo.type7)(mixed[].sliced, 0.5)) == 0);
+        T[2] extremes = [-T.max, T.max];
+        assert((quantileImpl!(T, QuantileAlgo.type7)(extremes[].sliced, 0.5)) == 0);
+        T[2] infinite = [T.infinity, T.infinity];
+        assert((quantileImpl!(T, QuantileAlgo.type7)(infinite[].sliced, 0.5)) == T.infinity);
+    }}
 }
 
 /++
@@ -6861,8 +6880,8 @@ private auto quantileSpread(F, QuantileAlgo algorithm, bool modify, S, P, Q)(
             auto owner = source.lightScope.flattened.as!T.rcslice;
             scope auto workspace = owner.lightScope;
         }
-        const lower = quantileParts!algorithm(workspace, lo);
-        const upper = quantileParts!algorithm(workspace, hi);
+        const lower = selectQuantile!algorithm(workspace, lo);
+        const upper = selectQuantile!algorithm(workspace, hi);
         const negative = upper.low < lower.low;
         const ulong distance = negative ?
             cast(ulong) lower.low - cast(ulong) upper.low :
