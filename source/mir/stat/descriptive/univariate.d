@@ -3890,11 +3890,61 @@ unittest
     static assert(is(quantileType!(Foo[], QuantileAlgo.type7) == Complex!float));
 }
 
+// Keep selected observations exact until interpolation or subtraction is required.
+private struct QuantileParts(T, G)
+{
+    T low, high;
+    G fraction;
+
+    auto value(F)() const
+    {
+        if (fraction == 0) return cast(F) low;
+        if (fraction == 1) return cast(F) high;
+        return interpolateQuantile!(F)(low, high, fraction);
+    }
+}
+
+// Splitting 64-bit integers before conversion preserves cancellation such as the
+// midpoint of long.min and long.max, even when real has only 53 significand bits.
+private F interpolateQuantile(F, T, G)(T a, T b, G fraction)
+{
+    import std.traits: isIntegral, CommonType;
+    static if (isIntegral!T)
+    {
+        enum long radix = 1L << 32;
+        const real t = fraction;
+        const real high = (1 - t) * (a / radix) + t * (b / radix);
+        const real low = (1 - t) * (a % radix) + t * (b % radix);
+        return cast(F)(high * radix + low);
+    }
+    else
+    {
+        alias Work = CommonType!(F, G, double);
+        const Work t = fraction;
+        const Work x = a, y = b;
+        import std.math: isFinite;
+        if (!isFinite(x) || !isFinite(y)) return cast(F)(x * (1 - t) + y * t);
+        // Preserve subnormals for nearby same-sign endpoints; avoid overflow
+        // in their difference when signs differ.
+        return cast(F)((x < 0) != (y < 0) ?
+            x * (1 - t) + y * t : x + (y - x) * t);
+    }
+}
+
 @fmamath private @safe pure nothrow @nogc
 auto quantileImpl(F, QuantileAlgo quantileAlgo, Iterator, G)(Slice!Iterator slice, G p)
-    if ((isFloatingPoint!F || (quantileAlgo == QuantileAlgo.type1 || 
-                               quantileAlgo == QuantileAlgo.type3)) &&
-        isFloatingPoint!G)
+    if ((isFloatingPoint!F || quantileAlgo == QuantileAlgo.type1 ||
+         quantileAlgo == QuantileAlgo.type3) && isFloatingPoint!G)
+{
+    static if (quantileAlgo == QuantileAlgo.type1 || quantileAlgo == QuantileAlgo.type3)
+        return cast(F) quantileParts!quantileAlgo(slice, p).low;
+    else
+        return quantileParts!quantileAlgo(slice, p).value!F;
+}
+
+@fmamath private @safe pure nothrow @nogc
+auto quantileParts(QuantileAlgo quantileAlgo, Iterator, G)(Slice!Iterator slice, G p)
+    if (isFloatingPoint!G)
 {
     assert(p >= 0 && p <= 1, "quantileImpl: p must be between 0 and 1");
     size_t n = slice.elementCount;
@@ -3902,9 +3952,13 @@ auto quantileImpl(F, QuantileAlgo quantileAlgo, Iterator, G)(Slice!Iterator slic
 
     import mir.math.common: floor;
     import mir.ndslice.sorting: partitionAt;
-    import std.traits: Unqual;
+    import std.traits: Unqual, CommonType;
+    import mir.primitives: DeepElementType;
+    alias T = Unqual!(DeepElementType!(typeof(slice)));
 
-    alias GG = Unqual!G;
+    alias GG = CommonType!(Unqual!G, double);
+    alias Parts = QuantileParts!(T, GG);
+    const GG probability = p;
 
     GG m;
 
@@ -3919,16 +3973,16 @@ auto quantileImpl(F, QuantileAlgo quantileAlgo, Iterator, G)(Slice!Iterator slic
     } else static if (quantileAlgo == QuantileAlgo.type5) {
         m = 0.5;
     } else static if (quantileAlgo == QuantileAlgo.type6) {
-        m = p;
+        m = probability;
     } else static if (quantileAlgo == QuantileAlgo.type7) {
-        m = 1 - p;
+        m = 1 - probability;
     } else static if (quantileAlgo == QuantileAlgo.type8) {
-        m = (p + 1) / 3;
+        m = (probability + 1) / 3;
     } else static if (quantileAlgo == QuantileAlgo.type9) {
-        m = p / 4 + cast(GG) 3 / 8;
+        m = probability / 4 + cast(GG) 3 / 8;
     }
 
-    GG g = n * p + m - 1; //note: 0-based, not 1-based indexing
+    GG g = n * cast(GG) probability + m - 1; //note: 0-based, not 1-based indexing
 
     GG pre_j = floor(g);
     GG pre_j_1 = pre_j + 1;
@@ -3977,17 +4031,17 @@ auto quantileImpl(F, QuantileAlgo quantileAlgo, Iterator, G)(Slice!Iterator slic
 
     if (gamma == 0) {
         partitionAt(slice, j);
-        return cast(F) slice[j];
+        return Parts(slice[j], slice[j], 0);
     } else if (gamma == 1) {
         partitionAt(slice, j_1);
-        return cast(F) slice[j_1];
+        return Parts(slice[j_1], slice[j_1], 0);
     } else if (j != j_1) {
         partitionAt(slice, j_1);
         partitionAt(slice[0 .. j_1], j);
-        return cast(F) ((1 - gamma) * slice[j] + gamma * slice[j_1]);
+        return Parts(slice[j], slice[j_1], gamma);
     } else {
         partitionAt(slice, j);
-        return cast(F) slice[j];
+        return Parts(slice[j], slice[j], 0);
     }
 }
 
@@ -4460,13 +4514,10 @@ private auto frequencyQuantileAt(F, WeightedQuantileAlgo algorithm, Workspace)(
         if (workspace[mid].cumulative <= index) first = mid + 1;
         else last = mid;
     }
-    const a = cast(real) workspace[first].value;
     if (fraction == 0 || workspace[first].cumulative > index + 1)
         return cast(F) workspace[first].value;
     // Every stored count is positive, so the next row owns the next rank.
-    const b = cast(real) workspace[first + 1].value;
-    return cast(F) ((a < 0) != (b < 0) ?
-        a * (1 - fraction) + b * fraction : a + (b - a) * fraction);
+    return interpolateQuantile!F(workspace[first].value, workspace[first + 1].value, fraction);
 }
 
 private auto weightedQuantileAt(F, WeightedQuantileAlgo algorithm, Workspace, P)(
@@ -4515,11 +4566,9 @@ private auto weightedQuantileAt(F, WeightedQuantileAlgo algorithm, Workspace, P)
             }
             if (next < workspace.length && workspace[next - 1].cumulative == target)
             {
-                const a = cast(real) workspace[low].value;
-                const b = cast(real) workspace[next].value;
                 // Same-sign subtraction and opposite-sign addition cannot
                 // overflow. Avoid halving each operand, which loses subnormals.
-                return cast(F) ((a < 0) != (b < 0) ? (a + b) / 2 : a + (b - a) / 2);
+                return interpolateQuantile!F(workspace[low].value, workspace[next].value, 0.5L);
             }
         }
         return cast(F) workspace[low].value;
@@ -6722,8 +6771,127 @@ unittest
     assert(x.quantile!"type9"(qtile.dup).all!approxEqual([0.55000, 1.92500, 3.01875, 4.16875, 5.00000, 5.53125, 7.93750, 8.80000, 9.01875, 9.91250]));
 }
 
+// Integral interpolation uses the result precision, including with float probabilities.
+version(mir_stat_test)
+@safe pure nothrow @nogc
+unittest
+{
+    import mir.ndslice.slice: sliced;
+    int[2] values = [16_777_216, 16_777_218];
+    assert(rcquantile(values, 0.5f) == 16_777_217);
+    float[1] probabilities = [0.5f];
+    double[1] output;
+    quantileInto(values, probabilities, output);
+    assert(output[0] == 16_777_217);
+    long[2] extremes = [long.min, long.max];
+    uint[2] weights = [1, 1];
+    assert(rcquantile(extremes, 0.5) == -0.5);
+    static foreach (algorithm; [WeightedQuantileAlgo.averagedInverseCDF,
+        WeightedQuantileAlgo.frequencyType7, WeightedQuantileAlgo.frequencyType8])
+        assert(rcWeightedQuantile!algorithm(weights, extremes, 0.5) == -0.5);
+    ulong[2] nearby = [ulong.max - 2, ulong.max];
+    assert(rcquantile!(QuantileAlgo.type1)(nearby, 1.0) == ulong.max);
+}
+
+// The GC and allocator adapters share the same interpolation arithmetic.
+version(mir_stat_test)
+pure nothrow
+unittest
+{
+    import std.experimental.allocator.mallocator: Mallocator;
+    int[2] values = [16_777_216, 16_777_218];
+    assert(quantile(values, 0.5f) == 16_777_217);
+    assert(makeQuantile(Mallocator.instance, values, 0.5f) == 16_777_217);
+}
+
+// Subtract integral quantiles before rounding their common large offset.
+version(mir_stat_test)
+@safe pure nothrow @nogc
+unittest
+{
+    import mir.ndslice.slice: sliced;
+    enum long base = 1L << 53;
+    long[3] values = [base + 2, base, base + 1];
+    const original = values;
+    assert(interquartileRange(values[].sliced) == 1);
+    assert(interquartileRange(values[].sliced, 0.25f) == 1);
+    assert(interquartileRange(values[].sliced, 0.25, 0.75) == 1);
+    assert(interquartileRange!(QuantileAlgo.type1)(values[].sliced) == 2);
+    assert(interquartileRange!(double, QuantileAlgo.type1)(values[].sliced) == 2);
+    assert(values == original);
+    assert(interquartileRange!(QuantileAlgo.type7, true)(values[].sliced) == 1);
+    ulong[3] top = [ulong.max - 2, ulong.max - 1, ulong.max];
+    assert(interquartileRange(top[].sliced) == 1);
+    long[3] bottom = [long.min, long.min + 1, long.min + 2];
+    assert(interquartileRange(bottom[].sliced) == 1);
+    assert(interquartileRange!(QuantileAlgo.type1)(bottom[].sliced, 0.75, 0.25) == -2);
+}
+
+private auto quantileSpread(F, QuantileAlgo algorithm, bool modify, S, P, Q)(
+    S source, P lo, Q hi)
+{
+    import std.traits: isIntegral, Unqual;
+    import mir.primitives: DeepElementType;
+    import mir.ndslice.topology: flattened;
+    alias T = Unqual!(DeepElementType!S);
+    static if (isIntegral!T)
+    {
+        static if (modify) scope auto workspace = source.flattened;
+        else
+        {
+            import mir.ndslice.allocation: rcslice;
+            import mir.ndslice.topology: as;
+            auto owner = source.lightScope.flattened.as!T.rcslice;
+            scope auto workspace = owner.lightScope;
+        }
+        const lower = quantileParts!algorithm(workspace, lo);
+        const upper = quantileParts!algorithm(workspace, hi);
+        const negative = upper.low < lower.low;
+        const ulong distance = negative ?
+            cast(ulong) lower.low - cast(ulong) upper.low :
+            cast(ulong) upper.low - cast(ulong) lower.low;
+        static if (isIntegral!F)
+        {
+            // Selection algorithms have integral results. Do not round a large
+            // exact difference through floating point or silently wrap it.
+            if (negative)
+            {
+                static if (F.min < 0)
+                {
+                    const ulong limit = cast(ulong) F.max + 1;
+                    assert(distance <= limit, "interquartileRange: result is out of range");
+                    if (distance == limit) return F.min;
+                    return cast(F) -cast(long) distance;
+                }
+                else assert(false, "interquartileRange: negative unsigned result");
+            }
+            assert(distance <= F.max, "interquartileRange: result is out of range");
+            return cast(F) distance;
+        }
+        else
+        {
+            const real anchor = negative ? -cast(real) distance : cast(real) distance;
+            const real upperOffset = upper.fraction *
+                cast(real)(cast(ulong) upper.high - cast(ulong) upper.low);
+            const real lowerOffset = lower.fraction *
+                cast(real)(cast(ulong) lower.high - cast(ulong) lower.low);
+            return cast(F)(anchor + (upperOffset - lowerOffset));
+        }
+    }
+    else
+    {
+        auto values = rcquantile!(F, algorithm, modify)(source, lo, hi);
+        return values[1] - values[0];
+    }
+}
+
 /++
 Computes the interquartile range of the input.
+
+For integral observations, the difference is computed before converting a common
+large offset to floating point. Selection algorithms retain integral results;
+the difference must fit the result type. Probabilities remain floating point
+regardless of the result type.
 
 By default, this function computes the result using $(LREF quantile), i.e.
 `result = quantile(x, 0.75) - quantile(x, 0.25)`. There are also overloads for
@@ -6765,8 +6933,7 @@ template interquartileRange(F, QuantileAlgo quantileAlgo = QuantileAlgo.type7,
         import core.lifetime: move;
 
         alias FF = typeof(return);
-        auto lo_hi = rcquantile!(FF, quantileAlgo, allowModifySlice)(slice.move, cast(FF) 0.25, cast(FF) 0.75);
-        return lo_hi[1] - lo_hi[0];
+        return quantileSpread!(FF, quantileAlgo, allowModifySlice)(slice.move, 0.25, 0.75);
     }
 
     /++
@@ -6775,15 +6942,14 @@ template interquartileRange(F, QuantileAlgo quantileAlgo = QuantileAlgo.type7,
         lo = low value
     +/
     @fmamath quantileType!(F, quantileAlgo) interquartileRange(
-        Iterator, size_t N, SliceKind kind)(
+        Iterator, size_t N, SliceKind kind, P)(
             Slice!(Iterator, N, kind) slice,
-            F lo = 0.25)
+            P lo)
     {
         import core.lifetime: move;
 
         alias FF = typeof(return);
-        auto lo_hi = rcquantile!(FF, quantileAlgo, allowModifySlice)(slice.move, cast(FF) lo, cast(FF) (1 - lo));
-        return lo_hi[1] - lo_hi[0];
+        return quantileSpread!(FF, quantileAlgo, allowModifySlice)(slice.move, lo, 1 - lo);
     }
 
     /++
@@ -6793,16 +6959,15 @@ template interquartileRange(F, QuantileAlgo quantileAlgo = QuantileAlgo.type7,
         hi = high value
     +/
     @fmamath quantileType!(F, quantileAlgo) interquartileRange(
-        Iterator, size_t N, SliceKind kind)(
+        Iterator, size_t N, SliceKind kind, P, Q)(
             Slice!(Iterator, N, kind) slice,
-            F lo,
-            F hi)
+            P lo,
+            Q hi)
     {
         import core.lifetime: move;
 
         alias FF = typeof(return);
-        auto lo_hi = rcquantile!(FF, quantileAlgo, allowModifySlice)(slice.move, cast(FF) lo, cast(FF) hi);
-        return lo_hi[1] - lo_hi[0];
+        return quantileSpread!(FF, quantileAlgo, allowModifySlice)(slice.move, lo, hi);
     }
 
     /++
@@ -6822,7 +6987,7 @@ template interquartileRange(F, QuantileAlgo quantileAlgo = QuantileAlgo.type7,
         if (isConvertibleToSlice!SliceLike && !isSlice!SliceLike)
     {
         import mir.ndslice.slice: toSlice;
-        return interquartileRange(x.toSlice);
+        return .interquartileRange!(F, quantileAlgo, allowModifySlice)(x.toSlice);
     }
 }
 
@@ -6852,7 +7017,7 @@ template interquartileRange(QuantileAlgo quantileAlgo = QuantileAlgo.type7,
         import core.lifetime: move;
 
         alias FF = typeof(return);
-        return .interquartileRange!(FF, quantileAlgo, allowModifySlice)(slice.move, cast(FF) lo);
+        return .interquartileRange!(FF, quantileAlgo, allowModifySlice)(slice.move, lo);
     }
 
     /// ditto
@@ -6865,7 +7030,7 @@ template interquartileRange(QuantileAlgo quantileAlgo = QuantileAlgo.type7,
         import core.lifetime: move;
 
         alias FF = typeof(return);
-        return .interquartileRange!(F, quantileAlgo, allowModifySlice)(slice.move, cast(FF) lo, cast(FF) hi);
+        return .interquartileRange!(FF, quantileAlgo, allowModifySlice)(slice.move, lo, hi);
     }
 
     /// ditto

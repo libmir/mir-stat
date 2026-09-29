@@ -1892,9 +1892,10 @@ unittest
 Copy precomputed quantile boundaries into reference-counted storage.
 Use this when another calculation supplies the quantiles. Input boundaries must
 be finite and nondecreasing, with at least two distinct values. Duplicates are
-combined and the maximum extended by one representable step; it must have a
-finite successor. The input is unchanged. Integral boundaries use double and sufficiently large
-integers may lose precision or become coincident boundaries.
+combined. Floating-point maxima are extended by one representable step and must
+have a finite successor. Integral boundaries retain their exact type and values;
+the last ordinary bin includes its upper endpoint without extending it.
+The input is unchanged.
 +/
 auto rcQuantileAxisFromBoundaries(Data)(scope auto ref Data boundaries)
 {
@@ -1929,8 +1930,7 @@ private template computeAxisQuantiles(QuantileAlgo algorithm)
         ref NoAllocationContext context, scope auto ref Data data, scope auto ref P probabilities)
     {
         import mir.stat.descriptive.univariate: rcquantile;
-        import mir.stat.descriptive.histogram.api.factory: QuantileBoundaryType;
-        return rcquantile!(QuantileBoundaryType!Data, algorithm)(data, probabilities);
+        return rcquantile!algorithm(data, probabilities);
     }
 }
 
@@ -1988,8 +1988,7 @@ private template computeWeightedAxisQuantiles(WeightedQuantileAlgo algorithm)
         scope auto ref Data data, scope auto ref P probabilities)
     {
         import mir.stat.descriptive.univariate: rcWeightedQuantile;
-        import mir.stat.descriptive.histogram.api.factory: QuantileBoundaryType;
-        return rcWeightedQuantile!(QuantileBoundaryType!Data, algorithm)(
+        return rcWeightedQuantile!algorithm(
             weights, data, probabilities);
     }
 }

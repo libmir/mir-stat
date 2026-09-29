@@ -1023,13 +1023,15 @@ Weights and observations must be one-dimensional arrays or Mir slices with
 matching lengths. Weighted-quantile input rules apply: finite nonnegative
 weights, at least one positive weight, and finite positive-weight observations.
 Zero-weight observations are ignored, including nonfinite values. Inputs are
-not modified. Integral observations use double boundaries, so large integers
-may lose precision. Floating observations retain their boundary type.
+not modified. Inverse-CDF boundaries retain the observation type; interpolating
+algorithms use floating-point boundaries and may round large integers.
+Floating observations retain their boundary type.
 
 Equal boundaries are combined; at least two distinct finite boundaries are
 required. Ties and discrete weights can prevent equal bin weights. Bins are
-left-closed and right-open, with the final edge extended by one representable
-step to include its cutoff. Both underflow and overflow are enabled. Tail
+left-closed. Floating-point final edges are extended by one representable
+step to include their cutoff; integral final bins include the unchanged upper
+endpoint. Both underflow and overflow are enabled. Tail
 weights remain in the default normalization; use Normalization.ordinary to
 exclude them. These boundary and density rules follow $(LREF percentogram).
 Use density or densityBins for bar heights whose areas represent probability.
@@ -1093,8 +1095,10 @@ Choose quantile boundaries once, then reuse them to compare samples against the
 same reference distribution. Returns GC-owned boundaries in a prepared quantile axis.
 Supply probability levels or a positive bin count for equally spaced levels.
 Inputs are unchanged; the selected quantile algorithm defaults to type7.
-Equal boundaries are combined and the upper endpoint extended once to include
-its quantile value. Both underflow and overflow are enabled.
+Equal boundaries are combined. Type1 and type3 retain integral observation types;
+interpolating algorithms promote integral observations to double. Floating upper
+endpoints are extended once; integral final bins include their unchanged upper
+endpoint. Both underflow and overflow are enabled.
 +/
 auto quantileAxis(QuantileAlgo algorithm = QuantileAlgo.type7, Data, P)(
     scope auto ref Data data, scope auto ref P probabilities)
@@ -1130,9 +1134,10 @@ unittest
 Copy precomputed quantile boundaries into GC-owned storage.
 Use this when another calculation supplies the quantiles. Input boundaries must
 be finite and nondecreasing, with at least two distinct values. Duplicates are
-combined and the maximum extended by one representable step; it must have a
-finite successor. The input is unchanged. Integral boundaries use double and sufficiently large
-integers may lose precision or become coincident boundaries.
+combined. Floating-point maxima are extended by one representable step and must
+have a finite successor. Integral boundaries retain their exact type and values;
+the last ordinary bin includes its upper endpoint without extending it.
+The input is unchanged.
 +/
 auto quantileAxisFromBoundaries(Data)(scope auto ref Data boundaries)
 {
@@ -1167,8 +1172,7 @@ private template computeAxisQuantiles(QuantileAlgo algorithm)
         ref NoAllocationContext context, scope auto ref Data data, scope auto ref P probabilities)
     {
         import mir.stat.descriptive.univariate: quantile;
-        import mir.stat.descriptive.histogram.api.factory: QuantileBoundaryType;
-        return quantile!(QuantileBoundaryType!Data, algorithm)(data, probabilities);
+        return quantile!algorithm(data, probabilities);
     }
 }
 
@@ -1226,8 +1230,7 @@ private template computeWeightedAxisQuantiles(WeightedQuantileAlgo algorithm)
         scope auto ref Data data, scope auto ref P probabilities)
     {
         import mir.stat.descriptive.univariate: weightedQuantile;
-        import mir.stat.descriptive.histogram.api.factory: QuantileBoundaryType;
-        return weightedQuantile!(QuantileBoundaryType!Data, algorithm)(
+        return weightedQuantile!algorithm(
             weights, data, probabilities);
     }
 }

@@ -3743,7 +3743,9 @@ unittest
 /++
 An axis with prepared quantile boundaries. Indexing and bin geometry follow
 $(LREF VariableAxis), with underflow and overflow enabled. Equal boundaries have
-been combined and the upper endpoint extended to include its quantile value.
+been combined. Floating-point upper endpoints are extended to include their
+quantile value; integral axes retain exact boundaries and include the final
+upper endpoint in the last ordinary bin, even at the integer type's maximum.
 
 Construct it through quantileAxis, rcQuantileAxis, or makeQuantileAxis in the
 histogram API modules, or their FromBoundaries variants for precomputed quantiles.
@@ -3767,14 +3769,25 @@ struct QuantileAxis(Axis)
     size_t N_bin()() const { return _axis.N_bin; }
     /// Lower boundary.
     auto low()() const { return _axis.low; }
-    /// Adjusted upper boundary.
+    /// Upper boundary, extended only for floating-point coordinates.
     auto high()() const { return _axis.high; }
     /// Classify an observation below the ordinary bins.
     bool isUnderflow()(BinType x) const { return _axis.isUnderflow(x); }
     /// Classify an observation above the ordinary bins.
-    bool isOverflow()(BinType x) const { return _axis.isOverflow(x); }
+    bool isOverflow()(BinType x) const
+    {
+        import std.traits: isIntegral;
+        static if (isIntegral!BinType) return x > high;
+        else return _axis.isOverflow(x);
+    }
     /// Find the ordinary-bin index, following VariableAxis semantics.
-    size_t index()(BinType x) { return _axis.index(x); }
+    size_t index()(BinType x)
+    {
+        import std.traits: isIntegral;
+        static if (isIntegral!BinType)
+            if (x == high) return N_bin - 1;
+        return _axis.index(x);
+    }
     /// Return a snapshot of a bin's boundaries.
     auto bin()(size_t i) const { return _axis.bin(i); }
 
@@ -3855,17 +3868,22 @@ package(mir.stat.descriptive.histogram) auto preparedQuantileAxis(Edges)(Edges e
 package(mir.stat.descriptive.histogram) size_t prepareQuantileEdges(Edges)(scope Edges edges)
 {
     import std.math: isFinite, nextUp;
+    import std.traits: isIntegral;
     size_t distinct = 0;
     foreach (i; 0 .. edges.length)
     {
-        assert(isFinite(edges[i]), "percentogram: quantile boundaries must be finite");
+        static if (!isIntegral!(typeof(edges[i])))
+            assert(isFinite(edges[i]), "percentogram: quantile boundaries must be finite");
         if (distinct == 0 || edges[i] > edges[distinct - 1])
             edges[distinct++] = edges[i];
         else
             assert(edges[i] == edges[distinct - 1], "percentogram: boundaries must not decrease");
     }
     assert(distinct >= 2, "percentogram: at least two distinct boundaries are required");
-    edges[distinct - 1] = nextUp(edges[distinct - 1]);
-    assert(isFinite(edges[distinct - 1]), "percentogram: maximum requires a finite successor");
+    static if (!isIntegral!(typeof(edges[0])))
+    {
+        edges[distinct - 1] = nextUp(edges[distinct - 1]);
+        assert(isFinite(edges[distinct - 1]), "percentogram: maximum requires a finite successor");
+    }
     return distinct;
 }

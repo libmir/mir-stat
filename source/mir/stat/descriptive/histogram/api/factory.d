@@ -1448,7 +1448,7 @@ package auto buildPercentogram(alias allocate, alias quantiles, alias histogram,
     Counts, Data, P)(scope auto ref Data data, scope auto ref P probabilities)
 {
     import mir.ndslice.slice: isSlice, sliced;
-    import mir.ndslice.topology: as;
+    import mir.ndslice.topology: map;
     import mir.stat.descriptive.histogram.axis: preparedQuantileAxis;
     NoAllocationContext context;
     auto edges = computeQuantileAxisEdges!(allocate, quantiles)(context, data, probabilities);
@@ -1456,7 +1456,7 @@ package auto buildPercentogram(alias allocate, alias quantiles, alias histogram,
     static if (isSlice!Data) scope auto observations = data;
     else scope auto observations = data[].sliced;
     // Match the axis coordinate type without allocating another observation buffer.
-    return histogram!Counts(observations.as!(typeof(axis).BinType), axis);
+    return histogram!Counts(observations.map!(x => quantileAxisCoordinate!(typeof(axis).BinType)(x)), axis);
 }
 
 version(mir_stat_test)
@@ -1573,17 +1573,6 @@ package void validatePercentogramInputs(Observations, Levels)(scope Observations
     validatePercentogramLevels(levels);
 }
 
-// Preserve floating observation precision; integral quantiles need floating
-// boundaries for widths and the final nextUp endpoint, even for inverseCDF.
-package template QuantileBoundaryType(Data)
-{
-    import mir.primitives: DeepElementType;
-    import std.traits: Unqual, isFloatingPoint;
-    alias Element = Unqual!(DeepElementType!Data);
-    static if (isFloatingPoint!Element) alias QuantileBoundaryType = Element;
-    else alias QuantileBoundaryType = double;
-}
-
 // The automatic-bin heuristic counts positive-weight rows, not their total
 // weight. It is therefore unchanged by rescaling probability weights.
 package size_t weightedPercentogramBinCount(Weights)(scope auto ref Weights weights)
@@ -1616,7 +1605,7 @@ package void fillWeightedPercentogram(H, Weights, Data)(ref H histogram,
     alias Boundary = typeof(histogram.axis).BinType;
     foreach (i; 0 .. masses.length)
         if (masses[i] > 0)
-            histogram.putWeighted(masses[i], cast(Boundary) values[i]);
+            histogram.putWeighted(masses[i], quantileAxisCoordinate!Boundary(values[i]));
 }
 
 package auto buildWeightedPercentogram(alias allocate, alias quantiles, alias histogram,
@@ -2493,7 +2482,7 @@ package void testAdaptivePercentogram(alias factory)()
 }
 
 // Copy precomputed boundaries so compaction and endpoint adjustment cannot mutate
-// caller storage. Integral boundaries use double, just as percentogram factories do.
+// caller storage. Preserve the boundary type, including exact integral values.
 package auto copyQuantileAxisEdges(alias allocate, alias release = null, Context, Data)(
     ref Context context, scope auto ref Data data)
 {
@@ -2501,7 +2490,8 @@ package auto copyQuantileAxisEdges(alias allocate, alias release = null, Context
     static if (isSlice!Data) scope auto values = data;
     else scope auto values = data[].sliced;
     static assert(typeof(values).N == 1, "quantile axis: boundaries must be one-dimensional");
-    auto edges = allocate!(QuantileBoundaryType!Data)(context, values.length);
+    import std.traits: Unqual;
+    auto edges = allocate!(Unqual!(typeof(values[0])))(context, values.length);
     scope(failure) { static if (!is(typeof(release) == typeof(null))) release(context, edges); }
     foreach (i; 0 .. values.length) edges[i] = values[i];
     return edges;
@@ -2543,19 +2533,56 @@ package auto computeQuantileAxisEdges(alias allocate, alias compute, alias relea
     }
 }
 
+// Floating axes have left-closed intervals. Round an integral observation down,
+// rather than to nearest, so conversion cannot move it onto a higher boundary.
+package Boundary quantileAxisCoordinate(Boundary, Value)(Value value)
+{
+    import std.traits: isIntegral, isFloatingPoint;
+    import std.math: nextDown, isFinite;
+    static if (isFloatingPoint!Boundary && isIntegral!Value)
+    {
+        auto converted = cast(Boundary) value;
+        enum real limit = 2.0L ^^ (Value.sizeof * 8 - (Value.min < 0 ? 1 : 0));
+        if (converted >= limit || cast(Value) converted > value)
+            return nextDown(converted);
+        return converted;
+    }
+    else static if (isIntegral!Boundary)
+    {
+        static if (isFloatingPoint!Value)
+        {
+            enum real limit = 2.0L ^^ (Boundary.sizeof * 8 - (Boundary.min < 0 ? 1 : 0));
+            assert(isFinite(value) && value >= Boundary.min && value < limit,
+                "percentogram: observation is outside the integral coordinate range");
+        }
+        else
+        {
+            static if (Boundary.min == 0 && Value.min < 0)
+                assert(value >= 0, "percentogram: negative unsigned coordinate");
+            static if (Boundary.min < 0 && Value.min == 0)
+                assert(value <= Boundary.max, "percentogram: coordinate is out of range");
+        }
+        const converted = cast(Boundary) value;
+        assert(cast(Value) converted == value,
+            "percentogram: observation must be exactly representable by the integral axis");
+        return converted;
+    }
+    else return cast(Boundary) value;
+}
+
 // Prepared axes use the existing insertion machinery, including lazy conversion
-// from integral observations to floating-point boundary values.
+// with interval-preserving integral-to-floating conversion.
 package auto percentogramOnAxis(alias histogram, Counts, Data, Axis, Context...)(
     scope auto ref Data data, Axis axis, auto ref Context context)
 {
     import mir.ndslice.slice: isSlice, sliced;
-    import mir.ndslice.topology: as;
+    import mir.ndslice.topology: map;
     import std.math: isFinite;
     static if (isSlice!Data) scope auto values = data;
     else scope auto values = data[].sliced;
     static assert(typeof(values).N == 1, "percentogram: observations must be one-dimensional");
     foreach (x; values) assert(isFinite(cast(real) x), "percentogram: observations must be finite");
-    return histogram!Counts(context, values.as!(Axis.BinType), axis.lightConst);
+    return histogram!Counts(context, values.map!(x => quantileAxisCoordinate!(Axis.BinType)(x)), axis.lightConst);
 }
 
 package auto weightedPercentogramOnAxis(alias histogram, Counts, alias release = null,
@@ -2632,6 +2659,33 @@ package void testQuantileAxes(alias create, alias copy, alias make, alias counts
     auto mixed = weightedMake(mixedWeights, mixedValues, fromStrided);
     assert(mixed.total == 9 && mixed.counts == [0, 2, 7, 0]);
 
+    // Selection algorithms and supplied boundaries keep adjacent 64-bit integers exact.
+    enum long base = 1L << 53;
+    const long[3] large = [base, base + 1, base + 2];
+    const double[3] thirds = [0, 0.5, 1];
+    auto exact = create!(QuantileAlgo.type1)(large, thirds);
+    static assert(is(typeof(exact).BinType == long));
+    assert(exact.N_bin == 2 && exact.high == base + 2);
+    auto exactCounts = make(large, exact);
+    assert(exactCounts.counts == [0, 1, 2, 0]);
+    const ulong[2] top = [ulong.max - 1, ulong.max];
+    auto topAxis = copy(top);
+    assert(topAxis.N_bin == 1 && !topAxis.isOverflow(ulong.max));
+    assert(topAxis.index(ulong.max) == 0);
+    auto topCounts = make(top, topAxis);
+    assert(topCounts.counts == [0, 2, 0]);
+    const long[3] wide = [base, base + 4, base + 8];
+    const long[1] observation = [base + 3];
+    auto wideAxis = copy(wide);
+    assert(make(observation, wideAxis).counts == [0, 1, 0, 0]);
+    const double[3] floatingEdges = [base, base + 4, base + 8];
+    auto floatingAxis = copy(floatingEdges);
+    assert(make(observation, floatingAxis).counts == [0, 1, 0, 0]);
+    const uint[3] equalWeights = [1, 1, 1];
+    auto weightedExact = weightedCreate(equalWeights, large, thirds);
+    static assert(is(typeof(weightedExact).BinType == long));
+    assert(weightedMake(equalWeights, large, weightedExact).counts == [0, 1, 2, 0]);
+
     auto alternate = create!(QuantileAlgo.type1)(values, levels);
     assert(alternate.N_bin == 2);
 
@@ -2678,4 +2732,23 @@ package void testQuantileAxisRejections(alias create, alias copy, alias make, al
     rejects(() { copy(missing); });
     const double[2] noSuccessor = [0, double.max];
     rejects(() { copy(noSuccessor); });
+    const int[2] integralEdges = [0, 2];
+    auto integralAxis = copy(integralEdges);
+    const double[1] fractional = [0.5], outOfRange = [0x1p63];
+    rejects(() { make(fractional, integralAxis); });
+    rejects(() { make(outOfRange, integralAxis); });
+}
+
+// Coordinate conversions preserve the ordering used by floating quantile axes.
+version(mir_stat_test)
+@safe pure nothrow @nogc
+unittest
+{
+    import std.math: nextDown;
+    assert(quantileAxisCoordinate!double(ulong.max) == nextDown(0x1p64));
+    assert(quantileAxisCoordinate!double(long.max) == nextDown(0x1p63));
+    assert(quantileAxisCoordinate!double(long.min) == -0x1p63);
+    assert(quantileAxisCoordinate!long(42.0) == 42);
+    assert(quantileAxisCoordinate!uint(42L) == 42);
+    assert(quantileAxisCoordinate!long(42u) == 42);
 }
