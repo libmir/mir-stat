@@ -3924,6 +3924,9 @@ private F interpolateQuantile(F, T, G)(T a, T b, G fraction)
         const Work x = a, y = b;
         import std.math: isFinite;
         if (!isFinite(x) || !isFinite(y)) return cast(F)(x * (1 - t) + y * t);
+        // Adding opposite signs cannot overflow. At the midpoint, add before
+        // halving so subnormal operands are not rounded separately.
+        if (t == 0.5 && (x < 0) != (y < 0)) return cast(F)((x + y) / 2);
         // Preserve subnormals for nearby same-sign endpoints; avoid overflow
         // in their difference when signs differ.
         return cast(F)((x < 0) != (y < 0) ?
@@ -3982,7 +3985,7 @@ auto quantileParts(QuantileAlgo quantileAlgo, Iterator, G)(Slice!Iterator slice,
         m = probability / 4 + cast(GG) 3 / 8;
     }
 
-    GG g = n * cast(GG) probability + m - 1; //note: 0-based, not 1-based indexing
+    GG g = n * probability + m - 1; //note: 0-based, not 1-based indexing
 
     GG pre_j = floor(g);
     GG pre_j_1 = pre_j + 1;
@@ -5454,6 +5457,12 @@ unittest
     const real tiny = nextafter(0.0L, 1.0L);
     const real[2] subnormal = [tiny, 3 * tiny];
     assert(q(equal, subnormal, 0.5) == 2 * tiny);
+    const real[2] mixedSigns = [-tiny, 2 * tiny];
+    assert(q(equal, mixedSigns, 0.5L) == 0);
+    assert(rcquantile(mixedSigns, 0.5L) == 0);
+    static foreach (algorithm; [WeightedQuantileAlgo.frequencyType7,
+        WeightedQuantileAlgo.frequencyType8])
+        assert(rcWeightedQuantile!algorithm(equal, mixedSigns, 0.5L) == 0);
 }
 
 // Compare conceptual replication against genuinely expanded samples, including
@@ -6793,14 +6802,22 @@ unittest
     assert(rcquantile!(QuantileAlgo.type1)(nearby, 1.0) == ulong.max);
 }
 
-// The GC and allocator adapters share the same interpolation arithmetic.
+// The GC adapter preserves interpolation precision.
 version(mir_stat_test)
-pure nothrow
+@safe pure nothrow
+unittest
+{
+    int[2] values = [16_777_216, 16_777_218];
+    assert(quantile(values, 0.5f) == 16_777_217);
+}
+
+// Mallocator requires @system, but custom interpolation remains @nogc.
+version(mir_stat_test)
+@system pure nothrow @nogc
 unittest
 {
     import std.experimental.allocator.mallocator: Mallocator;
     int[2] values = [16_777_216, 16_777_218];
-    assert(quantile(values, 0.5f) == 16_777_217);
     assert(makeQuantile(Mallocator.instance, values, 0.5f) == 16_777_217);
 }
 
@@ -7216,6 +7233,10 @@ unittest
 
     assert(x.interquartileRange.approxEqual(5.25));
     assert(x.interquartileRange!double.approxEqual(5.25));
+    // The asSlice adapter must forward both result type and algorithm.
+    auto selected = x.interquartileRange!(float, QuantileAlgo.type1);
+    static assert(is(typeof(selected) == float));
+    assert(selected == 6);
 }
 
 // Arbitrary test

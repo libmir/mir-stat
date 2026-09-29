@@ -2541,11 +2541,19 @@ package Boundary quantileAxisCoordinate(Boundary, Value)(Value value)
     import std.math: nextDown, isFinite;
     static if (isFloatingPoint!Boundary && isIntegral!Value)
     {
-        auto converted = cast(Boundary) value;
-        enum real limit = 2.0L ^^ (Value.sizeof * 8 - (Value.min < 0 ? 1 : 0));
-        if (converted >= limit || cast(Value) converted > value)
-            return nextDown(converted);
-        return converted;
+        enum digits = Value.sizeof * 8 - (Value.min < 0 ? 1 : 0);
+        // Every value is exact when the destination has enough significand bits.
+        // Keep ordinary int-to-double insertion as a plain cast.
+        static if (Boundary.mant_dig >= digits)
+            return cast(Boundary) value;
+        else
+        {
+            auto converted = cast(Boundary) value;
+            enum real limit = 2.0L ^^ digits;
+            if (converted >= limit || cast(Value) converted > value)
+                return nextDown(converted);
+            return converted;
+        }
     }
     else static if (isIntegral!Boundary)
     {
@@ -2745,6 +2753,8 @@ version(mir_stat_test)
 unittest
 {
     import std.math: nextDown;
+    assert(quantileAxisCoordinate!double(uint.max) == 4294967295.0);
+    assert(quantileAxisCoordinate!double(int.min) == -2147483648.0);
     assert(quantileAxisCoordinate!double(ulong.max) == nextDown(0x1p64));
     assert(quantileAxisCoordinate!double(long.max) == nextDown(0x1p63));
     assert(quantileAxisCoordinate!double(long.min) == -0x1p63);
