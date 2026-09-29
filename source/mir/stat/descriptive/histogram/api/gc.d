@@ -193,6 +193,31 @@ unittest
     static assert(is(h.CountType == ulong));
 }
 
+
+/// Compute quantile boundaries separately to count observations in equal-probability intervals.
+version(mir_stat_test)
+@safe pure nothrow
+unittest
+{
+    import mir.ndslice.slice: sliced;
+    import mir.stat.descriptive.univariate: quantile;
+    import mir.stat.descriptive.histogram.axis: VariableAxis;
+    import std.math: nextUp;
+
+    double[8] values = [0, 1, 2, 3, 4, 8, 12, 16];
+    double[5] levels = [0, 0.25, 0.5, 0.75, 1];
+    // Replace this calculation with your preferred quantiles or supplied edges.
+    auto boundaries = values[].sliced.quantile(levels[].sliced);
+    assert(boundaries == [0.0, 1.75, 3.5, 9.0, 16.0]);
+    // Combine duplicate quantiles first if the data contain ties.
+    // Include the maximum in the final left-closed, right-open bin.
+    boundaries[$ - 1] = nextUp(boundaries[$ - 1]);
+    auto h = values[].sliced.histogram!VariableAxis(boundaries);
+    assert(h.counts == [2, 2, 2, 2]);
+    h.put(1.0);
+    assert(h.counts == [3, 2, 2, 2]);
+}
+
 /++
 Adaptive counts avoid allocating wide counters for every bin when most bins
 receive few observations. Select AdaptiveCounts!() to start small and widen when
@@ -402,6 +427,36 @@ unittest
     assert(f.relativeFrequency(1) == 0.4);
 }
 
+
+/// Use your own quantile boundaries for percentogram densities.
+version(mir_stat_test)
+@safe pure nothrow
+unittest
+{
+    import mir.ndslice.slice: sliced;
+    import mir.stat.descriptive.univariate: quantile;
+    import mir.stat.descriptive.histogram.axis: VariableAxis;
+    import std.math: nextUp;
+
+    double[8] values = [0, 1, 2, 3, 4, 8, 12, 16];
+    double[5] levels = [0, 0.25, 0.5, 0.75, 1];
+    // Replace this calculation with your preferred quantiles or supplied edges.
+    auto boundaries = values[].sliced.quantile(levels[].sliced);
+    assert(boundaries == [0.0, 1.75, 3.5, 9.0, 16.0]);
+    // Combine duplicate quantiles first if the data contain ties.
+    // Include the maximum in the final left-closed, right-open bin.
+    boundaries[$ - 1] = nextUp(boundaries[$ - 1]);
+    auto f = values[].sliced.relativeFrequencyHistogram!VariableAxis(boundaries);
+    assert(f.counts == [2, 2, 2, 2]);
+    assert(f.total == 8);
+    assert(f.relativeFrequency(0) == 0.25);
+    assert(f.density(0) == 0.25 / 1.75);
+    // Density is the bar height: width times height is probability.
+    f.put(1.0);
+    assert(f.total == 9 && f.counts[0] == 3);
+    // Updates change counts and normalization, but retain the original edges.
+}
+
 /// Use adaptive counts when collecting an unknown number of observations.
 version(mir_stat_test)
 @safe pure nothrow
@@ -594,6 +649,12 @@ unittest
 Construct a percentogram using quantile boundaries and observed relative frequencies.
 Returns a relative-frequency accumulator with GC-owned boundaries and counts.
 Use `density` or `densityBins` for bar heights: area represents observed probability.
+
+The probabilities argument supplies probability levels, not precomputed quantile
+boundaries. To use your own boundaries or quantile calculation, construct a
+$(REF VariableAxis, mir, stat, descriptive, histogram, axis) with
+$(LREF relativeFrequencyHistogram); its documented examples show this two-step
+construction. The histogram factory also accepts these boundaries for raw counts.
 
 Omitting probabilities requests `ceil(cuberoot(n))` ordinary bins for `n` observations,
 with equally spaced probabilities from zero to one. This is a sample-size heuristic.

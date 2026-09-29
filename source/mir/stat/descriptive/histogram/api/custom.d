@@ -477,6 +477,36 @@ unittest
     assert(h.counts == [1UL, 2, 1, 1]);
 }
 
+
+/// Compute quantile boundaries separately to count observations in equal-probability intervals.
+version(mir_stat_test)
+@system pure nothrow @nogc
+unittest
+{
+    import mir.ndslice.slice: sliced;
+    import mir.stat.descriptive.univariate: makeQuantile;
+    import mir.stat.descriptive.histogram.axis: VariableAxis;
+    import std.math: nextUp;
+    import std.experimental.allocator.mallocator: Mallocator;
+    import std.experimental.allocator: dispose;
+
+    double[8] values = [0, 1, 2, 3, 4, 8, 12, 16];
+    double[5] levels = [0, 0.25, 0.5, 0.75, 1];
+    // Replace this calculation with your preferred quantiles or supplied edges.
+    auto boundaries = makeQuantile(Mallocator.instance, values[].sliced, levels[].sliced);
+    scope(exit) Mallocator.instance.dispose(boundaries.field);
+    assert(boundaries == [0.0, 1.75, 3.5, 9.0, 16.0]);
+    // Combine duplicate quantiles first if the data contain ties.
+    // Include the maximum in the final left-closed, right-open bin.
+    boundaries[$ - 1] = nextUp(boundaries[$ - 1]);
+    auto h = makeHistogram!VariableAxis(Mallocator.instance, values[].sliced, boundaries);
+    // Release counts before boundaries; neither may be used after disposal.
+    scope(exit) Mallocator.instance.dispose(h.counts.field);
+    assert(h.counts == [2, 2, 2, 2]);
+    h.put(1.0);
+    assert(h.counts == [3, 2, 2, 2]);
+}
+
 /++
 Combine sensor reports by region, weighting each report by the number of readings
 it represents. Allocate cells without the GC, then dispose of the entire cell
@@ -1137,6 +1167,41 @@ unittest
     assert(f.relativeFrequency(1) == 0.4);
 }
 
+
+/// Use your own quantile boundaries for percentogram densities.
+version(mir_stat_test)
+@system pure nothrow @nogc
+unittest
+{
+    import mir.ndslice.slice: sliced;
+    import mir.stat.descriptive.univariate: makeQuantile;
+    import mir.stat.descriptive.histogram.axis: VariableAxis;
+    import std.math: nextUp;
+    import std.experimental.allocator.mallocator: Mallocator;
+    import std.experimental.allocator: dispose;
+
+    double[8] values = [0, 1, 2, 3, 4, 8, 12, 16];
+    double[5] levels = [0, 0.25, 0.5, 0.75, 1];
+    // Replace this calculation with your preferred quantiles or supplied edges.
+    auto boundaries = makeQuantile(Mallocator.instance, values[].sliced, levels[].sliced);
+    scope(exit) Mallocator.instance.dispose(boundaries.field);
+    assert(boundaries == [0.0, 1.75, 3.5, 9.0, 16.0]);
+    // Combine duplicate quantiles first if the data contain ties.
+    // Include the maximum in the final left-closed, right-open bin.
+    boundaries[$ - 1] = nextUp(boundaries[$ - 1]);
+    auto f = makeRelativeFrequencyHistogram!VariableAxis(Mallocator.instance, values[].sliced, boundaries);
+    // Release counts before boundaries; neither may be used after disposal.
+    scope(exit) Mallocator.instance.dispose(cast(typeof(f).CountType[]) f.counts.field);
+    assert(f.counts == [2, 2, 2, 2]);
+    assert(f.total == 8);
+    assert(f.relativeFrequency(0) == 0.25);
+    assert(f.density(0) == 0.25 / 1.75);
+    // Density is the bar height: width times height is probability.
+    f.put(1.0);
+    assert(f.total == 9 && f.counts[0] == 3);
+    // Updates change counts and normalization, but retain the original edges.
+}
+
 /// Use adaptive counts when collecting an unknown number of observations.
 version(mir_stat_test)
 @safe pure nothrow @nogc
@@ -1532,6 +1597,10 @@ unittest
 Construct a percentogram with caller-selected allocation for scratch, boundaries,
 and counts. Accepts the same observations and bin count or probabilities as
 $(REF percentogram, mir, stat, descriptive, histogram, api, gc).
+For precomputed quantile boundaries, use $(LREF makeRelativeFrequencyHistogram)
+with a variable axis, or $(LREF makeHistogram) for raw counts. Their documented
+examples show how to release the separately allocated boundaries and counts.
+
 Omitting probabilities requests `ceil(cuberoot(n))` ordinary bins for `n` observations,
 with equally spaced probabilities from zero to one. This is a sample-size heuristic.
 Tied boundaries can reduce the number of ordinary bins.
