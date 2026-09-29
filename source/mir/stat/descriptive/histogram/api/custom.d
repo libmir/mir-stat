@@ -7,6 +7,8 @@ Copyright: 2026 Mir Stat Authors.
 +/
 module mir.stat.descriptive.histogram.api.custom;
 
+private import mir.stat.descriptive.univariate: WeightedQuantileAlgo;
+
 // Joint numeric batches preserve pairing, numeric types, and axis lifetimes.
 version(mir_stat_test)
 @safe pure nothrow
@@ -2092,4 +2094,167 @@ unittest
         assertThrown!Exception(makePercentogram!(AdaptiveCounts!())(allocator, values, 2));
         assert(allocator.allocations == failure && allocator.releases == failure - 1);
     }
+}
+
+/++
+Construct a weighted percentogram with caller-selected allocation.
+Uses the algorithms, input requirements, bin-count heuristic, and boundary rules
+of $(REF weightedPercentogram, mir, stat, descriptive, histogram, api, gc).
+The result exposes histogram; call dispose with the same allocator after use.
+Generated probabilities and quantile scratch are released before return.
+Completed allocations are released on exceptions; deallocation must not throw.
+As with makePercentogram, invalid-input assertions are contract violations,
+and recovery through nothrow code is not supported. The full boundary allocation
+is retained for disposal even when duplicate boundaries are compacted.
+
+Params:
+    Counts = numeric counter type, double by default
+    algorithm = weighted quantile definition, inverseCDF by default
+    allocator = allocator providing allocation and nonthrowing deallocation
+    weights = probability masses, or occurrence counts for frequency algorithms
+    data = one-dimensional observations, as an array or Mir slice
+    probabilities = positive bin count or probability array/slice
++/
+auto makeWeightedPercentogram(Counts = double,
+    WeightedQuantileAlgo algorithm = WeightedQuantileAlgo.inverseCDF, Allocator, Weights, Data, P)(
+    ref Allocator allocator, scope auto ref Weights weights, scope auto ref Data data,
+    scope auto ref P probabilities)
+{
+    import std.traits: isIntegral;
+    import std.experimental.allocator: dispose;
+    import mir.ndslice.slice: isSlice, sliced;
+    import mir.stat.descriptive.univariate: makeWeightedQuantile;
+    import mir.stat.descriptive.histogram.axis: variableAxis, AxisOptions;
+    import mir.stat.descriptive.histogram.api.factory: validatePercentogramLevels,
+        preparePercentogramEdges, WeightedPercentogramBoundary, fillWeightedPercentogram;
+    static if (isIntegral!P)
+    {
+        assert(probabilities > 0 && probabilities < size_t.max,
+            "percentogram: bin count must be positive and leave room for an extra boundary");
+        auto levels = allocateCounts!double(allocator, cast(size_t) probabilities + 1);
+        scope(exit) allocator.dispose(levels.field);
+        foreach (i; 0 .. levels.length) levels[i] = cast(double) i / probabilities;
+        return makeWeightedPercentogram!(Counts, algorithm)(allocator, weights, data, levels);
+    }
+    else
+    {
+        static if (isSlice!P) scope auto levels = probabilities;
+        else scope auto levels = probabilities[].sliced;
+        validatePercentogramLevels(levels);
+        auto edges = makeWeightedQuantile!(WeightedPercentogramBoundary!Data, algorithm)(
+            allocator, weights, data, levels);
+        scope(failure) allocator.dispose(edges.field);
+        const distinct = preparePercentogramEdges(edges);
+        auto axis = variableAxis!(AxisOptions(false, true, true))(edges[0 .. distinct]);
+        import mir.stat.descriptive.histogram.accumulator: HistogramAccumulator;
+        import mir.stat.descriptive.histogram.relative_frequency: RelativeFrequencyAccumulator;
+        auto h = makeHistogram!Counts(allocator, axis);
+        scope(failure) releaseCounts(allocator, h.counts);
+        static if (is(typeof(h) == HistogramAccumulator!Args, Args...))
+        {
+            auto f = RelativeFrequencyAccumulator!Args(h.counts, h.axis);
+            fillWeightedPercentogram(f, weights, data);
+            return AllocatedPercentogram!(typeof(f), typeof(edges), typeof(h.counts))(f, edges, h.counts);
+        }
+    }
+}
+
+/// ditto
+auto makeWeightedPercentogram(Counts = double,
+    WeightedQuantileAlgo algorithm = WeightedQuantileAlgo.inverseCDF, Allocator, Weights, Data)(
+    ref Allocator allocator, scope auto ref Weights weights, scope auto ref Data data)
+{
+    import mir.stat.descriptive.histogram.api.factory: weightedPercentogramBinCount;
+    return makeWeightedPercentogram!(Counts, algorithm)(allocator, weights, data,
+        weightedPercentogramBinCount(weights));
+}
+
+/// Build weighted bins without the GC and release their counts and boundaries together.
+version(mir_stat_test)
+@system pure nothrow @nogc
+unittest
+{
+    import std.experimental.allocator.mallocator: Mallocator;
+    const int[4] values = [0, 10, 20, 30], weights = [1, 1, 6, 2];
+    auto p = makeWeightedPercentogram(Mallocator.instance, weights, values, 2);
+    scope(exit) p.dispose(Mallocator.instance);
+    assert(p.histogram.bins()[0].bin.high == 20);
+    assert(p.histogram.counts == [0.0, 2, 8, 0]);
+    assert(p.histogram.relativeFrequency(1) == 0.8);
+}
+
+// The full compacted boundary allocation is disposed; every allocation failure cleans up.
+version(mir_stat_test)
+@system pure
+unittest
+{
+    import std.exception: assertThrown;
+    const int[5] data = [0, 0, 0, 10, 20], weights = [1, 1, 1, 1, 1];
+    PercentogramAllocator!() allocator;
+    auto p = makeWeightedPercentogram(allocator, weights, data, 4);
+    assert(p.histogram.axis.N_bin == 2);
+    assert(allocator.allocations == 4 && allocator.releases == 2);
+    p.dispose(allocator);
+    assert(allocator.releases == 4);
+    foreach (failure; 1 .. 5)
+    {
+        PercentogramAllocator!true failing;
+        failing.failAt = failure;
+        assertThrown!Exception(makeWeightedPercentogram(failing, weights, data, 4));
+        assert(failing.releases == failure - 1);
+    }
+}
+
+// A lazy observation can throw during validation, copying, or final insertion.
+version(mir_stat_test)
+@system pure
+unittest
+{
+    import std.exception: assertThrown;
+    import mir.ndslice.slice: sliced;
+    import mir.ndslice.topology: map;
+    const double[3] values = [0, 10, 20], weights = [1, 2, 1], levels = [0, 0.5, 1];
+    foreach (failure; [1, 4, 7])
+    {
+        PercentogramAllocator!() allocator;
+        size_t calls;
+        double read(double value)
+        {
+            if (++calls == failure) throw new Exception("weighted percentogram observation failure");
+            return value;
+        }
+        auto mapped = values[].sliced.map!read;
+        assertThrown!Exception(makeWeightedPercentogram(allocator, weights, mapped, levels));
+        assert(calls == failure);
+        assert(allocator.allocations == (failure == 1 ? 0 : failure == 4 ? 1 : 3));
+        assert(allocator.releases == allocator.allocations);
+    }
+}
+
+// Custom allocator attributes propagate to weighted construction and disposal.
+version(mir_stat_test)
+@safe pure nothrow
+unittest
+{
+    SafeAllocator allocator;
+    const int[3] values = [0, 10, 20], weights = [1, 1, 1];
+    auto p = makeWeightedPercentogram!(double, WeightedQuantileAlgo.type7)(allocator, weights, values);
+    assert(p.histogram.total == 3);
+    p.dispose(allocator);
+    assert(allocator.allocations == allocator.releases);
+}
+
+// Custom ownership preserves the common weighted boundary/count semantics.
+version(mir_stat_test)
+@system pure nothrow @nogc
+unittest
+{
+    import std.experimental.allocator.mallocator: Mallocator;
+    import mir.stat.descriptive.histogram.api.factory: testWeightedPercentograms;
+    static auto make(W, D, P...)(scope auto ref W weights, scope auto ref D data, scope auto ref P p)
+    {
+        return makeWeightedPercentogram(Mallocator.instance, weights, data, p);
+    }
+    static void release(T)(ref T value) { value.dispose(Mallocator.instance); }
+    testWeightedPercentograms!(make, release)();
 }

@@ -9,6 +9,7 @@ $(TR $(TD Relative frequencies) $(TD relativeFrequencyHistogram) $(TD rcRelative
 $(TR $(TD Weighted counts or accumulator cells) $(TD weightedHistogram) $(TD rcWeightedHistogram) $(TD makeWeightedHistogram))
 $(TR $(TD Weighted relative frequencies) $(TD weightedRelativeFrequencyHistogram) $(TD rcWeightedRelativeFrequencyHistogram) $(TD makeWeightedRelativeFrequencyHistogram))
 $(TR $(TD Quantile-based bins) $(TD percentogram) $(TD rcpercentogram) $(TD makePercentogram))
+$(TR $(TD Weighted quantile-based bins) $(TD weightedPercentogram) $(TD rcWeightedPercentogram) $(TD makeWeightedPercentogram))
 $(TR $(TD Projection onto selected axes) $(TD marginal) $(TD rcMarginal) $(TD makeMarginal))
 )
 
@@ -39,6 +40,11 @@ expose caller-allocated counts; makePercentogram returns a wrapper whose dispose
 method releases boundaries and fixed counts through the allocator; adaptive
 counts are released automatically. Allocating counts does not take
 ownership of borrowed axis boundaries.
+
+Weighted percentograms use weights both to choose quantile boundaries and to
+accumulate bin masses. Pass weights before observations; select a WeightedQuantileAlgo
+explicitly to change the default inverseCDF definition. They use fixed numeric
+counters and the same GC, RC, or explicit-disposal ownership policies as percentograms.
 
 See $(REF rc, mir, stat, descriptive, histogram, api) for axis-selection examples,
 $(REF gc, mir, stat, descriptive, histogram, api) for GC factories, and
