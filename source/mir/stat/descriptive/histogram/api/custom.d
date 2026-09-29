@@ -1632,43 +1632,24 @@ auto makePercentogram(Counts = size_t, Allocator, Data, P)(ref Allocator allocat
     scope auto ref Data data, scope auto ref P probabilities)
     if (!isQuantileAxis!P)
 {
-    import std.traits: isIntegral;
-    import std.experimental.allocator: dispose;
     import mir.ndslice.slice: isSlice, sliced;
     import mir.ndslice.topology: as;
-    import mir.primitives: DeepElementType;
-    import mir.stat.descriptive.univariate: makeQuantile;
     import mir.stat.descriptive.histogram.axis: preparedQuantileAxis;
     import mir.stat.descriptive.histogram.accumulator: HistogramAccumulator;
     import mir.stat.descriptive.histogram.relative_frequency: RelativeFrequencyAccumulator;
-    import mir.stat.descriptive.histogram.api.factory: validatePercentogramInputs;
-    static if (isIntegral!P)
+    import mir.stat.descriptive.histogram.api.factory: computeQuantileAxisEdges;
+    auto edges = computeQuantileAxisEdges!(
+        allocateCounts, computeAxisQuantiles!(QuantileAlgo.type7), releaseCounts)(
+        allocator, data, probabilities);
+    scope(failure) releaseCounts(allocator, edges);
+    auto axis = preparedQuantileAxis(edges);
+    static if (isSlice!Data) scope auto observations = data;
+    else scope auto observations = data[].sliced;
+    auto h = makeHistogram!Counts(allocator, observations.as!(typeof(axis).BinType), axis);
+    static if (is(typeof(h) == HistogramAccumulator!Args, Args...))
     {
-        assert(probabilities > 0 && probabilities < size_t.max,
-            "percentogram: bin count must be positive and leave room for an extra boundary");
-        auto levels = allocateCounts!double(allocator, cast(size_t) probabilities + 1);
-        scope(exit) allocator.dispose(levels.field);
-        foreach (i; 0 .. levels.length)
-            levels[i] = cast(double) i / probabilities;
-        return makePercentogram!Counts(allocator, data, levels);
-    }
-    else
-    {
-        static if (isSlice!Data) scope auto observations = data;
-        else scope auto observations = data[].sliced;
-        static if (isSlice!P) scope auto levels = probabilities;
-        else scope auto levels = probabilities[].sliced;
-        validatePercentogramInputs(observations, levels);
-        auto edges = makeQuantile(allocator, observations, levels);
-        scope(failure) allocator.dispose(edges.field);
-        auto axis = preparedQuantileAxis(edges);
-        auto h = makeHistogram!Counts(allocator,
-            observations.as!(DeepElementType!(typeof(edges))), axis);
-        static if (is(typeof(h) == HistogramAccumulator!Args, Args...))
-        {
-            auto f = RelativeFrequencyAccumulator!Args(h.counts, h.axis);
-            return AllocatedPercentogram!(typeof(f), typeof(edges), typeof(h.counts))(f, edges, h.counts);
-        }
+        auto f = RelativeFrequencyAccumulator!Args(h.counts, h.axis);
+        return AllocatedPercentogram!(typeof(f), typeof(edges), typeof(h.counts))(f, edges, h.counts);
     }
 }
 
@@ -2192,41 +2173,22 @@ auto makeWeightedPercentogram(Counts = double,
     scope auto ref P probabilities)
     if (!isQuantileAxis!P)
 {
-    import std.traits: isIntegral;
-    import std.experimental.allocator: dispose;
-    import mir.ndslice.slice: isSlice, sliced;
-    import mir.stat.descriptive.univariate: makeWeightedQuantile;
     import mir.stat.descriptive.histogram.axis: preparedQuantileAxis;
-    import mir.stat.descriptive.histogram.api.factory: validatePercentogramLevels,
-        WeightedPercentogramBoundary, fillWeightedPercentogram;
-    static if (isIntegral!P)
+    import mir.stat.descriptive.histogram.api.factory: computeQuantileAxisEdges, fillWeightedPercentogram;
+    import mir.stat.descriptive.histogram.accumulator: HistogramAccumulator;
+    import mir.stat.descriptive.histogram.relative_frequency: RelativeFrequencyAccumulator;
+    auto edges = computeQuantileAxisEdges!(
+        allocateCounts, computeWeightedAxisQuantiles!algorithm, releaseCounts)(
+        allocator, weights, data, probabilities);
+    scope(failure) releaseCounts(allocator, edges);
+    auto axis = preparedQuantileAxis(edges);
+    auto h = makeHistogram!Counts(allocator, axis);
+    scope(failure) releaseCounts(allocator, h.counts);
+    static if (is(typeof(h) == HistogramAccumulator!Args, Args...))
     {
-        assert(probabilities > 0 && probabilities < size_t.max,
-            "percentogram: bin count must be positive and leave room for an extra boundary");
-        auto levels = allocateCounts!double(allocator, cast(size_t) probabilities + 1);
-        scope(exit) allocator.dispose(levels.field);
-        foreach (i; 0 .. levels.length) levels[i] = cast(double) i / probabilities;
-        return makeWeightedPercentogram!(Counts, algorithm)(allocator, weights, data, levels);
-    }
-    else
-    {
-        static if (isSlice!P) scope auto levels = probabilities;
-        else scope auto levels = probabilities[].sliced;
-        validatePercentogramLevels(levels);
-        auto edges = makeWeightedQuantile!(WeightedPercentogramBoundary!Data, algorithm)(
-            allocator, weights, data, levels);
-        scope(failure) allocator.dispose(edges.field);
-        auto axis = preparedQuantileAxis(edges);
-        import mir.stat.descriptive.histogram.accumulator: HistogramAccumulator;
-        import mir.stat.descriptive.histogram.relative_frequency: RelativeFrequencyAccumulator;
-        auto h = makeHistogram!Counts(allocator, axis);
-        scope(failure) releaseCounts(allocator, h.counts);
-        static if (is(typeof(h) == HistogramAccumulator!Args, Args...))
-        {
-            auto f = RelativeFrequencyAccumulator!Args(h.counts, h.axis);
-            fillWeightedPercentogram(f, weights, data);
-            return AllocatedPercentogram!(typeof(f), typeof(edges), typeof(h.counts))(f, edges, h.counts);
-        }
+        auto f = RelativeFrequencyAccumulator!Args(h.counts, h.axis);
+        fillWeightedPercentogram(f, weights, data);
+        return AllocatedPercentogram!(typeof(f), typeof(edges), typeof(h.counts))(f, edges, h.counts);
     }
 }
 
@@ -2461,8 +2423,8 @@ private template computeAxisQuantiles(QuantileAlgo algorithm)
         ref Allocator allocator, scope auto ref Data data, scope auto ref P probabilities)
     {
         import mir.stat.descriptive.univariate: makeQuantile;
-        import mir.stat.descriptive.histogram.api.factory: WeightedPercentogramBoundary;
-        return makeQuantile!(WeightedPercentogramBoundary!Data, algorithm)(allocator, data, probabilities);
+        import mir.stat.descriptive.histogram.api.factory: QuantileBoundaryType;
+        return makeQuantile!(QuantileBoundaryType!Data, algorithm)(allocator, data, probabilities);
     }
 }
 
@@ -2529,8 +2491,8 @@ private template computeWeightedAxisQuantiles(WeightedQuantileAlgo algorithm)
         scope auto ref Data data, scope auto ref P probabilities)
     {
         import mir.stat.descriptive.univariate: makeWeightedQuantile;
-        import mir.stat.descriptive.histogram.api.factory: WeightedPercentogramBoundary;
-        return makeWeightedQuantile!(WeightedPercentogramBoundary!Data, algorithm)(
+        import mir.stat.descriptive.histogram.api.factory: QuantileBoundaryType;
+        return makeWeightedQuantile!(QuantileBoundaryType!Data, algorithm)(
             allocator, weights, data, probabilities);
     }
 }

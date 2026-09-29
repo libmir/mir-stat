@@ -695,9 +695,9 @@ Params:
 auto percentogram(Counts = size_t, Data, P)(scope auto ref Data data, scope auto ref P probabilities)
     if (!isQuantileAxis!P)
 {
-    import mir.stat.descriptive.univariate: quantile;
     import mir.stat.descriptive.histogram.api.factory: buildPercentogram;
-    return buildPercentogram!(allocateCounts, quantile, relativeFrequencyHistogram, Counts)(data, probabilities);
+    return buildPercentogram!(allocateCounts, computeAxisQuantiles!(QuantileAlgo.type7),
+        relativeFrequencyHistogram, Counts)(data, probabilities);
 }
 
 /// ditto
@@ -1047,10 +1047,9 @@ auto weightedPercentogram(Counts = double, WeightedQuantileAlgo algorithm = Weig
     scope auto ref P probabilities)
     if (!isQuantileAxis!P)
 {
-    import mir.stat.descriptive.univariate: weightedQuantile;
     import mir.stat.descriptive.histogram.api.factory: buildWeightedPercentogram;
-    return buildWeightedPercentogram!(allocateCounts, weightedQuantile, relativeFrequencyHistogram, Counts, algorithm)(
-        weights, data, probabilities);
+    return buildWeightedPercentogram!(allocateCounts, computeWeightedAxisQuantiles!algorithm,
+        relativeFrequencyHistogram, Counts)(weights, data, probabilities);
 }
 
 /// ditto
@@ -1168,8 +1167,8 @@ private template computeAxisQuantiles(QuantileAlgo algorithm)
         ref NoAllocationContext context, scope auto ref Data data, scope auto ref P probabilities)
     {
         import mir.stat.descriptive.univariate: quantile;
-        import mir.stat.descriptive.histogram.api.factory: WeightedPercentogramBoundary;
-        return quantile!(WeightedPercentogramBoundary!Data, algorithm)(data, probabilities);
+        import mir.stat.descriptive.histogram.api.factory: QuantileBoundaryType;
+        return quantile!(QuantileBoundaryType!Data, algorithm)(data, probabilities);
     }
 }
 
@@ -1227,8 +1226,8 @@ private template computeWeightedAxisQuantiles(WeightedQuantileAlgo algorithm)
         scope auto ref Data data, scope auto ref P probabilities)
     {
         import mir.stat.descriptive.univariate: weightedQuantile;
-        import mir.stat.descriptive.histogram.api.factory: WeightedPercentogramBoundary;
-        return weightedQuantile!(WeightedPercentogramBoundary!Data, algorithm)(
+        import mir.stat.descriptive.histogram.api.factory: QuantileBoundaryType;
+        return weightedQuantile!(QuantileBoundaryType!Data, algorithm)(
             weights, data, probabilities);
     }
 }
