@@ -3912,7 +3912,7 @@ private F interpolateQuantile(F, T, G)(T a, T b, G fraction)
     }
     else
     {
-        alias Work = CommonType!(F, G, double);
+        alias Work = CommonType!(T, F, G, double);
         const Work t = fraction;
         const Work x = a, y = b;
         import std.math: isFinite;
@@ -4065,6 +4065,12 @@ unittest
         T[2] infinite = [T.infinity, T.infinity];
         assert((quantileImpl!(T, QuantileAlgo.type7)(infinite[].sliced, 0.5)) == T.infinity);
     }}
+    // Round to the requested result type only after interpolating observations
+    // whose precision may exceed both the result and probability types.
+    real[2] precise = [-1.0L, 1.0L + real.epsilon];
+    assert(rcquantile!double(precise, 0.5) == cast(double)(real.epsilon / 2));
+    double[2] wider = [-1.0, 1.0 + double.epsilon];
+    assert(rcquantile!float(wider, 0.5f) == cast(float)(double.epsilon / 2));
 }
 
 /++
@@ -6863,13 +6869,37 @@ unittest
     assert(interquartileRange!(QuantileAlgo.type1)(bottom[].sliced, 0.75, 0.25) == -2);
 }
 
+// Integer probability arguments select endpoints just like floating literals.
+version(mir_stat_test)
+@safe pure nothrow @nogc
+unittest
+{
+    import mir.ndslice.slice: sliced;
+    int[3] integers = [2, 4, 8];
+    double[3] floating = [2, 4, 8];
+    assert(interquartileRange(integers[].sliced, 0, 1) == 6);
+    assert(interquartileRange(floating[].sliced, 0, 1) == 6);
+    assert(interquartileRange(integers[].sliced, 0) == 6);
+    assert(interquartileRange(floating[].sliced, 0) == 6);
+    assert(interquartileRange!float(floating[].sliced, 0, 1) == 6);
+    assert(interquartileRange!(QuantileAlgo.type1)(integers[].sliced, 0, 1) == 6);
+    assert(interquartileRange!double(floating[].sliced, 0, 0.5L) == 2);
+}
+
 private auto quantileSpread(F, QuantileAlgo algorithm, bool modify, S, P, Q)(
     S source, P lo, Q hi)
 {
-    import std.traits: isIntegral, Unqual;
+    import std.traits: isIntegral, Unqual, CommonType;
     import mir.primitives: DeepElementType;
     import mir.ndslice.topology: flattened;
     alias T = Unqual!(DeepElementType!S);
+    // Accept integer probability arguments independently of the result type,
+    // while retaining the precision of floating-point arguments.
+    alias Probability = CommonType!(P, Q);
+    static if (isIntegral!Probability) alias Level = double;
+    else alias Level = Probability;
+    auto lowerProbability = cast(Level) lo;
+    auto upperProbability = cast(Level) hi;
     static if (isIntegral!T)
     {
         static if (modify) scope auto workspace = source.flattened;
@@ -6880,8 +6910,8 @@ private auto quantileSpread(F, QuantileAlgo algorithm, bool modify, S, P, Q)(
             auto owner = source.lightScope.flattened.as!T.rcslice;
             scope auto workspace = owner.lightScope;
         }
-        const lower = selectQuantile!algorithm(workspace, lo);
-        const upper = selectQuantile!algorithm(workspace, hi);
+        const lower = selectQuantile!algorithm(workspace, lowerProbability);
+        const upper = selectQuantile!algorithm(workspace, upperProbability);
         const negative = upper.low < lower.low;
         const ulong distance = negative ?
             cast(ulong) lower.low - cast(ulong) upper.low :
@@ -6916,7 +6946,7 @@ private auto quantileSpread(F, QuantileAlgo algorithm, bool modify, S, P, Q)(
     }
     else
     {
-        auto values = rcquantile!(F, algorithm, modify)(source, lo, hi);
+        auto values = rcquantile!(F, algorithm, modify)(source, lowerProbability, upperProbability);
         return values[1] - values[0];
     }
 }
