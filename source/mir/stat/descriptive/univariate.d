@@ -6860,6 +6860,10 @@ unittest
     assert(interquartileRange(values[].sliced, 0.25, 0.75) == 1);
     assert(interquartileRange!(QuantileAlgo.type1)(values[].sliced) == 2);
     assert(interquartileRange!(double, QuantileAlgo.type1)(values[].sliced) == 2);
+    // Type 6 clamps these probabilities to the endpoints. Preserve their
+    // exact difference even when floating-point conversion would lose it.
+    long[2] endpoints = [base, base + 1];
+    assert(interquartileRange!(QuantileAlgo.type6)(endpoints[].sliced, 0, 1) == 1);
     assert(values == original);
     assert(interquartileRange!(QuantileAlgo.type7, true)(values[].sliced) == 1);
     ulong[3] top = [ulong.max - 2, ulong.max - 1, ulong.max];
