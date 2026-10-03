@@ -58,8 +58,11 @@ subsequent reuse leaves those boundaries unchanged. The existing convenience
 percentogram factories also expose a prepared QuantileAxis that can be reused.
 
 Quantile axes work with histogram and relative-frequency factories as ordinary
-explicit axes. Their coordinate type is floating-point; direct histogram insertion
-requires matching coordinates, while percentogram overloads convert integral inputs.
+explicit axes. Selection algorithms and supplied boundaries preserve integral coordinate types.
+Interpolating algorithms use floating-point coordinates. Direct histogram insertion
+requires matching coordinate types. Percentogram overloads convert observations;
+conversion to a floating axis preserves integral observations' interval membership,
+while conversion to an integral axis requires exact representability.
 Counts use the selected histogram factory's allocation policy independently of the
 axis's boundary policy. Custom quantile-axis factories return an owner exposing axis
 and dispose. A makePercentogram call with that axis allocates only counts and returns

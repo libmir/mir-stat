@@ -434,7 +434,8 @@ template freedmanDiaconis(CountType,
         import mir.primitives: elementCount;
         import mir.stat.descriptive.univariate: interquartileRange, quantileType;
 
-        alias F = quantileType!(Slice!(Iterator), quantileAlgo);
+        // Widths and probabilities are floating point even for selection quantiles.
+        alias F = quantileType!(Slice!(Iterator), QuantileAlgo.type7);
         // This allows the interquartileRange to be calculated over the slice
         // multiple times using allowModifySlice=true. This helps reduce some
         // work
@@ -716,4 +717,16 @@ unittest
     assert(sturges(readOnly) == 4);
     assert(sturges!uint(readOnly) == 4);
     assert(sturges!uint(array.sliced) == explicitCount);
+}
+
+// Integral selection quantiles still need floating-point probabilities and widths.
+version(mir_stat_test)
+@safe pure nothrow @nogc
+unittest
+{
+    import mir.ndslice.slice: sliced;
+    long[3] shifted = [(1L << 53), (1L << 53) + 1, (1L << 53) + 2];
+    long[3] ordinary = [0, 1, 2];
+    assert(freedmanDiaconis(shifted[].sliced) == freedmanDiaconis(ordinary[].sliced));
+    assert(freedmanDiaconis!(QuantileAlgo.type1)(shifted[].sliced) == 1);
 }

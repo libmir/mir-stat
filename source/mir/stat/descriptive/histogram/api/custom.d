@@ -1633,11 +1633,11 @@ auto makePercentogram(Counts = size_t, Allocator, Data, P)(ref Allocator allocat
     if (!isQuantileAxis!P)
 {
     import mir.ndslice.slice: isSlice, sliced;
-    import mir.ndslice.topology: as;
+    import mir.ndslice.topology: map;
     import mir.stat.descriptive.histogram.axis: preparedQuantileAxis;
     import mir.stat.descriptive.histogram.accumulator: HistogramAccumulator;
     import mir.stat.descriptive.histogram.relative_frequency: RelativeFrequencyAccumulator;
-    import mir.stat.descriptive.histogram.api.factory: computeQuantileAxisEdges;
+    import mir.stat.descriptive.histogram.api.factory: computeQuantileAxisEdges, quantileAxisCoordinate;
     auto edges = computeQuantileAxisEdges!(
         allocateCounts, computeAxisQuantiles!(QuantileAlgo.type7), releaseCounts)(
         allocator, data, probabilities);
@@ -1645,7 +1645,7 @@ auto makePercentogram(Counts = size_t, Allocator, Data, P)(ref Allocator allocat
     auto axis = preparedQuantileAxis(edges);
     static if (isSlice!Data) scope auto observations = data;
     else scope auto observations = data[].sliced;
-    auto h = makeHistogram!Counts(allocator, observations.as!(typeof(axis).BinType), axis);
+    auto h = makeHistogram!Counts(allocator, observations.map!(x => quantileAxisCoordinate!(typeof(axis).BinType)(x)), axis);
     static if (is(typeof(h) == HistogramAccumulator!Args, Args...))
     {
         auto f = RelativeFrequencyAccumulator!Args(h.counts, h.axis);
@@ -2340,9 +2340,10 @@ unittest
 Copy precomputed quantile boundaries into caller-allocated storage.
 Use this when another calculation supplies the quantiles. Input boundaries must
 be finite and nondecreasing, with at least two distinct values. Duplicates are
-combined and the maximum extended by one representable step; it must have a
-finite successor. The input is unchanged. Integral boundaries use double and sufficiently large
-integers may lose precision or become coincident boundaries.
+combined. Floating-point maxima are extended by one representable step and must
+have a finite successor. Integral boundaries retain their exact type and values;
+the last ordinary bin includes its upper endpoint without extending it.
+The input is unchanged.
 The result exposes axis; dispose its full boundary allocation only after all
 borrowed axes, histograms, and bin views are no longer used.
 +/
@@ -2423,8 +2424,7 @@ private template computeAxisQuantiles(QuantileAlgo algorithm)
         ref Allocator allocator, scope auto ref Data data, scope auto ref P probabilities)
     {
         import mir.stat.descriptive.univariate: makeQuantile;
-        import mir.stat.descriptive.histogram.api.factory: QuantileBoundaryType;
-        return makeQuantile!(QuantileBoundaryType!Data, algorithm)(allocator, data, probabilities);
+        return makeQuantile!algorithm(allocator, data, probabilities);
     }
 }
 
@@ -2491,8 +2491,7 @@ private template computeWeightedAxisQuantiles(WeightedQuantileAlgo algorithm)
         scope auto ref Data data, scope auto ref P probabilities)
     {
         import mir.stat.descriptive.univariate: makeWeightedQuantile;
-        import mir.stat.descriptive.histogram.api.factory: QuantileBoundaryType;
-        return makeWeightedQuantile!(QuantileBoundaryType!Data, algorithm)(
+        return makeWeightedQuantile!algorithm(
             allocator, weights, data, probabilities);
     }
 }
@@ -2624,4 +2623,22 @@ unittest
     assert(allocator.live == 1);
     owner.dispose(allocator);
     assert(allocator.live == 0);
+}
+
+// Caller-owned integral boundaries retain exact endpoints and maximum values.
+version(mir_stat_test)
+pure nothrow @nogc
+unittest
+{
+    import std.experimental.allocator.mallocator: Mallocator;
+    import std.experimental.allocator: dispose;
+    const ulong[2] values = [ulong.max - 1, ulong.max];
+    const double[2] probabilities = [0, 1];
+    auto prepared = makeQuantileAxis!(QuantileAlgo.type1)(Mallocator.instance, values, probabilities);
+    scope(exit) prepared.dispose(Mallocator.instance);
+    static assert(is(typeof(prepared.axis).BinType == ulong));
+    assert(prepared.axis.high == ulong.max);
+    auto histogram = makePercentogram(Mallocator.instance, values, prepared.axis);
+    scope(exit) Mallocator.instance.dispose(cast(typeof(histogram).CountType[]) histogram.counts.field);
+    assert(histogram.counts == [0, 2, 0]);
 }
