@@ -22,7 +22,9 @@ module mir.stat.descriptive.histogram.api.factory;
 
 // Storage ownership stays with the caller. Validate before writing so a bad
 // extent cannot clear unrelated storage before the constructor rejects it.
-package auto initializeHistogram(bool insert = true, Storage, Axis, Data)(Storage counts, Axis axis, Data data)
+// Borrow lvalue input to avoid an extra owning-range copy. Lifetime inference
+// still permits custom axes to retain observations in the returned histogram.
+package auto initializeHistogram(bool insert = true, Storage, Axis, Data)(Storage counts, Axis axis, auto ref Data data)
 {
     import mir.stat.descriptive.histogram.accumulator: HistogramAccumulator;
     auto h = HistogramAccumulator!(Storage, Axis)(counts, axis);
@@ -2761,4 +2763,34 @@ unittest
     assert(quantileAxisCoordinate!long(42.0) == 42);
     assert(quantileAxisCoordinate!uint(42L) == 42);
     assert(quantileAxisCoordinate!long(42u) == 42);
+}
+
+// Bulk insertion and factory initialization may retain GC-backed observations
+// when a custom axis deliberately stores them while selecting a bin.
+version (mir_stat_test)
+@safe pure nothrow unittest
+{
+    import mir.stat.descriptive.histogram.accumulator: HistogramAccumulator;
+    struct Observation { double[] values; }
+    struct RememberingAxis
+    {
+        alias BinType = Observation;
+        enum size_t N_bin = 1;
+        double[] last;
+        size_t index(Observation x) @safe pure nothrow @nogc
+        {
+            last = x.values;
+            return 0;
+        }
+    }
+    auto samples = [Observation(new double[2]), Observation(new double[3])];
+    auto h = HistogramAccumulator!(ulong[], RememberingAxis)(
+        new ulong[1], RememberingAxis());
+    h.put(samples);
+    assert(h.counts[0] == 2);
+    assert(h.axis[0].last is samples[1].values);
+    auto built = initializeHistogram(new ulong[1], RememberingAxis(), samples);
+    assert(built.counts[0] == 2);
+    assert(built.axis[0].last is samples[1].values);
+    assert(samples.length == 2);
 }
