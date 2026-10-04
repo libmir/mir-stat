@@ -23,6 +23,7 @@ private import mir.stat.descriptive.histogram.api.rc: rcMarginal;
 
 private import mir.stat.descriptive.histogram.traits: ordinaryBinCount;
 private import mir.stat.descriptive.histogram.internal.cell: readCount;
+private import mir.stat.descriptive.histogram.internal.view: needsScopedSliceRow;
 
 import mir.internal.utility: isFloatingPoint;
 import std.meta: allSatisfy;
@@ -145,6 +146,12 @@ struct RelativeFrequencyAccumulator(Storage, Axis...)
         {
             static if (depth + 1 == N)
                 result += readCount(storage[i]);
+            else static if (needsScopedSliceRow!S)
+            {
+                // Name const slice rows to avoid DMD 2.111/2.112's temporary-return bug.
+                scope auto row = storage[i];
+                result += storageTotal!(depth + 1)(row);
+            }
             else
                 result += storageTotal!(depth + 1)(storage[i]);
         }
@@ -156,6 +163,11 @@ struct RelativeFrequencyAccumulator(Storage, Axis...)
     {
         static if (depth + 1 == N)
             return readCount(storage[indices[depth]]);
+        else static if (needsScopedSliceRow!S)
+        {
+            scope auto row = storage[indices[depth]];
+            return storageCount!(depth + 1)(row, indices);
+        }
         else
             return storageCount!(depth + 1)(storage[indices[depth]], indices);
     }
@@ -480,6 +492,11 @@ struct RelativeFrequencyAccumulator(Storage, Axis...)
         {
             static if (depth + 1 == N)
                 result += readCount(storage[i + offset]);
+            else static if (needsScopedSliceRow!S)
+            {
+                scope auto row = storage[i + offset];
+                result += ordinaryCount!(depth + 1)(row);
+            }
             else
                 result += ordinaryCount!(depth + 1)(storage[i + offset]);
         }

@@ -33,6 +33,7 @@ import mir.qualifier: lightConst;
 import std.meta: allSatisfy;
 import std.traits: isNumeric, Unqual, isStaticArray;
 import mir.ndslice.slice: isSlice;
+private import mir.stat.descriptive.histogram.internal.view: needsScopedSliceRow;
 
 // Weighted insertion follows implicit conversion rules for real numeric weights.
 package template acceptsHistogramWeight(C, W)
@@ -241,6 +242,13 @@ private:
         {
             static if (depth + 1 == N)
                 mergeCell(destination[i], source[i]);
+            else static if (needsScopedSliceRow!S)
+            {
+                // DMD 2.111/2.112 can return a stale address for a temporary const row.
+                // Name the slice handle; keep nested arrays on the reference path below.
+                scope auto row = source[i];
+                mergeStorage!(depth + 1)(destination[i], row);
+            }
             else
                 mergeStorage!(depth + 1)(destination[i], source[i]);
         }
@@ -290,12 +298,28 @@ private:
         static if (depth == N)
             return readCount(storage);
         else static if (depth == dimension)
-            return axisEndTotal!(dimension, depth + 1)(storage[position], position);
+        {
+            static if (needsScopedSliceRow!S && depth + 1 < N)
+            {
+                scope auto row = storage[position];
+                return axisEndTotal!(dimension, depth + 1)(row, position);
+            }
+            else
+                return axisEndTotal!(dimension, depth + 1)(storage[position], position);
+        }
         else
         {
             CountType result = 0;
             foreach (i; 0 .. storage.length)
-                result += axisEndTotal!(dimension, depth + 1)(storage[i], position);
+            {
+                static if (needsScopedSliceRow!S && depth + 1 < N)
+                {
+                    scope auto row = storage[i];
+                    result += axisEndTotal!(dimension, depth + 1)(row, position);
+                }
+                else
+                    result += axisEndTotal!(dimension, depth + 1)(storage[i], position);
+            }
             return result;
         }
     }
