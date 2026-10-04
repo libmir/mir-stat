@@ -49,6 +49,27 @@ accumulate bin masses. Pass weights before observations; select a WeightedQuanti
 explicitly to change the default inverseCDF definition. They use fixed numeric
 counters and the same GC, RC, or explicit-disposal ownership policies as percentograms.
 
+The default weighted percentogram chooses the number of bins from the number
+of rows with positive weight. Callers can also calculate and supply their
+own bin count.
+
+For example, after reweighting simulated outcomes, a few outcomes may carry
+most of the probability. Kish effective sample size measures this imbalance:
+it equals the number of rows when all positive weights are equal and becomes
+smaller as the weights become more concentrated. Using it in the bin-count
+rule requests fewer bins, which can give a coarser summary of the reweighted
+distribution. It can also hide detail among outcomes with smaller weights.
+
+Frequency tables have a different interpretation. A row with weight 100
+represents 100 observations of that value. Using the sum of the frequencies
+in the bin-count rule gives the same requested number of bins as listing all
+those observations separately. Select a frequency quantile algorithm as well
+when you want the quantile boundaries to match that expanded sample.
+
+In both examples, the caller supplies only the number of bins. The selected
+quantile algorithm still determines their boundaries, and the original weights
+determine the amount accumulated in each bin.
+
 To compare samples using the same boundaries, first construct a quantile axis from
 a reference sample and probability levels or a bin count. Pass it to percentogram
 or weightedPercentogram with the observations to count. Use the FromBoundaries
@@ -86,3 +107,77 @@ module mir.stat.descriptive.histogram.api;
 public import mir.stat.descriptive.histogram.api.rc;
 public import mir.stat.descriptive.histogram.api.gc;
 public import mir.stat.descriptive.histogram.api.custom;
+
+/// Reweighted simulations can concentrate most probability on a few outcomes.
+/// Use effective sample size to request coarser resolution in that situation.
+/// This is an optional choice: it can also reduce detail among lighter outcomes.
+@safe pure nothrow @nogc
+unittest
+{
+    import mir.math.sum: sum;
+    import mir.stat.descriptive.histogram.api.rc: rcWeightedPercentogram;
+    import std.math: cbrt, ceil;
+
+    double[27] outcomes, weights;
+    foreach (i; 0 .. outcomes.length)
+        outcomes[i] = i;
+    weights[] = 1;
+    weights[13] = 26; // One outcome carries half the total probability.
+
+    // Normalize before squaring to avoid overflow from large raw weights.
+    double maximum = 0;
+    foreach (w; weights)
+        if (w > maximum)
+            maximum = w;
+
+    double[27] scaled, squared;
+    foreach (i, w; weights)
+    {
+        scaled[i] = w / maximum;
+        squared[i] = scaled[i] * scaled[i];
+    }
+    const total = scaled[].sum;
+    const effectiveSize = total * total / squared[].sum;
+    const bins = cast(size_t) ceil(cbrt(effectiveSize));
+
+    assert(bins == 2); // The row-count default requests three bins.
+    auto result = rcWeightedPercentogram(weights, outcomes, bins);
+    assert(result.total == 52);
+}
+
+/// A frequency table represents repeated observations without storing every copy.
+/// Use total frequency for bin selection when the requested resolution should
+/// match a percentogram constructed from the expanded sample.
+@safe pure nothrow @nogc
+unittest
+{
+    import mir.stat.descriptive.histogram.api.rc:
+        rcWeightedPercentogram, rcpercentogram;
+    import mir.stat.descriptive.univariate: WeightedQuantileAlgo;
+    import std.math: cbrt, ceil;
+
+    double[3] outcomes = [0, 10, 20];
+    uint[3] frequencies = [2, 3, 4];
+    double[9] expanded = [0, 0, 10, 10, 10, 20, 20, 20, 20];
+
+    size_t totalFrequency;
+    foreach (frequency; frequencies)
+        totalFrequency += frequency;
+    const bins = cast(size_t) ceil(cbrt(cast(double) totalFrequency));
+
+    assert(bins == 3); // Counting the three table rows would request two.
+    auto compact = rcWeightedPercentogram!(
+        double, WeightedQuantileAlgo.frequencyType7)(
+            frequencies, outcomes, bins);
+    auto repeated = rcpercentogram(expanded);
+
+    assert(compact.counts == repeated.counts);
+    // Repeated quantiles leave two ordinary bins in both representations.
+    assert(compact.axis.N_bin == 2);
+    assert(compact.axis.N_bin == repeated.axis.N_bin);
+    foreach (i; 0 .. compact.axis.N_bin)
+    {
+        assert(compact.bins()[i].bin.low == repeated.bins()[i].bin.low);
+        assert(compact.bins()[i].bin.high == repeated.bins()[i].bin.high);
+    }
+}

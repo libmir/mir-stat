@@ -1723,6 +1723,8 @@ unittest
 Construct a weighted percentogram with RC-owned boundaries and counts.
 Uses the algorithms, input requirements, bin-count heuristic, and boundary
 rules of $(REF weightedPercentogram, mir, stat, descriptive, histogram, api, gc).
+See $(REF api, mir, stat, descriptive, histogram) for examples choosing a bin
+count from effective sample size or total frequency.
 The result owns its storage independently of the inputs and supports @nogc use.
 
 Params:
