@@ -116,7 +116,7 @@ unittest
 {
     import mir.math.sum: sum;
     import mir.stat.descriptive.histogram.api.rc: rcWeightedPercentogram;
-    import std.math: cbrt, ceil;
+    import mir.math.common: pow, ceil;
 
     double[27] outcomes, weights;
     foreach (i; 0 .. outcomes.length)
@@ -138,7 +138,7 @@ unittest
     }
     const total = scaled[].sum;
     const effectiveSize = total * total / squared[].sum;
-    const bins = cast(size_t) ceil(cbrt(effectiveSize));
+    const bins = cast(size_t) ceil(pow(effectiveSize, 1.0 / 3));
 
     assert(bins == 2); // The row-count default requests three bins.
     auto result = rcWeightedPercentogram(weights, outcomes, bins);
@@ -154,7 +154,7 @@ unittest
     import mir.stat.descriptive.histogram.api.rc:
         rcWeightedPercentogram, rcpercentogram;
     import mir.stat.descriptive.univariate: WeightedQuantileAlgo;
-    import std.math: cbrt, ceil;
+    import mir.math.common: pow, ceil;
 
     double[3] outcomes = [0, 10, 20];
     uint[3] frequencies = [2, 3, 4];
@@ -163,7 +163,7 @@ unittest
     size_t totalFrequency;
     foreach (frequency; frequencies)
         totalFrequency += frequency;
-    const bins = cast(size_t) ceil(cbrt(cast(double) totalFrequency));
+    const bins = cast(size_t) ceil(pow(cast(double) totalFrequency, 1.0 / 3));
 
     assert(bins == 3); // Counting the three table rows would request two.
     auto compact = rcWeightedPercentogram!(
