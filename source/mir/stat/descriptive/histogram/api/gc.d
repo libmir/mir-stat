@@ -1015,9 +1015,21 @@ totals. Counts default to double; integral counters require integral weights.
 Counts and their total must accommodate the sums. AdaptiveCounts is unsupported.
 
 Supply a positive bin count or strictly increasing probabilities in [0,1].
-Omitting probabilities requests ceil(cuberoot(n)) bins, where n is the number
-of positive-weight rows, including for frequency algorithms. This heuristic
-is invariant to weight rescaling; it does not use the sum of the weights.
+When neither is supplied, the factory requests ceil(cuberoot(n)) bins,
+where n is the number of rows with positive weight, including for frequency
+algorithms. Repeated observations count as separate rows. Duplicate quantile
+boundaries are combined, so the result may contain fewer bins than requested.
+
+The default counts rows regardless of how large their weights are.
+Multiplying every weight by the same positive constant therefore leaves
+the requested bin count unchanged.
+
+You can supply a bin count when a different choice better suits your data.
+For reweighted simulations, you might prefer fewer bins when a small number
+of outcomes carry most of the probability. For a frequency table, you might
+instead choose the bin count using the total number of observations represented
+by the table. The examples in $(REF api, mir, stat, descriptive, histogram)
+show both approaches.
 
 Weights and observations must be one-dimensional arrays or Mir slices with
 matching lengths. Weighted-quantile input rules apply: finite nonnegative

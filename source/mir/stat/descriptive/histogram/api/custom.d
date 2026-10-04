@@ -2152,6 +2152,8 @@ unittest
 Construct a weighted percentogram with caller-selected allocation.
 Uses the algorithms, input requirements, bin-count heuristic, and boundary rules
 of $(REF weightedPercentogram, mir, stat, descriptive, histogram, api, gc).
+See $(REF api, mir, stat, descriptive, histogram) for examples choosing a bin
+count from effective sample size or total frequency.
 The result exposes histogram; call dispose with the same allocator after use.
 Generated probabilities and quantile scratch are released before return.
 Completed allocations are released on exceptions; deallocation must not throw.
