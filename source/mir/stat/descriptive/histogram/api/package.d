@@ -55,9 +55,9 @@ own bin count.
 
 For example, after reweighting simulated outcomes, a few outcomes may carry
 most of the probability. Kish effective sample size measures this imbalance:
-it equals the number of rows when all positive weights are equal and becomes
+it equals the number of positive-weight rows when those weights are equal and becomes
 smaller as the weights become more concentrated. Using it in the bin-count
-rule requests fewer bins, which can give a coarser summary of the reweighted
+rule can request fewer bins, which can give a coarser summary of the reweighted
 distribution. It can also hide detail among outcomes with smaller weights.
 
 Frequency tables have a different interpretation. A row with weight 100
