@@ -4339,7 +4339,7 @@ private template WeightedQuantileResult(Data, WeightedQuantileAlgo algorithm)
 {
     import mir.primitives: DeepElementType;
     import std.traits: Unqual;
-    alias Element = Unqual!(DeepElementType!(typeof(quantileSlice(Data.init))));
+    alias Element = Unqual!(DeepElementType!Data);
     static if (algorithm != WeightedQuantileAlgo.inverseCDF)
         alias WeightedQuantileResult = quantileType!(Element, QuantileAlgo.type7);
     else
@@ -4626,6 +4626,9 @@ private auto allocatedWeightedQuantile(F, WeightedQuantileAlgo algorithm,
         "Weighted quantile values and weights must be one-dimensional");
     alias Element = Unqual!(DeepElementType!(typeof(values)));
     alias Weight = Unqual!(DeepElementType!(typeof(masses)));
+    static assert(is(Unqual!(DeepElementType!Data) == Element),
+        "Weighted quantile input conversion changes its element type. " ~
+        "Convert the input to a Mir slice explicitly before calling.");
     static assert(isNumeric!Element && isNumeric!Weight && isNumeric!F,
         "Weighted quantiles require numeric values, weights, and output");
     assert(values.length == masses.length,
@@ -5065,6 +5068,52 @@ unittest
     scope(exit) Mallocator.instance.dispose(result.field);
     assert(result == [0, 0, 10, 10, 20]);
     assert(makeWeightedQuantile!double(Mallocator.instance, weights, values, 0.5) == 10.0);
+}
+
+// A decoding container must expose its converted element type explicitly.
+version(mir_stat_test)
+@safe pure nothrow
+unittest
+{
+    import mir.ndslice.slice: sliced;
+    import mir.ndslice.topology: map;
+    import std.experimental.allocator.mallocator: Mallocator;
+
+    static struct PackedMeasurements(bool decode)
+    {
+        alias DeepElement = short;
+        short[] raw;
+
+        @property auto asSlice() return scope @safe pure nothrow @nogc
+        {
+            static if (decode)
+                return raw.sliced.map!(x => x * 0.5);
+            else
+                return raw.sliced;
+        }
+    }
+
+    short[3] raw = [1, 3, 5];
+    const int[3] weights = [1, 1, 1];
+    auto packed = PackedMeasurements!true(raw[]);
+    static assert(!__traits(compiles, weightedQuantile(weights, packed, 0.5)));
+    static assert(!__traits(compiles, rcWeightedQuantile(weights, packed, 0.5)));
+    static assert(!__traits(compiles,
+        makeWeightedQuantile(Mallocator.instance, weights, packed, 0.5)));
+
+    // A conversion that preserves the element type remains valid.
+    auto unchanged = PackedMeasurements!false(raw[]);
+    assert(rcWeightedQuantile(weights, unchanged, 0.5) == 3);
+
+    auto decoded = packed.asSlice;
+    auto gcMedian = weightedQuantile(weights, decoded, 0.5);
+    auto rcMedian = rcWeightedQuantile(weights, decoded, 0.5);
+    static assert(is(typeof(gcMedian) == double) && is(typeof(rcMedian) == double));
+    assert(gcMedian == 1.5 && rcMedian == 1.5);
+    // Selecting a different output type remains supported.
+    auto explicitMedian = rcWeightedQuantile!float(weights, decoded, 0.5);
+    static assert(is(typeof(explicitMedian) == float));
+    assert(explicitMedian == 1.5f);
 }
 
 // Boundaries, ties, ignored values, and original integral precision.
