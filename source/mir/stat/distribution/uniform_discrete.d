@@ -132,11 +132,17 @@ size_t uniformDiscreteInvCDF(T)(const T p, const size_t lower = 0, const size_t 
     in (p <= 1, "p must be less than or equal to 1")
     in (lower < upper, "lower must be less than upper")
 {
+    import mir.math.common: ceil;
+
+    if (p == 0)
+        return lower;
+    if (p == 1)
+        return upper;
     size_t n = upper - lower + 1;
     if (p * n <= 1) {
         return lower;
     }
-    return cast(size_t) (p * n + lower - 1);
+    return lower + cast(size_t) ceil(p * n) - 1;
 }
 
 ///.
@@ -153,9 +159,30 @@ unittest
     0.0.uniformDiscreteInvCDF(1, 3).should == 1;
     0.2.uniformDiscreteInvCDF(1, 3).should == 1;
     (1.0 / 3).uniformDiscreteInvCDF(1, 3).should == 1;
-    0.5.uniformDiscreteInvCDF(1, 3).should == 1;
+    0.5.uniformDiscreteInvCDF(1, 3).should == 2;
     (2.0 / 3).uniformDiscreteInvCDF(1, 3).should == 2;
     1.0.uniformDiscreteInvCDF(1, 3).should == 3;
+}
+
+// Interior probabilities select the first value whose CDF reaches p.
+version(mir_stat_test)
+@safe pure nothrow @nogc
+unittest
+{
+    foreach (lower; 0 .. 4)
+    foreach (n; 2 .. 9)
+    foreach (j; 1 .. 100)
+    {
+        const p = j / 100.0;
+        const upper = lower + n - 1;
+        const x = uniformDiscreteInvCDF(p, lower, upper);
+        assert(uniformDiscreteCDF(x, lower, upper) >= p);
+        if (x > lower)
+            assert(uniformDiscreteCDF(x - 1, lower, upper) < p);
+    }
+    assert(uniformDiscreteInvCDF(0.25, 10, 13) == 10);
+    assert(uniformDiscreteInvCDF(0.25 + double.epsilon, 10, 13) == 11);
+    assert(uniformDiscreteInvCDF(0.25 - double.epsilon, 10, 13) == 10);
 }
 
 /++
