@@ -245,13 +245,16 @@ size_t categoricalInvCDF(T, Iterator, SliceKind kind)(const T q, scope const Sli
     in (p.all!("a <= 1"), "p must be less than or equal to 1")
 {
     CommonType!(T, elementType!(typeof(p))) s = 0.0;
-    size_t i;
-    s += p[i];
-    while (q > s) {
-        i++;
+    size_t lastPositive;
+    foreach (i; 0 .. p.length) {
         s += p[i];
+        if (q <= s)
+            return i;
+        if (p[i] > 0)
+            lastPositive = i;
     }
-    return i;// this ensures categoricalInvCDF(a, p) == b, which is consistent with categoricalCDF(b, p) == a (similar to bernoulliInvCDF)
+    // Rounding can leave the cumulative probability just below one.
+    return lastPositive;
 }
 
 /// ditto
@@ -265,13 +268,34 @@ size_t categoricalInvCDF(T)(const T q, scope const T[] p...)
     in (p.all!("a <= 1"), "p must be less than or equal to 1")
 {
     T s = 0.0;
-    size_t i;
-    s += p[i];
-    while (q > s) {
-        i++;
+    size_t lastPositive;
+    foreach (i; 0 .. p.length) {
         s += p[i];
+        if (q <= s)
+            return i;
+        if (p[i] > 0)
+            lastPositive = i;
     }
-    return i;// this ensures categoricalInvCDF(a, p) == b, which is consistent with categoricalCDF(b, p) == a (similar to bernoulliInvCDF)
+    // Rounding can leave the cumulative probability just below one.
+    return lastPositive;
+}
+
+// A rounded cumulative sum must not advance past the last category or select
+// trailing categories with zero probability.
+version(mir_stat_test)
+@safe pure nothrow @nogc
+unittest
+{
+    import mir.ndslice.slice: sliced;
+    double[12] p = 0;
+    p[0 .. 10] = 0.1;
+    assert(categoricalInvCDF(1.0, p[0 .. 10]) == 9);
+    assert(categoricalInvCDF(1.0, p[0 .. 10].sliced) == 9);
+    assert(categoricalInvCDF(1.0, p[]) == 9);
+    assert(categoricalInvCDF(1.0, p[].sliced) == 9);
+    assert(categoricalInvCDF(1.0 - double.epsilon / 2, p[]) == 9);
+    assert(categoricalInvCDF(0.0, p[]) == 0);
+    assert(categoricalInvCDF(0.25, p[]) == 2);
 }
 
 ///
