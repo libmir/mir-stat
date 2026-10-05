@@ -32,8 +32,21 @@ package auto initializeHistogram(bool insert = true, Storage, Axis, Data)(Storag
     import mir.stat.descriptive.histogram.internal.shared_counts: isSharedCountStorage;
     // Adaptive allocation already zeroes counts; proxies are read/increment only.
     static if (!isSharedCountStorage!Storage)
-        foreach (ref count; h.counts)
-            count = 0;
+    {
+        version (DigitalMars)
+            enum needsIndexedZeroing = __VERSION__ >= 2111 && __VERSION__ < 2113;
+        else
+            enum needsIndexedZeroing = false;
+        // DMD 2.111/2.112 can overwrite the returned axis when inlining the
+        // owning range copy used by foreach. Indexing avoids that copy.
+        // Keep the original loop elsewhere to preserve optimized code generation.
+        static if (needsIndexedZeroing)
+            foreach (i; 0 .. h.counts.length)
+                h.counts[i] = 0;
+        else
+            foreach (ref count; h.counts)
+                count = 0;
+    }
     static if (insert)
         h.put(data);
     return h;
