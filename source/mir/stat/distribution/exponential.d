@@ -62,9 +62,30 @@ T exponentialCDF(T)(const T x, const T lambda)
     in (x >= 0, "x must be greater than or equal to 0")
     in (lambda > 0, "lambda must be greater than zero")
 {
-    import mir.math.common: exp;
+    import std.math: expm1;
 
-    return 1 - exp(-lambda * x);
+    return -expm1(-lambda * x);
+}
+
+// Small probabilities must not disappear when exp(-lambda*x) rounds to one.
+version(mir_stat_test)
+@safe pure nothrow @nogc
+unittest
+{
+    import std.meta: AliasSeq;
+    import mir.math.common: approxEqual;
+    static foreach (T; AliasSeq!(float, double, real))
+    {{
+        const T x = T.epsilon / 16;
+        assert(exponentialCDF(x, T(1)) > 0);
+        assert(approxEqual(exponentialCDF(x, T(1)) / x, T(1), T.epsilon * 4, T(0)));
+        assert(approxEqual(exponentialCDF(x / 2, T(2)) / x, T(1), T.epsilon * 4, T(0)));
+        assert(approxEqual(exponentialCDF(exponentialInvCDF(x, T(2)), T(2)) / x,
+            T(1), T.epsilon * 4, T(0)));
+        assert(exponentialCDF(T(0), T(2)) == 0);
+        assert(exponentialCDF(T.infinity, T(2)) == 1);
+        assert(approxEqual(exponentialCDF(T(0.5), T(2)) + exponentialCCDF(T(0.5), T(2)), T(1)));
+    }}
 }
 
 ///
