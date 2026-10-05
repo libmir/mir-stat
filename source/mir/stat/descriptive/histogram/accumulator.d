@@ -33,6 +33,7 @@ import mir.qualifier: lightConst;
 import std.meta: allSatisfy;
 import std.traits: isNumeric, Unqual, isStaticArray;
 import mir.ndslice.slice: isSlice;
+private import mir.stat.descriptive.histogram.internal.view: needsScopedSliceRow;
 
 // Weighted insertion follows implicit conversion rules for real numeric weights.
 package template acceptsHistogramWeight(C, W)
@@ -241,6 +242,13 @@ private:
         {
             static if (depth + 1 == N)
                 mergeCell(destination[i], source[i]);
+            else static if (needsScopedSliceRow!S)
+            {
+                // DMD 2.111/2.112 can return a stale address for a temporary const row.
+                // Name the slice handle; keep nested arrays on the reference path below.
+                scope auto row = source[i];
+                mergeStorage!(depth + 1)(destination[i], row);
+            }
             else
                 mergeStorage!(depth + 1)(destination[i], source[i]);
         }
@@ -290,12 +298,28 @@ private:
         static if (depth == N)
             return readCount(storage);
         else static if (depth == dimension)
-            return axisEndTotal!(dimension, depth + 1)(storage[position], position);
+        {
+            static if (needsScopedSliceRow!S && depth + 1 < N)
+            {
+                scope auto row = storage[position];
+                return axisEndTotal!(dimension, depth + 1)(row, position);
+            }
+            else
+                return axisEndTotal!(dimension, depth + 1)(storage[position], position);
+        }
         else
         {
             CountType result = 0;
             foreach (i; 0 .. storage.length)
-                result += axisEndTotal!(dimension, depth + 1)(storage[i], position);
+            {
+                static if (needsScopedSliceRow!S && depth + 1 < N)
+                {
+                    scope auto row = storage[i];
+                    result += axisEndTotal!(dimension, depth + 1)(row, position);
+                }
+                else
+                    result += axisEndTotal!(dimension, depth + 1)(storage[i], position);
+            }
             return result;
         }
     }
@@ -417,10 +441,10 @@ public:
     }
 
     ///
-    void put(Range)(Range r)
-        if (acceptsCounting && N == 1 &&
-            isIterable!Range &&
-            !(isCategoryAxis!(Axis[0]) && isSomeString!Range))
+    void put(Range)(scope Range r)
+        if (acceptsCounting && N == 1 && isIterable!Range &&
+            !(isCategoryAxis!(Axis[0]) && isSomeString!Range) &&
+            canScopeRange!Range)
     {
         import mir.stat.descriptive.histogram.internal.shared_counts: isSharedCountStorage, insertSharedCounts;
         import std.traits: isArray;
@@ -431,11 +455,37 @@ public:
                 insertSharedCounts(this, r);
                 return;
             }
-        foreach(x; r)
-        {
+        foreach (scope x; r)
             put(x);
-        }
     }
+
+    /// ditto
+    void put(Range)(Range r)
+        if (acceptsCounting && N == 1 && isIterable!Range &&
+            !(isCategoryAxis!(Axis[0]) && isSomeString!Range) &&
+            !canScopeRange!Range)
+    {
+        import mir.stat.descriptive.histogram.internal.shared_counts: isSharedCountStorage, insertSharedCounts;
+        import std.traits: isArray;
+        // Other iterables may define foreach behavior that differs from indexing.
+        static if (isSharedCountStorage!Storage && (isArray!Range || isSlice!Range))
+            static if (acceptsAxisValue!(Axis[0], typeof(r[0])))
+            {
+                insertSharedCounts(this, r);
+                return;
+            }
+        foreach (x; r)
+            put(x);
+    }
+
+    // Older frontends need explicit scope for non-retaining traversal. Probe
+    // the actual calls instead of assuming custom axes never retain values.
+    // The other overload preserves their original inferred lifetime contract.
+    private enum canScopeRange(Range) = __traits(compiles,
+        (ref HistogramAccumulator h, scope Range r) @safe {
+            foreach (scope x; r)
+                h.put(x);
+        });
 
     private template acceptsArguments(T...)
     {
@@ -4172,9 +4222,11 @@ unittest
     static assert(!__traits(compiles, h.putWeighted(1u, 0)));
 
     // Nested arrays of proxies use the same value/snapshot contract.
-    TestCountProxy!ulong[2][2] cells = [
-        [testCountProxy(data[0]), testCountProxy(data[1])],
-        [testCountProxy(data[2]), testCountProxy(data[3])]];
+    // Initialize static cells directly; older frontends infer dynamic inner literals.
+    TestCountProxy!ulong[2][2] cells;
+    static foreach (i; 0 .. 2)
+        static foreach (j; 0 .. 2)
+            cells[i][j] = testCountProxy(data[2 * i + j]);
     alias B = IntegralAxis!(int, AxisOptions());
     auto nested = HistogramAccumulator!(typeof(cells[]), B, B)(cells[], B(2, 0), B(2, 0));
     nested.put(1, 1);

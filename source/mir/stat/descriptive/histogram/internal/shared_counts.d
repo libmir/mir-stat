@@ -192,6 +192,11 @@ public:
 
     auto lightConst()() const @property @safe pure nothrow @nogc
     {
+        // DMD 2.111/2.112 miscompile adaptive count views when this owner
+        // conversion is inlined. Other backends and versions retain inlining.
+        version (DigitalMars)
+            static if (__VERSION__ >= 2111 && __VERSION__ < 2113)
+                pragma(inline, false);
         return SharedCountField!(const State, typeof(ownerLightConst(owner)))(ownerLightConst(owner));
     }
 }

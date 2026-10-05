@@ -18,13 +18,15 @@ configuration "library" {
 buildType "unittest" {
     buildOptions "unittests" "debugMode" "debugInfo"
     versions "mir_stat_test"
-    dflags "-lowmem"
+    dflags "-lowmem" platform="dmd"
+    dflags "-lowmem" platform="ldc"
 }
 // Include the slower higher-precision probability tests.
 buildType "unittest-slow-numerics" {
     buildOptions "unittests" "debugMode" "debugInfo"
     versions "mir_stat_test" "mir_stat_test_slow_numerics"
-    dflags "-lowmem"
+    dflags "-lowmem" platform="dmd"
+    dflags "-lowmem" platform="ldc"
 }
 buildType "docs-check" {
     buildOptions "syntaxOnly" "warningsAsErrors"
@@ -38,22 +40,28 @@ configuration "unittest-benchmark" {
 buildType "unittest-dip1008" {
     buildOptions "unittests" "debugMode" "debugInfo"
     versions "mir_stat_test"
-    dflags "-lowmem" "-preview=dip1008"
+    dflags "-preview=dip1008"
+    dflags "-lowmem" platform="dmd"
+    dflags "-lowmem" platform="ldc"
 }
 buildType "unittest-dip1000" {
     buildOptions "unittests" "debugMode" "debugInfo"
     versions "mir_stat_test" "mir_stat_test_lifetime"
-    dflags "-lowmem" "-preview=dip1000"
+    dflags "-preview=dip1000"
+    dflags "-lowmem" platform="dmd"
+    dflags "-lowmem" platform="ldc"
 }
 buildType "unittest-cov" {
     buildOptions "unittests" "coverage" "debugMode" "debugInfo"
     versions "mir_stat_test"
-    dflags "-lowmem"
+    dflags "-lowmem" platform="dmd"
+    dflags "-lowmem" platform="ldc"
 }
 buildType "unittest-release" {
     buildOptions "unittests" "releaseMode" "optimize" "inline" "noBoundsCheck"
     versions "mir_stat_test"
-    dflags "-lowmem"
+    dflags "-lowmem" platform="dmd"
+    dflags "-lowmem" platform="ldc"
 }
 configuration "dips" {
     dflags "-preview=dip1000" "-preview=dip1008"
@@ -63,12 +71,14 @@ configuration "dips" {
 buildType "unittest-blas" {
     buildOptions "unittests" "debugMode" "debugInfo"
     versions "mir_stat_test_blas"
-    dflags "-lowmem"
+    dflags "-lowmem" platform="dmd"
+    dflags "-lowmem" platform="ldc"
 }
 buildType "unittest-cov-blas" {
     buildOptions "unittests" "coverage" "debugMode" "debugInfo"
     versions "mir_stat_test_blas"
-    dflags "-lowmem"
+    dflags "-lowmem" platform="dmd"
+    dflags "-lowmem" platform="ldc"
 }
 configuration "openblas" {
     dependency "mir-lapack" version=">=1.2.9"

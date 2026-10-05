@@ -1,5 +1,5 @@
 /++
-Internal helpers for histogram view constraints.
+Internal helpers for histogram views and row traversal.
 
 License: $(HTTP www.apache.org/licenses/LICENSE-2.0, Apache-2.0)
 Authors: John Michael Hall
@@ -10,8 +10,23 @@ module mir.stat.descriptive.histogram.internal.view;
 import mir.ndslice.slice: isSlice;
 import mir.qualifier: lightConst;
 import mir.stat.descriptive.histogram.traits: isAxis;
-import std.traits: isArray, isDynamicArray;
+import std.traits: isArray, isDynamicArray, hasElaborateDestructor;
 import std.meta: allSatisfy;
+
+// DMD 2.111/2.112 can return a stale stack address when a const RC slice row
+// is passed directly to a recursive call, e.g. total(storage[i]). Naming a
+// scoped row first avoids the miscompile. The expression compiles on affected
+// versions, so __traits(compiles) cannot detect this runtime code-generation bug.
+// This is a DMD backend workaround, not a frontend-version requirement for LDC
+// or GDC. Keep the original value-passing path elsewhere: naming the row changes
+// auto ref deduction and can prevent vectorization of histogram merges.
+version (DigitalMars)
+    private enum needsConstRowWorkaround = __VERSION__ >= 2111 && __VERSION__ < 2113;
+else
+    private enum needsConstRowWorkaround = false;
+
+package(mir.stat.descriptive.histogram) enum needsScopedSliceRow(S) =
+    needsConstRowWorkaround && isSlice!S && hasElaborateDestructor!S;
 
 package(mir.stat.descriptive.histogram) template JointArrayInfo(Storage)
 {

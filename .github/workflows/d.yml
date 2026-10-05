@@ -27,6 +27,32 @@ jobs:
     - name: Build documentation with warnings as errors
       run: dub build --build=docs-check --compiler=dmd
 
+  gdc:
+    name: GDC 15 tests
+    permissions:
+      contents: read
+    # Ubuntu 26.04 supplies GDC 15 without an additional package repository.
+    runs-on: ubuntu-26.04
+
+    steps:
+    - uses: actions/checkout@v7.0.1
+
+    - name: Install GDC and DUB
+      run: |
+        sudo apt-get update
+        sudo apt-get install --yes --no-install-recommends gdc-15 dub
+
+    - name: Report toolchain versions
+      run: |
+        gdc-15 --version
+        dub --version
+
+    # Optimized GDC tests are blocked by ndslice's narrow-integer
+    # safety-check helper: https://github.com/libmir/mir-algorithm/issues/483
+    # Revisit unittest-release coverage once the dependency fix is available.
+    - name: Run standard tests
+      run: dub test --compiler=gdc-15
+
   benchmarks:
     name: Benchmark tests
     strategy:

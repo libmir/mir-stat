@@ -40,6 +40,7 @@ template validMarginalAxes(size_t rank, dimensions...)
 void projectCells(size_t rank, alias dimensions, D, S)(ref D destination, auto ref const S source)
 {
     import mir.stat.descriptive.histogram.internal.cell: mergeCell;
+    import mir.stat.descriptive.histogram.internal.view: needsScopedSliceRow;
     static void add(size_t depth, T, V)(auto ref T destination, auto ref const V value,
         const ref size_t[rank] indices)
     {
@@ -58,10 +59,38 @@ void projectCells(size_t rank, alias dimensions, D, S)(ref D destination, auto r
             foreach (i; 0 .. source.length)
             {
                 indices[depth] = i;
-                accumulate!(depth + 1)(destination, source[i], indices);
+                static if (needsScopedSliceRow!T && depth + 1 < rank)
+                {
+                    // DMD 2.111/2.112 mishandle direct temporary const-row arguments.
+                    scope auto row = source[i];
+                    accumulate!(depth + 1)(destination, row, indices);
+                }
+                else
+                    accumulate!(depth + 1)(destination, source[i], indices);
             }
     }
 
     size_t[rank] indices;
     accumulate!(0)(destination, source, indices);
+}
+
+// Recursive array traversal must borrow cells that cannot be copied.
+version(mir_stat_test)
+@safe pure nothrow @nogc
+unittest
+{
+    static struct Cell
+    {
+        ulong value;
+        @disable this(this);
+        void put(ref const Cell other) @safe pure nothrow @nogc { value += other.value; }
+    }
+    Cell[2][2] source;
+    source[0][1].value = 7;
+    source[1][0].value = 3;
+    Cell[2] marginal;
+    enum dimensions = [0];
+    projectCells!(2, dimensions)(marginal, source);
+    assert(marginal[0].value == 7 && marginal[1].value == 3);
+    assert(source[0][1].value == 7 && source[1][0].value == 3);
 }
