@@ -30,7 +30,7 @@ double uniformDiscretePMF(const size_t x, const size_t lower = 0, const size_t u
     in (x <= upper, "x must be less than or equal to upper bound")
     in (lower <= upper, "lower must be less than or equal to upper")
 {
-    return 1.0 / (upper - lower + 1);
+    return 1.0 / (cast(double)(upper - lower) + 1);
 }
 
 ///
@@ -61,7 +61,7 @@ double uniformDiscreteCDF(const size_t x, const size_t lower = 0, const size_t u
     in (x <= upper, "x must be less than or equal to upper bound")
     in (lower <= upper, "lower must be less than or equal to upper")
 {
-    return (cast(double) x - lower + 1) / (upper - lower + 1);
+    return (cast(double)(x - lower) + 1) / (cast(double)(upper - lower) + 1);
 }
 
 ///
@@ -96,7 +96,7 @@ double uniformDiscreteCCDF(const size_t x, const size_t lower = 0, const size_t 
     in (x <= upper, "x must be less than or equal to upper bound")
     in (lower <= upper, "lower must be less than or equal to upper")
 {
-    return (cast(double) upper - x) / (upper - lower + 1);
+    return cast(double)(upper - x) / (cast(double)(upper - lower) + 1);
 }
 
 ///
@@ -138,11 +138,17 @@ size_t uniformDiscreteInvCDF(T)(const T p, const size_t lower = 0, const size_t 
         return lower;
     if (p == 1)
         return upper;
-    size_t n = upper - lower + 1;
-    if (p * n <= 1) {
+    // Subtract while integral, then add one in floating point so even the
+    // complete size_t domain has a representable interval size.
+    const n = cast(T)(upper - lower) + 1;
+    const rank = ceil(p * n);
+    if (rank <= 1) {
         return lower;
     }
-    return lower + cast(size_t) ceil(p * n) - 1;
+    // Rounding may reach n before p reaches one. Clamp before the integer cast.
+    if (rank >= n)
+        return upper;
+    return lower + (cast(size_t) rank - 1);
 }
 
 ///.
@@ -204,7 +210,37 @@ double uniformDiscreteLPMF(const size_t x, const size_t lower = 0, const size_t 
 {
     import mir.math.common: log;
 
-    return -log(cast(double) upper - lower + 1);
+    return -log(cast(double)(upper - lower) + 1);
+}
+
+// Translation must not lose adjacent integers, and the full integer domain
+// must not overflow its interval size.
+version(mir_stat_test)
+@safe pure nothrow @nogc
+unittest
+{
+    import mir.math.common: approxEqual, exp;
+    const lower = size_t.max - 2;
+    const upper = size_t.max;
+    foreach (i; 0 .. 3)
+    {
+        const x = lower + i;
+        assert(approxEqual(uniformDiscretePMF(x, lower, upper), 1.0 / 3));
+        assert(approxEqual(uniformDiscreteCDF(x, lower, upper), (i + 1.0) / 3));
+        assert(approxEqual(uniformDiscreteCCDF(x, lower, upper), (2.0 - i) / 3));
+        assert(approxEqual(exp(uniformDiscreteLPMF(x, lower, upper)), 1.0 / 3));
+    }
+    assert(uniformDiscreteInvCDF(0.5, lower, upper) == lower + 1);
+    assert(uniformDiscreteInvCDF(0.0, 0, upper) == 0);
+    assert(uniformDiscreteInvCDF(1.0, 0, upper) == upper);
+    assert(uniformDiscreteInvCDF(0.5, 0, upper) == upper / 2);
+    const probability = 1.0 / (cast(double) upper + 1);
+    assert(uniformDiscretePMF(0, 0, upper) == probability);
+    assert(uniformDiscreteCDF(0, 0, upper) == probability);
+    assert(uniformDiscreteCCDF(upper - 1, 0, upper) == probability);
+    assert(uniformDiscreteCDF(upper, 0, upper) == 1);
+    assert(uniformDiscreteCCDF(upper, 0, upper) == 0);
+    assert(approxEqual(exp(uniformDiscreteLPMF(0, 0, upper)), probability));
 }
 
 ///
