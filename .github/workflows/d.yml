@@ -47,6 +47,9 @@ jobs:
         gdc-15 --version
         dub --version
 
+    # Optimized GDC tests are blocked by ndslice's narrow-integer
+    # safety-check helper: https://github.com/libmir/mir-algorithm/issues/483
+    # Revisit unittest-release coverage once the dependency fix is available.
     - name: Run standard tests
       run: dub test --compiler=gdc-15
 
