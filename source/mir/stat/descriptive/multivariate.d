@@ -105,6 +105,52 @@ unittest
         check!(CorrelationAccumulator!(double, __traits(getMember, CorrelationAlgo, algo), Summation.naive))();
 }
 
+// Range insertion must reject unequal lengths, including nested batches.
+version(mir_stat_test)
+unittest
+{
+    import core.exception: AssertError;
+    import std.algorithm: filter;
+    import std.meta: AliasSeq;
+    import std.exception: assertThrown;
+
+    static foreach (A; AliasSeq!(
+        CovarianceAccumulator!(double, CovarianceAlgo.online, Summation.naive),
+        CovarianceAccumulator!(double, CovarianceAlgo.hybrid, Summation.naive),
+        CorrelationAccumulator!(double, CorrelationAlgo.online, Summation.naive),
+        CorrelationAccumulator!(double, CorrelationAlgo.hybrid, Summation.naive)))
+    {{
+        double[3] x = [1, 2, 3];
+        double[3] y = [2, 4, 6];
+        // Filters exercise the range overload rather than slice conversion.
+        foreach (n; [0, 2])
+        {
+            A leftShort, rightShort;
+            assertThrown!AssertError(leftShort.put(
+                x[0 .. n].filter!(v => true), y[].filter!(v => true)));
+            assertThrown!AssertError(rightShort.put(
+                x[].filter!(v => true), y[0 .. n].filter!(v => true)));
+        }
+        A equal;
+        equal.put(x[].filter!(v => true), y[].filter!(v => true));
+        assert(equal.count == 3 && equal.centeredSumOfProducts == 4);
+
+        double[][2] rowsX = [x[0 .. 1], x[1 .. 3]];
+        double[][2] rowsY = [y[0 .. 1], y[1 .. 3]];
+        foreach (n; [0, 1])
+        {
+            A leftShort, rightShort;
+            assertThrown!AssertError(leftShort.put(
+                rowsX[0 .. n].filter!(v => true), rowsY[].filter!(v => true)));
+            assertThrown!AssertError(rightShort.put(
+                rowsX[].filter!(v => true), rowsY[0 .. n].filter!(v => true)));
+        }
+        A nested;
+        nested.put(rowsX[].filter!(v => true), rowsY[].filter!(v => true));
+        assert(nested.count == 3 && nested.centeredSumOfProducts == 4);
+    }}
+}
+
 private void putter3(Slices, T, U, Summation summation1, Summation summation2, Summation summation3)
     (scope Slices slices, ref Summator!(T, summation1) seed1, ref Summator!(U, summation2) seed2, ref Summator!(U, summation3) seed3)
 {
@@ -482,9 +528,12 @@ struct CovarianceAccumulator(T, CovarianceAlgo covarianceAlgo, Summation summati
         if (isInputRange!RangeX && !isConvertibleToSlice!RangeX &&
             isInputRange!RangeY && !isConvertibleToSlice!RangeY)
     {
-        import std.range: zip;
-        foreach(a, b; zip(x, y)) {
-            this.put(a, b);
+        while (!x.empty || !y.empty)
+        {
+            assert(!x.empty && !y.empty, "x and y must have the same length");
+            this.put(x.front, y.front);
+            x.popFront;
+            y.popFront;
         }
     }
 
@@ -1398,9 +1447,12 @@ struct CovarianceAccumulator(T, CovarianceAlgo covarianceAlgo, Summation summati
             auto v = typeof(this)(x, y);
             this.put(v);
         } else {
-            import std.range: zip;
-            foreach(a, b; zip(x, y)) {
-                this.put(a, b);
+            while (!x.empty || !y.empty)
+            {
+                assert(!x.empty && !y.empty, "x and y must have the same length");
+                this.put(x.front, y.front);
+                x.popFront;
+                y.popFront;
             }
         }
     }
@@ -2706,9 +2758,12 @@ struct CorrelationAccumulator(T, CorrelationAlgo correlationAlgo, Summation summ
         if (isInputRange!RangeX && !isConvertibleToSlice!RangeX &&
             isInputRange!RangeY && !isConvertibleToSlice!RangeY)
     {
-        import std.range: zip;
-        foreach(a, b; zip(x, y)) {
-            this.put(a, b);
+        while (!x.empty || !y.empty)
+        {
+            assert(!x.empty && !y.empty, "x and y must have the same length");
+            this.put(x.front, y.front);
+            x.popFront;
+            y.popFront;
         }
     }
 
@@ -3793,9 +3848,12 @@ struct CorrelationAccumulator(T, CorrelationAlgo correlationAlgo, Summation summ
             auto v = typeof(this)(x, y);
             this.put(v);
         } else {
-            import std.range: zip;
-            foreach(a, b; zip(x, y)) {
-                this.put(a, b);
+            while (!x.empty || !y.empty)
+            {
+                assert(!x.empty && !y.empty, "x and y must have the same length");
+                this.put(x.front, y.front);
+                x.popFront;
+                y.popFront;
             }
         }
     }
