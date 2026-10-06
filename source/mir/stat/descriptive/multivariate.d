@@ -51,12 +51,58 @@ unittest
         {
             assert(a.centeredSumOfSquaresLeft == 2);
             assert(a.centeredSumOfSquaresRight == 8);
-            assert(a.correlation == 1);
+            assert(a.correlation > 1 - 1e-14 && a.correlation < 1 + 1e-14);
         }
         A copy;
         copy.put(a);
         assert(copy.count == 3 && copy.centeredSumOfProducts == 4);
     }}
+}
+
+// Empty arrays, slices, and ranges are valid for every algorithm.
+version(mir_stat_test)
+@safe pure nothrow
+unittest
+{
+    import mir.ndslice.slice: sliced;
+    import std.algorithm: filter;
+
+    void check(A)()
+    {
+        double[3] x = [1, 2, 3];
+        double[3] y = [2, 4, 6];
+        auto empty = x[0 .. 0];
+        auto expected = A(x[], y[]);
+
+        void checkInput(X, Y)(X left, Y right)
+        {
+            auto a = A(left, right);
+            assert(a.count == 0);
+            static if (__traits(hasMember, A, "put"))
+            {
+                a.put(left, right);
+                assert(a.count == 0);
+                a.put(x[], y[]);
+                a.put(left, right);
+                assert(a.count == expected.count);
+                assert(a.centeredSumOfProducts == expected.centeredSumOfProducts);
+                static if (__traits(hasMember, A, "centeredSumOfSquaresLeft"))
+                {
+                    assert(a.centeredSumOfSquaresLeft == expected.centeredSumOfSquaresLeft);
+                    assert(a.centeredSumOfSquaresRight == expected.centeredSumOfSquaresRight);
+                }
+            }
+        }
+
+        checkInput(empty, empty);
+        checkInput(empty.sliced, empty.sliced);
+        checkInput(empty.filter!(v => true), empty.filter!(v => true));
+    }
+
+    static foreach (algo; __traits(allMembers, CovarianceAlgo))
+        check!(CovarianceAccumulator!(double, __traits(getMember, CovarianceAlgo, algo), Summation.naive))();
+    static foreach (algo; __traits(allMembers, CorrelationAlgo))
+        check!(CorrelationAccumulator!(double, __traits(getMember, CorrelationAlgo, algo), Summation.naive))();
 }
 
 private void putter3(Slices, T, U, Summation summation1, Summation summation2, Summation summation3)
@@ -69,12 +115,11 @@ private void putter3(Slices, T, U, Summation summation1, Summation summation2, S
         seed3.put(slices[2]);
     } else {
         import mir.ndslice.internal: frontOfDim;
-        do
+        while (!slices.empty)
         {
             frontOfDim!(0, slices)[0].putter3(seed1, seed2, seed3);
             slices.popFront;
         }
-        while(!slices.empty);
     }
 }
 
@@ -181,14 +226,14 @@ struct CovarianceAccumulator(T, CovarianceAlgo covarianceAlgo, Summation summati
         if (isInputRange!RangeX && !isConvertibleToSlice!RangeX && is(elementType!RangeX : T) &&
             isInputRange!RangeY && !isConvertibleToSlice!RangeY && is(elementType!RangeY : T))
     {
-        do
+        while (!x.empty || !y.empty)
         {
             assert(!(!x.empty && y.empty) && !(x.empty && !y.empty),
                    "x and y must both be empty at the same time, one cannot be empty while the other has remaining items");
             this.put(x.front, y.front);
             x.popFront;
             y.popFront;
-        } while(!x.empty || !y.empty); // Using an || instead of && so that the loop does not end early. mis-matched lengths of x and y sould be caught by above assert
+        }
     }
 
     ///
@@ -731,6 +776,8 @@ struct CovarianceAccumulator(T, CovarianceAlgo covarianceAlgo, Summation summati
         _count = x.length;
         summatorLeft.put(x.lightScope);
         summatorRight.put(y.lightScope);
+        if (_count == 0)
+            return;
         centeredSummatorOfProducts.put(x.vmap(LeftOp!("-", T)(meanLeft)).zip(y.vmap(LeftOp!("-", T)(meanRight))).map!(naryFun!"a * b"));
     }
 
@@ -765,16 +812,19 @@ struct CovarianceAccumulator(T, CovarianceAlgo covarianceAlgo, Summation summati
             }
         }
 
+        if (x.empty && y.empty)
+            return;
+
         T xMean = meanLeft;
         T yMean = meanRight;
-        do
+        while (!x.empty || !y.empty)
         {
             assert(!(!x.empty && y.empty) && !(x.empty && !y.empty),
                    "x and y must both be empty at the same time, one cannot be empty while the other has remaining items");
             centeredSummatorOfProducts.put((x.front - xMean) * (y.front - yMean));
             x.popFront;
             y.popFront;
-        } while(!x.empty || !y.empty); // Using an || instead of && so that the loop does not end early. mis-matched lengths of x and y sould be caught by above assert
+        }
     }
 
     ///
@@ -1031,14 +1081,14 @@ struct CovarianceAccumulator(T, CovarianceAlgo covarianceAlgo, Summation summati
         if (isInputRange!RangeX && !isConvertibleToSlice!RangeX && is(elementType!RangeX : T) &&
             isInputRange!RangeY && !isConvertibleToSlice!RangeY && is(elementType!RangeY : T))
     {
-        do
+        while (!x.empty || !y.empty)
         {
             assert(!(!x.empty && y.empty) && !(x.empty && !y.empty),
                    "x and y must both be empty at the same time, one cannot be empty while the other has remaining items");
             this.put(x.front, y.front);
             x.popFront;
             y.popFront;
-        } while(!x.empty || !y.empty); // Using an || instead of && so that the loop does not end early. mis-matched lengths of x and y sould be caught by above assert
+        }
     }
 
     ///
@@ -1285,6 +1335,8 @@ struct CovarianceAccumulator(T, CovarianceAlgo covarianceAlgo, Summation summati
         _count += x.length;
         summatorLeft.put(x.lightScope);
         summatorRight.put(y.lightScope);
+        if (_count == 0)
+            return;
         centeredSummatorOfProducts.put(x.vmap(LeftOp!("-", T)(meanLeft)).zip(y.vmap(LeftOp!("-", T)(meanRight))).map!(naryFun!"a * b"));
     }
 
@@ -1320,16 +1372,19 @@ struct CovarianceAccumulator(T, CovarianceAlgo covarianceAlgo, Summation summati
                 }
             }
 
+            if (x.empty && y.empty)
+                return;
+
             T xMean = meanLeft;
             T yMean = meanRight;
-            do
+            while (!x.empty || !y.empty)
             {
                 assert(!(!x.empty && y.empty) && !(x.empty && !y.empty),
                        "x and y must both be empty at the same time, one cannot be empty while the other has remaining items");
                 centeredSummatorOfProducts.put((x.front - xMean) * (y.front - yMean));
                 x.popFront;
                 y.popFront;
-            } while(!x.empty || !y.empty); // Using an || instead of && so that the loop does not end early. mis-matched lengths of x and y sould be caught by above assert
+            }
         } else {
             this.put(x, y);
         }
@@ -2346,14 +2401,14 @@ struct CorrelationAccumulator(T, CorrelationAlgo correlationAlgo, Summation summ
         if (isInputRange!RangeX && !isConvertibleToSlice!RangeX && is(elementType!RangeX : T) &&
             isInputRange!RangeY && !isConvertibleToSlice!RangeY && is(elementType!RangeY : T))
     {
-        do
+        while (!x.empty || !y.empty)
         {
             assert(!(!x.empty && y.empty) && !(x.empty && !y.empty),
                    "x and y must both be empty at the same time, one cannot be empty while the other has remaining items");
             this.put(x.front, y.front);
             x.popFront;
             y.popFront;
-        } while(!x.empty || !y.empty); // Using an || instead of && so that the loop does not end early. mis-matched lengths of x and y sould be caught by above assert
+        }
     }
 
     ///
@@ -3021,6 +3076,8 @@ struct CorrelationAccumulator(T, CorrelationAlgo correlationAlgo, Summation summ
         _count = x.length;
         summatorLeft.put(x.lightScope);
         summatorRight.put(y.lightScope);
+        if (_count == 0)
+            return;
         auto z = x.vmap(LeftOp!("-", T)(meanLeft)).zip(y.vmap(LeftOp!("-", T)(meanRight))).map!("a * b", "a * a", "b * b");
         z.putter3(centeredSummatorOfProducts,
                   centeredSummatorOfSquaresLeft,
@@ -3058,11 +3115,14 @@ struct CorrelationAccumulator(T, CorrelationAlgo correlationAlgo, Summation summ
             }
         }
 
+        if (x.empty && y.empty)
+            return;
+
         T xMean = meanLeft;
         T yMean = meanRight;
         T xDeMean;
         T yDeMean;
-        do
+        while (!x.empty || !y.empty)
         {
             assert(!(!x.empty && y.empty) && !(x.empty && !y.empty),
                    "x and y must both be empty at the same time, one cannot be empty while the other has remaining items");
@@ -3073,7 +3133,7 @@ struct CorrelationAccumulator(T, CorrelationAlgo correlationAlgo, Summation summ
             centeredSummatorOfSquaresRight.put(yDeMean * yDeMean);
             x.popFront;
             y.popFront;
-        } while(!x.empty || !y.empty); // Using an || instead of && so that the loop does not end early. mis-matched lengths of x and y sould be caught by above assert
+        }
     }
 
     ///
@@ -3370,14 +3430,14 @@ struct CorrelationAccumulator(T, CorrelationAlgo correlationAlgo, Summation summ
         if (isInputRange!RangeX && !isConvertibleToSlice!RangeX && is(elementType!RangeX : T) &&
             isInputRange!RangeY && !isConvertibleToSlice!RangeY && is(elementType!RangeY : T))
     {
-        do
+        while (!x.empty || !y.empty)
         {
             assert(!(!x.empty && y.empty) && !(x.empty && !y.empty),
                    "x and y must both be empty at the same time, one cannot be empty while the other has remaining items");
             this.put(x.front, y.front);
             x.popFront;
             y.popFront;
-        } while(!x.empty || !y.empty); // Using an || instead of && so that the loop does not end early. mis-matched lengths of x and y sould be caught by above assert
+        }
     }
 
     ///
@@ -3661,6 +3721,8 @@ struct CorrelationAccumulator(T, CorrelationAlgo correlationAlgo, Summation summ
         _count += x.length;
         summatorLeft.put(x.lightScope);
         summatorRight.put(y.lightScope);
+        if (_count == 0)
+            return;
         auto z = x.vmap(LeftOp!("-", T)(meanLeft)).zip(y.vmap(LeftOp!("-", T)(meanRight))).map!("a * b", "a * a", "b * b");
         z.putter3(centeredSummatorOfProducts,
                   centeredSummatorOfSquaresLeft,
@@ -3699,11 +3761,14 @@ struct CorrelationAccumulator(T, CorrelationAlgo correlationAlgo, Summation summ
                 }
             }
 
+            if (x.empty && y.empty)
+                return;
+
             T xMean = meanLeft;
             T yMean = meanRight;
             T xDeMean;
             T yDeMean;
-            do
+            while (!x.empty || !y.empty)
             {
                 assert(!(!x.empty && y.empty) && !(x.empty && !y.empty),
                        "x and y must both be empty at the same time, one cannot be empty while the other has remaining items");
@@ -3714,7 +3779,7 @@ struct CorrelationAccumulator(T, CorrelationAlgo correlationAlgo, Summation summ
                 centeredSummatorOfSquaresRight.put(yDeMean * yDeMean);
                 x.popFront;
                 y.popFront;
-            } while(!x.empty || !y.empty); // Using an || instead of && so that the loop does not end early. mis-matched lengths of x and y sould be caught by above assert
+            }
         } else {
             this.put(x, y);
         }
