@@ -31,12 +31,11 @@ private void putter2(Slices, T, U, Summation summation1, Summation summation2)
         seed2.put(slices[1]);
     } else {
         import mir.ndslice.internal: frontOf2;
-        do
+        while (!slices.empty)
         {
             frontOf2!(slices)[0].putter2(seed1, seed2);
             slices.popFront;
         }
-        while(!slices.empty);
     }
 }
 
@@ -155,14 +154,13 @@ struct WMeanAccumulator(T, Summation summation, AssumeWeights assumeWeights,
         if (isInputRange!RangeA && !isConvertibleToSlice!RangeA &&
             isInputRange!RangeB && !isConvertibleToSlice!RangeB)
     {
-        do
+        while (!r.empty && !w.empty)
         {
-            assert(!(!r.empty && w.empty) && !(r.empty && !w.empty),
-                   "r and w must both be empty at the same time, one cannot be empty while the other has remaining items");
             this.put(r.front, w.front);
             r.popFront;
             w.popFront;
-        } while(!r.empty || !w.empty); // Using an || instead of && so that the loop does not end early. mis-matched lengths of r and w sould be caught by above assert
+        }
+        assert(r.empty && w.empty, "WMeanAccumulator.put: lengths must match");
     }
 
     ///
@@ -963,6 +961,55 @@ unittest
     assert(iota(2, 3, 4, 5).as!double.alongDim!0.map!wmean == iota([3, 4, 5], 3 * 4 * 5 / 2));
 }
 
+// Empty batches leave weighted accumulators unchanged, including shapes whose
+// inner dimension is empty and ranges that do not convert to ndslice.
+version(mir_stat_test)
+@safe pure nothrow @nogc
+unittest
+{
+    import mir.ndslice.slice: sliced;
+    import std.algorithm: filter;
+    import std.meta: AliasSeq;
+    double[] empty;
+    static foreach (summation; AliasSeq!(Summation.naive, Summation.pairwise))
+    {{
+        WMeanAccumulator!(double, summation, AssumeWeights.primary) mean;
+        WSummator!(double, summation) sum;
+        mean.put(empty.sliced, empty.sliced);
+        sum.put(empty.sliced, empty.sliced);
+        assert(mean.weight == 0 && mean.wsum == 0 && sum.wsum == 0);
+        mean.put(4.0, 2.0);
+        sum.put(4.0, 2.0);
+        mean.put(empty.sliced, empty.sliced);
+        mean.put(empty.sliced(2, 0), empty.sliced(2, 0));
+        mean.put(empty.filter!(x => true), empty.filter!(x => true));
+        sum.put(empty.sliced, empty.sliced);
+        sum.put(empty.sliced(2, 0), empty.sliced(2, 0));
+        sum.put(empty.filter!(x => true), empty.filter!(x => true));
+        assert(mean.weight == 2 && mean.wmean == 4 && mean.wsum == 8);
+        assert(sum.wsum == 8);
+    }}
+}
+
+// Empty-input handling must still diagnose unequal range lengths.
+version(mir_stat_test)
+@system unittest
+{
+    import std.algorithm: filter;
+    import std.exception: assertThrown;
+    import core.exception: AssertError;
+    double[] empty;
+    double[2] data = [1, 2];
+    WMeanAccumulator!(double, Summation.naive, AssumeWeights.primary) mean;
+    WSummator!(double, Summation.naive) sum;
+    assertThrown!AssertError(mean.put(empty.filter!(x => true), data[].filter!(x => true)));
+    assertThrown!AssertError(mean.put(data[].filter!(x => true), empty.filter!(x => true)));
+    assertThrown!AssertError(sum.put(empty.filter!(x => true), data[].filter!(x => true)));
+    assertThrown!AssertError(sum.put(data[].filter!(x => true), empty.filter!(x => true)));
+    assertThrown!AssertError(mean.put(data[].filter!(x => true), data[0 .. 1].filter!(x => true)));
+    assertThrown!AssertError(sum.put(data[].filter!(x => true), data[0 .. 1].filter!(x => true)));
+}
+
 // test chaining
 version(mir_stat_test)
 @safe pure nothrow
@@ -1066,14 +1113,13 @@ struct WSummator(T, Summation summation, U = T)
         if (isInputRange!RangeA && !isConvertibleToSlice!RangeA &&
             isInputRange!RangeB && !isConvertibleToSlice!RangeB)
     {
-        do
+        while (!r.empty && !w.empty)
         {
-            assert(!(!r.empty && w.empty) && !(r.empty && !w.empty),
-                   "r and w must both be empty at the same time, one cannot be empty while the other has remaining items");
             this.put(r.front, w.front);
             r.popFront;
             w.popFront;
-        } while(!r.empty || !w.empty); // Using an || instead of && so that the loop does not end early. mis-matched lengths of r and w sould be caught by above assert
+        }
+        assert(r.empty && w.empty, "WSummator.put: lengths must match");
     }
 
     ///

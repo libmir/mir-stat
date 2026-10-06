@@ -165,6 +165,8 @@ unittest
 /++
 Computes the Categorical complementary cumulative distribution function (CCDF).
 
+Returns the probability of a category strictly greater than `x`.
+
 Params:
     x = value to evaluate CCDF
     p = slice containing the probability associated with the Categorical Distribution
@@ -180,7 +182,7 @@ sumType!(Slice!(Iterator, 1, kind)) categoricalCCDF(Iterator, SliceKind kind)(co
     in (p.all!("a >= 0"), "p must be greater than or equal to 0")
     in (p.all!("a <= 1"), "p must be less than or equal to 1")
 {
-    return p[x .. $].sum;
+    return p[x + 1 .. $].sum;
 }
 
 /// ditto
@@ -192,7 +194,7 @@ T categoricalCCDF(T)(const size_t x, scope const T[] p...)
     in (p.all!("a >= 0"), "p must be greater than or equal to 0")
     in (p.all!("a <= 1"), "p must be less than or equal to 1")
 {
-    return p[x .. $].sum;
+    return p[x + 1 .. $].sum;
 }
 
 ///
@@ -206,9 +208,9 @@ unittest
     static immutable x = [0.1, 0.5, 0.4];
     auto p = x.sliced;
 
-    0.categoricalCCDF(p).shouldApprox == 1.0;
-    1.categoricalCCDF(p).shouldApprox == 0.9;
-    2.categoricalCCDF(p).shouldApprox == 0.4;
+    0.categoricalCCDF(p).shouldApprox == 0.9;
+    1.categoricalCCDF(p).shouldApprox == 0.4;
+    2.categoricalCCDF(p).shouldApprox == 0.0;
 }
 
 /// Can also use dynamic array
@@ -220,9 +222,27 @@ unittest
 
     double[] p = [0.1, 0.5, 0.4];
 
-    0.categoricalCCDF(p).shouldApprox == 1.0;
-    1.categoricalCCDF(p).shouldApprox == 0.9;
-    2.categoricalCCDF(p).shouldApprox == 0.4;
+    0.categoricalCCDF(p).shouldApprox == 0.9;
+    1.categoricalCCDF(p).shouldApprox == 0.4;
+    2.categoricalCCDF(p).shouldApprox == 0.0;
+}
+
+// CDF and CCDF partition the probability, including at the final category.
+version(mir_stat_test)
+@safe pure nothrow @nogc
+unittest
+{
+    import mir.ndslice.slice: sliced;
+    import mir.math.common: approxEqual;
+    double[4] p = [0.125, 0, 0.375, 0.5];
+    foreach (x; 0 .. p.length)
+    {
+        assert(approxEqual(categoricalCDF(x, p[]) + categoricalCCDF(x, p[]), 1.0));
+        assert(approxEqual(categoricalCDF(x, p[].sliced) + categoricalCCDF(x, p[].sliced), 1.0));
+    }
+    assert(categoricalCCDF(3, p[]) == 0);
+    double[1] singleton = [1.0];
+    assert(categoricalCCDF(0, singleton[]) == 0);
 }
 
 /++
@@ -245,13 +265,16 @@ size_t categoricalInvCDF(T, Iterator, SliceKind kind)(const T q, scope const Sli
     in (p.all!("a <= 1"), "p must be less than or equal to 1")
 {
     CommonType!(T, elementType!(typeof(p))) s = 0.0;
-    size_t i;
-    s += p[i];
-    while (q > s) {
-        i++;
+    size_t lastPositive;
+    foreach (i; 0 .. p.length) {
         s += p[i];
+        if (q <= s)
+            return i;
+        if (p[i] > 0)
+            lastPositive = i;
     }
-    return i;// this ensures categoricalInvCDF(a, p) == b, which is consistent with categoricalCDF(b, p) == a (similar to bernoulliInvCDF)
+    // Rounding can leave the cumulative probability just below one.
+    return lastPositive;
 }
 
 /// ditto
@@ -265,13 +288,34 @@ size_t categoricalInvCDF(T)(const T q, scope const T[] p...)
     in (p.all!("a <= 1"), "p must be less than or equal to 1")
 {
     T s = 0.0;
-    size_t i;
-    s += p[i];
-    while (q > s) {
-        i++;
+    size_t lastPositive;
+    foreach (i; 0 .. p.length) {
         s += p[i];
+        if (q <= s)
+            return i;
+        if (p[i] > 0)
+            lastPositive = i;
     }
-    return i;// this ensures categoricalInvCDF(a, p) == b, which is consistent with categoricalCDF(b, p) == a (similar to bernoulliInvCDF)
+    // Rounding can leave the cumulative probability just below one.
+    return lastPositive;
+}
+
+// A rounded cumulative sum must not advance past the last category or select
+// trailing categories with zero probability.
+version(mir_stat_test)
+@safe pure nothrow @nogc
+unittest
+{
+    import mir.ndslice.slice: sliced;
+    double[12] p = 0;
+    p[0 .. 10] = 0.1;
+    assert(categoricalInvCDF(1.0, p[0 .. 10]) == 9);
+    assert(categoricalInvCDF(1.0, p[0 .. 10].sliced) == 9);
+    assert(categoricalInvCDF(1.0, p[]) == 9);
+    assert(categoricalInvCDF(1.0, p[].sliced) == 9);
+    assert(categoricalInvCDF(1.0 - double.epsilon / 2, p[]) == 9);
+    assert(categoricalInvCDF(0.0, p[]) == 0);
+    assert(categoricalInvCDF(0.25, p[]) == 2);
 }
 
 ///

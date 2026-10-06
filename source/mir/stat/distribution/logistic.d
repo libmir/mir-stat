@@ -26,9 +26,9 @@ See_also:
 T logisticPDF(T)(const T x)
     if (isFloatingPoint!T)
 {
-    import mir.math.common: exp;
+    import mir.math.common: exp, fabs;
 
-    const T exp_x = exp(-x);
+    const T exp_x = exp(-fabs(x));
     return exp_x / ((1 + exp_x) * (1 + exp_x));
 }
 
@@ -84,6 +84,11 @@ T logisticCDF(T)(const T x)
 {
     import mir.math.common: exp;
 
+    if (x < 0)
+    {
+        const T exp_x = exp(x);
+        return exp_x / (1 + exp_x);
+    }
     return 1 / (1 + exp(-x));
 }
 
@@ -137,10 +142,7 @@ See_also:
 T logisticCCDF(T)(const T x)
     if (isFloatingPoint!T)
 {
-    import mir.math.common: exp;
-
-    const T exp_x = exp(-x);
-    return exp_x / (1 + exp_x);
+    return logisticCDF(-x);
 }
 
 /++
@@ -254,9 +256,48 @@ See_also:
 T logisticLPDF(T)(const T x)
     if (isFloatingPoint!T)
 {
-    import mir.math.common: exp, log;
+    import mir.math.common: exp, fabs;
+    import mir.math.internal.log1p: log1p;
 
-    return -x - 2 * log(1 + exp(-x));
+    const T magnitude = fabs(x);
+    return -magnitude - 2 * log1p(exp(-magnitude));
+}
+
+// Evaluate tails without overflowing exp(-x), including representable small
+// probabilities that would be lost by taking the reciprocal of exp(x).
+version(mir_stat_test)
+@safe pure nothrow @nogc
+unittest
+{
+    import std.meta: AliasSeq;
+    import mir.math.common: exp, approxEqual;
+    import std.math: isNaN;
+    static foreach (T; AliasSeq!(float, double, real))
+    {{
+        const T x = 1000;
+        assert(logisticPDF(-x) == logisticPDF(x));
+        assert(logisticLPDF(-x) == -x);
+        assert(logisticLPDF(x) == -x);
+        assert(logisticCCDF(-x) == 1);
+        assert(logisticCDF(x) == 1);
+        assert(logisticPDF(T.infinity) == 0);
+        assert(logisticPDF(-T.infinity) == 0);
+        assert(logisticCDF(-T.infinity) == 0);
+        assert(logisticCCDF(-T.infinity) == 1);
+        assert(logisticLPDF(-T.infinity) == -T.infinity);
+        assert(isNaN(logisticPDF(T.nan)));
+        assert(isNaN(logisticCDF(T.nan)));
+        assert(isNaN(logisticCCDF(T.nan)));
+        assert(isNaN(logisticLPDF(T.nan)));
+        const T tail = T.max_exp * T(0.695);
+        const T expected = exp(-tail);
+        assert(expected > 0);
+        assert(approxEqual(logisticCDF(-tail) / expected, T(1), T.epsilon * 8, T(0)));
+        assert(approxEqual(logisticPDF(-tail) / expected, T(1), T.epsilon * 8, T(0)));
+        assert(logisticCCDF(tail) == logisticCDF(-tail));
+        assert(logisticPDF(-x, T(0), T(1)) == logisticPDF(-x));
+        assert(logisticLPDF(-x, T(0), T(1)) == -x);
+    }}
 }
 
 /++
