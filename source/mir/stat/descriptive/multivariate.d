@@ -24,6 +24,41 @@ import mir.internal.utility: isFloatingPoint;
 import mir.math.sum: Summation, Summator;
 import std.traits: isMutable;
 
+// Merging empty partitions must preserve state, including when both sides
+// are empty and observations are added afterward.
+version(mir_stat_test)
+@safe pure nothrow @nogc
+unittest
+{
+    import std.meta: AliasSeq;
+    static foreach (summation; AliasSeq!(Summation.naive, Summation.pairwise))
+    static foreach (A; AliasSeq!(
+        CovarianceAccumulator!(double, CovarianceAlgo.online, summation),
+        CovarianceAccumulator!(double, CovarianceAlgo.hybrid, summation),
+        CorrelationAccumulator!(double, CorrelationAlgo.online, summation),
+        CorrelationAccumulator!(double, CorrelationAlgo.hybrid, summation)))
+    {{
+        A a, empty;
+        a.put(empty);
+        assert(a.count == 0 && a.centeredSumOfProducts == 0);
+        a.put(1.0, 2.0);
+        a.put(2.0, 4.0);
+        a.put(3.0, 6.0);
+        a.put(empty);
+        assert(a.count == 3 && a.centeredSumOfProducts == 4);
+        assert(a.meanLeft == 2 && a.meanRight == 4);
+        static if (__traits(hasMember, A, "correlation"))
+        {
+            assert(a.centeredSumOfSquaresLeft == 2);
+            assert(a.centeredSumOfSquaresRight == 8);
+            assert(a.correlation == 1);
+        }
+        A copy;
+        copy.put(a);
+        assert(copy.count == 3 && copy.centeredSumOfProducts == 4);
+    }}
+}
+
 private void putter3(Slices, T, U, Summation summation1, Summation summation2, Summation summation3)
     (scope Slices slices, ref Summator!(T, summation1) seed1, ref Summator!(U, summation2) seed2, ref Summator!(U, summation3) seed3)
 {
@@ -425,6 +460,9 @@ struct CovarianceAccumulator(T, CovarianceAlgo covarianceAlgo, Summation summati
     void put(U, CovarianceAlgo covAlgo, Summation sumAlgo)(CovarianceAccumulator!(U, covAlgo, sumAlgo) v)
         if (covAlgo != CovarianceAlgo.assumeZeroMean)
     {
+        // Empty partitions contribute no observations or centered moments.
+        if (v.count == 0)
+            return;
         size_t oldCount = count;
         T deltaLeft = v.meanLeft;
         T deltaRight = v.meanRight;
@@ -1328,6 +1366,9 @@ struct CovarianceAccumulator(T, CovarianceAlgo covarianceAlgo, Summation summati
     ///
     void put(U, CovarianceAlgo covAlgo, Summation sumAlgo)(CovarianceAccumulator!(U, covAlgo, sumAlgo) v)
     {
+        // Empty partitions contribute no observations or centered moments.
+        if (v.count == 0)
+            return;
         size_t oldCount = count;
         T deltaLeft = v.meanLeft!T;
         T deltaRight = v.meanRight!T;
@@ -2637,6 +2678,9 @@ struct CorrelationAccumulator(T, CorrelationAlgo correlationAlgo, Summation summ
     void put(U, CorrelationAlgo covAlgo, Summation sumAlgo)(CorrelationAccumulator!(U, covAlgo, sumAlgo) v)
         if (!is(covAlgo == CorrelationAlgo.assumeZeroMean))
     {
+        // Empty partitions contribute no observations or centered moments.
+        if (v.count == 0)
+            return;
         size_t oldCount = count;
         T deltaLeft = v.meanLeft;
         T deltaRight = v.meanRight;
@@ -3711,6 +3755,9 @@ struct CorrelationAccumulator(T, CorrelationAlgo correlationAlgo, Summation summ
     ///
     void put(U, CorrelationAlgo covAlgo, Summation sumAlgo)(CorrelationAccumulator!(U, covAlgo, sumAlgo) v)
     {
+        // Empty partitions contribute no observations or centered moments.
+        if (v.count == 0)
+            return;
         size_t oldCount = count;
         T deltaLeft = v.meanLeft;
         T deltaRight = v.meanRight;
