@@ -37,12 +37,16 @@ T gevPDF(T)(const T x, const T mu, const T sigma, const T xi)
     if (xi.fabs <= T.min_normal)
     {
         auto t = exp(-s);
+        if (t == T.infinity)
+            return 0;
         return t * exp(-t) / sigma;
     }
     auto v = 1 + xi * s;
     if (v <= 0)
-        return 0;
+        return xi == -1 ? 1 / sigma : xi < -1 ? T.infinity : T(0);
     auto a = pow(v, -1 / xi);
+    if (a == T.infinity)
+        return 0;
     return a * exp(-a) / (v * sigma);
 }
 
@@ -220,12 +224,17 @@ T gevLPDF(T)(const T x, const T mu, const T sigma, const T xi)
     if (xi.fabs <= T.min_normal)
     {
         auto t = exp(-s);
-        return log(t) - t - log(sigma);
+        if (t == T.infinity)
+            return -T.infinity;
+        // Avoid underflow in exp(-s) followed by log, even for finite s.
+        return -s - t - log(sigma);
     }
     auto v = 1 + xi * s;
     if (v <= 0)
-        return -double.infinity;
+        return xi == -1 ? -log(sigma) : xi < -1 ? T.infinity : -T.infinity;
     auto a = pow(v, -1 / xi);
+    if (a == T.infinity)
+        return -T.infinity;
     return log(a) - a - log(v * sigma);
 }
 
@@ -277,5 +286,43 @@ unittest
             assert(approxEqual(gevPDF(x, mu, sigma, T(0)), exp(expectedLog),
                 32 * T.epsilon, T(0)));
         }
+    }}
+}
+
+// The upper support endpoint has a shape-dependent density limit.
+version(mir_stat_test)
+@safe pure nothrow @nogc
+unittest
+{
+    import std.meta: AliasSeq;
+    import mir.math.common: log, approxEqual;
+
+    static foreach (T; AliasSeq!(float, double, real))
+    {{
+        const T mu = 2;
+        const T sigma = 3;
+        assert(gevPDF(mu + sigma, mu, sigma, T(-1)) == 1 / sigma);
+        assert(gevLPDF(mu + sigma, mu, sigma, T(-1)) == -log(sigma));
+        assert(gevPDF(mu + 2 * sigma, mu, sigma, T(-0.5)) == 0);
+        assert(gevLPDF(mu + 2 * sigma, mu, sigma, T(-0.5)) == -T.infinity);
+        assert(gevPDF(mu + sigma / 2, mu, sigma, T(-2)) == T.infinity);
+        assert(gevLPDF(mu + sigma / 2, mu, sigma, T(-2)) == T.infinity);
+        assert(gevPDF(mu - sigma, mu, sigma, T(1)) == 0);
+        assert(gevLPDF(mu - sigma, mu, sigma, T(1)) == -T.infinity);
+
+        // Finite log-densities survive PDF underflow in the Gumbel upper tail.
+        const T x = 1000;
+        assert(approxEqual(gevLPDF(x, T(0), T(1), T(0)), -x,
+            8 * T.epsilon, T(0)));
+        assert(gevPDF(T.infinity, T(0), T(1), T(0)) == 0);
+        assert(gevLPDF(T.infinity, T(0), T(1), T(0)) == -T.infinity);
+        assert(gevPDF(-T.infinity, T(0), T(1), T(0)) == 0);
+        assert(gevLPDF(-T.infinity, T(0), T(1), T(0)) == -T.infinity);
+
+        // A positive shape can also overflow the intermediate power near its lower endpoint.
+        const T xi = T(1) / 512;
+        const T lowerTail = -512 + T.epsilon * 512;
+        assert(gevPDF(lowerTail, T(0), T(1), xi) == 0);
+        assert(gevLPDF(lowerTail, T(0), T(1), xi) == -T.infinity);
     }}
 }
