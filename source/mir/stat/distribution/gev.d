@@ -37,7 +37,7 @@ T gevPDF(T)(const T x, const T mu, const T sigma, const T xi)
     if (xi.fabs <= T.min_normal)
     {
         auto t = exp(-s);
-        return t * exp(-t);
+        return t * exp(-t) / sigma;
     }
     auto v = 1 + xi * s;
     if (v <= 0)
@@ -55,7 +55,7 @@ unittest
 
     gevPDF(-3, 2, 3, -0.5).shouldApprox == 0.02120353011709564;
     gevPDF(-1, 2, 3, +0.5).shouldApprox == 0.04884170370329114;
-    gevPDF(-1, 2, 3, 0.0).shouldApprox == 0.1793740787340172;
+    gevPDF(-1, 2, 3, 0.0).shouldApprox == 0.05979135957800574;
 }
 
 // Checking v <= 0 branch
@@ -220,7 +220,7 @@ T gevLPDF(T)(const T x, const T mu, const T sigma, const T xi)
     if (xi.fabs <= T.min_normal)
     {
         auto t = exp(-s);
-        return log(t) - t;
+        return log(t) - t - log(sigma);
     }
     auto v = 1 + xi * s;
     if (v <= 0)
@@ -238,7 +238,7 @@ unittest
 
     gevLPDF(-3, 2, 3, -0.5).shouldApprox == -3.85358759620891;
     gevLPDF(-1, 2, 3, +0.5).shouldApprox == -3.01917074698827;
-    gevLPDF(-1, 2, 3, 0.0).shouldApprox == -1.71828182845905;
+    gevLPDF(-1, 2, 3, 0.0).shouldApprox == -2.81689411712715;
 }
 
 // Checking v <= 0 branch
@@ -248,4 +248,34 @@ unittest
 {
     import mir.test: shouldApprox;
     gevLPDF(-1.0, 0, 1, 1).shouldApprox == -double.infinity;
+}
+
+// Zero shape retains the density scaling of the general distribution.
+version(mir_stat_test)
+@safe pure nothrow @nogc
+unittest
+{
+    import std.meta: AliasSeq;
+    import mir.math.common: exp, log, approxEqual;
+
+    static foreach (T; AliasSeq!(float, double, real))
+    {{
+        foreach (sigma; [T(0.25), T(1), T(3)])
+        {
+            const T mu = 2;
+            const T z = 1;
+            const T x = mu + sigma * z;
+            const T standard = gevPDF(z, T(0), T(1), T(0));
+            assert(approxEqual(gevPDF(x, mu, sigma, T(0)), standard / sigma,
+                32 * T.epsilon, T(0)));
+            assert(approxEqual(gevLPDF(x, mu, sigma, T(0)),
+                gevLPDF(z, T(0), T(1), T(0)) - log(sigma),
+                32 * T.epsilon, 32 * T.epsilon));
+            const T expectedLog = -z - exp(-z) - log(sigma);
+            assert(approxEqual(gevLPDF(x, mu, sigma, T(0)), expectedLog,
+                32 * T.epsilon, 32 * T.epsilon));
+            assert(approxEqual(gevPDF(x, mu, sigma, T(0)), exp(expectedLog),
+                32 * T.epsilon, T(0)));
+        }
+    }}
 }
