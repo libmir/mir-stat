@@ -151,6 +151,91 @@ unittest
     }}
 }
 
+// Two-pass batches must save independent cursors; online insertion needs only one pass.
+version(mir_stat_test)
+unittest
+{
+    import std.meta: AliasSeq;
+    import std.range.primitives: isInputRange, isForwardRange;
+
+    class Cursor(T)
+    {
+        T[] data;
+        this(T[] data) { this.data = data; }
+    }
+    struct Input(T)
+    {
+        Cursor!T cursor;
+        bool empty() { return cursor.data.length == 0; }
+        T front() { return cursor.data[0]; }
+        void popFront() { cursor.data = cursor.data[1 .. $]; }
+    }
+    struct Forward(T, bool shaped = false)
+    {
+        Input!T input;
+        alias input this;
+        static if (shaped)
+            @property size_t[1] shape() const { return [input.cursor.data.length]; }
+        @property Forward save()
+        {
+            return Forward(Input!T(new Cursor!T(input.cursor.data)));
+        }
+    }
+
+    static assert(isInputRange!(Input!double));
+    static assert(!isForwardRange!(Input!double));
+    static assert(isForwardRange!(Forward!double));
+    import mir.primitives: hasShape;
+    static assert(!hasShape!(Forward!double));
+    static assert(hasShape!(Forward!(double, true)));
+    double[] x = [1, 2, 3], y = [2, 4, 6];
+
+    static foreach (A; AliasSeq!(
+        CovarianceAccumulator!(double, CovarianceAlgo.twoPass, Summation.naive),
+        CovarianceAccumulator!(double, CovarianceAlgo.hybrid, Summation.naive),
+        CorrelationAccumulator!(double, CorrelationAlgo.twoPass, Summation.naive),
+        CorrelationAccumulator!(double, CorrelationAlgo.hybrid, Summation.naive)))
+    {{
+        auto left = Input!double(new Cursor!double(x));
+        auto right = Input!double(new Cursor!double(y));
+        static assert(!__traits(compiles, A(left, right)));
+        auto a = A(Forward!double(left), Forward!double(right));
+        assert(a.count == 3 && a.centeredSumOfProducts == 4);
+        static if (__traits(hasMember, A, "centeredSumOfSquaresLeft"))
+        {
+            assert(a.centeredSumOfSquaresLeft == 2);
+            assert(a.centeredSumOfSquaresRight == 8);
+        }
+        static if (__traits(hasMember, A, "put"))
+            static assert(!__traits(compiles, a.put(left, right)));
+
+        auto shaped = A(
+            Forward!(double, true)(Input!double(new Cursor!double(x))),
+            Forward!(double, true)(Input!double(new Cursor!double(y))));
+        assert(shaped.count == 3 && shaped.centeredSumOfProducts == 4);
+    }}
+
+    static foreach (A; AliasSeq!(
+        CovarianceAccumulator!(double, CovarianceAlgo.online, Summation.naive),
+        CorrelationAccumulator!(double, CorrelationAlgo.online, Summation.naive)))
+    {{
+        auto a = A(Input!double(new Cursor!double(x)), Input!double(new Cursor!double(y)));
+        assert(a.count == 3 && a.centeredSumOfProducts == 4);
+    }}
+
+    // The outer range of hybrid batches is traversed only once.
+    static foreach (A; AliasSeq!(
+        CovarianceAccumulator!(double, CovarianceAlgo.hybrid, Summation.naive),
+        CorrelationAccumulator!(double, CorrelationAlgo.hybrid, Summation.naive)))
+    {{
+        auto left = Input!(double[])(new Cursor!(double[])([x[0 .. 1], x[1 .. $]]));
+        auto right = Input!(double[])(new Cursor!(double[])([y[0 .. 1], y[1 .. $]]));
+        A a;
+        a.put(left, right);
+        assert(a.count == 3 && a.centeredSumOfProducts == 4);
+    }}
+}
+
 private void putter3(Slices, T, U, Summation summation1, Summation summation2, Summation summation3)
     (scope Slices slices, ref Summator!(T, summation1) seed1, ref Summator!(U, summation2) seed2, ref Summator!(U, summation3) seed3)
 {
@@ -796,6 +881,7 @@ struct CovarianceAccumulator(T, CovarianceAlgo covarianceAlgo, Summation summati
     import mir.math.sum: elementType, Summator;
     import mir.ndslice.slice: isConvertibleToSlice, isSlice, Slice, SliceKind;
     import mir.primitives: isInputRange, front, empty, popFront;
+    import std.range.primitives: isForwardRange, save;
     import mir.stat.descriptive.univariate: MeanAccumulator;
 
     ///
@@ -839,22 +925,22 @@ struct CovarianceAccumulator(T, CovarianceAlgo covarianceAlgo, Summation summati
         this(x.toSlice, y.toSlice);
     }
 
-    ///
+    /// Generic ranges must be forward ranges: the first pass uses saved cursors to compute means.
     this(RangeX, RangeY)(RangeX x, RangeY y)
-        if (isInputRange!RangeX && !isConvertibleToSlice!RangeX && is(elementType!RangeX : T) &&
-            isInputRange!RangeY && !isConvertibleToSlice!RangeY && is(elementType!RangeY : T))
+        if (isForwardRange!RangeX && !isConvertibleToSlice!RangeX && is(elementType!RangeX : T) &&
+            isForwardRange!RangeY && !isConvertibleToSlice!RangeY && is(elementType!RangeY : T))
     {
         import mir.primitives: elementCount, hasShape;
 
         static if (hasShape!RangeX && hasShape!RangeY) {
             assert(x.elementCount == y.elementCount);
             _count += x.elementCount;
-            summatorLeft.put(x);
-            summatorRight.put(y);
+            summatorLeft.put(x.save);
+            summatorRight.put(y.save);
         } else {
             import std.range: zip;
 
-            foreach(a, b; zip(x, y)) {
+            foreach(a, b; zip(x.save, y.save)) {
                 _count++;
                 summatorLeft.put(a);
                 summatorRight.put(b);
@@ -1348,6 +1434,7 @@ struct CovarianceAccumulator(T, CovarianceAlgo covarianceAlgo, Summation summati
     import mir.math.sum: elementType, Summator;
     import mir.ndslice.slice: isConvertibleToSlice, isSlice, Slice, SliceKind;
     import mir.primitives: isInputRange, front, empty, popFront;
+    import std.range.primitives: isForwardRange, save;
 
     ///
     private size_t _count;
@@ -1398,23 +1485,27 @@ struct CovarianceAccumulator(T, CovarianceAlgo covarianceAlgo, Summation summati
         this(x.toSlice, y.toSlice);
     }
 
-    ///
+    /// Generic scalar batches must be forward ranges because their observations are traversed twice.
+    /// An outer range of batches may be single-pass; each inner batch must support its own calculation.
    this(RangeX, RangeY)(RangeX x, RangeY y)
         if (isInputRange!RangeX && !isConvertibleToSlice!RangeX &&
             isInputRange!RangeY && !isConvertibleToSlice!RangeY)
     {
         static if (is(elementType!RangeX : T) && is(elementType!RangeY : T)) {
+            static assert(isForwardRange!RangeX && isForwardRange!RangeY,
+                "Hybrid accumulation requires forward ranges for scalar batches; " ~
+                "use the online algorithm for single-pass inputs.");
             import mir.primitives: elementCount, hasShape;
 
             static if (hasShape!RangeX && hasShape!RangeY) {
                 assert(x.elementCount == y.elementCount);
                 _count += x.elementCount;
-                summatorLeft.put(x);
-                summatorRight.put(y);
+                summatorLeft.put(x.save);
+                summatorRight.put(y.save);
             } else {
                 import std.range: zip;
 
-                foreach(a, b; zip(x, y)) {
+                foreach(a, b; zip(x.save, y.save)) {
                     _count++;
                     summatorLeft.put(a);
                     summatorRight.put(b);
@@ -1444,6 +1535,10 @@ struct CovarianceAccumulator(T, CovarianceAlgo covarianceAlgo, Summation summati
         if (isInputRange!RangeX && isInputRange!RangeY)
     {
         static if (is(elementType!RangeX : T) && is(elementType!RangeY : T)) {
+            static assert((isConvertibleToSlice!RangeX && isConvertibleToSlice!RangeY) ||
+                          (isForwardRange!RangeX && isForwardRange!RangeY),
+                "Hybrid accumulation requires forward ranges for scalar batches; " ~
+                "use the online algorithm for single-pass inputs.");
             auto v = typeof(this)(x, y);
             this.put(v);
         } else {
@@ -3098,6 +3193,7 @@ struct CorrelationAccumulator(T, CorrelationAlgo correlationAlgo, Summation summ
     import mir.math.sum: elementType, Summator;
     import mir.ndslice.slice: isConvertibleToSlice, isSlice, Slice, SliceKind;
     import mir.primitives: isInputRange, front, empty, popFront;
+    import std.range.primitives: isForwardRange, save;
     import mir.stat.descriptive.univariate: MeanAccumulator;
 
     ///
@@ -3148,22 +3244,22 @@ struct CorrelationAccumulator(T, CorrelationAlgo correlationAlgo, Summation summ
         this(x.toSlice, y.toSlice);
     }
 
-    ///
+    /// Generic ranges must be forward ranges: the first pass uses saved cursors to compute means.
     this(RangeX, RangeY)(RangeX x, RangeY y)
-        if (isInputRange!RangeX && !isConvertibleToSlice!RangeX && is(elementType!RangeX : T) &&
-            isInputRange!RangeY && !isConvertibleToSlice!RangeY && is(elementType!RangeY : T))
+        if (isForwardRange!RangeX && !isConvertibleToSlice!RangeX && is(elementType!RangeX : T) &&
+            isForwardRange!RangeY && !isConvertibleToSlice!RangeY && is(elementType!RangeY : T))
     {
         import mir.primitives: elementCount, hasShape;
 
         static if (hasShape!RangeX && hasShape!RangeY) {
             assert(x.elementCount == y.elementCount);
             _count += x.elementCount;
-            summatorLeft.put(x);
-            summatorRight.put(y);
+            summatorLeft.put(x.save);
+            summatorRight.put(y.save);
         } else {
             import std.range: zip;
 
-            foreach(a, b; zip(x, y)) {
+            foreach(a, b; zip(x.save, y.save)) {
                 _count++;
                 summatorLeft.put(a);
                 summatorRight.put(b);
@@ -3736,6 +3832,7 @@ struct CorrelationAccumulator(T, CorrelationAlgo correlationAlgo, Summation summ
     import mir.math.sum: elementType, Summator;
     import mir.ndslice.slice: isConvertibleToSlice, isSlice, Slice, SliceKind;
     import mir.primitives: isInputRange, front, empty, popFront;
+    import std.range.primitives: isForwardRange, save;
 
     ///
     private size_t _count;
@@ -3793,23 +3890,27 @@ struct CorrelationAccumulator(T, CorrelationAlgo correlationAlgo, Summation summ
         this(x.toSlice, y.toSlice);
     }
 
-    ///
+    /// Generic scalar batches must be forward ranges because their observations are traversed twice.
+    /// An outer range of batches may be single-pass; each inner batch must support its own calculation.
    this(RangeX, RangeY)(RangeX x, RangeY y)
         if (isInputRange!RangeX && !isConvertibleToSlice!RangeX &&
             isInputRange!RangeY && !isConvertibleToSlice!RangeY)
     {
         static if (is(elementType!RangeX : T) && is(elementType!RangeY : T)) {
+            static assert(isForwardRange!RangeX && isForwardRange!RangeY,
+                "Hybrid accumulation requires forward ranges for scalar batches; " ~
+                "use the online algorithm for single-pass inputs.");
             import mir.primitives: elementCount, hasShape;
 
             static if (hasShape!RangeX && hasShape!RangeY) {
                 assert(x.elementCount == y.elementCount);
                 _count += x.elementCount;
-                summatorLeft.put(x);
-                summatorRight.put(y);
+                summatorLeft.put(x.save);
+                summatorRight.put(y.save);
             } else {
                 import std.range: zip;
 
-                foreach(a, b; zip(x, y)) {
+                foreach(a, b; zip(x.save, y.save)) {
                     _count++;
                     summatorLeft.put(a);
                     summatorRight.put(b);
@@ -3845,6 +3946,10 @@ struct CorrelationAccumulator(T, CorrelationAlgo correlationAlgo, Summation summ
         if (isInputRange!RangeX && isInputRange!RangeY)
     {
         static if (is(elementType!RangeX : T) && is(elementType!RangeY : T)) {
+            static assert((isConvertibleToSlice!RangeX && isConvertibleToSlice!RangeY) ||
+                          (isForwardRange!RangeX && isForwardRange!RangeY),
+                "Hybrid accumulation requires forward ranges for scalar batches; " ~
+                "use the online algorithm for single-pass inputs.");
             auto v = typeof(this)(x, y);
             this.put(v);
         } else {
