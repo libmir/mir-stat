@@ -24,6 +24,218 @@ import mir.internal.utility: isFloatingPoint;
 import mir.math.sum: Summation, Summator;
 import std.traits: isMutable;
 
+// Merging empty partitions must preserve state, including when both sides
+// are empty and observations are added afterward.
+version(mir_stat_test)
+@safe pure nothrow @nogc
+unittest
+{
+    import std.meta: AliasSeq;
+    static foreach (summation; AliasSeq!(Summation.naive, Summation.pairwise))
+    static foreach (A; AliasSeq!(
+        CovarianceAccumulator!(double, CovarianceAlgo.online, summation),
+        CovarianceAccumulator!(double, CovarianceAlgo.hybrid, summation),
+        CorrelationAccumulator!(double, CorrelationAlgo.online, summation),
+        CorrelationAccumulator!(double, CorrelationAlgo.hybrid, summation)))
+    {{
+        A a, empty;
+        a.put(empty);
+        assert(a.count == 0 && a.centeredSumOfProducts == 0);
+        a.put(1.0, 2.0);
+        a.put(2.0, 4.0);
+        a.put(3.0, 6.0);
+        a.put(empty);
+        assert(a.count == 3 && a.centeredSumOfProducts == 4);
+        assert(a.meanLeft == 2 && a.meanRight == 4);
+        static if (__traits(hasMember, A, "correlation"))
+        {
+            assert(a.centeredSumOfSquaresLeft == 2);
+            assert(a.centeredSumOfSquaresRight == 8);
+            assert(a.correlation > 1 - 1e-14 && a.correlation < 1 + 1e-14);
+        }
+        A copy;
+        copy.put(a);
+        assert(copy.count == 3 && copy.centeredSumOfProducts == 4);
+    }}
+}
+
+// Empty arrays, slices, and ranges are valid for every algorithm.
+version(mir_stat_test)
+@safe pure nothrow
+unittest
+{
+    import mir.ndslice.slice: sliced;
+    import std.algorithm: filter;
+
+    void check(A)()
+    {
+        double[3] x = [1, 2, 3];
+        double[3] y = [2, 4, 6];
+        auto empty = x[0 .. 0];
+        auto expected = A(x[], y[]);
+
+        void checkInput(X, Y)(X left, Y right)
+        {
+            auto a = A(left, right);
+            assert(a.count == 0);
+            static if (__traits(hasMember, A, "put"))
+            {
+                a.put(left, right);
+                assert(a.count == 0);
+                a.put(x[], y[]);
+                a.put(left, right);
+                assert(a.count == expected.count);
+                assert(a.centeredSumOfProducts == expected.centeredSumOfProducts);
+                static if (__traits(hasMember, A, "centeredSumOfSquaresLeft"))
+                {
+                    assert(a.centeredSumOfSquaresLeft == expected.centeredSumOfSquaresLeft);
+                    assert(a.centeredSumOfSquaresRight == expected.centeredSumOfSquaresRight);
+                }
+            }
+        }
+
+        checkInput(empty, empty);
+        checkInput(empty.sliced, empty.sliced);
+        checkInput(empty.filter!(v => true), empty.filter!(v => true));
+    }
+
+    static foreach (algo; __traits(allMembers, CovarianceAlgo))
+        check!(CovarianceAccumulator!(double, __traits(getMember, CovarianceAlgo, algo), Summation.naive))();
+    static foreach (algo; __traits(allMembers, CorrelationAlgo))
+        check!(CorrelationAccumulator!(double, __traits(getMember, CorrelationAlgo, algo), Summation.naive))();
+}
+
+// Range insertion must reject unequal lengths, including nested batches.
+version(mir_stat_test)
+unittest
+{
+    import core.exception: AssertError;
+    import std.algorithm: filter;
+    import std.meta: AliasSeq;
+    import std.exception: assertThrown;
+
+    static foreach (A; AliasSeq!(
+        CovarianceAccumulator!(double, CovarianceAlgo.online, Summation.naive),
+        CovarianceAccumulator!(double, CovarianceAlgo.hybrid, Summation.naive),
+        CorrelationAccumulator!(double, CorrelationAlgo.online, Summation.naive),
+        CorrelationAccumulator!(double, CorrelationAlgo.hybrid, Summation.naive)))
+    {{
+        double[3] x = [1, 2, 3];
+        double[3] y = [2, 4, 6];
+        // Filters exercise the range overload rather than slice conversion.
+        foreach (n; [0, 2])
+        {
+            A leftShort, rightShort;
+            assertThrown!AssertError(leftShort.put(
+                x[0 .. n].filter!(v => true), y[].filter!(v => true)));
+            assertThrown!AssertError(rightShort.put(
+                x[].filter!(v => true), y[0 .. n].filter!(v => true)));
+        }
+        A equal;
+        equal.put(x[].filter!(v => true), y[].filter!(v => true));
+        assert(equal.count == 3 && equal.centeredSumOfProducts == 4);
+
+        double[][2] rowsX = [x[0 .. 1], x[1 .. 3]];
+        double[][2] rowsY = [y[0 .. 1], y[1 .. 3]];
+        foreach (n; [0, 1])
+        {
+            A leftShort, rightShort;
+            assertThrown!AssertError(leftShort.put(
+                rowsX[0 .. n].filter!(v => true), rowsY[].filter!(v => true)));
+            assertThrown!AssertError(rightShort.put(
+                rowsX[].filter!(v => true), rowsY[0 .. n].filter!(v => true)));
+        }
+        A nested;
+        nested.put(rowsX[].filter!(v => true), rowsY[].filter!(v => true));
+        assert(nested.count == 3 && nested.centeredSumOfProducts == 4);
+    }}
+}
+
+// Two-pass batches must save independent cursors; online insertion needs only one pass.
+version(mir_stat_test)
+unittest
+{
+    import std.meta: AliasSeq;
+    import std.range.primitives: isInputRange, isForwardRange;
+
+    class Cursor(T)
+    {
+        T[] data;
+        this(T[] data) { this.data = data; }
+    }
+    struct Input(T)
+    {
+        Cursor!T cursor;
+        bool empty() { return cursor.data.length == 0; }
+        T front() { return cursor.data[0]; }
+        void popFront() { cursor.data = cursor.data[1 .. $]; }
+    }
+    struct Forward(T, bool shaped = false)
+    {
+        Input!T input;
+        alias input this;
+        static if (shaped)
+            @property size_t[1] shape() const { return [input.cursor.data.length]; }
+        @property Forward save()
+        {
+            return Forward(Input!T(new Cursor!T(input.cursor.data)));
+        }
+    }
+
+    static assert(isInputRange!(Input!double));
+    static assert(!isForwardRange!(Input!double));
+    static assert(isForwardRange!(Forward!double));
+    import mir.primitives: hasShape;
+    static assert(!hasShape!(Forward!double));
+    static assert(hasShape!(Forward!(double, true)));
+    double[] x = [1, 2, 3], y = [2, 4, 6];
+
+    static foreach (A; AliasSeq!(
+        CovarianceAccumulator!(double, CovarianceAlgo.twoPass, Summation.naive),
+        CovarianceAccumulator!(double, CovarianceAlgo.hybrid, Summation.naive),
+        CorrelationAccumulator!(double, CorrelationAlgo.twoPass, Summation.naive),
+        CorrelationAccumulator!(double, CorrelationAlgo.hybrid, Summation.naive)))
+    {{
+        auto left = Input!double(new Cursor!double(x));
+        auto right = Input!double(new Cursor!double(y));
+        static assert(!__traits(compiles, A(left, right)));
+        auto a = A(Forward!double(left), Forward!double(right));
+        assert(a.count == 3 && a.centeredSumOfProducts == 4);
+        static if (__traits(hasMember, A, "centeredSumOfSquaresLeft"))
+        {
+            assert(a.centeredSumOfSquaresLeft == 2);
+            assert(a.centeredSumOfSquaresRight == 8);
+        }
+        static if (__traits(hasMember, A, "put"))
+            static assert(!__traits(compiles, a.put(left, right)));
+
+        auto shaped = A(
+            Forward!(double, true)(Input!double(new Cursor!double(x))),
+            Forward!(double, true)(Input!double(new Cursor!double(y))));
+        assert(shaped.count == 3 && shaped.centeredSumOfProducts == 4);
+    }}
+
+    static foreach (A; AliasSeq!(
+        CovarianceAccumulator!(double, CovarianceAlgo.online, Summation.naive),
+        CorrelationAccumulator!(double, CorrelationAlgo.online, Summation.naive)))
+    {{
+        auto a = A(Input!double(new Cursor!double(x)), Input!double(new Cursor!double(y)));
+        assert(a.count == 3 && a.centeredSumOfProducts == 4);
+    }}
+
+    // The outer range of hybrid batches is traversed only once.
+    static foreach (A; AliasSeq!(
+        CovarianceAccumulator!(double, CovarianceAlgo.hybrid, Summation.naive),
+        CorrelationAccumulator!(double, CorrelationAlgo.hybrid, Summation.naive)))
+    {{
+        auto left = Input!(double[])(new Cursor!(double[])([x[0 .. 1], x[1 .. $]]));
+        auto right = Input!(double[])(new Cursor!(double[])([y[0 .. 1], y[1 .. $]]));
+        A a;
+        a.put(left, right);
+        assert(a.count == 3 && a.centeredSumOfProducts == 4);
+    }}
+}
+
 private void putter3(Slices, T, U, Summation summation1, Summation summation2, Summation summation3)
     (scope Slices slices, ref Summator!(T, summation1) seed1, ref Summator!(U, summation2) seed2, ref Summator!(U, summation3) seed3)
 {
@@ -34,12 +246,11 @@ private void putter3(Slices, T, U, Summation summation1, Summation summation2, S
         seed3.put(slices[2]);
     } else {
         import mir.ndslice.internal: frontOfDim;
-        do
+        while (!slices.empty)
         {
             frontOfDim!(0, slices)[0].putter3(seed1, seed2, seed3);
             slices.popFront;
         }
-        while(!slices.empty);
     }
 }
 
@@ -146,14 +357,14 @@ struct CovarianceAccumulator(T, CovarianceAlgo covarianceAlgo, Summation summati
         if (isInputRange!RangeX && !isConvertibleToSlice!RangeX && is(elementType!RangeX : T) &&
             isInputRange!RangeY && !isConvertibleToSlice!RangeY && is(elementType!RangeY : T))
     {
-        do
+        while (!x.empty || !y.empty)
         {
             assert(!(!x.empty && y.empty) && !(x.empty && !y.empty),
                    "x and y must both be empty at the same time, one cannot be empty while the other has remaining items");
             this.put(x.front, y.front);
             x.popFront;
             y.popFront;
-        } while(!x.empty || !y.empty); // Using an || instead of && so that the loop does not end early. mis-matched lengths of x and y sould be caught by above assert
+        }
     }
 
     ///
@@ -402,9 +613,12 @@ struct CovarianceAccumulator(T, CovarianceAlgo covarianceAlgo, Summation summati
         if (isInputRange!RangeX && !isConvertibleToSlice!RangeX &&
             isInputRange!RangeY && !isConvertibleToSlice!RangeY)
     {
-        import std.range: zip;
-        foreach(a, b; zip(x, y)) {
-            this.put(a, b);
+        while (!x.empty || !y.empty)
+        {
+            assert(!x.empty && !y.empty, "x and y must have the same length");
+            this.put(x.front, y.front);
+            x.popFront;
+            y.popFront;
         }
     }
 
@@ -425,6 +639,9 @@ struct CovarianceAccumulator(T, CovarianceAlgo covarianceAlgo, Summation summati
     void put(U, CovarianceAlgo covAlgo, Summation sumAlgo)(CovarianceAccumulator!(U, covAlgo, sumAlgo) v)
         if (covAlgo != CovarianceAlgo.assumeZeroMean)
     {
+        // Empty partitions contribute no observations or centered moments.
+        if (v.count == 0)
+            return;
         size_t oldCount = count;
         T deltaLeft = v.meanLeft;
         T deltaRight = v.meanRight;
@@ -664,6 +881,7 @@ struct CovarianceAccumulator(T, CovarianceAlgo covarianceAlgo, Summation summati
     import mir.math.sum: elementType, Summator;
     import mir.ndslice.slice: isConvertibleToSlice, isSlice, Slice, SliceKind;
     import mir.primitives: isInputRange, front, empty, popFront;
+    import std.range.primitives: isForwardRange, save;
     import mir.stat.descriptive.univariate: MeanAccumulator;
 
     ///
@@ -693,6 +911,8 @@ struct CovarianceAccumulator(T, CovarianceAlgo covarianceAlgo, Summation summati
         _count = x.length;
         summatorLeft.put(x.lightScope);
         summatorRight.put(y.lightScope);
+        if (_count == 0)
+            return;
         centeredSummatorOfProducts.put(x.vmap(LeftOp!("-", T)(meanLeft)).zip(y.vmap(LeftOp!("-", T)(meanRight))).map!(naryFun!"a * b"));
     }
 
@@ -705,38 +925,41 @@ struct CovarianceAccumulator(T, CovarianceAlgo covarianceAlgo, Summation summati
         this(x.toSlice, y.toSlice);
     }
 
-    ///
+    /// Generic ranges must be forward ranges: the first pass uses saved cursors to compute means.
     this(RangeX, RangeY)(RangeX x, RangeY y)
-        if (isInputRange!RangeX && !isConvertibleToSlice!RangeX && is(elementType!RangeX : T) &&
-            isInputRange!RangeY && !isConvertibleToSlice!RangeY && is(elementType!RangeY : T))
+        if (isForwardRange!RangeX && !isConvertibleToSlice!RangeX && is(elementType!RangeX : T) &&
+            isForwardRange!RangeY && !isConvertibleToSlice!RangeY && is(elementType!RangeY : T))
     {
         import mir.primitives: elementCount, hasShape;
 
         static if (hasShape!RangeX && hasShape!RangeY) {
             assert(x.elementCount == y.elementCount);
             _count += x.elementCount;
-            summatorLeft.put(x);
-            summatorRight.put(y);
+            summatorLeft.put(x.save);
+            summatorRight.put(y.save);
         } else {
             import std.range: zip;
 
-            foreach(a, b; zip(x, y)) {
+            foreach(a, b; zip(x.save, y.save)) {
                 _count++;
                 summatorLeft.put(a);
                 summatorRight.put(b);
             }
         }
 
+        if (x.empty && y.empty)
+            return;
+
         T xMean = meanLeft;
         T yMean = meanRight;
-        do
+        while (!x.empty || !y.empty)
         {
             assert(!(!x.empty && y.empty) && !(x.empty && !y.empty),
                    "x and y must both be empty at the same time, one cannot be empty while the other has remaining items");
             centeredSummatorOfProducts.put((x.front - xMean) * (y.front - yMean));
             x.popFront;
             y.popFront;
-        } while(!x.empty || !y.empty); // Using an || instead of && so that the loop does not end early. mis-matched lengths of x and y sould be caught by above assert
+        }
     }
 
     ///
@@ -993,14 +1216,14 @@ struct CovarianceAccumulator(T, CovarianceAlgo covarianceAlgo, Summation summati
         if (isInputRange!RangeX && !isConvertibleToSlice!RangeX && is(elementType!RangeX : T) &&
             isInputRange!RangeY && !isConvertibleToSlice!RangeY && is(elementType!RangeY : T))
     {
-        do
+        while (!x.empty || !y.empty)
         {
             assert(!(!x.empty && y.empty) && !(x.empty && !y.empty),
                    "x and y must both be empty at the same time, one cannot be empty while the other has remaining items");
             this.put(x.front, y.front);
             x.popFront;
             y.popFront;
-        } while(!x.empty || !y.empty); // Using an || instead of && so that the loop does not end early. mis-matched lengths of x and y sould be caught by above assert
+        }
     }
 
     ///
@@ -1211,6 +1434,7 @@ struct CovarianceAccumulator(T, CovarianceAlgo covarianceAlgo, Summation summati
     import mir.math.sum: elementType, Summator;
     import mir.ndslice.slice: isConvertibleToSlice, isSlice, Slice, SliceKind;
     import mir.primitives: isInputRange, front, empty, popFront;
+    import std.range.primitives: isForwardRange, save;
 
     ///
     private size_t _count;
@@ -1247,6 +1471,8 @@ struct CovarianceAccumulator(T, CovarianceAlgo covarianceAlgo, Summation summati
         _count += x.length;
         summatorLeft.put(x.lightScope);
         summatorRight.put(y.lightScope);
+        if (_count == 0)
+            return;
         centeredSummatorOfProducts.put(x.vmap(LeftOp!("-", T)(meanLeft)).zip(y.vmap(LeftOp!("-", T)(meanRight))).map!(naryFun!"a * b"));
     }
 
@@ -1259,39 +1485,46 @@ struct CovarianceAccumulator(T, CovarianceAlgo covarianceAlgo, Summation summati
         this(x.toSlice, y.toSlice);
     }
 
-    ///
+    /// Generic scalar batches must be forward ranges because their observations are traversed twice.
+    /// An outer range of batches may be single-pass; each inner batch must support its own calculation.
    this(RangeX, RangeY)(RangeX x, RangeY y)
         if (isInputRange!RangeX && !isConvertibleToSlice!RangeX &&
             isInputRange!RangeY && !isConvertibleToSlice!RangeY)
     {
         static if (is(elementType!RangeX : T) && is(elementType!RangeY : T)) {
+            static assert(isForwardRange!RangeX && isForwardRange!RangeY,
+                "Hybrid accumulation requires forward ranges for scalar batches; " ~
+                "use the online algorithm for single-pass inputs.");
             import mir.primitives: elementCount, hasShape;
 
             static if (hasShape!RangeX && hasShape!RangeY) {
                 assert(x.elementCount == y.elementCount);
                 _count += x.elementCount;
-                summatorLeft.put(x);
-                summatorRight.put(y);
+                summatorLeft.put(x.save);
+                summatorRight.put(y.save);
             } else {
                 import std.range: zip;
 
-                foreach(a, b; zip(x, y)) {
+                foreach(a, b; zip(x.save, y.save)) {
                     _count++;
                     summatorLeft.put(a);
                     summatorRight.put(b);
                 }
             }
 
+            if (x.empty && y.empty)
+                return;
+
             T xMean = meanLeft;
             T yMean = meanRight;
-            do
+            while (!x.empty || !y.empty)
             {
                 assert(!(!x.empty && y.empty) && !(x.empty && !y.empty),
                        "x and y must both be empty at the same time, one cannot be empty while the other has remaining items");
                 centeredSummatorOfProducts.put((x.front - xMean) * (y.front - yMean));
                 x.popFront;
                 y.popFront;
-            } while(!x.empty || !y.empty); // Using an || instead of && so that the loop does not end early. mis-matched lengths of x and y sould be caught by above assert
+            }
         } else {
             this.put(x, y);
         }
@@ -1302,12 +1535,19 @@ struct CovarianceAccumulator(T, CovarianceAlgo covarianceAlgo, Summation summati
         if (isInputRange!RangeX && isInputRange!RangeY)
     {
         static if (is(elementType!RangeX : T) && is(elementType!RangeY : T)) {
+            static assert((isConvertibleToSlice!RangeX && isConvertibleToSlice!RangeY) ||
+                          (isForwardRange!RangeX && isForwardRange!RangeY),
+                "Hybrid accumulation requires forward ranges for scalar batches; " ~
+                "use the online algorithm for single-pass inputs.");
             auto v = typeof(this)(x, y);
             this.put(v);
         } else {
-            import std.range: zip;
-            foreach(a, b; zip(x, y)) {
-                this.put(a, b);
+            while (!x.empty || !y.empty)
+            {
+                assert(!x.empty && !y.empty, "x and y must have the same length");
+                this.put(x.front, y.front);
+                x.popFront;
+                y.popFront;
             }
         }
     }
@@ -1328,6 +1568,9 @@ struct CovarianceAccumulator(T, CovarianceAlgo covarianceAlgo, Summation summati
     ///
     void put(U, CovarianceAlgo covAlgo, Summation sumAlgo)(CovarianceAccumulator!(U, covAlgo, sumAlgo) v)
     {
+        // Empty partitions contribute no observations or centered moments.
+        if (v.count == 0)
+            return;
         size_t oldCount = count;
         T deltaLeft = v.meanLeft!T;
         T deltaRight = v.meanRight!T;
@@ -1601,6 +1844,11 @@ Calculates the covariance of the inputs.
 
 If `x` and `y` are both slices or convertible to slices, then they must be
 one-dimensional.
+
+For generic ranges of scalar observations, the twoPass and hybrid algorithms
+require forward ranges because they traverse the observations twice. The default
+algorithm is hybrid. Use the online algorithm for single-pass sources such as
+file or stream ranges. Arrays and slices continue to use their dedicated paths.
 
 By default, if `F` is not floating point type, then the result will have a
 `double` type if `F` is implicitly convertible to a floating point type.
@@ -2305,14 +2553,14 @@ struct CorrelationAccumulator(T, CorrelationAlgo correlationAlgo, Summation summ
         if (isInputRange!RangeX && !isConvertibleToSlice!RangeX && is(elementType!RangeX : T) &&
             isInputRange!RangeY && !isConvertibleToSlice!RangeY && is(elementType!RangeY : T))
     {
-        do
+        while (!x.empty || !y.empty)
         {
             assert(!(!x.empty && y.empty) && !(x.empty && !y.empty),
                    "x and y must both be empty at the same time, one cannot be empty while the other has remaining items");
             this.put(x.front, y.front);
             x.popFront;
             y.popFront;
-        } while(!x.empty || !y.empty); // Using an || instead of && so that the loop does not end early. mis-matched lengths of x and y sould be caught by above assert
+        }
     }
 
     ///
@@ -2610,9 +2858,12 @@ struct CorrelationAccumulator(T, CorrelationAlgo correlationAlgo, Summation summ
         if (isInputRange!RangeX && !isConvertibleToSlice!RangeX &&
             isInputRange!RangeY && !isConvertibleToSlice!RangeY)
     {
-        import std.range: zip;
-        foreach(a, b; zip(x, y)) {
-            this.put(a, b);
+        while (!x.empty || !y.empty)
+        {
+            assert(!x.empty && !y.empty, "x and y must have the same length");
+            this.put(x.front, y.front);
+            x.popFront;
+            y.popFront;
         }
     }
 
@@ -2637,6 +2888,9 @@ struct CorrelationAccumulator(T, CorrelationAlgo correlationAlgo, Summation summ
     void put(U, CorrelationAlgo covAlgo, Summation sumAlgo)(CorrelationAccumulator!(U, covAlgo, sumAlgo) v)
         if (!is(covAlgo == CorrelationAlgo.assumeZeroMean))
     {
+        // Empty partitions contribute no observations or centered moments.
+        if (v.count == 0)
+            return;
         size_t oldCount = count;
         T deltaLeft = v.meanLeft;
         T deltaRight = v.meanRight;
@@ -2944,6 +3198,7 @@ struct CorrelationAccumulator(T, CorrelationAlgo correlationAlgo, Summation summ
     import mir.math.sum: elementType, Summator;
     import mir.ndslice.slice: isConvertibleToSlice, isSlice, Slice, SliceKind;
     import mir.primitives: isInputRange, front, empty, popFront;
+    import std.range.primitives: isForwardRange, save;
     import mir.stat.descriptive.univariate: MeanAccumulator;
 
     ///
@@ -2977,6 +3232,8 @@ struct CorrelationAccumulator(T, CorrelationAlgo correlationAlgo, Summation summ
         _count = x.length;
         summatorLeft.put(x.lightScope);
         summatorRight.put(y.lightScope);
+        if (_count == 0)
+            return;
         auto z = x.vmap(LeftOp!("-", T)(meanLeft)).zip(y.vmap(LeftOp!("-", T)(meanRight))).map!("a * b", "a * a", "b * b");
         z.putter3(centeredSummatorOfProducts,
                   centeredSummatorOfSquaresLeft,
@@ -2992,33 +3249,36 @@ struct CorrelationAccumulator(T, CorrelationAlgo correlationAlgo, Summation summ
         this(x.toSlice, y.toSlice);
     }
 
-    ///
+    /// Generic ranges must be forward ranges: the first pass uses saved cursors to compute means.
     this(RangeX, RangeY)(RangeX x, RangeY y)
-        if (isInputRange!RangeX && !isConvertibleToSlice!RangeX && is(elementType!RangeX : T) &&
-            isInputRange!RangeY && !isConvertibleToSlice!RangeY && is(elementType!RangeY : T))
+        if (isForwardRange!RangeX && !isConvertibleToSlice!RangeX && is(elementType!RangeX : T) &&
+            isForwardRange!RangeY && !isConvertibleToSlice!RangeY && is(elementType!RangeY : T))
     {
         import mir.primitives: elementCount, hasShape;
 
         static if (hasShape!RangeX && hasShape!RangeY) {
             assert(x.elementCount == y.elementCount);
             _count += x.elementCount;
-            summatorLeft.put(x);
-            summatorRight.put(y);
+            summatorLeft.put(x.save);
+            summatorRight.put(y.save);
         } else {
             import std.range: zip;
 
-            foreach(a, b; zip(x, y)) {
+            foreach(a, b; zip(x.save, y.save)) {
                 _count++;
                 summatorLeft.put(a);
                 summatorRight.put(b);
             }
         }
 
+        if (x.empty && y.empty)
+            return;
+
         T xMean = meanLeft;
         T yMean = meanRight;
         T xDeMean;
         T yDeMean;
-        do
+        while (!x.empty || !y.empty)
         {
             assert(!(!x.empty && y.empty) && !(x.empty && !y.empty),
                    "x and y must both be empty at the same time, one cannot be empty while the other has remaining items");
@@ -3029,7 +3289,7 @@ struct CorrelationAccumulator(T, CorrelationAlgo correlationAlgo, Summation summ
             centeredSummatorOfSquaresRight.put(yDeMean * yDeMean);
             x.popFront;
             y.popFront;
-        } while(!x.empty || !y.empty); // Using an || instead of && so that the loop does not end early. mis-matched lengths of x and y sould be caught by above assert
+        }
     }
 
     ///
@@ -3326,14 +3586,14 @@ struct CorrelationAccumulator(T, CorrelationAlgo correlationAlgo, Summation summ
         if (isInputRange!RangeX && !isConvertibleToSlice!RangeX && is(elementType!RangeX : T) &&
             isInputRange!RangeY && !isConvertibleToSlice!RangeY && is(elementType!RangeY : T))
     {
-        do
+        while (!x.empty || !y.empty)
         {
             assert(!(!x.empty && y.empty) && !(x.empty && !y.empty),
                    "x and y must both be empty at the same time, one cannot be empty while the other has remaining items");
             this.put(x.front, y.front);
             x.popFront;
             y.popFront;
-        } while(!x.empty || !y.empty); // Using an || instead of && so that the loop does not end early. mis-matched lengths of x and y sould be caught by above assert
+        }
     }
 
     ///
@@ -3577,6 +3837,7 @@ struct CorrelationAccumulator(T, CorrelationAlgo correlationAlgo, Summation summ
     import mir.math.sum: elementType, Summator;
     import mir.ndslice.slice: isConvertibleToSlice, isSlice, Slice, SliceKind;
     import mir.primitives: isInputRange, front, empty, popFront;
+    import std.range.primitives: isForwardRange, save;
 
     ///
     private size_t _count;
@@ -3617,6 +3878,8 @@ struct CorrelationAccumulator(T, CorrelationAlgo correlationAlgo, Summation summ
         _count += x.length;
         summatorLeft.put(x.lightScope);
         summatorRight.put(y.lightScope);
+        if (_count == 0)
+            return;
         auto z = x.vmap(LeftOp!("-", T)(meanLeft)).zip(y.vmap(LeftOp!("-", T)(meanRight))).map!("a * b", "a * a", "b * b");
         z.putter3(centeredSummatorOfProducts,
                   centeredSummatorOfSquaresLeft,
@@ -3632,34 +3895,41 @@ struct CorrelationAccumulator(T, CorrelationAlgo correlationAlgo, Summation summ
         this(x.toSlice, y.toSlice);
     }
 
-    ///
+    /// Generic scalar batches must be forward ranges because their observations are traversed twice.
+    /// An outer range of batches may be single-pass; each inner batch must support its own calculation.
    this(RangeX, RangeY)(RangeX x, RangeY y)
         if (isInputRange!RangeX && !isConvertibleToSlice!RangeX &&
             isInputRange!RangeY && !isConvertibleToSlice!RangeY)
     {
         static if (is(elementType!RangeX : T) && is(elementType!RangeY : T)) {
+            static assert(isForwardRange!RangeX && isForwardRange!RangeY,
+                "Hybrid accumulation requires forward ranges for scalar batches; " ~
+                "use the online algorithm for single-pass inputs.");
             import mir.primitives: elementCount, hasShape;
 
             static if (hasShape!RangeX && hasShape!RangeY) {
                 assert(x.elementCount == y.elementCount);
                 _count += x.elementCount;
-                summatorLeft.put(x);
-                summatorRight.put(y);
+                summatorLeft.put(x.save);
+                summatorRight.put(y.save);
             } else {
                 import std.range: zip;
 
-                foreach(a, b; zip(x, y)) {
+                foreach(a, b; zip(x.save, y.save)) {
                     _count++;
                     summatorLeft.put(a);
                     summatorRight.put(b);
                 }
             }
 
+            if (x.empty && y.empty)
+                return;
+
             T xMean = meanLeft;
             T yMean = meanRight;
             T xDeMean;
             T yDeMean;
-            do
+            while (!x.empty || !y.empty)
             {
                 assert(!(!x.empty && y.empty) && !(x.empty && !y.empty),
                        "x and y must both be empty at the same time, one cannot be empty while the other has remaining items");
@@ -3670,7 +3940,7 @@ struct CorrelationAccumulator(T, CorrelationAlgo correlationAlgo, Summation summ
                 centeredSummatorOfSquaresRight.put(yDeMean * yDeMean);
                 x.popFront;
                 y.popFront;
-            } while(!x.empty || !y.empty); // Using an || instead of && so that the loop does not end early. mis-matched lengths of x and y sould be caught by above assert
+            }
         } else {
             this.put(x, y);
         }
@@ -3681,12 +3951,19 @@ struct CorrelationAccumulator(T, CorrelationAlgo correlationAlgo, Summation summ
         if (isInputRange!RangeX && isInputRange!RangeY)
     {
         static if (is(elementType!RangeX : T) && is(elementType!RangeY : T)) {
+            static assert((isConvertibleToSlice!RangeX && isConvertibleToSlice!RangeY) ||
+                          (isForwardRange!RangeX && isForwardRange!RangeY),
+                "Hybrid accumulation requires forward ranges for scalar batches; " ~
+                "use the online algorithm for single-pass inputs.");
             auto v = typeof(this)(x, y);
             this.put(v);
         } else {
-            import std.range: zip;
-            foreach(a, b; zip(x, y)) {
-                this.put(a, b);
+            while (!x.empty || !y.empty)
+            {
+                assert(!x.empty && !y.empty, "x and y must have the same length");
+                this.put(x.front, y.front);
+                x.popFront;
+                y.popFront;
             }
         }
     }
@@ -3711,6 +3988,9 @@ struct CorrelationAccumulator(T, CorrelationAlgo correlationAlgo, Summation summ
     ///
     void put(U, CorrelationAlgo covAlgo, Summation sumAlgo)(CorrelationAccumulator!(U, covAlgo, sumAlgo) v)
     {
+        // Empty partitions contribute no observations or centered moments.
+        if (v.count == 0)
+            return;
         size_t oldCount = count;
         T deltaLeft = v.meanLeft;
         T deltaRight = v.meanRight;
@@ -4025,6 +4305,11 @@ Calculates the correlation of the inputs.
 
 If `x` and `y` are both slices or convertible to slices, then they must be
 one-dimensional.
+
+For generic ranges of scalar observations, the twoPass and hybrid algorithms
+require forward ranges because they traverse the observations twice. The default
+algorithm is hybrid. Use the online algorithm for single-pass sources such as
+file or stream ranges. Arrays and slices continue to use their dedicated paths.
 
 With assumeStandardized, inputs must already have mean zero and unit standard
 deviation over the complete dataset. Select the input z-score convention with
