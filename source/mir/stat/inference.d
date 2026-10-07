@@ -94,7 +94,65 @@ private F skewnessTestImpl(F, Accumulator)(ref const Accumulator acc)
     auto delta = 1 / sqrt(0.5f * log(w2));
     auto alpha = sqrt(2 / (w2 - 1));
     auto y_alpha = y / alpha;
-    return delta * log(y_alpha + sqrt(y_alpha * y_alpha + 1));
+    import std.math: asinh;
+    // The equivalent log expression loses precision for negative or tiny inputs.
+    return delta * asinh(y_alpha);
+}
+
+// The skewness transformation is odd, including close to zero.
+version(mir_stat_test)
+@safe pure nothrow
+unittest
+{
+    import std.meta: AliasSeq;
+    import std.math: isFinite;
+
+    static foreach (F; AliasSeq!(float, double, real))
+    {{
+        struct Sample
+        {
+            size_t count;
+            F value;
+            G skewness(G)(bool bias) const { return cast(G) value; }
+        }
+
+        foreach (value; [F(0), F.epsilon / 16, F(0.5), F(999)])
+        {
+            auto positive = Sample(1_000_000, value);
+            auto negative = Sample(1_000_000, -value);
+            auto a = skewnessTestImpl!F(positive);
+            auto b = skewnessTestImpl!F(negative);
+            assert(isFinite(a) && isFinite(b));
+            assert(a == -b); // Only the sign changes in this transformation.
+            if (value > 0)
+                assert(a > 0);
+            else
+                assert(a == 0);
+        }
+    }}
+}
+
+// Reflecting observations changes skewness direction, not the normality statistic.
+version(mir_stat_test)
+@safe pure nothrow
+unittest
+{
+    import std.meta: AliasSeq;
+    import std.math: isFinite, abs;
+
+    static foreach (F; AliasSeq!(float, double, real))
+    {{
+        auto values = new F[4096];
+        values[] = 0;
+        values[0] = 1;
+        F positiveP, negativeP;
+        auto positive = dAgostinoPearsonTest(values, positiveP);
+        values[0] = -1;
+        auto negative = dAgostinoPearsonTest(values, negativeP);
+        assert(isFinite(positive) && isFinite(negative));
+        assert(abs(positive - negative) <= 32 * F.epsilon * positive);
+        assert(positiveP == negativeP);
+    }}
 }
 
 version(mir_stat_test)

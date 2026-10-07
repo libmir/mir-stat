@@ -84,6 +84,12 @@ struct WMeanAccumulator(T, Summation summation, AssumeWeights assumeWeights,
         }
     }
 
+    // Match scalar put: convert each operand before multiplying.
+    private static auto weightedProduct(A, B)(A a, B b)
+    {
+        return cast(T) a * cast(U) b;
+    }
+
     ///
     F wsum(F = T)() const @safe @property pure nothrow @nogc
     {
@@ -105,6 +111,14 @@ struct WMeanAccumulator(T, Summation summation, AssumeWeights assumeWeights,
 
         import mir.ndslice.slice: Contiguous;
         import mir.ndslice.topology: zip, map;
+        import mir.functional: naryFun;
+        import mir.math.sum: elementType;
+
+        // Preserve the existing mapping for matching types, including its code generation.
+        static if (is(elementType!Slice1 == T) && is(elementType!Slice2 == U))
+            alias product = naryFun!"a * b";
+        else
+            alias product = weightedProduct;
 
         assert(s._lengths == w._lengths, "WMeanAcumulator.put: both slices must have the same lengths");
 
@@ -116,10 +130,10 @@ struct WMeanAccumulator(T, Summation summation, AssumeWeights assumeWeights,
         }
 
         static if (assumeWeights) {
-            auto combine2 = combine.map!"a * b";
+            auto combine2 = combine.map!product;
             wsummator.put(combine2);
         } else {
-            auto combine2 = combine.map!("b", "a * b");
+            auto combine2 = combine.map!("b", product);
             combine2.putter2(weights, wsummator);
         }
     }
@@ -139,8 +153,10 @@ struct WMeanAccumulator(T, Summation summation, AssumeWeights assumeWeights,
     {
         import mir.primitives: hasShape, elementCount;
         static if (hasShape!Range) {
+            // Summation can consume the cursor shared by copies of an input range.
+            auto count = r.elementCount;
             wsummator.put(r);
-            weights.put(cast(U) r.elementCount);
+            weights.put(cast(U) count);
         } else {
             foreach(x; r)
             {
@@ -187,6 +203,46 @@ struct WMeanAccumulator(T, Summation summation, AssumeWeights assumeWeights,
         weights.put(cast(U) wm.weights);
         wsummator.put(cast(T) wm.wsummator);
     }
+}
+
+// Capture the shape before summation consumes a shared input cursor.
+version(mir_stat_test)
+@safe pure nothrow
+unittest
+{
+    struct Cursor { double[] values; }
+
+    struct SharedInput
+    {
+        Cursor* remaining;
+        bool empty() { return remaining.values.length == 0; }
+        double front() { return remaining.values[0]; }
+        void popFront() { remaining.values = remaining.values[1 .. $]; }
+        @property size_t[1] shape() const { return [remaining.values.length]; }
+    }
+
+    static foreach (method; [Summation.naive, Summation.pairwise])
+    {{
+        auto values = new Cursor;
+        values.values = [1, 2, 3];
+        WMeanAccumulator!(double, method, AssumeWeights.primary) accumulator;
+        accumulator.put(SharedInput(values));
+        assert(values.values.length == 0);
+        assert(accumulator.weight == 3);
+        assert(accumulator.wsum == 6);
+        assert(accumulator.wmean == 2);
+
+        // An exhausted range contributes neither observations nor weight.
+        accumulator.put(SharedInput(values));
+        assert(accumulator.weight == 3);
+        assert(accumulator.wsum == 6);
+
+        values.values = [4, 5];
+        accumulator.put(SharedInput(values));
+        assert(accumulator.weight == 5);
+        assert(accumulator.wsum == 15);
+        assert(accumulator.wmean == 3);
+    }}
 }
 
 /// Assume weights sum to 1
@@ -1063,6 +1119,12 @@ struct WSummator(T, Summation summation, U = T)
     ///
     Summator!(T, summation) wsummator;
 
+    // Match scalar put: convert each operand before multiplying.
+    private static auto weightedProduct(A, B)(A a, B b)
+    {
+        return cast(T) a * cast(U) b;
+    }
+
     ///
     F wsum(F = T)() const @safe @property pure nothrow @nogc
     {
@@ -1078,6 +1140,14 @@ struct WSummator(T, Summation summation, U = T)
 
         import mir.ndslice.slice: Contiguous;
         import mir.ndslice.topology: zip, map;
+        import mir.functional: naryFun;
+        import mir.math.sum: elementType;
+
+        // Preserve the existing mapping for matching types, including its code generation.
+        static if (is(elementType!Slice1 == T) && is(elementType!Slice2 == U))
+            alias product = naryFun!"a * b";
+        else
+            alias product = weightedProduct;
 
         assert(s._lengths == w._lengths, "WMeanAcumulator.put: both slices must have the same lengths");
 
@@ -1088,7 +1158,7 @@ struct WSummator(T, Summation summation, U = T)
             auto combine = s.zip!false(w);
         }
 
-        auto combine2 = combine.map!"a * b";
+        auto combine2 = combine.map!product;
         wsummator.put(combine2);
     }
 
@@ -1697,4 +1767,45 @@ unittest
 
     x.wsum.should == 29.25;
     x.wsum(w).should == 203.0;
+}
+
+// Batch products use accumulator operand types, just as scalar insertion does.
+version(mir_stat_test)
+@safe pure nothrow
+unittest
+{
+    static foreach (method; [Summation.naive, Summation.pairwise])
+    {{
+        int[] values = [50_000, 50_000];
+        int[] weights = [50_000, 50_000];
+        assert(wsum!(double, method)(values, weights) == 5_000_000_000.0);
+        assert((wmean!(double, method, AssumeWeights.primary, double, method)(values, weights)) == 50_000);
+
+        static foreach (assumption; [AssumeWeights.primary, AssumeWeights.sumToOne])
+        {{
+            WMeanAccumulator!(double, method, assumption) batch, scalar;
+            batch.put(values, weights);
+            foreach (i; 0 .. values.length)
+                scalar.put(values[i], weights[i]);
+            assert(batch.wsum == scalar.wsum);
+            assert(batch.wmean == scalar.wmean);
+        }}
+
+        // The inputs are finite floats, but their product exceeds float.max.
+        float[] large = [1e20f];
+        WSummator!(double, method) batchSum, scalarSum;
+        batchSum.put(large, large);
+        scalarSum.put(large[0], large[0]);
+        assert(batchSum.wsum == scalarSum.wsum);
+        assert(batchSum.wsum > 0.999e40 && batchSum.wsum < 1.001e40);
+
+        static foreach (assumption; [AssumeWeights.primary, AssumeWeights.sumToOne])
+        {{
+            WMeanAccumulator!(double, method, assumption) batch, scalar;
+            batch.put(large, large);
+            scalar.put(large[0], large[0]);
+            assert(batch.wsum == scalar.wsum);
+            assert(batch.wmean == scalar.wmean);
+        }}
+    }}
 }
