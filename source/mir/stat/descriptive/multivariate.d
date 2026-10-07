@@ -1845,6 +1845,11 @@ Calculates the covariance of the inputs.
 If `x` and `y` are both slices or convertible to slices, then they must be
 one-dimensional.
 
+For generic ranges of scalar observations, the twoPass and hybrid algorithms
+require forward ranges because they traverse the observations twice. The default
+algorithm is hybrid. Use the online algorithm for single-pass sources such as
+file or stream ranges. Arrays and slices continue to use their dedicated paths.
+
 By default, if `F` is not floating point type, then the result will have a
 `double` type if `F` is implicitly convertible to a floating point type.
 
@@ -4300,6 +4305,11 @@ Calculates the correlation of the inputs.
 
 If `x` and `y` are both slices or convertible to slices, then they must be
 one-dimensional.
+
+For generic ranges of scalar observations, the twoPass and hybrid algorithms
+require forward ranges because they traverse the observations twice. The default
+algorithm is hybrid. Use the online algorithm for single-pass sources such as
+file or stream ranges. Arrays and slices continue to use their dedicated paths.
 
 With assumeStandardized, inputs must already have mean zero and unit standard
 deviation over the complete dataset. Select the input z-score convention with
