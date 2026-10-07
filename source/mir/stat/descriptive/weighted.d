@@ -153,8 +153,10 @@ struct WMeanAccumulator(T, Summation summation, AssumeWeights assumeWeights,
     {
         import mir.primitives: hasShape, elementCount;
         static if (hasShape!Range) {
+            // Summation can consume the cursor shared by copies of an input range.
+            auto count = r.elementCount;
             wsummator.put(r);
-            weights.put(cast(U) r.elementCount);
+            weights.put(cast(U) count);
         } else {
             foreach(x; r)
             {
@@ -201,6 +203,46 @@ struct WMeanAccumulator(T, Summation summation, AssumeWeights assumeWeights,
         weights.put(cast(U) wm.weights);
         wsummator.put(cast(T) wm.wsummator);
     }
+}
+
+// Capture the shape before summation consumes a shared input cursor.
+version(mir_stat_test)
+@safe pure nothrow
+unittest
+{
+    struct Cursor { double[] values; }
+
+    struct SharedInput
+    {
+        Cursor* remaining;
+        bool empty() { return remaining.values.length == 0; }
+        double front() { return remaining.values[0]; }
+        void popFront() { remaining.values = remaining.values[1 .. $]; }
+        @property size_t[1] shape() const { return [remaining.values.length]; }
+    }
+
+    static foreach (method; [Summation.naive, Summation.pairwise])
+    {{
+        auto values = new Cursor;
+        values.values = [1, 2, 3];
+        WMeanAccumulator!(double, method, AssumeWeights.primary) accumulator;
+        accumulator.put(SharedInput(values));
+        assert(values.values.length == 0);
+        assert(accumulator.weight == 3);
+        assert(accumulator.wsum == 6);
+        assert(accumulator.wmean == 2);
+
+        // An exhausted range contributes neither observations nor weight.
+        accumulator.put(SharedInput(values));
+        assert(accumulator.weight == 3);
+        assert(accumulator.wsum == 6);
+
+        values.values = [4, 5];
+        accumulator.put(SharedInput(values));
+        assert(accumulator.weight == 5);
+        assert(accumulator.wsum == 15);
+        assert(accumulator.wmean == 3);
+    }}
 }
 
 /// Assume weights sum to 1
