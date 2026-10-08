@@ -232,10 +232,12 @@ T gevLPDF(T)(const T x, const T mu, const T sigma, const T xi)
     auto v = 1 + xi * s;
     if (v <= 0)
         return xi == -1 ? -log(sigma) : xi < -1 ? T.infinity : -T.infinity;
-    auto a = pow(v, -1 / xi);
+    // Keep the logarithm even when the corresponding power underflows.
+    const T h = log(v) / xi;
+    const T a = exp(-h);
     if (a == T.infinity)
         return -T.infinity;
-    return log(a) - a - log(v * sigma);
+    return -(1 + xi) * h - a - log(sigma);
 }
 
 ///
@@ -257,6 +259,39 @@ unittest
 {
     import mir.test: shouldApprox;
     gevLPDF(-1.0, 0, 1, 1).shouldApprox == -double.infinity;
+}
+
+// Nonzero-shape log-densities remain finite after intermediate underflow or overflow.
+version(mir_stat_test)
+@safe pure nothrow @nogc
+unittest
+{
+    import std.meta: AliasSeq;
+    import mir.math.common: approxEqual;
+
+    static foreach (T; AliasSeq!(float, double, real))
+    {{
+        // The power is below even the extended-precision subnormal range.
+        const T expected = T(-21217.038044136922491357270448038231720304588745L);
+        assert(approxEqual(gevLPDF(T(1e12), T(0), T(1), T(1) / 1024),
+            expected, 8 * T.epsilon, T(0)));
+
+        // v == 2, but v * sigma would overflow for this finite scale.
+        const T sigma = T.max * T(0.75);
+        const T expectedScaled = -2 * log(T(2)) - T(0.5) - log(sigma);
+        assert(approxEqual(gevLPDF(sigma, T(0), sigma, T(1)),
+            expectedScaled, 8 * T.epsilon, T(0)));
+
+        foreach (xi; [T(-2), T(-1), T(-0.5), T(0.25), T(1)])
+        {
+            // Ordinary interior values still agree with the density.
+            const T x = T(0.125);
+            assert(approxEqual(gevLPDF(x, T(0), T(2), xi),
+                log(gevPDF(x, T(0), T(2), xi)), 16 * T.epsilon, 16 * T.epsilon));
+        }
+        assert(gevLPDF(T.infinity, T(0), T(1), T(1)) == -T.infinity);
+        assert(gevLPDF(-T.infinity, T(0), T(1), T(-1)) == -T.infinity);
+    }}
 }
 
 // Zero shape retains the density scaling of the general distribution.
