@@ -37,6 +37,7 @@ sources_list = [
     'mir/stat/descriptive/histogram/internal/cell',
     'mir/stat/descriptive/histogram/internal/shared_counts',
     'mir/stat/internal/borrow',
+    'mir/stat/internal/neg_log1m',
     'mir/stat/descriptive/histogram/package',
     'mir/stat/descriptive/histogram/api/rc',
     'mir/stat/descriptive/histogram/api/gc',

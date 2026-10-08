@@ -183,9 +183,10 @@ T rayleighInvCDF(T)(const T p)
     in (p >= 0, "p must be greater than or equal to 0")
     in (p <= 1, "p must be less than or equal to 1")
 {
-    import mir.math.common: log, sqrt;
-   
-    return sqrt(-2 * log(1 - p));
+    import mir.math.common: sqrt;
+    import mir.stat.internal.neg_log1m: negLog1m;
+
+    return sqrt(2 * negLog1m(p));
 }
 
 /++
@@ -283,4 +284,26 @@ unittest
     0.5.rayleighLPDF(2.0).shouldApprox == log(0.1211541);
     1.0.rayleighLPDF(2.0).shouldApprox == log(0.2206242);
     4.0.rayleighLPDF(2.0).shouldApprox == log(0.1353353);
+}
+
+// Preserve inverse-CDF values below machine epsilon, including scaled calls.
+version(mir_stat_test)
+@safe pure nothrow @nogc
+unittest
+{
+    import std.meta: AliasSeq;
+    import std.math: nextUp;
+    import mir.math.common: approxEqual, sqrt;
+    static foreach (T; AliasSeq!(float, double, real))
+    {{
+        foreach (p; [nextUp(T(0)), T.epsilon / 16, T.epsilon])
+        {
+            const T expected = sqrt(2 * p);
+            assert(approxEqual(rayleighInvCDF(p) / expected, T(1), 4 * T.epsilon, T(0)));
+            assert(approxEqual(rayleighInvCDF(p, T(3)) / (3 * expected), T(1),
+                4 * T.epsilon, T(0)));
+        }
+        assert(rayleighInvCDF(T(0)) == 0);
+        assert(rayleighInvCDF(T(1)) == T.infinity);
+    }}
 }
