@@ -38,7 +38,7 @@ T generalizedParetoPDF(T)(const T x, const T mu, const T sigma, const T xi)
     if (xi != 0) {
         return (cast(T) 1 / sigma) * pow(1 + xi * z, -(cast(T) 1 / xi + 1));
     } else {
-        return exp(-z);
+        return exp(-z) / sigma;
     }
 }
 
@@ -52,7 +52,7 @@ unittest
     1.0.generalizedParetoPDF(1, 1, 0.5).shouldApprox == 1;
     2.0.generalizedParetoPDF(1, 1, 0.5).shouldApprox == 0.2962963;
     3.0.generalizedParetoPDF(2, 3, 0.25).shouldApprox == 0.2233923;
-    5.0.generalizedParetoPDF(2, 3, 0).shouldApprox == 0.3678794;
+    5.0.generalizedParetoPDF(2, 3, 0).shouldApprox == 0.1226264803904808;
 }
 
 /++
@@ -209,7 +209,7 @@ T generalizedParetoLPDF(T)(const T x, const T mu, const T sigma, const T xi)
     if (xi != 0) {
         return -log(sigma) + xlogy(-(cast(T) 1 / xi + 1), 1 + xi * z);
     } else {
-        return -z;
+        return -z - log(sigma);
     }
 }
 
@@ -225,4 +225,34 @@ unittest
     2.0.generalizedParetoLPDF(1, 1, 0.5).shouldApprox == log(generalizedParetoPDF(2.0, 1, 1, 0.5));
     3.0.generalizedParetoLPDF(2, 3, 0.25).shouldApprox == log(generalizedParetoPDF(3.0, 2, 3, 0.25));
     5.0.generalizedParetoLPDF(2, 3, 0).shouldApprox == log(generalizedParetoPDF(5.0, 2, 3, 0));
+}
+
+// Zero shape retains the density scaling of the general distribution.
+version(mir_stat_test)
+@safe pure nothrow @nogc
+unittest
+{
+    import std.meta: AliasSeq;
+    import mir.math.common: exp, log, approxEqual;
+
+    static foreach (T; AliasSeq!(float, double, real))
+    {{
+        foreach (sigma; [T(0.25), T(1), T(3)])
+        {
+            const T mu = 2;
+            const T z = 1;
+            const T x = mu + sigma * z;
+            const T standard = generalizedParetoPDF(z, T(0), T(1), T(0));
+            assert(approxEqual(generalizedParetoPDF(x, mu, sigma, T(0)), standard / sigma,
+                32 * T.epsilon, T(0)));
+            assert(approxEqual(generalizedParetoLPDF(x, mu, sigma, T(0)),
+                generalizedParetoLPDF(z, T(0), T(1), T(0)) - log(sigma),
+                32 * T.epsilon, 32 * T.epsilon));
+            const T expectedLog = -z - log(sigma);
+            assert(approxEqual(generalizedParetoLPDF(x, mu, sigma, T(0)), expectedLog,
+                32 * T.epsilon, 32 * T.epsilon));
+            assert(approxEqual(generalizedParetoPDF(x, mu, sigma, T(0)), exp(expectedLog),
+                32 * T.epsilon, T(0)));
+        }
+    }}
 }
