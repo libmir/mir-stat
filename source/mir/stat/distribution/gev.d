@@ -12,8 +12,9 @@ Copyright: 2022-3 Mir Stat Authors.
 module mir.stat.distribution.gev;
 
 import mir.internal.utility: isFloatingPoint;
+import mir.stat.internal.shape_transform: log1pScaled, expm1Scaled;
 
-import mir.math.common: fabs, exp, pow, log;
+import mir.math.common: fabs, exp, log;
 
 /++
 Computes the generalized extreme value (GEV) probability density function (PDF).
@@ -44,7 +45,7 @@ T gevPDF(T)(const T x, const T mu, const T sigma, const T xi)
     auto v = 1 + xi * s;
     if (v <= 0)
         return xi == -1 ? 1 / sigma : xi < -1 ? T.infinity : T(0);
-    auto a = pow(v, -1 / xi);
+    auto a = exp(-log1pScaled(s, xi));
     if (a == T.infinity)
         return 0;
     return a * exp(-a) / (v * sigma);
@@ -95,7 +96,7 @@ T gevCDF(T)(const T x, const T mu, const T sigma, const T xi)
     auto v = 1 + xi * s;
     if (v <= 0)
         return xi > 0 ? 0 : 1;
-    auto a = pow(v, -1 / xi);
+    auto a = exp(-log1pScaled(s, xi));
     return exp(-a);
 }
 
@@ -152,7 +153,6 @@ T gevCCDF(T)(const T x, const T mu, const T sigma, const T xi)
     in (xi <= 0 || x >= mu - sigma / xi, "if xi is greater than zero, xi must be greater than or equal to mu - sigma / xi")
 {
     import mir.stat.internal.one_minus_exp: oneMinusExpNeg;
-    import std.math: log1p;
 
     // Evaluate the tail before the CDF can round to one.
     const T s = (x - mu) / sigma;
@@ -163,26 +163,7 @@ T gevCCDF(T)(const T x, const T mu, const T sigma, const T xi)
     if (v <= 0)
         return xi > 0 ? 1 : 0;
 
-    T h;
-    if (fabs(u) < T.epsilon)
-        // log1p(u) / xi approaches s, including when u underflows to zero.
-        h = s;
-    else if (u == T.infinity)
-        // Finite xi and s can overflow their product while h remains finite.
-        // For infinite s this also retains the appropriate infinite h.
-        h = (log(fabs(xi)) + log(fabs(s))) / xi;
-    else
-    {
-        static if (__VERSION__ == 2102)
-            // mir.math.internal.log1p also avoids this frontend's log1p.
-            // Its plain log(1 + u) fallback would lose small shapes here.
-            // The tiny-u branch above ensures v - 1 is nonzero.
-            h = s * (log(v) / (v - 1));
-        else static if (T.mant_dig > 53)
-            h = log1p(u) / xi;
-        else
-            h = fabs(u) < T(0.125) ? log1p(u) / xi : log(v) / xi;
-    }
+    const T h = log1pScaled(s, xi);
     return oneMinusExpNeg(exp(-h));
 }
 
@@ -301,6 +282,8 @@ unittest
 /++
 Computes the generalized extreme value (GEV) inverse cumulative distribution function (InvCDF).
 
+Uses $(D expm1) to retain the zero-shape limit for small nonzero shapes.
+
 Params:
     p = value to evaluate
     mu = location
@@ -319,7 +302,7 @@ T gevInvCDF(T)(const T p, const T mu, const T sigma, const T xi)
     auto logp = log(p);
     if (xi.fabs <= T.min_normal)
         return mu - sigma * log(-logp);
-    return mu + (pow(-logp, -xi) - 1) * sigma / xi;
+    return mu + sigma * expm1Scaled(-log(-logp), xi);
 }
 
 ///
@@ -367,7 +350,7 @@ T gevLPDF(T)(const T x, const T mu, const T sigma, const T xi)
     if (v <= 0)
         return xi == -1 ? -log(sigma) : xi < -1 ? T.infinity : -T.infinity;
     // Keep the logarithm even when the corresponding power underflows.
-    const T h = log(v) / xi;
+    const T h = log1pScaled(s, xi);
     const T a = exp(-h);
     if (a == T.infinity)
         return -T.infinity;
@@ -493,5 +476,42 @@ unittest
         const T lowerTail = -512 + T.epsilon * 512;
         assert(gevPDF(lowerTail, T(0), T(1), xi) == 0);
         assert(gevLPDF(lowerTail, T(0), T(1), xi) == -T.infinity);
+    }}
+}
+
+// Forward functions and quantiles retain the zero-shape limit.
+version(mir_stat_test)
+@safe pure nothrow @nogc
+unittest
+{
+    import std.meta: AliasSeq;
+    import mir.math.common: approxEqual;
+
+    static foreach (T; AliasSeq!(float, double, real))
+    {{
+        foreach (xi; [T.epsilon / 64, -T.epsilon / 64])
+        {
+            assert(approxEqual(gevCDF(T(1), T(0), T(1), xi),
+                T(0.69220062755534635386542199718278976149L), 16 * T.epsilon, T(0)));
+            assert(approxEqual(gevPDF(T(1), T(0), T(1), xi),
+                gevPDF(T(1), T(0), T(1), T(0)), 16 * T.epsilon, T(0)));
+            assert(approxEqual(gevLPDF(T(1), T(0), T(1), xi),
+                gevLPDF(T(1), T(0), T(1), T(0)), 16 * T.epsilon, T(0)));
+            foreach (p; [T(.25), T(.5), T(.75)])
+                assert(approxEqual(gevInvCDF(p, T(0), T(1), xi),
+                    gevInvCDF(p, T(0), T(1), T(0)), 16 * T.epsilon, T(0)));
+        }
+        foreach (xi; [T(-.5), T(0), T(.5)])
+        {
+            foreach (p; [T(.125), T(.5), T(.875)])
+                assert(approxEqual(gevCDF(gevInvCDF(p, T(2), T(3), xi), T(2), T(3), xi),
+                    p, 32 * T.epsilon, T(0)));
+            assert(gevInvCDF(T(0), T(2), T(3), xi) == (xi > 0 ? T(-4) : -T.infinity));
+            assert(gevInvCDF(T(1), T(2), T(3), xi) == (xi < 0 ? T(8) : T.infinity));
+        }
+        assert(approxEqual(gevInvCDF(T(.5), T(0), T(1), T(1)),
+            T(0.44269504088896340735992468100189213743L), 16 * T.epsilon, T(0)));
+        assert(approxEqual(gevInvCDF(T(.5), T(0), T(1), T(-1)),
+            T(0.30685281944005469058276787854182343192L), 16 * T.epsilon, T(0)));
     }}
 }
