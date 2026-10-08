@@ -80,9 +80,9 @@ See_also:
 T rayleighCDF(T)(const T x)
     if (isFloatingPoint!T)
 {
-    import mir.math.common: exp;
+    import mir.stat.internal.one_minus_exp: oneMinusExpNeg;
 
-    return 1 - exp(-0.5 * x * x);
+    return oneMinusExpNeg(0.5 * x * x);
 }
 
 /++
@@ -305,5 +305,27 @@ unittest
         }
         assert(rayleighInvCDF(T(0)) == 0);
         assert(rayleighInvCDF(T(1)) == T.infinity);
+    }}
+}
+
+// Preserve lower-tail CDF probabilities and round trips below machine epsilon.
+version(mir_stat_test)
+@safe pure nothrow @nogc
+unittest
+{
+    import std.meta: AliasSeq;
+    import std.math: nextUp;
+    import mir.math.common: approxEqual, sqrt;
+    static foreach (T; AliasSeq!(float, double, real))
+    {{
+        const T p = T.epsilon / 16;
+        const T x = rayleighInvCDF(p, T(3));
+        assert(x > 0);
+        assert(approxEqual(rayleighCDF(x, T(3)) / p, T(1), 32 * T.epsilon, T(0)));
+        assert(approxEqual(rayleighCDF(sqrt(2 * p)) / p, T(1), 8 * T.epsilon, T(0)));
+        const T smallest = nextUp(T(0));
+        assert(rayleighCDF(sqrt(2 * smallest)) == smallest);
+        assert(rayleighCDF(T(0)) == 0);
+        assert(rayleighCDF(T.infinity) == 1);
     }}
 }

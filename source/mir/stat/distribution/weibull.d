@@ -83,9 +83,10 @@ T weibullCDF(T)(const T x, const T shape, const T scale = 1)
     in (shape > 0, "shape must be greater than zero")
     in (scale > 0, "scale must be greater than zero")
 {
-    import mir.math.common: exp, pow;
+    import mir.math.common: pow;
+    import mir.stat.internal.one_minus_exp: oneMinusExpNeg;
 
-    return 1 - exp(-pow(x / scale, shape));
+    return oneMinusExpNeg(pow(x / scale, shape));
 }
 
 ///
@@ -255,5 +256,31 @@ unittest
         }
         assert(weibullInvCDF(T(0), T(2)) == 0);
         assert(weibullInvCDF(T(1), T(2)) == T.infinity);
+    }}
+}
+
+// Preserve lower-tail CDF probabilities and round trips below machine epsilon.
+version(mir_stat_test)
+@safe pure nothrow @nogc
+unittest
+{
+    import std.meta: AliasSeq;
+    import std.math: nextUp;
+    import mir.math.common: approxEqual;
+    static foreach (T; AliasSeq!(float, double, real))
+    {{
+        const T p = T.epsilon / 16;
+        foreach (shape; [T(1), T(2)])
+        {
+            const T x = weibullInvCDF(p, shape, T(3));
+            assert(x > 0);
+            assert(approxEqual(weibullCDF(x, shape, T(3)) / p, T(1),
+                32 * T.epsilon, T(0)));
+        }
+        assert(approxEqual(weibullCDF(p, T(1)) / p, T(1), 8 * T.epsilon, T(0)));
+        const T smallest = nextUp(T(0));
+        assert(weibullCDF(smallest, T(1)) == smallest);
+        assert(weibullCDF(T(0), T(2)) == 0);
+        assert(weibullCDF(T.infinity, T(2)) == 1);
     }}
 }
