@@ -124,6 +124,18 @@ unittest
 /++
 Computes the generalized extreme value (GEV) complementary cumulatve distribution function (CCDF).
 
+Evaluates the upper tail directly, rather than subtracting the CDF from one,
+so small probabilities are retained.
+
+Implementation_Notes:
+    With $(D s = (x - mu) / sigma), computes the interior power through
+    $(D h = log(1 + xi * s) / xi) and $(D exp(-h)). For float and double
+    precision, uses $(D log1p) when $(D abs(xi * s) < 1.0 / 8) to avoid
+    cancellation in the logarithm. Extended precision always uses $(D log1p).
+    The choice follows $(D T.mant_dig), since $(D real) varies between targets.
+    DMD 2.102 uses a compensated logarithm instead of its problematic
+    $(D log1p) implementation.
+
 Params:
     x = value to evaluate
     mu = location
@@ -139,7 +151,39 @@ T gevCCDF(T)(const T x, const T mu, const T sigma, const T xi)
     in (xi >= 0 || x <= mu - sigma / xi, "if xi is less than zero, x must be less than or equal to mu - sigma / xi")
     in (xi <= 0 || x >= mu - sigma / xi, "if xi is greater than zero, xi must be greater than or equal to mu - sigma / xi")
 {
-    return 1 - gevCDF(x, mu, sigma, xi);
+    import mir.stat.internal.one_minus_exp: oneMinusExpNeg;
+    import std.math: log1p;
+
+    // Evaluate the tail before the CDF can round to one.
+    const T s = (x - mu) / sigma;
+    if (xi.fabs <= T.min_normal)
+        return oneMinusExpNeg(exp(-s));
+    const T u = xi * s;
+    const T v = 1 + u;
+    if (v <= 0)
+        return xi > 0 ? 1 : 0;
+
+    T h;
+    if (fabs(u) < T.epsilon)
+        // log1p(u) / xi approaches s, including when u underflows to zero.
+        h = s;
+    else if (u == T.infinity)
+        // Finite xi and s can overflow their product while h remains finite.
+        // For infinite s this also retains the appropriate infinite h.
+        h = (log(fabs(xi)) + log(fabs(s))) / xi;
+    else
+    {
+        static if (__VERSION__ == 2102)
+            // mir.math.internal.log1p also avoids this frontend's log1p.
+            // Its plain log(1 + u) fallback would lose small shapes here.
+            // The tiny-u branch above ensures v - 1 is nonzero.
+            h = s * (log(v) / (v - 1));
+        else static if (T.mant_dig > 53)
+            h = log1p(u) / xi;
+        else
+            h = fabs(u) < T(0.125) ? log1p(u) / xi : log(v) / xi;
+    }
+    return oneMinusExpNeg(exp(-h));
 }
 
 ///
@@ -162,6 +206,96 @@ unittest
     import mir.test: should;
     gevCCDF(-1.0, 0, 1, 1).should == 1;
     gevCCDF(1.0, 0, 1, -1).should == 0;
+}
+
+// Direct tails retain small probabilities for zero, positive, and negative shapes.
+version(mir_stat_test)
+@safe pure nothrow @nogc
+unittest
+{
+    import std.meta: AliasSeq;
+    import mir.math.common: approxEqual;
+
+    static foreach (T; AliasSeq!(float, double, real))
+    {{
+        const T expected = T(4.248354255291588986304977843631582169098337L * 1e-18L);
+        assert(approxEqual(gevCCDF(T(40), T(0), T(1), T(0)) / expected,
+            T(1), 8 * T.epsilon, T(0)));
+        assert(approxEqual(gevCCDF(T(122), T(2), T(3), T(0)) / expected,
+            T(1), 8 * T.epsilon, T(0)));
+
+        const T x = T(1e20);
+        // Exponentiation amplifies error in the logarithm by its magnitude.
+        assert(approxEqual(gevCCDF(x, T(0), T(1), T(1)) / (1 / x),
+            T(1), 4 * T.epsilon * log(x), T(0)));
+        const T nearUpper = 4 * (1 - T.epsilon);
+        const T tiny = T.epsilon * T.epsilon * T.epsilon * T.epsilon;
+        assert(approxEqual(gevCCDF(nearUpper, T(0), T(1), T(-0.25)) / tiny,
+            T(1), 4 * T.epsilon * fabs(log(tiny)), T(0)));
+
+        assert(gevCCDF(T(4), T(0), T(1), T(-0.25)) == 0);
+        assert(gevCCDF(T(-4), T(0), T(1), T(0.25)) == 1);
+        assert(gevCCDF(T.infinity, T(0), T(1), T(0)) == 0);
+        assert(gevCCDF(-T.infinity, T(0), T(1), T(0)) == 1);
+        assert(gevCCDF(T.infinity, T(0), T(1), T(1)) == 0);
+        assert(gevCCDF(-T.infinity, T(0), T(1), T(-1)) == 1);
+
+        foreach (xi; [T(-2), T(-1), T(-0.5), T(0), T(0.25), T(1)])
+            assert(approxEqual(gevCDF(T(0.125), T(0), T(2), xi)
+                + gevCCDF(T(0.125), T(0), T(2), xi), T(1), 8 * T.epsilon, T(0)));
+    }}
+}
+
+// Small shapes approach the Gumbel limit without rounding 1 + xi * s to one.
+version(mir_stat_test)
+@safe pure nothrow @nogc
+unittest
+{
+    import std.meta: AliasSeq;
+    import std.math: nextUp;
+    import mir.math.common: approxEqual;
+
+    static foreach (T; AliasSeq!(float, double, real))
+    {{
+        const T expected = T(0.30779937244465364613457800281721023851L);
+        foreach (xi; [T.epsilon / 16, -T.epsilon / 16,
+            2 * T.min_normal, -2 * T.min_normal])
+            assert(approxEqual(gevCCDF(T(1), T(0), T(1), xi),
+                expected, 8 * T.epsilon, T(0)));
+
+        // The product can be subnormal or round to zero.
+        const T atLocation = T(0.63212055882855767840447622983853913255L);
+        assert(approxEqual(gevCCDF(nextUp(T(0)), T(0), T(1), 2 * T.min_normal),
+            atLocation, 8 * T.epsilon, T(0)));
+
+        // Overflow of a finite product does not imply a zero tail probability.
+        assert(approxEqual(gevCCDF(T(2), T(0), T(1), T.max),
+            atLocation, 8 * T.epsilon, T(0)));
+        assert(approxEqual(gevCCDF(T(-2), T(0), T(1), -T.max),
+            atLocation, 8 * T.epsilon, T(0)));
+    }}
+}
+
+// Both sides of the logarithm cutoff agree with independent reference values.
+version(mir_stat_test)
+@safe pure nothrow @nogc
+unittest
+{
+    import std.meta: AliasSeq;
+    import std.math: nextDown, nextUp;
+    import mir.math.common: approxEqual;
+
+    static foreach (T; AliasSeq!(float, double, real))
+    {{
+        const T[2][2] cases = [
+            [T(0.125), T(0.32277000913152354465704295941556212577L)],
+            [T(-0.125), T(0.29079376683063948552877145237498560910L)]];
+        foreach (entry; cases)
+            foreach (s; [nextDown(T(1)), T(1), nextUp(T(1))])
+                // Moving s by one ULP changes the probability by O(epsilon).
+                assert(approxEqual(gevCCDF(s, T(0), T(1), entry[0]),
+                    entry[1], 16 * T.epsilon, T(0)));
+    }}
 }
 
 /++
