@@ -196,6 +196,9 @@ unittest
 /++
 Computes the Cauchy inverse cumulative distribution function (InvCDF).
 
+Uses reciprocal tangents in the tails so small probabilities are not lost
+by subtracting one half.
+
 Params:
     p = value to evaluate InvCDF
 
@@ -209,16 +212,13 @@ T cauchyInvCDF(T)(const T p)
     in (p <= 1, "p must be less than or equal to 1")
 {
     import mir.math.constant: PI;
+    import mir.math.common: fabs;
     import std.math.trigonometry: tan;
 
-    if (p > 0 && p < 1) {
-        return tan(T(PI) * (p - 0.5));
-    } else if (p == 0) {
-        return -T.infinity;
-    } else if (p == 1) {
-        return T.infinity;
-    }
-    assert(0, "Should not be here");
+    const T centered = p - T(0.5);
+    if (fabs(centered) <= T(0.25))
+        return tan(T(PI) * centered);
+    return cauchyInvCDF(p, T(0), T(1));
 }
 
 /++
@@ -236,7 +236,31 @@ T cauchyInvCDF(T)(const T p, const T location, const T scale)
     in (p <= 1, "p must be less than or equal to 1")
     in (scale > 0, "scale must be greater than zero")
 {
-     return location + scale * cauchyInvCDF(p);
+    import mir.math.constant: PI, M_1_PI;
+    import std.math.trigonometry: tan;
+
+    if (p >= T(0.25) && p <= T(0.75))
+        return location + scale * tan(T(PI) * (p - T(0.5)));
+    if (p == 0)
+        return -T.infinity;
+    if (p == 1)
+        return T.infinity;
+    if (p > 0 && p < 1)
+    {
+        if (p < T.min_normal)
+        {
+            // Avoid rounding pi*p to a subnormal before taking its inverse.
+            // cot(pi*p) = 1/(pi*p) to far better than working precision here.
+            const T ratio = scale / p;
+            const T tail = ratio < T.infinity ? ratio * T(M_1_PI)
+                : (scale * T(M_1_PI)) / p;
+            return location - tail;
+        }
+        if (p < T(0.25))
+            return location - scale / tan(T(PI) * p);
+        return location + scale / tan(T(PI) * (1 - p));
+    }
+    assert(0, "Should not be here");
 }
 
 ///
@@ -352,6 +376,44 @@ unittest
         {
             assert(approxEqual(cauchyPDF(v), expected, 8 * T.epsilon, 2 * nextUp(T(0))));
             assert(approxEqual(cauchyLPDF(v), -T(LOGPI) - 2 * log(x), 8 * T.epsilon, T(0)));
+        }
+    }}
+}
+
+// Extreme probabilities retain tail and scaled quantiles.
+version(mir_stat_test)
+@safe pure nothrow @nogc
+unittest
+{
+    import std.meta: AliasSeq;
+    import std.math: ldexp, nextUp, nextDown;
+    import mir.math.common: approxEqual;
+    import mir.math.constant: M_1_PI;
+
+    static foreach (T; AliasSeq!(float, double, real))
+    {{
+        const T p = T.epsilon * T.epsilon;
+        assert(approxEqual(cauchyInvCDF(p), -T(M_1_PI) / p, 8 * T.epsilon, T(0)));
+        const T upper = nextDown(T(1));
+        assert(approxEqual(cauchyInvCDF(upper), T(M_1_PI) / (1 - upper), 8 * T.epsilon, T(0)));
+        const T tiny = nextUp(T(0));
+        assert(approxEqual(cauchyInvCDF(tiny, T(0), tiny), -T(M_1_PI), 8 * T.epsilon, T(0)));
+        // scale/p overflows, but division by pi leaves a finite result.
+        const T scaledTail = ldexp(T(M_1_PI), T.max_exp);
+        assert(approxEqual(cauchyInvCDF(T.min_normal / 2, T(0), T(2)),
+            -scaledTail, 8 * T.epsilon, T(0)));
+        // The normal-probability tail path also preserves small scales.
+        assert(approxEqual(cauchyInvCDF(T.min_normal, T(0), T.min_normal),
+            -T(M_1_PI), 8 * T.epsilon, T(0)));
+        assert(cauchyInvCDF(T(0)) == -T.infinity);
+        assert(cauchyInvCDF(T(1)) == T.infinity);
+        assert(cauchyInvCDF(T(.5)) == 0);
+        foreach (cutoff; [T(.25), T(.75)])
+        {
+            const T at = cauchyInvCDF(cutoff);
+            assert(approxEqual(at, cutoff == T(.25) ? T(-1) : T(1), 8 * T.epsilon, T(0)));
+            assert(approxEqual(cauchyInvCDF(nextDown(cutoff)), at, 8 * T.epsilon, T(0)));
+            assert(approxEqual(cauchyInvCDF(nextUp(cutoff)), at, 8 * T.epsilon, T(0)));
         }
     }}
 }
