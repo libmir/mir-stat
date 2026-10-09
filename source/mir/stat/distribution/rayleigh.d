@@ -34,6 +34,10 @@ T rayleighPDF(T)(const T x)
 /++
 Ditto, with scale parameter.
 
+Normalizes the observation before squaring, avoiding overflow or underflow
+from squaring the scale. Uses a logarithmic fallback when an underflowed
+intermediate could hide a representable scaled density.
+
 Params:
     x = value to evaluate PDF
     scale = scale parameter
@@ -43,10 +47,16 @@ T rayleighPDF(T)(const T x, const T scale)
     if (isFloatingPoint!T)
     in (scale > 0, "scale must be greater than zero")
 {
-    import mir.math.common: exp;
+    import mir.math.common: exp, log;
 
-    const T scale2 = scale * scale;
-    return x / scale2 * exp(-0.5 * x * x / scale2);
+    const T z = x / scale;
+    if (z == T.infinity)
+        return 0;
+    const T decay = exp(-T(0.5) * z * z);
+    const T density = z * decay;
+    if (x > 0 && (decay < T.min_normal || density < T.min_normal))
+        return exp(log(x) - 2 * log(scale) - T(0.5) * z * z);
+    return density / scale;
 }
 
 ///
@@ -260,11 +270,14 @@ See_also:
 @safe pure nothrow @nogc
 T rayleighLPDF(T)(const T x, const T scale)
     if (isFloatingPoint!T)
-    in (scale > 0, "shape must be greater than zero")
+    in (scale > 0, "scale must be greater than zero")
 {
     import mir.math.common: log;
 
-    return log(x) - 2 * log(scale) - 0.5 * x * x / (scale * scale);
+    const T z = x / scale;
+    if (z == T.infinity)
+        return -T.infinity;
+    return log(x) - 2 * log(scale) - T(0.5) * z * z;
 }
 
 ///
@@ -327,5 +340,38 @@ unittest
         assert(rayleighCDF(sqrt(2 * smallest)) == smallest);
         assert(rayleighCDF(T(0)) == 0);
         assert(rayleighCDF(T.infinity) == 1);
+    }}
+}
+
+// Scale normalization and tail underflow must retain finite densities.
+version(mir_stat_test)
+@safe pure nothrow @nogc
+unittest
+{
+    import std.meta: AliasSeq;
+    import std.math: ldexp;
+    import mir.math.common: approxEqual, exp, log, sqrt;
+
+    static foreach (T; AliasSeq!(float, double, real))
+    {{
+        foreach (scale; [ldexp(T(1), T.max_exp / 2 + 2),
+                        ldexp(T(1), T.min_exp / 2 - T.mant_dig)])
+        {
+            // At x == scale, the standardized observation is exactly one.
+            assert(approxEqual(rayleighPDF(scale, scale),
+                T(0.606530659712633423603799534991180453L) / scale,
+                8 * T.epsilon, T(0)));
+            assert(approxEqual(rayleighLPDF(scale, scale),
+                -T(0.5) - log(scale), 8 * T.epsilon, T(0)));
+            assert(rayleighPDF(T(0), scale) == 0);
+            assert(rayleighLPDF(T(0), scale) == -T.infinity);
+        }
+        const T smallScale = ldexp(T(1), -T.max_exp / 2);
+        const T z = sqrt(T(2) * T.max_exp);
+        const T expected = exp(log(z) - T(0.5) * z * z - log(smallScale));
+        assert(approxEqual(rayleighPDF(z * smallScale, smallScale), expected,
+            8 * T.epsilon * T.max_exp, T(0)));
+        assert(rayleighPDF(T.infinity, T(1)) == 0);
+        assert(rayleighLPDF(T.infinity, T(1)) == -T.infinity);
     }}
 }

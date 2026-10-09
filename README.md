@@ -56,3 +56,22 @@ void main()
 
 See [the benchmark subpackage](benchmarks/README.md) for selectable statistical
 benchmarks and their command-line runner.
+
+#### Extreme numerical tests
+
+Gamma inverse-CDF tests with very large shapes run by default with a DMD
+frontend version of 2.113 or newer, including corresponding LDC and GDC
+versions. Phobos fixed the large-shape performance issue in DMD 2.112.1
+([issue 10920](https://github.com/dlang/phobos/issues/10920)), but `__VERSION__`
+does not distinguish 2.112.0 from 2.112.1. The automatic gate therefore starts
+conservatively at 2.113. Phobos versions without the fix can take an
+impractically long time on these inputs.
+
+To run them on 2.112.1, or opt in regardless of frontend version, run:
+
+```sh
+dub test --build=unittest-extreme-numerics
+```
+
+This opt-in build is separate from `unittest-slow-numerics` and is not run
+by the routine CI matrix.

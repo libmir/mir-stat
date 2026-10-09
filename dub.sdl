@@ -28,6 +28,15 @@ buildType "unittest-slow-numerics" {
     dflags "-lowmem" platform="dmd"
     dflags "-lowmem" platform="ldc"
 }
+// Opt into extreme-shape tests even on older Phobos versions. Their lower
+// incomplete-gamma power series can make these cases exceptionally slow.
+// This build is intentionally not part of the routine CI matrix.
+buildType "unittest-extreme-numerics" {
+    buildOptions "unittests" "debugMode" "debugInfo"
+    versions "mir_stat_test" "mir_stat_test_extreme_numerics"
+    dflags "-lowmem" platform="dmd"
+    dflags "-lowmem" platform="ldc"
+}
 buildType "docs-check" {
     buildOptions "syntaxOnly" "warningsAsErrors"
     dflags "-Dddocs"
