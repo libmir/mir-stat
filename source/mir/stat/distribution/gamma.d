@@ -26,6 +26,9 @@ If `shape` is passed as a `size_t` type (or a type convertible to that), then th
 PDF is calculated using the relationship with the poisson distribution (i.e.
 replacing the `gamma` function with the `factorial`).
 
+The floating-point shape overload uses a logarithmic fallback when the direct
+calculation overflows or loses precision through underflow.
+
 Params:
     x = value to evaluate PDF
     shape = shape parameter
@@ -41,8 +44,8 @@ T gammaPDF(T)(const T x, const T shape, const T scale = 1)
     in (shape > 0, "shape must be greater than zero")
     in (scale > 0, "scale must be greater than zero")
 {
-    import mir.math.common: exp, pow;
-    import std.mathspecial: gamma;
+    import mir.math.common: exp, pow, log;
+    import std.mathspecial: gamma, logGamma;
     
     if (x == 0) {
         if (shape > 1) {
@@ -54,8 +57,20 @@ T gammaPDF(T)(const T x, const T shape, const T scale = 1)
         }
     }
 
-    T x_scale = x / scale;
-    return exp(-x_scale) * pow(x_scale, shape - 1) / (cast(T) gamma(shape)) / scale;
+    const T x_scale = x / scale;
+    const T decay = exp(-x_scale);
+    const T density = decay * pow(x_scale, shape - 1) / cast(T) gamma(shape);
+    // Keep the direct calculation when its intermediates retain precision.
+    // A subnormal density can become significant after division by scale.
+    if (x_scale >= T.min_normal && decay >= T.min_normal
+        && density >= T.min_normal && density < T.infinity)
+        return density / scale;
+
+    if (x_scale == T.infinity && shape < T.infinity)
+        return 0;
+    // A subnormal x / scale may already have lost significant digits.
+    const T logRatio = x_scale >= T.min_normal ? log(x_scale) : log(x) - log(scale);
+    return exp((shape - 1) * logRatio - x_scale - cast(T) logGamma(shape) - log(scale));
 }
 
 /// ditto
@@ -412,4 +427,45 @@ unittest
         x.gammaLPDF(1).exp.shouldApprox == x.gammaPDF(1);
         x.gammaLPDF(1, 1.5).exp.shouldApprox == x.gammaPDF(1, 1.5);
     }
+}
+
+// Finite densities survive overflow and underflow in the direct formula.
+version(mir_stat_test)
+@safe pure nothrow @nogc
+unittest
+{
+    import std.meta: AliasSeq;
+    import std.math: ldexp, nextUp;
+    import mir.math.common: approxEqual, sqrt, exp, log;
+    import mir.math.constant: PI;
+
+    static foreach (T; AliasSeq!(float, double, real))
+    {{
+        // Reference: 200^199 * exp(-200) / 199!, evaluated at high precision.
+        // The logarithmic terms are much larger than their difference.
+        assert(approxEqual(gammaPDF(T(200), T(200)),
+            T(0.028197727685920821798702062339363012L), 512 * T.epsilon, T(0)));
+
+        const T tiny = nextUp(T(0));
+        const T scale = ldexp(T(1), T.max_exp - 2);
+        // For shape 1/2, x/scale is negligible and the density is
+        // 1/sqrt(pi*x*scale), even when the ratio rounds to zero.
+        const T expected = 1 / sqrt(T(PI) * (tiny * scale));
+        assert(approxEqual(gammaPDF(tiny, T(0.5), scale), expected,
+            8 * T.epsilon * log(scale), T(0)));
+
+        // The ratio need not round all the way to zero to lose precision.
+        const T subnormalX = 3 * tiny;
+        const T expectedSubnormal = 1 / sqrt(T(PI)) / sqrt(subnormalX) / sqrt(T(2));
+        assert(approxEqual(gammaPDF(subnormalX, T(0.5), T(2)), expectedSubnormal,
+            8 * T.epsilon * -log(subnormalX), T(0)));
+
+        // Shape one is exponential. Its unscaled density underflows, but
+        // dividing by a small scale restores a representable result.
+        const T smallScale = ldexp(T(1), -T.max_exp / 2);
+        const T z = T.max_exp;
+        assert(approxEqual(gammaPDF(z * smallScale, T(1), smallScale),
+            exp(-z - log(smallScale)), 8 * T.epsilon * z, T(0)));
+        assert(gammaPDF(T.infinity, T(2)) == 0);
+    }}
 }
