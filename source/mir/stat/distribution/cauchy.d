@@ -28,7 +28,11 @@ T cauchyPDF(T)(const T x)
 {
     import mir.math.constant: M_1_PI;
 
-    return T(M_1_PI) / (1 + x * x);
+    const T square = x * x;
+    if (square == T.infinity)
+        // 1/x^2 is negligible here, but the density can still be subnormal.
+        return (T(M_1_PI) / x) / x;
+    return T(M_1_PI) / (1 + square);
 }
 
 /++
@@ -274,10 +278,13 @@ See_also:
 T cauchyLPDF(T)(const T x)
     if (isFloatingPoint!T)
 {
-    import mir.math.common: log;
+    import mir.math.common: log, fabs;
     import mir.stat.constant: LOGPI;
 
-    return -T(LOGPI) - log(1 + x * x);
+    const T square = x * x;
+    if (square == T.infinity)
+        return -T(LOGPI) - 2 * log(fabs(x));
+    return -T(LOGPI) - log(1 + square);
 }
 
 /++
@@ -322,4 +329,29 @@ unittest
     cauchyLPDF(1.0, 1, 2).shouldApprox == log(0.1591549);
     cauchyLPDF(2.0, 1, 2).shouldApprox == log(0.127324);
     cauchyLPDF(3.0, 1, 2).shouldApprox == log(0.07957747);
+}
+
+// Extreme tails retain densities and logarithms when squaring overflows.
+version(mir_stat_test)
+@safe pure nothrow @nogc
+unittest
+{
+    import std.meta: AliasSeq;
+    import std.math: ldexp, nextUp;
+    import mir.math.common: approxEqual, log;
+    import mir.math.constant: M_1_PI;
+    import mir.stat.constant: LOGPI;
+
+    static foreach (T; AliasSeq!(float, double, real))
+    {{
+        const T x = ldexp(T(1), T.max_exp / 2);
+        // 1/x^2 is negligible; evaluating the divisions separately is safe.
+        const T expected = (T(M_1_PI) / x) / x;
+        assert(expected > 0);
+        foreach (v; [x, -x])
+        {
+            assert(approxEqual(cauchyPDF(v), expected, 8 * T.epsilon, 2 * nextUp(T(0))));
+            assert(approxEqual(cauchyLPDF(v), -T(LOGPI) - 2 * log(x), 8 * T.epsilon, T(0)));
+        }
+    }}
 }
