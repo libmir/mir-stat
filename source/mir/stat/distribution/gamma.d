@@ -273,7 +273,13 @@ T gammaInvCDF(T)(const T p, const T shape, const T scale = 1)
 {
     import std.mathspecial: gammaIncompleteComplInverse;
     if (p >= T(0.5))
-        return gammaIncompleteComplInverse(shape, 1 - p) * scale;
+    {
+        const real x = gammaIncompleteComplInverse(shape, 1 - p);
+        // Small shapes can have tiny quantiles even above the median. Recover
+        // these in log space before applying a scale that may restore them.
+        if (x >= T.min_normal || p == 1 || !(shape < 1))
+            return cast(T) (x * scale);
+    }
     return cast(T) gammaLowerInvCDF(p, shape, scale);
 }
 
@@ -282,7 +288,7 @@ T gammaInvCDF(T)(const T p, const T shape, const T scale = 1)
 private @safe pure nothrow @nogc
 real gammaLowerInvCDF(const real p, const real shape, const real scale)
 {
-    import std.math: exp, log, fabs;
+    import std.math: exp, log, log1p, fabs;
     import std.mathspecial: gammaIncomplete, logGamma;
     import std.numeric: findRoot;
 
@@ -303,8 +309,11 @@ real gammaLowerInvCDF(const real p, const real shape, const real scale)
         : logGamma(shape) + log(shape);
     // P(a,x) <= x^a/Gamma(a+1), so this is a lower bound on log(x).
     // For p < 1/2 the quantile is below the mean a, giving the upper bound.
+    // The upper-half fallback is only used for a < 1: a unit-scale gamma
+    // with this shape is stochastically smaller than a shape-one exponential,
+    // whose quantile -log(1-p) supplies an upper bound instead.
     real low = (logP + logGammaNext) / shape;
-    real high = log(shape);
+    real high = p < 0.5L ? log(shape) : log(-log1p(-p));
     real y = low;
     if (y == -real.infinity)
         return exp(y + log(scale));
@@ -431,6 +440,56 @@ unittest
         assert(approxEqual(gammaInvCDF(T(1e-100L), T(2.5)),
             T(1.616703890291564173611661750815240370L * 1e-40L),
             512 * T.epsilon, T(0)));
+    }}
+}
+
+// Tiny unscaled quantiles must remain recoverable on both sides of the median.
+version(mir_stat_test)
+@safe pure nothrow @nogc
+unittest
+{
+    import std.meta: AliasSeq;
+    import std.math: ldexp, log, exp, nextDown, nextUp;
+    import mir.math.common: approxEqual;
+
+    static foreach (T; AliasSeq!(float, double, real))
+    {{
+        const T shape = T(1) / (2 * T.max_exp);
+        const T scale = ldexp(T(1), T.max_exp - 2);
+        // Independent 80-digit references for the exact binary inputs.
+        // At these tiny quantiles, P(a,x) = x^a/Gamma(a+1) has a
+        // correction far smaller than the precision of the references.
+        static if (T.max_exp == 128)
+        {
+            enum T median = T(4.138201387686505843786461287812758641L * 1e-40L);
+            enum T upper = T(5.142350936910122516153090934962000723L * 1e-27L);
+        }
+        else static if (T.max_exp == 1024)
+        {
+            enum T median = T(7.811190683306037302813411142333638137L * 1e-310L);
+            enum T upper = T(4.497757514169894067039631343546501935L * 1e-205L);
+        }
+        else
+        {
+            enum T median = T(1.179832546652321293867668997609491791L * 1e-4933L);
+            enum T upper = T(1.728504354429892150970839311825448008L * 1e-3257L);
+        }
+
+        T previous = 0;
+        foreach (p; [nextDown(T(0.5)), T(0.5), nextUp(T(0.5))])
+        {
+            const T value = gammaInvCDF(p, shape, scale);
+            const T expected = median * exp(log(2 * p) / shape);
+            assert(value > 0 && value >= previous);
+            // Log-space error is amplified by 1/shape; the result is also
+            // subnormal, so allow its final rounding error explicitly.
+            assert(approxEqual(value, expected, 16 * T.epsilon / shape,
+                2 * nextUp(T(0))));
+            previous = value;
+        }
+        // A smaller shape also needs recovery well above the median.
+        assert(approxEqual(gammaInvCDF(T(0.75), shape / 2, scale), upper,
+            32 * T.epsilon / shape, T(0)));
     }}
 }
 
