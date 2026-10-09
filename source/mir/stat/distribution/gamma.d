@@ -248,6 +248,13 @@ unittest
 /++
 Computes the gamma inverse cumulative distribution function (InvCDF).
 
+Lower-tail probabilities are inverted directly, without first subtracting
+them from one. If the unscaled quantile underflows, the scale is applied in
+logarithmic form so a representable scaled result can be retained.
+
+Very large shapes can be slow with Phobos versions before DMD 2.113, which
+use a power series to evaluate the lower cumulative probability near the mean.
+
 Params:
     p = value to evaluate InvCDF
     shape = shape parameter
@@ -265,7 +272,90 @@ T gammaInvCDF(T)(const T p, const T shape, const T scale = 1)
     in (scale > 0, "scale must be greater than zero")
 {
     import std.mathspecial: gammaIncompleteComplInverse;
-    return gammaIncompleteComplInverse(shape, 1 - p) * scale;
+    if (p >= T(0.5))
+        return gammaIncompleteComplInverse(shape, 1 - p) * scale;
+    return cast(T) gammaLowerInvCDF(p, shape, scale);
+}
+
+// Work in real, as does the complementary inverse used for the upper half.
+// Keeping the lower probability avoids losing it in the subtraction 1-p.
+private @safe pure nothrow @nogc
+real gammaLowerInvCDF(const real p, const real shape, const real scale)
+{
+    import std.math: exp, log, fabs;
+    import std.mathspecial: gammaIncomplete, logGamma;
+    import std.numeric: findRoot;
+
+    if (shape == real.infinity)
+        return real.nan;
+    if (p == 0)
+        return 0 * scale;
+
+    // Near the mean, solve in x rather than log(x). This avoids cancellation
+    // in the logarithmic derivative for large shapes. Phobos 2.113 added a
+    // faster incomplete-gamma implementation here; older versions can be slow.
+    if (shape > 25 && p >= gammaIncomplete(shape, 0.8L * shape))
+        return findRoot((real x) => gammaIncomplete(shape, x) - p,
+            0.8L * shape, shape) * scale;
+
+    const real logP = log(p);
+    const real logGammaNext = shape < 1 ? logGamma(1 + shape)
+        : logGamma(shape) + log(shape);
+    // P(a,x) <= x^a/Gamma(a+1), so this is a lower bound on log(x).
+    // For p < 1/2 the quantile is below the mean a, giving the upper bound.
+    real low = (logP + logGammaNext) / shape;
+    real high = log(shape);
+    real y = low;
+    if (y == -real.infinity)
+        return exp(y + log(scale));
+
+    foreach (iteration; 0 .. 128)
+    {
+        const real x = exp(y);
+        // P(a,x) = exp(a*log(x)-x)/Gamma(a+1) * sum,
+        // sum = 1 + x/(a+1) + x^2/((a+1)*(a+2)) + ... .
+        real term = 1;
+        real sum = 1;
+        bool converged;
+        foreach (n; 1 .. 100_000)
+        {
+            term *= x / (shape + n);
+            sum += term;
+            if (term <= real.epsilon * sum)
+            {
+                converged = true;
+                break;
+            }
+        }
+        if (!converged)
+            return real.nan;
+
+        const real residual = shape * y - x - logGammaNext + log(sum) - logP;
+        // d(log(P))/d(log(x)) = a/sum. Newton steps therefore remain useful
+        // even when x, P, or the ordinary density would underflow.
+        const real step = residual / (shape / sum);
+        if (fabs(step) <= 4 * real.epsilon * (1 + fabs(y)))
+            break;
+        if (residual > 0)
+            high = y;
+        else
+            low = y;
+        real next = y - step;
+        if (!(next > low && next < high))
+            next = low + (high - low) / 2;
+        if (next == y)
+            break;
+        y = next;
+        if (iteration == 127)
+            return real.nan;
+    }
+
+    const real x = exp(y);
+    if (x >= real.min_normal)
+        return x * scale;
+    // Apply the scale before exponentiation if the unscaled quantile is
+    // subnormal or zero. A large scale may restore a representable result.
+    return exp(y + log(scale));
 }
 
 ///
@@ -294,6 +384,91 @@ unittest
     0.99.gammaInvCDF(0.5, 1.5).shouldApprox == 4.976172;
     0.99.gammaInvCDF(2).shouldApprox == 6.638352;
     0.99.gammaInvCDF(0.5).shouldApprox == 3.317448;
+}
+
+// Lower probabilities and scaled quantiles survive intermediate underflow.
+version(mir_stat_test)
+@safe pure nothrow @nogc
+unittest
+{
+    import std.meta: AliasSeq;
+    import std.math: log, nextDown, nextUp;
+    import mir.math.common: approxEqual;
+    import mir.math.constant: PI;
+
+    static foreach (T; AliasSeq!(float, double, real))
+    {{
+        // Shape one is exponential: -log(1-p) = p + O(p^2).
+        const T p = T.epsilon * T.epsilon;
+        assert(approxEqual(gammaInvCDF(p, T(1), 1 / p), T(1),
+            16 * T.epsilon * (1 - log(p)), T(0)));
+
+        // For shape 1/2, P(1/2,x) = erf(sqrt(x)), hence the small-p
+        // quantile is pi*p^2/4 + O(p^4). Its unscaled value can underflow
+        // even real, but the scaled result is normal in T.
+        const T tinyP = 16 * T.min_normal;
+        const T expected = T(PI / 4) * tinyP;
+        assert(approxEqual(gammaInvCDF(tinyP, T(0.5), 1 / tinyP), expected,
+            16 * T.epsilon * (1 - log(tinyP)), T(0)));
+        assert(gammaInvCDF(T(0), T(2), T(3)) == 0);
+        assert(gammaInvCDF(T(1), T(2), T(3)) == T.infinity);
+        foreach (middle; [nextDown(T(0.5)), T(0.5), nextUp(T(0.5))])
+            assert(approxEqual(gammaInvCDF(middle, T(1)), -log(1 - middle),
+                32 * T.epsilon, T(0)));
+
+        // Independent 80-decimal-digit incomplete-gamma inversion.
+        assert(approxEqual(gammaInvCDF(T(1e-20L), T(200)),
+            T(95.6946452213520086055421832734165936725L),
+            128 * T.epsilon, T(0)));
+    }}
+    static foreach (T; AliasSeq!(double, real))
+    {{
+        // Logarithmic evaluation and input rounding are amplified in these
+        // very small quantiles, especially for the nonexact shape 0.1.
+        assert(approxEqual(gammaInvCDF(T(1e-20L), T(0.1L)),
+            T(6.073048362407882531571435593407629104L * 1e-201L),
+            4096 * T.epsilon, T(0)));
+        assert(approxEqual(gammaInvCDF(T(1e-100L), T(2.5)),
+            T(1.616703890291564173611661750815240370L * 1e-40L),
+            512 * T.epsilon, T(0)));
+    }}
+}
+
+version(mir_stat_test)
+{
+    // Phobos 2.113 introduced the fast large-shape incomplete-gamma path.
+    // Explicit opt-in also runs these on older frontends; that can be slow.
+    version(mir_stat_test_extreme_numerics)
+        private enum testLargeGammaShapes = true;
+    else
+        private enum testLargeGammaShapes = __VERSION__ >= 2113;
+
+    static if (testLargeGammaShapes)
+    @safe pure nothrow @nogc
+    unittest
+    {
+        import std.meta: AliasSeq;
+        import std.math: sqrt;
+        import mir.math.common: approxEqual;
+
+        static foreach (T; AliasSeq!(float, double, real))
+        {{
+            // Independent 80-decimal-digit references.
+            assert(approxEqual(gammaInvCDF(T(0.1), T(10000)),
+                T(9872.060875049735778499556443787512518L),
+                128 * T.epsilon, T(0)));
+            assert(approxEqual(gammaInvCDF(T(1e-20L), T(1000000)),
+                T(990765.903258275879702339899208327863L),
+                128 * T.epsilon, T(0)));
+            // At this shape, the first two normal-limit correction terms
+            // locate the quantile well within one floating-point step.
+            const T shape = T(1e20L);
+            const T z = T(-9.262340089798407573717356977875325L);
+            const T expected = shape + sqrt(shape) * z + (z * z - 1) / 3;
+            assert(approxEqual(gammaInvCDF(T(1e-20L), shape), expected,
+                8 * T.epsilon, T(0)));
+        }}
+    }
 }
 
 // confirming consistency with gammaCDF
