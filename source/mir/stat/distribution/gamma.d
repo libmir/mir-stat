@@ -252,7 +252,7 @@ Lower-tail probabilities are inverted directly, without first subtracting
 them from one. If the unscaled quantile underflows, the scale is applied in
 logarithmic form so a representable scaled result can be retained.
 
-Very large shapes can be slow with Phobos versions before DMD 2.113, which
+Very large shapes can be slow with Phobos versions before DMD 2.112.1, which
 use a power series to evaluate the lower cumulative probability near the mean.
 
 Params:
@@ -298,7 +298,7 @@ real gammaLowerInvCDF(const real p, const real shape, const real scale)
         return 0 * scale;
 
     // Near the mean, solve in x rather than log(x). This avoids cancellation
-    // in the logarithmic derivative for large shapes. Phobos 2.113 added a
+    // in the logarithmic derivative for large shapes. Phobos 2.112.1 added a
     // faster incomplete-gamma implementation here; older versions can be slow.
     if (shape > 25 && p >= gammaIncomplete(shape, 0.8L * shape))
         return findRoot((real x) => gammaIncomplete(shape, x) - p,
@@ -495,8 +495,10 @@ unittest
 
 version(mir_stat_test)
 {
-    // Phobos 2.113 introduced the fast large-shape incomplete-gamma path.
-    // Explicit opt-in also runs these on older frontends; that can be slow.
+    // Phobos 2.112.1 fixed https://github.com/dlang/phobos/issues/10920.
+    // __VERSION__ cannot distinguish 2.112.0 from 2.112.1, so automatic
+    // tests conservatively start at 2.113. Explicit opt-in also runs these
+    // on 2.112.1 and older frontends; versions without the fix can be slow.
     version(mir_stat_test_extreme_numerics)
         private enum testLargeGammaShapes = true;
     else
