@@ -54,7 +54,34 @@ T poissonPMFImpl(T, PoissonAlgo poissonAlgo)(const size_t k, const T lambda)
     import mir.math.common: exp, pow;
     import mir.math.numeric: factorial;
 
-    return exp(-lambda) * pow(lambda, k) / (cast(T) factorial(k));
+    // Keep the direct calculation while the intermediate values retain precision.
+    // Bound the factorial work as well as avoiding an integer wrap at k + 1.
+    if (k < 2048)
+    {
+        const T decay = exp(-lambda);
+        const T mass = decay * pow(lambda, k) / cast(T) factorial(k);
+        if (decay >= T.min_normal && mass >= T.min_normal && mass < T.infinity)
+            return mass;
+    }
+    return cast(T) exp(poissonLogMass(k, cast(real) lambda));
+}
+
+// Evaluate only when direct intermediates fail. Keep the exponent in real until
+// the final conversion, including when the requested result is subnormal.
+private @safe pure nothrow @nogc
+real poissonLogMass(size_t k, real lambda)
+{
+    import mir.math.common: log;
+    import mir.math.internal.log_binomial: logFactorial;
+    import std.mathspecial: logGamma;
+
+    if (k == 0)
+        return -lambda;
+    if (lambda == real.infinity)
+        return -real.infinity;
+    const real logFact = k < 2048 ? logFactorial!real(k)
+        : logGamma(cast(real) k + 1);
+    return k * log(lambda) - lambda - logFact;
 }
 
 private
@@ -100,6 +127,9 @@ T poissonPMFImpl(T, PoissonAlgo poissonAlgo)(const size_t k, const T lambda)
 
 /++
 Computes the poisson probability mass function (PMF).
+
+The direct algorithm uses a logarithmic fallback when intermediate powers,
+factorials, or exponentials overflow or underflow.
 
 Params:
     poissonAlgo = algorithm for calculating PMF (default: PoissonAlgo.direct)
@@ -164,6 +194,31 @@ unittest
     assert(8.poissonPMF(5.0).approxEqual(exp(-5.0) * 390625 / 40320));
     assert(9.poissonPMF(5.0).approxEqual(exp(-5.0) * 1953125 / 362880));
     assert(10.poissonPMF(5.0).approxEqual(exp(-5.0) * 9765625 / 3628800));
+}
+
+// Direct PMFs must survive overflow and underflow of their intermediate values.
+version(mir_stat_test)
+@safe pure nothrow @nogc unittest
+{
+    import std.meta: AliasSeq;
+    import mir.math.common: approxEqual;
+    static foreach (T; AliasSeq!(float, double, real))
+    {{
+        // Independent 100-digit references, rounded to the result type.
+        assert(approxEqual(poissonPMF(40, T(40)),
+            T(0.062947039423592203188230813788406L), 512 * T.epsilon, T(0)));
+        assert(approxEqual(poissonPMF(200, T(200)),
+            T(0.028197727685920821798702062339363L), 2048 * T.epsilon, T(0)));
+        assert(approxEqual(poissonPMF(1000, T(1000)),
+            T(0.012614611348721499718036936474579L), 8192 * T.epsilon, T(0)));
+        assert(approxEqual(poissonPMF(3000, T(3000)),
+            T(0.00728345388297452668151904477178226L), 32768 * T.epsilon, T(0)));
+        assert(poissonPMF(size_t.max, T(5)) == 0);
+        assert(poissonPMF(1, T.infinity) == 0);
+    }}
+    import mir.math.ieee: nextUp;
+    assert(approxEqual(poissonPMF(1, 740.0), 62738 * nextUp(0.0),
+        0.0, nextUp(0.0)));
 }
 
 // test PoissonAlgo.gamma
