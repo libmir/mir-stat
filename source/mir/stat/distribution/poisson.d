@@ -63,7 +63,13 @@ T poissonPMFImpl(T, PoissonAlgo poissonAlgo)(const size_t k, const T lambda)
     if (isFloatingPoint!T && poissonAlgo == PoissonAlgo.gamma)
     in (lambda > 0, "lambda must be greater than or equal to 0")
 {
+    import mir.math.common: exp;
     import std.mathspecial: gammaIncompleteCompl;
+
+    // Zero events have probability exp(-lambda); the gamma difference below
+    // would call Phobos with a zero shape, outside its supported domain.
+    if (k == 0)
+        return exp(-lambda);
 
     return gammaIncompleteCompl(k + 1, lambda) - gammaIncompleteCompl(k, lambda);
 }
@@ -168,6 +174,28 @@ unittest
     import mir.math.common: approxEqual;
     for (size_t i; i < 20; i++) {
         assert(i.poissonPMF!"gamma"(5.0).approxEqual(poissonPMF(i, 5.0)));
+    }
+}
+
+// The gamma algorithm must handle zero events without a zero-shape gamma call.
+version(mir_stat_test)
+@safe pure nothrow @nogc
+unittest
+{
+    import mir.math.common: approxEqual, exp;
+    import std.meta: AliasSeq;
+
+    static foreach (T; AliasSeq!(float, double, real))
+    {
+        foreach (lambda; [T(0.125), T(1), T(5), T(80)])
+        {
+            // P(0) = exp(-lambda), and P(1) = lambda * P(0).
+            const expected = exp(-lambda);
+            assert(approxEqual(poissonPMF!"gamma"(0, lambda), expected,
+                T(16) * T.epsilon, T(0)));
+            assert(approxEqual(poissonPMF!"gamma"(1, lambda), lambda * expected,
+                T(128) * T.epsilon, T(0)));
+        }
     }
 }
 
