@@ -262,6 +262,9 @@ version(mir_stat_test)
         assert(poissonPMF(1, T.infinity) == 0);
     }}
     import mir.math.ieee: nextUp;
+    // Zero events also use the logarithmic fallback after exponential underflow.
+    assert(approxEqual(poissonPMF(0, 740.0), 85 * nextUp(0.0),
+        0.0, nextUp(0.0)));
     assert(approxEqual(poissonPMF(1, 740.0), 62738 * nextUp(0.0),
         0.0, nextUp(0.0)));
 }
@@ -400,6 +403,9 @@ version(mir_stat_test)
     const tiny = fp_poissonPMF(0, Fp!128(1000));
     assert(tiny.coefficient != 0);
     assert(approxEqual(fp_log!double(tiny), -1000.0, 1e-14, 0.0));
+    // A finite extended rate can exceed the double exponential seed's range.
+    const hugeRate = Fp!128(double.max) * Fp!128(2);
+    assert(fp_poissonPMF(0, hugeRate).coefficient == 0);
     foreach (rate; [511.0, 512.0, 513.0, 1024.0, 2000.0])
     {
         const zero = fp_poissonPMF(0, Fp!128(rate));
@@ -924,7 +930,9 @@ version(mir_stat_test)
 @safe pure nothrow @nogc unittest
 {
     import std.meta: AliasSeq;
-    import mir.math.ieee: nextDown;
+    import mir.math.ieee: nextDown, nextUp;
+    import mir.math.common: sqrt;
+    import mir.stat.distribution.normal: normalCDF;
     static foreach (T; AliasSeq!(float, double, real))
     {{
         assert(poissonInvCDF(T(0.5), T(1000)) == 1000);
@@ -938,6 +946,19 @@ version(mir_stat_test)
         assert(poissonInvCDF!"gamma"(T(1), size_t(5)) == 0);
         assert(poissonInvCDF!"gamma"(T(0), size_t(5)) == T.infinity);
         assert(poissonInvCDF(T(0.5), T.infinity) == size_t.max);
+        // Finite rates can also put the median beyond the count return type.
+        const hugeRate = cast(T) size_t.max * 4;
+        assert(poissonInvCDF(T(0.5), hugeRate) == size_t.max);
+        assert(poissonInvCDF!"approxNormal"(T(0.5), hugeRate) == size_t.max);
+        assert(poissonInvCDF!"approxNormalContinuityCorrection"(T(0.5), hugeRate)
+            == size_t.max);
+        // Just above the lower cutoff, inverse-normal rounding can put the
+        // continuity-corrected result at or slightly below zero.
+        foreach (rate; [T(5), T(10)])
+        {
+            const p = nextUp(normalCDF(T(0.5), rate, sqrt(rate)));
+            assert(poissonInvCDF!"approxNormalContinuityCorrection"(p, rate) == 0);
+        }
         foreach (lambda; [T(1), T(5), T(20), T(1000)])
             foreach (p; [T(1e-9), T(0.1), T(0.5), T(0.9), nextDown(T(1))])
             {
@@ -1065,6 +1086,14 @@ version(mir_stat_test)
             -14.734449091169030179221611797845136, 8 * double.epsilon, 0.0));
         assert(poissonLPMF(size_t.max, 5.0) < 0);
     }
+    // Forming k/lambda overflows, although its logarithm is finite.
+    // log(32!) = 81.55795945611503717850296866601120668710... (100-digit reference).
+    import mir.math.common: log;
+    const real tinyRate = real.min_normal;
+    const real expected = 32 * log(tinyRate)
+        - 81.55795945611503717850296866601120668710L;
+    assert(approxEqual(poissonLPMF(32, tinyRate), expected,
+        32 * real.epsilon, 0.0L));
 }
 
 ///
