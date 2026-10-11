@@ -312,17 +312,22 @@ T poissonCDFImpl(T, PoissonAlgo poissonAlgo)(const size_t k, const T lambda)
     in (lambda > 0, "lambda must be greater than or equal to 0")
 {
     import mir.math.common: exp;
-    import mir.math.numeric: factorial;
-
-    T output = 1;
-    if (k > 0) {
+    // The unscaled sum grows like exp(lambda). Use the incomplete gamma
+    // function if this sum or its final rescaling loses range or precision.
+    if (k < 2048)
+    {
+        T output = 1;
         T multiplier = 1;
-        for (size_t i = 1; i < (k + 1); i++) {
+        for (size_t i = 1; i <= k; i++) {
             multiplier *= (lambda / i);
             output += multiplier;
         }
+        const T decay = exp(-lambda);
+        const T result = output * decay;
+        if (decay >= T.min_normal && result >= T.min_normal && result <= 1)
+            return result;
     }
-    return output * exp(-lambda);
+    return poissonCDFImpl!(T, PoissonAlgo.gamma)(k, lambda);
 }
 
 private
@@ -332,7 +337,8 @@ T poissonCDFImpl(T, PoissonAlgo poissonAlgo)(const size_t k, const T lambda)
     in (lambda > 0, "lambda must be greater than or equal to 0")
 {
     import std.mathspecial: gammaIncompleteCompl;
-    return cast(T) gammaIncompleteCompl(k + 1, lambda); 
+    // Convert before adding one: k may be size_t.max.
+    return cast(T) gammaIncompleteCompl(cast(real) k + 1, lambda);
 }
 
 private
@@ -355,6 +361,9 @@ T poissonCDFImpl(T, PoissonAlgo poissonAlgo)(const size_t k, const T lambda)
 
 /++
 Computes the poisson cumulative distrivution function (CDF).
+
+The direct algorithm falls back to the incomplete gamma function when its
+unscaled sum cannot be evaluated reliably, or the count would require a long sum.
 
 Params:
     poissonAlgo = algorithm for calculating CDF (default: PoissonAlgo.direct)
@@ -451,7 +460,13 @@ T poissonCCDFImpl(T, PoissonAlgo poissonAlgo)(const size_t k, const T lambda)
     if (isFloatingPoint!T && poissonAlgo == PoissonAlgo.direct)
     in (lambda > 0, "lambda must be greater than or equal to 0")
 {
-    return T(1) - poissonCDFImpl!(T, poissonAlgo)(k, lambda);
+    const T cdf = poissonCDFImpl!(T, poissonAlgo)(k, lambda);
+    // Keep subtraction when the remaining tail is at least 1/8.
+    // Subtraction preserves the CDF's absolute error, but that error is larger
+    // relative to a small tail probability. For smaller tails, evaluate the
+    // upper tail directly instead of subtracting a value near one.
+    return cdf <= T(0.875) ? T(1) - cdf
+        : poissonCCDFImpl!(T, PoissonAlgo.gamma)(k, lambda);
 }
 
 private
@@ -461,7 +476,7 @@ T poissonCCDFImpl(T, PoissonAlgo poissonAlgo)(const size_t k, const T lambda)
     in (lambda > 0, "lambda must be greater than or equal to 0")
 {
     import std.mathspecial: gammaIncomplete;
-    return cast(T) gammaIncomplete(k + 1, lambda); 
+    return cast(T) gammaIncomplete(cast(real) k + 1, lambda);
 }
 
 private
@@ -484,6 +499,9 @@ T poissonCCDFImpl(T, PoissonAlgo poissonAlgo)(const size_t k, const T lambda)
 
 /++
 Computes the poisson complementary cumulative distrivution function (CCDF).
+
+Returns the probability of strictly more than `k` events. The direct algorithm
+uses the incomplete gamma function for small upper tails to avoid cancellation.
 
 Params:
     poissonAlgo = algorithm for calculating CCDF (default: PoissonAlgo.direct)
@@ -564,6 +582,32 @@ unittest
         assert(i.poissonCCDF!"approxNormal"(5.0).approxEqual(normalCCDF(i, 5.0, sqrt(5.0))));
         assert(i.poissonCCDF!"approxNormalContinuityCorrection"(5.0).approxEqual(normalCCDF(i + 0.5, 5.0, sqrt(5.0))));
     }
+}
+
+// Tail calculations must remain bounded and retain small probabilities.
+version(mir_stat_test)
+@safe pure nothrow @nogc unittest
+{
+    import std.meta: AliasSeq;
+    import mir.math.common: approxEqual;
+    static foreach (T; AliasSeq!(float, double, real))
+    {{
+        assert(approxEqual(poissonCDF(1000, T(1000)),
+            T(0.50840936716850599121425909287246L), 2048 * T.epsilon, T(0)));
+        assert(approxEqual(poissonCCDF(20, T(1)),
+            T(7.542625077205278476019579100834e-21L), 128 * T.epsilon, T(0)));
+        assert(poissonCDF(size_t.max, T(5)) == 1);
+        assert(poissonCCDF(size_t.max, T(5)) == 0);
+        assert(poissonCDF!"gamma"(size_t.max, T(5)) == 1);
+        assert(poissonCCDF!"gamma"(size_t.max, T(5)) == 0);
+        assert(poissonCDF(3, T.infinity) == 0);
+        assert(poissonCCDF(3, T.infinity) == 1);
+        foreach (k; 0 .. 20)
+        {
+            assert(approxEqual(poissonCDF(k, T(5)) + poissonCCDF(k, T(5)),
+                T(1), 32 * T.epsilon));
+        }
+    }}
 }
 
 private
