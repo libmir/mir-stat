@@ -640,37 +640,48 @@ private
 size_t poissonInvCDFImpl(T, PoissonAlgo poissonAlgo)(const T p, const T lambda)
     if (isFloatingPoint!T && poissonAlgo == PoissonAlgo.direct)
     in (p >= 0, "p must be greater than or equal to 0")
-    in (p < 1, "p must be less than 1")
+    in (p <= 1, "p must be less than or equal to 1")
     in (lambda > 0, "lambda must be greater than or equal to 0")
 {
     if (p == 0) {
         return 0;
     }
 
-    size_t guess = 0;
-    if (lambda > 16) {
-        guess = poissonInvCDFImpl!(T, PoissonAlgo.approxNormalContinuityCorrection)(p, lambda);
-    }
-    T cdfGuess = poissonCDF!(poissonAlgo)(guess, lambda);
+    if (p == 1 || lambda == T.infinity)
+        return size_t.max;
 
-    if (p <= cdfGuess) {
-        if (guess == 0) {
-            return guess;
-        }
-        for (size_t i = (guess - 1); guess >= 0; i--) {
-            cdfGuess -= poissonPMF!(poissonAlgo)(i + 1, lambda);
-            if (p > cdfGuess) {
-                guess = i + 1;
-                break;
-            }
-        }
-    } else {
-        while(p > cdfGuess) {
-            guess++;
-            cdfGuess += poissonPMF!(poissonAlgo)(guess, lambda);
-        }
+    // Compare the smaller tail. Repeatedly adding/subtracting masses can stop
+    // changing the cumulative value, or accumulate enough error to miss a bin.
+    bool reached(size_t k)
+    {
+        return p <= T(0.5) ? poissonCDF(k, lambda) >= p
+            : poissonCCDF(k, lambda) <= 1 - p;
     }
-    return guess;
+
+    size_t low = 0;
+    size_t high = lambda > 16
+        ? poissonInvCDFImpl!(T, PoissonAlgo.approxNormalContinuityCorrection)(p, lambda)
+        : 0;
+    size_t step = 1;
+    while (!reached(high))
+    {
+        if (high == size_t.max)
+            return high; // The quantile does not fit in the result type.
+        low = high + 1;
+        high += step < size_t.max - high ? step : size_t.max - high;
+        step = step <= size_t.max / 2 ? step * 2 : size_t.max;
+    }
+    // A bounded binary search also handles an initial guess above the answer,
+    // without decrementing an unsigned counter past zero.
+    while (low < high)
+    {
+        const mid = low + (high - low) / 2;
+        if (reached(mid))
+            high = mid;
+        else
+            low = mid + 1;
+    }
+    return low;
 }
 
 private
@@ -678,14 +689,16 @@ private
 T poissonInvCDFImpl(T, PoissonAlgo poissonAlgo)(const T p, const size_t k)
     if (isFloatingPoint!T && poissonAlgo == PoissonAlgo.gamma)
     in (p >= 0, "p must be greater than or equal to 0")
-    in (p < 1, "p must be less than 1")
+    in (p <= 1, "p must be less than or equal to 1")
 {
     import std.mathspecial: gammaIncompleteComplInverse;
 
     if (p == 0) {
         return T.infinity;
     }
-    return gammaIncompleteComplInverse(k + 1, p); 
+    if (p == 1)
+        return 0;
+    return gammaIncompleteComplInverse(cast(real) k + 1, p);
 }
 
 private
@@ -695,11 +708,16 @@ size_t poissonInvCDFImpl(T, PoissonAlgo poissonAlgo)(const T p, const T lambda)
         (poissonAlgo == PoissonAlgo.approxNormal || 
          poissonAlgo == PoissonAlgo.approxNormalContinuityCorrection))
     in (p >= 0, "p must be greater than or equal to 0")
-    in (p < 1, "p must be less than 1")
+    in (p <= 1, "p must be less than or equal to 1")
     in (lambda > 0, "lambda must be greater than or equal to 0")
 {
     import mir.math.common: floor, sqrt;
     import mir.stat.distribution.normal: normalCDF, normalInvCDF;
+
+    if (p == 0)
+        return 0;
+    if (p == 1 || lambda == T.infinity)
+        return size_t.max;
 
     T std = sqrt(lambda);
 
@@ -717,6 +735,10 @@ size_t poissonInvCDFImpl(T, PoissonAlgo poissonAlgo)(const T p, const T lambda)
     static if (poissonAlgo == PoissonAlgo.approxNormalContinuityCorrection) {
         result = result - 0.5;
     }
+    if (result <= 0)
+        return 0;
+    if (result >= cast(real) size_t.max)
+        return size_t.max;
     return cast(size_t) floor(result);
 }
 
@@ -731,6 +753,11 @@ of occurence (`lambda`) given the probability (`p`) and the number of events (`k
 
 For `PoissonAlgo.direct`, if the value of `lambda` is larger than 16, then an
 initial guess is made based on `PoissonAlgo.approxNormalContinuityCorrection`.
+
+Count-returning algorithms return `0` at `p = 0` and `size_t.max` at `p = 1`,
+where no finite Poisson quantile exists. `size_t.max` also denotes a quantile
+outside the result type's range. The gamma algorithm instead solves for the
+rate and returns positive infinity at `p = 0` and zero at `p = 1`.
 
 Params:
     poissonAlgo = algorithm for calculating InvCDF (default: PoissonAlgo.direct)
@@ -812,6 +839,44 @@ unittest
         assert(value.poissonCDF(5.0) >= x);
         assert((value - 1).poissonCDF(5.0) < x);
     }
+}
+
+// Quantile endpoints and bracketing must not depend on cumulative roundoff.
+version(mir_stat_test)
+@safe pure nothrow @nogc unittest
+{
+    import std.meta: AliasSeq;
+    import mir.math.ieee: nextDown;
+    static foreach (T; AliasSeq!(float, double, real))
+    {{
+        assert(poissonInvCDF(T(0.5), T(1000)) == 1000);
+        // Independently bracketed using 100-digit Poisson sums.
+        assert(poissonInvCDF(T(0.1), T(1000)) == 960);
+        assert(poissonInvCDF(T(0.9), T(1000)) == 1041);
+        assert(poissonInvCDF(T(0), T(5)) == 0);
+        assert(poissonInvCDF(T(1), T(5)) == size_t.max);
+        assert(poissonInvCDF!"approxNormal"(T(1), T(5)) == size_t.max);
+        assert(poissonInvCDF!"approxNormalContinuityCorrection"(T(1), T(5)) == size_t.max);
+        assert(poissonInvCDF!"gamma"(T(1), size_t(5)) == 0);
+        assert(poissonInvCDF!"gamma"(T(0), size_t(5)) == T.infinity);
+        assert(poissonInvCDF(T(0.5), T.infinity) == size_t.max);
+        foreach (lambda; [T(1), T(5), T(20), T(1000)])
+            foreach (p; [T(1e-9), T(0.1), T(0.5), T(0.9), nextDown(T(1))])
+            {
+                const k = poissonInvCDF(p, lambda);
+                if (p <= T(0.5))
+                {
+                    assert(poissonCDF(k, lambda) >= p);
+                    assert(k == 0 || poissonCDF(k - 1, lambda) < p);
+                }
+                else
+                {
+                    assert(poissonCCDF(k, lambda) <= 1 - p);
+                    assert(k == 0 || poissonCCDF(k - 1, lambda) > 1 - p);
+                }
+            }
+    }}
+    assert(poissonInvCDF(nextDown(1.0), 5.0) == 32);
 }
 
 // test PoissonAlgo.direct, large lambda branch, check small p
