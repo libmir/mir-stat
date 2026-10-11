@@ -66,8 +66,8 @@ T poissonPMFImpl(T, PoissonAlgo poissonAlgo)(const size_t k, const T lambda)
     return cast(T) exp(poissonLogMass(k, cast(real) lambda));
 }
 
-// Evaluate only when direct intermediates fail. Keep the exponent in real until
-// the final conversion, including when the requested result is subnormal.
+// Shared logarithmic calculation for the PMF fallback and large-count LPMF.
+// Keep intermediate calculations in real until the final result conversion.
 private @safe pure nothrow @nogc
 real poissonLogMass(size_t k, real lambda)
 {
