@@ -56,10 +56,104 @@ T binomialPMFImpl(T, BinomialAlgo binomialAlgo)(const size_t k, const size_t n, 
     in (p >= 0, "p must be greater than or equal to 0")
     in (p <= 1, "p must be less than or equal to 1")
 {
-    import mir.math.common: pow;
+    import mir.math.common: exp, pow;
     import mir.combinatorics: binomial;
 
-    return binomial(n, k) * pow(p, k) * pow(1 - p, n - k);
+    // All coefficients through n=64 fit in ulong. Near an endpoint, also try
+    // the short direct product, checking the coefficient's overflow sentinel.
+    // Limit trial counts too: raising rounded (1-p) to a large power can
+    // amplify its rounding error even when the coefficient fits.
+    if (n <= 64 || (n <= 1024 && (k < 32 || n - k < 32)))
+    {
+        const ulong coefficient = binomial(n, k);
+        const T successes = pow(p, k);
+        const T failures = pow(1 - p, n - k);
+        if (coefficient != 0 && successes >= T.min_normal && failures >= T.min_normal)
+            return coefficient * successes * failures;
+    }
+    return cast(T) exp(binomialLogMass(k, n, cast(real) p));
+}
+
+// The correction to Stirling's log-factorial formula, used only for n>=32.
+// The first omitted term is below 1e-24 at that boundary.
+private @safe pure nothrow @nogc
+real binomialStirlingCorrection(real n)
+{
+    const real inv = 1 / n;
+    const real inv2 = inv * inv;
+    return inv * (1.0L / 12 + inv2 * (-1.0L / 360
+        + inv2 * (1.0L / 1260 + inv2 * (-1.0L / 1680
+        + inv2 * (1.0L / 1188 + inv2 * (-691.0L / 360360 + inv2 / 156))))));
+}
+
+// x*log(x/mean)+mean-x is small near x=mean. Evaluate a convergent
+// series there instead of subtracting terms much larger than the answer.
+private @safe pure nothrow @nogc
+real binomialDeviance(real x, real mean)
+{
+    import mir.math.common: fabs, log;
+    const real delta = x - mean;
+    if (fabs(delta) < x * 0.5L)
+    {
+        const real v = delta / (x + mean);
+        const real vv = v * v;
+        real sum = delta * v;
+        real term = 2 * x * v;
+        // |v|<1/3. Stop once the next term no longer changes the sum.
+        for (uint j = 1; j < 64; ++j)
+        {
+            term *= vv;
+            const real next = sum + term / (2 * j + 1);
+            if (next == sum)
+                break;
+            sum = next;
+        }
+        return sum;
+    }
+    // Separate logs also avoid overflow in x/mean for very small means.
+    return x * (log(x) - log(mean)) + mean - x;
+}
+
+// Shared by the PMF fallback and large-count LPMF. Counts stay in size_t:
+// narrowing k before exploiting symmetry can silently change the distribution.
+private @safe pure nothrow @nogc
+real binomialLogMass(size_t k, size_t n, real p)
+{
+    import mir.math.common: log;
+    import std.math: log1p;
+    import std.math.constants: PI;
+    if (p == 0)
+        return k == 0 ? 0 : -real.infinity;
+    if (p == 1)
+        return k == n ? 0 : -real.infinity;
+    if (k == 0)
+        return cast(real) n * log1p(-p);
+    if (k == n)
+        return cast(real) n * log(p);
+
+    const size_t smaller = k < n - k ? k : n - k;
+    if (smaller < 32)
+    {
+        // Only a few factors are needed near either endpoint. This avoids
+        // subtracting almost equal log-factorials when n is very large.
+        real logCoefficient = 0;
+        foreach (i; 0 .. smaller)
+            logCoefficient += log(cast(real)(n - i)) - log(cast(real)(i + 1));
+        return logCoefficient + cast(real) k * log(p)
+            + cast(real)(n - k) * log1p(-p);
+    }
+
+    // Center the log mass on the expected successes and failures. The usual
+    // log(coefficient)+k*log(p)+(n-k)*log(1-p) subtracts large terms near the
+    // mode; this form keeps the small deviations separate from normalization.
+    const real successes = k;
+    const real failures = n - k;
+    const real total = n;
+    return binomialStirlingCorrection(total)
+        - binomialStirlingCorrection(successes) - binomialStirlingCorrection(failures)
+        - binomialDeviance(successes, total * p)
+        - binomialDeviance(failures, total * (1 - p))
+        - 0.5L * (log(2 * PI) + log(successes) + log(failures) - log(total));
 }
 
 private
@@ -105,6 +199,10 @@ T binomialPMFImpl(T, BinomialAlgo binomialAlgo, PoissonAlgo poissonAlgo)(const s
 
 /++
 Computes the binomial probability mass function (PMF).
+
+The direct algorithm retains its coefficient-and-powers calculation for small
+trial counts when the intermediate values retain precision. Otherwise it uses
+a logarithmic calculation, avoiding coefficient overflow and premature underflow.
 
 Additional algorithms may be provided for calculating PMF that allow trading off
 time and accuracy. If `approxPoisson` is provided, the default is `PoissonAlgo.gamma`
@@ -174,6 +272,45 @@ unittest
         assert(i.binomialPMF(5, 0.25).approxEqual(binomial(5, i) * pow(0.25, i) * pow(0.75, 5 - i)));
         assert(i.binomialPMF(5, 0.50).approxEqual(binomial(5, i) * pow(0.50, 5)));
         assert(i.binomialPMF(5, 0.75).approxEqual(binomial(5, i) * pow(0.75, i) * pow(0.25, 5 - i)));
+    }
+}
+
+// Coefficient overflow must not erase ordinary central probabilities.
+version(mir_stat_test)
+@safe pure nothrow @nogc unittest
+{
+    import std.meta: AliasSeq;
+    import mir.math.common: approxEqual;
+    static foreach (T; AliasSeq!(float, double, real))
+    {{
+        // Independent 100-digit references; probabilities here are exactly 1/2.
+        assert(approxEqual(binomialPMF(100, 200, T(0.5)),
+            T(0.0563484790092564222472452641429001498014L), 64 * T.epsilon, T(0)));
+        assert(approxEqual(binomialPMF(1000, 2000, T(0.5)),
+            T(0.01783901114585432073023806723820746438468L), 64 * T.epsilon, T(0)));
+        foreach (n; [size_t(0), size_t(65), size_t.max])
+        {
+            assert(binomialPMF(0, n, T(0)) == 1);
+            assert(binomialPMF(n, n, T(1)) == 1);
+            if (n != 0)
+            {
+                assert(binomialPMF(1, n, T(0)) == 0);
+                assert(binomialPMF(0, n, T(1)) == 0);
+            }
+        }
+    }}
+    // p^32 is subnormal, but multiplying by the coefficient restores a normal
+    // result. Reject the imprecise direct intermediate, not just a zero result.
+    assert(approxEqual(binomialPMF(32, 64, 1e-10),
+        1.832624135078195428602296825521737138147e-302,
+        512 * double.epsilon, 0.0));
+    static if (size_t.sizeof == 8)
+    {
+        // 1-p rounds to 1 in double, but its large power is measurably below 1.
+        assert(approxEqual(binomialPMF(0, 1UL << 40, 0x1p-60),
+            0.9999990463261383409563257953301640312839, 16 * double.epsilon, 0.0));
+        assert(approxEqual(binomialPMF(1, 1UL << 40, 0x1p-60),
+            0.0000009536734069119819086300723134406561437, 64 * double.epsilon, 0.0));
     }
 }
 
@@ -846,6 +983,9 @@ unittest
 /++
 Computes the binomial log probability mass function (LPMF)
 
+Large counts use a centered calculation to avoid cancellation near the mode.
+Counts retain their full `size_t` width, including near either endpoint.
+
 Params:
     k = value to evaluate LPMF (e.g. number of "heads")
     n = number of trials
@@ -863,7 +1003,11 @@ T binomialLPMF(T)(const size_t k, const size_t n, const T p)
     import mir.math.internal.xlogy: xlogy, xlog1py;
     import mir.math.internal.log_binomial: logBinomialCoefficient;
 
-    return logBinomialCoefficient(n, cast(const uint) k) + xlogy(k, p) + xlog1py((n - k), -p);
+    // Keep the existing result-type arithmetic for ordinary small counts.
+    if (n <= 64)
+        return logBinomialCoefficient(n, cast(const uint) k)
+            + xlogy(k, p) + xlog1py((n - k), -p);
+    return cast(T) binomialLogMass(k, n, cast(real) p);
 }
 
 ///
@@ -876,6 +1020,43 @@ unittest
     for (size_t i; i <= 5; i++) {
         assert(i.binomialLPMF(5, 0.5).exp.approxEqual(binomialPMF(i, 5, 0.5)));
         assert(i.binomialLPMF(5, 0.75).exp.approxEqual(binomialPMF(i, 5, 0.75)));
+    }
+}
+
+// Check centered log masses, helper transitions, and full-width observation counts.
+version(mir_stat_test)
+@safe pure nothrow @nogc unittest
+{
+    import std.meta: AliasSeq;
+    import mir.math.common: approxEqual, exp;
+    static foreach (T; AliasSeq!(float, double, real))
+    {{
+        assert(approxEqual(binomialLPMF(31, 65, T(0.5)),
+            T(-2.385031079372598900724141513641103501569L), 128 * T.epsilon, T(0)));
+        assert(approxEqual(binomialLPMF(32, 65, T(0.5)),
+            T(-2.324406457556164058143535381600683238283L), 64 * T.epsilon, T(0)));
+        assert(approxEqual(binomialLPMF(1000, 2000, T(0.5)),
+            T(-4.026367582410560281327866338545531330554L), 64 * T.epsilon, T(0)));
+        foreach (p; [T(0.125), T(0.25), T(0.5), T(0.75), T(0.875)])
+        {
+            assert(approxEqual(binomialLPMF(32, 64, p), binomialLPMF(32, 64, 1-p),
+                128 * T.epsilon, T(0)));
+            assert(approxEqual(exp(binomialLPMF(32, 65, p)), binomialPMF(32, 65, p),
+                128 * T.epsilon, T(0)));
+        }
+        assert(binomialLPMF(0, size_t.max, T(0)) == 0);
+        assert(binomialLPMF(size_t.max, size_t.max, T(1)) == 0);
+        assert(binomialLPMF(1, size_t.max, T(0)) == -T.infinity);
+        assert(binomialLPMF(0, size_t.max, T(1)) == -T.infinity);
+    }}
+    static if (size_t.sizeof == 8)
+    {
+        // The probability is the exact binary double used for the reference.
+        const double p = 0.99999999883584678173065185546875;
+        assert(approxEqual(binomialLPMF(4_294_967_296UL, 4_294_967_301UL, p),
+            -1.740302180029467515858762710331235197724, 128 * double.epsilon, 0.0));
+        assert(approxEqual(binomialLPMF(500_000_000_000UL, 1_000_000_000_000UL, 0.5),
+            -14.04130191060925153647104634305362631735, 32 * double.epsilon, 0.0));
     }
 }
 
