@@ -297,6 +297,10 @@ Computes the poisson probability mass function (PMF) directly with extended
 floating point types (e.g. `Fp!128`), which provides additional accuracy for
 large values of `lambda` or `k`. 
 
+The exponential is seeded in `double` precision, then squared in the extended
+type when necessary to preserve its exponent range. This avoids premature
+underflow; it does not provide full coefficient-width transcendental accuracy.
+
 Params:
     k = value to evaluate PMF (e.g. number of "heads")
     lambda = expected rate of occurence
@@ -313,7 +317,24 @@ T fp_poissonPMF(T)(const size_t k, const T lambda)
     import mir.math.internal.fp_powi: fp_powi;
     import mir.math.numeric: factorial;
 
-    return T(exp(-cast(double) lambda)) * fp_powi(lambda, k) / factorial(k);
+    double rate = cast(double) lambda;
+    if (rate == double.infinity)
+        return T(0);
+    // exp(-rate) can underflow in double even when the final mass is ordinary.
+    // Halving is exact; start with a normal exponential and perform the remaining
+    // squarings in Fp, whose exponent range can retain the very small factor.
+    uint squarings;
+    while (rate > 512)
+    {
+        rate *= 0.5;
+        ++squarings;
+    }
+    T decay = T(exp(-rate));
+    foreach (i; 0 .. squarings)
+        decay *= decay;
+    if (k == 0)
+        return decay;
+    return decay * fp_powi(lambda, k) / factorial(k);
 }
 
 ///
@@ -327,6 +348,26 @@ unittest
 
     for (size_t i; i <= 10; i++) {
         assert(i.fp_poissonPMF(Fp!128(5.0)).to!double.approxEqual(poissonPMF(i, 5.0)));
+    }
+}
+
+// Extended storage must preserve the exponential before applying the power.
+version(mir_stat_test)
+@safe pure nothrow @nogc unittest
+{
+    import mir.math.common: approxEqual;
+    import mir.bignum.fp: fp_log;
+    const central = fp_poissonPMF(1000, Fp!128(1000));
+    assert(approxEqual(cast(double) central, 0.012614611348721499718036936474579,
+        1e-12, 0.0));
+    const tiny = fp_poissonPMF(0, Fp!128(1000));
+    assert(tiny.coefficient != 0);
+    assert(approxEqual(fp_log!double(tiny), -1000.0, 1e-14, 0.0));
+    foreach (rate; [511.0, 512.0, 513.0, 1024.0, 2000.0])
+    {
+        const zero = fp_poissonPMF(0, Fp!128(rate));
+        const one = fp_poissonPMF(1, Fp!128(rate));
+        assert(approxEqual(cast(double)(one / zero), rate, 1e-14, 0.0));
     }
 }
 
