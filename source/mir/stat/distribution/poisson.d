@@ -71,17 +71,54 @@ T poissonPMFImpl(T, PoissonAlgo poissonAlgo)(const size_t k, const T lambda)
 private @safe pure nothrow @nogc
 real poissonLogMass(size_t k, real lambda)
 {
-    import mir.math.common: log;
+    import mir.math.common: log, fabs;
     import mir.math.internal.log_binomial: logFactorial;
-    import std.mathspecial: logGamma;
+    import std.math.constants: PI;
 
     if (k == 0)
         return -lambda;
     if (lambda == real.infinity)
         return -real.infinity;
-    const real logFact = k < 2048 ? logFactorial!real(k)
-        : logGamma(cast(real) k + 1);
-    return k * log(lambda) - lambda - logFact;
+    if (k < 32)
+        return k * log(lambda) - lambda - logFactorial!real(k);
+
+    // Center Stirling's formula on lambda=k. Subtracting k*log(k) terms
+    // separately loses the whole log mass for large counts near the mode.
+    const real n = k;
+    const real delta = n - lambda;
+    real deviance;
+    if (fabs(delta) < n * 0.5L)
+    {
+        // k*log(k/lambda)+lambda-k, using log((1+v)/(1-v))
+        // = 2*(v+v^3/3+...). Here |v| < 1/3, so the series converges quickly.
+        const real v = delta / (n + lambda);
+        const real vv = v * v;
+        deviance = delta * v;
+        real term = 2 * n * v;
+        for (uint j = 1; j < 64; ++j)
+        {
+            term *= vv;
+            const real next = deviance + term / (2 * j + 1);
+            if (next == deviance)
+                break;
+            deviance = next;
+        }
+    }
+    else
+    {
+        const real ratio = n / lambda;
+        const real logRatio = ratio > 0 && ratio < real.infinity
+            ? log(ratio) : log(n) - log(lambda);
+        deviance = n * logRatio + (lambda - n);
+    }
+    // Stirling correction through n^-13. At n>=32 the first omitted term
+    // is below 1e-24, smaller than the precision of supported real types.
+    const real inv = 1 / n;
+    const real inv2 = inv * inv;
+    const real correction = inv * (1.0L / 12 + inv2 * (-1.0L / 360
+        + inv2 * (1.0L / 1260 + inv2 * (-1.0L / 1680
+        + inv2 * (1.0L / 1188 + inv2 * (-691.0L / 360360 + inv2 / 156))))));
+    return -deviance - 0.5L * (log(2 * PI) + log(n)) - correction;
 }
 
 private
@@ -978,6 +1015,10 @@ unittest
 /++
 Computes the poisson log probability mass function (LPMF).
 
+For large counts, the calculation centers the logarithm around the mean rather
+than subtracting large log-factorial and power terms. This preserves accuracy
+when the count and rate are close.
+
 Params:
     k = value to evaluate LPMF (e.g. number of "heads")
     lambda = expected rate of occurence
@@ -990,10 +1031,31 @@ T poissonLPMF(T)(const size_t k, const T lambda)
     if (isFloatingPoint!T)
     in (lambda > 0, "lambda must be greater than or equal to 0")
 {
-    import mir.math.common: log;
-    import mir.math.internal.log_binomial: logFactorial;
+    return cast(T) poissonLogMass(k, cast(real) lambda);
+}
 
-    return k * log(lambda) - (logFactorial!T(k) + lambda);
+// Large central counts must not lose the log mass to cancellation.
+version(mir_stat_test)
+@safe pure nothrow @nogc unittest
+{
+    import std.meta: AliasSeq;
+    import mir.math.common: approxEqual, exp;
+    static foreach (T; AliasSeq!(float, double, real))
+    {{
+        assert(approxEqual(poissonLPMF(32, T(32)),
+            T(-2.6544105665237876717458292327029558L), 32 * T.epsilon, T(0)));
+        assert(poissonLPMF(0, T.infinity) == -T.infinity);
+        assert(poissonLPMF(1, T.infinity) == -T.infinity);
+        foreach (lambda; [T(16), T(16.001), T(31), T(32), T(33), T(47.999), T(48)])
+            assert(approxEqual(exp(poissonLPMF(32, lambda)), poissonPMF(32, lambda),
+                512 * T.epsilon, T(0)));
+    }}
+    static if (size_t.sizeof == 8)
+    {
+        assert(approxEqual(poissonLPMF(1_000_000_000_000UL, 1e12),
+            -14.734449091169030179221611797845136, 8 * double.epsilon, 0.0));
+        assert(poissonLPMF(size_t.max, 5.0) < 0);
+    }
 }
 
 ///
