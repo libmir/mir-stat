@@ -26,8 +26,9 @@ If `shape` is passed as a `size_t` type (or a type convertible to that), then th
 PDF is calculated using the relationship with the poisson distribution (i.e.
 replacing the `gamma` function with the `factorial`).
 
-The floating-point shape overload uses a logarithmic fallback when the direct
-calculation overflows or loses precision through underflow.
+Both overloads use a logarithmic fallback when the direct calculation overflows
+or loses precision through underflow. The integer-shape overload retains the
+integer shape and uses a log-factorial in that fallback.
 
 Params:
     x = value to evaluate PDF
@@ -81,7 +82,9 @@ T gammaPDF(T)(const T x, const size_t shape, const T scale = 1)
     in (shape > 0, "shape must be greater than zero")
     in (scale > 0, "scale must be greater than zero")
 {
-    import mir.stat.distribution.poisson: poissonPMF;
+    import mir.math.common: exp, log, pow;
+    import mir.math.numeric: factorial;
+    import mir.math.internal.log_binomial: logFactorial;
 
     if (x == 0) {
         if (shape > 1) {
@@ -91,7 +94,31 @@ T gammaPDF(T)(const T x, const size_t shape, const T scale = 1)
         }
     }
 
-    return poissonPMF!"direct"(shape - 1, x / scale) / scale;
+    const T x_scale = x / scale;
+    if (x_scale >= T.min_normal && x_scale < T.infinity)
+    {
+        const T decay = exp(-x_scale);
+        const T density = decay * pow(x_scale, shape - 1) / cast(T) factorial(shape - 1);
+        // Preserve the ordinary calculation while its intermediates are normal.
+        // A subnormal density may lose digits that division by scale magnifies.
+        if (decay >= T.min_normal && density >= T.min_normal && density < T.infinity)
+            return density / scale;
+    }
+
+    if (x_scale == T.infinity)
+        return 0;
+    // Shape one is exponential. For a subnormal ratio exp(-x_scale) rounds
+    // to one; keep the direct reciprocal rather than round-trip through logs.
+    if (shape == 1 && x_scale < T.min_normal)
+        return 1 / scale;
+
+    // Include the scale before exponentiation so an unscaled density cannot
+    // underflow before division restores a representable result. Reconstruct
+    // the log-ratio when the division itself has lost significant digits.
+    const real logRatio = x_scale >= T.min_normal
+        ? log(cast(real) x_scale) : log(cast(real) x) - log(cast(real) scale);
+    return cast(T) exp((shape - 1) * logRatio - cast(real) x_scale
+        - logFactorial!real(shape - 1) - log(cast(real) scale));
 }
 
 ///
@@ -704,4 +731,52 @@ unittest
             exp(-z - log(smallScale)), 8 * T.epsilon * z, T(0)));
         assert(gammaPDF(T.infinity, T(2)) == 0);
     }}
+}
+
+// Integer shapes must preserve representable densities when direct intermediates fail.
+version(mir_stat_test)
+@safe pure nothrow @nogc
+unittest
+{
+    import std.meta: AliasSeq;
+    import mir.math.common: approxEqual, exp, log, sqrt;
+    import mir.math.ieee: ldexp, nextUp;
+
+    static foreach (T; AliasSeq!(float, double, real))
+    {{
+        // 100-digit references for x^(shape-1) * exp(-x) / (shape-1)!.
+        assert(approxEqual(gammaPDF(T(200), size_t(200)),
+            T(0.028197727685920821798702062339363012L), 1024 * T.epsilon, T(0)));
+        assert(approxEqual(gammaPDF(T(2000), size_t(2000)),
+            T(0.008920248895986241092471236388983900L), 8192 * T.epsilon, T(0)));
+
+        const T tiny = nextUp(T(0));
+        // The ratio rounds to zero, but the shape-one density rounds to 1/scale.
+        assert(gammaPDF(tiny, size_t(1), T(4)) == T(0.25));
+        // A subnormal ratio must not lose digits before the density is rescaled.
+        assert(gammaPDF(3 * tiny, size_t(2), T(2)) == tiny);
+
+        const T scale = ldexp(T(1), -T.max_exp / 2);
+        const T boundary = -log(T.min_normal);
+        foreach (offset; [T(-1), T(0), T(1)])
+        {
+            const T z = boundary + offset;
+            // Split the exponential before scaling: both halves stay normal.
+            // This checks both sides of the direct/fallback transition without
+            // using a log-factorial or the fallback expression as the reference.
+            const T halfDensity = exp(-z / 2) / sqrt(scale);
+            const T expected = halfDensity * halfDensity;
+            assert(approxEqual(gammaPDF(z * scale, size_t(1), scale), expected,
+                16 * T.epsilon * z, T(0)));
+            assert(approxEqual(gammaPDF(z * scale, size_t(2), scale), z * expected,
+                16 * T.epsilon * z, T(0)));
+        }
+        assert(gammaPDF(T.infinity, size_t(2)) == 0);
+        assert(gammaPDF(T.max, size_t(2), T.min_normal) == 0);
+    }}
+
+    // The direct unscaled density underflows to zero, but the scaled result does not.
+    // Reference uses the actual binary double inputs, evaluated at 100 digits.
+    assert(approxEqual(gammaPDF(1e-297, size_t(2), 1e-300),
+        5.07595889754938266039615477309060459e-132, 2e-12, 0.0));
 }
