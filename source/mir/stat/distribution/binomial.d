@@ -748,7 +748,9 @@ unittest
     // Or closer with continuity correction
     assert(0.500401.binomialInvCDF!"approxNormalContinuityCorrection"(1_000_000, 0.55) == 550_000);
     // Poisson approximation is better when `p` is low
-    assert(0.5026596.binomialInvCDF!"approxPoisson"(1_000_000, 0.01) == 10_000);
+    // The Poisson CDF at 10,000 is approximately 0.5026595812190076.
+    assert(0.5026595.binomialInvCDF!"approxPoisson"(1_000_000, 0.01) == 10_000);
+    assert(0.5026596.binomialInvCDF!"approxPoisson"(1_000_000, 0.01) == 10_001);
 }
 
 // test BinomialAlgo.direct

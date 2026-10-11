@@ -54,7 +54,71 @@ T poissonPMFImpl(T, PoissonAlgo poissonAlgo)(const size_t k, const T lambda)
     import mir.math.common: exp, pow;
     import mir.math.numeric: factorial;
 
-    return exp(-lambda) * pow(lambda, k) / (cast(T) factorial(k));
+    // Keep the direct calculation while the intermediate values retain precision.
+    // Bound the factorial work as well as avoiding an integer wrap at k + 1.
+    if (k < 2048)
+    {
+        const T decay = exp(-lambda);
+        const T mass = decay * pow(lambda, k) / cast(T) factorial(k);
+        if (decay >= T.min_normal && mass >= T.min_normal && mass < T.infinity)
+            return mass;
+    }
+    return cast(T) exp(poissonLogMass(k, cast(real) lambda));
+}
+
+// Shared logarithmic calculation for the PMF fallback and large-count LPMF.
+// Keep intermediate calculations in real until the final result conversion.
+private @safe pure nothrow @nogc
+real poissonLogMass(size_t k, real lambda)
+{
+    import mir.math.common: log, fabs;
+    import mir.math.internal.log_binomial: logFactorial;
+    import std.math.constants: PI;
+
+    if (k == 0)
+        return -lambda;
+    if (lambda == real.infinity)
+        return -real.infinity;
+    if (k < 32)
+        return k * log(lambda) - lambda - logFactorial!real(k);
+
+    // Center Stirling's formula on lambda=k. Subtracting k*log(k) terms
+    // separately loses the whole log mass for large counts near the mode.
+    const real n = k;
+    const real delta = n - lambda;
+    real deviance;
+    if (fabs(delta) < n * 0.5L)
+    {
+        // k*log(k/lambda)+lambda-k, using log((1+v)/(1-v))
+        // = 2*(v+v^3/3+...). Here |v| < 1/3, so the series converges quickly.
+        const real v = delta / (n + lambda);
+        const real vv = v * v;
+        deviance = delta * v;
+        real term = 2 * n * v;
+        for (uint j = 1; j < 64; ++j)
+        {
+            term *= vv;
+            const real next = deviance + term / (2 * j + 1);
+            if (next == deviance)
+                break;
+            deviance = next;
+        }
+    }
+    else
+    {
+        const real ratio = n / lambda;
+        const real logRatio = ratio > 0 && ratio < real.infinity
+            ? log(ratio) : log(n) - log(lambda);
+        deviance = n * logRatio + (lambda - n);
+    }
+    // Stirling correction through n^-13. At n>=32 the first omitted term
+    // is below 1e-24, smaller than the precision of supported real types.
+    const real inv = 1 / n;
+    const real inv2 = inv * inv;
+    const real correction = inv * (1.0L / 12 + inv2 * (-1.0L / 360
+        + inv2 * (1.0L / 1260 + inv2 * (-1.0L / 1680
+        + inv2 * (1.0L / 1188 + inv2 * (-691.0L / 360360 + inv2 / 156))))));
+    return -deviance - 0.5L * (log(2 * PI) + log(n)) - correction;
 }
 
 private
@@ -71,7 +135,13 @@ T poissonPMFImpl(T, PoissonAlgo poissonAlgo)(const size_t k, const T lambda)
     if (k == 0)
         return exp(-lambda);
 
-    return gammaIncompleteCompl(k + 1, lambda) - gammaIncompleteCompl(k, lambda);
+    const real upper = gammaIncompleteCompl(cast(real) k + 1, lambda);
+    const real mass = upper - gammaIncompleteCompl(cast(real) k, lambda);
+    // Adjacent CDF values can both round to one in the upper tail. Keep their
+    // difference only when cancellation costs at most three significant bits.
+    if (mass >= upper * 0.125L && mass >= T.min_normal)
+        return cast(T) mass;
+    return poissonPMFImpl!(T, PoissonAlgo.direct)(k, lambda);
 }
 
 private
@@ -100,6 +170,11 @@ T poissonPMFImpl(T, PoissonAlgo poissonAlgo)(const size_t k, const T lambda)
 
 /++
 Computes the poisson probability mass function (PMF).
+
+The direct algorithm uses a logarithmic fallback when intermediate powers,
+factorials, or exponentials overflow or underflow.
+The gamma algorithm falls back to the direct algorithm when subtracting adjacent
+CDF values would lose precision.
 
 Params:
     poissonAlgo = algorithm for calculating PMF (default: PoissonAlgo.direct)
@@ -166,6 +241,34 @@ unittest
     assert(10.poissonPMF(5.0).approxEqual(exp(-5.0) * 9765625 / 3628800));
 }
 
+// Direct PMFs must survive overflow and underflow of their intermediate values.
+version(mir_stat_test)
+@safe pure nothrow @nogc unittest
+{
+    import std.meta: AliasSeq;
+    import mir.math.common: approxEqual;
+    static foreach (T; AliasSeq!(float, double, real))
+    {{
+        // Independent 100-digit references, rounded to the result type.
+        assert(approxEqual(poissonPMF(40, T(40)),
+            T(0.062947039423592203188230813788406L), 512 * T.epsilon, T(0)));
+        assert(approxEqual(poissonPMF(200, T(200)),
+            T(0.028197727685920821798702062339363L), 2048 * T.epsilon, T(0)));
+        assert(approxEqual(poissonPMF(1000, T(1000)),
+            T(0.012614611348721499718036936474579L), 8192 * T.epsilon, T(0)));
+        assert(approxEqual(poissonPMF(3000, T(3000)),
+            T(0.00728345388297452668151904477178226L), 32768 * T.epsilon, T(0)));
+        assert(poissonPMF(size_t.max, T(5)) == 0);
+        assert(poissonPMF(1, T.infinity) == 0);
+    }}
+    import mir.math.ieee: nextUp;
+    // Zero events also use the logarithmic fallback after exponential underflow.
+    assert(approxEqual(poissonPMF(0, 740.0), 85 * nextUp(0.0),
+        0.0, nextUp(0.0)));
+    assert(approxEqual(poissonPMF(1, 740.0), 62738 * nextUp(0.0),
+        0.0, nextUp(0.0)));
+}
+
 // test PoissonAlgo.gamma
 version(mir_stat_test)
 @safe pure nothrow @nogc
@@ -175,6 +278,23 @@ unittest
     for (size_t i; i < 20; i++) {
         assert(i.poissonPMF!"gamma"(5.0).approxEqual(poissonPMF(i, 5.0)));
     }
+}
+
+// Differences of adjacent CDF values must not erase a representable mass.
+version(mir_stat_test)
+@safe pure nothrow @nogc unittest
+{
+    import std.meta: AliasSeq;
+    import mir.math.common: approxEqual;
+    static foreach (T; AliasSeq!(float, double, real))
+    {{
+        assert(approxEqual(poissonPMF!"gamma"(30, T(1)),
+            T(1.3869009421120462916399604485452e-33L), 128 * T.epsilon, T(0)));
+        assert(poissonPMF!"gamma"(size_t.max, T(5)) == 0);
+        foreach (k; 1 .. 35)
+            assert(approxEqual(poissonPMF!"gamma"(k, T(5)), poissonPMF(k, T(5)),
+                512 * T.epsilon, T(0)));
+    }}
 }
 
 // The gamma algorithm must handle zero events without a zero-shape gamma call.
@@ -217,6 +337,10 @@ Computes the poisson probability mass function (PMF) directly with extended
 floating point types (e.g. `Fp!128`), which provides additional accuracy for
 large values of `lambda` or `k`. 
 
+The exponential is seeded in `double` precision, then squared in the extended
+type when necessary to preserve its exponent range. This avoids premature
+underflow; it does not provide full coefficient-width transcendental accuracy.
+
 Params:
     k = value to evaluate PMF (e.g. number of "heads")
     lambda = expected rate of occurence
@@ -233,7 +357,24 @@ T fp_poissonPMF(T)(const size_t k, const T lambda)
     import mir.math.internal.fp_powi: fp_powi;
     import mir.math.numeric: factorial;
 
-    return T(exp(-cast(double) lambda)) * fp_powi(lambda, k) / factorial(k);
+    double rate = cast(double) lambda;
+    if (rate == double.infinity)
+        return T(0);
+    // exp(-rate) can underflow in double even when the final mass is ordinary.
+    // Halving is exact; start with a normal exponential and perform the remaining
+    // squarings in Fp, whose exponent range can retain the very small factor.
+    uint squarings;
+    while (rate > 512)
+    {
+        rate *= 0.5;
+        ++squarings;
+    }
+    T decay = T(exp(-rate));
+    foreach (i; 0 .. squarings)
+        decay *= decay;
+    if (k == 0)
+        return decay;
+    return decay * fp_powi(lambda, k) / factorial(k);
 }
 
 ///
@@ -250,6 +391,29 @@ unittest
     }
 }
 
+// Extended storage must preserve the exponential before applying the power.
+version(mir_stat_test)
+@safe pure nothrow @nogc unittest
+{
+    import mir.math.common: approxEqual;
+    import mir.bignum.fp: fp_log;
+    const central = fp_poissonPMF(1000, Fp!128(1000));
+    assert(approxEqual(cast(double) central, 0.012614611348721499718036936474579,
+        1e-12, 0.0));
+    const tiny = fp_poissonPMF(0, Fp!128(1000));
+    assert(tiny.coefficient != 0);
+    assert(approxEqual(fp_log!double(tiny), -1000.0, 1e-14, 0.0));
+    // A finite extended rate can exceed the double exponential seed's range.
+    const hugeRate = Fp!128(double.max) * Fp!128(2);
+    assert(fp_poissonPMF(0, hugeRate).coefficient == 0);
+    foreach (rate; [511.0, 512.0, 513.0, 1024.0, 2000.0])
+    {
+        const zero = fp_poissonPMF(0, Fp!128(rate));
+        const one = fp_poissonPMF(1, Fp!128(rate));
+        assert(approxEqual(cast(double)(one / zero), rate, 1e-14, 0.0));
+    }
+}
+
 private
 @safe pure nothrow @nogc
 T poissonCDFImpl(T, PoissonAlgo poissonAlgo)(const size_t k, const T lambda)
@@ -257,17 +421,22 @@ T poissonCDFImpl(T, PoissonAlgo poissonAlgo)(const size_t k, const T lambda)
     in (lambda > 0, "lambda must be greater than or equal to 0")
 {
     import mir.math.common: exp;
-    import mir.math.numeric: factorial;
-
-    T output = 1;
-    if (k > 0) {
+    // The unscaled sum grows like exp(lambda). Use the incomplete gamma
+    // function if this sum or its final rescaling loses range or precision.
+    if (k < 2048)
+    {
+        T output = 1;
         T multiplier = 1;
-        for (size_t i = 1; i < (k + 1); i++) {
+        for (size_t i = 1; i <= k; i++) {
             multiplier *= (lambda / i);
             output += multiplier;
         }
+        const T decay = exp(-lambda);
+        const T result = output * decay;
+        if (decay >= T.min_normal && result >= T.min_normal && result <= 1)
+            return result;
     }
-    return output * exp(-lambda);
+    return poissonCDFImpl!(T, PoissonAlgo.gamma)(k, lambda);
 }
 
 private
@@ -277,7 +446,8 @@ T poissonCDFImpl(T, PoissonAlgo poissonAlgo)(const size_t k, const T lambda)
     in (lambda > 0, "lambda must be greater than or equal to 0")
 {
     import std.mathspecial: gammaIncompleteCompl;
-    return cast(T) gammaIncompleteCompl(k + 1, lambda); 
+    // Convert before adding one: k may be size_t.max.
+    return cast(T) gammaIncompleteCompl(cast(real) k + 1, lambda);
 }
 
 private
@@ -300,6 +470,9 @@ T poissonCDFImpl(T, PoissonAlgo poissonAlgo)(const size_t k, const T lambda)
 
 /++
 Computes the poisson cumulative distrivution function (CDF).
+
+The direct algorithm falls back to the incomplete gamma function when its
+unscaled sum cannot be evaluated reliably, or the count would require a long sum.
 
 Params:
     poissonAlgo = algorithm for calculating CDF (default: PoissonAlgo.direct)
@@ -396,7 +569,13 @@ T poissonCCDFImpl(T, PoissonAlgo poissonAlgo)(const size_t k, const T lambda)
     if (isFloatingPoint!T && poissonAlgo == PoissonAlgo.direct)
     in (lambda > 0, "lambda must be greater than or equal to 0")
 {
-    return T(1) - poissonCDFImpl!(T, poissonAlgo)(k, lambda);
+    const T cdf = poissonCDFImpl!(T, poissonAlgo)(k, lambda);
+    // Keep subtraction when the remaining tail is at least 1/8.
+    // Subtraction preserves the CDF's absolute error, but that error is larger
+    // relative to a small tail probability. For smaller tails, evaluate the
+    // upper tail directly instead of subtracting a value near one.
+    return cdf <= T(0.875) ? T(1) - cdf
+        : poissonCCDFImpl!(T, PoissonAlgo.gamma)(k, lambda);
 }
 
 private
@@ -406,7 +585,7 @@ T poissonCCDFImpl(T, PoissonAlgo poissonAlgo)(const size_t k, const T lambda)
     in (lambda > 0, "lambda must be greater than or equal to 0")
 {
     import std.mathspecial: gammaIncomplete;
-    return cast(T) gammaIncomplete(k + 1, lambda); 
+    return cast(T) gammaIncomplete(cast(real) k + 1, lambda);
 }
 
 private
@@ -429,6 +608,9 @@ T poissonCCDFImpl(T, PoissonAlgo poissonAlgo)(const size_t k, const T lambda)
 
 /++
 Computes the poisson complementary cumulative distrivution function (CCDF).
+
+Returns the probability of strictly more than `k` events. The direct algorithm
+uses the incomplete gamma function for small upper tails to avoid cancellation.
 
 Params:
     poissonAlgo = algorithm for calculating CCDF (default: PoissonAlgo.direct)
@@ -511,42 +693,79 @@ unittest
     }
 }
 
+// Tail calculations must remain bounded and retain small probabilities.
+version(mir_stat_test)
+@safe pure nothrow @nogc unittest
+{
+    import std.meta: AliasSeq;
+    import mir.math.common: approxEqual;
+    static foreach (T; AliasSeq!(float, double, real))
+    {{
+        assert(approxEqual(poissonCDF(1000, T(1000)),
+            T(0.50840936716850599121425909287246L), 2048 * T.epsilon, T(0)));
+        assert(approxEqual(poissonCCDF(20, T(1)),
+            T(7.542625077205278476019579100834e-21L), 128 * T.epsilon, T(0)));
+        assert(poissonCDF(size_t.max, T(5)) == 1);
+        assert(poissonCCDF(size_t.max, T(5)) == 0);
+        assert(poissonCDF!"gamma"(size_t.max, T(5)) == 1);
+        assert(poissonCCDF!"gamma"(size_t.max, T(5)) == 0);
+        assert(poissonCDF(3, T.infinity) == 0);
+        assert(poissonCCDF(3, T.infinity) == 1);
+        foreach (k; 0 .. 20)
+        {
+            assert(approxEqual(poissonCDF(k, T(5)) + poissonCCDF(k, T(5)),
+                T(1), 32 * T.epsilon));
+        }
+    }}
+}
+
 private
 @safe pure nothrow @nogc
 size_t poissonInvCDFImpl(T, PoissonAlgo poissonAlgo)(const T p, const T lambda)
     if (isFloatingPoint!T && poissonAlgo == PoissonAlgo.direct)
     in (p >= 0, "p must be greater than or equal to 0")
-    in (p < 1, "p must be less than 1")
+    in (p <= 1, "p must be less than or equal to 1")
     in (lambda > 0, "lambda must be greater than or equal to 0")
 {
     if (p == 0) {
         return 0;
     }
 
-    size_t guess = 0;
-    if (lambda > 16) {
-        guess = poissonInvCDFImpl!(T, PoissonAlgo.approxNormalContinuityCorrection)(p, lambda);
-    }
-    T cdfGuess = poissonCDF!(poissonAlgo)(guess, lambda);
+    if (p == 1 || lambda == T.infinity)
+        return size_t.max;
 
-    if (p <= cdfGuess) {
-        if (guess == 0) {
-            return guess;
-        }
-        for (size_t i = (guess - 1); guess >= 0; i--) {
-            cdfGuess -= poissonPMF!(poissonAlgo)(i + 1, lambda);
-            if (p > cdfGuess) {
-                guess = i + 1;
-                break;
-            }
-        }
-    } else {
-        while(p > cdfGuess) {
-            guess++;
-            cdfGuess += poissonPMF!(poissonAlgo)(guess, lambda);
-        }
+    // Compare the smaller tail. Repeatedly adding/subtracting masses can stop
+    // changing the cumulative value, or accumulate enough error to miss a bin.
+    bool reached(size_t k)
+    {
+        return p <= T(0.5) ? poissonCDF(k, lambda) >= p
+            : poissonCCDF(k, lambda) <= 1 - p;
     }
-    return guess;
+
+    size_t low = 0;
+    size_t high = lambda > 16
+        ? poissonInvCDFImpl!(T, PoissonAlgo.approxNormalContinuityCorrection)(p, lambda)
+        : 0;
+    size_t step = 1;
+    while (!reached(high))
+    {
+        if (high == size_t.max)
+            return high; // The quantile does not fit in the result type.
+        low = high + 1;
+        high += step < size_t.max - high ? step : size_t.max - high;
+        step = step <= size_t.max / 2 ? step * 2 : size_t.max;
+    }
+    // A bounded binary search also handles an initial guess above the answer,
+    // without decrementing an unsigned counter past zero.
+    while (low < high)
+    {
+        const mid = low + (high - low) / 2;
+        if (reached(mid))
+            high = mid;
+        else
+            low = mid + 1;
+    }
+    return low;
 }
 
 private
@@ -554,14 +773,16 @@ private
 T poissonInvCDFImpl(T, PoissonAlgo poissonAlgo)(const T p, const size_t k)
     if (isFloatingPoint!T && poissonAlgo == PoissonAlgo.gamma)
     in (p >= 0, "p must be greater than or equal to 0")
-    in (p < 1, "p must be less than 1")
+    in (p <= 1, "p must be less than or equal to 1")
 {
     import std.mathspecial: gammaIncompleteComplInverse;
 
     if (p == 0) {
         return T.infinity;
     }
-    return gammaIncompleteComplInverse(k + 1, p); 
+    if (p == 1)
+        return 0;
+    return gammaIncompleteComplInverse(cast(real) k + 1, p);
 }
 
 private
@@ -571,11 +792,16 @@ size_t poissonInvCDFImpl(T, PoissonAlgo poissonAlgo)(const T p, const T lambda)
         (poissonAlgo == PoissonAlgo.approxNormal || 
          poissonAlgo == PoissonAlgo.approxNormalContinuityCorrection))
     in (p >= 0, "p must be greater than or equal to 0")
-    in (p < 1, "p must be less than 1")
+    in (p <= 1, "p must be less than or equal to 1")
     in (lambda > 0, "lambda must be greater than or equal to 0")
 {
     import mir.math.common: floor, sqrt;
     import mir.stat.distribution.normal: normalCDF, normalInvCDF;
+
+    if (p == 0)
+        return 0;
+    if (p == 1 || lambda == T.infinity)
+        return size_t.max;
 
     T std = sqrt(lambda);
 
@@ -593,6 +819,10 @@ size_t poissonInvCDFImpl(T, PoissonAlgo poissonAlgo)(const T p, const T lambda)
     static if (poissonAlgo == PoissonAlgo.approxNormalContinuityCorrection) {
         result = result - 0.5;
     }
+    if (result <= 0)
+        return 0;
+    if (result >= cast(real) size_t.max)
+        return size_t.max;
     return cast(size_t) floor(result);
 }
 
@@ -607,6 +837,11 @@ of occurence (`lambda`) given the probability (`p`) and the number of events (`k
 
 For `PoissonAlgo.direct`, if the value of `lambda` is larger than 16, then an
 initial guess is made based on `PoissonAlgo.approxNormalContinuityCorrection`.
+
+Count-returning algorithms return `0` at `p = 0` and `size_t.max` at `p = 1`,
+where no finite Poisson quantile exists. `size_t.max` also denotes a quantile
+outside the result type's range. The gamma algorithm instead solves for the
+rate and returns positive infinity at `p = 0` and zero at `p = 1`.
 
 Params:
     poissonAlgo = algorithm for calculating InvCDF (default: PoissonAlgo.direct)
@@ -690,6 +925,59 @@ unittest
     }
 }
 
+// Quantile endpoints and bracketing must not depend on cumulative roundoff.
+version(mir_stat_test)
+@safe pure nothrow @nogc unittest
+{
+    import std.meta: AliasSeq;
+    import mir.math.ieee: nextDown, nextUp;
+    import mir.math.common: sqrt;
+    import mir.stat.distribution.normal: normalCDF;
+    static foreach (T; AliasSeq!(float, double, real))
+    {{
+        assert(poissonInvCDF(T(0.5), T(1000)) == 1000);
+        // Independently bracketed using 100-digit Poisson sums.
+        assert(poissonInvCDF(T(0.1), T(1000)) == 960);
+        assert(poissonInvCDF(T(0.9), T(1000)) == 1041);
+        assert(poissonInvCDF(T(0), T(5)) == 0);
+        assert(poissonInvCDF(T(1), T(5)) == size_t.max);
+        assert(poissonInvCDF!"approxNormal"(T(1), T(5)) == size_t.max);
+        assert(poissonInvCDF!"approxNormalContinuityCorrection"(T(1), T(5)) == size_t.max);
+        assert(poissonInvCDF!"gamma"(T(1), size_t(5)) == 0);
+        assert(poissonInvCDF!"gamma"(T(0), size_t(5)) == T.infinity);
+        assert(poissonInvCDF(T(0.5), T.infinity) == size_t.max);
+        // Finite rates can also put the median beyond the count return type.
+        const hugeRate = cast(T) size_t.max * 4;
+        assert(poissonInvCDF(T(0.5), hugeRate) == size_t.max);
+        assert(poissonInvCDF!"approxNormal"(T(0.5), hugeRate) == size_t.max);
+        assert(poissonInvCDF!"approxNormalContinuityCorrection"(T(0.5), hugeRate)
+            == size_t.max);
+        // Just above the lower cutoff, inverse-normal rounding can put the
+        // continuity-corrected result at or slightly below zero.
+        foreach (rate; [T(5), T(10)])
+        {
+            const p = nextUp(normalCDF(T(0.5), rate, sqrt(rate)));
+            assert(poissonInvCDF!"approxNormalContinuityCorrection"(p, rate) == 0);
+        }
+        foreach (lambda; [T(1), T(5), T(20), T(1000)])
+            foreach (p; [T(1e-9), T(0.1), T(0.5), T(0.9), nextDown(T(1))])
+            {
+                const k = poissonInvCDF(p, lambda);
+                if (p <= T(0.5))
+                {
+                    assert(poissonCDF(k, lambda) >= p);
+                    assert(k == 0 || poissonCDF(k - 1, lambda) < p);
+                }
+                else
+                {
+                    assert(poissonCCDF(k, lambda) <= 1 - p);
+                    assert(k == 0 || poissonCCDF(k - 1, lambda) > 1 - p);
+                }
+            }
+    }}
+    assert(poissonInvCDF(nextDown(1.0), 5.0) == 32);
+}
+
 // test PoissonAlgo.direct, large lambda branch, check small p
 version(mir_stat_test)
 @safe pure nothrow @nogc
@@ -748,6 +1036,10 @@ unittest
 /++
 Computes the poisson log probability mass function (LPMF).
 
+For large counts, the calculation centers the logarithm around the mean rather
+than subtracting large log-factorial and power terms. This preserves accuracy
+when the count and rate are close.
+
 Params:
     k = value to evaluate LPMF (e.g. number of "heads")
     lambda = expected rate of occurence
@@ -763,7 +1055,45 @@ T poissonLPMF(T)(const size_t k, const T lambda)
     import mir.math.common: log;
     import mir.math.internal.log_binomial: logFactorial;
 
-    return k * log(lambda) - (logFactorial!T(k) + lambda);
+    if (k == 0 || lambda == T.infinity)
+        return -lambda;
+    // Small counts do not need the centered expansion. Preserve their original
+    // result-type calculation rather than paying for extended-precision logs.
+    if (k < 32)
+        return k * log(lambda) - (logFactorial!T(k) + lambda);
+    return cast(T) poissonLogMass(k, cast(real) lambda);
+}
+
+// Large central counts must not lose the log mass to cancellation.
+version(mir_stat_test)
+@safe pure nothrow @nogc unittest
+{
+    import std.meta: AliasSeq;
+    import mir.math.common: approxEqual, exp;
+    static foreach (T; AliasSeq!(float, double, real))
+    {{
+        assert(approxEqual(poissonLPMF(32, T(32)),
+            T(-2.6544105665237876717458292327029558L), 32 * T.epsilon, T(0)));
+        assert(poissonLPMF(0, T.infinity) == -T.infinity);
+        assert(poissonLPMF(1, T.infinity) == -T.infinity);
+        foreach (lambda; [T(16), T(16.001), T(31), T(32), T(33), T(47.999), T(48)])
+            assert(approxEqual(exp(poissonLPMF(32, lambda)), poissonPMF(32, lambda),
+                512 * T.epsilon, T(0)));
+    }}
+    static if (size_t.sizeof == 8)
+    {
+        assert(approxEqual(poissonLPMF(1_000_000_000_000UL, 1e12),
+            -14.734449091169030179221611797845136, 8 * double.epsilon, 0.0));
+        assert(poissonLPMF(size_t.max, 5.0) < 0);
+    }
+    // Forming k/lambda overflows, although its logarithm is finite.
+    // log(32!) = 81.55795945611503717850296866601120668710... (100-digit reference).
+    import mir.math.common: log;
+    const real tinyRate = real.min_normal;
+    const real expected = 32 * log(tinyRate)
+        - 81.55795945611503717850296866601120668710L;
+    assert(approxEqual(poissonLPMF(32, tinyRate), expected,
+        32 * real.epsilon, 0.0L));
 }
 
 ///
