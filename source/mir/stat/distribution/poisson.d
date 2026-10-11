@@ -1031,6 +1031,15 @@ T poissonLPMF(T)(const size_t k, const T lambda)
     if (isFloatingPoint!T)
     in (lambda > 0, "lambda must be greater than or equal to 0")
 {
+    import mir.math.common: log;
+    import mir.math.internal.log_binomial: logFactorial;
+
+    if (k == 0 || lambda == T.infinity)
+        return -lambda;
+    // Small counts do not need the centered expansion. Preserve their original
+    // result-type calculation rather than paying for extended-precision logs.
+    if (k < 32)
+        return k * log(lambda) - (logFactorial!T(k) + lambda);
     return cast(T) poissonLogMass(k, cast(real) lambda);
 }
 
