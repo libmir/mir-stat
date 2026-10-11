@@ -98,7 +98,13 @@ T poissonPMFImpl(T, PoissonAlgo poissonAlgo)(const size_t k, const T lambda)
     if (k == 0)
         return exp(-lambda);
 
-    return gammaIncompleteCompl(k + 1, lambda) - gammaIncompleteCompl(k, lambda);
+    const real upper = gammaIncompleteCompl(cast(real) k + 1, lambda);
+    const real mass = upper - gammaIncompleteCompl(cast(real) k, lambda);
+    // Adjacent CDF values can both round to one in the upper tail. Keep their
+    // difference only when cancellation costs at most three significant bits.
+    if (mass >= upper * 0.125L && mass >= T.min_normal)
+        return cast(T) mass;
+    return poissonPMFImpl!(T, PoissonAlgo.direct)(k, lambda);
 }
 
 private
@@ -130,6 +136,8 @@ Computes the poisson probability mass function (PMF).
 
 The direct algorithm uses a logarithmic fallback when intermediate powers,
 factorials, or exponentials overflow or underflow.
+The gamma algorithm falls back to the direct algorithm when subtracting adjacent
+CDF values would lose precision.
 
 Params:
     poissonAlgo = algorithm for calculating PMF (default: PoissonAlgo.direct)
@@ -230,6 +238,23 @@ unittest
     for (size_t i; i < 20; i++) {
         assert(i.poissonPMF!"gamma"(5.0).approxEqual(poissonPMF(i, 5.0)));
     }
+}
+
+// Differences of adjacent CDF values must not erase a representable mass.
+version(mir_stat_test)
+@safe pure nothrow @nogc unittest
+{
+    import std.meta: AliasSeq;
+    import mir.math.common: approxEqual;
+    static foreach (T; AliasSeq!(float, double, real))
+    {{
+        assert(approxEqual(poissonPMF!"gamma"(30, T(1)),
+            T(1.3869009421120462916399604485452e-33L), 128 * T.epsilon, T(0)));
+        assert(poissonPMF!"gamma"(size_t.max, T(5)) == 0);
+        foreach (k; 1 .. 35)
+            assert(approxEqual(poissonPMF!"gamma"(k, T(5)), poissonPMF(k, T(5)),
+                512 * T.epsilon, T(0)));
+    }}
 }
 
 // The gamma algorithm must handle zero events without a zero-shape gamma call.
