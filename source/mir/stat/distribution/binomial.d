@@ -1277,6 +1277,21 @@ unittest
     // Nearby queries exercise the floating-point fallback outside the budget.
     assert(binomialInvCDF(0.5348091761606, 200, 0.3) == 60);
     assert(binomialInvCDF(0.5348091761608, 200, 0.3) == 61);
+    // The lower-half fallback must distinguish either side of CDF(59) too:
+    // 0.4733474593659296238141304129738303866... for the same binary p.
+    assert(binomialInvCDF(0.4733474593658, 200, 0.3) == 59);
+    assert(binomialInvCDF(0.4733474593660, 200, 0.3) == 60);
+}
+
+// A skewed distribution can start at n and require several downward steps.
+version(mir_stat_test)
+@safe pure nothrow @nogc
+unittest
+{
+    // Exact rational binomial sums for the binary double p=0.95 establish
+    // these quantiles. Exercise both lower-CDF and upper-CCDF searches.
+    assert(binomialInvCDF(0.1, 65, 0.95) == 59);
+    assert(binomialInvCDF(0.6, 65, 0.95) == 62);
 }
 
 // test Binomial.direct, alternate guess paths
@@ -1405,6 +1420,9 @@ unittest
     // the smallest positive double is still negative and must be clipped.
     assert(binomialInvCDF!"approxNormal"(nextUp(0.0), 1000, 0.5) == 0);
     assert(binomialInvCDF!"approxNormalContinuityCorrection"(nextUp(0.0), 1000, 0.5) == 0);
+    // A small positive query below a nonzero lower cutoff also returns zero.
+    assert(binomialInvCDF!"approxNormal"(0.01, 2, 0.25) == 0);
+    assert(binomialInvCDF!"approxNormalContinuityCorrection"(0.01, 2, 0.25) == 0);
 }
 
 // The Poisson sub-algorithm must not change endpoint handling or return k > n.
