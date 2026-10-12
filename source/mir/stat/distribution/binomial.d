@@ -779,6 +779,116 @@ unittest
     }
 }
 
+/*
+For a close quantile comparison, floating-point rounding can turn an exact
+equality into a crossing. Binary floating-point inputs are exact fractions:
+p = a / 2^b. Compute integer probability numerators over the common denominator
+2^(b*n), then compare with the exact fraction represented by q.
+
+Limit the denominator to 8192 bits. The twice-as-wide stack storage also holds
+intermediate products before division. This is a bounded fallback, not an
+arbitrary-precision quantile algorithm. Unsupported inputs retain the precision
+of the floating-point CDF/CCDF calculation.
+*/
+private @safe pure nothrow @nogc
+bool binomialExactQuantileReached(T)(size_t k, size_t n, T p, T q, out bool supported)
+{
+    import mir.bignum.integer: BigInt;
+    import std.math: frexp, ldexp;
+
+    enum maxBits = 8192;
+    alias Integer = BigInt!(2 * maxBits / 64);
+    supported = false;
+    static if (T.mant_dig > 64) {
+        return false;
+    } else {
+        static void split(T value, out ulong numerator, out int exponent) {
+            int e;
+            const T fraction = frexp(value, e);
+            numerator = cast(ulong) ldexp(fraction, T.mant_dig);
+            exponent = T.mant_dig - e;
+            while (numerator && !(numerator & 1)) {
+                numerator >>= 1;
+                --exponent;
+            }
+        }
+        static void shift(ref Integer value, int bits) {
+            while (bits >= 32) {
+                value *= 1UL << 32;
+                bits -= 32;
+            }
+            if (bits)
+                value *= 1UL << bits;
+        }
+        static Integer power(Integer value, size_t exponent) {
+            Integer result = Integer(1);
+            while (exponent) {
+                if (exponent & 1)
+                    result *= value;
+                exponent >>= 1;
+                if (exponent)
+                    value *= value;
+            }
+            return result;
+        }
+
+        ulong a, qNumerator;
+        int b, qExponent;
+        split(p, a, b);
+        split(q, qNumerator, qExponent);
+        if (b <= 0 || b > maxBits || n > maxBits / cast(uint)b || qExponent > maxBits)
+            return false;
+        supported = true;
+
+        Integer failureNumerator = Integer(1);
+        shift(failureNumerator, b);
+        Integer numerator = Integer(a);
+        failureNumerator -= numerator; // 1-p = (2^b-a) / 2^b.
+        Integer term = power(failureNumerator, n);
+        Integer sum = Integer(0);
+        foreach (j; 0 .. k + 1) {
+            sum += term;
+            if (j < k) {
+                // Adjacent binomial numerators: C(n,j) * a^j * (2^b-a)^(n-j).
+                // Both divisions are exact, including division by j+1 first.
+                term *= n - j;
+                term *= a;
+                term /= cast(uint)(j + 1);
+                // Scalar division leaves leading zero limbs in the buffer.
+                term.normalize;
+                term /= failureNumerator;
+            }
+        }
+        Integer target = Integer(qNumerator);
+        const int exponent = cast(int)n * b;
+        if (qExponent > exponent)
+            shift(sum, qExponent - exponent);
+        else
+            shift(target, exponent - qExponent);
+        return sum >= target;
+    }
+}
+
+private @safe pure nothrow @nogc
+bool binomialQuantileReached(T)(size_t k, size_t n, T p, T q, bool upper, T value)
+{
+    import std.math: abs;
+
+    const T target = upper ? 1 - q : q;
+    // A conservative screen for close comparisons, not a tolerance that changes
+    // the quantile inequality. Exact equality belongs to the lower integer.
+    if (n <= 8192 && abs(value - target) <= 128 * (n + 1) * T.epsilon * (abs(value) + target)) {
+        bool supported;
+        const bool reached = binomialExactQuantileReached(k, n, p, q, supported);
+        if (supported)
+            return reached;
+        return upper
+            ? binomialCCDF(k, n, cast(real)p) <= 1 - cast(real)q
+            : binomialCDF(k, n, cast(real)p) >= q;
+    }
+    return upper ? value <= target : value >= target;
+}
+
 private
 @safe pure nothrow @nogc
 size_t binomialInvCDFImpl(T, BinomialAlgo binomialAlgo)(const T q, const size_t n, const T p)
@@ -788,38 +898,91 @@ size_t binomialInvCDFImpl(T, BinomialAlgo binomialAlgo)(const T q, const size_t 
     in (p >= 0, "p must be greater than or equal to 0")
     in (p <= 1, "p must be less than or equal to 1")
 {
-    if (q == 0) {
+    import std.math: abs;
+
+    if (q == 0 || p == 0 || n == 0) {
         return 0;
-    } else if (q == 1) {
+    } else if (q == 1 || p == 1) {
         return n;
     }
 
-    size_t guess = 0;
-    if ((n > 20 && (p > 0.25 && p < 0.75)) ||
-        (n * p > 9 * (1 - p) && n * (1 - p) > 9 * p) ||
-        (n * p >= 5 && n * (1 - p) >= 5)) {
-        guess = binomialInvCDFImpl!(T, BinomialAlgo.approxNormalContinuityCorrection)(q, n, p);
-    } else if ((n >= 20 && p <= 0.05) ||
-               (n >= 100 && n * p <= 10)) {
-        guess = binomialInvCDFImpl!(T, BinomialAlgo.approxPoisson, PoissonAlgo.approxNormalContinuityCorrection)(q, n, p);
+    static if (is(T == float))
+        alias F = double;
+    else
+        alias F = T;
+    const F probability = p;
+    const F quantile = q;
+    const bool upper = q > 0.5;
+    const F target = upper ? 1 - quantile : quantile;
+    bool reached(size_t k, F value) {
+        return binomialQuantileReached(k, n, probability, quantile, upper, value);
     }
-    T cdfGuess = binomialCDF!(binomialAlgo)(guess, n, p);
+    F evaluate(size_t k) {
+        return upper ? binomialCCDF(k, n, probability) : binomialCDF(k, n, probability);
+    }
 
-    if (q <= cdfGuess) {
-        if (guess == 0) {
-            return guess;
-        }
-        for (size_t i = (guess - 1); guess >= 0; i--) {
-            cdfGuess -= binomialPMF!(binomialAlgo)(i + 1, n, p);
-            if (q > cdfGuess) {
-                guess = i + 1;
-                break;
+    // Short distributions need only one endpoint mass and an adjacent-mass
+    // recurrence. Do not seed it with an underflowed or subnormal probability.
+    if (n <= 64) {
+        size_t k = upper ? n : 0;
+        F term = binomialPMF(k, n, probability);
+        if (term >= F.min_normal) {
+            F sum = upper ? 0 : term;
+            if (upper) {
+                while (k > 0) {
+                    const F next = sum + term;
+                    if (!reached(k - 1, next))
+                        return k;
+                    sum = next;
+                    term *= cast(F)k / (n - k + 1) * ((1 - probability) / probability);
+                    --k;
+                }
+            } else {
+                while (k < n && !reached(k, sum)) {
+                    term *= cast(F)(n - k) / (k + 1) * (probability / (1 - probability));
+                    sum += term;
+                    ++k;
+                }
             }
+            return k;
+        }
+    }
+
+    size_t guess = p > 0.5 ? n : 0;
+    if ((n > 20 && (probability > 0.25 && probability < 0.75)) ||
+        (n * probability > 9 * (1 - probability) && n * (1 - probability) > 9 * probability) ||
+        (n * probability >= 5 && n * (1 - probability) >= 5)) {
+        guess = binomialInvCDFImpl!(F, BinomialAlgo.approxNormalContinuityCorrection)(quantile, n, probability);
+    } else if ((n >= 20 && probability <= 0.05) ||
+               (n >= 100 && n * probability <= 10)) {
+        guess = binomialInvCDFImpl!(F, BinomialAlgo.approxPoisson, PoissonAlgo.approxNormalContinuityCorrection)(quantile, n, probability);
+    }
+    if (guess > n)
+        guess = n;
+    F value = evaluate(guess);
+    if (reached(guess, value)) {
+        while (guess > 0) {
+            const F mass = binomialPMF(guess, n, probability);
+            F next = upper ? value + mass : value - mass;
+            // Re-evaluate after substantial cancellation or a close comparison
+            // instead of propagating subtraction error through later steps.
+            if (next < value * 0.5 || abs(next - target) <= 64 * F.epsilon * (abs(value) + mass + target))
+                next = evaluate(guess - 1);
+            if (!reached(guess - 1, next))
+                break;
+            --guess;
+            value = next;
         }
     } else {
-        while(q > cdfGuess) {
-            guess++;
-            cdfGuess += binomialPMF!(binomialAlgo)(guess, n, p);
+        while (guess < n) {
+            ++guess;
+            const F mass = binomialPMF(guess, n, probability);
+            F next = upper ? value - mass : value + mass;
+            if (next < value * 0.5 || abs(next - target) <= 64 * F.epsilon * (abs(value) + mass + target))
+                next = evaluate(guess);
+            value = next;
+            if (reached(guess, value))
+                break;
         }
     }
     return guess;
@@ -884,13 +1047,21 @@ size_t binomialInvCDFImpl(T, BinomialAlgo binomialAlgo, PoissonAlgo poissonAlgo)
 /++
 Computes the binomial inverse cumulative distribution function (InvCDF).
 
+The direct algorithm seeks the smallest `k` whose CDF is at least `q`.
+It returns zero for `q = 0`, `p = 0`, or `n = 0`; otherwise `q = 1` or
+`p = 1` returns `n`. Upper-half probabilities are compared using the CCDF
+so that subtracting a small tail from one does not lose the comparison.
+Close comparisons use exact integer arithmetic when the binary probability
+fractions fit a bounded workspace. Outside that bound, the result remains
+subject to the accuracy of the floating-point tail calculation.
+
 Additional algorithms may be provided for calculating InvCDF that allow trading off
 time and accuracy. If `approxPoisson` is provided, the default is
 `PoissonAlgo.direct`, which is different from `binomialPMF` and `binomialCDF`
 `PoissonAlgo.gamma` is not supported.
 
 Params:
-    binomialAlgo = algorithm for calculating CDF (default: BinomialAlgo.direct)
+    binomialAlgo = algorithm for calculating InvCDF (default: BinomialAlgo.direct)
     poissonAlgo = algorithm for poisson approximation (default: PoissonAlgo.direct)
 
 See_also:
@@ -956,6 +1127,93 @@ unittest
         assert(value.binomialCDF(5, 0.6) >= x);
         assert((value - 1).binomialCDF(5, 0.6) < x);
     }
+}
+
+// Degenerate distributions and bounded searches at the support endpoints.
+version(mir_stat_test)
+@safe pure nothrow @nogc
+unittest
+{
+    import std.meta: AliasSeq;
+
+    static foreach (T; AliasSeq!(float, double, real)) {{
+        foreach (n; [size_t(0), size_t(20), size_t.max]) {
+            assert(binomialInvCDF(T(0.5), n, T(0)) == 0);
+            assert(binomialInvCDF(T(1), n, T(0)) == 0);
+            assert(binomialInvCDF(T(0), n, T(1)) == 0);
+            assert(binomialInvCDF(T(0.5), n, T(1)) == n);
+            assert(binomialInvCDF(T(1), n, T(1)) == n);
+        }
+        assert(binomialInvCDF(T(0.5), 0, T(0.5)) == 0);
+        assert(binomialInvCDF(T(1), 100, T(0.5)) == 100);
+        // The endpoint mass used by the short recurrence underflows here.
+        assert(binomialInvCDF(T(0.9), 64, T(1e-8L)) == 0);
+        assert(binomialInvCDF(T(0.1), 64, T(1) - T(1e-8L)) == 64);
+    }}
+}
+
+// Exact ties belong to the lower integer, rather than the next observation.
+version(mir_stat_test)
+@safe pure nothrow @nogc
+unittest
+{
+    import std.math: nextDown, nextUp;
+    import std.meta: AliasSeq;
+
+    static foreach (T; AliasSeq!(float, double, real)) {{
+        // Binomial(5, 1/4) has exact CDF numerators over 4^5 = 1024.
+        // These references come from integer binomial coefficients, not CDF().
+        foreach (k, numerator; [243, 648, 918, 1008, 1023]) {
+            const T q = T(numerator) / 1024;
+            assert(binomialInvCDF(nextDown(q), 5, T(0.25)) == k);
+            assert(binomialInvCDF(q, 5, T(0.25)) == k);
+            assert(binomialInvCDF(nextUp(q), 5, T(0.25)) == k + 1);
+        }
+        // Symmetry gives an exact half at the middle of odd-sized support.
+        // Check both sides of the short-distribution cutoff.
+        foreach (n; [size_t(63), size_t(65)]) {
+            assert(binomialInvCDF(nextDown(T(0.5)), n, T(0.5)) == n / 2);
+            assert(binomialInvCDF(T(0.5), n, T(0.5)) == n / 2);
+            assert(binomialInvCDF(nextUp(T(0.5)), n, T(0.5)) == n / 2 + 1);
+        }
+    }}
+}
+
+// Tiny upper tails must not be reconstructed by subtracting a rounded CDF.
+version(mir_stat_test)
+@safe pure nothrow @nogc
+unittest
+{
+    import std.math: nextDown;
+
+    // For Binomial(64, 1/2), P(X>61)=2081/2^64 and P(X>62)=65/2^64.
+    // The target tail is 2^-53, between these two exact probabilities.
+    assert(binomialInvCDF(nextDown(1.0), 64, 0.5) == 62);
+    // Independently checked by summing masses with 100-decimal precision for
+    // the exact binary value of 0.01f. The old search could step past n.
+    assert(binomialInvCDF(nextDown(1.0f), 200, 0.01f) == 13);
+}
+
+// Exact comparisons have a fixed arithmetic budget and never silently truncate.
+version(mir_stat_test)
+@safe pure nothrow @nogc
+unittest
+{
+    bool supported;
+    assert(!binomialExactQuantileReached(0, 8192, 0.5, 0.5, supported));
+    assert(supported);
+    assert(!binomialExactQuantileReached(0, 8193, 0.5, 0.5, supported));
+    assert(!supported);
+    // A probability with a long binary denominator can exceed the same budget
+    // with far fewer trials. The ordinary floating-point comparison remains.
+    assert(!binomialExactQuantileReached(60, 200, 0.3, 0.5, supported));
+    assert(!supported);
+    assert(binomialInvCDF(0.5, 200, 0.3) == 60);
+    // For the exact double value of p=0.3, a 100-decimal reference gives
+    // CDF(60) = 0.5348091761606989177271863599018766395... .
+    // Nearby queries exercise the floating-point fallback outside the budget.
+    assert(binomialInvCDF(0.5348091761606, 200, 0.3) == 60);
+    assert(binomialInvCDF(0.5348091761608, 200, 0.3) == 61);
 }
 
 // test Binomial.direct, alternate guess paths
