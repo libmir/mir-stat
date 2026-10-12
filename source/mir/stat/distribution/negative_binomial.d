@@ -274,6 +274,14 @@ version(mir_stat_test)
         assert(cast(double)fp_negativeBinomialPMF(0, size_t.max, T(1)) == 1);
         assert(!fp_negativeBinomialPMF(1, size_t.max, T(1)).coefficient);
         assert(!fp_negativeBinomialPMF(0, 2, T(0)).coefficient);
+        // With no failures and one required success, the mass is p itself,
+        // even at the Fp exponent floor where multiplication can underflow.
+        auto smallestExponent = T(1);
+        smallestExponent.exponent = long.min;
+        const identityMass = negativeBinomialPMF(0, 1, smallestExponent);
+        assert(identityMass.coefficient == smallestExponent.coefficient);
+        assert(identityMass.exponent == smallestExponent.exponent);
+        assert(!identityMass.sign);
         assert(fpProbabilityValid(T(0)) && fpProbabilityValid(T(1)));
         assert(!fpProbabilityValid(T(-0.5)) && !fpProbabilityValid(T(2)));
         assert(!fpProbabilityValid(T(double.infinity)));

@@ -16,6 +16,11 @@ package(mir)
 T fp_powi(T)(const T x, size_t i)
     if (is(T == Fp!size, size_t size))
 {
+    // Preserve the identity without multiplication: Fp can underflow while
+    // adding raw exponents in 1*x near its minimum exponent.
+    if (i == 1)
+        return x;
+
     // Exponentiation by squaring keeps full-width counts practical. Avoid an
     // unused final square, which could overflow even when the result fits.
     T output = T(1);
@@ -43,4 +48,24 @@ unittest
     assert(Fp!128(1).fp_powi(size_t.max).to!double == 1);
     assert(Fp!128(0).fp_powi(0).to!double == 1);
     assert(Fp!128(0).fp_powi(17).to!double == 0);
+}
+
+// Exponent-one identity must preserve values at the Fp exponent floor.
+version(mir_stat_test)
+@safe pure nothrow @nogc unittest
+{
+    static foreach (bits; [64u, 128u, 256u]) {{
+        alias T = Fp!bits;
+        foreach (offset; [0L, 1L, cast(long)bits - 2]) {
+            auto x = T(1);
+            x.exponent = long.min + offset;
+            foreach (negative; [false, true]) {
+                x.sign = negative;
+                const result = fp_powi(x, 1);
+                assert(result.sign == x.sign);
+                assert(result.coefficient == x.coefficient);
+                assert(result.exponent == x.exponent);
+            }
+        }
+    }}
 }
