@@ -403,6 +403,92 @@ unittest
     }
 }
 
+/*
+Evaluate the tail on the side of the mean containing k. This avoids forming a
+small probability by subtracting an almost-one probability, and keeps p intact
+instead of reflecting it through the rounded value of 1-p.
+
+For n <= 64, start at the boundary mass and walk away from the mean using the
+ratio of adjacent masses. All coefficients fit in ulong in this range, and a
+short recurrence avoids repeated powers. Accumulate float inputs in double.
+Larger counts retain direct PMF summation; no incomplete-beta fallback is used.
+*/
+private @safe pure nothrow @nogc
+T binomialDirectTail(bool upper, T)(size_t k, size_t n, T p)
+{
+    import mir.math.common: exp;
+    import std.math: log1p, expm1;
+
+    if (k == n || p == 0)
+        return upper ? 0 : 1;
+    if (p == 1)
+        return upper ? 1 : 0;
+    if (k == 0) {
+        const real logMass = cast(real)n * log1p(-cast(real)p);
+        static if (upper)
+            return cast(T) -expm1(logMass);
+        else
+            return cast(T) exp(logMass);
+    }
+
+    static if (is(T == float))
+        alias F = double;
+    else
+        alias F = T;
+
+    const bool lower = k < cast(real)n * p;
+    size_t j = lower ? k : k + 1;
+    F sum = 0;
+    if (n <= 64) {
+        const F probability = p;
+        const F complement = 1 - probability;
+        F term = binomialPMFImpl!(F, BinomialAlgo.direct)(j, n, probability);
+        sum = term;
+        if (lower) {
+            const F ratio = complement / probability;
+            while (j > 0) {
+                term *= cast(F)j / (n - j + 1) * ratio;
+                sum += term;
+                --j;
+            }
+        } else {
+            const F ratio = probability / complement;
+            while (j < n) {
+                term *= cast(F)(n - j) / (j + 1) * ratio;
+                sum += term;
+                ++j;
+            }
+        }
+    } else {
+        // Test the endpoint before incrementing: n + 1 can overflow size_t.
+        while (true) {
+            const F mass = binomialPMFImpl!(F, BinomialAlgo.direct)(j, n, cast(F)p);
+            sum += mass;
+            // Ratios decrease as we move away from the mean. The geometric
+            // series bounds all remaining masses, avoiding a long walk through
+            // negligible terms for a large n and a strongly skewed distribution.
+            const real ratio = lower
+                ? (cast(real)j / (cast(real)(n - j) + 1)) * ((1 - cast(real)p) / p)
+                : (cast(real)(n - j) / (cast(real)j + 1)) * (p / (1 - cast(real)p));
+            if (ratio < 1 && cast(real)mass * ratio <= F.epsilon * sum * (1 - ratio))
+                break;
+            if (lower) {
+                if (j == 0)
+                    break;
+                --j;
+            } else {
+                if (j == n)
+                    break;
+                ++j;
+            }
+        }
+    }
+    // A sum of nonnegative masses can exceed one slightly through rounding.
+    if (sum > 1)
+        sum = 1;
+    return cast(T)(upper == lower ? 1 - sum : sum);
+}
+
 private
 @safe pure nothrow @nogc
 T binomialCDFImpl(T, BinomialAlgo binomialAlgo)(const size_t k, const size_t n, const T p)
@@ -411,23 +497,7 @@ T binomialCDFImpl(T, BinomialAlgo binomialAlgo)(const size_t k, const size_t n, 
     in (p >= 0, "p must be greater than or equal to 0")
     in (p <= 1, "p must be less than or equal to 1")
 {
-    import mir.math.common: pow;
-
-    if (k == n) {
-        return 1;
-    } else if (k == 0) {
-        return pow(1 - p, n);
-    } else if (k <= n / 2 + 1) {
-        T result = 0;
-
-        foreach (size_t i; 0 .. (k + 1)) {
-            result += binomialPMFImpl!(T, binomialAlgo)(i, n, p);
-        }
-
-        return result;
-    } else {
-        return 1 - binomialCDFImpl!(T, binomialAlgo)(n - k - 1, n, 1 - p);
-    }
+    return binomialDirectTail!(false, T)(k, n, p);
 }
 
 private
@@ -577,23 +647,7 @@ T binomialCCDFImpl(T, BinomialAlgo binomialAlgo)(const size_t k, const size_t n,
     in (p >= 0, "p must be greater than or equal to 0")
     in (p <= 1, "p must be less than or equal to 1")
 {
-    import mir.math.common: pow;
-
-    if (k == n) {
-        return 0;
-    } else if (k == 0) {
-        return 1 - pow(1 - p, n);
-    } else if (k >= n / 2) {
-        T result = 0;
-
-        foreach (size_t i; (k + 1) .. (n + 1)) {
-            result += binomialPMFImpl!(T, binomialAlgo)(i, n, p);
-        }
-
-        return result;
-    } else {
-        return 1 - binomialCCDFImpl!(T, binomialAlgo)(n - k - 1, n, 1 - p);
-    }
+    return binomialDirectTail!(true, T)(k, n, p);
 }
 
 private
@@ -1090,4 +1144,61 @@ unittest
     assert((val - 2).binomialLPMF(val + 5, 0.75).approxEqual(fp_binomialPMF(val - 2, val + 5, Fp!128(0.75)).fp_log!double));
     assert((val - 1).binomialLPMF(val + 5, 0.75).approxEqual(fp_binomialPMF(val - 1, val + 5, Fp!128(0.75)).fp_log!double));
     assert((val - 0).binomialLPMF(val + 5, 0.75).approxEqual(fp_binomialPMF(val, val + 5, Fp!128(0.75)).fp_log!double));
+}
+
+// Direct tails: degenerate distributions, cancellation, and recurrence boundaries.
+version(mir_stat_test)
+@safe pure nothrow @nogc
+unittest
+{
+    import std.meta: AliasSeq;
+    import std.math: abs;
+
+    static foreach (T; AliasSeq!(float, double, real)) {{
+        foreach (n; [size_t(0), size_t(10), size_t.max]) {
+            assert(binomialCDF(n, n, T(0)) == 1);
+            assert(binomialCCDF(n, n, T(1)) == 0);
+            if (n != 0) {
+                assert(binomialCDF(n - 1, n, T(0)) == 1);
+                assert(binomialCCDF(n - 1, n, T(0)) == 0);
+                assert(binomialCDF(n - 1, n, T(1)) == 0);
+                assert(binomialCCDF(n - 1, n, T(1)) == 1);
+            }
+        }
+        const T tiny = T(1e-20L);
+        // The quadratic correction is negligible at this input precision.
+        assert(abs(binomialCCDF(0, 10, tiny) / (10 * tiny) - 1) < 16 * T.epsilon);
+        assert(abs(binomialCCDF(1, 10, tiny) / (45 * tiny * tiny) - 1) <
+            (is(T == float) ? T(1e-4) : T(1e-13)));
+
+        // Check bounds, monotonicity, and complement agreement across n=64/65.
+        const T tolerance = is(T == float) ? T(2e-6) : T(2e-13);
+        foreach (n; [size_t(64), size_t(65)]) {
+            T previous = 0;
+            foreach (k; 0 .. n + 1) {
+                const T c = binomialCDF(k, n, T(0.25));
+                const T s = binomialCCDF(k, n, T(0.25));
+                assert(c >= 0 && c <= 1 && s >= 0 && s <= 1);
+                assert(c + tolerance >= previous);
+                assert(abs(c + s - 1) <= tolerance);
+                previous = c;
+            }
+        }
+        // Independent finite binomial sums evaluated with mpmath at 100 digits.
+        assert(abs(binomialCCDF(32, 64, T(0.25)) /
+            T(0.00000458614953167524842111188594734398354L) - 1) < tolerance);
+        assert(abs(binomialCCDF(32, 65, T(0.25)) /
+            T(0.00000708105513203867121233649993116407543L) - 1) < tolerance);
+        assert(abs(binomialCDF(31, 64, T(0.75)) /
+            T(0.00000458614953167524842111188594734398354L) - 1) < tolerance);
+        // The old reflected calculation loses this small upper tail.
+        assert(abs(binomialCCDF(1, 65, tiny) / (2080 * tiny * tiny) - 1) <
+            (is(T == float) ? T(1e-4) : T(1e-12)));
+    }}
+    // A large, sparse distribution should not require traversing n masses.
+    assert(abs(binomialCCDF(1, 1_000_000, 1e-20) / 4.999995e-29 - 1) < 1e-12);
+    // Only one upper-tail mass is needed, even when n+1 is unrepresentable.
+    const double p = 1 - double.epsilon / 2;
+    const double expected = binomialPMF(size_t.max, size_t.max, p);
+    assert(binomialCCDF(size_t.max - 1, size_t.max, p) == expected);
 }
