@@ -200,10 +200,18 @@ T negativeBinomialCDF(T)(const size_t k, const size_t r, const T p)
     import mir.math.common: pow;
     import std.mathspecial: betaIncomplete;
 
+    if (p == 0 || p == 1)
+        return p;
+    if (r == 1) {
+        import mir.stat.distribution.geometric: geometricCDF;
+        return geometricCDF(k, p);
+    }
     if (k == 0) {
         return pow(p, r);
     }
-    return 1 - betaIncomplete(k + 1, r, 1 - p);
+    // Evaluate the lower tail directly. Form k+1 after conversion so the
+    // largest count does not wrap to a zero beta shape.
+    return betaIncomplete(cast(T)r, cast(T)k + 1, p);
 }
 
 ///
@@ -260,13 +268,50 @@ T negativeBinomialCCDF(T)(const size_t k, const size_t r, const T p)
     in (p >= 0, "p must be greater than or equal to 0")
     in (p <= 1, "p must be less than or equal to 1")
 {
-    import mir.math.common: pow;
+    import mir.math.common: log;
+    import mir.stat.internal.one_minus_exp: oneMinusExpNeg;
     import std.mathspecial: betaIncomplete;
 
-    if (k == 0) {
-        return 1 - pow(p, r);
+    if (p == 0 || p == 1)
+        return 1 - p;
+    if (r == 1) {
+        import mir.stat.distribution.geometric: geometricCCDF;
+        return geometricCCDF(k, p);
     }
-    return betaIncomplete(k + 1, r, 1 - p);
+    if (k == 0) {
+        return oneMinusExpNeg(-cast(T)r * log(p));
+    }
+    return betaIncomplete(cast(T)k + 1, cast(T)r, 1 - p);
+}
+
+// Lower tails must not disappear through subtraction, or count addition wrap.
+version(mir_stat_test)
+@safe pure nothrow @nogc unittest
+{
+    import std.meta: AliasSeq;
+    import std.math: nextDown;
+    import mir.math.common: approxEqual;
+    static foreach (T; AliasSeq!(float, double, real)) {{
+        const T p = T.epsilon / 16;
+        assert(approxEqual(negativeBinomialCDF(1, 1, p), 2 * p, 16 * T.epsilon, T(0)));
+        // P(K<=1) = p^2*(3-2p) for r=2.
+        assert(approxEqual(negativeBinomialCDF(1, 2, p), p*p*(3-2*p),
+            128 * T.epsilon, T(0)));
+        const T nearOne = nextDown(T(1));
+        const T failure = 1 - nearOne;
+        assert(approxEqual(negativeBinomialCCDF(0, 2, nearOne),
+            failure * (2 - failure), 16 * T.epsilon, T(0)));
+        foreach (r; [size_t(1), size_t(6)]) {
+            foreach (k; [size_t(0), size_t(1), size_t.max]) {
+                assert(negativeBinomialCDF(k, r, T(0)) == 0);
+                assert(negativeBinomialCDF(k, r, T(1)) == 1);
+                assert(negativeBinomialCCDF(k, r, T(0)) == 1);
+                assert(negativeBinomialCCDF(k, r, T(1)) == 0);
+            }
+        }
+        assert(negativeBinomialCDF(size_t.max, 1, T(0.5)) == 1);
+        assert(negativeBinomialCCDF(size_t.max, 1, T(0.5)) == 0);
+    }}
 }
 
 ///
