@@ -213,9 +213,10 @@ T negativeBinomialCDF(T)(const size_t k, const size_t r, const T p)
         import mir.stat.distribution.binomial: binomialCCDF;
         return binomialCCDF(r - 1, k + r, p);
     }
-    // Evaluate the lower tail directly. Form k+1 after conversion so the
-    // largest count does not wrap to a zero beta shape.
-    return betaIncomplete(cast(T)r, cast(T)k + 1, p);
+    // betaIncomplete takes real shapes. Convert counts directly to its working
+    // type rather than rounding through T, and add after conversion to avoid
+    // wrapping the largest size_t count.
+    return betaIncomplete(cast(real)r, cast(real)k + 1, p);
 }
 
 ///
@@ -289,7 +290,8 @@ T negativeBinomialCCDF(T)(const size_t k, const size_t r, const T p)
         import mir.stat.distribution.binomial: binomialCDF;
         return binomialCDF(r - 1, k + r, p);
     }
-    return betaIncomplete(cast(T)k + 1, cast(T)r, 1 - p);
+    // Preserve count precision in the existing real-valued beta backend.
+    return betaIncomplete(cast(real)k + 1, cast(real)r, 1 - p);
 }
 
 // For tiny p, rounding 1-p before incomplete-beta evaluation can move a
@@ -311,6 +313,14 @@ version(mir_stat_test)
     import std.meta: AliasSeq;
     import std.math: nextDown;
     import mir.math.common: approxEqual;
+    // With p=1/2 and k=r-1 the beta shapes are equal. Counts beyond float's
+    // consecutive-integer precision must still reach the backend unchanged.
+    // Compare input types: older Phobos versions have an independent large-
+    // shape error here, so they do not reliably return the exact value 1/2.
+    assert(negativeBinomialCDF(size_t(16_777_217), size_t(16_777_218), 0.5f)
+        == cast(float)negativeBinomialCDF(size_t(16_777_217), size_t(16_777_218), 0.5L));
+    assert(negativeBinomialCCDF(size_t(16_777_217), size_t(16_777_218), 0.5f)
+        == cast(float)negativeBinomialCCDF(size_t(16_777_217), size_t(16_777_218), 0.5L));
     static foreach (T; AliasSeq!(float, double, real)) {{
         const T p = T.epsilon / 16;
         assert(approxEqual(negativeBinomialCDF(1, 1, p), 2 * p, 16 * T.epsilon, T(0)));
