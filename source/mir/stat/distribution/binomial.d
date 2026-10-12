@@ -904,7 +904,11 @@ bool binomialQuantileReached(T)(size_t k, size_t n, T p, T q, bool upper, T valu
     const T target = upper ? 1 - q : q;
     // A conservative screen for close comparisons, not a tolerance that changes
     // the quantile inequality. Exact equality belongs to the lower integer.
-    if (n <= 8192 && abs(value - target) <= 128 * (n + 1) * T.epsilon * (abs(value) + target)) {
+    // Subnormal tails have less relative precision. Adding min_normal supplies
+    // an absolute allowance based on the smallest subnormal spacing, so rounding
+    // cannot erase the screen precisely where an exact comparison is needed.
+    if (n <= 8192 && abs(value - target) <=
+        128 * (n + 1) * T.epsilon * (abs(value) + target + T.min_normal)) {
         bool supported;
         const bool reached = binomialExactQuantileReached(k, n, p, q, supported);
         if (supported)
@@ -1235,6 +1239,22 @@ unittest
     // Independently checked by summing masses with 100-decimal precision for
     // the exact binary value of 0.01f. The old search could step past n.
     assert(binomialInvCDF(nextDown(1.0f), 200, 0.01f) == 13);
+}
+
+// Subnormal lower tails still distinguish queries on either side of a CDF step.
+version(mir_stat_test)
+@safe pure nothrow @nogc
+unittest
+{
+    import std.math: nextDown, nextUp;
+
+    // Exact integer sums of binomial coefficients over 2^1500 put CDF(79)
+    // strictly between nextDown(q) and q, and CDF(80) above nextUp(q).
+    // A purely relative comparison screen could underflow and return 79 for q.
+    const double q = 0x0.0000000010cbep-1022;
+    assert(binomialInvCDF(nextDown(q), 1500, 0.5) == 79);
+    assert(binomialInvCDF(q, 1500, 0.5) == 80);
+    assert(binomialInvCDF(nextUp(q), 1500, 0.5) == 80);
 }
 
 // Exact comparisons have a fixed arithmetic budget and never silently truncate.
