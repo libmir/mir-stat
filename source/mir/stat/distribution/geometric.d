@@ -13,8 +13,49 @@ module mir.stat.distribution.geometric;
 
 import mir.internal.utility: isFloatingPoint;
 
+// Tiny probabilities and counts whose successor is not an integer size_t.
+version(mir_stat_test)
+@safe pure nothrow @nogc unittest
+{
+    import std.meta: AliasSeq;
+    import std.math: nextUp;
+    import mir.math.common: approxEqual;
+    static foreach (T; AliasSeq!(float, double, real)) {{
+        const T tiny = T.epsilon / 16;
+        assert(geometricCDF(size_t(0), tiny) == tiny);
+        assert(approxEqual(geometricCDF(size_t(1), tiny), 2 * tiny, 8 * T.epsilon, T(0)));
+        assert(geometricCDF(size_t(0), nextUp(T(0))) == nextUp(T(0)));
+        foreach (k; [size_t(0), size_t(64), size_t(65), size_t.max]) {
+            assert(geometricPMF(k, T(0)) == 0);
+            assert(geometricPMF(k, T(1)) == (k == 0 ? 1 : 0));
+            assert(geometricCDF(k, T(0)) == 0);
+            assert(geometricCDF(k, T(1)) == 1);
+            assert(geometricCCDF(k, T(0)) == 1);
+            assert(geometricCCDF(k, T(1)) == 0);
+        }
+        assert(geometricCDF(size_t.max, T(0.5)) == 1);
+        assert(geometricCCDF(size_t.max, T(0.5)) == 0);
+        foreach (x; [cast(T)size_t.max, T.infinity]) {
+            assert(geometricCDF(x, T(0.5)) == 1);
+            assert(geometricCCDF(x, T(0.5)) == 0);
+            assert(geometricCDF(x, T(0)) == 0);
+            assert(geometricCCDF(x, T(0)) == 1);
+            assert(geometricCDF(x, T(1)) == 1);
+            assert(geometricCCDF(x, T(1)) == 0);
+        }
+    }}
+    static if (size_t.sizeof == 8) {
+        // Independent 100-digit references for exact binary p and k.
+        assert(approxEqual(geometricPMF(1UL << 60, 0x1p-60),
+            3.190845514646648713140259429307883234771e-19, 8 * double.epsilon, 0.0));
+        assert(approxEqual(geometricCCDF(size_t.max, 0x1p-64),
+            0.3678794411714423215855522278535, 8 * double.epsilon, 0.0));
+    }
+}
+
 /++
-Computes the geometric probability density function (PMF).
+Computes the geometric probability mass function (PMF) for the number of
+failures before the first success.
 
 Params:
     k = value to evaluate PMF
@@ -28,8 +69,17 @@ T geometricPMF(T)(const size_t k, const T p)
     in (p >= 0, "p must be greater than or equal to 0")
     in (p <= 1, "p must be less than or equal to 1")
 {
-    import mir.math.common: pow;
-    return pow(1 - p, k) * p;   
+    import mir.math.common: pow, exp;
+    import mir.stat.internal.neg_log1m: negLog1m;
+    if (k == 0)
+        return p;
+    if (p == 0 || p == 1)
+        return 0;
+    // Keep the short power calculation for ordinary counts. At large counts,
+    // rounding 1-p before exponentiation can noticeably change the probability.
+    if (k <= 64)
+        return pow(1 - p, k) * p;
+    return exp(-cast(T)k * negLog1m(p)) * p;
 }
 
 ///
@@ -59,8 +109,12 @@ T geometricCDF(T)(const size_t k, const T p)
     in (p >= 0, "p must be greater than or equal to 0")
     in (p <= 1, "p must be less than or equal to 1")
 {
-    import mir.math.common: pow;
-    return 1 - pow(1 - p, k + 1);   
+    import mir.stat.internal.neg_log1m: negLog1m;
+    import mir.stat.internal.one_minus_exp: oneMinusExpNeg;
+    if (k == 0 || p == 0 || p == 1)
+        return p;
+    // Convert before adding: k+1 need not fit in size_t.
+    return oneMinusExpNeg((cast(T)k + 1) * negLog1m(p));
 }
 
 /// ditto
@@ -73,6 +127,15 @@ T geometricCDF(T)(const T x, const T p)
 {
     if (x < 0)
         return 0;
+    // Avoid converting infinity or a count outside size_t to an integer.
+    if (x >= cast(T)size_t.max) {
+        import mir.math.common: floor;
+        import mir.stat.internal.neg_log1m: negLog1m;
+        import mir.stat.internal.one_minus_exp: oneMinusExpNeg;
+        if (p == 0 || p == 1)
+            return p;
+        return oneMinusExpNeg((floor(x) + 1) * negLog1m(p));
+    }
     return geometricCDF!T(cast(const size_t) x, p);  
 }
 
@@ -110,8 +173,11 @@ T geometricCCDF(T)(const size_t k, const T p)
     in (p >= 0, "p must be greater than or equal to 0")
     in (p <= 1, "p must be less than or equal to 1")
 {
-    import mir.math.common: pow;
-    return pow(1 - p, k + 1);   
+    import mir.math.common: exp;
+    import mir.stat.internal.neg_log1m: negLog1m;
+    if (k == 0 || p == 0 || p == 1)
+        return 1 - p;
+    return exp(-(cast(T)k + 1) * negLog1m(p));
 }
 
 /// ditto
@@ -124,6 +190,13 @@ T geometricCCDF(T)(const T x, const T p)
 {
     if (x < 0)
         return 1;
+    if (x >= cast(T)size_t.max) {
+        import mir.math.common: floor, exp;
+        import mir.stat.internal.neg_log1m: negLog1m;
+        if (p == 0 || p == 1)
+            return 1 - p;
+        return exp(-(floor(x) + 1) * negLog1m(p));
+    }
     return geometricCCDF!T(cast(const size_t) x, p);  
 }
 
@@ -149,6 +222,13 @@ unittest
 /++
 Computes the geometric inverse cumulative distribution function (InvCDF).
 
+For interior probabilities, returns the smallest nonnegative count whose CDF
+is at least `q`. Retains the boundary conventions `q = 0` returns -1 (except
+at `p = 1`, where it returns zero), and `q = 1` returns infinity. For `p = 0`,
+positive queries also return infinity. The floating return type cannot represent
+every integer at large counts. Close comparisons use bounded exact binary
+arithmetic where possible; larger cases retain floating-point accuracy.
+
 Params:
     q = value to evaluate InvCDF
     p = `true` probability
@@ -163,20 +243,121 @@ T geometricInvCDF(T)(const T q, const T p)
     in (p >= 0, "p must be greater than or equal to 0")
     in (p <= 1, "p must be less than or equal to 1")
 {
-    import mir.math.common: approxEqual, ceil, nearbyint, log;
+    import mir.math.common: ceil;
+    import mir.stat.internal.neg_log1m: negLog1m;
     if (q == 1) {
         return T.infinity;
     }
     if (p == 1) {
         return 0;
     }
-    T guess = log(1 - q) / log(1 - p);
-    T guessNearby = nearbyint(guess);
-    if (approxEqual(guess, guessNearby, T.epsilon * 2)) {
-        return guessNearby - 1;
-    } else {
-        return ceil(guess) - 1;
+    if (q == 0)
+        return -1;
+    if (p == 0)
+        return T.infinity;
+    // Keep ordinary double logarithms in double; widen float only. The exact
+    // fallback below resolves ambiguous steps without widening every call.
+    static if (is(T == float)) alias F = double;
+    else alias F = T;
+    const F lp = negLog1m(cast(F)p);
+    const F lq = negLog1m(cast(F)q);
+    F guess = ceil(lq / lp) - 1;
+    if (guess < 0)
+        guess = 0;
+    // At counts beyond consecutive-integer precision, stepping by one may
+    // leave the value unchanged. Return the representable approximation there.
+    if (guess + 1 == guess || guess == F.infinity)
+        return cast(T)guess;
+    while (guess > 0 && geometricQuantileReached(guess - 1, p, q, lp, lq))
+        --guess;
+    while (guess + 1 != guess && !geometricQuantileReached(guess, p, q, lp, lq))
+        ++guess;
+    return cast(T)guess;
+}
+
+// Comparing logarithms avoids reconstructing a CDF close to one. Near a
+// boundary, do not snap approximately equal values to an integer: adjacent
+// queries can lie on opposite sides of the exact CDF step.
+private @safe pure nothrow @nogc
+bool geometricQuantileReached(T, F)(F k, T p, T q, F lp, F lq)
+{
+    import std.math: fabs, frexp, ldexp;
+    import mir.bignum.integer: BigInt;
+    const F value = (k + 1) * lp;
+    if (k < 8192 && fabs(value - lq) <= 32 * F.epsilon * (value + lq)) {
+        static if (T.mant_dig <= 64) {
+            // For p=a/2^b, compare (2^b-a)^(k+1)/2^(b*(k+1))
+            // directly with 1-q. Fixed storage keeps the fallback @nogc.
+            alias Integer = BigInt!256;
+            static void split(T x, out ulong a, out int b) {
+                int e;
+                a = cast(ulong)ldexp(frexp(x, e), T.mant_dig);
+                b = T.mant_dig - e;
+                while (a && !(a & 1)) { a >>= 1; --b; }
+            }
+            static void shift(ref Integer x, int bits) {
+                while (bits >= 32) { x *= 1UL << 32; bits -= 32; }
+                if (bits) x *= 1UL << bits;
+            }
+            ulong a, c;
+            int b, d;
+            split(p, a, b);
+            split(q, c, d);
+            const size_t m = cast(size_t)k + 1;
+            if (b > 0 && b <= 8192 && d > 0 && d <= 8192 && m <= 8192 / b) {
+                Integer base = Integer(1);
+                shift(base, b);
+                Integer probabilityNumerator = Integer(a);
+                base -= probabilityNumerator;
+                Integer tail = Integer(1);
+                size_t exponent = m;
+                while (exponent) {
+                    if (exponent & 1) tail *= base;
+                    exponent >>= 1;
+                    if (exponent) base *= base;
+                }
+                Integer target = Integer(1);
+                shift(target, d);
+                Integer queryNumerator = Integer(c);
+                target -= queryNumerator;
+                const int tailExponent = cast(int)m * b;
+                if (d > tailExponent) shift(tail, d - tailExponent);
+                else shift(target, tailExponent - d);
+                return tail <= target;
+            }
+        }
     }
+    return value >= lq;
+}
+
+// Exact dyadic boundaries and queries on either side of them.
+version(mir_stat_test)
+@safe pure nothrow @nogc unittest
+{
+    import std.meta: AliasSeq;
+    import std.math: nextUp, nextDown;
+    import mir.math.common: approxEqual;
+    static foreach (T; AliasSeq!(float, double, real)) {{
+        foreach (k, q; [T(0.5), T(0.75), T(0.875)]) {
+            assert(geometricInvCDF(nextDown(q), T(0.5)) == k);
+            assert(geometricInvCDF(q, T(0.5)) == k);
+            assert(geometricInvCDF(nextUp(q), T(0.5)) == k + 1);
+        }
+        assert(geometricInvCDF(T(0.5), T(0)) == T.infinity);
+        assert(geometricInvCDF(T(0), T(0.5)) == -1);
+        assert(geometricInvCDF(T(0), T(1)) == 0);
+        assert(geometricInvCDF(T(1), T(1)) == T.infinity);
+        assert(geometricInvCDF(T(1e-20L), T(0.5)) == 0);
+        // Dividing the smallest positive query by -log(1-p) may underflow
+        // before ceil. The first count still reaches this positive query.
+        assert(geometricInvCDF(nextUp(T(0)), T(0.99)) == 0);
+        // The next query above CDF(0)=p belongs to count 1. Rounded logarithms
+        // can initially suggest count 0, requiring an upward correction.
+        const T probability = T(0.0003);
+        assert(geometricInvCDF(nextUp(probability), probability) == 1);
+        assert(approxEqual(geometricInvCDF(T(0.5), T(1e-20L)),
+            T(6.9314718055994530941e19L), 8 * T.epsilon, T(0)));
+    }}
 }
 
 ///
