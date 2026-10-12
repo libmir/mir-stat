@@ -178,6 +178,8 @@ T negativeBinomialPMF(T)(const size_t k, const size_t r, const T p)
 version(mir_stat_test)
 @safe pure nothrow @nogc unittest
 {
+    import mir.bignum.fp: Fp;
+
     auto probability = Fp!128(0.5);
     auto mass = negativeBinomialPMF(1, 2, probability);
     static assert(is(typeof(mass) == Fp!128));
