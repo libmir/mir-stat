@@ -127,7 +127,7 @@ See_also:
     $(LINK2 https://en.wikipedia.org/wiki/Negative_binomial_distribution, Negative Binomial Distribution)
 +/
 @safe pure nothrow @nogc
-T fp_negativeBinomialPMF(T)(const size_t k, const size_t r, const T p)
+T negativeBinomialPMF(T)(const size_t k, const size_t r, const T p)
     if (is(T == Fp!size, size_t size))
     in (r > 0, "number of successes must be larger than zero")
     in (fpProbabilityValid(p), "p must be finite and between zero and one")
@@ -172,6 +172,34 @@ T fp_negativeBinomialPMF(T)(const size_t k, const size_t r, const T p)
         coefficient.exponent += numeratorProduct.exponent - denominatorProduct.exponent - cast(long)size - 64;
     }
     return coefficient * fp_powi(complement, k) * fp_powi(p, r);
+}
+
+/// The probability type selects the extended-precision implementation.
+version(mir_stat_test)
+@safe pure nothrow @nogc unittest
+{
+    auto probability = Fp!128(0.5);
+    auto mass = negativeBinomialPMF(1, 2, probability);
+    static assert(is(typeof(mass) == Fp!128));
+    assert(cast(double)mass == 0.25);
+    static assert(is(typeof(negativeBinomialPMF(1, 2, 0.5)) == double));
+}
+
+/++
+Compatibility name for the `Fp` overload of $(LREF negativeBinomialPMF).
+Existing calls remain supported; new code can use `negativeBinomialPMF` with
+either a built-in floating-point probability or an `Fp` probability.
+
+Params:
+    k = number of failures before stopping
+    r = number of successes until stopping
+    p = success probability as an `Fp` value
++/
+@safe pure nothrow @nogc
+T fp_negativeBinomialPMF(T)(const size_t k, const size_t r, const T p)
+    if (is(T == Fp!size, size_t size))
+{
+    return negativeBinomialPMF(k, r, p);
 }
 
 // Validate the represented value, including probabilities that round to 0 or
