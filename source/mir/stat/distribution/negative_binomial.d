@@ -109,7 +109,14 @@ unittest
 /++
 Computes the  negative binomial probability mass function (PMF) directly with extended 
 floating point types (e.g. `Fp!128`), which provides additional accuracy for
-extreme values of `k`, `r`, or `p`. 
+extreme values of `k`, `r`, or `p`. Complements and coefficient ratios retain
+the supplied `Fp` precision rather than converting through hardware floating
+point. Intermediate arithmetic is rounded to that precision; it is not exact
+arbitrary-precision probability arithmetic.
+
+The coefficient requires `O(min(k, r - 1))` iterations. Powers use logarithmic
+time in their exponents, so a large count is practical when the other count is
+small. Central probabilities with two enormous counts remain expensive.
 
 Params:
     k = number of failures before stopping
@@ -123,13 +130,149 @@ See_also:
 T fp_negativeBinomialPMF(T)(const size_t k, const size_t r, const T p)
     if (is(T == Fp!size, size_t size))
     in (r > 0, "number of successes must be larger than zero")
-    in (cast(double) p >= 0, "p must be greater than or equal to 0")
-    in (cast(double) p <= 1, "p must be less than or equal to 1")
+    in (fpProbabilityValid(p), "p must be finite and between zero and one")
 {
     import mir.math.internal.fp_powi: fp_powi;
-    import mir.math.numeric: binomialCoefficient;
+    import mir.bignum.fixed: UInt;
+    enum size = typeof(p.coefficient).sizeof * 8;
 
-    return binomialCoefficient(k + r - 1, cast(const uint) (r - 1)) * fp_powi(T(1 - cast(double) p), k) * fp_powi(p, r);
+    if (!p.coefficient)
+        return T(0);
+    if (k == 0)
+        return fp_powi(p, r);
+    const T complement = fpProbabilityComplement(p);
+    if (!complement.coefficient)
+        return T(0);
+    T coefficient;
+    if (k <= 64 && r - 1 <= 64 - k) {
+        // Every coefficient through row 64 fits exactly in ulong.
+        import mir.combinatorics: binomial;
+        coefficient = T(binomial(k + r - 1, r - 1));
+    } else {
+        // Exploit symmetry before forming a coefficient. A factor may need 65
+        // bits even though each input count fits size_t; never add them in size_t.
+        const size_t smaller = k < r - 1 ? k : r - 1;
+        const size_t larger = k < r - 1 ? r - 1 : k;
+        T numeratorProduct = T(1);
+        T denominatorProduct = T(1);
+        foreach (i; 0 .. smaller) {
+            UInt!128 numerator = UInt!128(larger);
+            numerator += i;
+            numerator += 1;
+            numeratorProduct *= T(numerator);
+            denominatorProduct *= T(i + 1);
+        }
+        // Fp division currently converts through hardware real. Divide the
+        // significands once, with 64 guard bits beyond the requested precision.
+        // Accumulating the products first avoids a wide division per factor.
+        UInt!(2 * size + 64) quotient = numeratorProduct.coefficient.toSize!(2 * size + 64);
+        quotient <<= size + 64;
+        quotient /= denominatorProduct.coefficient;
+        coefficient = T(quotient);
+        coefficient.exponent += numeratorProduct.exponent - denominatorProduct.exponent - cast(long)size - 64;
+    }
+    return coefficient * fp_powi(complement, k) * fp_powi(p, r);
+}
+
+// Validate the represented value, including probabilities that round to 0 or
+// 1 in a hardware type. Fp's special exponent denotes infinity or NaN.
+private @safe pure nothrow @nogc
+bool fpProbabilityValid(uint bits)(Fp!bits p)
+{
+    import mir.bignum.fixed: UInt;
+    if (p.exponent == long.max)
+        return false;
+    if (!p.coefficient)
+        return true;
+    if (p.sign || p.exponent > 0)
+        return false;
+    if (p.exponent <= -cast(long)bits)
+        return true;
+    UInt!bits one = UInt!bits(1);
+    one <<= cast(size_t)-p.exponent;
+    return p.coefficient <= one;
+}
+
+// Fp does not supply subtraction. Form 1-p exactly as an integer at p's
+// binary exponent, then let Fp's integer constructor round to its precision.
+// The temporary accommodates cancellation near one and guard bits near zero.
+private @safe pure nothrow @nogc
+Fp!bits fpProbabilityComplement(uint bits)(Fp!bits p)
+{
+    import mir.bignum.fixed: UInt;
+    if (!p.coefficient || p.exponent < -2 * cast(long)bits)
+        return Fp!bits(1); // p is less than half the spacing immediately below 1.
+    UInt!(2 * bits + 64) difference = UInt!(2 * bits + 64)(1);
+    difference <<= cast(size_t)-p.exponent;
+    difference -= p.coefficient;
+    auto result = Fp!bits(difference);
+    result.exponent += p.exponent;
+    return result;
+}
+
+// Exact dyadic probabilities exercise precision unavailable through double.
+version(mir_stat_test)
+@safe pure nothrow @nogc unittest
+{
+    import mir.bignum.fixed: UInt;
+    import mir.math.common: approxEqual;
+    static foreach (bits; [64u, 128u, 256u]) {{
+        alias T = Fp!bits;
+        UInt!bits allOnes;
+        allOnes.data[] = size_t.max;
+        const T p = T(false, -cast(long)bits, allOnes); // 1 - 2^-bits
+        const T mass = fp_negativeBinomialPMF(1, 1, p);
+        assert(mass.coefficient == p.coefficient);
+        assert(mass.exponent == -2 * cast(long)bits);
+        assert(!mass.sign);
+        // C(14,10)*(1/4)^5*(3/4)^10 = 59108049/2^30 exactly.
+        T expected = T(59108049);
+        expected.exponent -= 30;
+        const T dyadic = fp_negativeBinomialPMF(10, 5, T(0.25));
+        assert(dyadic.coefficient == expected.coefficient);
+        assert(dyadic.exponent == expected.exponent);
+        // C(200,100)/2^201 tests the large-coefficient path. Compare at the
+        // requested precision, so conversion through real cannot pass.
+        enum exactCoefficient = UInt!256("90548514656103281165404177077484163874504589675413336841320");
+        T centralExpected = T(exactCoefficient);
+        centralExpected.exponent -= 201;
+        const T central = fp_negativeBinomialPMF(100, 101, T(0.5));
+        assert(central.exponent == centralExpected.exponent);
+        const error = central.coefficient > centralExpected.coefficient
+            ? central.coefficient - centralExpected.coefficient
+            : centralExpected.coefficient - central.coefficient;
+        assert(error <= UInt!bits(16));
+        assert(cast(double)fp_negativeBinomialPMF(1, 2, T(0.5)) == 0.25);
+        assert(cast(double)fp_negativeBinomialPMF(0, size_t.max, T(1)) == 1);
+        assert(!fp_negativeBinomialPMF(1, size_t.max, T(1)).coefficient);
+        assert(!fp_negativeBinomialPMF(0, 2, T(0)).coefficient);
+        assert(fpProbabilityValid(T(0)) && fpProbabilityValid(T(1)));
+        assert(!fpProbabilityValid(T(-0.5)) && !fpProbabilityValid(T(2)));
+        assert(!fpProbabilityValid(T(double.infinity)));
+        // A negative value too small to survive a double conversion is invalid.
+        assert(!fpProbabilityValid(T(true, -2000, p.coefficient)));
+        // This coefficient/exponent represents a value just above 1.
+        assert(!fpProbabilityValid(T(false, 1 - cast(long)bits, allOnes)));
+        const T tiny = T(false, -3 * cast(long)bits, p.coefficient);
+        assert(cast(double)fpProbabilityComplement(tiny) == 1);
+        T spacing = T(1);
+        spacing.exponent -= bits;
+        const T predecessor = fpProbabilityComplement(spacing);
+        assert(predecessor.coefficient == allOnes && predecessor.exponent == -cast(long)bits);
+        --spacing.exponent; // Exactly halfway between 1 and its predecessor.
+        const T halfway = fpProbabilityComplement(spacing);
+        assert(halfway.coefficient == T(1).coefficient && halfway.exponent == T(1).exponent);
+        static if (size_t.sizeof == 8) {
+            // k=1 makes the coefficient exactly r. The old uint conversion
+            // erased it when r-1 was 2^32. Reference uses exact binary p.
+            assert(approxEqual(cast(double)fp_negativeBinomialPMF(1,
+                4_294_967_297UL, T(1 - 0x1p-32)),
+                0.36787944112861551803393984760514035666, 1e-12, 0.0));
+            // k+r-1 needs 65 bits. Underflow of this astronomically small mass
+            // is expected; wrapping the coefficient input or asserting is not.
+            assert(!fp_negativeBinomialPMF(2, size_t.max, T(0.5)).coefficient);
+        }
+    }}
 }
 
 /// Extended precision provides accurate values for large counts.
