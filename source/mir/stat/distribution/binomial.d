@@ -824,8 +824,9 @@ intermediate products before division. This is a bounded fallback, not an
 arbitrary-precision quantile algorithm. Unsupported inputs retain the precision
 of the floating-point CDF/CCDF calculation.
 */
-private @safe pure nothrow @nogc
-bool binomialExactQuantileReached(T)(size_t k, size_t n, T p, T q, out bool supported)
+package(mir.stat) @safe pure nothrow @nogc
+bool binomialExactQuantileReached(T)(size_t k, size_t n, T p, T q,
+    out bool supported, bool complement = false)
 {
     import mir.bignum.integer: BigInt;
     import std.math: frexp, ldexp;
@@ -894,12 +895,20 @@ bool binomialExactQuantileReached(T)(size_t k, size_t n, T p, T q, out bool supp
             }
         }
         Integer target = Integer(qNumerator);
+        // Negative-binomial CDFs are binomial upper tails. Form 1-q in
+        // integer arithmetic rather than rounding away a tiny query.
+        if (complement) {
+            Integer one = Integer(1);
+            shift(one, qExponent);
+            one -= target;
+            target = one;
+        }
         const int exponent = cast(int)n * b;
         if (qExponent > exponent)
             shift(sum, qExponent - exponent);
         else
             shift(target, exponent - qExponent);
-        return sum >= target;
+        return complement ? sum <= target : sum >= target;
     }
 }
 
