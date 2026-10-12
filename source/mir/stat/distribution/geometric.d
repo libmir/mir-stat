@@ -270,12 +270,8 @@ T geometricInvCDF(T)(const T q, const T p)
         return cast(T)guess;
     while (guess > 0 && geometricQuantileReached(guess - 1, p, q, lp, lq))
         --guess;
-    while (!geometricQuantileReached(guess, p, q, lp, lq)) {
-        const F next = guess + 1;
-        if (next == guess)
-            break;
-        guess = next;
-    }
+    while (guess + 1 != guess && !geometricQuantileReached(guess, p, q, lp, lq))
+        ++guess;
     return cast(T)guess;
 }
 
@@ -352,6 +348,13 @@ version(mir_stat_test)
         assert(geometricInvCDF(T(0), T(1)) == 0);
         assert(geometricInvCDF(T(1), T(1)) == T.infinity);
         assert(geometricInvCDF(T(1e-20L), T(0.5)) == 0);
+        // Dividing the smallest positive query by -log(1-p) may underflow
+        // before ceil. The first count still reaches this positive query.
+        assert(geometricInvCDF(nextUp(T(0)), T(0.99)) == 0);
+        // The next query above CDF(0)=p belongs to count 1. Rounded logarithms
+        // can initially suggest count 0, requiring an upward correction.
+        const T probability = T(0.0003);
+        assert(geometricInvCDF(nextUp(probability), probability) == 1);
         assert(approxEqual(geometricInvCDF(T(0.5), T(1e-20L)),
             T(6.9314718055994530941e19L), 8 * T.epsilon, T(0)));
     }}

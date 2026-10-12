@@ -639,6 +639,12 @@ version(mir_stat_test)
     static foreach (T; AliasSeq!(float, double, real)) {{
         assert(approxEqual(negativeBinomialPMF(100, 100, T(0.5)),
             T(0.0281742395046282111236226320714500749007L), 128 * T.epsilon, T(0)));
+        // No failures means r consecutive successes, including beyond the
+        // small-coefficient path. At p=1/2 the mass is exactly 2^-r.
+        assert(negativeBinomialPMF(0, 100, T(0.5)) == T(0x1p-100L));
+        assert(approxEqual(negativeBinomialLPMF(0, 100, T(0.5)),
+            T(-69.31471805599453094172321214581765680755L), 8 * T.epsilon, T(0)));
+        assert(negativeBinomialLPMF(1, 100, T(0)) == -T.infinity);
         foreach (r; [size_t(1), size_t(100), size_t.max]) {
             assert(negativeBinomialPMF(0, r, T(1)) == 1);
             assert(negativeBinomialPMF(1, r, T(1)) == 0);
