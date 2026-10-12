@@ -2,7 +2,8 @@
 This module contains algorithms for the $(LINK2 https://en.wikipedia.org/wiki/Negative_binomial_distribution, Negative Binomial Distribution).
 
 There are multiple alternative formulations of the Negative Binomial Distribution. The
-formulation in this module uses the number of Bernoulli trials until `r` successes. 
+formulation in this module counts failures before the `r`th success. Thus
+`k = 0` means that the first `r` trials all succeed, and `r = 1` is geometric.
 
 License: $(HTTP www.apache.org/licenses/LICENSE-2.0, Apache-2.0)
 
@@ -21,7 +22,7 @@ import mir.internal.utility: isFloatingPoint;
 Computes the negative binomial probability mass function (PMF).
 
 Params:
-    k = value to evaluate PMF (e.g. number of "heads")
+    k = number of failures before stopping
     r = number of successes until stopping
     p = `true` probability
 
@@ -30,16 +31,49 @@ See_also:
     $(LINK2 https://en.wikipedia.org/wiki/Negative_binomial_distribution, Negative Binomial Distribution)
 +/
 @safe pure nothrow @nogc
+pragma(inline, true)
 T negativeBinomialPMF(T)(const size_t k, const size_t r, const T p)
     if (isFloatingPoint!T)
-    in (r > 0, "number of failures must be larger than zero")
+    in (r > 0, "number of successes must be larger than zero")
     in (p >= 0, "p must be greater than or equal to 0")
     in (p <= 1, "p must be less than or equal to 1")
 {
-    import mir.math.common: pow;
+    import mir.math.common: pow, exp;
     import mir.combinatorics: binomial;
 
-    return binomial(k + r - 1, r - 1) * pow(1 - p, k) * pow(p, r);
+    // Preserve the inexpensive product only when its coefficient is known to
+    // fit. Test by subtraction so k+r-1 cannot wrap before the decision.
+    if (k <= 64 && r - 1 <= 64 - k) {
+        const ulong coefficient = binomial(k + r - 1, r - 1);
+        const T failures = pow(1 - p, k);
+        const T successes = pow(p, r);
+        if (failures >= T.min_normal && successes >= T.min_normal)
+            return coefficient * failures * successes;
+    }
+    if (p == 0)
+        return 0;
+    if (p == 1)
+        return k == 0 ? 1 : 0;
+    if (k == 0)
+        return pow(p, r);
+    return cast(T)exp(negativeBinomialLogMass(k, r, cast(real)p));
+}
+
+private @safe pure nothrow @nogc
+real negativeBinomialLogMass(size_t k, size_t r, real p)
+{
+    import mir.stat.distribution.binomial: binomialLogMassCounts;
+    import mir.math.common: log;
+    import std.math: log1p;
+    if (p == 0)
+        return -real.infinity;
+    if (p == 1)
+        return k == 0 ? 0 : -real.infinity;
+    if (k == 0)
+        return cast(real)r * log(p);
+    // NB(k,r,p) = BinomialMass(r,k+r,p) * r/(k+r). Separate counts
+    // avoid overflowing k+r, and log1p preserves a small ratio k/r.
+    return binomialLogMassCounts(r, k, p) - log1p(cast(real)k / r);
 }
 
 ///
@@ -78,7 +112,7 @@ floating point types (e.g. `Fp!128`), which provides additional accuracy for
 extreme values of `k`, `r`, or `p`. 
 
 Params:
-    k = value to evaluate PMF (e.g. number of "heads")
+    k = number of failures before stopping
     r = number of successes until stopping
     p = `true` probability
 
@@ -88,7 +122,7 @@ See_also:
 @safe pure nothrow @nogc
 T fp_negativeBinomialPMF(T)(const size_t k, const size_t r, const T p)
     if (is(T == Fp!size, size_t size))
-    in (r > 0, "number of failures must be larger than zero")
+    in (r > 0, "number of successes must be larger than zero")
     in (cast(double) p >= 0, "p must be greater than or equal to 0")
     in (cast(double) p <= 1, "p must be less than or equal to 1")
 {
@@ -98,7 +132,7 @@ T fp_negativeBinomialPMF(T)(const size_t k, const size_t r, const T p)
     return binomialCoefficient(k + r - 1, cast(const uint) (r - 1)) * fp_powi(T(1 - cast(double) p), k) * fp_powi(p, r);
 }
 
-/// fp_binomialPMF provides accurate values for large values of `n`
+/// Extended precision provides accurate values for large counts.
 version(mir_stat_test_slow_numerics)
 @safe pure nothrow @nogc
 unittest
@@ -149,7 +183,7 @@ unittest
 Computes the negative binomial cumulative distribution function (CDF).
 
 Params:
-    k = value to evaluate CDF (e.g. number of "heads")
+    k = number of failures before stopping
     r = number of successes until stopping
     p = `true` probability
 
@@ -159,7 +193,7 @@ See_also:
 @safe pure nothrow @nogc
 T negativeBinomialCDF(T)(const size_t k, const size_t r, const T p)
     if (isFloatingPoint!T)
-    in (r > 0, "number of failures must be larger than zero")
+    in (r > 0, "number of successes must be larger than zero")
     in (p >= 0, "p must be greater than or equal to 0")
     in (p <= 1, "p must be less than or equal to 1")
 {
@@ -212,7 +246,7 @@ unittest
 Computes the negative binomial complementary cumulative distribution function (CCDF).
 
 Params:
-    k = value to evaluate CCDF (e.g. number of "heads")
+    k = number of failures before stopping
     r = number of successes until stopping
     p = `true` probability
 
@@ -222,7 +256,7 @@ See_also:
 @safe pure nothrow @nogc
 T negativeBinomialCCDF(T)(const size_t k, const size_t r, const T p)
     if (isFloatingPoint!T)
-    in (r > 0, "number of failures must be larger than zero")
+    in (r > 0, "number of successes must be larger than zero")
     in (p >= 0, "p must be greater than or equal to 0")
     in (p <= 1, "p must be less than or equal to 1")
 {
@@ -267,7 +301,7 @@ private
 @safe pure nothrow @nogc
 size_t negativeBinomialInvCDFSearch(T)(const size_t guess, ref T cdfGuess, const T q, const size_t r, const T p, const size_t searchIncrement)
     if (isFloatingPoint!T)
-    in (r > 0, "number of failures must be larger than zero")
+    in (r > 0, "number of successes must be larger than zero")
     in (q >= 0, "q must be greater than or equal to 0")
     in (q <= 1, "q must be less than or equal to 1")
     in (p >= 0, "p must be greater than or equal to 0")
@@ -308,7 +342,7 @@ See_also:
 @safe pure nothrow @nogc
 size_t negativeBinomialInvCDF(T)(const T q, const size_t r, const T p)
     if (isFloatingPoint!T)
-    in (r > 0, "number of failures must be larger than zero")
+    in (r > 0, "number of successes must be larger than zero")
     in (q >= 0, "q must be greater than or equal to 0")
     in (q <= 1, "q must be less than or equal to 1")
     in (p >= 0, "p must be greater than or equal to 0")
@@ -431,7 +465,7 @@ unittest
 Computes the negative binomial log probability mass function (LPMF).
 
 Params:
-    k = value to evaluate PMF (e.g. number of "heads")
+    k = number of failures before stopping
     r = number of successes until stopping
     p = `true` probability
 
@@ -441,14 +475,42 @@ See_also:
 @safe pure nothrow @nogc
 T negativeBinomialLPMF(T)(const size_t k, const size_t r, const T p)
     if (isFloatingPoint!T)
-    in (r > 0, "number of failures must be larger than zero")
+    in (r > 0, "number of successes must be larger than zero")
     in (p >= 0, "p must be greater than or equal to 0")
     in (p <= 1, "p must be less than or equal to 1")
 {
     import mir.math.internal.xlogy: xlogy, xlog1py;
     import mir.math.internal.log_binomial: logBinomialCoefficient;
 
-    return logBinomialCoefficient(k + r - 1, cast(const uint) (r - 1)) + xlog1py(k, -p) + xlogy(r, p);
+    if (k <= 64 && r - 1 <= 64 - k)
+        return logBinomialCoefficient(k + r - 1, cast(uint)(r - 1))
+            + xlog1py(k, -p) + xlogy(r, p);
+    return cast(T)negativeBinomialLogMass(k, r, cast(real)p);
+}
+
+// Independent high-precision references and full-width count boundaries.
+version(mir_stat_test)
+@safe pure nothrow @nogc unittest
+{
+    import std.meta: AliasSeq;
+    import mir.math.common: approxEqual;
+    static foreach (T; AliasSeq!(float, double, real)) {{
+        assert(approxEqual(negativeBinomialPMF(100, 100, T(0.5)),
+            T(0.0281742395046282111236226320714500749007L), 128 * T.epsilon, T(0)));
+        foreach (r; [size_t(1), size_t(100), size_t.max]) {
+            assert(negativeBinomialPMF(0, r, T(1)) == 1);
+            assert(negativeBinomialPMF(1, r, T(1)) == 0);
+            assert(negativeBinomialPMF(0, r, T(0)) == 0);
+            assert(negativeBinomialLPMF(1, r, T(1)) == -T.infinity);
+        }
+        // Their sum exceeds size_t, but the log mass is still finite.
+        assert(negativeBinomialLPMF(size_t.max, size_t.max, T(0.5)) < 0);
+        assert(negativeBinomialLPMF(size_t.max, size_t.max, T(0.5)) > -100);
+    }}
+    static if (size_t.sizeof == 8) {
+        assert(approxEqual(negativeBinomialLPMF(1, 4_294_967_297UL, 1 - 0x1p-32),
+            -1.00000000011641532189921495928864740589, 256 * double.epsilon, 0.0));
+    }
 }
 
 ///

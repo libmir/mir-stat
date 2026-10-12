@@ -119,36 +119,46 @@ real binomialDeviance(real x, real mean)
 private @safe pure nothrow @nogc
 real binomialLogMass(size_t k, size_t n, real p)
 {
+    return binomialLogMassCounts(k, n - k, p);
+}
+
+// Separate counts also support negative-binomial masses when their sum exceeds
+// size_t. Form the total in floating point only when integer addition would wrap.
+package(mir.stat) @safe pure nothrow @nogc
+real binomialLogMassCounts(size_t k, size_t failureCount, real p)
+{
     import mir.math.common: log;
     import std.math: log1p;
     import std.math.constants: PI;
     if (p == 0)
         return k == 0 ? 0 : -real.infinity;
     if (p == 1)
-        return k == n ? 0 : -real.infinity;
+        return failureCount == 0 ? 0 : -real.infinity;
     if (k == 0)
-        return cast(real) n * log1p(-p);
-    if (k == n)
-        return cast(real) n * log(p);
+        return cast(real) failureCount * log1p(-p);
+    if (failureCount == 0)
+        return cast(real) k * log(p);
 
-    const size_t smaller = k < n - k ? k : n - k;
+    const bool fits = k <= size_t.max - failureCount;
+    const real total = fits ? cast(real)(k + failureCount) : cast(real)k + failureCount;
+    const size_t smaller = k < failureCount ? k : failureCount;
     if (smaller < 32)
     {
         // Only a few factors are needed near either endpoint. This avoids
         // subtracting almost equal log-factorials when n is very large.
         real logCoefficient = 0;
         foreach (i; 0 .. smaller)
-            logCoefficient += log(cast(real)(n - i)) - log(cast(real)(i + 1));
+            logCoefficient += log(fits ? cast(real)(k + failureCount - i) : total - i)
+                - log(cast(real)(i + 1));
         return logCoefficient + cast(real) k * log(p)
-            + cast(real)(n - k) * log1p(-p);
+            + cast(real)failureCount * log1p(-p);
     }
 
     // Center the log mass on the expected successes and failures. The usual
     // log(coefficient)+k*log(p)+(n-k)*log(1-p) subtracts large terms near the
     // mode; this form keeps the small deviations separate from normalization.
     const real successes = k;
-    const real failures = n - k;
-    const real total = n;
+    const real failures = failureCount;
     return binomialStirlingCorrection(total)
         - binomialStirlingCorrection(successes) - binomialStirlingCorrection(failures)
         - binomialDeviance(successes, total * p)
