@@ -473,6 +473,10 @@ T binomialDirectTail(bool upper, T)(size_t k, size_t n, T p)
         while (true) {
             const F mass = binomialPMFImpl!(F, BinomialAlgo.direct)(j, n, cast(F)p);
             sum += mass;
+            // Stop explicitly at the support boundary before estimating the
+            // remaining tail or stepping an unsigned index past its endpoint.
+            if (lower ? j == 0 : j == n)
+                break;
             // Ratios decrease as we move away from the mean. The geometric
             // series bounds all remaining masses, avoiding a long walk through
             // negligible terms for a large n and a strongly skewed distribution.
@@ -482,19 +486,12 @@ T binomialDirectTail(bool upper, T)(size_t k, size_t n, T p)
             if (ratio < 1 && cast(real)mass * ratio <= F.epsilon * sum * (1 - ratio))
                 break;
             if (lower) {
-                if (j == 0)
-                    break;
                 --j;
             } else {
-                if (j == n)
-                    break;
                 ++j;
             }
         }
     }
-    // A sum of nonnegative masses can exceed one slightly through rounding.
-    if (sum > 1)
-        sum = 1;
     return cast(T)(upper == lower ? 1 - sum : sum);
 }
 
