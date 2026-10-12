@@ -985,8 +985,6 @@ size_t binomialInvCDFImpl(T, BinomialAlgo binomialAlgo)(const T q, const size_t 
                (n >= 100 && n * probability <= 10)) {
         guess = binomialInvCDFImpl!(F, BinomialAlgo.approxPoisson, PoissonAlgo.approxNormalContinuityCorrection)(quantile, n, probability);
     }
-    if (guess > n)
-        guess = n;
     F value = evaluate(guess);
     if (reached(guess, value)) {
         while (guess > 0) {
@@ -1420,6 +1418,27 @@ unittest
     // A small positive query below a nonzero lower cutoff also returns zero.
     assert(binomialInvCDF!"approxNormal"(0.01, 2, 0.25) == 0);
     assert(binomialInvCDF!"approxNormalContinuityCorrection"(0.01, 2, 0.25) == 0);
+}
+
+// A query below the normal upper cutoff can still round back to that endpoint.
+version(mir_stat_test)
+@safe pure nothrow @nogc
+unittest
+{
+    import std.math: nextDown, sqrt;
+    import std.meta: AliasSeq;
+    import mir.stat.distribution.normal: normalCDF;
+
+    static foreach (T; AliasSeq!(float, double, real)) {{
+        const T p = T(0.99);
+        const T mu = 2 * p;
+        const T deviation = sqrt(mu * (1 - p));
+        const T q = nextDown(normalCDF(T(2), mu, deviation));
+        const size_t result = binomialInvCDF!"approxNormal"(q, 2, p);
+        // The continuous quantile is just below 2. Depending on rounding,
+        // flooring gives 1 or the endpoint guard returns 2.
+        assert(result == 1 || result == 2);
+    }}
 }
 
 // The Poisson sub-algorithm must not change endpoint handling or return k > n.
