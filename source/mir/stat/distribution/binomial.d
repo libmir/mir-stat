@@ -207,6 +207,8 @@ a logarithmic calculation, avoiding coefficient overflow and premature underflow
 Additional algorithms may be provided for calculating PMF that allow trading off
 time and accuracy. If `approxPoisson` is provided, the default is `PoissonAlgo.gamma`
 
+All algorithms return the exact point mass when `n = 0`, `p = 0`, or `p = 1`.
+
 Params:
     binomialAlgo = algorithm for calculating PMF (default: BinomialAlgo.direct)
     poissonAlgo = algorithm for poisson approximation (default: PoissonAlgo.gamma)
@@ -230,6 +232,13 @@ template binomialPMF(BinomialAlgo binomialAlgo = BinomialAlgo.direct,
         in (p >= 0, "p must be greater than or equal to 0")
         in (p <= 1, "p must be less than or equal to 1")
     {
+        static if (binomialAlgo != BinomialAlgo.direct) {
+            // A point mass has no variance and needs no approximation.
+            if (n == 0 || p == 0)
+                return k == 0 ? 1 : 0;
+            if (p == 1)
+                return k == n ? 1 : 0;
+        }
         static if (binomialAlgo != BinomialAlgo.approxPoisson)
             return binomialPMFImpl!(T, binomialAlgo)(k, n, p);
         else
@@ -539,6 +548,9 @@ Computes the binomial cumulative distribution function (CDF).
 Additional algorithms may be provided for calculating CDF that allow trading off
 time and accuracy. If `approxPoisson` is provided, the default is `PoissonAlgo.gamma`
 
+All algorithms handle `p = 0` and `p = 1` exactly and return one at `k = n`,
+including when `n = 0`. Interior approximations are not renormalized.
+
 Params:
     binomialAlgo = algorithm for calculating CDF (default: BinomialAlgo.direct)
     poissonAlgo = algorithm for poisson approximation (default: PoissonAlgo.gamma)
@@ -562,6 +574,12 @@ template binomialCDF(BinomialAlgo binomialAlgo = BinomialAlgo.direct,
         in (p >= 0, "p must be greater than or equal to 0")
         in (p <= 1, "p must be less than or equal to 1")
     {
+        static if (binomialAlgo != BinomialAlgo.direct) {
+            if (k == n || p == 0)
+                return 1;
+            if (p == 1)
+                return 0;
+        }
         static if (binomialAlgo != BinomialAlgo.approxPoisson)
             return binomialCDFImpl!(T, binomialAlgo)(k, n, p);
         else
@@ -689,6 +707,9 @@ Computes the binomial complementary cumulative distribution function (CCDF).
 Additional algorithms may be provided for calculating CCDF that allow trading off
 time and accuracy. If `approxPoisson` is provided, the default is `PoissonAlgo.gamma`
 
+All algorithms handle `p = 0` and `p = 1` exactly and return zero at `k = n`,
+including when `n = 0`. Interior approximations are not renormalized.
+
 Params:
     binomialAlgo = algorithm for calculating CCDF (default: BinomialAlgo.direct)
     poissonAlgo = algorithm for poisson approximation (default: PoissonAlgo.gamma)
@@ -712,6 +733,12 @@ template binomialCCDF(BinomialAlgo binomialAlgo = BinomialAlgo.direct,
         in (p >= 0, "p must be greater than or equal to 0")
         in (p <= 1, "p must be less than or equal to 1")
     {
+        static if (binomialAlgo != BinomialAlgo.direct) {
+            if (k == n || p == 0)
+                return 0;
+            if (p == 1)
+                return 1;
+        }
         static if (binomialAlgo != BinomialAlgo.approxPoisson)
             return binomialCCDFImpl!(T, binomialAlgo)(k, n, p);
         else
@@ -1026,6 +1053,12 @@ size_t binomialInvCDFImpl(T, BinomialAlgo binomialAlgo)(const T q, const size_t 
     static if (binomialAlgo == BinomialAlgo.approxNormalContinuityCorrection) {
         result = result - 0.5;
     }
+    // Check in floating point before converting: large counts can round up
+    // beyond size_t.max, and a negative approximation must not wrap unsigned.
+    if (result <= 0)
+        return 0;
+    if (result >= n)
+        return n;
     return cast(size_t) floor(result);
 }
 
@@ -1041,15 +1074,19 @@ size_t binomialInvCDFImpl(T, BinomialAlgo binomialAlgo, PoissonAlgo poissonAlgo)
 {
     import mir.stat.distribution.poisson: poissonInvCDF;
 
-    return poissonInvCDF!poissonAlgo(q, n * p);
+    const size_t result = poissonInvCDF!poissonAlgo(q, n * p);
+    // A Poisson distribution is unbounded; the binomial support ends at n.
+    return result < n ? result : n;
 }
 
 /++
 Computes the binomial inverse cumulative distribution function (InvCDF).
 
+All algorithms return zero for `q = 0`, `p = 0`, or `n = 0`; otherwise
+`q = 1` or `p = 1` returns `n`. Approximate quantiles are limited to `[0, n]`.
+
 The direct algorithm seeks the smallest `k` whose CDF is at least `q`.
-It returns zero for `q = 0`, `p = 0`, or `n = 0`; otherwise `q = 1` or
-`p = 1` returns `n`. Upper-half probabilities are compared using the CCDF
+Upper-half probabilities are compared using the CCDF
 so that subtracting a small tail from one does not lose the comparison.
 Close comparisons use exact integer arithmetic when the binary probability
 fractions fit a bounded workspace. Outside that bound, the result remains
@@ -1085,6 +1122,12 @@ template binomialInvCDF(BinomialAlgo binomialAlgo = BinomialAlgo.direct,
         in (p >= 0, "p must be greater than or equal to 0")
         in (p <= 1, "p must be less than or equal to 1")
     {
+        static if (binomialAlgo != BinomialAlgo.direct) {
+            if (q == 0 || n == 0 || p == 0)
+                return 0;
+            if (q == 1 || p == 1)
+                return n;
+        }
         static if (binomialAlgo != BinomialAlgo.approxPoisson)
             return binomialInvCDFImpl!(T, binomialAlgo)(q, n, p);
         else
@@ -1275,6 +1318,91 @@ unittest
         checkValue = normalInvCDF(x, 1_000 * 0.55, sqrt(1000 * 0.55 * 0.45));
         assert(x.binomialInvCDF!"approxNormal"(1_000, 0.55) == floor(checkValue));
         assert(x.binomialInvCDF!"approxNormalContinuityCorrection"(1_000, 0.55) == floor(checkValue - 0.5));
+    }
+}
+
+// Approximation choices preserve point masses and the finite binomial support.
+version(mir_stat_test)
+@safe pure nothrow @nogc
+unittest
+{
+    import std.meta: AliasSeq;
+    import std.math: nextDown;
+
+    static foreach (T; AliasSeq!(float, double, real)) {{
+        static foreach (algo; ["approxNormal", "approxNormalContinuityCorrection", "approxPoisson"]) {{
+            assert(binomialPMF!algo(0, 0, T(0.3)) == 1);
+            assert(binomialCDF!algo(0, 0, T(0.3)) == 1);
+            assert(binomialCCDF!algo(0, 0, T(0.3)) == 0);
+            assert(binomialInvCDF!algo(T(0.5), 0, T(0.3)) == 0);
+            foreach (n; [size_t(5), size_t.max]) {
+                assert(binomialPMF!algo(0, n, T(0)) == 1);
+                assert(binomialPMF!algo(1, n, T(0)) == 0);
+                assert(binomialPMF!algo(n, n, T(1)) == 1);
+                assert(binomialPMF!algo(n - 1, n, T(1)) == 0);
+                assert(binomialCDF!algo(0, n, T(0)) == 1);
+                assert(binomialCDF!algo(n - 1, n, T(1)) == 0);
+                assert(binomialCCDF!algo(0, n, T(0)) == 0);
+                assert(binomialCCDF!algo(n - 1, n, T(1)) == 1);
+                foreach (p; [T(0), T(0.25), T(1)]) {
+                    assert(binomialCDF!algo(n, n, p) == 1);
+                    assert(binomialCCDF!algo(n, n, p) == 0);
+                    assert(binomialInvCDF!algo(T(0), n, p) == 0);
+                }
+                assert(binomialInvCDF!algo(T(1), n, T(0.25)) == n);
+                assert(binomialInvCDF!algo(T(1), n, T(0)) == 0);
+                assert(binomialInvCDF!algo(T(0.5), n, T(0)) == 0);
+                assert(binomialInvCDF!algo(T(0.5), n, T(1)) == n);
+            }
+            assert(binomialInvCDF!algo(nextDown(T(1)), 20, T(0.25)) <= 20);
+        }}
+    }}
+}
+
+// Rounding near the normal lower cutoff must not wrap a negative count.
+version(mir_stat_test)
+@safe pure nothrow @nogc
+unittest
+{
+    import std.math: nextUp, sqrt;
+    import std.meta: AliasSeq;
+    import mir.stat.distribution.normal: normalCDF;
+
+    static foreach (T; AliasSeq!(float, double, real)) {{
+        static foreach (algo; ["approxNormal", "approxNormalContinuityCorrection"]) {{
+            foreach (n; [size_t(2), size_t(5)]) {
+                foreach (p; [T(0.25), T(0.5), T(0.75)]) {
+                    const T lower = algo == "approxNormal" ? 0 : 0.5;
+                    const T q = nextUp(normalCDF(lower, n * p, sqrt(n * p * (1 - p))));
+                    // Just above this cutoff, the continuous result (after
+                    // continuity correction, if any) is near zero: floor to 0.
+                    assert(binomialInvCDF!algo(q, n, p) == 0);
+                }
+            }
+        }}
+    }}
+    // Here the lower-cutoff CDF underflows to zero. The normal quantile of
+    // the smallest positive double is still negative and must be clipped.
+    assert(binomialInvCDF!"approxNormal"(nextUp(0.0), 1000, 0.5) == 0);
+    assert(binomialInvCDF!"approxNormalContinuityCorrection"(nextUp(0.0), 1000, 0.5) == 0);
+}
+
+// The Poisson sub-algorithm must not change endpoint handling or return k > n.
+version(mir_stat_test)
+@safe pure nothrow @nogc
+unittest
+{
+    import std.math: nextDown;
+
+    static foreach (algo; ["direct", "gamma", "approxNormal", "approxNormalContinuityCorrection"]) {
+        assert(binomialPMF!("approxPoisson", algo)(0, 20, 0.0) == 1);
+        assert(binomialCDF!("approxPoisson", algo)(0, 20, 0.0) == 1);
+        assert(binomialCCDF!("approxPoisson", algo)(0, 20, 0.0) == 0);
+        static if (algo != "gamma") {
+            assert(binomialInvCDF!("approxPoisson", algo)(0.5, 20, 0.0) == 0);
+            assert(binomialInvCDF!("approxPoisson", algo)(1.0, 20, 0.25) == 20);
+            assert(binomialInvCDF!("approxPoisson", algo)(nextDown(1.0), 20, 0.25) == 20);
+        }
     }
 }
 
