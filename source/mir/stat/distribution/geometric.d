@@ -255,19 +255,23 @@ T geometricInvCDF(T)(const T q, const T p)
         return -1;
     if (p == 0)
         return T.infinity;
-    const real lp = negLog1m(cast(real)p);
-    const real lq = negLog1m(cast(real)q);
-    real guess = ceil(lq / lp) - 1;
+    // Keep ordinary double logarithms in double; widen float only. The exact
+    // fallback below resolves ambiguous steps without widening every call.
+    static if (is(T == float)) alias F = double;
+    else alias F = T;
+    const F lp = negLog1m(cast(F)p);
+    const F lq = negLog1m(cast(F)q);
+    F guess = ceil(lq / lp) - 1;
     if (guess < 0)
         guess = 0;
     // At counts beyond consecutive-integer precision, stepping by one may
     // leave the value unchanged. Return the representable approximation there.
-    if (guess + 1 == guess || guess == real.infinity)
+    if (guess + 1 == guess || guess == F.infinity)
         return cast(T)guess;
     while (guess > 0 && geometricQuantileReached(guess - 1, p, q, lp, lq))
         --guess;
     while (!geometricQuantileReached(guess, p, q, lp, lq)) {
-        const real next = guess + 1;
+        const F next = guess + 1;
         if (next == guess)
             break;
         guess = next;
@@ -279,12 +283,12 @@ T geometricInvCDF(T)(const T q, const T p)
 // boundary, do not snap approximately equal values to an integer: adjacent
 // queries can lie on opposite sides of the exact CDF step.
 private @safe pure nothrow @nogc
-bool geometricQuantileReached(T)(real k, T p, T q, real lp, real lq)
+bool geometricQuantileReached(T, F)(F k, T p, T q, F lp, F lq)
 {
     import std.math: fabs, frexp, ldexp;
     import mir.bignum.integer: BigInt;
-    const real value = (k + 1) * lp;
-    if (k < 8192 && fabs(value - lq) <= 32 * real.epsilon * (value + lq)) {
+    const F value = (k + 1) * lp;
+    if (k < 8192 && fabs(value - lq) <= 32 * F.epsilon * (value + lq)) {
         static if (T.mant_dig <= 64) {
             // For p=a/2^b, compare (2^b-a)^(k+1)/2^(b*(k+1))
             // directly with 1-q. Fixed storage keeps the fallback @nogc.
