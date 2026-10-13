@@ -38,7 +38,7 @@ See_also:
 T normalCCDF(T)(const T x, const T mean, const T stdDev)
     if (isFloatingPoint!T)
 {
-    return normalCCDF((x - mean) / stdDev);
+    return normalCCDF(standardizedNormal(x, mean, stdDev));
 }
 
 /// ditto
@@ -98,7 +98,7 @@ T normalLPDF(T)(const T x, const T mean, const T stdDev)
     if (isFloatingPoint!T)
 {
     import mir.math.common: log;
-    return normalLPDF((x - mean) / stdDev) - log(stdDev);
+    return normalLPDF(standardizedNormal(x, mean, stdDev)) - log(stdDev);
 }
 
 /// ditto
@@ -106,10 +106,48 @@ T normalLPDF(T)(const T x, const T mean, const T stdDev)
 T normalLPDF(T)(const T x)
     if (isFloatingPoint!T)
 {
-    import mir.math.common: pow;
     import mir.stat.constant: LOGSQRT2PI;
 
-    return -0.5 * pow(x, 2) - T(LOGSQRT2PI);
+    // Halve before squaring: x*x can overflow while x*x/2 still fits.
+    return (-T(0.5) * x) * x - T(LOGSQRT2PI);
+}
+
+// Divide first only when subtraction overflows for finite observations.
+// In that case x and mean have opposite signs, so the divisions cannot
+// introduce cancellation between infinities. Keep the usual rounding otherwise.
+private @safe pure nothrow @nogc
+T standardizedNormal(T)(T x, T mean, T stdDev)
+{
+    import mir.math.common: fabs;
+    const T delta = x - mean;
+    if (fabs(delta) == T.infinity && fabs(x) <= T.max && fabs(mean) <= T.max)
+        return x / stdDev - mean / stdDev;
+    return delta / stdDev;
+}
+
+version(mir_stat_test)
+@safe pure nothrow @nogc
+unittest
+{
+    import mir.math.common: fabs, sqrt, log;
+    import std.meta: AliasSeq;
+    static foreach (T; AliasSeq!(float, double, real))
+    {{
+        // x*x overflows, but the halved square and log density are finite.
+        const T x = sqrt(T.max) * T(1.125);
+        const T expected = -(x / 2) * x;
+        assert(fabs(normalLPDF(x) / expected - 1) <= 4 * T.epsilon);
+        const T scale = T.max * T(0.75);
+        assert(fabs(normalLPDF(scale, -scale, scale) -
+            (normalLPDF(T(2)) - log(scale))) <= 4 * T.epsilon * log(scale));
+        assert(fabs(normalCCDF(scale, -scale, scale) / normalCCDF(T(2)) - 1)
+            <= 4 * T.epsilon);
+        assert(normalLPDF(T.infinity) == -T.infinity);
+        assert(normalLPDF(-T.infinity) == -T.infinity);
+        assert(normalCCDF(T.infinity, T(0), T(1)) == 0);
+        assert(normalCCDF(-T.infinity, T(0), T(1)) == 1);
+        assert(normalLPDF(T.nan) != normalLPDF(T.nan));
+    }}
 }
 
 ///
