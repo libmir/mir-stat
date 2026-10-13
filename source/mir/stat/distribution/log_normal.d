@@ -398,3 +398,15 @@ unittest
     enum double expected = 1.2130856546630247693e-262;
     assert(fabs(logNormalPDF(1e-200, 0.0, 10.0) / expected - 1) < 3e-13);
 }
+
+// The normal CDF tail correction must also reach the log-normal wrappers.
+version(mir_stat_test)
+@safe pure nothrow @nogc
+unittest
+{
+    import mir.math.common: fabs;
+    // mpmath, 100 decimal digits, exact power-of-two observations.
+    enum double expected = 1.3649994674147508546714884699975213978e-204;
+    assert(fabs(logNormalCDF(0x1p-44) / expected - 1) < 2e-13);
+    assert(fabs(logNormalCCDF(0x1p44) / expected - 1) < 2e-13);
+}
