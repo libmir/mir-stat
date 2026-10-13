@@ -824,6 +824,33 @@ size_t hypergeometricInvCDFImpl(T, HypergeometricAlgo hypergeometricAlgo)
     }
     if (guess < lower) guess = lower;
     if (guess > upper) guess = upper;
+    if (p > T(0.5)) {
+        // Compare the remaining probability directly. Adding masses to a CDF
+        // near one can discard the tail and move the quantile to an endpoint.
+        const target = 1 - p;
+        if (n < 0.1 * N) {
+            // The approximation is usually within a few counts of the answer.
+            // Re-evaluate each tail instead of subtracting nearly equal masses.
+            if (hypergeometricCCDF!T(guess, N, K, n) <= target) {
+                while (guess > lower &&
+                    hypergeometricCCDF!T(guess - 1, N, K, n) <= target)
+                    --guess;
+            } else {
+                while (guess < upper &&
+                    hypergeometricCCDF!T(++guess, N, K, n) > target) {}
+            }
+            return guess;
+        }
+        size_t left = lower, right = upper;
+        while (left < right) {
+            const middle = left + (right - left) / 2;
+            if (hypergeometricCCDF!T(middle, N, K, n) <= target)
+                right = middle;
+            else
+                left = middle + 1;
+        }
+        return left;
+    }
     T cdfGuess = hypergeometricCDF!(T, hypergeometricAlgo)(guess, N, K, n);
     if (p <= cdfGuess) {
         while (guess > lower) {
@@ -1048,6 +1075,30 @@ unittest
         x.hypergeometricInvCDF!"approxNormal"(N, K, n).should == floor(checkValue);
         x.hypergeometricInvCDF!"approxNormalContinuityCorrection"(N, K, n).should == floor(checkValue - 0.5);
     }
+}
+
+// Upper-tail quantiles use exact rational comparisons as independent references.
+version(mir_stat_test)
+@safe pure nothrow @nogc
+unittest
+{
+    import std.meta: AliasSeq;
+
+    // Sum C(K,j)*C(N-K,n-j) and compare with p*C(N,n) using integers.
+    // These probabilities are exact binary fractions, not rounded CDF values.
+    static foreach (T; AliasSeq!(double, real)) {{
+        const p = T(1) - T(double.epsilon / 2);
+        assert(hypergeometricInvCDF(p, 100, 50, 50) == 44);
+        assert(hypergeometricInvCDF(p, 250, 25, 25) == 18);
+        assert(hypergeometricInvCDF(p, 1000, 100, 500) == 87);
+        assert(hypergeometricInvCDF(p, 1000, 500, 100) == 87);
+        assert(hypergeometricInvCDF(p, 1000, 500, 500) == 315);
+        assert(hypergeometricInvCDF(p, 1000, 500, 9) == 9);
+    }}
+    const p = 1.0f - float.epsilon / 2;
+    assert(hypergeometricInvCDF(p, 100, 50, 50) == 38);
+    assert(hypergeometricInvCDF(p, 250, 25, 25) == 12);
+    assert(hypergeometricInvCDF(p, 1000, 500, 500) == 292);
 }
 
 // test alternate direct guess paths
