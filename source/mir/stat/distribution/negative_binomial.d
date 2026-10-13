@@ -268,10 +268,8 @@ version(mir_stat_test)
         centralExpected.exponent -= 201;
         const T central = fp_negativeBinomialPMF(100, 101, T(0.5));
         assert(central.exponent == centralExpected.exponent);
-        const error = central.coefficient > centralExpected.coefficient
-            ? central.coefficient - centralExpected.coefficient
-            : centralExpected.coefficient - central.coefficient;
-        assert(error <= UInt!bits(16));
+        assert(central.coefficient >= centralExpected.coefficient - UInt!bits(16));
+        assert(central.coefficient <= centralExpected.coefficient + UInt!bits(16));
         assert(cast(double)fp_negativeBinomialPMF(1, 2, T(0.5)) == 0.25);
         assert(cast(double)fp_negativeBinomialPMF(0, size_t.max, T(1)) == 1);
         assert(!fp_negativeBinomialPMF(1, size_t.max, T(1)).coefficient);
