@@ -63,10 +63,17 @@ T hypergeometricPMFImpl(T, HypergeometricAlgo hypergeometricAlgo)
     in (n <= N, "n must be less than or equal to N")
     in (k <= n, "n - k must be greater than or equal to zero")
     in (k <= K, "k must be less than or equal to K")
-    in (k + N >= n + K, "`N - K` must be greater than or equal to `n - k`")
+    in (n - k <= N - K, "`N - K` must be greater than or equal to `n - k`")
 {
     import mir.combinatorics: binomial;
-    return cast(T) (binomial(K, k) * binomial(N - K, n - k)) / binomial(N, n);
+    // Inline both dispatch layers so fixed parameters can be optimized;
+    // the extended-precision fallback remains out of line.
+    pragma(inline, true);
+    const numerator = binomial(K, k) * binomial(N - K, n - k);
+    const denominator = binomial(N, n);
+    if (denominator != 0)
+        return cast(T) numerator / denominator;
+    return hypergeometricLargePMF!T(k, N, K, n);
 }
 
 private
@@ -78,7 +85,7 @@ T hypergeometricPMFImpl(T, HypergeometricAlgo hypergeometricAlgo)
     in (n <= N, "n must be less than or equal to N")
     in (k <= n, "n - k must be greater than or equal to zero")
     in (k <= K, "k must be less than or equal to K")
-    in (k + N >= n + K, "`N - K` must be greater than or equal to `n - k`")
+    in (n - k <= N - K, "`N - K` must be greater than or equal to `n - k`")
 {
     import mir.stat.distribution.binomial: binomialPMF;
 
@@ -94,7 +101,7 @@ T hypergeometricPMFImpl(T, HypergeometricAlgo hypergeometricAlgo)
     in (n <= N, "n must be less than or equal to N")
     in (k <= n, "n - k must be greater than or equal to zero")
     in (k <= K, "k must be less than or equal to K")
-    in (k + N >= n + K, "`N - K` must be greater than or equal to `n - k`")
+    in (n - k <= N - K, "`N - K` must be greater than or equal to `n - k`")
 {
     import mir.stat.distribution.poisson: poissonPMF, PoissonAlgo;
 
@@ -111,13 +118,13 @@ T hypergeometricPMFImpl(T, HypergeometricAlgo hypergeometricAlgo)
     in (n <= N, "n must be less than or equal to N")
     in (k <= n, "n - k must be greater than or equal to zero")
     in (k <= K, "k must be less than or equal to K")
-    in (k + N >= n + K, "`N - K` must be greater than or equal to `n - k`")
+    in (n - k <= N - K, "`N - K` must be greater than or equal to `n - k`")
 {
     import mir.math.common: sqrt;
     import mir.stat.distribution.normal: normalPDF;
 
     T l = k;
-    return normalPDF(l, cast(T) (n * K) / N, sqrt(n * (cast(T) K / N) * (cast(T) (N - K) / N) * (cast(T) (N - n) / (N - 1))));
+    return normalPDF(l, (cast(T) n * K) / N, sqrt(n * (cast(T) K / N) * (cast(T) (N - K) / N) * (cast(T) (N - n) / (N - 1))));
 }
 
 private
@@ -130,18 +137,26 @@ T hypergeometricPMFImpl(T, HypergeometricAlgo hypergeometricAlgo)
     in (n <= N, "n must be less than or equal to N")
     in (k <= n, "n - k must be greater than or equal to zero")
     in (k <= K, "k must be less than or equal to K")
-    in (k + N >= n + K, "`N - K` must be greater than or equal to `n - k`")
+    in (n - k <= N - K, "`N - K` must be greater than or equal to `n - k`")
 {
     import mir.math.common: sqrt;
-    import mir.stat.distribution.normal: normalCDF;
+    import mir.stat.distribution.normal: normalCDF, normalCCDF;
 
-    T location = cast(T) (n * K) / N;
+    T location = (cast(T) n * K) / N;
     T scale = sqrt(n * (cast(T) K / N) * (cast(T) (N - K) / N) * (cast(T) (N - n) / (N - 1)));
+    // Right-tail CDFs can both round to one. Subtract their complementary
+    // probabilities to preserve the same continuity-corrected interval mass.
+    if (k > location)
+        return normalCCDF(k - 0.5, location, scale) - normalCCDF(k + 0.5, location, scale);
     return normalCDF(k + 0.5, location, scale) - normalCDF(k - 0.5, location, scale);
 }
 
 /++
 Computes the hypergeometric probability mass function (PMF).
+
+The direct algorithm uses integer coefficients where they fit, and extended
+precision otherwise. Request `hypergeometricPMF!(Fp!128)` to retain an extended
+precision result instead of converting to a built-in floating-point type.
 
 Additional algorithms may be provided for calculating PMF that allow trading off
 time and accuracy. If `approxPoisson` is provided, `PoissonAlgo.gamma` is assumed.
@@ -162,9 +177,10 @@ T hypergeometricPMF(T, HypergeometricAlgo hypergeometricAlgo = HypergeometricAlg
     in (n <= N, "n must be less than or equal to N")
     in (k <= n, "n - k must be greater than or equal to zero")
     in (k <= K, "k must be less than or equal to K")
-    in (k + N >= n + K, "`N - K` must be greater than or equal to `n - k`")
+    in (n - k <= N - K, "`N - K` must be greater than or equal to `n - k`")
 {
-    if (n == 0)
+    pragma(inline, true);
+    if (n == 0 || K == 0 || n == N || K == N)
         return 1;
     return hypergeometricPMFImpl!(T, hypergeometricAlgo)(k, N, K, n);
 }
@@ -234,9 +250,9 @@ unittest
 }
 
 /++
-Computes the hypergeometric probability mass function (PMF) with extended 
-floating point types (e.g. `Fp!128`), which provides additional accuracy for
-large values of `k`, `N`, `K`, or `n`. 
+Compatibility name for the extended-precision $(LREF hypergeometricPMF)
+overload. New code can request `hypergeometricPMF!(Fp!128)` explicitly.
+The default precision of this wrapper remains `Fp!128`.
 
 Params:
     k = value to evaluate PMF (e.g. number of correct draws of object of interest)
@@ -253,12 +269,9 @@ T fp_hypergeometricPMF(T = Fp!128)(const size_t k, const size_t N, const size_t 
     in (n <= N, "n must be less than or equal to N")
     in (k <= n, "n - k must be greater than or equal to zero")
     in (k <= K, "k must be less than or equal to K")
-    in (k + N >= n + K, "`N - K` must be greater than or equal to `n - k`")
+    in (n - k <= N - K, "`N - K` must be greater than or equal to `n - k`")
 {
-    import mir.math.numeric: binomialCoefficient;
-    return binomialCoefficient(K, cast(const uint) k) * 
-           binomialCoefficient(N - K, cast(const uint) (n - k)) / 
-           binomialCoefficient(N, cast(const uint) n);
+    return hypergeometricPMF!T(k, N, K, n);
 }
 
 ///
@@ -284,6 +297,201 @@ unittest
     n.fp_hypergeometricPMF(N, K, n).fp_log!double.shouldApprox == hypergeometricLPMF(n, N, K, n);
 }
 
+/++
+Computes the direct PMF at the explicitly requested `Fp` precision.
+Coefficient products and division retain extended precision; counts are not
+narrowed to `uint`. Cost grows with the smaller side of each binomial
+coefficient, so very large central counts may still be expensive.
+
+Params:
+    k = number of successes drawn
+    N = population size
+    K = successes in the population
+    n = number of draws
++/
+@safe pure nothrow @nogc
+T hypergeometricPMF(T)(const size_t k, const size_t N, const size_t K, const size_t n)
+    if (is(T == Fp!bits, uint bits))
+    in (K <= N)
+    in (n <= N)
+    in (k <= n)
+    in (k <= K)
+    in (n - k <= N - K)
+{
+    // Extra coefficient bits absorb intermediate rounding. Do not use Fp's
+    // division operator: it currently converts through hardware real.
+    static if (is(T == Fp!bits, uint bits)) {
+        const numerator = hypergeometricCoefficient!(bits + 64)(K, k) *
+            hypergeometricCoefficient!(bits + 64)(N - K, n - k);
+        const denominator = hypergeometricCoefficient!(bits + 64)(N, n);
+        return cast(T) hypergeometricDivide(numerator, denominator);
+    }
+}
+
+private @safe pure nothrow @nogc
+Fp!bits hypergeometricDivide(uint bits)(Fp!bits numerator, Fp!bits denominator)
+{
+    import mir.bignum.fixed: UInt;
+    UInt!(2 * bits + 64) quotient = numerator.coefficient.toSize!(2 * bits + 64);
+    quotient <<= bits + 64;
+    quotient /= denominator.coefficient;
+    auto result = Fp!bits(quotient);
+    result.exponent += numerator.exponent - denominator.exponent - cast(long)bits - 64;
+    return result;
+}
+
+private @safe pure nothrow @nogc
+Fp!bits hypergeometricCoefficient(uint bits)(size_t n, size_t k)
+{
+    import mir.math.numeric: factorial;
+    if (k > n - k) k = n - k;
+    if (k == 0) return Fp!bits(1);
+    return hypergeometricDivide(factorial!bits(k, n - k + 1), factorial!bits(k));
+}
+
+/// Select extended precision explicitly, or retain the compatibility name.
+version(mir_stat_test)
+@safe pure nothrow @nogc unittest
+{
+    import mir.bignum.fp: Fp;
+
+    static foreach (bits; [64u, 128u, 256u]) {{
+        alias T = Fp!bits;
+        auto mass = hypergeometricPMF!T(1, 4, 2, 2);
+        static assert(is(typeof(mass) == T));
+        assert(cast(double)mass == 2.0 / 3);
+        assert(mass == fp_hypergeometricPMF!T(1, 4, 2, 2));
+        // 1/(2^32+1) = (2^32-1)/(2^64-1). Its repeating binary
+        // expansion exercises precision beyond hardware floating point.
+        static if (size_t.sizeof == 8) {
+            import mir.bignum.fixed: UInt;
+            const result = hypergeometricPMF!T(0x100000000UL, 0x100000001UL,
+                0x100000000UL, 0x100000000UL);
+            UInt!(bits + 128) scaled = UInt!(bits + 128)(1);
+            scaled <<= bits + 96;
+            scaled /= UInt!64(0x100000001UL);
+            auto expected = T(scaled);
+            expected.exponent -= bits + 96;
+            assert(result.exponent == expected.exponent);
+            assert(result.coefficient == expected.coefficient);
+        }
+    }}
+}
+
+// Exact integer combinations give the rounded 128-bit coefficient below.
+version(mir_stat_test)
+@safe pure nothrow @nogc unittest
+{
+    import mir.bignum.fixed: UInt;
+    enum expected = UInt!128("215582029535793405898658859699468210548");
+    const mass = hypergeometricPMF!(Fp!128)(25, 100, 50, 50);
+    assert(mass.exponent == -130);
+    assert(mass.coefficient == expected);
+}
+
+// Keep extended-precision machinery out of the ordinary integer fast path.
+private @safe pure nothrow @nogc
+T hypergeometricLargePMF(T)(size_t k, size_t N, size_t K, size_t n)
+{
+    pragma(inline, false);
+    return hypergeometricToFloat!T(hypergeometricPMF!(Fp!128)(k, N, K, n));
+}
+
+// Continuity correction preserves representable normal-approximation tails.
+version(mir_stat_test)
+@safe pure nothrow @nogc
+unittest
+{
+    import std.math: abs;
+    import std.meta: AliasSeq;
+
+    // 100-digit mpmath normal integrals over [k-1/2,k+1/2], using
+    // mean=500 and variance=1000*(1/2)*(1/2)*9000/9999.
+    // These reference the approximation itself, not the exact hypergeometric PMF.
+    static foreach (T; AliasSeq!(float, double, real)) {{
+        alias pmf = hypergeometricPMF!(T, HypergeometricAlgo.approxNormalContinuityCorrection);
+        const T middle = 0.02658989853189438668076460428291362448L;
+        const T tail = 5.250180007593334009264374940772430523e-24L;
+        assert(abs(pmf(500, 10000, 5000, 1000) / middle - 1) < 128 * T.epsilon);
+        assert(abs(pmf(650, 10000, 5000, 1000) / tail - 1) < 128 * T.epsilon);
+        assert(abs(pmf(350, 10000, 5000, 1000) / tail - 1) < 128 * T.epsilon);
+    }}
+    const double farTail = 6.899585649237641167195415473071995941e-41;
+    assert(abs(hypergeometricPMF!(double, HypergeometricAlgo.approxNormalContinuityCorrection)
+        (700, 10000, 5000, 1000) / farTail - 1) < 128 * double.epsilon);
+}
+
+// Normalize before conversion so a very small Fp exponent is not narrowed
+// inside a floating-point cast. ldexp performs the final subnormal scaling.
+private @safe pure nothrow @nogc
+T hypergeometricToFloat(T)(Fp!128 value)
+{
+    import std.math: ldexp;
+    const exponent = value.exponent + 128;
+    if (exponent < T.min_exp - T.mant_dig)
+        return 0;
+    value.exponent = -128;
+    // Some runtime ldexp implementations truncate subnormal results. Keep
+    // both factors normal and let hardware multiplication round the result.
+    if (exponent < T.min_exp)
+        return ldexp(cast(T)value, T.min_exp) * ldexp(T(1), cast(int)exponent - T.min_exp);
+    return ldexp(cast(T)value, cast(int)exponent);
+}
+
+private @safe pure nothrow @nogc
+T hypergeometricTail(T, bool upper)(size_t k, size_t N, size_t K, size_t n)
+{
+    import mir.combinatorics: binomial;
+    const lower = n > N - K ? n - (N - K) : 0;
+    const last = n < K ? n : K;
+    static if (upper) {
+        if (k == last) return 0;
+        ++k;
+    }
+    const denominator = binomial(N, n);
+    T sum = 0;
+    if (denominator != 0) {
+        // Every numerator is at most the denominator, so its product fits too.
+        static if (upper) {
+            for (size_t i = k;; ++i) {
+                sum += cast(T)(binomial(K, i) * binomial(N - K, n - i)) / denominator;
+                if (i == last) break;
+            }
+        } else {
+            for (size_t i = lower;; ++i) {
+                sum += cast(T)(binomial(K, i) * binomial(N - K, n - i)) / denominator;
+                if (i == k) break;
+            }
+        }
+    } else {
+        // Relative terms shrink as we move away from the mean. Keep the
+        // initial mass in Fp until after summation: an individual mass can
+        // underflow even when the sum of the tail is representable.
+        const initial = hypergeometricPMF!(Fp!128)(k, N, K, n);
+        T term = 1;
+        sum = 1;
+        size_t i = k;
+        while (true) {
+            static if (upper) {
+                if (i == last) break;
+                term *= (cast(T)(K - i) / (i + 1)) *
+                    (cast(T)(n - i) / ((N - K) - (n - i) + 1));
+                ++i;
+            } else {
+                if (i == lower) break;
+                term *= (cast(T)i / (K - i + 1)) *
+                    (cast(T)((N - K) - (n - i)) / (n - i + 1));
+                --i;
+            }
+            const next = sum + term;
+            if (next == sum) break;
+            sum = next;
+        }
+        sum = hypergeometricToFloat!T(initial * Fp!128(sum));
+    }
+    return sum > 1 ? T(1) : sum;
+}
+
 private
 @safe pure @nogc nothrow
 T hypergeometricCDFImpl(T, HypergeometricAlgo hypergeometricAlgo)
@@ -293,20 +501,13 @@ T hypergeometricCDFImpl(T, HypergeometricAlgo hypergeometricAlgo)
     in (n <= N, "n must be less than or equal to N")
     in (k <= n, "n - k must be greater than or equal to zero")
     in (k <= K, "k must be less than or equal to K")
-    in (k + N >= n + K, "`N - K` must be greater than or equal to `n - k`")
+    in (n - k <= N - K, "`N - K` must be greater than or equal to `n - k`")
 {
-    import mir.combinatorics: binomial;
-
-    T result = 0;
-    const denominator = binomial(N, n);
-    if (k <= n / 2) {
-        foreach (size_t i; 0 .. (k + 1)) {
-            result += cast(T) (binomial(K, i) * binomial(N - K, n - i)) / denominator;
-        }
-    } else {
-        result = 1 - hypergeometricCCDFImpl!(T, hypergeometricAlgo)(k, N, K, n);
-    }
-    return result;
+    // Sum the tail on its own side of the mean. Using n/2 instead can
+    // subtract a tiny probability from a CDF already rounded to one.
+    if (k < cast(T)n * (cast(T)K / N))
+        return hypergeometricTail!(T, false)(k, N, K, n);
+    return 1 - hypergeometricTail!(T, true)(k, N, K, n);
 }
 
 private
@@ -318,7 +519,7 @@ T hypergeometricCDFImpl(T, HypergeometricAlgo hypergeometricAlgo)
     in (n <= N, "n must be less than or equal to N")
     in (k <= n, "n - k must be greater than or equal to zero")
     in (k <= K, "k must be less than or equal to K")
-    in (k + N >= n + K, "`N - K` must be greater than or equal to `n - k`")
+    in (n - k <= N - K, "`N - K` must be greater than or equal to `n - k`")
 {
     import mir.stat.distribution.binomial: binomialCDF;
 
@@ -334,7 +535,7 @@ T hypergeometricCDFImpl(T, HypergeometricAlgo hypergeometricAlgo)
     in (n <= N, "n must be less than or equal to N")
     in (k <= n, "n - k must be greater than or equal to zero")
     in (k <= K, "k must be less than or equal to K")
-    in (k + N >= n + K, "`N - K` must be greater than or equal to `n - k`")
+    in (n - k <= N - K, "`N - K` must be greater than or equal to `n - k`")
 {
     import mir.stat.distribution.poisson: poissonCDF, PoissonAlgo;
 
@@ -352,7 +553,7 @@ T hypergeometricCDFImpl(T, HypergeometricAlgo hypergeometricAlgo)
     in (n <= N, "n must be less than or equal to N")
     in (k <= n, "n - k must be greater than or equal to zero")
     in (k <= K, "k must be less than or equal to K")
-    in (k + N >= n + K, "`N - K` must be greater than or equal to `n - k`")
+    in (n - k <= N - K, "`N - K` must be greater than or equal to `n - k`")
 {
     import mir.math.common: sqrt;
     import mir.stat.distribution.normal: normalCDF;
@@ -361,7 +562,7 @@ T hypergeometricCDFImpl(T, HypergeometricAlgo hypergeometricAlgo)
     static if (hypergeometricAlgo == HypergeometricAlgo.approxNormalContinuityCorrection) {
         l += 0.5;
     }
-    return normalCDF(l, cast(T) (n * K) / N, sqrt(n * (cast(T) K / N) * (cast(T) (N - K) / N) * (cast(T) (N - n) / (N - 1))));
+    return normalCDF(l, (cast(T) n * K) / N, sqrt(n * (cast(T) K / N) * (cast(T) (N - K) / N) * (cast(T) (N - n) / (N - 1))));
 }
 
 /++
@@ -390,9 +591,9 @@ T hypergeometricCDF(T, HypergeometricAlgo hypergeometricAlgo = HypergeometricAlg
     in (n <= N, "n must be less than or equal to N")
     in (k <= n, "n - k must be greater than or equal to zero")
     in (k <= K, "k must be less than or equal to K")
-    in (k + N >= n + K, "`N - K` must be greater than or equal to `n - k`")
+    in (n - k <= N - K, "`N - K` must be greater than or equal to `n - k`")
 {
-    if (k == n || n == 0)
+    if (k == n || k == K || n == 0)
         return 1;
     return hypergeometricCDFImpl!(T, hypergeometricAlgo)(k, N, K, n);
 }
@@ -469,20 +670,14 @@ T hypergeometricCCDFImpl(T, HypergeometricAlgo hypergeometricAlgo)
     in (n <= N, "n must be less than or equal to N")
     in (k <= n, "n - k must be greater than or equal to zero")
     in (k <= K, "k must be less than or equal to K")
-    in (k + N >= n + K, "`N - K` must be greater than or equal to `n - k`")
+    in (n - k <= N - K, "`N - K` must be greater than or equal to `n - k`")
 {
-    import mir.combinatorics: binomial;
-
-    T result = 0;
-    const denominator = binomial(N, n);
-    if (k > n / 2) {
-        foreach (size_t i; (k + 1) .. (n + 1)) {
-            result += cast(T) (binomial(K, i) * binomial(N - K, n - i)) / denominator;
-        }
-    } else {
-        result = 1 - hypergeometricCDFImpl!(T, hypergeometricAlgo)(k, N, K, n);
-    }
-    return result;
+    // The upper tail starts at k+1. Compare that first included count with
+    // the mean: k can be below the mean even when P(X>k) is extremely small.
+    // The public endpoint check guarantees k+1 cannot overflow here.
+    if (k + 1 < cast(T)n * (cast(T)K / N))
+        return 1 - hypergeometricTail!(T, false)(k, N, K, n);
+    return hypergeometricTail!(T, true)(k, N, K, n);
 }
 
 private
@@ -494,7 +689,7 @@ T hypergeometricCCDFImpl(T, HypergeometricAlgo hypergeometricAlgo)
     in (n <= N, "n must be less than or equal to N")
     in (k <= n, "n - k must be greater than or equal to zero")
     in (k <= K, "k must be less than or equal to K")
-    in (k + N >= n + K, "`N - K` must be greater than or equal to `n - k`")
+    in (n - k <= N - K, "`N - K` must be greater than or equal to `n - k`")
 {
     import mir.stat.distribution.binomial: binomialCCDF;
 
@@ -510,7 +705,7 @@ T hypergeometricCCDFImpl(T, HypergeometricAlgo hypergeometricAlgo)
     in (n <= N, "n must be less than or equal to N")
     in (k <= n, "n - k must be greater than or equal to zero")
     in (k <= K, "k must be less than or equal to K")
-    in (k + N >= n + K, "`N - K` must be greater than or equal to `n - k`")
+    in (n - k <= N - K, "`N - K` must be greater than or equal to `n - k`")
 {
     import mir.stat.distribution.poisson: poissonCCDF, PoissonAlgo;
 
@@ -528,7 +723,7 @@ T hypergeometricCCDFImpl(T, HypergeometricAlgo hypergeometricAlgo)
     in (n <= N, "n must be less than or equal to N")
     in (k <= n, "n - k must be greater than or equal to zero")
     in (k <= K, "k must be less than or equal to K")
-    in (k + N >= n + K, "`N - K` must be greater than or equal to `n - k`")
+    in (n - k <= N - K, "`N - K` must be greater than or equal to `n - k`")
 {
     import mir.math.common: sqrt;
     import mir.stat.distribution.normal: normalCCDF;
@@ -537,7 +732,7 @@ T hypergeometricCCDFImpl(T, HypergeometricAlgo hypergeometricAlgo)
     static if (hypergeometricAlgo == HypergeometricAlgo.approxNormalContinuityCorrection) {
         l += 0.5;
     }
-    return normalCCDF(l, cast(T) (n * K) / N, sqrt(n * (cast(T) K / N) * (cast(T) (N - K) / N) * (cast(T) (N - n) / (N - 1))));
+    return normalCCDF(l, (cast(T) n * K) / N, sqrt(n * (cast(T) K / N) * (cast(T) (N - K) / N) * (cast(T) (N - n) / (N - 1))));
 }
 
 /++
@@ -566,9 +761,9 @@ T hypergeometricCCDF(T, HypergeometricAlgo hypergeometricAlgo = HypergeometricAl
     in (n <= N, "n must be less than or equal to N")
     in (k <= n, "n - k must be greater than or equal to zero")
     in (k <= K, "k must be less than or equal to K")
-    in (k + N >= n + K, "`N - K` must be greater than or equal to `n - k`")
+    in (n - k <= N - K, "`N - K` must be greater than or equal to `n - k`")
 {
-    if (k == n || n == 0)
+    if (k == n || k == K || n == 0)
         return 0;
     return hypergeometricCCDFImpl!(T, hypergeometricAlgo)(k, N, K, n);
 }
@@ -637,6 +832,56 @@ unittest
     3_750.hypergeometricCCDF!"approxNormalContinuityCorrection"(10_000, 7_500, 5_000).shouldApprox(1e-2) == 0.4907878;
 }
 
+// Resolve a close inverse comparison exactly when C(N,n) fits in ulong.
+// Each term and their sum fit too. A 128-bit significand holds the exact
+// product of this denominator and any supported hardware probability.
+private @safe pure nothrow @nogc
+bool hypergeometricExactQuantileReached(T)(size_t k, size_t N, size_t K,
+    size_t n, T p, bool fallback)
+{
+    pragma(inline, false);
+    import mir.combinatorics: binomial;
+
+    static if (T.mant_dig > 64) {
+        return fallback;
+    } else {
+        const denominator = binomial(N, n);
+        if (denominator == 0)
+            return fallback;
+        const lower = n > N - K ? n - (N - K) : 0;
+        ulong sum;
+        for (size_t i = lower;; ++i) {
+            sum += binomial(K, i) * binomial(N - K, n - i);
+            if (i == k) break;
+        }
+        const left = Fp!128(sum);
+        const right = Fp!128(p) * Fp!128(denominator);
+        // Both positive coefficients are normalized, so exponents order them
+        // first; only equal exponents require comparing the significands.
+        return left.exponent != right.exponent
+            ? left.exponent > right.exponent
+            : left.coefficient >= right.coefficient;
+    }
+}
+
+private @safe pure nothrow @nogc
+bool hypergeometricQuantileReached(T)(size_t k, size_t N, size_t K,
+    size_t n, T p, bool upper, T value)
+{
+    import std.math: abs;
+
+    const T target = upper ? 1 - p : p;
+    const reached = upper ? value <= target : value >= target;
+    const lower = n > N - K ? n - (N - K) : 0;
+    const last = n < K ? n : K;
+    // This screen selects an exact comparison; it does not relax the quantile
+    // inequality. Include subnormal spacing and accumulated summation error.
+    if (abs(value - target) <= 32 * (T(last - lower) + 1) * T.epsilon *
+        (abs(value) + target + T.min_normal))
+        return hypergeometricExactQuantileReached(k, N, K, n, p, reached);
+    return reached;
+}
+
 private
 @safe pure nothrow @nogc
 size_t hypergeometricInvCDFImpl(T, HypergeometricAlgo hypergeometricAlgo)
@@ -647,33 +892,64 @@ size_t hypergeometricInvCDFImpl(T, HypergeometricAlgo hypergeometricAlgo)
     in (p >= 0, "p must be greater than or equal to 0")
     in (p <= 1, "p must be less than or equal to 1")
 {
-    size_t guess = 0;
+    const lower = n > N - K ? n - (N - K) : 0;
+    const upper = n < K ? n : K;
+    size_t guess = lower;
     if (n < 0.1 * N) {
-        if ((n * N > 9 * (N - K)) &&
-            (n * (N - K) > 9 * K)) {
-        	guess = hypergeometricInvCDFImpl!(T, HypergeometricAlgo.approxNormalContinuityCorrection)(p, N, K, n);
-    	} else if (K < 0.1 * N) {
-        	guess = hypergeometricInvCDFImpl!(T, HypergeometricAlgo.approxPoisson)(p, N, K, n);
+        if ((cast(T) n * K > 9 * cast(T)(N - K)) &&
+            (cast(T) n * (N - K) > 9 * cast(T) K)) {
+            guess = hypergeometricInvCDFImpl!(T, HypergeometricAlgo.approxNormalContinuityCorrection)(p, N, K, n);
+        } else if (K < 0.1 * N) {
+            guess = hypergeometricInvCDFImpl!(T, HypergeometricAlgo.approxPoisson)(p, N, K, n);
         } else {
             guess = hypergeometricInvCDFImpl!(T, HypergeometricAlgo.approxBinomial)(p, N, K, n);
         }
     }
-    T cdfGuess = hypergeometricCDF!(T, hypergeometricAlgo)(guess, N, K, n);
-
-    if (p <= cdfGuess) {
-        if (guess == 0) {
+    if (guess < lower) guess = lower;
+    if (guess > upper) guess = upper;
+    bool reached(size_t k, bool upperTail, T value) {
+        return hypergeometricQuantileReached(k, N, K, n, p, upperTail, value);
+    }
+    if (p > T(0.5)) {
+        // Compare the remaining probability directly. Adding masses to a CDF
+        // near one can discard the tail and move the quantile to an endpoint.
+        if (n < 0.1 * N) {
+            // The approximation is usually within a few counts of the answer.
+            // Re-evaluate each tail instead of subtracting nearly equal masses.
+            if (reached(guess, true, hypergeometricCCDF!T(guess, N, K, n))) {
+                while (guess > lower &&
+                    reached(guess - 1, true, hypergeometricCCDF!T(guess - 1, N, K, n)))
+                    --guess;
+            } else {
+                while (guess < upper) {
+                    ++guess;
+                    if (reached(guess, true, hypergeometricCCDF!T(guess, N, K, n)))
+                        break;
+                }
+            }
             return guess;
         }
-        for (size_t i = (guess - 1); guess >= 0; i--) {
-            cdfGuess -= hypergeometricPMF!(T, hypergeometricAlgo)(i + 1, N, K, n);
-            if (p > cdfGuess) {
-                guess = i + 1;
-                break;
-            }
+        size_t left = lower, right = upper;
+        while (left < right) {
+            const middle = left + (right - left) / 2;
+            if (reached(middle, true, hypergeometricCCDF!T(middle, N, K, n)))
+                right = middle;
+            else
+                left = middle + 1;
+        }
+        return left;
+    }
+    T cdfGuess = hypergeometricCDF!(T, hypergeometricAlgo)(guess, N, K, n);
+    if (reached(guess, false, cdfGuess)) {
+        while (guess > lower) {
+            const previous = cdfGuess - hypergeometricPMF!(T, hypergeometricAlgo)(guess, N, K, n);
+            if (!reached(guess - 1, false, previous)) break;
+            --guess;
+            cdfGuess = previous;
         }
     } else {
-        while(p > cdfGuess) {
-            guess++;
+        while (guess < upper && !reached(guess, false, cdfGuess)) {
+            ++guess;
             cdfGuess += hypergeometricPMF!(T, hypergeometricAlgo)(guess, N, K, n);
         }
     }
@@ -727,7 +1003,7 @@ size_t hypergeometricInvCDFImpl(T, HypergeometricAlgo hypergeometricAlgo)
     import mir.math.common: floor, sqrt;
     import mir.stat.distribution.normal: normalCDF, normalInvCDF;
 
-    T location = cast(T) (n * K) / N;
+    T location = (cast(T) n * K) / N;
     T scale = sqrt(n * (cast(T) K / N) * (cast(T) (N - K) / N) * (cast(T) (N - n) / (N - 1)));
 
     // Handles case where p is small or large, better than just using pLowerBound = 0 or pUpperBound = 1
@@ -757,6 +1033,14 @@ size_t hypergeometricInvCDFImpl(T, HypergeometricAlgo hypergeometricAlgo)
 /++
 Computes the hypergeometric inverse cumulative distribution function (InvCDF).
 
+For positive probabilities, results lie between `max(0, n - (N - K))` and
+`min(n, K)`. At `p = 0`, this function retains its convention of returning zero
+even when the smallest attainable number of successes is positive.
+
+The direct algorithm resolves close probability comparisons exactly when
+`C(N,n)` fits in an unsigned 64-bit integer and the probability type has at
+most 64 significand bits. Larger cases retain floating-point tail comparisons.
+
 Additional algorithms may be provided for calculating InvCDF that allow trading off
 time and accuracy. If `approxPoisson` is provided, `PoissonAlgo.direct` is assumed.
 This is different from other functions that use `PoissonAlgo.gamma` since in this
@@ -783,12 +1067,16 @@ size_t hypergeometricInvCDF(T, HypergeometricAlgo hypergeometricAlgo = Hypergeom
     in (p >= 0, "p must be greater than or equal to 0")
     in (p <= 1, "p must be less than or equal to 1")
 {
-    if (n == 0 || p == 0) {
+    // Preserve the existing p=0 convention; positive probabilities are
+    // bounded by the actual support, which need not begin at zero.
+    if (n == 0 || p == 0)
         return 0;
-    } else if (p == 1) {
-        return K;
-    }
-    return hypergeometricInvCDFImpl!(T, hypergeometricAlgo)(p, N, K, n);
+    const lower = n > N - K ? n - (N - K) : 0;
+    const upper = n < K ? n : K;
+    if (lower == upper || p == 1)
+        return upper;
+    const result = hypergeometricInvCDFImpl!(T, hypergeometricAlgo)(p, N, K, n);
+    return result < lower ? lower : result > upper ? upper : result;
 }
 
 /// ditto
@@ -881,6 +1169,76 @@ unittest
     }
 }
 
+// A rounded CDF must not erase which side of a rational boundary p lies on.
+version(mir_stat_test)
+@safe pure nothrow @nogc
+unittest
+{
+    import std.math: nextDown, nextUp;
+    import std.meta: AliasSeq;
+
+    // Binary double(.01) lies above 1/100; the next lower double lies below.
+    assert(hypergeometricInvCDF(0.01, 100, 1, 99) == 1);
+    assert(hypergeometricInvCDF(0.01.nextDown, 100, 1, 99) == 0);
+    assert(hypergeometricInvCDF(0.01, 100, 99, 1) == 1);
+    assert(hypergeometricInvCDF(0.01.nextDown, 100, 99, 1) == 0);
+    static foreach (T; AliasSeq!(float, double, real)) {{
+        // CDF(0)=3/4 exactly. Equality selects zero, not the next count.
+        assert(hypergeometricInvCDF(T(0.75).nextDown, 4, 1, 1) == 0);
+        assert(hypergeometricInvCDF(T(0.75), 4, 1, 1) == 0);
+        assert(hypergeometricInvCDF(T(0.75).nextUp, 4, 1, 1) == 1);
+        assert(hypergeometricInvCDF(T(0.25), 4, 1, 3) == 0);
+        assert(hypergeometricInvCDF(T(0.25).nextUp, 4, 1, 3) == 1);
+        // The same boundary with a positive lower support endpoint.
+        assert(hypergeometricInvCDF(T(0.75), 4, 3, 3) == 2);
+        assert(hypergeometricInvCDF(T(0.75).nextUp, 4, 3, 3) == 3);
+    }}
+}
+
+// Upper-tail quantiles use exact rational comparisons as independent references.
+version(mir_stat_test)
+@safe pure nothrow @nogc
+unittest
+{
+    import std.meta: AliasSeq;
+
+    // Sum C(K,j)*C(N-K,n-j) and compare with p*C(N,n) using integers.
+    // These probabilities are exact binary fractions, not rounded CDF values.
+    static foreach (T; AliasSeq!(double, real)) {{
+        const p = T(1) - T(double.epsilon / 2);
+        assert(hypergeometricInvCDF(p, 100, 50, 50) == 44);
+        assert(hypergeometricInvCDF(p, 250, 25, 25) == 18);
+        assert(hypergeometricInvCDF(p, 1000, 100, 500) == 87);
+        assert(hypergeometricInvCDF(p, 1000, 500, 100) == 87);
+        assert(hypergeometricInvCDF(p, 1000, 500, 500) == 315);
+        assert(hypergeometricInvCDF(p, 1000, 500, 9) == 9);
+    }}
+    const p = 1.0f - float.epsilon / 2;
+    assert(hypergeometricInvCDF(p, 100, 50, 50) == 38);
+    assert(hypergeometricInvCDF(p, 250, 25, 25) == 12);
+    assert(hypergeometricInvCDF(p, 1000, 500, 500) == 292);
+}
+
+// Refine a normal-based guess to the exact discrete quantile.
+version(mir_stat_test)
+@safe pure nothrow @nogc
+unittest
+{
+    // Exact integer combination sums establish these quantiles. In particular,
+    // the upper-half search must advance beyond its continuity-corrected guess.
+    const double[6] queries = [0.01, 0.1, 0.25, 0.5, 0.75, 0.99];
+    const size_t[6] expected = [17, 21, 23, 25, 27, 33];
+    foreach (i, p; queries)
+        assert(hypergeometricInvCDF(p, 1000, 500, 50) == expected[i]);
+
+    // A binomial guess can overshoot in the lower half; refine it downward.
+    assert(hypergeometricInvCDF(0.49, 100, 93, 9) == 8);
+
+    // Symmetry gives CDF(24)=1/2 although C(100,49) exceeds ulong.
+    // The close-comparison path must retain its floating-point fallback.
+    assert(hypergeometricInvCDF(0.5, 100, 50, 49) == 24);
+}
+
 // test alternate direct guess paths
 version(mir_stat_test)
 @safe pure nothrow @nogc
@@ -903,8 +1261,46 @@ unittest
     }
 }
 
+// Used only for more than 64 draws and expected successes below 1/4.
+// Those conditions imply N > 4*draws^2 and keep the series arguments small.
+private @safe pure nothrow @nogc
+T hypergeometricLogNoSuccess(T)(size_t N, size_t K, size_t n)
+{
+    import std.math: log1p;
+    T log1pmx(T x) {
+        // log(1+x)-x, without subtracting nearly equal floating-point values.
+        T power = -x * x;
+        T sum = power / 2;
+        for (uint j = 3;; ++j) {
+            power *= -x;
+            const next = sum + power / j;
+            if (next == sum) return sum;
+            sum = next;
+        }
+    }
+    const T population = N, draws = n, successes = K;
+    const T a = N - K, b = N - n, c = N - K - n;
+    // Expand log((N-K)! (N-n)! / (N! (N-K-n)!)) around N.
+    // Remove cancelling linear terms analytically; the remaining terms have
+    // the scale of the log probability, even when that probability is near one.
+    const T main = (a + T(0.5)) * log1pmx(draws / c) +
+        (b + T(0.5)) * log1pmx(-draws / population) +
+        draws * ((draws + T(0.5)) / c + (draws - T(0.5)) / population +
+                 log1p(-(successes + draws) / population));
+    // First Stirling-correction difference, factored to preserve cancellation.
+    const T correction = -(draws / population) * (successes / a) *
+        ((population + c) / b) / c / 12;
+    const T ia = 1 / a, ib = 1 / b, ip = 1 / population, ic = 1 / c;
+    const T third = -(ia*ia*ia + ib*ib*ib - ip*ip*ip - ic*ic*ic) / 360;
+    return main + correction + third;
+}
+
 /++
 Computes the hypergeometric log probability mass function (LPMF).
+
+Counts retain their full `size_t` width. Large populations use binomial log
+probabilities to avoid subtracting large log-factorials. Outcomes with probability
+close to one have a separate calculation that preserves their small negative log.
 
 Params:
     k = value to evaluate LPMF (e.g. number of correct draws of object of interest)
@@ -921,13 +1317,63 @@ T hypergeometricLPMF(T = double)(const size_t k, const size_t N, const size_t K,
     in (n <= N, "n must be less than or equal to N")
     in (k <= n, "n - k must be greater than or equal to zero")
     in (k <= K, "k must be less than or equal to K")
-    in (k + N >= n + K, "`N - K` must be greater than or equal to `n - k`")
+    in (n - k <= N - K, "`N - K` must be greater than or equal to `n - k`")
 {
     import mir.math.internal.log_binomial: logBinomialCoefficient;
-    
-    return logBinomialCoefficient(K, cast(const uint) k) + 
-           logBinomialCoefficient(N - K, cast(const uint) (n - k)) - 
-           logBinomialCoefficient(N, cast(const uint) n);
+    import mir.stat.distribution.binomial: binomialLPMF;
+    import std.math: log1p;
+
+    if (n == 0 || K == 0 || n == N || K == N)
+        return 0;
+
+    // Complement draws and successes, then exchange their roles, so draws
+    // is the smallest of n, K, N-n and N-K. These symmetries preserve the PMF.
+    size_t draws = n, successes = K, observed = k;
+    if (draws > N - draws) {
+        draws = N - draws;
+        observed = successes - observed;
+    }
+    if (successes > N - successes) {
+        successes = N - successes;
+        observed = draws - observed;
+    }
+    if (draws > successes) {
+        const temp = draws;
+        draws = successes;
+        successes = temp;
+    }
+    // A short no-success product preserves log probabilities close to zero,
+    // where subtracting two binomial log probabilities would lose digits.
+    if (observed == 0 && draws <= 64) {
+        T result = 0, correction = 0;
+        foreach (size_t i; 0 .. draws) {
+            const term = log1p(-cast(T)successes / (N - i)) - correction;
+            const next = result + term;
+            correction = (next - result) - term;
+            result = next;
+        }
+        return result;
+    }
+    // Retain the existing factorial-based calculation for small populations.
+    if (N < 2048)
+        return logBinomialCoefficient(K, cast(uint)k) +
+            logBinomialCoefficient(N - K, cast(uint)(n - k)) -
+            logBinomialCoefficient(N, cast(uint)n);
+
+    if (observed == 0 && draws * (cast(T)successes / N) < T(0.25))
+        return hypergeometricLogNoSuccess!T(N, successes, draws);
+
+    // Independent binomials with a common p, conditioned on their total,
+    // have this hypergeometric distribution. The powers of p and 1-p cancel:
+    // B(observed; successes,p) B(draws-observed; N-successes,p) / B(draws; N,p).
+    // p=draws/N centers the denominator. The complements above keep p <= 1/2
+    // and prevent a draw count near N from rounding this probability to one.
+    // binomialLPMF already evaluates large counts in real. Keep its results
+    // in that type until subtraction, rather than rounding each one to float.
+    const real p = cast(real)draws / N;
+    return binomialLPMF(observed, successes, p) +
+        binomialLPMF(draws - observed, N - successes, p) -
+        binomialLPMF(draws, N, p);
 }
 
 ///
@@ -942,4 +1388,85 @@ unittest
     1.hypergeometricLPMF(7, 4, 3).shouldApprox == log(0.3428571);
     2.hypergeometricLPMF(7, 4, 3).shouldApprox == log(0.5142857);
     3.hypergeometricLPMF(7, 4, 3).shouldApprox == log(0.1142857);
+}
+
+// Actual support and deterministic draws apply to every approximation.
+version(mir_stat_test)
+@safe pure nothrow @nogc unittest
+{
+    static foreach (algo; __traits(allMembers, HypergeometricAlgo)) {{
+        enum a = __traits(getMember, HypergeometricAlgo, algo);
+        assert(hypergeometricInvCDF!(double, a)(1.0, 10, 8, 4) == 4);
+        assert(hypergeometricPMF!a(3, 10, 3, 10) == 1);
+        assert(hypergeometricCDF!a(3, 10, 3, 10) == 1);
+        assert(hypergeometricCCDF!a(3, 10, 3, 10) == 0);
+        assert(hypergeometricInvCDF!(double, a)(0.5, 10, 3, 10) == 3);
+    }}
+    assert(hypergeometricInvCDF(0.5, 10, 8, 4) == 3);
+    assert(hypergeometricInvCDF(0.01, 10, 8, 4) == 2);
+    assert(hypergeometricInvCDF(0.99, 10, 8, 4) == 4);
+    assert(hypergeometricInvCDF(0.0, 10, 8, 4) == 0);
+    assert(hypergeometricPMF(1, size_t.max, 1, 1) > 0);
+}
+
+// Coefficients exceed ulong even though the probabilities are ordinary.
+version(mir_stat_test)
+@safe pure nothrow @nogc unittest
+{
+    import mir.test: shouldApprox;
+    import std.meta: AliasSeq;
+    static foreach (T; AliasSeq!(float, double, real)) {
+        hypergeometricPMF!T(25, 100, 50, 50).shouldApprox == T(0.15838466116133042726L);
+        hypergeometricCDF!T(25, 100, 50, 50).shouldApprox == T(0.57919233058066521363L);
+        hypergeometricCCDF!T(25, 100, 50, 50).shouldApprox == T(0.42080766941933478637L);
+        assert(hypergeometricPMF!T(0, 20000, 10000, 10000) == 0);
+        assert(hypergeometricCDF!T(0, 20000, 10000, 10000) == 0);
+    }
+    assert(hypergeometricPMF(99, 2000, 1000, 1000) == 0x0.0000000000005p-1022);
+    assert(hypergeometricCDF(99, 2000, 1000, 1000) == 0x0.0000000000005p-1022);
+    assert(hypergeometricCCDF(900, 2000, 1000, 1000) == 0x0.0000000000005p-1022);
+    static if (size_t.sizeof == 8) {
+        import std.math: abs;
+        static foreach (T; AliasSeq!(float, double, real)) {{
+            const T expected = 1 / cast(T)(1_000_000_000_000_000_000UL);
+            assert(abs(hypergeometricCCDF!T(0, 1_000_000_000_000_000_000UL, 1, 1)
+                / expected - 1) < 8 * T.epsilon);
+            const T edge = 1 / cast(T)(size_t.max);
+            assert(abs(hypergeometricCCDF!T(size_t.max - 2, size_t.max,
+                size_t.max - 1, size_t.max - 1) / edge - 1) < 8 * T.epsilon);
+        }}
+    }
+}
+
+// Large-count and near-one references evaluated with 100-digit log-gamma arithmetic.
+version(mir_stat_test)
+@safe pure nothrow @nogc unittest
+{
+    import std.meta: AliasSeq;
+    import std.math: log, log1p;
+    import mir.math.common: approxEqual;
+    static foreach (T; AliasSeq!(float, double, real)) {{
+        assert(hypergeometricLPMF!T(3, 10, 3, 10) == 0);
+        assert(approxEqual(hypergeometricLPMF!T(0, 16900, 65, 65),
+            T(-0.250958420923428801083239829061741746756006075L), 64*T.epsilon, 0));
+        assert(approxEqual(hypergeometricLPMF!T(0, 16901, 65, 65),
+            T(-0.250943515232362117688059964756904267400091569L), 64*T.epsilon, 0));
+        assert(approxEqual(hypergeometricLPMF!T(200, 1000000, 10000, 20000),
+            T(-3.55338757338537526311047126385461753777997241L), 64*T.epsilon, 0));
+        static if (size_t.sizeof == 8) {
+            assert(approxEqual(hypergeometricLPMF!T(4294967296UL, 4294967297UL,
+                4294967296UL, 4294967296UL), -log(cast(T)(4294967297UL)), 64*T.epsilon, 0));
+            assert(approxEqual(hypergeometricLPMF!T(500000000000UL, 2000000000000UL,
+                1000000000000UL, 1000000000000UL),
+                T(-13.6947283203294038817624302823245380332766312L), 64*T.epsilon, 0));
+            assert(approxEqual(hypergeometricLPMF!T(0, size_t.max, 10000, 10000),
+                T(-5.42101086242752510892007785392312318400784217e-12L), 64*T.epsilon, 0));
+            assert(hypergeometricLPMF!T(0, size_t.max, 1, 1) == log1p(-1/cast(T)(size_t.max)));
+            // Exchanging draws/successes and complementing either preserves mass.
+            const value = hypergeometricLPMF!T(10, 1000000000000UL, 1000, 2000);
+            assert(approxEqual(hypergeometricLPMF!T(10, 1000000000000UL, 2000, 1000), value, 64*T.epsilon, 0));
+            assert(approxEqual(hypergeometricLPMF!T(990, 1000000000000UL, 1000, 999999998000UL), value, 64*T.epsilon, 0));
+            assert(approxEqual(hypergeometricLPMF!T(1990, 1000000000000UL, 999999999000UL, 2000), value, 64*T.epsilon, 0));
+        }
+    }}
 }
