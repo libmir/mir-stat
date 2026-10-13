@@ -1461,7 +1461,11 @@ version(mir_stat_test)
                 T(-13.6947283203294038817624302823245380332766312L), 64*T.epsilon, 0));
             assert(approxEqual(hypergeometricLPMF!T(0, size_t.max, 10000, 10000),
                 T(-5.42101086242752510892007785392312318400784217e-12L), 64*T.epsilon, 0));
-            assert(hypergeometricLPMF!T(0, size_t.max, 1, 1) == log1p(-1/cast(T)(size_t.max)));
+            // Older Phobos versions return real from log1p even for float
+            // and double arguments. Round the reference to the requested
+            // result type before comparing it exactly.
+            const T expected = cast(T) log1p(-1 / cast(T)(size_t.max));
+            assert(hypergeometricLPMF!T(0, size_t.max, 1, 1) == expected);
             // Exchanging draws/successes and complementing either preserves mass.
             const value = hypergeometricLPMF!T(10, 1000000000000UL, 1000, 2000);
             assert(approxEqual(hypergeometricLPMF!T(10, 1000000000000UL, 2000, 1000), value, 64*T.epsilon, 0));
