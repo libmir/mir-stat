@@ -1072,8 +1072,46 @@ unittest
     }
 }
 
+// Used only for more than 64 draws and expected successes below 1/4.
+// Those conditions imply N > 4*draws^2 and keep the series arguments small.
+private @safe pure nothrow @nogc
+T hypergeometricLogNoSuccess(T)(size_t N, size_t K, size_t n)
+{
+    import std.math: log1p;
+    T log1pmx(T x) {
+        // log(1+x)-x, without subtracting nearly equal floating-point values.
+        T power = -x * x;
+        T sum = power / 2;
+        for (uint j = 3;; ++j) {
+            power *= -x;
+            const next = sum + power / j;
+            if (next == sum) return sum;
+            sum = next;
+        }
+    }
+    const T population = N, draws = n, successes = K;
+    const T a = N - K, b = N - n, c = N - K - n;
+    // Expand log((N-K)! (N-n)! / (N! (N-K-n)!)) around N.
+    // Remove cancelling linear terms analytically; the remaining terms have
+    // the scale of the log probability, even when that probability is near one.
+    const T main = (a + T(0.5)) * log1pmx(draws / c) +
+        (b + T(0.5)) * log1pmx(-draws / population) +
+        draws * ((draws + T(0.5)) / c + (draws - T(0.5)) / population +
+                 log1p(-(successes + draws) / population));
+    // First Stirling-correction difference, factored to preserve cancellation.
+    const T correction = -(draws / population) * (successes / a) *
+        ((population + c) / b) / c / 12;
+    const T ia = 1 / a, ib = 1 / b, ip = 1 / population, ic = 1 / c;
+    const T third = -(ia*ia*ia + ib*ib*ib - ip*ip*ip - ic*ic*ic) / 360;
+    return main + correction + third;
+}
+
 /++
 Computes the hypergeometric log probability mass function (LPMF).
+
+Counts retain their full `size_t` width. Large populations use binomial log
+probabilities to avoid subtracting large log-factorials. Outcomes with probability
+close to one have a separate calculation that preserves their small negative log.
 
 Params:
     k = value to evaluate LPMF (e.g. number of correct draws of object of interest)
@@ -1093,10 +1131,60 @@ T hypergeometricLPMF(T = double)(const size_t k, const size_t N, const size_t K,
     in (n - k <= N - K, "`N - K` must be greater than or equal to `n - k`")
 {
     import mir.math.internal.log_binomial: logBinomialCoefficient;
-    
-    return logBinomialCoefficient(K, cast(const uint) k) + 
-           logBinomialCoefficient(N - K, cast(const uint) (n - k)) - 
-           logBinomialCoefficient(N, cast(const uint) n);
+    import mir.stat.distribution.binomial: binomialLPMF;
+    import std.math: log1p;
+
+    if (n == 0 || K == 0 || n == N || K == N)
+        return 0;
+
+    // Complement draws and successes, then exchange their roles, so draws
+    // is the smallest of n, K, N-n and N-K. These symmetries preserve the PMF.
+    size_t draws = n, successes = K, observed = k;
+    if (draws > N - draws) {
+        draws = N - draws;
+        observed = successes - observed;
+    }
+    if (successes > N - successes) {
+        successes = N - successes;
+        observed = draws - observed;
+    }
+    if (draws > successes) {
+        const temp = draws;
+        draws = successes;
+        successes = temp;
+    }
+    // A short no-success product preserves log probabilities close to zero,
+    // where subtracting two binomial log probabilities would lose digits.
+    if (observed == 0 && draws <= 64) {
+        T result = 0, correction = 0;
+        foreach (size_t i; 0 .. draws) {
+            const term = log1p(-cast(T)successes / (N - i)) - correction;
+            const next = result + term;
+            correction = (next - result) - term;
+            result = next;
+        }
+        return result;
+    }
+    // Retain the existing factorial-based calculation for small populations.
+    if (N < 2048)
+        return logBinomialCoefficient(K, cast(uint)k) +
+            logBinomialCoefficient(N - K, cast(uint)(n - k)) -
+            logBinomialCoefficient(N, cast(uint)n);
+
+    if (observed == 0 && draws * (cast(T)successes / N) < T(0.25))
+        return hypergeometricLogNoSuccess!T(N, successes, draws);
+
+    // Independent binomials with a common p, conditioned on their total,
+    // have this hypergeometric distribution. The powers of p and 1-p cancel:
+    // B(observed; successes,p) B(draws-observed; N-successes,p) / B(draws; N,p).
+    // p=draws/N centers the denominator. The complements above keep p <= 1/2
+    // and prevent a draw count near N from rounding this probability to one.
+    // binomialLPMF already evaluates large counts in real. Keep its results
+    // in that type until subtraction, rather than rounding each one to float.
+    const real p = cast(real)draws / N;
+    return binomialLPMF(observed, successes, p) +
+        binomialLPMF(draws - observed, N - successes, p) -
+        binomialLPMF(draws, N, p);
 }
 
 ///
@@ -1151,4 +1239,37 @@ version(mir_stat_test)
     static if (size_t.sizeof == 8) {
         hypergeometricCCDF(0, 1_000_000_000_000_000_000UL, 1, 1).shouldApprox == 1e-18;
     }
+}
+
+// Large-count and near-one references evaluated with 100-digit log-gamma arithmetic.
+version(mir_stat_test)
+@safe pure nothrow @nogc unittest
+{
+    import std.meta: AliasSeq;
+    import std.math: log, log1p;
+    import mir.math.common: approxEqual;
+    static foreach (T; AliasSeq!(float, double, real)) {{
+        assert(hypergeometricLPMF!T(3, 10, 3, 10) == 0);
+        assert(approxEqual(hypergeometricLPMF!T(0, 16900, 65, 65),
+            T(-0.250958420923428801083239829061741746756006075L), 64*T.epsilon, 0));
+        assert(approxEqual(hypergeometricLPMF!T(0, 16901, 65, 65),
+            T(-0.250943515232362117688059964756904267400091569L), 64*T.epsilon, 0));
+        assert(approxEqual(hypergeometricLPMF!T(200, 1000000, 10000, 20000),
+            T(-3.55338757338537526311047126385461753777997241L), 64*T.epsilon, 0));
+        static if (size_t.sizeof == 8) {
+            assert(approxEqual(hypergeometricLPMF!T(4294967296UL, 4294967297UL,
+                4294967296UL, 4294967296UL), -log(cast(T)(4294967297UL)), 64*T.epsilon, 0));
+            assert(approxEqual(hypergeometricLPMF!T(500000000000UL, 2000000000000UL,
+                1000000000000UL, 1000000000000UL),
+                T(-13.6947283203294038817624302823245380332766312L), 64*T.epsilon, 0));
+            assert(approxEqual(hypergeometricLPMF!T(0, size_t.max, 10000, 10000),
+                T(-5.42101086242752510892007785392312318400784217e-12L), 64*T.epsilon, 0));
+            assert(hypergeometricLPMF!T(0, size_t.max, 1, 1) == log1p(-1/cast(T)(size_t.max)));
+            // Exchanging draws/successes and complementing either preserves mass.
+            const value = hypergeometricLPMF!T(10, 1000000000000UL, 1000, 2000);
+            assert(approxEqual(hypergeometricLPMF!T(10, 1000000000000UL, 2000, 1000), value, 64*T.epsilon, 0));
+            assert(approxEqual(hypergeometricLPMF!T(990, 1000000000000UL, 1000, 999999998000UL), value, 64*T.epsilon, 0));
+            assert(approxEqual(hypergeometricLPMF!T(1990, 1000000000000UL, 999999999000UL, 2000), value, 64*T.epsilon, 0));
+        }
+    }}
 }
