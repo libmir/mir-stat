@@ -234,9 +234,9 @@ unittest
 }
 
 /++
-Computes the hypergeometric probability mass function (PMF) with extended 
-floating point types (e.g. `Fp!128`), which provides additional accuracy for
-large values of `k`, `N`, `K`, or `n`. 
+Compatibility name for the extended-precision $(LREF hypergeometricPMF)
+overload. New code can request `hypergeometricPMF!(Fp!128)` explicitly.
+The default precision of this wrapper remains `Fp!128`.
 
 Params:
     k = value to evaluate PMF (e.g. number of correct draws of object of interest)
@@ -255,10 +255,7 @@ T fp_hypergeometricPMF(T = Fp!128)(const size_t k, const size_t N, const size_t 
     in (k <= K, "k must be less than or equal to K")
     in (n - k <= N - K, "`N - K` must be greater than or equal to `n - k`")
 {
-    import mir.math.numeric: binomialCoefficient;
-    return binomialCoefficient(K, cast(const uint) k) * 
-           binomialCoefficient(N - K, cast(const uint) (n - k)) / 
-           binomialCoefficient(N, cast(const uint) n);
+    return hypergeometricPMF!T(k, N, K, n);
 }
 
 ///
@@ -284,6 +281,95 @@ unittest
     n.fp_hypergeometricPMF(N, K, n).fp_log!double.shouldApprox == hypergeometricLPMF(n, N, K, n);
 }
 
+/++
+Computes the direct PMF at the explicitly requested `Fp` precision.
+Coefficient products and division retain extended precision; counts are not
+narrowed to `uint`. Cost grows with the smaller side of each binomial
+coefficient, so very large central counts may still be expensive.
+
+Params:
+    k = number of successes drawn
+    N = population size
+    K = successes in the population
+    n = number of draws
++/
+@safe pure nothrow @nogc
+T hypergeometricPMF(T)(const size_t k, const size_t N, const size_t K, const size_t n)
+    if (is(T == Fp!bits, uint bits))
+    in (K <= N)
+    in (n <= N)
+    in (k <= n)
+    in (k <= K)
+    in (n - k <= N - K)
+{
+    // Extra coefficient bits absorb intermediate rounding. Do not use Fp's
+    // division operator: it currently converts through hardware real.
+    static if (is(T == Fp!bits, uint bits)) {
+        const numerator = hypergeometricCoefficient!(bits + 64)(K, k) *
+            hypergeometricCoefficient!(bits + 64)(N - K, n - k);
+        const denominator = hypergeometricCoefficient!(bits + 64)(N, n);
+        return cast(T) hypergeometricDivide(numerator, denominator);
+    }
+}
+
+private @safe pure nothrow @nogc
+Fp!bits hypergeometricDivide(uint bits)(Fp!bits numerator, Fp!bits denominator)
+{
+    import mir.bignum.fixed: UInt;
+    UInt!(2 * bits + 64) quotient = numerator.coefficient.toSize!(2 * bits + 64);
+    quotient <<= bits + 64;
+    quotient /= denominator.coefficient;
+    auto result = Fp!bits(quotient);
+    result.exponent += numerator.exponent - denominator.exponent - cast(long)bits - 64;
+    return result;
+}
+
+private @safe pure nothrow @nogc
+Fp!bits hypergeometricCoefficient(uint bits)(size_t n, size_t k)
+{
+    import mir.math.numeric: factorial;
+    if (k > n - k) k = n - k;
+    if (k == 0) return Fp!bits(1);
+    return hypergeometricDivide(factorial!bits(k, n - k + 1), factorial!bits(k));
+}
+
+/// Select extended precision explicitly, or retain the compatibility name.
+version(mir_stat_test)
+@safe pure nothrow @nogc unittest
+{
+    static foreach (bits; [64u, 128u, 256u]) {{
+        alias T = Fp!bits;
+        auto mass = hypergeometricPMF!T(1, 4, 2, 2);
+        static assert(is(typeof(mass) == T));
+        assert(cast(double)mass == 2.0 / 3);
+        assert(mass == fp_hypergeometricPMF!T(1, 4, 2, 2));
+        // 1/(2^32+1) = (2^32-1)/(2^64-1). Its repeating binary
+        // expansion exercises precision beyond hardware floating point.
+        static if (size_t.sizeof == 8) {
+            import mir.bignum.fixed: UInt;
+            const result = hypergeometricPMF!T(0x100000000UL, 0x100000001UL,
+                0x100000000UL, 0x100000000UL);
+            UInt!(bits + 128) scaled = UInt!(bits + 128)(1);
+            scaled <<= bits + 96;
+            scaled /= UInt!64(0x100000001UL);
+            auto expected = T(scaled);
+            expected.exponent -= bits + 96;
+            assert(result.exponent == expected.exponent);
+            assert(result.coefficient == expected.coefficient);
+        }
+    }}
+}
+
+// Exact integer combinations give the rounded 128-bit coefficient below.
+version(mir_stat_test)
+@safe pure nothrow @nogc unittest
+{
+    import mir.bignum.fixed: UInt;
+    enum expected = UInt!128("215582029535793405898658859699468210548");
+    const mass = hypergeometricPMF!(Fp!128)(25, 100, 50, 50);
+    assert(mass.exponent == -130);
+    assert(mass.coefficient == expected);
+}
 private
 @safe pure @nogc nothrow
 T hypergeometricCDFImpl(T, HypergeometricAlgo hypergeometricAlgo)
