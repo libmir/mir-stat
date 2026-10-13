@@ -12,9 +12,14 @@ Copyright: 2022-3 Mir Stat Authors.
 module mir.stat.distribution.bernoulli;
 
 import mir.internal.utility: isFloatingPoint;
+import mir.bignum.fp: Fp;
+import mir.stat.internal.fp_probability: fpProbabilityValid, fpProbabilityComplement;
 
 /++
 Computes the bernoulli probability mass function (PMF).
+
+Accepts built-in floating-point probabilities and $(D Fp) probabilities.
+The latter retain their supplied precision without conversion to a hardware float.
 
 Params:
     x = value to evaluate PMF
@@ -30,6 +35,15 @@ T bernoulliPMF(T)(const bool x, const T p)
     in (p <= 1, "p must be less than or equal to 1")
 {
     return p * x + (1 - p) * (1 - x);
+}
+
+/// ditto
+@safe pure nothrow @nogc
+T bernoulliPMF(T)(const bool x, const T p)
+    if (is(T == Fp!size, size_t size))
+    in (fpProbabilityValid(p), "p must be a finite probability in [0, 1]")
+{
+    return x ? p : fpProbabilityComplement(p);
 }
 
 ///
@@ -65,6 +79,15 @@ T bernoulliCDF(T)(const bool x, const T p)
     return x + (1 - x) * (1 - p);
 }
 
+/// ditto
+@safe pure nothrow @nogc
+T bernoulliCDF(T)(const bool x, const T p)
+    if (is(T == Fp!size, size_t size))
+    in (fpProbabilityValid(p), "p must be a finite probability in [0, 1]")
+{
+    return x ? T(1) : fpProbabilityComplement(p);
+}
+
 ///
 version(mir_stat_test)
 @safe pure nothrow @nogc
@@ -96,6 +119,15 @@ T bernoulliCCDF(T)(const bool x, const T p)
     in (p <= 1, "p must be less than or equal to 1")
 {
     return (1 - x) * p;
+}
+
+/// ditto
+@safe pure nothrow @nogc
+T bernoulliCCDF(T)(const bool x, const T p)
+    if (is(T == Fp!size, size_t size))
+    in (fpProbabilityValid(p), "p must be a finite probability in [0, 1]")
+{
+    return x ? T(0) : p;
 }
 
 ///
@@ -228,4 +260,46 @@ version(mir_stat_test)
         assert(bernoulliLPMF(false, T(1)) == -T.infinity);
         assert(bernoulliLPMF(true, T(1)) == 0);
     }
+}
+
+/// Preserve probabilities smaller than hardware floating-point types can represent.
+version(mir_stat_test)
+@safe pure nothrow @nogc unittest
+{
+    auto p = Fp!128(1);
+    p.exponent -= 2000; // Exactly 2^-2000.
+    const mass = bernoulliPMF(true, p);
+    assert(mass.coefficient == p.coefficient && mass.exponent == p.exponent);
+    const tail = bernoulliCCDF(false, p);
+    assert(tail.coefficient == p.coefficient && tail.exponent == p.exponent);
+}
+
+// Exact complements near one must not pass through double or real.
+version(mir_stat_test)
+@safe pure nothrow @nogc unittest
+{
+    import mir.bignum.fixed: UInt;
+    static foreach (bits; [64u, 128u, 256u]) {{
+        alias T = Fp!bits;
+        UInt!bits ones;
+        ones.data[] = size_t.max;
+        const p = T(false, -cast(long)bits, ones); // 1 - 2^-bits.
+        auto expected = T(1);
+        expected.exponent -= bits;
+        const mass = bernoulliPMF(false, p);
+        const cdf = bernoulliCDF(false, p);
+        assert(mass.coefficient == expected.coefficient && mass.exponent == expected.exponent);
+        assert(cdf.coefficient == expected.coefficient && cdf.exponent == expected.exponent);
+        assert(cast(double)bernoulliCDF(true, p) == 1);
+        assert(!bernoulliCCDF(true, p).coefficient);
+        assert(!bernoulliPMF(false, T(1)).coefficient);
+        assert(!bernoulliPMF(true, T(0)).coefficient);
+        assert(cast(double)bernoulliPMF(false, T(0)) == 1);
+        assert(cast(double)bernoulliPMF(true, T(1)) == 1);
+        auto tiny = T(1);
+        tiny.exponent = long.min;
+        const identity = bernoulliPMF(true, tiny);
+        assert(identity.coefficient == tiny.coefficient && identity.exponent == tiny.exponent);
+        assert(cast(double)bernoulliCDF(false, tiny) == 1);
+    }}
 }
