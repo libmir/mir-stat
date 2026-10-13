@@ -670,7 +670,10 @@ T hypergeometricCCDFImpl(T, HypergeometricAlgo hypergeometricAlgo)
     in (k <= K, "k must be less than or equal to K")
     in (n - k <= N - K, "`N - K` must be greater than or equal to `n - k`")
 {
-    if (k < cast(T)n * (cast(T)K / N))
+    // The upper tail starts at k+1. Compare that first included count with
+    // the mean: k can be below the mean even when P(X>k) is extremely small.
+    // The public endpoint check guarantees k+1 cannot overflow here.
+    if (k + 1 < cast(T)n * (cast(T)K / N))
         return 1 - hypergeometricTail!(T, false)(k, N, K, n);
     return hypergeometricTail!(T, true)(k, N, K, n);
 }
@@ -1401,7 +1404,15 @@ version(mir_stat_test)
     assert(hypergeometricCDF(99, 2000, 1000, 1000) == 0x0.0000000000005p-1022);
     assert(hypergeometricCCDF(900, 2000, 1000, 1000) == 0x0.0000000000005p-1022);
     static if (size_t.sizeof == 8) {
-        hypergeometricCCDF(0, 1_000_000_000_000_000_000UL, 1, 1).shouldApprox == 1e-18;
+        import std.math: abs;
+        static foreach (T; AliasSeq!(float, double, real)) {{
+            const T expected = 1 / cast(T)(1_000_000_000_000_000_000UL);
+            assert(abs(hypergeometricCCDF!T(0, 1_000_000_000_000_000_000UL, 1, 1)
+                / expected - 1) < 8 * T.epsilon);
+            const T edge = 1 / cast(T)(size_t.max);
+            assert(abs(hypergeometricCCDF!T(size_t.max - 2, size_t.max,
+                size_t.max - 1, size_t.max - 1) / edge - 1) < 8 * T.epsilon);
+        }}
     }
 }
 
