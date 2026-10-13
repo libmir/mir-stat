@@ -63,7 +63,7 @@ T hypergeometricPMFImpl(T, HypergeometricAlgo hypergeometricAlgo)
     in (n <= N, "n must be less than or equal to N")
     in (k <= n, "n - k must be greater than or equal to zero")
     in (k <= K, "k must be less than or equal to K")
-    in (k + N >= n + K, "`N - K` must be greater than or equal to `n - k`")
+    in (n - k <= N - K, "`N - K` must be greater than or equal to `n - k`")
 {
     import mir.combinatorics: binomial;
     return cast(T) (binomial(K, k) * binomial(N - K, n - k)) / binomial(N, n);
@@ -78,7 +78,7 @@ T hypergeometricPMFImpl(T, HypergeometricAlgo hypergeometricAlgo)
     in (n <= N, "n must be less than or equal to N")
     in (k <= n, "n - k must be greater than or equal to zero")
     in (k <= K, "k must be less than or equal to K")
-    in (k + N >= n + K, "`N - K` must be greater than or equal to `n - k`")
+    in (n - k <= N - K, "`N - K` must be greater than or equal to `n - k`")
 {
     import mir.stat.distribution.binomial: binomialPMF;
 
@@ -94,7 +94,7 @@ T hypergeometricPMFImpl(T, HypergeometricAlgo hypergeometricAlgo)
     in (n <= N, "n must be less than or equal to N")
     in (k <= n, "n - k must be greater than or equal to zero")
     in (k <= K, "k must be less than or equal to K")
-    in (k + N >= n + K, "`N - K` must be greater than or equal to `n - k`")
+    in (n - k <= N - K, "`N - K` must be greater than or equal to `n - k`")
 {
     import mir.stat.distribution.poisson: poissonPMF, PoissonAlgo;
 
@@ -111,13 +111,13 @@ T hypergeometricPMFImpl(T, HypergeometricAlgo hypergeometricAlgo)
     in (n <= N, "n must be less than or equal to N")
     in (k <= n, "n - k must be greater than or equal to zero")
     in (k <= K, "k must be less than or equal to K")
-    in (k + N >= n + K, "`N - K` must be greater than or equal to `n - k`")
+    in (n - k <= N - K, "`N - K` must be greater than or equal to `n - k`")
 {
     import mir.math.common: sqrt;
     import mir.stat.distribution.normal: normalPDF;
 
     T l = k;
-    return normalPDF(l, cast(T) (n * K) / N, sqrt(n * (cast(T) K / N) * (cast(T) (N - K) / N) * (cast(T) (N - n) / (N - 1))));
+    return normalPDF(l, (cast(T) n * K) / N, sqrt(n * (cast(T) K / N) * (cast(T) (N - K) / N) * (cast(T) (N - n) / (N - 1))));
 }
 
 private
@@ -130,12 +130,12 @@ T hypergeometricPMFImpl(T, HypergeometricAlgo hypergeometricAlgo)
     in (n <= N, "n must be less than or equal to N")
     in (k <= n, "n - k must be greater than or equal to zero")
     in (k <= K, "k must be less than or equal to K")
-    in (k + N >= n + K, "`N - K` must be greater than or equal to `n - k`")
+    in (n - k <= N - K, "`N - K` must be greater than or equal to `n - k`")
 {
     import mir.math.common: sqrt;
     import mir.stat.distribution.normal: normalCDF;
 
-    T location = cast(T) (n * K) / N;
+    T location = (cast(T) n * K) / N;
     T scale = sqrt(n * (cast(T) K / N) * (cast(T) (N - K) / N) * (cast(T) (N - n) / (N - 1)));
     return normalCDF(k + 0.5, location, scale) - normalCDF(k - 0.5, location, scale);
 }
@@ -162,9 +162,9 @@ T hypergeometricPMF(T, HypergeometricAlgo hypergeometricAlgo = HypergeometricAlg
     in (n <= N, "n must be less than or equal to N")
     in (k <= n, "n - k must be greater than or equal to zero")
     in (k <= K, "k must be less than or equal to K")
-    in (k + N >= n + K, "`N - K` must be greater than or equal to `n - k`")
+    in (n - k <= N - K, "`N - K` must be greater than or equal to `n - k`")
 {
-    if (n == 0)
+    if (n == 0 || K == 0 || n == N || K == N)
         return 1;
     return hypergeometricPMFImpl!(T, hypergeometricAlgo)(k, N, K, n);
 }
@@ -253,7 +253,7 @@ T fp_hypergeometricPMF(T = Fp!128)(const size_t k, const size_t N, const size_t 
     in (n <= N, "n must be less than or equal to N")
     in (k <= n, "n - k must be greater than or equal to zero")
     in (k <= K, "k must be less than or equal to K")
-    in (k + N >= n + K, "`N - K` must be greater than or equal to `n - k`")
+    in (n - k <= N - K, "`N - K` must be greater than or equal to `n - k`")
 {
     import mir.math.numeric: binomialCoefficient;
     return binomialCoefficient(K, cast(const uint) k) * 
@@ -293,7 +293,7 @@ T hypergeometricCDFImpl(T, HypergeometricAlgo hypergeometricAlgo)
     in (n <= N, "n must be less than or equal to N")
     in (k <= n, "n - k must be greater than or equal to zero")
     in (k <= K, "k must be less than or equal to K")
-    in (k + N >= n + K, "`N - K` must be greater than or equal to `n - k`")
+    in (n - k <= N - K, "`N - K` must be greater than or equal to `n - k`")
 {
     import mir.combinatorics: binomial;
 
@@ -318,7 +318,7 @@ T hypergeometricCDFImpl(T, HypergeometricAlgo hypergeometricAlgo)
     in (n <= N, "n must be less than or equal to N")
     in (k <= n, "n - k must be greater than or equal to zero")
     in (k <= K, "k must be less than or equal to K")
-    in (k + N >= n + K, "`N - K` must be greater than or equal to `n - k`")
+    in (n - k <= N - K, "`N - K` must be greater than or equal to `n - k`")
 {
     import mir.stat.distribution.binomial: binomialCDF;
 
@@ -334,7 +334,7 @@ T hypergeometricCDFImpl(T, HypergeometricAlgo hypergeometricAlgo)
     in (n <= N, "n must be less than or equal to N")
     in (k <= n, "n - k must be greater than or equal to zero")
     in (k <= K, "k must be less than or equal to K")
-    in (k + N >= n + K, "`N - K` must be greater than or equal to `n - k`")
+    in (n - k <= N - K, "`N - K` must be greater than or equal to `n - k`")
 {
     import mir.stat.distribution.poisson: poissonCDF, PoissonAlgo;
 
@@ -352,7 +352,7 @@ T hypergeometricCDFImpl(T, HypergeometricAlgo hypergeometricAlgo)
     in (n <= N, "n must be less than or equal to N")
     in (k <= n, "n - k must be greater than or equal to zero")
     in (k <= K, "k must be less than or equal to K")
-    in (k + N >= n + K, "`N - K` must be greater than or equal to `n - k`")
+    in (n - k <= N - K, "`N - K` must be greater than or equal to `n - k`")
 {
     import mir.math.common: sqrt;
     import mir.stat.distribution.normal: normalCDF;
@@ -361,7 +361,7 @@ T hypergeometricCDFImpl(T, HypergeometricAlgo hypergeometricAlgo)
     static if (hypergeometricAlgo == HypergeometricAlgo.approxNormalContinuityCorrection) {
         l += 0.5;
     }
-    return normalCDF(l, cast(T) (n * K) / N, sqrt(n * (cast(T) K / N) * (cast(T) (N - K) / N) * (cast(T) (N - n) / (N - 1))));
+    return normalCDF(l, (cast(T) n * K) / N, sqrt(n * (cast(T) K / N) * (cast(T) (N - K) / N) * (cast(T) (N - n) / (N - 1))));
 }
 
 /++
@@ -390,9 +390,9 @@ T hypergeometricCDF(T, HypergeometricAlgo hypergeometricAlgo = HypergeometricAlg
     in (n <= N, "n must be less than or equal to N")
     in (k <= n, "n - k must be greater than or equal to zero")
     in (k <= K, "k must be less than or equal to K")
-    in (k + N >= n + K, "`N - K` must be greater than or equal to `n - k`")
+    in (n - k <= N - K, "`N - K` must be greater than or equal to `n - k`")
 {
-    if (k == n || n == 0)
+    if (k == n || k == K || n == 0)
         return 1;
     return hypergeometricCDFImpl!(T, hypergeometricAlgo)(k, N, K, n);
 }
@@ -469,7 +469,7 @@ T hypergeometricCCDFImpl(T, HypergeometricAlgo hypergeometricAlgo)
     in (n <= N, "n must be less than or equal to N")
     in (k <= n, "n - k must be greater than or equal to zero")
     in (k <= K, "k must be less than or equal to K")
-    in (k + N >= n + K, "`N - K` must be greater than or equal to `n - k`")
+    in (n - k <= N - K, "`N - K` must be greater than or equal to `n - k`")
 {
     import mir.combinatorics: binomial;
 
@@ -494,7 +494,7 @@ T hypergeometricCCDFImpl(T, HypergeometricAlgo hypergeometricAlgo)
     in (n <= N, "n must be less than or equal to N")
     in (k <= n, "n - k must be greater than or equal to zero")
     in (k <= K, "k must be less than or equal to K")
-    in (k + N >= n + K, "`N - K` must be greater than or equal to `n - k`")
+    in (n - k <= N - K, "`N - K` must be greater than or equal to `n - k`")
 {
     import mir.stat.distribution.binomial: binomialCCDF;
 
@@ -510,7 +510,7 @@ T hypergeometricCCDFImpl(T, HypergeometricAlgo hypergeometricAlgo)
     in (n <= N, "n must be less than or equal to N")
     in (k <= n, "n - k must be greater than or equal to zero")
     in (k <= K, "k must be less than or equal to K")
-    in (k + N >= n + K, "`N - K` must be greater than or equal to `n - k`")
+    in (n - k <= N - K, "`N - K` must be greater than or equal to `n - k`")
 {
     import mir.stat.distribution.poisson: poissonCCDF, PoissonAlgo;
 
@@ -528,7 +528,7 @@ T hypergeometricCCDFImpl(T, HypergeometricAlgo hypergeometricAlgo)
     in (n <= N, "n must be less than or equal to N")
     in (k <= n, "n - k must be greater than or equal to zero")
     in (k <= K, "k must be less than or equal to K")
-    in (k + N >= n + K, "`N - K` must be greater than or equal to `n - k`")
+    in (n - k <= N - K, "`N - K` must be greater than or equal to `n - k`")
 {
     import mir.math.common: sqrt;
     import mir.stat.distribution.normal: normalCCDF;
@@ -537,7 +537,7 @@ T hypergeometricCCDFImpl(T, HypergeometricAlgo hypergeometricAlgo)
     static if (hypergeometricAlgo == HypergeometricAlgo.approxNormalContinuityCorrection) {
         l += 0.5;
     }
-    return normalCCDF(l, cast(T) (n * K) / N, sqrt(n * (cast(T) K / N) * (cast(T) (N - K) / N) * (cast(T) (N - n) / (N - 1))));
+    return normalCCDF(l, (cast(T) n * K) / N, sqrt(n * (cast(T) K / N) * (cast(T) (N - K) / N) * (cast(T) (N - n) / (N - 1))));
 }
 
 /++
@@ -566,9 +566,9 @@ T hypergeometricCCDF(T, HypergeometricAlgo hypergeometricAlgo = HypergeometricAl
     in (n <= N, "n must be less than or equal to N")
     in (k <= n, "n - k must be greater than or equal to zero")
     in (k <= K, "k must be less than or equal to K")
-    in (k + N >= n + K, "`N - K` must be greater than or equal to `n - k`")
+    in (n - k <= N - K, "`N - K` must be greater than or equal to `n - k`")
 {
-    if (k == n || n == 0)
+    if (k == n || k == K || n == 0)
         return 0;
     return hypergeometricCCDFImpl!(T, hypergeometricAlgo)(k, N, K, n);
 }
@@ -647,33 +647,32 @@ size_t hypergeometricInvCDFImpl(T, HypergeometricAlgo hypergeometricAlgo)
     in (p >= 0, "p must be greater than or equal to 0")
     in (p <= 1, "p must be less than or equal to 1")
 {
-    size_t guess = 0;
+    const lower = n > N - K ? n - (N - K) : 0;
+    const upper = n < K ? n : K;
+    size_t guess = lower;
     if (n < 0.1 * N) {
-        if ((n * N > 9 * (N - K)) &&
-            (n * (N - K) > 9 * K)) {
-        	guess = hypergeometricInvCDFImpl!(T, HypergeometricAlgo.approxNormalContinuityCorrection)(p, N, K, n);
-    	} else if (K < 0.1 * N) {
-        	guess = hypergeometricInvCDFImpl!(T, HypergeometricAlgo.approxPoisson)(p, N, K, n);
+        if ((cast(T) n * K > 9 * cast(T)(N - K)) &&
+            (cast(T) n * (N - K) > 9 * cast(T) K)) {
+            guess = hypergeometricInvCDFImpl!(T, HypergeometricAlgo.approxNormalContinuityCorrection)(p, N, K, n);
+        } else if (K < 0.1 * N) {
+            guess = hypergeometricInvCDFImpl!(T, HypergeometricAlgo.approxPoisson)(p, N, K, n);
         } else {
             guess = hypergeometricInvCDFImpl!(T, HypergeometricAlgo.approxBinomial)(p, N, K, n);
         }
     }
+    if (guess < lower) guess = lower;
+    if (guess > upper) guess = upper;
     T cdfGuess = hypergeometricCDF!(T, hypergeometricAlgo)(guess, N, K, n);
-
     if (p <= cdfGuess) {
-        if (guess == 0) {
-            return guess;
-        }
-        for (size_t i = (guess - 1); guess >= 0; i--) {
-            cdfGuess -= hypergeometricPMF!(T, hypergeometricAlgo)(i + 1, N, K, n);
-            if (p > cdfGuess) {
-                guess = i + 1;
-                break;
-            }
+        while (guess > lower) {
+            const previous = cdfGuess - hypergeometricPMF!(T, hypergeometricAlgo)(guess, N, K, n);
+            if (p > previous) break;
+            --guess;
+            cdfGuess = previous;
         }
     } else {
-        while(p > cdfGuess) {
-            guess++;
+        while (guess < upper && p > cdfGuess) {
+            ++guess;
             cdfGuess += hypergeometricPMF!(T, hypergeometricAlgo)(guess, N, K, n);
         }
     }
@@ -727,7 +726,7 @@ size_t hypergeometricInvCDFImpl(T, HypergeometricAlgo hypergeometricAlgo)
     import mir.math.common: floor, sqrt;
     import mir.stat.distribution.normal: normalCDF, normalInvCDF;
 
-    T location = cast(T) (n * K) / N;
+    T location = (cast(T) n * K) / N;
     T scale = sqrt(n * (cast(T) K / N) * (cast(T) (N - K) / N) * (cast(T) (N - n) / (N - 1)));
 
     // Handles case where p is small or large, better than just using pLowerBound = 0 or pUpperBound = 1
@@ -783,12 +782,16 @@ size_t hypergeometricInvCDF(T, HypergeometricAlgo hypergeometricAlgo = Hypergeom
     in (p >= 0, "p must be greater than or equal to 0")
     in (p <= 1, "p must be less than or equal to 1")
 {
-    if (n == 0 || p == 0) {
+    // Preserve the existing p=0 convention; positive probabilities are
+    // bounded by the actual support, which need not begin at zero.
+    if (n == 0 || p == 0)
         return 0;
-    } else if (p == 1) {
-        return K;
-    }
-    return hypergeometricInvCDFImpl!(T, hypergeometricAlgo)(p, N, K, n);
+    const lower = n > N - K ? n - (N - K) : 0;
+    const upper = n < K ? n : K;
+    if (lower == upper || p == 1)
+        return upper;
+    const result = hypergeometricInvCDFImpl!(T, hypergeometricAlgo)(p, N, K, n);
+    return result < lower ? lower : result > upper ? upper : result;
 }
 
 /// ditto
@@ -921,7 +924,7 @@ T hypergeometricLPMF(T = double)(const size_t k, const size_t N, const size_t K,
     in (n <= N, "n must be less than or equal to N")
     in (k <= n, "n - k must be greater than or equal to zero")
     in (k <= K, "k must be less than or equal to K")
-    in (k + N >= n + K, "`N - K` must be greater than or equal to `n - k`")
+    in (n - k <= N - K, "`N - K` must be greater than or equal to `n - k`")
 {
     import mir.math.internal.log_binomial: logBinomialCoefficient;
     
@@ -942,4 +945,23 @@ unittest
     1.hypergeometricLPMF(7, 4, 3).shouldApprox == log(0.3428571);
     2.hypergeometricLPMF(7, 4, 3).shouldApprox == log(0.5142857);
     3.hypergeometricLPMF(7, 4, 3).shouldApprox == log(0.1142857);
+}
+
+// Actual support and deterministic draws apply to every approximation.
+version(mir_stat_test)
+@safe pure nothrow @nogc unittest
+{
+    static foreach (algo; __traits(allMembers, HypergeometricAlgo)) {{
+        enum a = __traits(getMember, HypergeometricAlgo, algo);
+        assert(hypergeometricInvCDF!(double, a)(1.0, 10, 8, 4) == 4);
+        assert(hypergeometricPMF!a(3, 10, 3, 10) == 1);
+        assert(hypergeometricCDF!a(3, 10, 3, 10) == 1);
+        assert(hypergeometricCCDF!a(3, 10, 3, 10) == 0);
+        assert(hypergeometricInvCDF!(double, a)(0.5, 10, 3, 10) == 3);
+    }}
+    assert(hypergeometricInvCDF(0.5, 10, 8, 4) == 3);
+    assert(hypergeometricInvCDF(0.01, 10, 8, 4) == 2);
+    assert(hypergeometricInvCDF(0.99, 10, 8, 4) == 4);
+    assert(hypergeometricInvCDF(0.0, 10, 8, 4) == 0);
+    assert(hypergeometricPMF(1, size_t.max, 1, 1) > 0);
 }
