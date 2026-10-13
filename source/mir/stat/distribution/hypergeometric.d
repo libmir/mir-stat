@@ -140,10 +140,14 @@ T hypergeometricPMFImpl(T, HypergeometricAlgo hypergeometricAlgo)
     in (n - k <= N - K, "`N - K` must be greater than or equal to `n - k`")
 {
     import mir.math.common: sqrt;
-    import mir.stat.distribution.normal: normalCDF;
+    import mir.stat.distribution.normal: normalCDF, normalCCDF;
 
     T location = (cast(T) n * K) / N;
     T scale = sqrt(n * (cast(T) K / N) * (cast(T) (N - K) / N) * (cast(T) (N - n) / (N - 1)));
+    // Right-tail CDFs can both round to one. Subtract their complementary
+    // probabilities to preserve the same continuity-corrected interval mass.
+    if (k > location)
+        return normalCCDF(k - 0.5, location, scale) - normalCCDF(k + 0.5, location, scale);
     return normalCDF(k + 0.5, location, scale) - normalCDF(k - 0.5, location, scale);
 }
 
@@ -389,6 +393,30 @@ T hypergeometricLargePMF(T)(size_t k, size_t N, size_t K, size_t n)
 {
     pragma(inline, false);
     return hypergeometricToFloat!T(hypergeometricPMF!(Fp!128)(k, N, K, n));
+}
+
+// Continuity correction preserves representable normal-approximation tails.
+version(mir_stat_test)
+@safe pure nothrow @nogc
+unittest
+{
+    import std.math: abs;
+    import std.meta: AliasSeq;
+
+    // 100-digit mpmath normal integrals over [k-1/2,k+1/2], using
+    // mean=500 and variance=1000*(1/2)*(1/2)*9000/9999.
+    // These reference the approximation itself, not the exact hypergeometric PMF.
+    static foreach (T; AliasSeq!(float, double, real)) {{
+        alias pmf = hypergeometricPMF!(T, HypergeometricAlgo.approxNormalContinuityCorrection);
+        const T middle = 0.02658989853189438668076460428291362448L;
+        const T tail = 5.250180007593334009264374940772430523e-24L;
+        assert(abs(pmf(500, 10000, 5000, 1000) / middle - 1) < 128 * T.epsilon);
+        assert(abs(pmf(650, 10000, 5000, 1000) / tail - 1) < 128 * T.epsilon);
+        assert(abs(pmf(350, 10000, 5000, 1000) / tail - 1) < 128 * T.epsilon);
+    }}
+    const double farTail = 6.899585649237641167195415473071995941e-41;
+    assert(abs(hypergeometricPMF!(double, HypergeometricAlgo.approxNormalContinuityCorrection)
+        (700, 10000, 5000, 1000) / farTail - 1) < 128 * double.epsilon);
 }
 
 // Normalize before conversion so a very small Fp exponent is not narrowed
