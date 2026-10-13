@@ -799,6 +799,56 @@ unittest
     3_750.hypergeometricCCDF!"approxNormalContinuityCorrection"(10_000, 7_500, 5_000).shouldApprox(1e-2) == 0.4907878;
 }
 
+// Resolve a close inverse comparison exactly when C(N,n) fits in ulong.
+// Each term and their sum fit too. A 128-bit significand holds the exact
+// product of this denominator and any supported hardware probability.
+private @safe pure nothrow @nogc
+bool hypergeometricExactQuantileReached(T)(size_t k, size_t N, size_t K,
+    size_t n, T p, bool fallback)
+{
+    pragma(inline, false);
+    import mir.combinatorics: binomial;
+
+    static if (T.mant_dig > 64) {
+        return fallback;
+    } else {
+        const denominator = binomial(N, n);
+        if (denominator == 0)
+            return fallback;
+        const lower = n > N - K ? n - (N - K) : 0;
+        ulong sum;
+        for (size_t i = lower;; ++i) {
+            sum += binomial(K, i) * binomial(N - K, n - i);
+            if (i == k) break;
+        }
+        const left = Fp!128(sum);
+        const right = Fp!128(p) * Fp!128(denominator);
+        // Both positive coefficients are normalized, so exponents order them
+        // first; only equal exponents require comparing the significands.
+        return left.exponent != right.exponent
+            ? left.exponent > right.exponent
+            : left.coefficient >= right.coefficient;
+    }
+}
+
+private @safe pure nothrow @nogc
+bool hypergeometricQuantileReached(T)(size_t k, size_t N, size_t K,
+    size_t n, T p, bool upper, T value)
+{
+    import std.math: abs;
+
+    const T target = upper ? 1 - p : p;
+    const reached = upper ? value <= target : value >= target;
+    const lower = n > N - K ? n - (N - K) : 0;
+    const last = n < K ? n : K;
+    // This screen selects an exact comparison; it does not relax the quantile
+    // inequality. Include subnormal spacing and accumulated summation error.
+    if (abs(value - target) <= 32 * (T(last - lower) + 1) * T.epsilon *
+        (abs(value) + target + T.min_normal))
+        return hypergeometricExactQuantileReached(k, N, K, n, p, reached);
+    return reached;
+}
+
 private
 @safe pure nothrow @nogc
 size_t hypergeometricInvCDFImpl(T, HypergeometricAlgo hypergeometricAlgo)
@@ -824,27 +874,32 @@ size_t hypergeometricInvCDFImpl(T, HypergeometricAlgo hypergeometricAlgo)
     }
     if (guess < lower) guess = lower;
     if (guess > upper) guess = upper;
+    bool reached(size_t k, bool upperTail, T value) {
+        return hypergeometricQuantileReached(k, N, K, n, p, upperTail, value);
+    }
     if (p > T(0.5)) {
         // Compare the remaining probability directly. Adding masses to a CDF
         // near one can discard the tail and move the quantile to an endpoint.
-        const target = 1 - p;
         if (n < 0.1 * N) {
             // The approximation is usually within a few counts of the answer.
             // Re-evaluate each tail instead of subtracting nearly equal masses.
-            if (hypergeometricCCDF!T(guess, N, K, n) <= target) {
+            if (reached(guess, true, hypergeometricCCDF!T(guess, N, K, n))) {
                 while (guess > lower &&
-                    hypergeometricCCDF!T(guess - 1, N, K, n) <= target)
+                    reached(guess - 1, true, hypergeometricCCDF!T(guess - 1, N, K, n)))
                     --guess;
             } else {
-                while (guess < upper &&
-                    hypergeometricCCDF!T(++guess, N, K, n) > target) {}
+                while (guess < upper) {
+                    ++guess;
+                    if (reached(guess, true, hypergeometricCCDF!T(guess, N, K, n)))
+                        break;
+                }
             }
             return guess;
         }
         size_t left = lower, right = upper;
         while (left < right) {
             const middle = left + (right - left) / 2;
-            if (hypergeometricCCDF!T(middle, N, K, n) <= target)
+            if (reached(middle, true, hypergeometricCCDF!T(middle, N, K, n)))
                 right = middle;
             else
                 left = middle + 1;
@@ -852,15 +907,15 @@ size_t hypergeometricInvCDFImpl(T, HypergeometricAlgo hypergeometricAlgo)
         return left;
     }
     T cdfGuess = hypergeometricCDF!(T, hypergeometricAlgo)(guess, N, K, n);
-    if (p <= cdfGuess) {
+    if (reached(guess, false, cdfGuess)) {
         while (guess > lower) {
             const previous = cdfGuess - hypergeometricPMF!(T, hypergeometricAlgo)(guess, N, K, n);
-            if (p > previous) break;
+            if (!reached(guess - 1, false, previous)) break;
             --guess;
             cdfGuess = previous;
         }
     } else {
-        while (guess < upper && p > cdfGuess) {
+        while (guess < upper && !reached(guess, false, cdfGuess)) {
             ++guess;
             cdfGuess += hypergeometricPMF!(T, hypergeometricAlgo)(guess, N, K, n);
         }
@@ -948,6 +1003,10 @@ Computes the hypergeometric inverse cumulative distribution function (InvCDF).
 For positive probabilities, results lie between `max(0, n - (N - K))` and
 `min(n, K)`. At `p = 0`, this function retains its convention of returning zero
 even when the smallest attainable number of successes is positive.
+
+The direct algorithm resolves close probability comparisons exactly when
+`C(N,n)` fits in an unsigned 64-bit integer and the probability type has at
+most 64 significand bits. Larger cases retain floating-point tail comparisons.
 
 Additional algorithms may be provided for calculating InvCDF that allow trading off
 time and accuracy. If `approxPoisson` is provided, `PoissonAlgo.direct` is assumed.
@@ -1075,6 +1134,32 @@ unittest
         x.hypergeometricInvCDF!"approxNormal"(N, K, n).should == floor(checkValue);
         x.hypergeometricInvCDF!"approxNormalContinuityCorrection"(N, K, n).should == floor(checkValue - 0.5);
     }
+}
+
+// A rounded CDF must not erase which side of a rational boundary p lies on.
+version(mir_stat_test)
+@safe pure nothrow @nogc
+unittest
+{
+    import std.math: nextDown, nextUp;
+    import std.meta: AliasSeq;
+
+    // Binary double(.01) lies above 1/100; the next lower double lies below.
+    assert(hypergeometricInvCDF(0.01, 100, 1, 99) == 1);
+    assert(hypergeometricInvCDF(0.01.nextDown, 100, 1, 99) == 0);
+    assert(hypergeometricInvCDF(0.01, 100, 99, 1) == 1);
+    assert(hypergeometricInvCDF(0.01.nextDown, 100, 99, 1) == 0);
+    static foreach (T; AliasSeq!(float, double, real)) {{
+        // CDF(0)=3/4 exactly. Equality selects zero, not the next count.
+        assert(hypergeometricInvCDF(T(0.75).nextDown, 4, 1, 1) == 0);
+        assert(hypergeometricInvCDF(T(0.75), 4, 1, 1) == 0);
+        assert(hypergeometricInvCDF(T(0.75).nextUp, 4, 1, 1) == 1);
+        assert(hypergeometricInvCDF(T(0.25), 4, 1, 3) == 0);
+        assert(hypergeometricInvCDF(T(0.25).nextUp, 4, 1, 3) == 1);
+        // The same boundary with a positive lower support endpoint.
+        assert(hypergeometricInvCDF(T(0.75), 4, 3, 3) == 2);
+        assert(hypergeometricInvCDF(T(0.75).nextUp, 4, 3, 3) == 3);
+    }}
 }
 
 // Upper-tail quantiles use exact rational comparisons as independent references.
