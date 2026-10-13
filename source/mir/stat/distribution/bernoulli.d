@@ -47,7 +47,7 @@ unittest
 }
 
 /++
-Computes the bernoulli cumulatve distribution function (CDF).
+Computes the bernoulli cumulative distribution function (CDF).
 
 Params:
     x = value to evaluate CDF
@@ -115,6 +115,10 @@ unittest
 /++
 Computes the bernoulli inverse cumulative distribution function (InvCDF).
 
+For $(D q < 1), returns $(D false) when $(D q <= 1 - p), and $(D true) otherwise.
+At $(D q == 1), returns $(D true) whenever $(D p > 0).
+At $(D q == 0), returns $(D false), including when $(D p == 1).
+
 Params:
     q = value to evaluate InvCDF
     p = `true` probability
@@ -130,7 +134,9 @@ bool bernoulliInvCDF(T)(const T q, const T p)
     in (p >= 0, "p must be greater than or equal to 0")
     in (p <= 1, "p must be less than or equal to 1")
 {
-    return q > p; // this ensures bernoulliInvCDF(a, a) == false, which is consistent with bernoulliCDF(false, a) == a
+    // The lower outcome has probability 1 - p; equality selects false.
+    // Preserve the upper endpoint even when 1 - p rounds to one.
+    return q == 1 ? p > 0 : q > 1 - p;
 }
 
 ///
@@ -143,7 +149,7 @@ unittest
     assert(0.75.bernoulliInvCDF(0.5) == true);
 
     assert(0.3.bernoulliInvCDF(0.7) == false);
-    assert(0.7.bernoulliInvCDF(0.7) == false);
+    assert(0.7.bernoulliInvCDF(0.7) == true);
     assert(0.9.bernoulliInvCDF(0.7) == true);
 }
 
@@ -161,7 +167,7 @@ unittest
 Computes the bernoulli log probability mass function (LPMF).
 
 Params:
-    x = value to evaluate LPDF
+    x = value to evaluate LPMF
     p = `true` probability
 
 See_also:
@@ -190,4 +196,36 @@ unittest
 
     assert(true.bernoulliLPMF(0.7).approxEqual(log(bernoulliPMF(true, 0.7))));
     assert(false.bernoulliLPMF(0.7).approxEqual(log(bernoulliPMF(false, 0.7))));
+}
+
+// Asymmetric probabilities expose a swapped inverse-CDF threshold.
+version(mir_stat_test)
+@safe pure nothrow @nogc unittest
+{
+    import std.meta: AliasSeq;
+    static foreach (T; AliasSeq!(float, double, real))
+    {
+        static foreach (p; [T(0), T(0.25), T(0.75), T(1)])
+        {
+            assert(bernoulliPMF(false, p) == 1 - p);
+            assert(bernoulliPMF(true, p) == p);
+            assert(bernoulliCDF(false, p) == 1 - p);
+            assert(bernoulliCDF(true, p) == 1);
+            assert(bernoulliCCDF(false, p) == p);
+            assert(bernoulliCCDF(true, p) == 0);
+            assert(!bernoulliInvCDF(T(0), p));
+            assert(!bernoulliInvCDF(T(1 - p), p));
+            assert(bernoulliInvCDF(T(1), p) == (p != 0));
+        }
+        assert(bernoulliInvCDF(T(1), T.min_normal));
+        assert(!bernoulliInvCDF(T(1) - T.epsilon, T.min_normal));
+        assert(bernoulliInvCDF(T(0.5), T(0.75)));
+        assert(!bernoulliInvCDF(T(0.5), T(0.25)));
+        assert(bernoulliInvCDF(T(0.25) + T.epsilon, T(0.75)));
+        assert(!bernoulliInvCDF(T(0.25) - T.epsilon, T(0.75)));
+        assert(bernoulliLPMF(false, T(0)) == 0);
+        assert(bernoulliLPMF(true, T(0)) == -T.infinity);
+        assert(bernoulliLPMF(false, T(1)) == -T.infinity);
+        assert(bernoulliLPMF(true, T(1)) == 0);
+    }
 }
