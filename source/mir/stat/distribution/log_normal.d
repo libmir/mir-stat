@@ -27,14 +27,22 @@ T logNormalPDF(T)(const T x)
     if (isFloatingPoint!T)
     in (x >= 0, "x must be greater than or equal to zero")
 {
-    import mir.math.common: log;
-    import mir.stat.distribution.normal: normalPDF;
-    if (x == 0) return 0;
-    return x.log.normalPDF / x;
+    import mir.math.common: log, exp;
+    import mir.stat.distribution.normal: normalPDF, normalLPDF;
+    if (x == 0 || x == T.infinity) return 0;
+    const T logX = log(x);
+    const T density = normalPDF(logX);
+    // A rounded-away normal density can become representable after dividing
+    // by a small x. Combine the logarithms before the final exponential.
+    if (density < T.min_normal)
+        return exp(normalLPDF(logX) - logX);
+    return density / x;
 }
 
 /++
-Ditto, with location and scale parameters (by standardizing `x`).
+Ditto, with location and scale parameters for $(D log(x)).
+These are the mean and standard deviation of the underlying normal
+variable, not the mean and standard deviation of the log-normal variable.
 
 Params:
     x = value to evaluate PDF
@@ -47,10 +55,16 @@ T logNormalPDF(T)(const T x, const T mean, const T stdDev)
     in (x >= 0, "x must be greater than or equal to zero")
     in (stdDev > 0, "stdDev must be greater than zero")
 {
-    import mir.math.common: log;
-    import mir.stat.distribution.normal: normalPDF;
-    if (x == 0) return 0;
-    return x.log.normalPDF(mean, stdDev) / x;
+    import mir.math.common: log, exp;
+    import mir.stat.distribution.normal: normalPDF, normalLPDF;
+    if (x == 0 || x == T.infinity) return 0;
+    const T logX = log(x);
+    const T density = normalPDF(logX, mean, stdDev);
+    // Recover both underflow before division by x and overflow before
+    // division by a large x. Ordinary densities retain the direct path.
+    if (density < T.min_normal || density == T.infinity)
+        return exp(normalLPDF(logX, mean, stdDev) - logX);
+    return density / x;
 }
 
 ///
@@ -106,7 +120,9 @@ T logNormalCDF(T)(const T x)
 }
 
 /++
-Ditto, with location and scale parameters (by standardizing `x`).
+Ditto, with location and scale parameters for $(D log(x)).
+These are the mean and standard deviation of the underlying normal
+variable, not the mean and standard deviation of the log-normal variable.
 
 Params:
     x = value to evaluate CDF
@@ -144,7 +160,7 @@ unittest
 }
 
 /++
-Computes the Student's t complementary cumulative distribution function (CCDF).
+Computes the Log-normal complementary cumulative distribution function (CCDF).
 
 Params:
     x = value to evaluate CCDF
@@ -163,7 +179,9 @@ T logNormalCCDF(T)(const T x)
 }
 
 /++
-Ditto, with location and scale parameters (by standardizing `x`).
+Ditto, with location and scale parameters for $(D log(x)).
+These are the mean and standard deviation of the underlying normal
+variable, not the mean and standard deviation of the log-normal variable.
 
 Params:
     x = value to evaluate CCDF
@@ -222,7 +240,9 @@ T logNormalInvCDF(T)(const T p)
 }
 
 /++
-Ditto, with location and scale parameters (by standardizing `x`).
+Ditto, with location and scale parameters for $(D log(x)).
+These are the mean and standard deviation of the underlying normal
+variable, not the mean and standard deviation of the log-normal variable.
 
 Params:
     p = value to evaluate InvCDF
@@ -280,11 +300,14 @@ T logNormalLPDF(T)(const T x)
     import mir.math.common: log;
     import mir.stat.distribution.normal: normalLPDF;
     if (x == 0) return -T.infinity;
-    return x.log.normalLPDF - log(x);
+    const T logX = log(x);
+    return normalLPDF(logX) - logX;
 }
 
 /++
-Ditto, with location and scale parameters (by standardizing `x`).
+Ditto, with location and scale parameters for $(D log(x)).
+These are the mean and standard deviation of the underlying normal
+variable, not the mean and standard deviation of the log-normal variable.
 
 Params:
     x = value to evaluate LPDF
@@ -300,7 +323,8 @@ T logNormalLPDF(T)(const T x, const T mean, const T stdDev)
     import mir.math.common: log;
     import mir.stat.distribution.normal: normalLPDF;
     if (x == 0) return -T.infinity;
-    return x.log.normalLPDF(mean, stdDev) - log(x);
+    const T logX = log(x);
+    return normalLPDF(logX, mean, stdDev) - logX;
 }
 
 ///
@@ -331,4 +355,46 @@ unittest
 
     logNormalLPDF(0.0).shouldApprox == -double.infinity;
     logNormalLPDF(0.0, 1, 2).shouldApprox == -double.infinity;
+}
+
+// References evaluated with mpmath at 100 decimal digits. Powers of two
+// make the observations exact; compare subnormals with an absolute allowance.
+version(mir_stat_test)
+@safe pure nothrow @nogc
+unittest
+{
+    import mir.math.common: fabs, log;
+    import std.meta: AliasSeq;
+    static foreach (T; AliasSeq!(float, double, real))
+    {{
+        static if (T.mant_dig == 24)
+        {
+            enum T x = 0x1p-20;
+            enum T expected = 7.760530809436573628861965896882676e-37L;
+        }
+        else static if (T.max_exp == 1024)
+        {
+            enum T x = 0x1p-56;
+            enum T expected = 1.917345496570292173741763244485091e-311L;
+        }
+        else
+        {
+            enum T x = 0x1p-218L;
+            enum T expected = 1.235517764122188481314436537289697e-4893L;
+        }
+        const T tolerance = 16 * T.epsilon * log(x) * log(x);
+        assert(fabs(logNormalPDF(x) - expected) <=
+            expected * tolerance + 4 * T.min_normal * T.epsilon);
+        assert(fabs(logNormalPDF(x, T(0), T(1)) - expected) <=
+            expected * tolerance + 4 * T.min_normal * T.epsilon);
+        assert(logNormalPDF(T.infinity) == 0);
+        assert(logNormalPDF(T.infinity, T(0), T(2)) == 0);
+        assert(logNormalLPDF(T.infinity) == -T.infinity);
+        assert(logNormalLPDF(T.infinity, T(0), T(2)) == -T.infinity);
+        assert(logNormalPDF(T(1), T(0), T.min_normal * T.epsilon) == T.infinity);
+        assert(logNormalInvCDF(T(0)) == 0);
+        assert(logNormalInvCDF(T(1)) == T.infinity);
+    }}
+    enum double expected = 1.2130856546630247693e-262;
+    assert(fabs(logNormalPDF(1e-200, 0.0, 10.0) / expected - 1) < 3e-13);
 }
