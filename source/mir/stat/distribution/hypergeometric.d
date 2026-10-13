@@ -66,6 +66,9 @@ T hypergeometricPMFImpl(T, HypergeometricAlgo hypergeometricAlgo)
     in (n - k <= N - K, "`N - K` must be greater than or equal to `n - k`")
 {
     import mir.combinatorics: binomial;
+    // Inline both dispatch layers so fixed parameters can be optimized;
+    // the extended-precision fallback remains out of line.
+    pragma(inline, true);
     const numerator = binomial(K, k) * binomial(N - K, n - k);
     const denominator = binomial(N, n);
     if (denominator != 0)
@@ -172,6 +175,7 @@ T hypergeometricPMF(T, HypergeometricAlgo hypergeometricAlgo = HypergeometricAlg
     in (k <= K, "k must be less than or equal to K")
     in (n - k <= N - K, "`N - K` must be greater than or equal to `n - k`")
 {
+    pragma(inline, true);
     if (n == 0 || K == 0 || n == N || K == N)
         return 1;
     return hypergeometricPMFImpl!(T, hypergeometricAlgo)(k, N, K, n);
