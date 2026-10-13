@@ -1217,6 +1217,26 @@ unittest
     assert(hypergeometricInvCDF(p, 1000, 500, 500) == 292);
 }
 
+// Refine a normal-based guess to the exact discrete quantile.
+version(mir_stat_test)
+@safe pure nothrow @nogc
+unittest
+{
+    // Exact integer combination sums establish these quantiles. In particular,
+    // the upper-half search must advance beyond its continuity-corrected guess.
+    const double[6] queries = [0.01, 0.1, 0.25, 0.5, 0.75, 0.99];
+    const size_t[6] expected = [17, 21, 23, 25, 27, 33];
+    foreach (i, p; queries)
+        assert(hypergeometricInvCDF(p, 1000, 500, 50) == expected[i]);
+
+    // A binomial guess can overshoot in the lower half; refine it downward.
+    assert(hypergeometricInvCDF(0.49, 100, 93, 9) == 8);
+
+    // Symmetry gives CDF(24)=1/2 although C(100,49) exceeds ulong.
+    // The close-comparison path must retain its floating-point fallback.
+    assert(hypergeometricInvCDF(0.5, 100, 50, 49) == 24);
+}
+
 // test alternate direct guess paths
 version(mir_stat_test)
 @safe pure nothrow @nogc
