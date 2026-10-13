@@ -353,6 +353,8 @@ Fp!bits hypergeometricCoefficient(uint bits)(size_t n, size_t k)
 version(mir_stat_test)
 @safe pure nothrow @nogc unittest
 {
+    import mir.bignum.fp: Fp;
+
     static foreach (bits; [64u, 128u, 256u]) {{
         alias T = Fp!bits;
         auto mass = hypergeometricPMF!T(1, 4, 2, 2);
