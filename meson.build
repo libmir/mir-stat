@@ -37,6 +37,7 @@ sources_list = [
     'mir/stat/descriptive/histogram/internal/cell',
     'mir/stat/descriptive/histogram/internal/shared_counts',
     'mir/stat/internal/borrow',
+    'mir/stat/internal/fp_probability',
     'mir/stat/internal/neg_log1m',
     'mir/stat/internal/one_minus_exp',
     'mir/stat/internal/shape_transform',
