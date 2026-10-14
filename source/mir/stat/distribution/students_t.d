@@ -929,3 +929,18 @@ T studentsTScaledCDF(T)(const T z, const T x, const T nu,
     }
     return studentsTCDF(complement ? -z : z, nu);
 }
+
+// Central probabilities can still require the complementary beta formula
+// at small degrees of freedom. References invert a 100-digit beta integral
+// by bisection in log(x), independently of the production inverse routine.
+version(mir_stat_test)
+@safe pure nothrow @nogc unittest
+{
+    import mir.math.common: approxEqual;
+    assert(approxEqual(studentsTInvCDF(0.3, 0.1), -27.170126296735762052108, 2e-13));
+    assert(approxEqual(studentsTInvCDF(0.3, 0.001), -1.11660119096013474742e220, 2e-12));
+    assert(approxEqual(studentsTInvCDF(0.7, 0.1), 27.170126296735762052108, 2e-13));
+    // The rescaled beta argument remains normal even though x*x overflows.
+    // The tail here is smaller than the smallest representable double.
+    assert(studentsTCDF(-1e155, 1e5) == 0);
+}
