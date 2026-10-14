@@ -47,7 +47,7 @@ Params:
     x = value to evaluate PDF
     nu = degrees of freedom
     mean = location parameter
-    stdDev = scale parameter
+    stdDev = positive scale parameter (not generally the standard deviation)
 +/
 @safe pure nothrow @nogc
 T studentsTPDF(T)(const T x, const T nu, const T mean, const T stdDev)
@@ -55,7 +55,7 @@ T studentsTPDF(T)(const T x, const T nu, const T mean, const T stdDev)
     in (nu > 0, "nu must be greater than zero")
     in (stdDev > 0, "stdDev must be greater than zero")
 {
-    return studentsTPDF((x - mean) / stdDev, nu);
+    return studentsTPDF((x - mean) / stdDev, nu) / stdDev;
 }
 
 ///
@@ -74,13 +74,13 @@ unittest
     studentsTPDF(3.0, 5).shouldApprox == 0.01729258;
 
     // Can include location/scale
-    studentsTPDF(-3.0, 5, 1, 2).shouldApprox == 0.06509031;
-    studentsTPDF(-2.0, 5, 1, 2).shouldApprox == 0.1245173;
-    studentsTPDF(-1.0, 5, 1, 2).shouldApprox == 0.2196798;
-    studentsTPDF(0.0, 5, 1, 2).shouldApprox == 0.3279185;
-    studentsTPDF(1.0, 5, 1, 2).shouldApprox == 0.3796067;
-    studentsTPDF(2.0, 5, 1, 2).shouldApprox == 0.3279185;
-    studentsTPDF(3.0, 5, 1, 2).shouldApprox == 0.2196798;
+    studentsTPDF(-3.0, 5, 1, 2).shouldApprox == (0.06509031) / 2;
+    studentsTPDF(-2.0, 5, 1, 2).shouldApprox == (0.1245173) / 2;
+    studentsTPDF(-1.0, 5, 1, 2).shouldApprox == (0.2196798) / 2;
+    studentsTPDF(0.0, 5, 1, 2).shouldApprox == (0.3279185) / 2;
+    studentsTPDF(1.0, 5, 1, 2).shouldApprox == (0.3796067) / 2;
+    studentsTPDF(2.0, 5, 1, 2).shouldApprox == (0.3279185) / 2;
+    studentsTPDF(3.0, 5, 1, 2).shouldApprox == (0.2196798) / 2;
 }
 
 // Checking other DoF
@@ -114,13 +114,13 @@ unittest
 {
     import mir.test: shouldApprox;
 
-    studentsTPDF(-3.0, 5, -1, 2).shouldApprox == 0.2196798;
-    studentsTPDF(-2.0, 5, -1, 2).shouldApprox == 0.3279185;
-    studentsTPDF(-1.0, 5, -1, 2).shouldApprox == 0.3796067;
-    studentsTPDF(0.0, 5, -1, 2).shouldApprox == 0.3279185;
-    studentsTPDF(1.0, 5, -1, 2).shouldApprox == 0.2196798;
-    studentsTPDF(2.0, 5, -1, 2).shouldApprox == 0.1245173;
-    studentsTPDF(3.0, 5, -1, 2).shouldApprox == 0.06509031;
+    studentsTPDF(-3.0, 5, -1, 2).shouldApprox == (0.2196798) / 2;
+    studentsTPDF(-2.0, 5, -1, 2).shouldApprox == (0.3279185) / 2;
+    studentsTPDF(-1.0, 5, -1, 2).shouldApprox == (0.3796067) / 2;
+    studentsTPDF(0.0, 5, -1, 2).shouldApprox == (0.3279185) / 2;
+    studentsTPDF(1.0, 5, -1, 2).shouldApprox == (0.2196798) / 2;
+    studentsTPDF(2.0, 5, -1, 2).shouldApprox == (0.1245173) / 2;
+    studentsTPDF(3.0, 5, -1, 2).shouldApprox == (0.06509031) / 2;
 }
 
 /++
@@ -165,7 +165,7 @@ Params:
     x = value to evaluate CDF
     nu = degrees of freedom
     mean = location parameter
-    stdDev = scale parameter
+    stdDev = positive scale parameter (not generally the standard deviation)
 +/
 @safe pure nothrow @nogc
 T studentsTCDF(T)(const T x, const T nu, const T mean, const T stdDev)
@@ -268,7 +268,7 @@ Params:
     x = value to evaluate CCDF
     nu = degrees of freedom
     mean = location parameter
-    stdDev = scale parameter
+    stdDev = positive scale parameter (not generally the standard deviation)
 +/
 @safe pure nothrow @nogc
 T studentsTCCDF(T)(const T x, const T nu, const T mean, const T stdDev)
@@ -409,7 +409,7 @@ Params:
     p = value to evaluate InvCDF
     nu = degrees of freedom
     mean = location parameter
-    stdDev = scale parameter
+    stdDev = positive scale parameter (not generally the standard deviation)
 +/
 @safe pure nothrow @nogc
 T studentsTInvCDF(T)(const T p, const T nu, const T mean, const T stdDev)
@@ -517,7 +517,7 @@ Params:
     x = value to evaluate LPDF
     nu = degrees of freedom
     mean = location parameter
-    stdDev = scale parameter
+    stdDev = positive scale parameter (not generally the standard deviation)
 +/
 @safe pure nothrow @nogc
 T studentsTLPDF(T)(const T x, const T nu, const T mean, const T stdDev)
@@ -525,7 +525,9 @@ T studentsTLPDF(T)(const T x, const T nu, const T mean, const T stdDev)
     in (nu > 0, "nu must be greater than zero")
     in (stdDev > 0, "stdDev must be greater than zero")
 {
-    return studentsTLPDF((x - mean) / stdDev, nu);
+    import mir.math.common: log;
+
+    return studentsTLPDF((x - mean) / stdDev, nu) - log(stdDev);
 }
 
 ///
@@ -545,13 +547,13 @@ unittest
     studentsTLPDF(3.0, 5).shouldApprox == log(0.01729258);
 
     // Can include location/scale
-    studentsTLPDF(-3.0, 5, 1, 2).shouldApprox == log(0.06509031);
-    studentsTLPDF(-2.0, 5, 1, 2).shouldApprox == log(0.1245173);
-    studentsTLPDF(-1.0, 5, 1, 2).shouldApprox == log(0.2196798);
-    studentsTLPDF(0.0, 5, 1, 2).shouldApprox == log(0.3279185);
-    studentsTLPDF(1.0, 5, 1, 2).shouldApprox == log(0.3796067);
-    studentsTLPDF(2.0, 5, 1, 2).shouldApprox == log(0.3279185);
-    studentsTLPDF(3.0, 5, 1, 2).shouldApprox == log(0.2196798);
+    studentsTLPDF(-3.0, 5, 1, 2).shouldApprox == log((0.06509031) / 2);
+    studentsTLPDF(-2.0, 5, 1, 2).shouldApprox == log((0.1245173) / 2);
+    studentsTLPDF(-1.0, 5, 1, 2).shouldApprox == log((0.2196798) / 2);
+    studentsTLPDF(0.0, 5, 1, 2).shouldApprox == log((0.3279185) / 2);
+    studentsTLPDF(1.0, 5, 1, 2).shouldApprox == log((0.3796067) / 2);
+    studentsTLPDF(2.0, 5, 1, 2).shouldApprox == log((0.3279185) / 2);
+    studentsTLPDF(3.0, 5, 1, 2).shouldApprox == log((0.2196798) / 2);
 }
 
 // Checking other DoF
@@ -587,11 +589,33 @@ unittest
     import mir.test: shouldApprox;
     import mir.math.common: log;
 
-    studentsTLPDF(-3.0, 5, -1, 2).shouldApprox == log(0.2196798);
-    studentsTLPDF(-2.0, 5, -1, 2).shouldApprox == log(0.3279185);
-    studentsTLPDF(-1.0, 5, -1, 2).shouldApprox == log(0.3796067);
-    studentsTLPDF(0.0, 5, -1, 2).shouldApprox == log(0.3279185);
-    studentsTLPDF(1.0, 5, -1, 2).shouldApprox == log(0.2196798);
-    studentsTLPDF(2.0, 5, -1, 2).shouldApprox == log(0.1245173);
-    studentsTLPDF(3.0, 5, -1, 2).shouldApprox == log(0.06509031);
+    studentsTLPDF(-3.0, 5, -1, 2).shouldApprox == log((0.2196798) / 2);
+    studentsTLPDF(-2.0, 5, -1, 2).shouldApprox == log((0.3279185) / 2);
+    studentsTLPDF(-1.0, 5, -1, 2).shouldApprox == log((0.3796067) / 2);
+    studentsTLPDF(0.0, 5, -1, 2).shouldApprox == log((0.3279185) / 2);
+    studentsTLPDF(1.0, 5, -1, 2).shouldApprox == log((0.2196798) / 2);
+    studentsTLPDF(2.0, 5, -1, 2).shouldApprox == log((0.1245173) / 2);
+    studentsTLPDF(3.0, 5, -1, 2).shouldApprox == log((0.06509031) / 2);
+}
+
+// A change of scale must preserve unit total probability, including the normal limit.
+version(mir_stat_test)
+@safe pure nothrow @nogc unittest
+{
+    import std.meta: AliasSeq;
+    import mir.math.common: approxEqual, log;
+    static foreach (T; AliasSeq!(float, double, real))
+    {
+        foreach (nu; [T(1), T(5), T.infinity])
+            foreach (scale; [T(0.5), T(2), T(8)])
+            {
+                const density = studentsTPDF(T(0), nu);
+                assert(approxEqual(studentsTPDF(T(3), nu, T(3), scale), density / scale));
+                assert(approxEqual(studentsTLPDF(T(3), nu, T(3), scale),
+                    studentsTLPDF(T(0), nu) - log(scale)));
+            }
+        // Independent reference: Gamma(3)/(sqrt(5*pi)*Gamma(5/2))/2.
+        assert(approxEqual(studentsTPDF(T(1), T(5), T(1), T(2)),
+            T(0.189803344911247215593803380374347484L)));
+    }
 }
