@@ -13361,6 +13361,16 @@ unittest
     static assert(is(typeof(rawMoment!(float, 2)([1, 2, 3])) == float));
 }
 
+// Moment orders retain their full size_t range in release builds too.
+version(mir_stat_test)
+@safe pure nothrow @nogc unittest
+{
+    assert(rawMoment!(double, uint.max)(0.5) == 0);
+    assert(rawMoment!(double, uint.max)(-1.0) == -1);
+    assert(rawMoment!(double, int.max)(1.0) == 1);
+    assert(rawMoment!(double, size_t.max)(-1.0) == -1);
+}
+
 /// Raw Moment of vector
 version(mir_stat_test)
 @safe pure nothrow
