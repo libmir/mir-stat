@@ -58,7 +58,12 @@ T studentsTPDF(T)(const T x, const T nu, const T mean, const T stdDev)
     in (nu > 0, "nu must be greater than zero")
     in (stdDev > 0, "stdDev must be greater than zero")
 {
-    return studentsTPDF((x - mean) / stdDev, nu) / stdDev;
+    import mir.math.common: exp;
+    const T z = standardizedStudentT(x, mean, stdDev);
+    const T density = studentsTPDF(z, nu);
+    if (density < T.min_normal && stdDev < 1)
+        return exp(studentsTLPDF(x, nu, mean, stdDev));
+    return density / stdDev;
 }
 
 ///
@@ -190,7 +195,8 @@ T studentsTCDF(T)(const T x, const T nu, const T mean, const T stdDev)
     in (nu > 0, "nu must be greater than zero")
     in (stdDev > 0, "stdDev must be greater than zero")
 {
-    return studentsTCDF((x - mean) / stdDev, nu);
+    const T z = standardizedStudentT(x, mean, stdDev);
+    return studentsTScaledCDF(z, x, nu, mean, stdDev, false);
 }
 
 ///
@@ -293,7 +299,8 @@ T studentsTCCDF(T)(const T x, const T nu, const T mean, const T stdDev)
     in (nu > 0, "nu must be greater than zero")
     in (stdDev > 0, "stdDev must be greater than zero")
 {
-    return studentsTCCDF((x - mean) / stdDev, nu);
+    const T z = standardizedStudentT(x, mean, stdDev);
+    return studentsTScaledCDF(z, x, nu, mean, stdDev, true);
 }
 
 ///
@@ -442,7 +449,22 @@ T studentsTInvCDF(T)(const T p, const T nu, const T mean, const T stdDev)
     in (nu > 0, "nu must be greater than zero")
     in (stdDev > 0, "stdDev must be greater than zero")
 {
-    return mean + stdDev * studentsTInvCDF(p, nu);
+    import mir.math.common: fabs;
+    const T q = studentsTInvCDF(p, nu);
+    if (fabs(q) == T.infinity && p > 0 && p < 1 && nu >= T.min_normal * 2 && nu <= T.max && stdDev < 1)
+    {
+        import mir.math.common: exp, log;
+        // A standard quantile can overflow although its scaled value fits.
+        // Such an extreme finite-nu quantile is in the logarithmic tail.
+        const T tail = p < T(0.5) ? p : 1 - p;
+        const T offset = exp(studentsTInverseSmallTailLog(tail, nu) + log(stdDev));
+        return mean + (p < T(0.5) ? -offset : offset);
+    }
+    const T offset = stdDev * q;
+    if (fabs(offset) == T.infinity && fabs(q) <= T.max &&
+        stdDev <= T.max && fabs(mean) <= T.max)
+        return ((q * T(0.5)) * stdDev + mean * T(0.5)) * 2;
+    return mean + offset;
 }
 
 ///
@@ -546,9 +568,17 @@ T studentsTLPDF(T)(const T x, const T nu, const T mean, const T stdDev)
     in (nu > 0, "nu must be greater than zero")
     in (stdDev > 0, "stdDev must be greater than zero")
 {
-    import mir.math.common: log;
-
-    return studentsTLPDF((x - mean) / stdDev, nu) - log(stdDev);
+    import mir.math.common: fabs, log;
+    const T z = standardizedStudentT(x, mean, stdDev);
+    if (fabs(z) == T.infinity && fabs(x) <= T.max && fabs(mean) <= T.max && nu <= T.max)
+    {
+        // A tiny scale can overflow z even though the scaled heavy-tail
+        // density remains representable. Evaluate its exponent in logs.
+        const T logZ = studentsTLogDistance(x, mean) - log(stdDev);
+        return studentsTLogNormalization(nu)
+            - (nu * T(0.5) + T(0.5)) * (2 * logZ - log(nu)) - log(stdDev);
+    }
+    return studentsTLPDF(z, nu) - log(stdDev);
 }
 
 ///
@@ -755,9 +785,8 @@ T studentsTExtremeTail(T)(const T x, const T nu)
 private @safe pure nothrow @nogc
 T studentsTInverseSmallTail(T)(const T p, const T nu)
 {
-    import mir.math.common: log, exp;
-    const T halfLogNu = T(0.5) * log(nu);
-    return exp(halfLogNu + (studentsTLogNormalization(nu) - halfLogNu - log(p)) / nu);
+    import mir.math.common: exp;
+    return exp(studentsTInverseSmallTailLog(p, nu));
 }
 
 // The central beta formulation can round to one for small nu. Use the
@@ -808,4 +837,95 @@ version(mir_stat_test)
             0.318309886183790671537767526745028724, 2e-13));
     // nu=2 has the exact quantile (2p-1)/sqrt(2p(1-p)).
     assert(approxEqual(studentsTInvCDF(1e-160, 2.0), -7.071067811865475237e79, 2e-13));
+}
+// Preserve finite standardized observations when subtraction overflows.
+private @safe pure nothrow @nogc
+T standardizedStudentT(T)(const T x, const T mean, const T scale)
+{
+    import mir.math.common: fabs;
+    const T difference = x - mean;
+    if (fabs(difference) == T.infinity && fabs(x) <= T.max && fabs(mean) <= T.max)
+        return x / scale - mean / scale;
+    return difference / scale;
+}
+
+// Used only after a finite location/scale calculation overflowed.
+private @safe pure nothrow @nogc
+T studentsTLogDistance(T)(const T x, const T mean)
+{
+    import mir.math.common: fabs, log;
+    import mir.math.internal.log1p: log1p;
+    const T distance = fabs(x - mean);
+    if (distance <= T.max)
+        return log(distance);
+    const T a = fabs(x), b = fabs(mean);
+    return a > b ? log(a) + log1p(b / a) : log(b) + log1p(a / b);
+}
+
+// Overflow in an intermediate location/scale operation need not imply an
+// infinite standardized value or an unrepresentable final density/quantile.
+version(mir_stat_test)
+@safe pure nothrow @nogc unittest
+{
+    import mir.math.common: approxEqual, log;
+    import std.meta: AliasSeq;
+    static foreach (T; AliasSeq!(float, double, real))
+    {
+        {
+            const T large = T.max * T(0.75);
+            assert(approxEqual(studentsTCDF(large, T(1), -large, large),
+                T(0.852416382349566725824598923775259L), T(128)*T.epsilon));
+            assert(approxEqual(studentsTCCDF(large, T(1), -large, large),
+                T(0.147583617650433274175401076224741L), T(128)*T.epsilon));
+            assert(approxEqual(studentsTLPDF(large, T(1), -large, large),
+                studentsTLPDF(T(2), T(1)) - log(large), T(128)*T.epsilon));
+            // cot(pi/8)=1+sqrt(2); multiplying by large overflows, but
+            // adding -large leaves (sqrt(2)*large), which fits for this scale.
+            const T scale = T.max * T(0.5);
+            assert(approxEqual(studentsTInvCDF(T(0.875), T(1), -scale, scale) / scale,
+                T(1.414213562373095048801688724209698L), T(256)*T.epsilon));
+            // No representable scale can recover the quantiles at this shape.
+            assert(studentsTInvCDF(T(0.25), T.min_normal / 2, T(0), T.min_normal) == -T.infinity);
+            assert(studentsTLPDF(large, T(1), -large, T(0.5)) > -T.infinity);
+            assert(studentsTLPDF(large, T(1), -T.max, T(0.5)) > -T.infinity);
+            assert(studentsTLPDF(T.max, T(1), -large, T(0.5)) > -T.infinity);
+        }
+    }
+    // Cauchy density: scale/(pi*(x*x+scale*scale)); the standardized
+    // density underflows before division by scale restores the result.
+    assert(approxEqual(studentsTPDF(1.0, 1.0, 0.0, 1e-200) / 1e-200,
+        0.31830988618379067154, 2e-13));
+    assert(approxEqual(studentsTLPDF(1.0, 1.0, 0.0, cast(double)1e-320L),
+        -737.971970776823314, 2e-14));
+    assert(studentsTPDF(1.0, 1.0, 0.0, cast(double)1e-320L) > 0);
+    assert(studentsTCCDF(1.0, 1.0, 0.0, cast(double)1e-320L) > 0);
+    assert(studentsTCDF(-1.0, 1.0, 0.0, cast(double)1e-320L) > 0);
+    // Exact binary p and scale are the same: -scale*cot(pi*p) ~ -1/pi.
+    assert(approxEqual(studentsTInvCDF(cast(double)1e-320L, 1.0, 0.0, cast(double)1e-320L),
+        -0.31830988618379067154, 2e-13));
+}
+
+private @safe pure nothrow @nogc
+T studentsTInverseSmallTailLog(T)(const T p, const T nu)
+{
+    import mir.math.common: log;
+    const T halfLogNu = T(0.5) * log(nu);
+    return halfLogNu + (studentsTLogNormalization(nu) - halfLogNu - log(p)) / nu;
+}
+
+private @safe pure nothrow @nogc
+T studentsTScaledCDF(T)(const T z, const T x, const T nu,
+    const T mean, const T scale, bool complement)
+{
+    import mir.math.common: fabs, exp, log;
+    if (fabs(z) == T.infinity && fabs(x) <= T.max && fabs(mean) <= T.max && nu <= T.max)
+    {
+        const T logZ = studentsTLogDistance(x, mean) - log(scale);
+        // z is beyond the finite range, so the leading power-law tail
+        // differs from the complete beta integral by less than precision.
+        const T tail = exp((nu * T(0.5)) * (log(nu) - 2 * logZ)
+            + studentsTLogNormalization(nu) - T(0.5) * log(nu));
+        return (z > 0) != complement ? 1 - tail : tail;
+    }
+    return studentsTCDF(complement ? -z : z, nu);
 }
