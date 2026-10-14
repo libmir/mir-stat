@@ -831,3 +831,14 @@ version(mir_stat_test)
         assert(gammaCCDF(T(0), T(0.5), T(2)) == 1);
     }}
 }
+
+// Tiny shape retains a small complementary probability even when x/scale
+// underflows. Reference uses the exact double shape and 100-digit arithmetic.
+version(mir_stat_test)
+@safe pure nothrow @nogc unittest
+{
+    import std.math: nextUp;
+    import mir.math.common: approxEqual;
+    assert(approxEqual(gammaCCDF(nextUp(0.0), 1e-20, 2.0),
+        7.445560034370396311546470242271865683e-18, 4e-15, 0.0));
+}

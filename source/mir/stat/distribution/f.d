@@ -234,7 +234,9 @@ T fLPDF(T)(const T x, const T df1, const T df2)
     {
         const T ratio = x / b;
         if (ratio < T.min_normal)
-            return -x - ratio;
+            // Form the scale factor before multiplying a subnormal x;
+            // x/b may round to zero even when its contribution matters.
+            return -x * (1 + 1/b);
         if (ratio < T.infinity)
             return -(b + 1) * log1p(ratio);
         return -(b + 1) * (log(x) - log(b));
@@ -489,4 +491,25 @@ version(mir_stat_test)
 {
     assert(fInvCDF(0.99, 1.0, 0.01) == double.infinity);
     assert(fInvCDF(0.01, 0.01, 1.0) == 0);
+}
+
+// Independent 100-digit references for density fallbacks away from the peak.
+version(mir_stat_test)
+@safe pure nothrow @nogc unittest
+{
+    import mir.math.common: approxEqual;
+    import std.math: nextUp;
+    const double tiny = nextUp(0.0);
+    assert(fLPDF(tiny, 2.0, 4.0) == -2*tiny);
+    assert(approxEqual(fLPDF(tiny, 1.0, 1.0),
+        371.075306074841230982910221871687758345, 4e-15));
+    assert(approxEqual(fLPDF(1e308, 2.0, 0.5),
+        -888.228128754107451634193619893926230543, 4e-15));
+    assert(approxEqual(fLPDF(1e308, 1.0, 0.5),
+        -888.325654114039056860965738764679150217, 4e-15));
+    assert(approxEqual(fLPDF(0.01, 100.0, 64.0),
+        -149.200721337238705029942855422958031302, 4e-15));
+    assert(approxEqual(fLPDF(100.0, 64.0, 100.0),
+        -158.411061709214888759771180495116846251, 4e-15));
+    assert(approxEqual(fCDF(4.0, 2.0, 2.0), 0.8, 4e-15));
 }
