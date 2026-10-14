@@ -13,7 +13,7 @@ module mir.stat.distribution.bernoulli;
 
 import mir.internal.utility: isFloatingPoint;
 import mir.bignum.fp: Fp;
-import mir.stat.internal.fp_probability: fpProbabilityValid, fpProbabilityComplement;
+import mir.stat.internal.fp_probability: fpProbabilityValid, fpProbabilityComplement, fpProbabilityLess;
 
 /++
 Computes the bernoulli probability mass function (PMF).
@@ -151,6 +151,10 @@ For $(D q < 1), returns $(D false) when $(D q <= 1 - p), and $(D true) otherwise
 At $(D q == 1), returns $(D true) whenever $(D p > 0).
 At $(D q == 0), returns $(D false), including when $(D p == 1).
 
+The $(D Fp) overload compares the represented probabilities without conversion
+to a hardware type. Its decision is equivalent to an exact $(D q + p > 1),
+avoiding rounding of a tiny probability out of the complementary threshold.
+
 Params:
     q = value to evaluate InvCDF
     p = `true` probability
@@ -169,6 +173,22 @@ bool bernoulliInvCDF(T)(const T q, const T p)
     // The lower outcome has probability 1 - p; equality selects false.
     // Preserve the upper endpoint even when 1 - p rounds to one.
     return q == 1 ? p > 0 : q > 1 - p;
+}
+
+/// ditto
+@safe pure nothrow @nogc
+bool bernoulliInvCDF(T)(const T q, const T p)
+    if (is(T == Fp!size, size_t size))
+    in (fpProbabilityValid(q), "q must be a finite probability in [0, 1]")
+    in (fpProbabilityValid(p), "p must be a finite probability in [0, 1]")
+{
+    // The decision is q + p > 1. Complement the larger operand so tiny
+    // probabilities cannot disappear in 1 - tiny. If the larger is at least
+    // 1/2, its complement is exact at the supplied precision. If both are
+    // below 1/2, the comparison is false even if the complement rounds.
+    if (fpProbabilityLess(q, p))
+        return fpProbabilityLess(fpProbabilityComplement(p), q);
+    return fpProbabilityLess(fpProbabilityComplement(q), p);
 }
 
 ///
@@ -301,5 +321,52 @@ version(mir_stat_test)
         const identity = bernoulliPMF(true, tiny);
         assert(identity.coefficient == tiny.coefficient && identity.exponent == tiny.exponent);
         assert(cast(double)bernoulliCDF(false, tiny) == 1);
+    }}
+}
+/// Quantiles can also retain probability distinctions beyond hardware precision.
+version(mir_stat_test)
+@safe pure nothrow @nogc unittest
+{
+    const p = Fp!128(0.75);
+    assert(!bernoulliInvCDF(Fp!128(0.25), p));
+    assert(bernoulliInvCDF(Fp!128(0.5), p));
+}
+
+// Compare exact dyadic probabilities on both sides of the inverse threshold.
+version(mir_stat_test)
+@safe pure nothrow @nogc unittest
+{
+    import mir.bignum.fixed: UInt;
+    static foreach (bits; [64u, 128u, 256u]) {{
+        alias T = Fp!bits;
+        static foreach (p; [0.0, 0.25, 0.75, 1.0])
+        {
+            assert(!bernoulliInvCDF(T(0), T(p)));
+            assert(!bernoulliInvCDF(T(1 - p), T(p)));
+            assert(bernoulliInvCDF(T(1), T(p)) == (p != 0));
+        }
+        foreach (i; 0 .. 33)
+            foreach (j; 0 .. 33)
+                assert(bernoulliInvCDF(T(i / 32.0), T(j / 32.0)) == (i + j > 32));
+        auto halfAbove = T(0.5);
+        halfAbove.coefficient += UInt!bits(1);
+        auto halfBelow = T(0.5);
+        halfBelow.coefficient -= UInt!bits(1); // Deliberately unnormalized.
+        assert(bernoulliInvCDF(T(0.5), halfAbove));
+        assert(bernoulliInvCDF(halfAbove, T(0.5)));
+        assert(!bernoulliInvCDF(T(0.5), halfBelow));
+        assert(!bernoulliInvCDF(halfBelow, T(0.5)));
+        assert(!bernoulliInvCDF(halfAbove, halfBelow)); // Sum is exactly one.
+        auto tiny = T(1);
+        tiny.exponent = long.min;
+        assert(bernoulliInvCDF(T(1), tiny));
+        assert(bernoulliInvCDF(tiny, T(1)));
+        assert(!bernoulliInvCDF(tiny, tiny));
+        // Equivalent representations compare equally, even without normalization.
+        const a = T(false, -2, UInt!bits(1));
+        const b = T(false, -3, UInt!bits(2));
+        assert(!fpProbabilityLess(a, b) && !fpProbabilityLess(b, a));
+        assert(fpProbabilityLess(a, T(false, -3, UInt!bits(3))));
+        assert(!fpProbabilityLess(T(false, -3, UInt!bits(3)), a));
     }}
 }

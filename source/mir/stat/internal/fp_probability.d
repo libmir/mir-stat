@@ -45,3 +45,33 @@ Fp!bits fpProbabilityComplement(uint bits)(Fp!bits p)
     result.exponent += p.exponent;
     return result;
 }
+
+// Compare nonnegative finite values without narrowing or assuming normalized
+// coefficients. Align only when exponents differ by fewer than bits; otherwise
+// even the smallest nonzero coefficient at the larger exponent is greater.
+package(mir.stat) @safe pure nothrow @nogc
+bool fpProbabilityLess(uint bits)(Fp!bits a, Fp!bits b)
+{
+    import mir.bignum.fixed: UInt;
+    if (!a.coefficient)
+        return !!b.coefficient;
+    if (!b.coefficient)
+        return false;
+    if (a.exponent == b.exponent)
+        return a.coefficient < b.coefficient;
+    if (a.exponent > b.exponent)
+    {
+        const gap = cast(ulong)a.exponent - cast(ulong)b.exponent;
+        if (gap >= bits)
+            return false;
+        auto aligned = UInt!(2 * bits)(a.coefficient);
+        aligned <<= cast(size_t)gap;
+        return aligned < UInt!(2 * bits)(b.coefficient);
+    }
+    const gap = cast(ulong)b.exponent - cast(ulong)a.exponent;
+    if (gap >= bits)
+        return true;
+    auto aligned = UInt!(2 * bits)(b.coefficient);
+    aligned <<= cast(size_t)gap;
+    return UInt!(2 * bits)(a.coefficient) < aligned;
+}
