@@ -430,6 +430,7 @@ version(mir_stat_test)
 @safe pure nothrow @nogc unittest
 {
     import std.meta: AliasSeq;
+    import std.algorithm.comparison: max;
     import mir.math.common: approxEqual;
     static foreach (T; AliasSeq!(float, double, real))
     {{
@@ -437,8 +438,13 @@ version(mir_stat_test)
         assert(fCCDF(T(0), T(2), T(2)) == 1);
         assert(fCDF(T.infinity, T(2), T(2)) == 1);
         assert(fCCDF(T.infinity, T(2), T(2)) == 0);
+        // Phobos may evaluate this subnormal tail through exp(log(x)).
+        // Allow for logarithmic rounding amplified by the exponent range:
+        // https://github.com/dlang/phobos/issues/11111
+        // Keep zero absolute tolerance so a lost tail still fails.
+        const T tailTolerance = T(max(256, T.max_exp)) * T.epsilon;
         assert(approxEqual(fCCDF(T.max, T(2), T(2)), T(1)/T.max,
-            T(256)*T.epsilon, T(0)));
+            tailTolerance, T(0)));
         foreach (p; [T(0.001), T(0.25), T(0.5), T(0.75), T(0.999)])
             assert(approxEqual(fInvCDF(p, T(2), T(2)), p/(1-p), T(128)*T.epsilon, T(0)));
     }}
