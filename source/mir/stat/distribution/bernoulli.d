@@ -60,6 +60,20 @@ unittest
     assert(false.bernoulliPMF(0.7).approxEqual(0.3));
 }
 
+/// Preserve probabilities smaller than hardware floating-point types can represent.
+version(mir_stat_test)
+@safe pure nothrow @nogc unittest
+{
+    import mir.bignum.fp: Fp;
+
+    auto p = Fp!128(1);
+    p.exponent -= 2000; // Exactly 2^-2000.
+    const mass = bernoulliPMF(true, p);
+    assert(mass.coefficient == p.coefficient && mass.exponent == p.exponent);
+    const tail = bernoulliCCDF(false, p);
+    assert(tail.coefficient == p.coefficient && tail.exponent == p.exponent);
+}
+
 /++
 Computes the bernoulli cumulative distribution function (CDF).
 
@@ -215,6 +229,17 @@ unittest
     assert(1.0.bernoulliInvCDF(0.7) == true);
 }
 
+/// Compute quantiles from Fp probabilities.
+version(mir_stat_test)
+@safe pure nothrow @nogc unittest
+{
+    import mir.bignum.fp: Fp;
+
+    const p = Fp!128(0.75);
+    assert(!bernoulliInvCDF(Fp!128(0.25), p));
+    assert(bernoulliInvCDF(Fp!128(0.5), p));
+}
+
 /++
 Computes the bernoulli log probability mass function (LPMF).
 
@@ -282,18 +307,6 @@ version(mir_stat_test)
     }
 }
 
-/// Preserve probabilities smaller than hardware floating-point types can represent.
-version(mir_stat_test)
-@safe pure nothrow @nogc unittest
-{
-    auto p = Fp!128(1);
-    p.exponent -= 2000; // Exactly 2^-2000.
-    const mass = bernoulliPMF(true, p);
-    assert(mass.coefficient == p.coefficient && mass.exponent == p.exponent);
-    const tail = bernoulliCCDF(false, p);
-    assert(tail.coefficient == p.coefficient && tail.exponent == p.exponent);
-}
-
 // Exact complements near one must not pass through double or real.
 version(mir_stat_test)
 @safe pure nothrow @nogc unittest
@@ -322,14 +335,6 @@ version(mir_stat_test)
         assert(identity.coefficient == tiny.coefficient && identity.exponent == tiny.exponent);
         assert(cast(double)bernoulliCDF(false, tiny) == 1);
     }}
-}
-/// Quantiles can also retain probability distinctions beyond hardware precision.
-version(mir_stat_test)
-@safe pure nothrow @nogc unittest
-{
-    const p = Fp!128(0.75);
-    assert(!bernoulliInvCDF(Fp!128(0.25), p));
-    assert(bernoulliInvCDF(Fp!128(0.5), p));
 }
 
 // Compare exact dyadic probabilities on both sides of the inverse threshold.
