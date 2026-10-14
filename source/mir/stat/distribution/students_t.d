@@ -33,11 +33,14 @@ T studentsTPDF(T)(const T x, const T nu)
     import mir.stat.distribution.normal: normalPDF;
     import std.mathspecial: gamma;
 
-    if (nu != T.infinity) {
-        return (gamma((nu + 1) * 0.5) / gamma(nu * 0.5)) / sqrt(nu) * T(M_SQRTPI) * pow(1 + (x * x) / nu, -(nu + 1) * 0.5);
-    } else {
+    if (nu == T.infinity)
         return normalPDF(x);
-    }
+    const T square = x * x;
+    // Keep the direct formula for ordinary shapes and representable ratios.
+    // Large shapes overflow gamma; extreme observations can overflow x*x.
+    if (nu >= T.min_normal * 2 && nu < 64 && square <= T.max && square / nu <= T.max)
+        return (gamma((nu + 1) * 0.5) / gamma(nu * 0.5)) / sqrt(nu) * T(M_SQRTPI) * pow(1 + square / nu, -(nu + 1) * 0.5);
+    return studentsTPDFFallback(x, nu);
 }
 
 /++
@@ -500,14 +503,12 @@ T studentsTLPDF(T)(const T x, const T nu)
     import mir.math.common: log;
     import mir.math.internal.log1p: log1p;
     import mir.stat.constant: LOGPI;
-    import mir.stat.distribution.normal: normalLPDF;
     import std.mathspecial: logGamma;
-
-    if (nu != T.infinity) {
-        return logGamma((nu + 1) * 0.5) - logGamma(nu * 0.5) - 0.5 * (log(nu) + T(LOGPI) + (nu + 1) * log1p((x * x) / nu));
-    } else {
-        return normalLPDF(x);
-    }
+    const T ratio = (x * x) / nu;
+    if (nu >= 2 && nu < 64 && ratio >= T.min_normal && ratio <= T.max)
+        return logGamma((nu + 1) * 0.5) - logGamma(nu * 0.5)
+            - 0.5 * (log(nu) + T(LOGPI) + (nu + 1) * log1p(ratio));
+    return studentsTLPDFFallback(x, nu);
 }
 
 /++
@@ -618,4 +619,95 @@ version(mir_stat_test)
         assert(approxEqual(studentsTPDF(T(1), T(5), T(1), T(2)),
             T(0.189803344911247215593803380374347484L)));
     }
+}
+// log(Gamma((nu+1)/2) / (sqrt(nu*pi) * Gamma(nu/2))).
+// Use a gamma recurrence near zero, and the log gamma-ratio expansion at
+// large nu rather than subtracting nearly equal log-gamma values. At nu=64,
+// the first omitted term (-5461/(52*nu^13)) is below 4e-22.
+private @safe pure nothrow @nogc
+T studentsTLogNormalization(T)(const T nu)
+{
+    import mir.math.common: log;
+    import mir.stat.constant: LOGPI, LOGSQRT2PI;
+    import std.mathspecial: logGamma;
+    if (nu >= 64)
+    {
+        const T r = 1 / nu;
+        const T r2 = r * r;
+        return -T(LOGSQRT2PI) + r * (-T(0.25) + r2 * (T(1)/24
+            + r2 * (-T(1)/20 + r2 * (T(17)/112
+            + r2 * (-T(31)/36 + r2 * (T(691)/88))))));
+    }
+    if (nu < 2)
+        return logGamma(T(0.5) + nu * T(0.5)) - logGamma(1 + nu * T(0.5))
+            + T(0.5) * log(nu) - T(0.693147180559945309417232121458176568L) - T(0.5) * T(LOGPI);
+    return logGamma((nu + 1) * T(0.5)) - logGamma(nu * T(0.5))
+        - T(0.5) * (log(nu) + T(LOGPI));
+}
+
+// Independent 100-digit log-gamma references and the nu=1 Cauchy identity.
+version(mir_stat_test)
+@safe pure nothrow @nogc unittest
+{
+    import std.meta: AliasSeq;
+    import mir.math.common: approxEqual;
+    static foreach (T; AliasSeq!(float, double, real))
+    {
+        assert(approxEqual(studentsTPDF(T(0), T(40000)),
+            T(0.398939787019972253893245481608949881L), T(64)*T.epsilon));
+        assert(approxEqual(studentsTLPDF(T(0), T(1e20)),
+            T(-0.91893853320467274178282973640561764L), T(64)*T.epsilon));
+        assert(approxEqual(studentsTLPDF(T(1), T.max),
+            T(-1.41893853320467274178032973640561764L), T(64)*T.epsilon));
+        assert(studentsTPDF(T.infinity, T(5)) == 0);
+        assert(studentsTLPDF(T.infinity, T(5)) == -T.infinity);
+    }
+    assert(approxEqual(studentsTLPDF(1e155, 1.0), -714.946108714003562234L, 1e-14));
+    const density = studentsTPDF(1e155, 1.0);
+    assert(density > 0 && approxEqual(density / cast(double)3.18309886183790666969e-311L, 1.0, 1e-12));
+}
+private @safe pure nothrow @nogc
+T studentsTLPDFFallback(T)(const T x, const T nu)
+{
+    pragma(inline, false);
+    import mir.math.common: log;
+    import mir.math.internal.log1p: log1p;
+    import mir.stat.constant: LOGPI;
+    import mir.stat.distribution.normal: normalLPDF;
+    import std.mathspecial: logGamma;
+
+    import mir.math.common: fabs, sqrt;
+    if (nu == T.infinity)
+        return normalLPDF(x);
+    const T square = x * x;
+    T ratio = square / nu;
+    if (ratio == T.infinity)
+    {
+        const T scaled = fabs(x) / sqrt(nu);
+        ratio = scaled * scaled;
+    }
+    T decay;
+    if (ratio == T.infinity)
+    {
+        // x is finite here for finite log-density; true infinite x still
+        // gives infinite decay. Taking logs avoids overflowing its square.
+        decay = (nu * T(0.5) + T(0.5)) * (2 * log(fabs(x)) - log(nu));
+    }
+    else if (ratio < T.min_normal)
+    {
+        // log1p(ratio) equals ratio to working precision. Multiply before
+        // division so large nu does not erase the normal-limit exponent.
+        decay = square * T(0.5) + ratio * T(0.5);
+    }
+    else
+        decay = (nu * T(0.5) + T(0.5)) * log1p(ratio);
+    return studentsTLogNormalization(nu) - decay;
+}
+
+private @safe pure nothrow @nogc
+T studentsTPDFFallback(T)(const T x, const T nu)
+{
+    pragma(inline, false);
+    import mir.math.common: exp;
+    return exp(studentsTLPDF(x, nu));
 }
