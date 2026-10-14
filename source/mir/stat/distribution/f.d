@@ -88,9 +88,7 @@ T fCDF(T)(const T x, const T df1, const T df2)
     in (df1 > 0, "df1 must be greater than zero")
     in (df2 > 0, "df2 must be greater than zero")
 {
-    import std.mathspecial: betaIncomplete;
-
-    return betaIncomplete(df1 * 0.5, df2 * 0.5, (df1 * x) / (df1 * x + df2));
+    return fProbability!(T, false)(x, df1, df2);
 }
 
 ///
@@ -124,9 +122,7 @@ T fCCDF(T)(const T x, const T df1, const T df2)
     in (df1 > 0, "df1 must be greater than zero")
     in (df2 > 0, "df2 must be greater than zero")
 {
-    import std.mathspecial: betaIncomplete;
-
-    return betaIncomplete(df2 * 0.5, df1 * 0.5, df2 / (df1 * x + df2));
+    return fProbability!(T, true)(x, df1, df2);
 }
 
 ///
@@ -161,14 +157,35 @@ T fInvCDF(T)(const T p, const T df1, const T df2)
     in (df1 > 0, "df1 must be greater than zero")
     in (df2 > 0, "df2 must be greater than zero")
 {
-    import std.mathspecial: betaIncompleteInverse;
+    import mir.stat.distribution.beta: betaInvCDF;
+    import mir.math.common: log, exp;
+    import mir.math.internal.log1p: log1p;
 
     if (p == 0)
         return 0;
     if (p == 1)
         return T.infinity;
-    const T invBeta = betaIncompleteInverse(df1 * 0.5, df2 * 0.5, p);
-    return invBeta * df2 / ((1 - invBeta) * df1);
+    const T a = df1 * T(0.5), b = df2 * T(0.5);
+    bool reflected = p > T(0.5);
+    T q = reflected ? betaInvCDF(1-p, b, a) : betaInvCDF(p, a, b);
+    if (q > T(0.5) && (reflected || 1-p < 1))
+    {
+        // Unequal shapes can put even a lower-half probability near one.
+        // Compute the small complementary quantile instead of subtracting,
+        // but only if forming 1-p preserves a probability below one.
+        reflected = !reflected;
+        q = reflected ? betaInvCDF(1-p, b, a) : betaInvCDF(p, a, b);
+    }
+    const T odds = reflected ? (1-q)/q : q/(1-q);
+    const T ratio = df2 / df1;
+    const T result = odds * ratio;
+    if (odds >= T.min_normal && odds < T.infinity
+        && ratio >= T.min_normal && ratio < T.infinity
+        && result >= T.min_normal && result < T.infinity)
+        return result;
+    // Apply the degree ratio before a separate odds value over/underflows.
+    const T logOdds = reflected ? log1p(-q)-log(q) : log(q)-log1p(-q);
+    return exp(logOdds + log(df2) - log(df1));
 }
 
 ///
@@ -368,4 +385,108 @@ version(mir_stat_test)
     assert(approxEqual(fLPDF(1e300, 2.0, 2.0), -1381.551055796427410461721857,
         4e-15));
     assert(approxEqual(fPDF(1e100, 2.0, 2.0), 1e-200, 2e-13, 0.0));
+}
+
+
+// Calculate the smaller beta argument directly, retaining the upper tail
+// even when df1*x overflows or the larger argument would round to one.
+private @safe pure nothrow @nogc
+T fProbability(T, bool complement)(const T x, const T df1, const T df2)
+{
+    import mir.stat.distribution.beta: betaCDF, betaCCDF;
+    import mir.math.common: log, exp;
+    if (x == 0)
+        return complement ? T(1) : T(0);
+    if (x == T.infinity)
+        return complement ? T(0) : T(1);
+    const T ratio = df1 / df2;
+    T r = ratio*x;
+    if (!(ratio >= T.min_normal && ratio < T.infinity
+        && r >= T.min_normal && r < T.infinity))
+        r = exp(log(df1) - log(df2) + log(x));
+    const T a = df1*T(0.5), b = df2*T(0.5);
+    if (r <= 1)
+    {
+        const T z = r/(1+r);
+        static if (complement)
+            return betaCCDF(z, a, b);
+        else
+            return betaCDF(z, a, b);
+    }
+    // Divide first: 1/(1+r) would discard a representable tail when r
+    // overflows. The logarithmic fallback is needed only in that case.
+    const T inverse = r < T.infinity ? 1/r : exp(log(df2)-log(df1)-log(x));
+    const T z = inverse/(1+inverse);
+    static if (complement)
+        return betaCDF(z, b, a);
+    else
+        return betaCCDF(z, b, a);
+}
+
+// F(2,2) has CDF x/(1+x), survival 1/(1+x), and quantile p/(1-p).
+version(mir_stat_test)
+@safe pure nothrow @nogc unittest
+{
+    import std.meta: AliasSeq;
+    import mir.math.common: approxEqual;
+    static foreach (T; AliasSeq!(float, double, real))
+    {{
+        assert(fCDF(T(0), T(2), T(2)) == 0);
+        assert(fCCDF(T(0), T(2), T(2)) == 1);
+        assert(fCDF(T.infinity, T(2), T(2)) == 1);
+        assert(fCCDF(T.infinity, T(2), T(2)) == 0);
+        assert(approxEqual(fCCDF(T.max, T(2), T(2)), T(1)/T.max,
+            T(256)*T.epsilon, T(0)));
+        foreach (p; [T(0.001), T(0.25), T(0.5), T(0.75), T(0.999)])
+            assert(approxEqual(fInvCDF(p, T(2), T(2)), p/(1-p), T(128)*T.epsilon, T(0)));
+    }}
+    assert(approxEqual(fCCDF(1e308, 4.0, 2.0), cast(double)1e-308L, 4e-13, 0.0));
+    // Independent cot(pi*(1-p)/2)^2 reference at the exact binary input p.
+    assert(approxEqual(fInvCDF(1-1e-10, 1.0, 1.0),
+        40528466750254081239.61589107317028169, 2e-13));
+    assert(approxEqual(fCCDF(40528466750254081239.61589107317028169, 1.0, 1.0),
+        1.000000082740371e-10, 2e-13, 0.0));
+}
+
+// Shape-one beta identities check unequal degrees and quantile reflection.
+version(mir_stat_test)
+@safe pure nothrow @nogc unittest
+{
+    import std.meta: AliasSeq;
+    import std.math: expm1, log, log1p;
+    import mir.math.common: approxEqual;
+    static foreach (T; AliasSeq!(float, double, real))
+    {{
+        foreach (df; [T(0.5), T(1), T(4), T(20)])
+        foreach (p; [T(0.01), T(0.25), T(0.75), T(0.99)])
+        {
+            const T shape = df*T(0.5);
+            const T expectedLower = shape * expm1(-log1p(-p)/shape);
+            const T expectedUpper = 1 / (shape * expm1(-log(p)/shape));
+            assert(approxEqual(fInvCDF(p, T(2), df), expectedLower, T(512)*T.epsilon, T(0)));
+            assert(approxEqual(fInvCDF(p, df, T(2)), expectedUpper, T(512)*T.epsilon, T(0)));
+        }
+    }}
+    assert(approxEqual(fInvCDF(0.25, 20.0, 2.0),
+        0.672502395887257562679242875427350516, 2e-14));
+}
+
+// A tiny lower-tail p must not be replaced by a complementary probability
+// that rounds to one, even when its beta quantile is above one half.
+version(mir_stat_test)
+@safe pure nothrow @nogc unittest
+{
+    import mir.math.common: approxEqual;
+    import std.math: expm1, log;
+    const double p = 1e-100;
+    const double expected = 1 / (1000 * expm1(-log(p)/1000));
+    assert(approxEqual(fInvCDF(p, 2000.0, 2.0), expected, 2e-14));
+}
+// These heavy-tail quantiles lie outside the double range; logarithmic
+// odds scaling must preserve the appropriate overflow/underflow limits.
+version(mir_stat_test)
+@safe pure nothrow @nogc unittest
+{
+    assert(fInvCDF(0.99, 1.0, 0.01) == double.infinity);
+    assert(fInvCDF(0.01, 0.01, 1.0) == 0);
 }
