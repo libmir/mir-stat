@@ -19,6 +19,10 @@ Approximates the inverse CDF of a continuous distribution using the Cornish-Fish
 It is generally recommended to only use the Cornish-Fisher expansion with
 distributions that are similar to the normal distribution. Extreme values of
 `skewness` or `excessKurtosis` can result in poorer approximations.
+The truncated expansion is not guaranteed to be monotone in `p`, and
+nonzero corrections do not in general define valid endpoint quantiles.
+When both corrections are zero, the result is the normal quantile,
+including its infinite endpoints.
 
 Params:
     p = quantile to calculate inverse CDF
@@ -33,6 +37,9 @@ See_also:
 T cornishFisherInvCDF(T)(const T p, const T mu, const T std, const T skewness, const T excessKurtosis)
     if (isFloatingPoint!T)
 {
+    import mir.stat.distribution.normal: normalInvCDF;
+    if (skewness == 0 && excessKurtosis == 0 && std > 0)
+        return normalInvCDF(p, mu, std);
     return mu + std * cornishFisherInvCDF(p, skewness, excessKurtosis);
 }
 
@@ -94,6 +101,9 @@ T cornishFisherInvCDFImpl(T)(const T x, const T skewness, const T excessKurtosis
 {
     import mir.stat.distribution.normal: normalInvCDF;
 
+    // Avoid zero times infinity in unused correction terms at p=0 or p=1.
+    if (skewness == 0 && excessKurtosis == 0)
+        return x;
     T x2 = x * x;
     T x3 = x2 * x;
     return x + (x2 - 1) * skewness / 6 + (x3 - 3 * x) * excessKurtosis / 24 - (2 * x3 - 5 * x) * skewness * skewness / 36;
@@ -121,4 +131,21 @@ unittest
     (-2.326348).cornishFisherInvCDFImpl(0.1, 0).shouldApprox == -2.249053  ;
     (-2.326348).cornishFisherInvCDFImpl(0.1, 1).shouldApprox == -2.482841;
     (-2.326348).cornishFisherInvCDFImpl(0.1, -1).shouldApprox == -2.015265;
+}
+
+// Zero corrections reduce exactly to the normal quantile, including endpoints.
+version(mir_stat_test)
+@safe pure @nogc nothrow unittest
+{
+    import std.meta: AliasSeq;
+    import mir.stat.distribution.normal: normalInvCDF;
+    static foreach (T; AliasSeq!(float, double, real))
+    {
+        foreach (p; [T(0), T(0.1), T(0.5), T(0.9), T(1)])
+        {
+            assert(cornishFisherInvCDF(p) == normalInvCDF(p));
+            assert(cornishFisherInvCDF(p, T(3), T(2), T(0), T(0)) ==
+                normalInvCDF(p, T(3), T(2)));
+        }
+    }
 }
