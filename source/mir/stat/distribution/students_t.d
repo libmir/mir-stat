@@ -465,7 +465,15 @@ T studentsTInvCDF(T)(const T p, const T nu, const T mean, const T stdDev)
         // A standard quantile can overflow although its scaled value fits.
         // Such an extreme finite-nu quantile is in the logarithmic tail.
         const T tail = p < T(0.5) ? p : 1 - p;
-        const T offset = exp(studentsTInverseSmallTailLog(tail, nu) + log(stdDev));
+        const T logOffset = studentsTInverseSmallTailLog(tail, nu) + log(stdDev);
+        const T offset = exp(logOffset);
+        if (offset == T.infinity && fabs(mean) <= T.max)
+        {
+            // The location can cancel an offset larger than T.max. Form
+            // half of each term first, then restore the final magnitude.
+            const T halfOffset = exp(logOffset - T(0.693147180559945309417232121458176568L));
+            return (mean * T(0.5) + (p < T(0.5) ? -halfOffset : halfOffset)) * 2;
+        }
         return mean + (p < T(0.5) ? -offset : offset);
     }
     const T offset = stdDev * q;
@@ -976,4 +984,21 @@ version(mir_stat_test)
     assert(studentsTCCDF(1e154, 1e-20) == 0.5);
     assert(studentsTCCDF(2e154, 1e-20) == 0.5);
     assert(studentsTCDF(1e154, 1e-20) == 0.5);
+}
+
+// For nu=1, mean-scale*cot(pi*p) gives an independent Cauchy reference.
+// Both the standard quantile and its scaled offset overflow, but cancellation
+// with the location leaves a finite result. Inputs are exact binary doubles
+// in the 100-digit reference calculation.
+version(mir_stat_test)
+@safe pure nothrow @nogc unittest
+{
+    import mir.math.common: approxEqual;
+    const double p = cast(double)1e-320L;
+    assert(approxEqual(studentsTInvCDF(p, 1.0, double.max, 1e-11),
+        -1.38544116422823804939e308, 5e-13, 0.0));
+    // Neither a same-signed location nor an insufficient cancellation may
+    // turn a truly out-of-range result into a finite quantile.
+    assert(studentsTInvCDF(p, 1.0, -double.max, 1e-11) == -double.infinity);
+    assert(studentsTInvCDF(p, 1.0, double.max, 1e-10) == -double.infinity);
 }
