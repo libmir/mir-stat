@@ -168,7 +168,15 @@ T studentsTCDF(T)(const T x, const T nu)
         if (nu > x * x) {
             output = betaCCDF(x * x / (nu + x * x), 0.5, 0.5 * nu);
         } else {
-            output = betaCDF((nu / (nu + x * x)), 0.5 * nu, 0.5);
+            const T z = nu / (nu + x * x);
+            // Even a finite denominator can erase the small beta argument.
+            // Its power-law tail may still be large when nu is small.
+            if (z < T.min_normal)
+            {
+                const T tail = studentsTExtremeTail(fabs(x), nu);
+                return x > 0 ? 1 - tail : tail;
+            }
+            output = betaCDF(z, 0.5 * nu, 0.5);
         }
         output *= 0.5;
         if (x > 0) {
@@ -761,7 +769,8 @@ T studentsTPDFFallback(T)(const T x, const T nu)
     import mir.math.common: exp;
     return exp(studentsTLPDF(x, nu));
 }
-// Only used when nu+x*x overflows. Rescale before forming the beta argument;
+// Used when nu+x*x overflows or its beta argument becomes subnormal.
+// Rescale before forming the beta argument;
 // if that argument underflows, integrate its leading small-z term in logs.
 private @safe pure nothrow @nogc
 T studentsTExtremeTail(T)(const T x, const T nu)
@@ -776,7 +785,7 @@ T studentsTExtremeTail(T)(const T x, const T nu)
     if (z >= T.min_normal)
         return T(0.5) * betaCDF(z, nu * T(0.5), T(0.5));
     const T logZ = log(nu) - 2 * log(x) - log1p(r2);
-    return exp((nu * T(0.5)) * logZ + studentsTLogNormalization(nu) - T(0.5) * log(nu));
+    return exp((nu * T(0.5)) * logZ + studentsTLogTailNormalization(nu));
 }
 
 // For a subnormal beta quantile z, relative rounding of z contaminates the
@@ -924,7 +933,7 @@ T studentsTScaledCDF(T)(const T z, const T x, const T nu,
         // z is beyond the finite range, so the leading power-law tail
         // differs from the complete beta integral by less than precision.
         const T tail = exp((nu * T(0.5)) * (log(nu) - 2 * logZ)
-            + studentsTLogNormalization(nu) - T(0.5) * log(nu));
+            + studentsTLogTailNormalization(nu));
         return (z > 0) != complement ? 1 - tail : tail;
     }
     return studentsTCDF(complement ? -z : z, nu);
@@ -943,4 +952,28 @@ version(mir_stat_test)
     // The rescaled beta argument remains normal even though x*x overflows.
     // The tail here is smaller than the smallest representable double.
     assert(studentsTCDF(-1e155, 1e5) == 0);
+}
+
+// The leading beta-tail coefficient tends to 1/2 as nu approaches zero.
+// Avoid cancelling two large log(nu)/2 terms in that limit. Omitting its
+// O(nu) correction for nu < epsilon changes the result by less than epsilon.
+private @safe pure nothrow @nogc
+T studentsTLogTailNormalization(T)(const T nu)
+{
+    import mir.math.common: log;
+    if (nu < T.epsilon)
+        return -T(0.693147180559945309417232121458176568L);
+    return studentsTLogNormalization(nu) - T(0.5) * log(nu);
+}
+
+// Both sides of x*x overflow must retain the same small-nu tail. For these
+// exact binary inputs, 100-digit beta integrals round to 0.5 as doubles.
+version(mir_stat_test)
+@safe pure nothrow @nogc unittest
+{
+    assert(studentsTCDF(-1e154, 1e-20) == 0.5);
+    assert(studentsTCDF(-2e154, 1e-20) == 0.5);
+    assert(studentsTCCDF(1e154, 1e-20) == 0.5);
+    assert(studentsTCCDF(2e154, 1e-20) == 0.5);
+    assert(studentsTCDF(1e154, 1e-20) == 0.5);
 }
