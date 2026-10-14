@@ -190,7 +190,11 @@ T gammaCDF(T)(const T x, const T shape, const T scale = 1)
     in (scale > 0, "scale must be greater than zero")
 {
     import std.mathspecial: gammaIncomplete;
-    return gammaIncomplete(shape, x / scale);
+    import mir.math.common: exp;
+    const T ratio = x / scale;
+    if (x > 0 && ratio < T.min_normal && shape < T.infinity)
+        return exp(gammaSmallRatioLogCDF(x, shape, scale));
+    return gammaIncomplete(shape, ratio);
 }
 
 ///
@@ -240,7 +244,11 @@ T gammaCCDF(T)(const T x, const T shape, const T scale = 1)
     in (scale > 0, "scale must be greater than zero")
 {
     import std.mathspecial: gammaIncompleteCompl;
-    return gammaIncompleteCompl(shape, x / scale);
+    import std.math: expm1;
+    const T ratio = x / scale;
+    if (x > 0 && ratio < T.min_normal && shape < T.infinity)
+        return -expm1(gammaSmallRatioLogCDF(x, shape, scale));
+    return gammaIncompleteCompl(shape, ratio);
 }
 
 ///
@@ -617,8 +625,12 @@ T gammaLPDF(T)(const T x, const T shape, const T scale = 1)
         }
     }
 
-    T x_scale = x / scale;
-    return (shape - 1) * log(x_scale) - x_scale - cast(T) logGamma(shape) - log(scale);
+    const T x_scale = x / scale;
+    if (x_scale == T.infinity && shape < T.infinity)
+        return -T.infinity;
+    // Preserve log(x/scale) if division erases a positive finite argument.
+    const T logRatio = x_scale >= T.min_normal ? log(x_scale) : log(x) - log(scale);
+    return (shape - 1) * logRatio - x_scale - cast(T) logGamma(shape) - log(scale);
 }
 
 /// ditto
@@ -779,4 +791,54 @@ unittest
     // Reference uses the actual binary double inputs, evaluated at 100 digits.
     assert(approxEqual(gammaPDF(1e-297, size_t(2), 1e-300),
         5.07595889754938266039615477309060459e-132, 2e-12, 0.0));
+}
+
+// For y=x/scale below the normal range, P(a,y)=y^a/Gamma(a+1)
+// to working precision. Keep y in logarithms so a small positive shape can
+// retain substantial probability even when the division rounds to zero.
+private @safe pure nothrow @nogc
+T gammaSmallRatioLogCDF(T)(const T x, const T shape, const T scale)
+{
+    pragma(inline, false);
+    import mir.math.common: log;
+    import std.mathspecial: logGamma;
+    // logGamma(1+a)=-EulerGamma*a+O(a*a). Avoid rounding 1+a to 1
+    // when this first-order term matters to a small complementary tail.
+    const T logNext = shape < T.epsilon
+        ? -T(0.577215664901532860606512090082402431L) * shape
+        : T(logGamma(1 + shape));
+    return shape * (log(x) - log(scale)) - logNext;
+}
+
+// Endpoint limits and a scaled argument whose division underflows.
+version(mir_stat_test)
+@safe pure nothrow @nogc unittest
+{
+    import std.meta: AliasSeq;
+    import std.math: nextUp;
+    import mir.math.common: approxEqual, sqrt;
+    static foreach (T; AliasSeq!(float, double, real))
+    {{
+        foreach (a; [T(0.5), T(1), T(2)])
+            assert(gammaLPDF(T.infinity, a, T(2)) == -T.infinity);
+        const T tiny = nextUp(T(0));
+        // erf(sqrt(x/2)) ~ sqrt(2/pi)*sqrt(x), without halving x first.
+        const T expected = T(0.797884560802865355879892119868763737L) * sqrt(tiny);
+        assert(approxEqual(gammaCDF(tiny, T(0.5), T(2)), expected,
+            T(4096)*T.epsilon, T(0)));
+        assert(gammaCCDF(tiny, T(0.5), T(2)) == 1);
+        assert(gammaCDF(T(0), T(0.5), T(2)) == 0);
+        assert(gammaCCDF(T(0), T(0.5), T(2)) == 1);
+    }}
+}
+
+// Tiny shape retains a small complementary probability even when x/scale
+// underflows. Reference uses the exact double shape and 100-digit arithmetic.
+version(mir_stat_test)
+@safe pure nothrow @nogc unittest
+{
+    import std.math: nextUp;
+    import mir.math.common: approxEqual;
+    assert(approxEqual(gammaCCDF(nextUp(0.0), 1e-20, 2.0),
+        7.445560034370396311546470242271865683e-18, 4e-15, 0.0));
 }
