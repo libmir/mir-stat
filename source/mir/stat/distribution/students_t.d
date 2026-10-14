@@ -144,6 +144,20 @@ T studentsTCDF(T)(const T x, const T nu)
     import mir.stat.distribution.beta: betaCDF, betaCCDF;
     import mir.stat.distribution.normal: normalCDF;
 
+    import mir.math.common: fabs;
+    if (x != x)
+        return x;
+    if (x == -T.infinity)
+        return 0;
+    if (x == T.infinity)
+        return 1;
+    if (nu < T.min_normal * 2)
+        return T(0.5); // Finite observations have indistinguishable tails at this precision.
+    if (nu != T.infinity && nu + x * x == T.infinity)
+    {
+        const T tail = studentsTExtremeTail(fabs(x), nu);
+        return x > 0 ? 1 - tail : tail;
+    }
     if (nu != T.infinity) {
         T output;
         if (nu > x * x) {
@@ -368,6 +382,8 @@ T studentsTInvCDF(T)(const T p, const T nu)
     import mir.stat.distribution.beta: betaInvCDF;
     import mir.stat.distribution.normal: normalInvCDF;
 
+    if (nu < T.min_normal * 2)
+        return p == T(0.5) ? T(0) : p < T(0.5) ? -T.infinity : T.infinity;
     if (p == 0) {
         return -T.infinity;
     } else if (p == 1) {
@@ -387,7 +403,9 @@ T studentsTInvCDF(T)(const T p, const T nu)
                 p_new *= -1;
             }
             output = betaInvCDF(p_new, 0.5, 0.5 * nu);
-            output = sqrt(nu * output / (1 - output));
+            if (output > T(0.5))
+                return studentsTInverseTail(p < T(0.5) ? p : 1 - p, nu) * output_sign;
+            output = sqrt(nu) * sqrt(output / (1 - output));
         } else {
             output_sign = -1;
             p_new = p;
@@ -397,7 +415,9 @@ T studentsTInvCDF(T)(const T p, const T nu)
             }
             p_new *= 2;
             output = betaInvCDF(p_new, 0.5 * nu, 0.5);
-            output = sqrt(nu / output - nu);
+            if (output < T.min_normal)
+                return studentsTInverseSmallTail(p < T(0.5) ? p : 1 - p, nu) * output_sign;
+            output = (sqrt(nu) / sqrt(output)) * sqrt(1 - output);
         }
         return output_sign * output;
     } else {
@@ -710,4 +730,82 @@ T studentsTPDFFallback(T)(const T x, const T nu)
     pragma(inline, false);
     import mir.math.common: exp;
     return exp(studentsTLPDF(x, nu));
+}
+// Only used when nu+x*x overflows. Rescale before forming the beta argument;
+// if that argument underflows, integrate its leading small-z term in logs.
+private @safe pure nothrow @nogc
+T studentsTExtremeTail(T)(const T x, const T nu)
+{
+    pragma(inline, false);
+    import mir.math.common: sqrt, log, exp;
+    import mir.math.internal.log1p: log1p;
+    import mir.stat.distribution.beta: betaCDF;
+    const T r = sqrt(nu) / x;
+    const T r2 = r * r;
+    const T z = r2 / (1 + r2);
+    if (z >= T.min_normal)
+        return T(0.5) * betaCDF(z, nu * T(0.5), T(0.5));
+    const T logZ = log(nu) - 2 * log(x) - log1p(r2);
+    return exp((nu * T(0.5)) * logZ + studentsTLogNormalization(nu) - T(0.5) * log(nu));
+}
+
+// For a subnormal beta quantile z, relative rounding of z contaminates the
+// t quantile after the square root. Invert the leading tail in logarithms.
+// The omitted relative correction is O(z), below working precision here.
+private @safe pure nothrow @nogc
+T studentsTInverseSmallTail(T)(const T p, const T nu)
+{
+    import mir.math.common: log, exp;
+    const T halfLogNu = T(0.5) * log(nu);
+    return exp(halfLogNu + (studentsTLogNormalization(nu) - halfLogNu - log(p)) / nu);
+}
+
+// The central beta formulation can round to one for small nu. Use the
+// complementary beta quantile instead, retaining a small positive argument.
+private @safe pure nothrow @nogc
+T studentsTInverseTail(T)(const T p, const T nu)
+{
+    pragma(inline, false);
+    import mir.math.common: sqrt;
+    import mir.stat.distribution.beta: betaInvCDF;
+    const T z = betaInvCDF(2 * p, nu * T(0.5), T(0.5));
+    if (z < T.min_normal)
+        return studentsTInverseSmallTail(p, nu);
+    return (sqrt(nu) / sqrt(z)) * sqrt(1 - z);
+}
+
+// The nu=1 distribution is Cauchy: its tail is atan(1/x)/pi and its
+// inverse is -cot(pi*p). References use 100-digit evaluation of those identities.
+version(mir_stat_test)
+@safe pure nothrow @nogc unittest
+{
+    import mir.math.common: approxEqual;
+    assert(approxEqual(studentsTCDF(-1e155, 1.0), 3.183098861837906692535e-156, 2e-13, 0.0));
+    assert(approxEqual(studentsTCCDF(1e155, 1.0), 3.183098861837906692535e-156, 2e-13, 0.0));
+    assert(approxEqual(studentsTInvCDF(1e-160, 1.0), -3.183098861837906751548e159, 2e-13, 0.0));
+    assert(studentsTCDF(-double.infinity, 5.0) == 0);
+    assert(studentsTCDF(double.infinity, 5.0) == 1);
+    assert(studentsTCDF(double.nan, 5.0) != studentsTCDF(double.nan, 5.0));
+}
+version(mir_stat_test)
+@safe pure nothrow @nogc unittest
+{
+    import std.meta: AliasSeq;
+    import mir.math.common: approxEqual;
+    static foreach (T; AliasSeq!(float, double, real))
+    {
+        assert(studentsTInvCDF(T(0.5), T.min_normal / 2) == 0);
+        assert(studentsTInvCDF(T(0.25), T.min_normal / 2) == -T.infinity);
+        assert(studentsTInvCDF(T(0.75), T.min_normal / 2) == T.infinity);
+        assert(studentsTCDF(T(1), T.min_normal / 2) == T(0.5));
+        foreach (p; [T(0.1), T(0.25), T(0.3), T(0.5), T(0.7), T(0.75), T(0.9)])
+            assert(approxEqual(studentsTCDF(studentsTInvCDF(p, T(1)), T(1)), p,
+                T(128)*T.epsilon, T(128)*T.epsilon));
+    }
+    // Both sides of the subnormal beta-quantile transition for nu=1.
+    foreach (p; [1e-150, 1e-154, 1e-158, 1e-160])
+        assert(approxEqual(-studentsTInvCDF(p, 1.0) * p,
+            0.318309886183790671537767526745028724, 2e-13));
+    // nu=2 has the exact quantile (2p-1)/sqrt(2p(1-p)).
+    assert(approxEqual(studentsTInvCDF(1e-160, 2.0), -7.071067811865475237e79, 2e-13));
 }
