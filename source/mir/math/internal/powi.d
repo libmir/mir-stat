@@ -76,17 +76,25 @@ package(mir)
 Unqual!T powi(T)(T x, size_t i)
     if (!isFloatingPoint!(Unqual!(T)) && !is(Unqual!(T) : double))
 {
-    if (i == 0) {
+    if (i == 0)
         return cast(Unqual!T) 1;
-    } else if (i == 1) {
-        return cast(Unqual!T) x;
-    } else {
-        auto output = cast(Unqual!T) x;
-        for (size_t j = 1; j < i; j++) {
+
+    // Start with x rather than 1*x to preserve exponent-one identity,
+    // including signed zeros and nonfinite components of complex values.
+    auto output = cast(Unqual!T) x;
+    size_t bit = 1;
+    while (bit <= (i >> 1))
+        bit <<= 1;
+
+    // Read the remaining bits from high to low. This takes logarithmically
+    // many multiplications and never computes a power beyond the result.
+    while ((bit >>= 1) != 0)
+    {
+        output *= output;
+        if (i & bit)
             output *= x;
-        }
-        return output;
     }
+    return output;
 }
 
 version(mir_stat_test)
@@ -149,4 +157,40 @@ version(mir_stat_test)
     assert(powi(2, negative) == 0.125);
     assert(powi(-1, positive) == -1);
     static assert(is(typeof(powi(2, positive)) == double));
+}
+
+// Large complex powers must remain practical at runtime and during CTFE.
+version(mir_stat_test)
+@safe pure nothrow @nogc unittest
+{
+    import mir.complex: MirComplex = Complex;
+    import std.complex: StdComplex = Complex;
+    import std.meta: AliasSeq;
+    import std.math: abs, signbit, isNaN;
+
+    static foreach (F; AliasSeq!(float, double, real))
+    static foreach (C; AliasSeq!(MirComplex!F, StdComplex!F))
+    {{
+        const C x = C(1, 2);
+        assert(powi(x, 5) == C(41, -38));
+        static assert(is(typeof(powi(x, 5)) == C));
+        assert(powi(C(0), 0) == C(1));
+        assert(powi(C(0), size_t.max) == C(0));
+        assert(powi(C(0, 1), size_t.max) == C(0, -1));
+        assert(powi(C(0, 1), size_t.max - 1) == C(-1, 0));
+        assert(powi(C(0, 1), size_t(1) << (size_t.sizeof * 8 - 1)) == C(1, 0));
+        enum extreme = powi(C(0, 1), size_t.max);
+        static assert(extreme.re == 0 && extreme.im == -1);
+
+        auto identity = powi(C(F.infinity, -F(0)), 1);
+        assert(identity.re == F.infinity && signbit(identity.im));
+        auto nanIdentity = powi(C(F.nan, F(2)), 1);
+        assert(isNaN(nanIdentity.re) && nanIdentity.im == 2);
+
+        // Independent decimal expansion of (1.1 + 0.2i)^^7. Allow for input
+        // rounding and the changed multiplication order in each precision.
+        auto result = powi(C(F(1.1L), F(0.2L)), 7);
+        assert(abs(result.re - F(0.6699319L)) <= 64 * F.epsilon);
+        assert(abs(result.im - F(2.0783558L)) <= 64 * F.epsilon);
+    }}
 }

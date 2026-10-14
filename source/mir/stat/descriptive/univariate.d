@@ -13471,6 +13471,21 @@ unittest
     assert(x.rawMoment!2.isClose(Complex!double(-24, 80)/ 4));
 }
 
+// Full-width complex moment orders use logarithmically many products.
+version(mir_stat_test)
+@safe pure nothrow @nogc unittest
+{
+    import mir.complex: MirComplex = Complex;
+    import std.complex: StdComplex = Complex;
+    import std.meta: AliasSeq;
+
+    static foreach (C; AliasSeq!(MirComplex!double, StdComplex!double))
+    {
+        assert(rawMoment!(C, size_t.max)(C(0, 1)) == C(0, -1));
+        assert(rawMoment!(C, size_t.max - 1)(C(0, 1)) == C(-1, 0));
+    }
+}
+
 /// Arbitrary raw moment
 version(mir_stat_test)
 @safe pure nothrow @nogc
