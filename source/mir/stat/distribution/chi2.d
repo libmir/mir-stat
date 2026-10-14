@@ -134,7 +134,7 @@ unittest
 }
 
 /++
-Computes the Chi-squared probability density function (LPDF).
+Computes the Chi-squared log probability density function (LPDF).
 
 Params:
     x = value to evaluate LPDF
@@ -149,21 +149,8 @@ T chi2LPDF(T)(const T x, const uint k)
     in (x >= 0, "x must be greater than or equal to 0")
     in (k >= 1, "k must be greater than or equal to 1")
 {
-    import mir.math.common: log;
-    import mir.math.constant: LN2;
-    import std.mathspecial: logGamma;
-
-    if (x == 0) {
-        if (k > 2) {
-            return -T.infinity;
-        } else if (k < 2) {
-            return T.infinity;
-        } else {
-            return -T(LN2);
-        }
-    }
-
-    return (T(k) * 0.5f - 1) * (log(x) - T(LN2)) - x *0.5f - cast(T) logGamma(T(k) * 0.5f) - T(LN2);
+    import mir.stat.distribution.gamma: gammaLPDF;
+    return gammaLPDF(x, T(k) * T(0.5), T(2));
 }
 
 ///
@@ -184,4 +171,18 @@ unittest
     0.0.chi2LPDF(2).shouldApprox == -0.6931472;
     0.0.chi2LPDF(1).shouldApprox == double.infinity;
     0.0.chi2LPDF(3).shouldApprox == -double.infinity;
+}
+
+// The gamma representation must preserve the same endpoint and tiny-tail limits.
+version(mir_stat_test)
+@safe pure nothrow @nogc unittest
+{
+    import mir.math.common: approxEqual;
+    foreach (k; [1u, 2u, 4u])
+    {
+        assert(chi2LPDF(double.infinity, k) == -double.infinity);
+        assert(chi2PDF(double.infinity, k) == 0);
+    }
+    assert(approxEqual(chi2CDF(cast(double)4.94065645841246544177e-324L, 1),
+        1.77350488860362726888307738673937e-162, 2e-13, 0.0));
 }
