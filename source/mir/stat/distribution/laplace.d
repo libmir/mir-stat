@@ -44,7 +44,14 @@ T laplacePDF(T)(const T x, const T location, const T scale)
     if (isFloatingPoint!T)
     in (scale > 0, "scale must be greater than zero")
 {
-    return laplacePDF((x - location) / scale) / scale;
+    import mir.math.common: exp, log;
+    const T z = standardizedLaplace(x, location, scale);
+    const T density = laplacePDF(z);
+    // Scaling can recover a representable result after the standard density
+    // has underflowed or lost precision in the subnormal range.
+    if (density < T.min_normal && scale < 1)
+        return exp(laplaceLPDF(z) - log(scale));
+    return density / scale;
 }
 
 ///
@@ -103,7 +110,7 @@ T laplaceCDF(T)(const T x, const T location, const T scale)
     if (isFloatingPoint!T)
     in (scale > 0, "scale must be greater than zero")
 {
-    return laplaceCDF((x - location) / scale);
+    return laplaceCDF(standardizedLaplace(x, location, scale));
 }
 
 ///
@@ -161,7 +168,7 @@ T laplaceCCDF(T)(const T x, const T location, const T scale)
     if (isFloatingPoint!T)
     in (scale > 0, "scale must be greater than zero")
 {
-    return laplaceCCDF((x - location) / scale);
+    return laplaceCCDF(standardizedLaplace(x, location, scale));
 }
 
 ///
@@ -218,7 +225,7 @@ Params:
     scale = scale parameter
 
 See_also:
-    $(LINK2 https://en.wikipedia.org/wiki/Logistic_distribution, Logistic probability distribution)
+    $(LINK2 https://en.wikipedia.org/wiki/Laplace_distribution, Laplace Distribution)
 +/
 T laplaceInvCDF(T)(const T p, const T location, const T scale)
     if (isFloatingPoint!T)
@@ -226,7 +233,15 @@ T laplaceInvCDF(T)(const T p, const T location, const T scale)
     in (p <= 1, "p must be less than or equal to 1")
     in (scale > 0, "scale must be greater than zero")
 {
-    return location + scale * laplaceInvCDF(p);
+    import mir.math.common: fabs;
+    const T z = laplaceInvCDF(p);
+    const T offset = scale * z;
+    // A finite location can bring an overflowing offset back into range.
+    // Halve before multiplying; true endpoint infinities stay unchanged.
+    if (fabs(offset) == T.infinity && fabs(z) <= T.max
+        && scale <= T.max && fabs(location) <= T.max)
+        return ((z * T(0.5)) * scale + location * T(0.5)) * 2;
+    return location + offset;
 }
 
 ///
@@ -281,11 +296,11 @@ See_also:
 +/
 T laplaceLPDF(T)(const T x, const T location, const T scale)
     if (isFloatingPoint!T)
-    in (scale > 0, "shape must be greater than zero")
+    in (scale > 0, "scale must be greater than zero")
 {
     import mir.math.common: log;
 
-    return laplaceLPDF((x - location) / scale) - log(scale);
+    return laplaceLPDF(standardizedLaplace(x, location, scale)) - log(scale);
 }
 
 ///
@@ -308,4 +323,59 @@ unittest
     laplaceLPDF(-1.0, 2.0, 3.0).shouldApprox == log(0.06131324);
     laplaceLPDF(1.0, 2.0, 3.0).shouldApprox == log(0.1194219);
     laplaceLPDF(4.0, 2.0, 3.0).shouldApprox == log(0.08556952);
+}
+
+// Divide first only when subtracting finite opposite-signed values overflows.
+// In that case the divisions cannot cancel infinities of the same sign.
+private @safe pure nothrow @nogc
+T standardizedLaplace(T)(const T x, const T location, const T scale)
+{
+    import mir.math.common: fabs;
+    const T delta = x - location;
+    if (fabs(delta) == T.infinity && fabs(x) <= T.max && fabs(location) <= T.max)
+        return x / scale - location / scale;
+    return delta / scale;
+}
+
+// Finite location and scale can compensate for overflowing intermediates.
+version(mir_stat_test)
+@safe pure nothrow @nogc unittest
+{
+    import std.meta: AliasSeq;
+    import mir.math.common: approxEqual, exp, log;
+    import mir.math.constant: LN2;
+    static foreach (T; AliasSeq!(float, double, real))
+    {{
+        const T m = T.max;
+        const T tail = T(0.0676676416183063459469997474862422017L);
+        assert(approxEqual(laplaceCCDF(m, -m, m), tail, T(16)*T.epsilon));
+        assert(approxEqual(laplaceCDF(-m, m, m), tail, T(16)*T.epsilon));
+        assert(approxEqual(laplaceCDF(m, -m, m), 1-tail, T(16)*T.epsilon));
+        assert(approxEqual(laplaceCCDF(-m, m, m), 1-tail, T(16)*T.epsilon));
+        assert(approxEqual(laplacePDF(m, -m, m), tail/m, T(32)*T.epsilon, T(0)));
+        assert(approxEqual(laplaceLPDF(m, -m, m), -T(2)-T(LN2)-log(m), T(16)*T.epsilon));
+        assert(laplaceCDF(-T.infinity, T(0), T(1)) == 0);
+        assert(laplaceCCDF(T.infinity, T(0), T(1)) == 0);
+        assert(laplacePDF(T.infinity, T(0), T(0.5)) == 0);
+        assert(laplaceInvCDF(T(0), T(1), m) == -T.infinity);
+        assert(laplaceInvCDF(T(1), T(-1), m) == T.infinity);
+        // At p=1/8 the standard quantile is -log(4), so adding the
+        // location after scaling should recover a finite negative result.
+        const T expected = (1-T(2)*T(LN2))*m;
+        assert(approxEqual(laplaceInvCDF(T(0.125), m, m), expected, T(32)*T.epsilon));
+        assert(approxEqual(laplaceInvCDF(T(0.875), -m, m), -expected, T(32)*T.epsilon));
+        assert(laplaceInvCDF(T(0.5), T(3), T(2)) == 3);
+        // Split the exponential in the reference so neither factor underflows
+        // before scaling. Exercise density recovery for every floating type.
+        const T smallScale = T.min_normal * 16;
+        const T distance = -log(T.min_normal) + 32;
+        const T halfDensity = exp(-distance / 2);
+        const T recovered = (halfDensity / smallScale) * halfDensity / 2;
+        assert(approxEqual(laplacePDF(distance * smallScale, T(0), smallScale),
+            recovered, T(8) * distance * T.epsilon, T(0)));
+    }}
+    // Decimal references at the exact binary double inputs, evaluated with
+    // 100 decimal digits; the standard density underflows before scaling.
+    assert(approxEqual(laplacePDF(1e-297, 0.0, 1e-300),
+        2.537979448774691293172203145033537e-135, 4e-13, 0.0));
 }
