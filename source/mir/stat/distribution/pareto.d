@@ -31,9 +31,16 @@ T paretoPDF(T)(const T x, const T xMin, const T alpha)
     in (xMin > 0, "xMin must be greater than zero")
     in (alpha > 0, "alpha must be greater than zero")
 {
-    import mir.math.common: pow;
+    import mir.math.common: exp, log;
 
-    return alpha * pow(xMin, alpha) / pow(x, alpha + 1);
+    const T decay = alpha * paretoLogRatio(x, xMin);
+    const T factor = alpha / x;
+    const T tail = exp(-decay);
+    // Avoid separate powers of xMin and x. If either factor loses range,
+    // combine their logarithms before recovering the final density.
+    if (factor >= T.min_normal && factor <= T.max && tail >= T.min_normal)
+        return factor * tail;
+    return exp(log(alpha) - log(x) - decay);
 }
 
 ///
@@ -66,9 +73,9 @@ T paretoCDF(T)(const T x, const T xMin, const T alpha)
     in (xMin > 0, "xMin must be greater than zero")
     in (alpha > 0, "alpha must be greater than zero")
 {
-    import mir.math.common: pow;
+    import mir.stat.internal.one_minus_exp: oneMinusExpNeg;
 
-    return 1 - pow(xMin / x, alpha);
+    return oneMinusExpNeg(alpha * paretoLogRatio(x, xMin));
 }
 
 ///
@@ -101,9 +108,9 @@ T paretoCCDF(T)(const T x, const T xMin, const T alpha)
     in (xMin > 0, "xMin must be greater than zero")
     in (alpha > 0, "alpha must be greater than zero")
 {
-    import mir.math.common: pow;
+    import mir.math.common: exp;
 
-    return pow(xMin / x, alpha);
+    return exp(-alpha * paretoLogRatio(x, xMin));
 }
 
 ///
@@ -137,9 +144,17 @@ T paretoInvCDF(T)(const T p, const T xMin, const T alpha)
     in (xMin > 0, "xMin must be greater than zero")
     in (alpha > 0, "alpha must be greater than zero")
 {
-    import mir.math.common: pow;
+    import mir.math.common: exp, log;
+    import mir.stat.internal.neg_log1m: negLog1m;
 
-    return xMin / pow(1 - p, cast(T) 1 / alpha);
+    if (p == 0)
+        return xMin;
+    const T growth = negLog1m(p) / alpha;
+    const T factor = exp(growth);
+    if (factor <= T.max)
+        return xMin * factor;
+    // A small xMin can recover a finite quantile after exp(growth) overflows.
+    return exp(log(xMin) + growth);
 }
 
 ///
@@ -173,9 +188,11 @@ T paretoLPDF(T)(const T x, const T xMin, const T alpha)
     in (alpha > 0, "alpha must be greater than zero")
 {
     import mir.math.common: log;
-    import mir.math.internal.xlogy: xlogy;
 
-    return log(alpha) + xlogy(alpha, xMin) - xlogy(alpha + 1, x);
+    const T factor = alpha / x;
+    const T normalization = factor >= T.min_normal && factor <= T.max
+        ? log(factor) : log(alpha) - log(x);
+    return normalization - alpha * paretoLogRatio(x, xMin);
 }
 
 ///
@@ -189,4 +206,76 @@ unittest
     1.0.paretoLPDF(1, 3).shouldApprox == log(paretoPDF(1.0, 1, 3));
     2.0.paretoLPDF(1, 3).shouldApprox == log(paretoPDF(2.0, 1, 3));
     3.0.paretoLPDF(2, 4).shouldApprox == log(paretoPDF(3.0, 2, 4));
+}
+
+// Near the lower bound, subtraction is exact. Evaluate log(x/xMin) as
+// -log(1 - (x-xMin)/x) to preserve the small relative distance using the
+// existing corrected logarithm. Farther away, use a representable ratio;
+// separate logarithms avoid overflow across very different scales.
+private @safe pure nothrow @nogc
+T paretoLogRatio(T)(const T x, const T xMin)
+{
+    import mir.math.common: log;
+    import mir.stat.internal.neg_log1m: negLog1m;
+    const T distance = x - xMin;
+    if (distance <= xMin)
+        return negLog1m(distance / x);
+    const T ratio = x / xMin;
+    if (ratio <= T.max)
+        return log(ratio);
+    return log(x) - log(xMin);
+}
+
+version(mir_stat_test)
+@safe pure nothrow @nogc unittest
+{
+    import std.meta: AliasSeq;
+    import mir.math.common: approxEqual, exp, log, sqrt;
+    import std.math: nextDown, nextUp;
+    static foreach (T; AliasSeq!(float, double, real))
+    {{
+        assert(paretoPDF(T(2), T(2), T(4)) == 2);
+        assert(paretoCDF(T(2), T(2), T(4)) == 0);
+        assert(paretoCCDF(T(2), T(2), T(4)) == 1);
+        assert(paretoInvCDF(T(0), T(2), T(4)) == 2);
+        assert(paretoInvCDF(T(1), T(2), T(4)) == T.infinity);
+        assert(paretoPDF(T.infinity, T(2), T(4)) == 0);
+        assert(paretoCDF(T.infinity, T(2), T(4)) == 1);
+        assert(paretoCCDF(T.infinity, T(2), T(4)) == 0);
+        assert(paretoLPDF(T.infinity, T(2), T(4)) == -T.infinity);
+
+        const T large = sqrt(T.max);
+        assert(approxEqual(paretoPDF(large, large, T(4)), T(4)/large, T(8)*T.epsilon, T(0)));
+        assert(approxEqual(paretoLPDF(T(2), T(2), large), log(large)-log(T(2)), T(8)*T.epsilon));
+        // A tiny shape makes the CDF small even well away from the boundary.
+        const T tiny = T.epsilon / 16;
+        assert(approxEqual(paretoCDF(T(2), T(1), tiny), tiny*log(T(2)), T(8)*T.epsilon, T(0)));
+        assert(approxEqual(paretoInvCDF(tiny, T(1), tiny), exp(T(1)), T(8)*T.epsilon));
+        // A large shape amplifies errors in ratios rounded near one.
+        assert(approxEqual(paretoCCDF(T(1)+T.epsilon, T(1), 1/T.epsilon),
+            exp(T(-1)), T(8)*T.epsilon));
+        assert(approxEqual(paretoLPDF(T(1), T(1), T(1)+T.epsilon),
+            T.epsilon, T(8)*T.epsilon, T(0)));
+        // Both logarithm paths agree around x/xMin == 2. For alpha == 1,
+        // the probabilities have simple rational references.
+        foreach (x; [nextDown(T(2)), T(2), nextUp(T(2))])
+        {
+            assert(approxEqual(paretoCDF(x, T(1), T(1)), (x-1)/x, T(8)*T.epsilon));
+            assert(approxEqual(paretoCCDF(x, T(1), T(1)), 1/x, T(8)*T.epsilon));
+        }
+    }}
+    // Independent Decimal references using exact binary double inputs and
+    // 100 decimal digits of working precision.
+    assert(approxEqual(paretoPDF(1e200, 1e200, 2.0), 2e-200, 4e-15, 0.0));
+    assert(approxEqual(paretoCCDF(1e200, 1e-200, 0.5), 1e-200, 2e-13, 0.0));
+    assert(approxEqual(paretoInvCDF(1e-20, 1.0, 1e-20),
+        2.71828182845904523537, 4e-15, 0.0));
+    assert(approxEqual(paretoLPDF(2.0, 2.0, 1e20),
+        45.358554679320968371, 4e-15));
+    assert(approxEqual(paretoPDF(cast(double)1e-310L, cast(double)1e-311L, 300.0),
+        2999999999955.543257076365, 4e-13, 0.0));
+    assert(approxEqual(paretoPDF(1e-200, 1e-201, 400.0),
+        3.999999999999942054888553e-198, 4e-13, 0.0));
+    assert(approxEqual(paretoInvCDF(0.5, 1e-300, 0.0008),
+        1.938628441591554730157366e76, 4e-13, 0.0));
 }
