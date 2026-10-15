@@ -36,7 +36,17 @@ T weibullPDF(T)(const T x, const T shape, const T scale = 1)
     // Keep the exponential distribution's endpoint as a direct reciprocal.
     if (x == 0 && shape == 1)
         return T(1) / scale;
-    return exp(weibullLPDF(x, shape, scale));
+    const T logDensity = weibullLPDF(x, shape, scale);
+    // Some exp implementations overflow before the largest finite result.
+    // Near that limit, evaluate half the exponent and let multiplication
+    // determine whether the density overflows. Keep ordinary densities direct.
+    enum T upperLog = T(T.max_exp * 0.693147180559945309417232121458176568L);
+    if (logDensity > upperLog - 2)
+    {
+        const T root = exp(logDensity / 2);
+        return root * root;
+    }
+    return exp(logDensity);
 }
 
 ///
@@ -422,6 +432,34 @@ unittest
             -0.76078362289116266064109484385712350574L,
             8 * real.max_exp * real.epsilon, 0.0L));
     }
+}
+
+// Preserve large finite PDFs when the final exponential is near overflow.
+version(mir_stat_test)
+@safe pure nothrow @nogc
+unittest
+{
+    import std.meta: AliasSeq;
+    import std.math: nextUp, isFinite;
+    import mir.math.common: approxEqual;
+    static foreach (T; AliasSeq!(float, double, real))
+    {{
+        const T scale = T(1.0625) / T.max;
+        const T x = scale / 16;
+        const T density = weibullPDF(x, T(1), scale);
+        assert(isFinite(density));
+        // Here x / scale is exactly 1/16. The limiting normalized density
+        // (16/17)*exp(-1/16) was evaluated independently at 110 decimal digits;
+        // rounding of the scale and T.max changes it only by O(epsilon).
+        // The log/exp calculation contributes error proportional to max_exp.
+        assert(approxEqual(density / T.max,
+            T(0.88415347088327132811266901140922831485L),
+            8 * T.max_exp * T.epsilon, T(0)));
+
+        // A true overflow must remain infinite rather than being clamped.
+        const T tiny = nextUp(T(0));
+        assert(weibullPDF(tiny, T(1), tiny) == T.infinity);
+    }}
 }
 
 // Preserve inverse-CDF values below machine epsilon for linear and square roots.
