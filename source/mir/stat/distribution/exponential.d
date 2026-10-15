@@ -1,6 +1,16 @@
 /++
 This module contains algorithms for the $(LINK2 https://en.wikipedia.org/wiki/Exponential_distribution, Exponential Distribution).
 
+The parameter $(D lambda) is a rate (the reciprocal of the mean), not a scale.
+The support is $(D x >= 0). The inverse CDF currently requires $(D 0 <= p < 1);
+its contract excludes $(D p == 1), although the mathematical quantile tends to
+positive infinity as $(D p) approaches one.
+
+The special-value tables assume finite distribution parameters in the stated
+domain. Finite expressions are subject to floating-point rounding and range
+limits. Contract violations are not prescribed return values: disabling
+contracts does not make an invalid input supported.
+
 License: $(HTTP www.apache.org/licenses/LICENSE-2.0, Apache-2.0)
 
 Authors: John Michael Hall
@@ -16,9 +26,19 @@ import mir.internal.utility: isFloatingPoint;
 /++
 Computes the exponential probability density function (PDF).
 
+Returns a density, which may exceed one; it is not a point probability.
+
+Special values:
+$(TABLE
+    $(TR $(TH Input) $(TH Result))
+    $(TR $(TD $(D x == 0)) $(TD $(D lambda)))
+    $(TR $(TD $(D x == T.infinity)) $(TD $(D 0)))
+    $(TR $(TD $(D x < 0) or NaN) $(TD Contract violation))
+)
+
 Params:
     x = value to evaluate PDF
-    lambda = number of events in an interval
+    lambda = positive rate parameter (reciprocal of the mean)
 
 See_also:
     $(LINK2 https://en.wikipedia.org/wiki/Exponential_distribution, Exponential Distribution)
@@ -53,6 +73,15 @@ unittest
     assert(0.5.exponentialPDF(2.0).approxEqual(0.7357589));
     assert(0.75.exponentialPDF(2.0).approxEqual(0.4462603));
     assert(0.25.exponentialPDF(0.5).approxEqual(0.4412485));
+}
+
+/// The density starts at the rate and tends to zero in the upper tail.
+version(mir_stat_test)
+@safe pure nothrow @nogc
+unittest
+{
+    assert(exponentialPDF(0.0, 2.0) == 2.0);
+    assert(exponentialPDF(double.infinity, 2.0) == 0.0);
 }
 
 // Scaling must not lose a representable density when the decay underflows.
@@ -126,9 +155,19 @@ unittest
 /++
 Computes the exponential cumulative distribution function (CDF).
 
+Returns the lower-tail probability $(D P(X <= x)).
+
+Special values:
+$(TABLE
+    $(TR $(TH Input) $(TH Result))
+    $(TR $(TD $(D x == 0)) $(TD $(D 0)))
+    $(TR $(TD $(D x == T.infinity)) $(TD $(D 1)))
+    $(TR $(TD $(D x < 0) or NaN) $(TD Contract violation))
+)
+
 Params:
     x = value to evaluate CDF
-    lambda = number of events in an interval
+    lambda = positive rate parameter (reciprocal of the mean)
 
 See_also:
     $(LINK2 https://en.wikipedia.org/wiki/Exponential_distribution, Exponential Distribution)
@@ -180,9 +219,20 @@ unittest
 /++
 Computes the exponential complementary cumulative distribution function (CCDF).
 
+Returns the upper-tail probability $(D P(X > x)). Use this function directly
+when the upper tail is small, rather than subtracting the CDF from one.
+
+Special values:
+$(TABLE
+    $(TR $(TH Input) $(TH Result))
+    $(TR $(TD $(D x == 0)) $(TD $(D 1)))
+    $(TR $(TD $(D x == T.infinity)) $(TD $(D 0)))
+    $(TR $(TD $(D x < 0) or NaN) $(TD Contract violation))
+)
+
 Params:
     x = value to evaluate CCDF
-    lambda = number of events in an interval
+    lambda = positive rate parameter (reciprocal of the mean)
 
 See_also:
     $(LINK2 https://en.wikipedia.org/wiki/Exponential_distribution, Exponential Distribution)
@@ -213,9 +263,19 @@ unittest
 /++
 Computes the exponential inverse cumulative distribution function (InvCDF).
 
+Returns the quantile at cumulative probability $(D p).
+
+Special values:
+$(TABLE
+    $(TR $(TH Input) $(TH Result))
+    $(TR $(TD $(D p == 0)) $(TD $(D 0)))
+    $(TR $(TD $(D p == 1)) $(TD Contract violation))
+    $(TR $(TD $(D p < 0) or $(D p > 1) or NaN) $(TD Contract violation))
+)
+
 Params:
     p = value to evaluate InvCDF
-    lambda = number of events in an interval
+    lambda = positive rate parameter (reciprocal of the mean)
 
 See_also:
     $(LINK2 https://en.wikipedia.org/wiki/Exponential_distribution, Exponential Distribution)
@@ -248,9 +308,20 @@ unittest
 /++
 Computes the exponential log probability density function (LPDF).
 
+Returns the natural logarithm of the density. A negative value is valid;
+it is not a probability.
+
+Special values:
+$(TABLE
+    $(TR $(TH Input) $(TH Result))
+    $(TR $(TD $(D x == 0)) $(TD $(D log(lambda))))
+    $(TR $(TD $(D x == T.infinity)) $(TD $(D -T.infinity)))
+    $(TR $(TD $(D x < 0) or NaN) $(TD Contract violation))
+)
+
 Params:
     x = value to evaluate LPDF
-    lambda = number of events in an interval
+    lambda = positive rate parameter (reciprocal of the mean)
 
 See_also:
     $(LINK2 https://en.wikipedia.org/wiki/Exponential_distribution, Exponential Distribution)
