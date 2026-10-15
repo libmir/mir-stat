@@ -1039,9 +1039,18 @@ struct GMeanAccumulator(T)
     F gmean(F = T)() const @property
         if (isFloatingPoint!F)
     {
-        import mir.math.common: exp2;
+        import mir.math.common: exp2, floor;
 
-        return nthroot(cast(F) prodAccumulator.mantissa, count) * exp2(cast(F) prodAccumulator.exp / count);
+        const F root = nthroot(cast(F) prodAccumulator.mantissa, count);
+        const F exponent = cast(F) prodAccumulator.exp / count;
+        if (count && (exponent >= F.max_exp || exponent < F.min_exp - 1))
+        {
+            // Keep exp2 in the normal range and apply the mantissa before
+            // the final scaling, which may legitimately produce a subnormal.
+            const F halfExponent = floor(exponent / 2);
+            return (root * exp2(exponent - halfExponent)) * exp2(halfExponent);
+        }
+        return root * exp2(exponent);
     }
 
     ///
@@ -1098,6 +1107,57 @@ unittest
     assert(x.gmean.approxEqual(2.21336384));
     x.put(5);
     assert(x.gmean.approxEqual(2.60517108));
+}
+
+version(mir_stat_test)
+@safe pure nothrow @nogc
+unittest
+{
+    import mir.math.common: fabs;
+    import std.meta: AliasSeq;
+
+    static foreach (T; AliasSeq!(float, double))
+    {
+        static assert(gmean(T.max) == T.max);
+        static assert(gmean(T.min_normal * T.epsilon) == T.min_normal * T.epsilon);
+    }
+
+    static foreach (T; AliasSeq!(float, double, real))
+    {{
+        const T smallest = T.min_normal * T.epsilon;
+        foreach (value; [T.max, smallest, 3 * smallest])
+        {
+            GMeanAccumulator!T accumulator;
+            accumulator.put(value);
+            assert(accumulator.gmean == value);
+            assert(gmean(value) == value);
+            foreach (i; 1 .. 17)
+            {
+                accumulator.put(value);
+                auto result = accumulator.gmean;
+                assert(result > 0 && result <= T.max);
+                assert(fabs(result / value - 1) <= 8 * T.epsilon);
+            }
+            assert(gmean(value, value) == value);
+        }
+
+        // Exact powers exercise a fractional average exponent in the
+        // subnormal range, as well as a large finite geometric mean.
+        assert(gmean(smallest, 4 * smallest) == 2 * smallest);
+        assert(fabs(gmean(T.max / 4, T.max) / (T.max / 2) - 1) <= 8 * T.epsilon);
+        assert(fabs(gmean(T(1), T(4)) - 2) <= 8 * T.epsilon);
+        assert(gmean(T(0), T(4)) == 0);
+        assert(gmean(T.infinity, T(4)) == T.infinity);
+        auto nanResult = gmean(T.nan, T(4));
+        assert(nanResult != nanResult);
+    }}
+
+    GMeanAccumulator!double mixed;
+    mixed.put(cast(double) float.max);
+    assert(mixed.gmean!float == float.max);
+    mixed = GMeanAccumulator!double.init;
+    mixed.put(cast(double) (float.min_normal * float.epsilon));
+    assert(mixed.gmean!float == float.min_normal * float.epsilon);
 }
 
 ///
