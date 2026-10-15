@@ -208,10 +208,12 @@ version(mir_stat_test)
         const T m = T.max;
         assert(uniformCDF(T(0), -m, m) == T(0.5));
         assert(uniformCCDF(T(0), -m, m) == T(0.5));
-        assert(uniformCDF(-m, -m, m) == 0);
+        // Identity also verifies positive zero and avoids a DMD real equality
+        // code-generation issue when these calls are inlined on Linux.
+        assert(uniformCDF(-m, -m, m) is T(0));
         assert(uniformCDF(m, -m, m) == 1);
         assert(uniformCCDF(-m, -m, m) == 1);
-        assert(uniformCCDF(m, -m, m) == 0);
+        assert(uniformCCDF(m, -m, m) is T(0));
         assert(uniformPDF(T(0), -m, m) > 0);
         assert(approxEqual(uniformPDF(T(0), -m, m), T(0.5)/m,
             T(8)*T.epsilon, T(0)));
@@ -219,7 +221,7 @@ version(mir_stat_test)
             T(8)*T.epsilon, T(0)));
         assert(uniformInvCDF(T(0), -m, m) == -m);
         assert(uniformInvCDF(T(1), -m, m) == m);
-        assert(uniformInvCDF(T(0.5), -m, m) == 0);
+        assert(uniformInvCDF(T(0.5), -m, m) is T(0));
         // Unequal bounds prevent a symmetry-only implementation from passing.
         const T lower = -m, upper = m*T(0.5);
         foreach (p; [T(0.25), T(0.5), T(0.75)])
