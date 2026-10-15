@@ -2,23 +2,16 @@ project('mir-stat', 'd', version : '0.3.1', license: 'Apache-2.0')
 
 description = 'Dlang Statistical Package'
 
-subprojects = [
-    'cblas-d',
-    'lapack-d',
-    'mir-algorithm',
-    'mir-blas',
-    'mir-core',
-    'mir-lapack',
-    'mir-random',
-]
-
-if target_machine.system() == 'linux'
-    subprojects += 'mir-linux-kernel'
-endif
+# Match the default DUB library configuration. Optional BLAS and benchmark
+# dependencies are exercised by their separate DUB configurations.
+subprojects = ['mir-core', 'mir-algorithm']
 
 has_cpp_headers = false
 
 sources_list = [
+    'mir/math/internal/benchmark',
+    'mir/math/internal/linearAlgebra',
+    'mir/math/internal/log1p',
     'mir/math/internal/fp_powi',
     'mir/math/internal/powi',
     'mir/math/internal/log_beta',
