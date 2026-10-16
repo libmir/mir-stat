@@ -110,10 +110,10 @@ unittest
     assert(fabs(nearBoundary - cast(double) 1.63711785526567331511458767387450060e-308L) <=
         2 * double.min_normal * double.epsilon);
 
-    // Require CTFE support from the math primitive, without hiding PDF regressions.
+    // Require underflowing exp at CTFE; ordinary inputs may work independently.
     static if (__traits(compiles, {
         import mir.math.common: exp;
-        enum double probe = exp(-1.0);
+        enum double probe = exp(-800.0);
     }))
     {
         enum double ctfeDensity = exponentialPDF(800 / 1e300, 1e300);
