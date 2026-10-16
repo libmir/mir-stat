@@ -31,7 +31,16 @@ T exponentialPDF(T)(const T x, const T lambda)
 {
     import mir.math.common: exp;
 
-    return lambda * exp(-lambda * x);
+    const T exponent = -lambda * x;
+    const T decay = exp(exponent);
+    if (decay < T.min_normal && lambda > 1 && lambda < T.infinity)
+    {
+        // Scale between two exponential factors to avoid losing the decay
+        // before multiplication by the rate can restore a representable result.
+        const T halfDecay = exp(exponent / 2);
+        return (lambda * halfDecay) * halfDecay;
+    }
+    return lambda * decay;
 }
 
 ///
@@ -44,6 +53,67 @@ unittest
     assert(0.5.exponentialPDF(2.0).approxEqual(0.7357589));
     assert(0.75.exponentialPDF(2.0).approxEqual(0.4462603));
     assert(0.25.exponentialPDF(0.5).approxEqual(0.4412485));
+}
+
+// Scaling must not lose a representable density when the decay underflows.
+version(mir_stat_test)
+@safe pure nothrow @nogc
+unittest
+{
+    import std.meta: AliasSeq;
+    import std.math: ldexp;
+    import mir.math.common: fabs;
+
+    static foreach (T; AliasSeq!(float, double, real))
+    {{
+        // References computed with 90-digit arithmetic. Power-of-two rates
+        // keep the chosen integer exponents exact after standardization.
+        static if (T.max_exp == 128)
+        {
+            enum T exponent = 120;
+            enum T expected = 6.52291358810724124141821303035571164e-15L;
+            enum T smallExponent = 90;
+            enum T smallExpected = 1.63880252479810308607222164267638868e-39L;
+        }
+        else static if (T.max_exp == 1024)
+        {
+            enum T exponent = 800;
+            enum T expected = 1.64842823987804998528024178106714402e-40L;
+            enum T smallExponent = 710;
+            enum T smallExpected = 8.95257245135025991216632140458264468e-309L;
+        }
+        else static if (T.max_exp == 16384)
+        {
+            enum T exponent = 11420;
+            enum T expected = 6.76714733679691181158578826955688255e-29L;
+            enum T smallExponent = 11358;
+            enum T smallExpected = 3.83976405302577104196109564353492666e-4933L;
+        }
+        const T rate = ldexp(T(1), T.max_exp - 2);
+        // Extended-real exp can accumulate error proportional to its exponent.
+        const T tolerance = T.mant_dig > 53 ? 2 * T.epsilon * exponent : 4 * T.epsilon;
+        const T actual = exponentialPDF(exponent / rate, rate);
+        assert(actual > 0);
+        assert(fabs(actual / expected - 1) < tolerance);
+        const T smallActual = exponentialPDF(smallExponent / 2, T(2));
+        assert(fabs(smallActual - smallExpected) <=
+            tolerance * smallExpected + 2 * T.min_normal * T.epsilon);
+        assert(exponentialPDF(T(0), rate) == rate);
+        assert(exponentialPDF(T.infinity, rate) == 0);
+        assert(exponentialPDF(T.max, rate) == 0);
+        assert(exponentialPDF(T(0), T.min_normal) == T.min_normal);
+        assert(exponentialPDF(T(1), T.infinity) != exponentialPDF(T(1), T.infinity));
+    }}
+
+    // A modest rate must not introduce log/exp cancellation near underflow.
+    const double nearBoundary = exponentialPDF(354.69820926613204, 2.0);
+    assert(fabs(nearBoundary - cast(double) 1.63711785526567331511458767387450060e-308L) <=
+        2 * double.min_normal * double.epsilon);
+
+    enum double ctfeDensity = exponentialPDF(800 / 1e300, 1e300);
+    static assert(fabs(ctfeDensity / 3.667874584177790597e-48 - 1) < 2e-13);
+    const double density = exponentialPDF(800 / 1e300, 1e300);
+    assert(fabs(density / 3.667874584177790597e-48 - 1) < 2e-13);
 }
 
 /++
