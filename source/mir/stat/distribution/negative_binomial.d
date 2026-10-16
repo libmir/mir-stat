@@ -90,6 +90,17 @@ T negativeBinomialPMF(T)(const size_t k, const size_t r, const T p)
     return cast(T)exp(negativeBinomialLogMass(k, r, cast(real)p));
 }
 
+/// Zero failures means that every trial up to the required success count succeeds.
+version(mir_stat_test)
+@safe pure nothrow @nogc unittest
+{
+    import mir.stat.distribution.geometric: geometricPMF;
+    // Two successes with no failures: p squared.
+    assert(negativeBinomialPMF(0, 2, 0.5) == 0.25);
+    // One required success recovers the geometric count convention.
+    assert(negativeBinomialPMF(1, 1, 0.5) == geometricPMF(1, 0.5));
+}
+
 private @safe pure nothrow @nogc
 real negativeBinomialLogMass(size_t k, size_t r, real p)
 {
@@ -135,17 +146,6 @@ unittest
     8.negativeBinomialPMF(6, 2.0 / 3).shouldApprox == 0.0172211;
     9.negativeBinomialPMF(6, 2.0 / 3).shouldApprox == 0.008929461;
     10.negativeBinomialPMF(6, 2.0 / 3).shouldApprox == 0.00446473;
-}
-
-/// Zero failures means that every trial up to the required success count succeeds.
-version(mir_stat_test)
-@safe pure nothrow @nogc unittest
-{
-    import mir.stat.distribution.geometric: geometricPMF;
-    // Two successes with no failures: p squared.
-    assert(negativeBinomialPMF(0, 2, 0.5) == 0.25);
-    // One required success recovers the geometric count convention.
-    assert(negativeBinomialPMF(1, 1, 0.5) == geometricPMF(1, 0.5));
 }
 
 /++

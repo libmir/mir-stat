@@ -1176,6 +1176,20 @@ template hypergeometricInvCDF(string hypergeometricAlgo)
     mixin("alias hypergeometricInvCDF = .hypergeometricInvCDF!(double, HypergeometricAlgo." ~ hypergeometricAlgo ~ ");");
 }
 
+/// Sampling without replacement can make the lowest attainable count positive.
+version(mir_stat_test)
+@safe pure nothrow @nogc unittest
+{
+    // Draw four objects from five, of which three have the desired feature.
+    // At least two and at most three draws must have that feature.
+    assert(hypergeometricPMF(2, 5, 3, 4) == 0.6);
+    assert(hypergeometricCDF(3, 5, 3, 4) == 1);
+    assert(hypergeometricCCDF(3, 5, 3, 4) == 0);
+    assert(hypergeometricInvCDF(0.0, 5, 3, 4) == 0); // Endpoint convention.
+    assert(hypergeometricInvCDF(0.5, 5, 3, 4) == 2);
+    assert(hypergeometricInvCDF(1.0, 5, 3, 4) == 3);
+}
+
 ///
 version(mir_stat_test)
 @safe pure nothrow @nogc
@@ -1376,20 +1390,6 @@ T hypergeometricLogNoSuccess(T)(size_t N, size_t K, size_t n)
     const T ia = 1 / a, ib = 1 / b, ip = 1 / population, ic = 1 / c;
     const T third = -(ia*ia*ia + ib*ib*ib - ip*ip*ip - ic*ic*ic) / 360;
     return main + correction + third;
-}
-
-/// Sampling without replacement can make the lowest attainable count positive.
-version(mir_stat_test)
-@safe pure nothrow @nogc unittest
-{
-    // Draw four objects from five, of which three have the desired feature.
-    // At least two and at most three draws must have that feature.
-    assert(hypergeometricPMF(2, 5, 3, 4) == 0.6);
-    assert(hypergeometricCDF(3, 5, 3, 4) == 1);
-    assert(hypergeometricCCDF(3, 5, 3, 4) == 0);
-    assert(hypergeometricInvCDF(0.0, 5, 3, 4) == 0); // Endpoint convention.
-    assert(hypergeometricInvCDF(0.5, 5, 3, 4) == 2);
-    assert(hypergeometricInvCDF(1.0, 5, 3, 4) == 3);
 }
 
 /++

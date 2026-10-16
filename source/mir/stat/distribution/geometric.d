@@ -361,6 +361,17 @@ T geometricInvCDF(T)(const T q, const T p)
     return cast(T)guess;
 }
 
+/// The inverse CDF has explicit conventions at probability zero and one.
+version(mir_stat_test)
+@safe pure nothrow @nogc unittest
+{
+    assert(geometricInvCDF(0.0, 0.5) == -1);
+    assert(geometricInvCDF(0.75, 0.5) == 1);
+    assert(geometricInvCDF(1.0, 0.5) == double.infinity);
+    assert(geometricInvCDF(0.0, 1.0) == 0);
+    assert(geometricInvCDF(1.0, 1.0) == double.infinity);
+}
+
 // Comparing logarithms avoids reconstructing a CDF close to one. Near a
 // boundary, do not snap approximately equal values to an integer: adjacent
 // queries can lie on opposite sides of the exact CDF step.
@@ -467,17 +478,6 @@ unittest
 
     0.5.geometricInvCDF(1).should == 0;
     1.geometricInvCDF(0.5).should == double.infinity;
-}
-
-/// The inverse CDF has explicit conventions at probability zero and one.
-version(mir_stat_test)
-@safe pure nothrow @nogc unittest
-{
-    assert(geometricInvCDF(0.0, 0.5) == -1);
-    assert(geometricInvCDF(0.75, 0.5) == 1);
-    assert(geometricInvCDF(1.0, 0.5) == double.infinity);
-    assert(geometricInvCDF(0.0, 1.0) == 0);
-    assert(geometricInvCDF(1.0, 1.0) == double.infinity);
 }
 
 /++
