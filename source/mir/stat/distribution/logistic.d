@@ -45,7 +45,19 @@ T logisticPDF(T)(const T x, const T location, const T scale)
     if (isFloatingPoint!T)
     in (scale > 0, "scale must be greater than zero")
 {
-    return logisticPDF((x - location) / scale) / scale;
+    import mir.math.common: exp, fabs;
+
+    const T z = (x - location) / scale;
+    const T density = logisticPDF(z);
+    if (density < T.min_normal && scale < 1)
+    {
+        // In this tail, 1 + exp(-abs(z)) rounds to one. Divide between
+        // four exponential factors. Half-exponentials can themselves become
+        // subnormal when a subnormal scale restores a representable density.
+        const T quarterDecay = exp(-fabs(z) / 4);
+        return ((quarterDecay / scale) * quarterDecay) * quarterDecay * quarterDecay;
+    }
+    return density / scale;
 }
 
 ///
@@ -67,6 +79,75 @@ unittest
     logisticPDF(-1.0, 2.0, 3.0).shouldApprox == 0.06553731;
     logisticPDF(1.0, 2.0, 3.0).shouldApprox == 0.08106072;
     logisticPDF(4.0, 2.0, 3.0).shouldApprox == 0.07471913;
+}
+
+// Small scales must restore representable densities in both tails.
+version(mir_stat_test)
+@safe pure nothrow @nogc
+unittest
+{
+    import std.meta: AliasSeq;
+    import std.math: ldexp;
+    import mir.math.common: fabs;
+
+    static foreach (T; AliasSeq!(float, double, real))
+    {{
+        // 90-digit references; the logistic denominator rounds to one here.
+        static if (T.max_exp == 128)
+        {
+            enum T exponent = 120;
+            enum T tinyExponent = 191;
+            enum T tinyExpected = 8.00245628516475785138969687948202631e-39L;
+            enum T expected = 6.52291358810724124141821303035571164e-15L;
+            enum T smallExponent = 90;
+            enum T smallExpected = 1.63880252479810308607222164267638868e-39L;
+        }
+        else static if (T.max_exp == 1024)
+        {
+            enum T exponent = 800;
+            enum T tinyExponent = 1450;
+            enum T tinyExpected = 3.79504197181520648721376487356687376e-307L;
+            enum T expected = 1.64842823987804998528024178106714402e-40L;
+            enum T smallExponent = 710;
+            enum T smallExpected = 8.95257245135025991216632140458264468e-309L;
+        }
+        else static if (T.max_exp == 16384)
+        {
+            enum T exponent = 11420;
+            enum T tinyExponent = 22750;
+            // The reference uses a 64-bit significand; adjust for the
+            // smaller minimum subnormal of wider formats.
+            const T tinyExpected = ldexp(T(1.73306716928370349897078093711548328e-4930L),
+                T.mant_dig - 64);
+            enum T expected = 6.76714733679691181158578826955688255e-29L;
+            enum T smallExponent = 11358;
+            enum T smallExpected = 3.83976405302577104196109564353492666e-4933L;
+        }
+        const T scale = ldexp(T(1), 2 - T.max_exp);
+        const T tolerance = T.mant_dig > 53 ? 2 * T.epsilon * exponent : 4 * T.epsilon;
+        foreach (T sign; [T(-1), T(1)])
+        {
+            const T actual = logisticPDF(sign * exponent * scale, T(0), scale);
+            assert(actual > 0);
+            assert(fabs(actual / expected - 1) < tolerance);
+            const T smallActual = logisticPDF(sign * smallExponent / 2, T(0), T(0.5));
+            assert(fabs(smallActual - smallExpected) <=
+                tolerance * smallExpected + 2 * T.min_normal * T.epsilon);
+        }
+        const T tinyScale = T.min_normal * T.epsilon;
+        const T tinyActual = logisticPDF(tinyExponent * tinyScale, T(0), tinyScale);
+        assert(tinyActual > 0);
+        assert(fabs(tinyActual / tinyExpected - 1) < 2 * tolerance);
+        assert(logisticPDF(T(0), T(0), scale) == T(0.25) / scale);
+        assert(logisticPDF(T.infinity, T(0), scale) == 0);
+        assert(logisticPDF(-T.infinity, T(0), scale) == 0);
+        assert(logisticPDF(T(1), T(0), T.infinity) == 0);
+    }}
+
+    enum double ctfeDensity = logisticPDF(800 * 1e-300, 0.0, 1e-300);
+    static assert(fabs(ctfeDensity / 3.667874584177395251e-48 - 1) < 2e-13);
+    const double density = logisticPDF(800 * 1e-300, 0.0, 1e-300);
+    assert(fabs(density / 3.667874584177395251e-48 - 1) < 2e-13);
 }
 
 /++
