@@ -5,6 +5,22 @@ There are multiple alternative formulations of the Negative Binomial Distributio
 formulation in this module counts failures before the `r`th success. Thus
 `k = 0` means that the first `r` trials all succeed, and `r = 1` is geometric.
 
+The required success count $(D r) is a positive $(D size_t), not a real-valued
+shape parameter. The per-trial success probability $(D p) must be finite and
+in $(D [0, 1]). At $(D p == 1), there are no failures. At $(D p == 0), success
+never occurs: the API uses zero mass and zero CDF at every finite count, with
+CCDF equal to one.
+
+Only PMF has an $(D Fp) overload. CDF, CCDF, LPMF, and inverse CDF use built-in
+floating-point probabilities. The inverse returns $(D size_t), using
+$(D size_t.max) for an unbounded quantile or one outside the count range.
+Its endpoint conventions differ from $(D geometricInvCDF), even for $(D r == 1).
+
+The tables assume valid parameters except where an invalid input is listed.
+Finite expressions are subject to floating-point rounding and range limits.
+Contract violations are not prescribed return values: disabling contracts does
+not make an invalid input supported.
+
 License: $(HTTP www.apache.org/licenses/LICENSE-2.0, Apache-2.0)
 
 Authors: John Michael Hall
@@ -22,10 +38,24 @@ import mir.internal.utility: isFloatingPoint;
 /++
 Computes the negative binomial probability mass function (PMF).
 
+Returns the point probability $(D P(K == k)). The count $(D k) excludes the
+$(D r) successes; the stopping trial is therefore trial $(D k + r).
+
+Special values:
+$(TABLE
+    $(TR $(TH Input) $(TH Result))
+    $(TR $(TD $(D k == 0)) $(TD $(D p) raised to $(D r)))
+    $(TR $(TD $(D p == 0)) $(TD $(D 0)))
+    $(TR $(TD $(D p == 1) and $(D k == 0)) $(TD $(D 1)))
+    $(TR $(TD $(D p == 1) and $(D k > 0)) $(TD $(D 0)))
+    $(TR $(TD $(D r == 0)) $(TD Contract violation))
+    $(TR $(TD $(D p < 0), $(D p > 1), or NaN) $(TD Contract violation))
+)
+
 Params:
     k = number of failures before stopping
-    r = number of successes until stopping
-    p = `true` probability
+    r = positive number of successes required before stopping
+    p = per-trial success probability in $(D [0, 1])
 
 
 See_also:
@@ -107,8 +137,19 @@ unittest
     10.negativeBinomialPMF(6, 2.0 / 3).shouldApprox == 0.00446473;
 }
 
+/// Zero failures means that every trial up to the required success count succeeds.
+version(mir_stat_test)
+@safe pure nothrow @nogc unittest
+{
+    import mir.stat.distribution.geometric: geometricPMF;
+    // Two successes with no failures: p squared.
+    assert(negativeBinomialPMF(0, 2, 0.5) == 0.25);
+    // One required success recovers the geometric count convention.
+    assert(negativeBinomialPMF(1, 1, 0.5) == geometricPMF(1, 0.5));
+}
+
 /++
-Computes the  negative binomial probability mass function (PMF) directly with extended 
+Computes the negative binomial probability mass function (PMF) directly with extended
 floating point types (e.g. `Fp!128`), which provides additional accuracy for
 extreme values of `k`, `r`, or `p`. Complements and coefficient ratios retain
 the supplied `Fp` precision rather than converting through hardware floating
@@ -119,10 +160,25 @@ The coefficient requires `O(min(k, r - 1))` iterations. Powers use logarithmic
 time in their exponents, so a large count is practical when the other count is
 small. Central probabilities with two enormous counts remain expensive.
 
+The success and failure counts have the same interpretation as in the built-in
+floating-point overload. Extended precision does not change the support or
+endpoint conventions.
+
+Special values:
+$(TABLE
+    $(TR $(TH Input) $(TH Result))
+    $(TR $(TD $(D k == 0)) $(TD $(D p) raised to $(D r)))
+    $(TR $(TD $(D p == 0)) $(TD $(D 0)))
+    $(TR $(TD $(D p == 1) and $(D k == 0)) $(TD $(D 1)))
+    $(TR $(TD $(D p == 1) and $(D k > 0)) $(TD $(D 0)))
+    $(TR $(TD $(D r == 0)) $(TD Contract violation))
+    $(TR $(TD $(D p < 0), $(D p > 1), or NaN) $(TD Contract violation))
+)
+
 Params:
     k = number of failures before stopping
-    r = number of successes until stopping
-    p = `true` probability
+    r = positive number of successes required before stopping
+    p = per-trial success probability in $(D [0, 1])
 
 See_also:
     $(LINK2 https://en.wikipedia.org/wiki/Negative_binomial_distribution, Negative Binomial Distribution)
@@ -195,7 +251,7 @@ either a built-in floating-point probability or an `Fp` probability.
 
 Params:
     k = number of failures before stopping
-    r = number of successes until stopping
+    r = positive number of successes required before stopping
     p = success probability as an `Fp` value
 +/
 @safe pure nothrow @nogc
@@ -326,10 +382,23 @@ unittest
 /++
 Computes the negative binomial cumulative distribution function (CDF).
 
+Returns the inclusive lower-tail probability $(D P(K <= k)). For $(D r == 1),
+this is the geometric CDF.
+
+Special values:
+$(TABLE
+    $(TR $(TH Input) $(TH Result))
+    $(TR $(TD $(D k == 0)) $(TD $(D p) raised to $(D r)))
+    $(TR $(TD $(D p == 0)) $(TD $(D 0)))
+    $(TR $(TD $(D p == 1)) $(TD $(D 1)))
+    $(TR $(TD $(D r == 0)) $(TD Contract violation))
+    $(TR $(TD $(D p < 0), $(D p > 1), or NaN) $(TD Contract violation))
+)
+
 Params:
     k = number of failures before stopping
-    r = number of successes until stopping
-    p = `true` probability
+    r = positive number of successes required before stopping
+    p = per-trial success probability in $(D [0, 1])
 
 See_also:
     $(LINK2 https://en.wikipedia.org/wiki/Negative_binomial_distribution, Negative Binomial Distribution)
@@ -402,10 +471,23 @@ unittest
 /++
 Computes the negative binomial complementary cumulative distribution function (CCDF).
 
+Returns the strict upper-tail probability $(D P(K > k)). For $(D r == 1),
+this is the geometric CCDF.
+
+Special values:
+$(TABLE
+    $(TR $(TH Input) $(TH Result))
+    $(TR $(TD $(D k == 0)) $(TD $(D 1) minus $(D p) raised to $(D r)))
+    $(TR $(TD $(D p == 0)) $(TD $(D 1)))
+    $(TR $(TD $(D p == 1)) $(TD $(D 0)))
+    $(TR $(TD $(D r == 0)) $(TD Contract violation))
+    $(TR $(TD $(D p < 0), $(D p > 1), or NaN) $(TD Contract violation))
+)
+
 Params:
     k = number of failures before stopping
-    r = number of successes until stopping
-    p = `true` probability
+    r = positive number of successes required before stopping
+    p = per-trial success probability in $(D [0, 1])
 
 See_also:
     $(LINK2 https://en.wikipedia.org/wiki/Negative_binomial_distribution, Negative Binomial Distribution)
@@ -527,16 +609,32 @@ unittest
 /++
 Computes the negative binomial inverse cumulative distribution function (InvCDF).
 
-Returns the smallest representable count whose CDF reaches `q`. Queries at zero
-and the point mass `p = 1` return zero. For `q = 1`, `p = 0`, or a quantile
-beyond the count range, returns `size_t.max`. Close comparisons use bounded
-exact binomial arithmetic when the binary input fractions fit its workspace;
+For $(D 0 < q && q < 1) and $(D 0 < p && p < 1), returns the smallest
+representable count whose CDF reaches $(D q), or $(D size_t.max) when the
+quantile is beyond the count range. Close comparisons use bounded exact
+binomial arithmetic when the binary input fractions fit its workspace;
 other interior results remain subject to incomplete-beta tail accuracy.
 
+Zero queries and the point mass at $(D p == 1) take precedence over the
+$(D size_t.max) convention. That sentinel cannot distinguish an exact maximum
+count from an unbounded or out-of-range quantile.
+
+Special values:
+$(TABLE
+    $(TR $(TH Input) $(TH Result))
+    $(TR $(TD $(D q == 0)) $(TD $(D 0), including when $(D p == 0)))
+    $(TR $(TD $(D p == 1)) $(TD $(D 0), including when $(D q == 1)))
+    $(TR $(TD $(D q == 1) and $(D p < 1)) $(TD $(D size_t.max)))
+    $(TR $(TD $(D q > 0) and $(D p == 0)) $(TD $(D size_t.max)))
+    $(TR $(TD $(D q < 0), $(D q > 1), or NaN) $(TD Contract violation))
+    $(TR $(TD $(D r == 0)) $(TD Contract violation))
+    $(TR $(TD $(D p < 0), $(D p > 1), or NaN) $(TD Contract violation))
+)
+
 Params:
-    q = value to evaluate InvCDF
-    r = number of successes until stopping
-    p = `true` probability
+    q = cumulative probability in $(D [0, 1])
+    r = positive number of successes required before stopping
+    p = per-trial success probability in $(D [0, 1])
 
 See_also:
     $(LINK2 https://en.wikipedia.org/wiki/Negative_binomial_distribution, Negative Binomial Distribution)
@@ -747,13 +845,36 @@ unittest
     }
 }
 
+/// Inverse endpoints use an integer sentinel, except for the deterministic outcome.
+version(mir_stat_test)
+@safe pure nothrow @nogc unittest
+{
+    assert(negativeBinomialInvCDF(0.0, 2, 0.5) == 0);
+    assert(negativeBinomialInvCDF(1.0, 2, 0.5) == size_t.max);
+    assert(negativeBinomialInvCDF(0.5, 2, 0.0) == size_t.max);
+    assert(negativeBinomialInvCDF(1.0, 2, 1.0) == 0);
+}
+
 /++
 Computes the negative binomial log probability mass function (LPMF).
 
+Returns the natural logarithm of $(D P(K == k)).
+
+Special values:
+$(TABLE
+    $(TR $(TH Input) $(TH Result))
+    $(TR $(TD $(D k == 0) and $(D p > 0)) $(TD $(D r * log(p))))
+    $(TR $(TD $(D p == 0)) $(TD $(D -T.infinity)))
+    $(TR $(TD $(D p == 1) and $(D k == 0)) $(TD $(D 0)))
+    $(TR $(TD $(D p == 1) and $(D k > 0)) $(TD $(D -T.infinity)))
+    $(TR $(TD $(D r == 0)) $(TD Contract violation))
+    $(TR $(TD $(D p < 0), $(D p > 1), or NaN) $(TD Contract violation))
+)
+
 Params:
     k = number of failures before stopping
-    r = number of successes until stopping
-    p = `true` probability
+    r = positive number of successes required before stopping
+    p = per-trial success probability in $(D [0, 1])
 
 See_also:
     $(LINK2 https://en.wikipedia.org/wiki/Negative_binomial_distribution, Negative Binomial Distribution)

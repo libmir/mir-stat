@@ -1,6 +1,23 @@
 /++
 This module contains algorithms for the $(LINK2 https://en.wikipedia.org/wiki/Geometric_distribution, Geometric Distribution).
 
+The count is the number of failures before the first success in independent
+trials with success probability $(D p). Thus $(D k == 0) means the first trial
+succeeds; it does not mean that no trials were performed. The usual
+distribution has $(D 0 < p <= 1). The API also accepts $(D p == 0) as a
+limiting case with no success and zero mass at every finite count.
+
+All functions use built-in floating-point probabilities; there are no $(D Fp)
+overloads. PMF and LPMF take a $(D size_t) count. CDF and CCDF additionally
+accept a floating-point threshold $(D x >= -1), using the integer part of
+nonnegative finite thresholds. Inverse CDF returns a floating-point count
+and has explicit endpoint conventions described below.
+
+The tables assume valid parameters except where an invalid input is listed.
+Finite expressions are subject to floating-point rounding and range limits.
+Contract violations are not prescribed return values: disabling contracts does
+not make an invalid input supported.
+
 License: $(HTTP www.apache.org/licenses/LICENSE-2.0, Apache-2.0)
 
 Authors: John Michael Hall
@@ -57,9 +74,20 @@ version(mir_stat_test)
 Computes the geometric probability mass function (PMF) for the number of
 failures before the first success.
 
+Returns the point probability $(D P(K == k)).
+
+Special values:
+$(TABLE
+    $(TR $(TH Input) $(TH Result))
+    $(TR $(TD $(D k == 0)) $(TD $(D p)))
+    $(TR $(TD $(D p == 0)) $(TD $(D 0)))
+    $(TR $(TD $(D p == 1) and $(D k > 0)) $(TD $(D 0)))
+    $(TR $(TD $(D p < 0), $(D p > 1), or NaN) $(TD Contract violation))
+)
+
 Params:
-    k = value to evaluate PMF
-    p = `true` probability
+    k = number of failures at which to evaluate PMF
+    p = per-trial success probability in $(D [0, 1])
 
 See_also: $(LINK2 https://en.wikipedia.org/wiki/Geometric_distribution, Geometric Distribution)
 +/
@@ -95,11 +123,28 @@ unittest
 }
 
 /++
-Computes the geometric cumulative density function (CDF).
+Computes the geometric cumulative distribution function (CDF).
+
+Returns the inclusive lower-tail probability $(D P(K <= k)), or $(D P(K <= x))
+for a floating-point threshold. The interval $(D -1 <= x && x < 0) is accepted
+and lies below the first outcome.
+
+Special values:
+$(TABLE
+    $(TR $(TH Input) $(TH Result))
+    $(TR $(TD $(D k == 0) or $(D 0 <= x && x < 1)) $(TD $(D p)))
+    $(TR $(TD $(D -1 <= x && x < 0)) $(TD $(D 0)))
+    $(TR $(TD $(D p == 0) and $(D x >= 0) (or any $(D k))) $(TD $(D 0), including $(D x == T.infinity)))
+    $(TR $(TD $(D p > 0) and $(D x == T.infinity)) $(TD $(D 1)))
+    $(TR $(TD $(D p == 1) and $(D x >= 0) (or any $(D k))) $(TD $(D 1)))
+    $(TR $(TD $(D x < -1) or NaN) $(TD Contract violation))
+    $(TR $(TD $(D p < 0), $(D p > 1), or NaN) $(TD Contract violation))
+)
 
 Params:
-    k = value to evaluate CDF
-    p = `true` probability
+    k = number of failures at which to evaluate CDF
+    x = floating-point threshold, at least -1
+    p = per-trial success probability in $(D [0, 1])
 
 See_also: $(LINK2 https://en.wikipedia.org/wiki/Geometric_distribution, Geometric Distribution)
 +/
@@ -159,11 +204,27 @@ unittest
 }
 
 /++
-Computes the geometric complementary cumulative density function (CCDF).
+Computes the geometric complementary cumulative distribution function (CCDF).
+
+Returns the strict upper-tail probability $(D P(K > k)), or $(D P(K > x))
+for a floating-point threshold. This excludes the mass at the threshold.
+
+Special values:
+$(TABLE
+    $(TR $(TH Input) $(TH Result))
+    $(TR $(TD $(D k == 0) or $(D 0 <= x && x < 1)) $(TD $(D 1 - p)))
+    $(TR $(TD $(D -1 <= x && x < 0)) $(TD $(D 1)))
+    $(TR $(TD $(D p == 0) and $(D x >= 0) (or any $(D k))) $(TD $(D 1), including $(D x == T.infinity)))
+    $(TR $(TD $(D p > 0) and $(D x == T.infinity)) $(TD $(D 0)))
+    $(TR $(TD $(D p == 1) and $(D x >= 0) (or any $(D k))) $(TD $(D 0)))
+    $(TR $(TD $(D x < -1) or NaN) $(TD Contract violation))
+    $(TR $(TD $(D p < 0), $(D p > 1), or NaN) $(TD Contract violation))
+)
 
 Params:
-    k = value to evaluate CCDF
-    p = `true` probability
+    k = number of failures at which to evaluate CCDF
+    x = floating-point threshold, at least -1
+    p = per-trial success probability in $(D [0, 1])
 
 See_also: $(LINK2 https://en.wikipedia.org/wiki/Geometric_distribution, Geometric Distribution)
 +/
@@ -219,19 +280,44 @@ unittest
     2.5.geometricCCDF(0.25).shouldApprox == 0.421875;
 }
 
+/// Count failures, and include the whole CDF step for a fractional threshold.
+version(mir_stat_test)
+@safe pure nothrow @nogc unittest
+{
+    import mir.math.common: approxEqual;
+    assert(geometricPMF(0, 0.5) == 0.5); // Success on the first trial.
+    assert(geometricPMF(1, 0.5) == 0.25); // One failure, then success.
+    assert(approxEqual(geometricCDF(1.5, 0.5), 0.75));
+    assert(approxEqual(geometricCCDF(1.5, 0.5), 0.25));
+}
+
 /++
 Computes the geometric inverse cumulative distribution function (InvCDF).
 
-For interior probabilities, returns the smallest nonnegative count whose CDF
-is at least `q`. Retains the boundary conventions `q = 0` returns -1 (except
-at `p = 1`, where it returns zero), and `q = 1` returns infinity. For `p = 0`,
-positive queries also return infinity. The floating return type cannot represent
-every integer at large counts. Close comparisons use bounded exact binary
-arithmetic where possible; larger cases retain floating-point accuracy.
+For $(D 0 < q && q < 1) and $(D 0 < p && p < 1), returns the smallest
+nonnegative count whose CDF reaches $(D q). The floating return type cannot
+represent every integer at large counts. Close comparisons use bounded exact
+binary arithmetic where possible; larger cases retain floating-point accuracy.
+
+The $(D q == 1) convention takes precedence over $(D p == 1). In particular,
+$(D geometricInvCDF(1.0, 1.0)) returns infinity even though all finite mass
+is at zero. The returned $(D -1) at the lower endpoint is a boundary convention,
+not a possible number of failures.
+
+Special values:
+$(TABLE
+    $(TR $(TH Input) $(TH Result))
+    $(TR $(TD $(D q == 1)) $(TD $(D T.infinity), including when $(D p == 1)))
+    $(TR $(TD $(D q < 1) and $(D p == 1)) $(TD $(D 0)))
+    $(TR $(TD $(D q == 0) and $(D p < 1)) $(TD $(D -1)))
+    $(TR $(TD $(D 0 < q && q < 1) and $(D p == 0)) $(TD $(D T.infinity)))
+    $(TR $(TD $(D q < 0), $(D q > 1), or NaN) $(TD Contract violation))
+    $(TR $(TD $(D p < 0), $(D p > 1), or NaN) $(TD Contract violation))
+)
 
 Params:
-    q = value to evaluate InvCDF
-    p = `true` probability
+    q = cumulative probability in $(D [0, 1])
+    p = per-trial success probability in $(D [0, 1])
 
 See_also: $(LINK2 https://en.wikipedia.org/wiki/Geometric_distribution, Geometric Distribution)
 +/
@@ -383,12 +469,35 @@ unittest
     1.geometricInvCDF(0.5).should == double.infinity;
 }
 
+/// The inverse CDF has explicit conventions at probability zero and one.
+version(mir_stat_test)
+@safe pure nothrow @nogc unittest
+{
+    assert(geometricInvCDF(0.0, 0.5) == -1);
+    assert(geometricInvCDF(0.75, 0.5) == 1);
+    assert(geometricInvCDF(1.0, 0.5) == double.infinity);
+    assert(geometricInvCDF(0.0, 1.0) == 0);
+    assert(geometricInvCDF(1.0, 1.0) == double.infinity);
+}
+
 /++
-Computes the geometric log probability density function (LPMF).
+Computes the geometric log probability mass function (LPMF).
+
+Returns the natural logarithm of $(D P(K == k)).
+
+Special values:
+$(TABLE
+    $(TR $(TH Input) $(TH Result))
+    $(TR $(TD $(D k == 0) and $(D p > 0)) $(TD $(D log(p))))
+    $(TR $(TD $(D p == 0)) $(TD $(D -T.infinity)))
+    $(TR $(TD $(D p == 1) and $(D k == 0)) $(TD $(D 0)))
+    $(TR $(TD $(D p == 1) and $(D k > 0)) $(TD $(D -T.infinity)))
+    $(TR $(TD $(D p < 0), $(D p > 1), or NaN) $(TD Contract violation))
+)
 
 Params:
-    k = value to evaluate LPMF
-    p = `true` probability
+    k = number of failures at which to evaluate LPMF
+    p = per-trial success probability in $(D [0, 1])
 
 See_also: $(LINK2 https://en.wikipedia.org/wiki/Geometric_distribution, Geometric Distribution)
 +/
