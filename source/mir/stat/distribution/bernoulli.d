@@ -1,6 +1,18 @@
 /++
 This module contains algorithms for the $(LINK2 https://en.wikipedia.org/wiki/Bernoulli_distribution, Bernoulli Distribution).
 
+The outcomes are $(D false) (zero) and $(D true) (one), with probabilities
+$(D 1 - p) and $(D p). The parameter $(D p) must be finite and in $(D [0, 1]);
+both endpoints describe a deterministic outcome.
+
+PMF, CDF, CCDF, and inverse CDF accept built-in floating-point or $(D Fp)
+probabilities. LPMF accepts only built-in floating-point probabilities and
+returns a natural logarithm. The inverse CDF returns $(D bool).
+
+Finite expressions are subject to floating-point rounding. Contract violations
+are not prescribed return values: disabling contracts does not make an invalid
+input supported.
+
 License: $(HTTP www.apache.org/licenses/LICENSE-2.0, Apache-2.0)
 
 Authors: John Michael Hall
@@ -21,9 +33,19 @@ Computes the bernoulli probability mass function (PMF).
 Accepts built-in floating-point probabilities and $(D Fp) probabilities.
 The latter retain their supplied precision without conversion to a hardware float.
 
+Returns the point probability $(D P(X == x)).
+
+Special values:
+$(TABLE
+    $(TR $(TH Input) $(TH Result))
+    $(TR $(TD $(D x == false)) $(TD $(D 1 - p)))
+    $(TR $(TD $(D x == true)) $(TD $(D p)))
+    $(TR $(TD $(D p < 0), $(D p > 1), or NaN) $(TD Contract violation))
+)
+
 Params:
     x = value to evaluate PMF
-    p = `true` probability
+    p = finite probability of $(D true), in $(D [0, 1])
 
 See_also:
     $(LINK2 https://en.wikipedia.org/wiki/Bernoulli_distribution, Bernoulli Distribution)
@@ -77,9 +99,19 @@ version(mir_stat_test)
 /++
 Computes the bernoulli cumulative distribution function (CDF).
 
+Returns $(D P(X <= x)), ordering $(D false) before $(D true).
+
+Special values:
+$(TABLE
+    $(TR $(TH Input) $(TH Result))
+    $(TR $(TD $(D x == false)) $(TD $(D 1 - p)))
+    $(TR $(TD $(D x == true)) $(TD $(D 1)))
+    $(TR $(TD $(D p < 0), $(D p > 1), or NaN) $(TD Contract violation))
+)
+
 Params:
     x = value to evaluate CDF
-    p = `true` probability
+    p = finite probability of $(D true), in $(D [0, 1])
 
 See_also:
     $(LINK2 https://en.wikipedia.org/wiki/Bernoulli_distribution, Bernoulli Distribution)
@@ -119,9 +151,19 @@ unittest
 /++
 Computes the bernoulli complementary cumulative distribution function (CCDF).
 
+Returns the strict upper-tail probability $(D P(X > x)).
+
+Special values:
+$(TABLE
+    $(TR $(TH Input) $(TH Result))
+    $(TR $(TD $(D x == false)) $(TD $(D p)))
+    $(TR $(TD $(D x == true)) $(TD $(D 0)))
+    $(TR $(TD $(D p < 0), $(D p > 1), or NaN) $(TD Contract violation))
+)
+
 Params:
     x = value to evaluate CCDF
-    p = `true` probability
+    p = finite probability of $(D true), in $(D [0, 1])
 
 See_also:
     $(LINK2 https://en.wikipedia.org/wiki/Bernoulli_distribution, Bernoulli Distribution)
@@ -169,9 +211,22 @@ The $(D Fp) overload compares the represented probabilities without conversion
 to a hardware type. Its decision is equivalent to an exact $(D q + p > 1),
 avoiding rounding of a tiny probability out of the complementary threshold.
 
+For $(D q < 1), equality at the lower outcome's cumulative probability
+selects $(D false); the upper endpoint follows the rule in the table.
+
+Special values:
+$(TABLE
+    $(TR $(TH Input) $(TH Result))
+    $(TR $(TD $(D q == 0)) $(TD $(D false), even when $(D p == 1)))
+    $(TR $(TD $(D p == 0)) $(TD $(D false) for every valid $(D q)))
+    $(TR $(TD $(D q == 1) and $(D p > 0)) $(TD $(D true)))
+    $(TR $(TD $(D p == 1) and $(D q > 0)) $(TD $(D true)))
+    $(TR $(TD $(D p) or $(D q) outside $(D [0, 1]) or NaN) $(TD Contract violation))
+)
+
 Params:
-    q = value to evaluate InvCDF
-    p = `true` probability
+    q = cumulative probability in $(D [0, 1])
+    p = finite probability of $(D true), in $(D [0, 1])
 
 See_also:
     $(LINK2 https://en.wikipedia.org/wiki/Bernoulli_distribution, Bernoulli Distribution)
@@ -240,12 +295,33 @@ version(mir_stat_test)
     assert(bernoulliInvCDF(Fp!128(0.5), p));
 }
 
+/// A deterministic outcome still uses the lower endpoint convention at zero probability.
+version(mir_stat_test)
+@safe pure nothrow @nogc unittest
+{
+    assert(bernoulliPMF(true, 1.0) == 1);
+    assert(bernoulliCDF(false, 1.0) == 0);
+    assert(bernoulliCCDF(false, 1.0) == 1);
+    assert(!bernoulliInvCDF(0.0, 1.0));
+    assert(bernoulliInvCDF(0.5, 1.0));
+}
+
 /++
 Computes the bernoulli log probability mass function (LPMF).
 
+Returns the natural logarithm of $(D P(X == x)).
+
+Special values:
+$(TABLE
+    $(TR $(TH Input) $(TH Result))
+    $(TR $(TD $(D p == 0), $(D x == false); or $(D p == 1), $(D x == true)) $(TD $(D 0)))
+    $(TR $(TD $(D p == 0), $(D x == true); or $(D p == 1), $(D x == false)) $(TD $(D -T.infinity)))
+    $(TR $(TD $(D p < 0), $(D p > 1), or NaN) $(TD Contract violation))
+)
+
 Params:
     x = value to evaluate LPMF
-    p = `true` probability
+    p = finite probability of $(D true), in $(D [0, 1])
 
 See_also:
     $(LINK2 https://en.wikipedia.org/wiki/Bernoulli_distribution, Bernoulli Distribution)

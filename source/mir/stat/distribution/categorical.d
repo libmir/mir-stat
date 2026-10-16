@@ -1,6 +1,21 @@
 /++
 This module contains algorithms for the $(LINK2 https://en.wikipedia.org/wiki/Categorical_distribution, Categorical Distribution).
 
+Outcomes are zero-based indices into $(D p). Each entry is a finite
+probability in $(D [0, 1]), and the entries must sum approximately to one,
+as checked by $(D approxEqual). The functions do not normalize the supplied
+probabilities. Empty probability sequences and out-of-range observations
+violate the contracts.
+
+CDF and CCDF use the order of the category indices. This ordering is chosen
+by the caller; it need not have an intrinsic meaning for category labels.
+The overloads accept a one-dimensional slice or an array/variadic list of
+built-in floating-point probabilities.
+
+Finite expressions are subject to floating-point rounding. Contract violations
+are not prescribed return values: disabling contracts does not make an invalid
+input supported.
+
 License: $(HTTP www.apache.org/licenses/LICENSE-2.0, Apache-2.0)
 
 Authors: John Michael Hall
@@ -21,9 +36,19 @@ import std.traits: CommonType;
 /++
 Computes the Categorical probability mass function (PMF).
 
+Returns the point probability $(D P(X == x) = p[x]).
+
+Special values:
+$(TABLE
+    $(TR $(TH Input) $(TH Result))
+    $(TR $(TD $(D p[x] == 0)) $(TD $(D 0)))
+    $(TR $(TD $(D p[x] == 1)) $(TD $(D 1)))
+    $(TR $(TD $(D x >= p.length)) $(TD Contract violation))
+)
+
 Params:
-    x = value to evaluate PMF
-    p = slice containing the probability associated with the Categorical Distribution
+    x = zero-based category index at which to evaluate PMF
+    p = category probabilities, each in $(D [0, 1]), summing approximately to one
 
 See_also:
     $(LINK2 https://en.wikipedia.org/wiki/Categorical_distribution, Categorical Distribution)
@@ -81,7 +106,7 @@ unittest
     2.categoricalPMF(p).shouldApprox == 0.4;
 }
 
-///
+/// Normalize nonnegative weights before passing them as category probabilities.
 version(mir_stat_test)
 @safe pure nothrow @nogc
 unittest
@@ -102,9 +127,21 @@ unittest
 /++
 Computes the Categorical cumulative distribution function (CDF).
 
+Returns $(D P(X <= x)) by summing entries from index zero through $(D x).
+At the final category the result is the supplied total, which may differ
+slightly from one; it is not replaced with an exact one.
+
+Special values:
+$(TABLE
+    $(TR $(TH Input) $(TH Result))
+    $(TR $(TD $(D x == 0)) $(TD $(D p[0])))
+    $(TR $(TD $(D x == p.length - 1)) $(TD Sum of all entries in $(D p)))
+    $(TR $(TD $(D x >= p.length)) $(TD Contract violation))
+)
+
 Params:
-    x = value to evaluate CDF
-    p = slice containing the probability associated with the Categorical Distribution
+    x = zero-based category index at which to evaluate CDF
+    p = category probabilities, each in $(D [0, 1]), summing approximately to one
 
 See_also:
     $(LINK2 https://en.wikipedia.org/wiki/Categorical_distribution, Categorical Distribution)
@@ -167,9 +204,20 @@ Computes the Categorical complementary cumulative distribution function (CCDF).
 
 Returns the probability of a category strictly greater than `x`.
 
+Sums entries after $(D x) directly, avoiding subtraction of a rounded CDF
+from one.
+
+Special values:
+$(TABLE
+    $(TR $(TH Input) $(TH Result))
+    $(TR $(TD $(D x == p.length - 1)) $(TD $(D 0)))
+    $(TR $(TD $(D p.length == 1) and $(D x == 0)) $(TD $(D 0)))
+    $(TR $(TD $(D x >= p.length)) $(TD Contract violation))
+)
+
 Params:
-    x = value to evaluate CCDF
-    p = slice containing the probability associated with the Categorical Distribution
+    x = zero-based category index at which to evaluate CCDF
+    p = category probabilities, each in $(D [0, 1]), summing approximately to one
 
 See_also:
     $(LINK2 https://en.wikipedia.org/wiki/Categorical_distribution, Categorical Distribution)
@@ -248,9 +296,22 @@ unittest
 /++
 Computes the Categorical inverse cumulative distribution function (InvCDF).
 
+Returns the first category whose accumulated probability is at least $(D q).
+Equality selects that category. Accumulation is subject to floating-point
+rounding. If the scan never reaches $(D q) because the total is slightly
+below it, the function returns the last category with positive probability.
+
+Special values:
+$(TABLE
+    $(TR $(TH Input) $(TH Result))
+    $(TR $(TD $(D q == 0)) $(TD $(D 0), even when $(D p[0] == 0)))
+    $(TR $(TD $(D q == 1)) $(TD First category whose accumulated probability reaches one; otherwise the last positive-probability category))
+    $(TR $(TD $(D q < 0), $(D q > 1), or NaN) $(TD Contract violation))
+)
+
 Params:
-    q = value to evaluate InvCDF
-    p = slice containing the probability associated with the Categorical Distribution
+    q = cumulative probability in $(D [0, 1])
+    p = category probabilities, each in $(D [0, 1]), summing approximately to one
 
 See_also:
     $(LINK2 https://en.wikipedia.org/wiki/Categorical_distribution, Categorical Distribution)
@@ -354,12 +415,35 @@ unittest
     categoricalInvCDF(0.5, p).should == 1;
 }
 
+/// Zero-probability categories preserve indices but do not add cumulative mass.
+version(mir_stat_test)
+@safe pure nothrow @nogc unittest
+{
+    double[4] p = [0.0, 0.25, 0.75, 0.0];
+    assert(categoricalPMF(0, p[]) == 0);
+    assert(categoricalCDF(1, p[]) == 0.25);
+    assert(categoricalCCDF(1, p[]) == 0.75);
+    assert(categoricalInvCDF(0.0, p[]) == 0);
+    assert(categoricalInvCDF(0.25, p[]) == 1);
+    assert(categoricalInvCDF(1.0, p[]) == 2);
+}
+
 /++
 Computes the Categorical log probability mass function (LPMF).
 
+Returns the natural logarithm of $(D p[x]).
+
+Special values:
+$(TABLE
+    $(TR $(TH Input) $(TH Result))
+    $(TR $(TD $(D p[x] == 0)) $(TD $(D -T.infinity) for the probability element type $(D T)))
+    $(TR $(TD $(D p[x] == 1)) $(TD $(D 0)))
+    $(TR $(TD $(D x >= p.length)) $(TD Contract violation))
+)
+
 Params:
-    x = value to evaluate LPMF
-    p = slice containing the probability associated with the Categorical Distribution
+    x = zero-based category index at which to evaluate LPMF
+    p = category probabilities, each in $(D [0, 1]), summing approximately to one
 
 See_also:
     $(LINK2 https://en.wikipedia.org/wiki/Categorical_distribution, Categorical Distribution)

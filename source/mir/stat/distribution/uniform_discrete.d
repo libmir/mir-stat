@@ -1,6 +1,24 @@
 /++
 This module contains algorithms for the $(LINK2 https://en.wikipedia.org/wiki/Discrete_uniform_distribution, Discrete Uniform Distribution).
 
+The outcomes are the integers from $(D lower) through $(D upper), inclusive,
+with equal probability. Bounds and observations use $(D size_t); negative
+outcomes are not represented by this API. Forward functions require an
+observation inside the interval rather than extending the tails outside it.
+
+PMF, CDF, and CCDF accept $(D lower == upper). LPMF and inverse CDF instead
+require $(D lower < upper). Forward functions return $(D double); the inverse
+CDF accepts a built-in floating-point probability and returns $(D size_t).
+
+In the tables, $(D n = upper - lower + 1) denotes the mathematical number
+of outcomes. The implementation adds one after conversion to floating point
+to avoid integer overflow for the full $(D size_t) domain. Large interval
+sizes and interior quantile ranks can still round in the floating-point type.
+
+Finite expressions are subject to floating-point rounding. Contract violations
+are not prescribed return values: disabling contracts does not make an invalid
+input supported.
+
 License: $(HTTP www.apache.org/licenses/LICENSE-2.0, Apache-2.0)
 
 Authors: John Michael Hall
@@ -16,10 +34,20 @@ import mir.internal.utility: isFloatingPoint;
 /++
 Computes the discrete uniform probability mass function (PMF).
 
+Returns $(D P(X == x) = 1 / n) for every outcome in the interval.
+
+Special values:
+$(TABLE
+    $(TR $(TH Input) $(TH Result))
+    $(TR $(TD $(D lower <= x && x <= upper)) $(TD $(D 1 / n)))
+    $(TR $(TD $(D lower == upper) and $(D x == lower)) $(TD $(D 1)))
+    $(TR $(TD $(D x < lower) or $(D x > upper)) $(TD Contract violation))
+)
+
 Params:
     x = value to evaluate PMF
-    lower = lower bound
-    upper = upper bound
+    lower = inclusive lower bound
+    upper = inclusive upper bound
 
 See_also:
     $(LINK2 https://en.wikipedia.org/wiki/Discrete_uniform_distribution, Discrete Uniform Distribution)
@@ -47,10 +75,20 @@ unittest
 /++
 Computes the discrete uniform cumulative distribution function (CDF).
 
+Returns the inclusive lower-tail probability $(D P(X <= x)).
+
+Special values:
+$(TABLE
+    $(TR $(TH Input) $(TH Result))
+    $(TR $(TD $(D x == lower)) $(TD $(D 1 / n)))
+    $(TR $(TD $(D x == upper)) $(TD $(D 1)))
+    $(TR $(TD $(D x < lower) or $(D x > upper)) $(TD Contract violation))
+)
+
 Params:
     x = value to evaluate CDF
-    lower = lower bound
-    upper = upper bound
+    lower = inclusive lower bound
+    upper = inclusive upper bound
 
 See_also:
     $(LINK2 https://en.wikipedia.org/wiki/Discrete_uniform_distribution, Discrete Uniform Distribution)
@@ -82,10 +120,20 @@ unittest
 /++
 Computes the discrete uniform complementary cumulative distribution function (CCDF).
 
+Returns the strict upper-tail probability $(D P(X > x)).
+
+Special values:
+$(TABLE
+    $(TR $(TH Input) $(TH Result))
+    $(TR $(TD $(D x == lower)) $(TD $(D (n - 1) / n)))
+    $(TR $(TD $(D x == upper)) $(TD $(D 0)))
+    $(TR $(TD $(D x < lower) or $(D x > upper)) $(TD Contract violation))
+)
+
 Params:
     x = value to evaluate CCDF
-    lower = lower bound
-    upper = upper bound
+    lower = inclusive lower bound
+    upper = inclusive upper bound
 
 See_also:
     $(LINK2 https://en.wikipedia.org/wiki/Discrete_uniform_distribution, Discrete Uniform Distribution)
@@ -115,12 +163,24 @@ unittest
 }
 
 /++
-Computes the discrete uniform inverse cumulative distribution function (InvCDF)
+Computes the discrete uniform inverse cumulative distribution function (InvCDF).
+
+Selects the first outcome whose cumulative probability reaches $(D p).
+Interior ranks are computed in $(D T) and are subject to rounding.
+
+Special values:
+$(TABLE
+    $(TR $(TH Input) $(TH Result))
+    $(TR $(TD $(D p == 0)) $(TD $(D lower)))
+    $(TR $(TD $(D p == 1)) $(TD $(D upper)))
+    $(TR $(TD $(D p < 0), $(D p > 1), or NaN) $(TD Contract violation))
+    $(TR $(TD $(D lower >= upper)) $(TD Contract violation))
+)
 
 Params:
-    p = value to evaluate InvCDF
-    lower = lower bound
-    upper = upper bound
+    p = cumulative probability in $(D [0, 1])
+    lower = inclusive lower bound
+    upper = inclusive upper bound
 
 See_also:
     $(LINK2 https://en.wikipedia.org/wiki/Discrete_uniform_distribution, Discrete Uniform Distribution)
@@ -170,6 +230,17 @@ unittest
     1.0.uniformDiscreteInvCDF(1, 3).should == 3;
 }
 
+/// The CDF includes the selected integer; the CCDF counts only larger integers.
+version(mir_stat_test)
+@safe pure nothrow @nogc unittest
+{
+    // Four equally likely outcomes: 10, 11, 12, and 13.
+    assert(uniformDiscretePMF(11, 10, 13) == 0.25);
+    assert(uniformDiscreteCDF(11, 10, 13) == 0.5);
+    assert(uniformDiscreteCCDF(11, 10, 13) == 0.5);
+    assert(uniformDiscreteInvCDF(0.5, 10, 13) == 11);
+}
+
 // Interior probabilities select the first value whose CDF reaches p.
 version(mir_stat_test)
 @safe pure nothrow @nogc
@@ -192,12 +263,22 @@ unittest
 }
 
 /++
-Computes the discrete uniform log probability distribution function (LPDF)
+Computes the discrete uniform log probability mass function (LPMF).
+
+Returns the natural logarithm of the point probability $(D P(X == x)).
+
+Special values:
+$(TABLE
+    $(TR $(TH Input) $(TH Result))
+    $(TR $(TD $(D lower <= x && x <= upper) with $(D lower < upper)) $(TD $(D -log(n))))
+    $(TR $(TD $(D lower >= upper)) $(TD Contract violation))
+    $(TR $(TD $(D x < lower) or $(D x > upper)) $(TD Contract violation))
+)
 
 Params:
-    x = value to evaluate LPDF
-    lower = lower bound
-    upper = upper bound
+    x = integer outcome at which to evaluate LPMF
+    lower = inclusive lower bound
+    upper = inclusive upper bound
 
 See_also:
     $(LINK2 https://en.wikipedia.org/wiki/Discrete_uniform_distribution, Discrete Uniform Distribution)
