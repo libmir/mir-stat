@@ -58,6 +58,12 @@ Ditto, with location and scale parameters (by standardizing `x`).
 
 Returns a density, which may exceed one; it is not a point probability.
 
+For scales below one, tail densities can remain representable even when the
+corresponding unit-scale density underflows. This overload preserves such
+results and reduces rounding error near the subnormal boundary.
+Use $(D laplaceLPDF) when the logarithm of the density is needed, including
+when the density itself is outside the representable range.
+
 The table assumes a finite location and positive finite scale.
 
 Special values:
@@ -123,6 +129,10 @@ unittest
     assert(laplacePDF(3.0, 3.0, 2.0) == 0.25);
     assert(laplacePDF(-double.infinity) == 0.0);
     assert(laplacePDF(double.infinity) == 0.0);
+
+    // A small scale can restore a representable tail density.
+    assert(laplacePDF(800.0) == 0.0);
+    assert(laplacePDF(800 * 1e-300, 0.0, 1e-300) > 0.0);
 }
 
 // Small scales must restore representable densities in both tails.
