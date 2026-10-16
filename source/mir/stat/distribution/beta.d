@@ -3,6 +3,16 @@ This module contains algorithms for the $(LINK2 https://en.wikipedia.org/wiki/Be
 
 An alternate parameterization of this distribution is provided in $(MREF mir,stat,distribution,beta_proportion).
 
+Both shape parameters must be positive. Observations must lie in the closed
+interval $(D [0, 1]); the forward functions do not extend outside it. The
+shape $(D alpha) controls the density limit at zero, while $(D beta) controls
+the limit at one. The inverse CDF accepts both probability endpoints.
+
+The special-value tables assume finite distribution parameters in the stated
+domain. Finite expressions are subject to floating-point rounding and range
+limits. Contract violations are not prescribed return values: disabling
+contracts does not make an invalid input supported.
+
 License: $(HTTP www.apache.org/licenses/LICENSE-2.0, Apache-2.0)
 
 Authors: John Michael Hall
@@ -23,10 +33,24 @@ finite and normal. Otherwise, a logarithmic fallback avoids losing a
 representable density through intermediate overflow or underflow. Its
 accuracy follows $(LREF betaLPDF), including the limits for smaller shapes.
 
+Returns a density, which may exceed one; it is not a point probability.
+
+Special values:
+$(TABLE
+    $(TR $(TH Input) $(TH Result))
+    $(TR $(TD $(D x == 0), $(D alpha < 1)) $(TD $(D T.infinity)))
+    $(TR $(TD $(D x == 0), $(D alpha == 1)) $(TD $(D beta)))
+    $(TR $(TD $(D x == 0), $(D alpha > 1)) $(TD $(D 0)))
+    $(TR $(TD $(D x == 1), $(D beta < 1)) $(TD $(D T.infinity)))
+    $(TR $(TD $(D x == 1), $(D beta == 1)) $(TD $(D alpha)))
+    $(TR $(TD $(D x == 1), $(D beta > 1)) $(TD $(D 0)))
+    $(TR $(TD Outside $(D [0, 1]) or NaN) $(TD Contract violation))
+)
+
 Params:
     x = value to evaluate PDF
-    alpha = shape parameter #1
-    beta = shape parameter #2
+    alpha = positive shape controlling the lower endpoint
+    beta = positive shape controlling the upper endpoint
 
 See_also:
     $(LINK2 https://en.wikipedia.org/wiki/Beta_distribution, Beta Distribution)
@@ -129,13 +153,34 @@ unittest
     }}
 }
 
+/// Each shape controls one endpoint; a shape of one gives a finite endpoint density.
+version(mir_stat_test)
+@safe pure nothrow @nogc
+unittest
+{
+    assert(betaPDF(0.0, 0.5, 2.0) == double.infinity);
+    assert(betaPDF(0.0, 1.0, 2.0) == 2.0);
+    assert(betaPDF(0.0, 2.0, 2.0) == 0.0);
+    assert(betaPDF(1.0, 2.0, 1.0) == 2.0);
+}
+
 /++
-Computes the beta cumulatve distribution function (CDF).
+Computes the beta cumulative distribution function (CDF).
+
+Returns the lower-tail probability $(D P(X <= x)).
+
+Special values:
+$(TABLE
+    $(TR $(TH Input) $(TH Result))
+    $(TR $(TD $(D x == 0)) $(TD $(D 0)))
+    $(TR $(TD $(D x == 1)) $(TD $(D 1)))
+    $(TR $(TD Outside $(D [0, 1]) or NaN) $(TD Contract violation))
+)
 
 Params:
     x = value to evaluate CDF
-    alpha = shape parameter #1
-    beta = shape parameter #2
+    alpha = positive shape controlling the lower endpoint
+    beta = positive shape controlling the upper endpoint
 
 See_also:
     $(LINK2 https://en.wikipedia.org/wiki/Beta_distribution, Beta Distribution)
@@ -175,10 +220,21 @@ fallback can instead add the probability between $(D x) and an interior
 point to the upper tail starting at that point. Other parameter regimes use
 Phobos's reflected incomplete-beta calculation and retain its accuracy limits.
 
+Returns the upper-tail probability $(D P(X > x)). Use this function directly
+when the upper tail is small, rather than subtracting the CDF from one.
+
+Special values:
+$(TABLE
+    $(TR $(TH Input) $(TH Result))
+    $(TR $(TD $(D x == 0)) $(TD $(D 1)))
+    $(TR $(TD $(D x == 1)) $(TD $(D 0)))
+    $(TR $(TD Outside $(D [0, 1]) or NaN) $(TD Contract violation))
+)
+
 Params:
     x = value to evaluate CCDF
-    alpha = shape parameter #1
-    beta = shape parameter #2
+    alpha = positive shape controlling the lower endpoint
+    beta = positive shape controlling the upper endpoint
 
 See_also:
     $(LINK2 https://en.wikipedia.org/wiki/Beta_distribution, Beta Distribution)
@@ -369,10 +425,20 @@ For lower-half probabilities whose quantiles are near one, a bounded search
 keeps the original probability intact instead of subtracting it from one.
 Its accuracy remains limited by the underlying incomplete beta calculation.
 
+Returns the quantile at cumulative probability $(D p).
+
+Special values:
+$(TABLE
+    $(TR $(TH Input) $(TH Result))
+    $(TR $(TD $(D p == 0)) $(TD $(D 0)))
+    $(TR $(TD $(D p == 1)) $(TD $(D 1)))
+    $(TR $(TD $(D p < 0) or $(D p > 1) or NaN) $(TD Contract violation))
+)
+
 Params:
     p = value to evaluate InvCDF
-    alpha = shape parameter #1
-    beta = shape parameter #2
+    alpha = positive shape controlling the lower endpoint
+    beta = positive shape controlling the upper endpoint
 
 See_also:
     $(LINK2 https://en.wikipedia.org/wiki/Beta_distribution, Beta Distribution)
@@ -548,10 +614,24 @@ When both shapes are at least 16, a centered calculation avoids subtracting
 large, nearly equal logarithms near the peak. Smaller shapes retain the
 direct logarithmic formula and its accuracy limits.
 
+Returns the natural logarithm of the density.
+
+Special values:
+$(TABLE
+    $(TR $(TH Input) $(TH Result))
+    $(TR $(TD $(D x == 0), $(D alpha < 1)) $(TD $(D T.infinity)))
+    $(TR $(TD $(D x == 0), $(D alpha == 1)) $(TD $(D log(beta))))
+    $(TR $(TD $(D x == 0), $(D alpha > 1)) $(TD $(D -T.infinity)))
+    $(TR $(TD $(D x == 1), $(D beta < 1)) $(TD $(D T.infinity)))
+    $(TR $(TD $(D x == 1), $(D beta == 1)) $(TD $(D log(alpha))))
+    $(TR $(TD $(D x == 1), $(D beta > 1)) $(TD $(D -T.infinity)))
+    $(TR $(TD Outside $(D [0, 1]) or NaN) $(TD Contract violation))
+)
+
 Params:
     x = value to evaluate LPDF
-    alpha = shape parameter #1
-    beta = shape parameter #2
+    alpha = positive shape controlling the lower endpoint
+    beta = positive shape controlling the upper endpoint
 
 See_also:
     $(LINK2 https://en.wikipedia.org/wiki/Beta_distribution, Beta Distribution)

@@ -2,8 +2,16 @@
 This module contains algorithms for the $(LINK2 https://en.wikipedia.org/wiki/Gamma_distribution, Gamma Distribution).
 
 This module uses the shape/scale parameterization of the gamma distribution. To
-use the shape/rate parameterization, apply the inverse to the rate and pass it
-as the scale parameter.
+use the shape/rate parameterization, pass $(D 1 / rate) as the scale parameter.
+
+The shape and scale must be positive, and observations must satisfy $(D x >= 0).
+The default scale is one. The mean is $(D shape * scale) and the variance is
+$(D shape * scale * scale). The inverse CDF accepts both probability endpoints.
+
+The special-value tables assume finite distribution parameters in the stated
+domain. Finite expressions are subject to floating-point rounding and range
+limits. Contract violations are not prescribed return values: disabling
+contracts does not make an invalid input supported.
 
 License: $(HTTP www.apache.org/licenses/LICENSE-2.0, Apache-2.0)
 
@@ -30,10 +38,23 @@ Both overloads use a logarithmic fallback when the direct calculation overflows
 or loses precision through underflow. The integer-shape overload retains the
 integer shape and uses a log-factorial in that fallback.
 
+Returns a density, which may exceed one; it is not a point probability.
+The $(D shape < 1) row applies only to the floating-point shape overload.
+
+Special values:
+$(TABLE
+    $(TR $(TH Input) $(TH Result))
+    $(TR $(TD $(D x == 0), $(D 0 < shape && shape < 1)) $(TD $(D T.infinity)))
+    $(TR $(TD $(D x == 0), $(D shape == 1)) $(TD $(D 1 / scale)))
+    $(TR $(TD $(D x == 0), $(D shape > 1)) $(TD $(D 0)))
+    $(TR $(TD $(D x == T.infinity)) $(TD $(D 0)))
+    $(TR $(TD $(D x < 0) or NaN) $(TD Contract violation))
+)
+
 Params:
     x = value to evaluate PDF
-    shape = shape parameter
-    scale = scale parameter
+    shape = positive shape parameter
+    scale = positive scale parameter (default: one)
 
 See_also:
     $(LINK2 https://en.wikipedia.org/wiki/Gamma_distribution, Gamma Distribution)
@@ -171,13 +192,34 @@ unittest
     3.0.gammaPDF(0.5, 2.0).shouldApprox == 0.05139344;
 }
 
+/// At zero, the shape determines the density; integer shape one has the same limit.
+version(mir_stat_test)
+@safe pure nothrow @nogc
+unittest
+{
+    assert(gammaPDF(0.0, 0.5, 2.0) == double.infinity);
+    assert(gammaPDF(0.0, 1.0, 2.0) == 0.5);
+    assert(gammaPDF(0.0, 2.0, 2.0) == 0.0);
+    assert(gammaPDF(0.0, size_t(1), 2.0) == 0.5);
+}
+
 /++
 Computes the gamma cumulative distribution function (CDF).
 
+Returns the lower-tail probability $(D P(X <= x)).
+
+Special values:
+$(TABLE
+    $(TR $(TH Input) $(TH Result))
+    $(TR $(TD $(D x == 0)) $(TD $(D 0)))
+    $(TR $(TD $(D x == T.infinity)) $(TD $(D 1)))
+    $(TR $(TD $(D x < 0) or NaN) $(TD Contract violation))
+)
+
 Params:
     x = value to evaluate CDF
-    shape = shape parameter
-    scale = scale parameter
+    shape = positive shape parameter
+    scale = positive scale parameter (default: one)
 
 See_also:
     $(LINK2 https://en.wikipedia.org/wiki/Gamma_distribution, Gamma Distribution)
@@ -228,10 +270,21 @@ unittest
 /++
 Computes the gamma complementary cumulative distribution function (CCDF).
 
+Returns the upper-tail probability $(D P(X > x)). Use this function directly
+when the upper tail is small, rather than subtracting the CDF from one.
+
+Special values:
+$(TABLE
+    $(TR $(TH Input) $(TH Result))
+    $(TR $(TD $(D x == 0)) $(TD $(D 1)))
+    $(TR $(TD $(D x == T.infinity)) $(TD $(D 0)))
+    $(TR $(TD $(D x < 0) or NaN) $(TD Contract violation))
+)
+
 Params:
     x = value to evaluate CCDF
-    shape = shape parameter
-    scale = scale parameter
+    shape = positive shape parameter
+    scale = positive scale parameter (default: one)
 
 See_also:
     $(LINK2 https://en.wikipedia.org/wiki/Gamma_distribution, Gamma Distribution)
@@ -290,10 +343,20 @@ logarithmic form so a representable scaled result can be retained.
 Very large shapes can be slow with Phobos versions before DMD 2.112.1, which
 use a power series to evaluate the lower cumulative probability near the mean.
 
+Returns the quantile at cumulative probability $(D p).
+
+Special values:
+$(TABLE
+    $(TR $(TH Input) $(TH Result))
+    $(TR $(TD $(D p == 0)) $(TD $(D 0)))
+    $(TR $(TD $(D p == 1)) $(TD $(D T.infinity)))
+    $(TR $(TD $(D p < 0) or $(D p > 1) or NaN) $(TD Contract violation))
+)
+
 Params:
     p = value to evaluate InvCDF
-    shape = shape parameter
-    scale = scale parameter
+    shape = positive shape parameter
+    scale = positive scale parameter (default: one)
 
 See_also:
     $(LINK2 https://en.wikipedia.org/wiki/Gamma_distribution, Gamma Distribution)
@@ -597,10 +660,23 @@ If `shape` is passed as a `size_t` type (or a type convertible to that), then th
 LPDF is calculated using the relationship with the poisson distribution (i.e.
 replacing the `logGamma` function with the `logFactorial`).
 
+Returns the natural logarithm of the density.
+The $(D shape < 1) row applies only to the floating-point shape overload.
+
+Special values:
+$(TABLE
+    $(TR $(TH Input) $(TH Result))
+    $(TR $(TD $(D x == 0), $(D 0 < shape && shape < 1)) $(TD $(D T.infinity)))
+    $(TR $(TD $(D x == 0), $(D shape == 1)) $(TD $(D -log(scale))))
+    $(TR $(TD $(D x == 0), $(D shape > 1)) $(TD $(D -T.infinity)))
+    $(TR $(TD $(D x == T.infinity)) $(TD $(D -T.infinity)))
+    $(TR $(TD $(D x < 0) or NaN) $(TD Contract violation))
+)
+
 Params:
     x = value to evaluate LPDF
-    shape = shape parameter
-    scale = scale parameter
+    shape = positive shape parameter
+    scale = positive scale parameter (default: one)
 
 See_also:
     $(LINK2 https://en.wikipedia.org/wiki/Gamma_distribution, Gamma Distribution)

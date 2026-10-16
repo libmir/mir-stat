@@ -1,6 +1,24 @@
 /++
 This module contains algorithms for the $(LINK2 https://en.wikipedia.org/wiki/Binomial_distribution, Binomial Distribution).
 
+The count $(D k) is the number of successes in $(D n) independent trials with
+success probability $(D p). Counts use $(D size_t), with $(D k <= n), and
+$(D p) must be finite and in $(D [0, 1]). Forward functions reject counts
+outside this interval rather than extending their tails beyond the support.
+
+The ordinary functions accept built-in floating-point probabilities.
+$(LREF fp_binomialPMF) is a separate extended-range PMF with limitations
+described below; it is not an $(D Fp) overload of $(D binomialPMF).
+LPMF has no algorithm selector. Normal and Poisson approximations trade
+accuracy for speed and do not promise the direct algorithm's interior
+probabilities, although their point masses and boundary returns are handled
+explicitly.
+
+Tables assume valid parameters except where an invalid input is listed.
+Finite expressions are subject to floating-point rounding and range limits.
+Contract violations are not prescribed return values: disabling contracts does
+not make an invalid input supported.
+
 License: $(HTTP www.apache.org/licenses/LICENSE-2.0, Apache-2.0)
 
 Authors: John Michael Hall
@@ -219,6 +237,19 @@ time and accuracy. If `approxPoisson` is provided, the default is `PoissonAlgo.g
 
 All algorithms return the exact point mass when `n = 0`, `p = 0`, or `p = 1`.
 
+Returns the point probability $(D P(X == k)). The table applies to all
+$(D BinomialAlgo) choices.
+
+Special values:
+$(TABLE
+    $(TR $(TH Input) $(TH Result))
+    $(TR $(TD $(D n == 0) (so $(D k == 0))) $(TD $(D 1)))
+    $(TR $(TD $(D p == 0)) $(TD $(D 1) at $(D k == 0); otherwise $(D 0)))
+    $(TR $(TD $(D p == 1)) $(TD $(D 1) at $(D k == n); otherwise $(D 0)))
+    $(TR $(TD $(D k > n)) $(TD Contract violation))
+    $(TR $(TD $(D p < 0), $(D p > 1), or NaN) $(TD Contract violation))
+)
+
 Params:
     binomialAlgo = algorithm for calculating PMF (default: BinomialAlgo.direct)
     poissonAlgo = algorithm for poisson approximation (default: PoissonAlgo.gamma)
@@ -234,7 +265,7 @@ template binomialPMF(BinomialAlgo binomialAlgo = BinomialAlgo.direct,
     Params:
     k = value to evaluate PMF (e.g. number of "heads")
     n = number of trials
-    p = `true` probability
+    p = per-trial success probability in $(D [0, 1])
     +/
     T binomialPMF(T)(const size_t k, const size_t n, const T p)
         if (isFloatingPoint!T)
@@ -351,14 +382,33 @@ unittest
 }
 
 /++
-Computes the  binomial probability mass function (PMF) directly with extended 
-floating point types (e.g. `Fp!128`), which provides additional accuracy for
-large values of `k`, `n`, or `p`. 
+Computes the binomial PMF with extended-range $(D Fp) arithmetic.
+
+This implementation does not preserve all of the supplied probability precision:
+it forms the failure probability as $(D 1 - cast(double)p), then converts that
+complement back to $(D Fp). Probabilities near one can therefore lose a small
+failure probability. Input probability contracts also compare after conversion
+to $(D double). Callers must supply an actual probability in $(D [0, 1]),
+even if an invalid value would round into that interval.
+
+The coefficient calculation converts $(D k) to $(D uint); counts above
+$(D uint.max) are not supported correctly by this implementation. The
+extended exponent range can retain small products, but does not remove these
+input-precision and count limitations.
+
+Special values:
+$(TABLE
+    $(TR $(TH Input) $(TH Result))
+    $(TR $(TD $(D n == 0) and $(D k == 0)) $(TD $(D 1)))
+    $(TR $(TD $(D p == 0)) $(TD Unit mass at $(D k == 0)))
+    $(TR $(TD $(D p == 1)) $(TD Unit mass at $(D k == n)))
+    $(TR $(TD $(D k > n)) $(TD Contract violation))
+)
 
 Params:
     k = value to evaluate PMF (e.g. number of "heads")
     n = number of trials
-    p = `true` probability
+    p = per-trial success probability in $(D [0, 1])
 
 See_also:
     $(LINK2 https://en.wikipedia.org/wiki/Binomial_distribution, Binomial Distribution)
@@ -558,6 +608,19 @@ time and accuracy. If `approxPoisson` is provided, the default is `PoissonAlgo.g
 All algorithms handle `p = 0` and `p = 1` exactly and return one at `k = n`,
 including when `n = 0`. Interior approximations are not renormalized.
 
+Returns the inclusive lower-tail probability $(D P(X <= k)). The boundary
+returns below apply to every algorithm choice.
+
+Special values:
+$(TABLE
+    $(TR $(TH Input) $(TH Result))
+    $(TR $(TD $(D k == n)) $(TD $(D 1)))
+    $(TR $(TD $(D p == 0)) $(TD $(D 1)))
+    $(TR $(TD $(D p == 1) and $(D k < n)) $(TD $(D 0)))
+    $(TR $(TD $(D k > n)) $(TD Contract violation))
+    $(TR $(TD $(D p < 0), $(D p > 1), or NaN) $(TD Contract violation))
+)
+
 Params:
     binomialAlgo = algorithm for calculating CDF (default: BinomialAlgo.direct)
     poissonAlgo = algorithm for poisson approximation (default: PoissonAlgo.gamma)
@@ -573,7 +636,7 @@ template binomialCDF(BinomialAlgo binomialAlgo = BinomialAlgo.direct,
     Params:
     k = value to evaluate CDF (e.g. number of "heads")
     n = number of trials
-    p = `true` probability
+    p = per-trial success probability in $(D [0, 1])
     +/
     T binomialCDF(T)(const size_t k, const size_t n, const T p)
         if (isFloatingPoint!T)
@@ -717,6 +780,19 @@ time and accuracy. If `approxPoisson` is provided, the default is `PoissonAlgo.g
 All algorithms handle `p = 0` and `p = 1` exactly and return zero at `k = n`,
 including when `n = 0`. Interior approximations are not renormalized.
 
+Returns the strict upper-tail probability $(D P(X > k)). The boundary
+returns below apply to every algorithm choice.
+
+Special values:
+$(TABLE
+    $(TR $(TH Input) $(TH Result))
+    $(TR $(TD $(D k == n)) $(TD $(D 0)))
+    $(TR $(TD $(D p == 0)) $(TD $(D 0)))
+    $(TR $(TD $(D p == 1) and $(D k < n)) $(TD $(D 1)))
+    $(TR $(TD $(D k > n)) $(TD Contract violation))
+    $(TR $(TD $(D p < 0), $(D p > 1), or NaN) $(TD Contract violation))
+)
+
 Params:
     binomialAlgo = algorithm for calculating CCDF (default: BinomialAlgo.direct)
     poissonAlgo = algorithm for poisson approximation (default: PoissonAlgo.gamma)
@@ -732,7 +808,7 @@ template binomialCCDF(BinomialAlgo binomialAlgo = BinomialAlgo.direct,
     Params:
     k = value to evaluate CCDF (e.g. number of "heads")
     n = number of trials
-    p = `true` probability
+    p = per-trial success probability in $(D [0, 1])
     +/
     T binomialCCDF(T)(const size_t k, const size_t n, const T p)
         if (isFloatingPoint!T)
@@ -1115,6 +1191,20 @@ time and accuracy. If `approxPoisson` is provided, the default is
 `PoissonAlgo.direct`, which is different from `binomialPMF` and `binomialCDF`
 `PoissonAlgo.gamma` is not supported.
 
+Zero queries and the point mass at zero take precedence over upper-endpoint
+returns, for every algorithm choice. A zero query returns zero even when
+$(D p == 1) puts all mass at $(D n).
+
+Special values:
+$(TABLE
+    $(TR $(TH Input) $(TH Result))
+    $(TR $(TD $(D q == 0), $(D p == 0), or $(D n == 0)) $(TD $(D 0)))
+    $(TR $(TD $(D q == 1) with $(D p > 0) and $(D n > 0)) $(TD $(D n)))
+    $(TR $(TD $(D p == 1) and $(D q > 0)) $(TD $(D n)))
+    $(TR $(TD $(D q < 0), $(D q > 1), or NaN) $(TD Contract violation))
+    $(TR $(TD $(D p < 0), $(D p > 1), or NaN) $(TD Contract violation))
+)
+
 Params:
     binomialAlgo = algorithm for calculating InvCDF (default: BinomialAlgo.direct)
     poissonAlgo = algorithm for poisson approximation (default: PoissonAlgo.direct)
@@ -1129,9 +1219,9 @@ template binomialInvCDF(BinomialAlgo binomialAlgo = BinomialAlgo.direct,
 {
     /++
     Params:
-    q = value to evaluate InvCDF
+    q = cumulative probability in $(D [0, 1])
     n = number of trials
-    p = `true` probability
+    p = per-trial success probability in $(D [0, 1])
     +/
     size_t binomialInvCDF(T)(const T q, const size_t n, const T p)
         if (isFloatingPoint!T)
@@ -1493,16 +1583,41 @@ unittest
     }
 }
 
+/// Count successes in a fixed number of trials and distinguish the two tails.
+version(mir_stat_test)
+@safe pure nothrow @nogc unittest
+{
+    import mir.math.common: approxEqual;
+    assert(binomialPMF(1, 2, 0.5) == 0.5);
+    assert(approxEqual(binomialCDF(1, 2, 0.5), 0.75));
+    assert(approxEqual(binomialCCDF(1, 2, 0.5), 0.25));
+    assert(binomialInvCDF(0.75, 2, 0.5) == 1);
+    assert(binomialInvCDF(0.0, 2, 1.0) == 0);
+    assert(binomialInvCDF(1.0, 2, 1.0) == 2);
+}
+
 /++
-Computes the binomial log probability mass function (LPMF)
+Computes the binomial log probability mass function (LPMF).
 
 Large counts use a centered calculation to avoid cancellation near the mode.
 Counts retain their full `size_t` width, including near either endpoint.
 
+Returns the natural logarithm of $(D P(X == k)).
+
+Special values:
+$(TABLE
+    $(TR $(TH Input) $(TH Result))
+    $(TR $(TD $(D n == 0) (so $(D k == 0))) $(TD $(D 0)))
+    $(TR $(TD $(D p == 0)) $(TD $(D 0) at $(D k == 0); otherwise $(D -T.infinity)))
+    $(TR $(TD $(D p == 1)) $(TD $(D 0) at $(D k == n); otherwise $(D -T.infinity)))
+    $(TR $(TD $(D k > n)) $(TD Contract violation))
+    $(TR $(TD $(D p < 0), $(D p > 1), or NaN) $(TD Contract violation))
+)
+
 Params:
     k = value to evaluate LPMF (e.g. number of "heads")
     n = number of trials
-    p = `true` probability
+    p = per-trial success probability in $(D [0, 1])
 
 See_also:
     $(LINK2 https://en.wikipedia.org/wiki/Binomial_distribution, Binomial Distribution)

@@ -1,6 +1,16 @@
 /++
 This module contains algorithms for the continuous $(LINK2 https://en.wikipedia.org/wiki/Continuous_uniform_distribution, Uniform Distribution).
 
+These functions describe a continuous distribution on the closed interval
+$(D [lower, upper]), with $(D lower < upper). The forward functions require
+$(D x) to lie in that interval; they do not extend the density or probabilities
+outside it. The inverse CDF accepts both probability endpoints.
+
+The special-value tables assume finite distribution parameters in the stated
+domain. Finite expressions are subject to floating-point rounding and range
+limits. Contract violations are not prescribed return values: disabling
+contracts does not make an invalid input supported.
+
 License: $(HTTP www.apache.org/licenses/LICENSE-2.0, Apache-2.0)
 
 Authors: John Michael Hall
@@ -16,10 +26,23 @@ import mir.internal.utility: isFloatingPoint;
 /++
 Computes the uniform probability density function (PDF).
 
+Returns a density, which may exceed one; it is not a point probability.
+
+The table expresses the density in real arithmetic; the implementation also
+handles finite bounds whose difference overflows the floating-point type.
+
+Special values:
+$(TABLE
+    $(TR $(TH Input) $(TH Result))
+    $(TR $(TD $(D x == lower)) $(TD $(D 1 / (upper - lower))))
+    $(TR $(TD $(D x == upper)) $(TD $(D 1 / (upper - lower))))
+    $(TR $(TD Outside $(D [lower, upper]) or NaN) $(TD Contract violation))
+)
+
 Params:
     x = value to evaluate PDF
-    lower = lower bound
-    upper = upper bound
+    lower = finite lower support boundary
+    upper = finite upper support boundary, greater than lower
 
 See_also:
     $(LINK2 https://en.wikipedia.org/wiki/Continuous_uniform_distribution, Uniform Distribution)
@@ -49,13 +72,32 @@ unittest
     assert(2.5.uniformPDF(1.0, 3.0).approxEqual(0.5));
 }
 
+/// The density includes both bounds; it can exceed one on a narrow interval.
+version(mir_stat_test)
+@safe pure nothrow @nogc
+unittest
+{
+    assert(uniformPDF(0.0, 0.0, 0.5) == 2.0);
+    assert(uniformPDF(0.5, 0.0, 0.5) == 2.0);
+}
+
 /++
 Computes the uniform cumulative distribution function (CDF).
 
+Returns the lower-tail probability $(D P(X <= x)).
+
+Special values:
+$(TABLE
+    $(TR $(TH Input) $(TH Result))
+    $(TR $(TD $(D x == lower)) $(TD $(D 0)))
+    $(TR $(TD $(D x == upper)) $(TD $(D 1)))
+    $(TR $(TD Outside $(D [lower, upper]) or NaN) $(TD Contract violation))
+)
+
 Params:
     x = value to evaluate CDF
-    lower = lower bound
-    upper = upper bound
+    lower = finite lower support boundary
+    upper = finite upper support boundary, greater than lower
 
 See_also:
     $(LINK2 https://en.wikipedia.org/wiki/Continuous_uniform_distribution, Uniform Distribution)
@@ -88,10 +130,21 @@ unittest
 /++
 Computes the uniform complementary cumulative distribution function (CCDF).
 
+Returns the upper-tail probability $(D P(X > x)). Use this function directly
+when the upper tail is small, rather than subtracting the CDF from one.
+
+Special values:
+$(TABLE
+    $(TR $(TH Input) $(TH Result))
+    $(TR $(TD $(D x == lower)) $(TD $(D 1)))
+    $(TR $(TD $(D x == upper)) $(TD $(D 0)))
+    $(TR $(TD Outside $(D [lower, upper]) or NaN) $(TD Contract violation))
+)
+
 Params:
     x = value to evaluate CCDF
-    lower = lower bound
-    upper = upper bound
+    lower = finite lower support boundary
+    upper = finite upper support boundary, greater than lower
 
 See_also:
     $(LINK2 https://en.wikipedia.org/wiki/Continuous_uniform_distribution, Uniform Distribution)
@@ -124,10 +177,20 @@ unittest
 /++
 Computes the uniform inverse cumulative distribution function (InvCDF)
 
+Returns the quantile at cumulative probability $(D p).
+
+Special values:
+$(TABLE
+    $(TR $(TH Input) $(TH Result))
+    $(TR $(TD $(D p == 0)) $(TD $(D lower)))
+    $(TR $(TD $(D p == 1)) $(TD $(D upper)))
+    $(TR $(TD $(D p < 0) or $(D p > 1) or NaN) $(TD Contract violation))
+)
+
 Params:
     p = value to evaluate InvCDF
-    lower = lower bound
-    upper = upper bound
+    lower = finite lower support boundary
+    upper = finite upper support boundary, greater than lower
 
 See_also:
     $(LINK2 https://en.wikipedia.org/wiki/Continuous_uniform_distribution, Uniform Distribution)
@@ -161,10 +224,24 @@ unittest
 /++
 Computes the uniform log probability density function (LPDF)
 
+Returns the natural logarithm of the density. A negative value is valid;
+it is not a probability.
+
+The table expresses the density in real arithmetic; the implementation also
+handles finite bounds whose difference overflows the floating-point type.
+
+Special values:
+$(TABLE
+    $(TR $(TH Input) $(TH Result))
+    $(TR $(TD $(D x == lower)) $(TD $(D -log(upper - lower))))
+    $(TR $(TD $(D x == upper)) $(TD $(D -log(upper - lower))))
+    $(TR $(TD Outside $(D [lower, upper]) or NaN) $(TD Contract violation))
+)
+
 Params:
     x = value to evaluate LPDF
-    lower = lower bound
-    upper = upper bound
+    lower = finite lower support boundary
+    upper = finite upper support boundary, greater than lower
 
 See_also:
     $(LINK2 https://en.wikipedia.org/wiki/Continuous_uniform_distribution, Uniform Distribution)

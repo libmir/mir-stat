@@ -1,6 +1,15 @@
 /++
 This module contains algorithms for the $(LINK2 https://en.wikipedia.org/wiki/Weibull_distribution, Weibull Distribution).
 
+The shape and scale parameters are positive, and the support is $(D x >= 0).
+The default scale is one. Shape one gives an exponential distribution with
+rate $(D 1 / scale). The inverse CDF accepts both probability endpoints.
+
+The special-value tables assume finite distribution parameters in the stated
+domain. Finite expressions are subject to floating-point rounding and range
+limits. Contract violations are not prescribed return values: disabling
+contracts does not make an invalid input supported.
+
 License: $(HTTP www.apache.org/licenses/LICENSE-2.0, Apache-2.0)
 
 Authors: John Michael Hall
@@ -16,10 +25,22 @@ import mir.internal.utility: isFloatingPoint;
 /++
 Computes the Weibull probability density function (PDF).
 
+Returns a density, which may exceed one; it is not a point probability.
+
+Special values:
+$(TABLE
+    $(TR $(TH Input) $(TH Result))
+    $(TR $(TD $(D x == 0), $(D shape < 1)) $(TD $(D T.infinity)))
+    $(TR $(TD $(D x == 0), $(D shape == 1)) $(TD $(D 1 / scale)))
+    $(TR $(TD $(D x == 0), $(D shape > 1)) $(TD $(D 0)))
+    $(TR $(TD $(D x == T.infinity)) $(TD $(D 0)))
+    $(TR $(TD $(D x < 0) or NaN) $(TD Contract violation))
+)
+
 Params:
     x = value to evaluate PDF
-    shape = shape parameter
-    scale = scale parameter
+    shape = positive shape parameter
+    scale = positive scale parameter (default: one)
 
 See_also:
     $(LINK2 https://en.wikipedia.org/wiki/Weibull_distribution, Weibull Distribution)
@@ -77,13 +98,33 @@ unittest
     0.0.weibullPDF(1.0, 3.0).shouldApprox == 0.3333333;
 }
 
+/// At zero, the shape determines whether the density is infinite, finite, or zero.
+version(mir_stat_test)
+@safe pure nothrow @nogc
+unittest
+{
+    assert(weibullPDF(0.0, 0.5, 2.0) == double.infinity);
+    assert(weibullPDF(0.0, 1.0, 2.0) == 0.5);
+    assert(weibullPDF(0.0, 2.0, 2.0) == 0.0);
+}
+
 /++
 Computes the Weibull cumulative distribution function (CDF).
 
+Returns the lower-tail probability $(D P(X <= x)).
+
+Special values:
+$(TABLE
+    $(TR $(TH Input) $(TH Result))
+    $(TR $(TD $(D x == 0)) $(TD $(D 0)))
+    $(TR $(TD $(D x == T.infinity)) $(TD $(D 1)))
+    $(TR $(TD $(D x < 0) or NaN) $(TD Contract violation))
+)
+
 Params:
     x = value to evaluate CDF
-    shape = shape parameter
-    scale = scale parameter
+    shape = positive shape parameter
+    scale = positive scale parameter (default: one)
 
 See_also:
     $(LINK2 https://en.wikipedia.org/wiki/Weibull_distribution, Weibull Distribution)
@@ -122,10 +163,21 @@ unittest
 /++
 Computes the Weibull complementary cumulative distribution function (CCDF).
 
+Returns the upper-tail probability $(D P(X > x)). Use this function directly
+when the upper tail is small, rather than subtracting the CDF from one.
+
+Special values:
+$(TABLE
+    $(TR $(TH Input) $(TH Result))
+    $(TR $(TD $(D x == 0)) $(TD $(D 1)))
+    $(TR $(TD $(D x == T.infinity)) $(TD $(D 0)))
+    $(TR $(TD $(D x < 0) or NaN) $(TD Contract violation))
+)
+
 Params:
     x = value to evaluate CCDF
-    shape = shape parameter
-    scale = scale parameter
+    shape = positive shape parameter
+    scale = positive scale parameter (default: one)
 
 See_also:
     $(LINK2 https://en.wikipedia.org/wiki/Weibull_distribution, Weibull Distribution)
@@ -163,10 +215,20 @@ unittest
 /++
 Computes the Weibull inverse cumulative distribution function (InvCDF).
 
+Returns the quantile at cumulative probability $(D p).
+
+Special values:
+$(TABLE
+    $(TR $(TH Input) $(TH Result))
+    $(TR $(TD $(D p == 0)) $(TD $(D 0)))
+    $(TR $(TD $(D p == 1)) $(TD $(D T.infinity)))
+    $(TR $(TD $(D p < 0) or $(D p > 1) or NaN) $(TD Contract violation))
+)
+
 Params:
     p = value to evaluate InvCDF
-    shape = shape parameter
-    scale = scale parameter
+    shape = positive shape parameter
+    scale = positive scale parameter (default: one)
 
 See_also:
     $(LINK2 https://en.wikipedia.org/wiki/Weibull_distribution, Weibull Distribution)
@@ -209,10 +271,23 @@ unittest
 /++
 Computes the Weibull log probability density function (LPDF).
 
+Returns the natural logarithm of the density. A negative value is valid;
+it is not a probability.
+
+Special values:
+$(TABLE
+    $(TR $(TH Input) $(TH Result))
+    $(TR $(TD $(D x == 0), $(D shape < 1)) $(TD $(D T.infinity)))
+    $(TR $(TD $(D x == 0), $(D shape == 1)) $(TD $(D -log(scale))))
+    $(TR $(TD $(D x == 0), $(D shape > 1)) $(TD $(D -T.infinity)))
+    $(TR $(TD $(D x == T.infinity)) $(TD $(D -T.infinity)))
+    $(TR $(TD $(D x < 0) or NaN) $(TD Contract violation))
+)
+
 Params:
     x = value to evaluate LPDF
-    shape = shape parameter
-    scale = scale parameter
+    shape = positive shape parameter
+    scale = positive scale parameter (default: one)
 
 See_also:
     $(LINK2 https://en.wikipedia.org/wiki/Weibull_distribution, Weibull Distribution)

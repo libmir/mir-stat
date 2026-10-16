@@ -1,6 +1,17 @@
 /++
 This module contains algorithms for the $(LINK2 https://en.wikipedia.org/wiki/F-distribution, F Distribution).
 
+The positive parameters $(D df1) and $(D df2) are the numerator and denominator
+degrees of freedom. They may be nonintegral. The distribution describes the
+ratio of two independent chi-squared variables, each divided by its degrees
+of freedom. Observations must be nonnegative. The inverse CDF accepts both
+probability endpoints.
+
+The special-value tables assume finite distribution parameters in the stated
+domain. Finite expressions are subject to floating-point rounding and range
+limits. Contract violations are not prescribed return values: disabling
+contracts does not make an invalid input supported.
+
 License: $(HTTP www.apache.org/licenses/LICENSE-2.0, Apache-2.0)
 
 Authors: John Michael Hall
@@ -16,10 +27,22 @@ import mir.internal.utility: isFloatingPoint;
 /++
 Computes the F probability density function (PDF).
 
+Returns a density, which may exceed one; it is not a point probability.
+
+Special values:
+$(TABLE
+    $(TR $(TH Input) $(TH Result))
+    $(TR $(TD $(D x == 0), $(D df1 < 2)) $(TD $(D T.infinity)))
+    $(TR $(TD $(D x == 0), $(D df1 == 2)) $(TD $(D 1)))
+    $(TR $(TD $(D x == 0), $(D df1 > 2)) $(TD $(D 0)))
+    $(TR $(TD $(D x == T.infinity)) $(TD $(D 0)))
+    $(TR $(TD $(D x < 0) or NaN) $(TD Contract violation))
+)
+
 Params:
     x = value to evaluate PDF
-    df1 = degrees of freedom parameter #1
-    df2 = degrees of freedom parameter #2
+    df1 = positive numerator degrees of freedom
+    df2 = positive denominator degrees of freedom
 
 See_also:
     $(LINK2 https://en.wikipedia.org/wiki/F-distribution, F Distribution)
@@ -70,13 +93,33 @@ unittest
     0.00.fPDF(1, 3).shouldApprox == double.infinity;
 }
 
+/// At zero, the numerator degrees of freedom determine the density limit.
+version(mir_stat_test)
+@safe pure nothrow @nogc
+unittest
+{
+    assert(fPDF(0.0, 1.0, 4.0) == double.infinity);
+    assert(fPDF(0.0, 2.0, 4.0) == 1.0);
+    assert(fPDF(0.0, 3.0, 4.0) == 0.0);
+}
+
 /++
 Computes the F cumulative distribution function (CDF).
 
+Returns the lower-tail probability $(D P(X <= x)).
+
+Special values:
+$(TABLE
+    $(TR $(TH Input) $(TH Result))
+    $(TR $(TD $(D x == 0)) $(TD $(D 0)))
+    $(TR $(TD $(D x == T.infinity)) $(TD $(D 1)))
+    $(TR $(TD $(D x < 0) or NaN) $(TD Contract violation))
+)
+
 Params:
     x = value to evaluate CDF
-    df1 = degrees of freedom parameter #1
-    df2 = degrees of freedom parameter #2
+    df1 = positive numerator degrees of freedom
+    df2 = positive denominator degrees of freedom
 
 See_also:
     $(LINK2 https://en.wikipedia.org/wiki/F-distribution, F Distribution)
@@ -107,10 +150,21 @@ unittest
 /++
 Computes the F complementary cumulative distribution function (CCDF).
 
+Returns the upper-tail probability $(D P(X > x)). Use this function directly
+when the upper tail is small, rather than subtracting the CDF from one.
+
+Special values:
+$(TABLE
+    $(TR $(TH Input) $(TH Result))
+    $(TR $(TD $(D x == 0)) $(TD $(D 1)))
+    $(TR $(TD $(D x == T.infinity)) $(TD $(D 0)))
+    $(TR $(TD $(D x < 0) or NaN) $(TD Contract violation))
+)
+
 Params:
     x = value to evaluate CCDF
-    df1 = degrees of freedom parameter #1
-    df2 = degrees of freedom parameter #2
+    df1 = positive numerator degrees of freedom
+    df2 = positive denominator degrees of freedom
 
 See_also:
     $(LINK2 https://en.wikipedia.org/wiki/F-distribution, F Distribution)
@@ -141,10 +195,20 @@ unittest
 /++
 Computes the F inverse cumulative distribution function (InvCDF).
 
+Returns the quantile at cumulative probability $(D p).
+
+Special values:
+$(TABLE
+    $(TR $(TH Input) $(TH Result))
+    $(TR $(TD $(D p == 0)) $(TD $(D 0)))
+    $(TR $(TD $(D p == 1)) $(TD $(D T.infinity)))
+    $(TR $(TD $(D p < 0) or $(D p > 1) or NaN) $(TD Contract violation))
+)
+
 Params:
     p = value to evaluate InvCDF
-    df1 = degrees of freedom parameter #1
-    df2 = degrees of freedom parameter #2
+    df1 = positive numerator degrees of freedom
+    df2 = positive denominator degrees of freedom
 
 See_also:
     $(LINK2 https://en.wikipedia.org/wiki/F-distribution, F Distribution)
@@ -206,10 +270,22 @@ unittest
 /++
 Computes the F log probability density function (LPDF).
 
+Returns the natural logarithm of the density.
+
+Special values:
+$(TABLE
+    $(TR $(TH Input) $(TH Result))
+    $(TR $(TD $(D x == 0), $(D df1 < 2)) $(TD $(D T.infinity)))
+    $(TR $(TD $(D x == 0), $(D df1 == 2)) $(TD $(D 0)))
+    $(TR $(TD $(D x == 0), $(D df1 > 2)) $(TD $(D -T.infinity)))
+    $(TR $(TD $(D x == T.infinity)) $(TD $(D -T.infinity)))
+    $(TR $(TD $(D x < 0) or NaN) $(TD Contract violation))
+)
+
 Params:
     x = value to evaluate LPDF
-    df1 = degrees of freedom parameter #1
-    df2 = degrees of freedom parameter #2
+    df1 = positive numerator degrees of freedom
+    df2 = positive denominator degrees of freedom
 
 See_also:
     $(LINK2 https://en.wikipedia.org/wiki/F-distribution, F Distribution)

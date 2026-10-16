@@ -1,6 +1,15 @@
 /++
 This module contains algorithms for the $(LINK2 https://en.wikipedia.org/wiki/Laplace_distribution, Laplace Distribution).
 
+The one-argument overloads use location zero and scale one. The other
+overloads take a location and a positive scale; scale is not the standard
+deviation (the standard deviation is $(D sqrt(2) * scale)).
+
+The special-value tables assume finite distribution parameters in the stated
+domain. Finite expressions are subject to floating-point rounding and range
+limits. Contract violations are not prescribed return values: disabling
+contracts does not make an invalid input supported.
+
 License: $(HTTP www.apache.org/licenses/LICENSE-2.0, Apache-2.0)
 
 Authors: John Michael Hall
@@ -15,6 +24,19 @@ import mir.internal.utility: isFloatingPoint;
 
 /++
 Computes the Laplace probability density function (PDF).
+
+Returns a density, which may exceed one; it is not a point probability.
+
+This overload uses location zero and scale one.
+
+Special values:
+$(TABLE
+    $(TR $(TH Input) $(TH Result))
+    $(TR $(TD $(D x == -T.infinity)) $(TD $(D 0)))
+    $(TR $(TD $(D x == 0)) $(TD $(D 0.5)))
+    $(TR $(TD $(D x == T.infinity)) $(TD $(D 0)))
+    $(TR $(TD NaN) $(TD NaN))
+)
 
 Params:
     x = value to evaluate PDF
@@ -34,10 +56,23 @@ T laplacePDF(T)(const T x)
 /++
 Ditto, with location and scale parameters (by standardizing `x`).
 
+Returns a density, which may exceed one; it is not a point probability.
+
+The table assumes a finite location and positive finite scale.
+
+Special values:
+$(TABLE
+    $(TR $(TH Input) $(TH Result))
+    $(TR $(TD $(D x == -T.infinity)) $(TD $(D 0)))
+    $(TR $(TD $(D x == location)) $(TD $(D 0.5 / scale)))
+    $(TR $(TD $(D x == T.infinity)) $(TD $(D 0)))
+    $(TR $(TD NaN) $(TD NaN))
+)
+
 Params:
     x = value to evaluate PDF
-    location = location parameter
-    scale = scale parameter
+    location = finite location parameter
+    scale = positive finite scale parameter
 +/
 @safe pure nothrow @nogc
 T laplacePDF(T)(const T x, const T location, const T scale)
@@ -75,8 +110,31 @@ unittest
     laplacePDF(4.0, 2.0, 3.0).shouldApprox == 0.08556952;
 }
 
+/// The density peaks at the location and tends to zero in either tail.
+version(mir_stat_test)
+@safe pure nothrow @nogc
+unittest
+{
+    assert(laplacePDF(3.0, 3.0, 2.0) == 0.25);
+    assert(laplacePDF(-double.infinity) == 0.0);
+    assert(laplacePDF(double.infinity) == 0.0);
+}
+
 /++
 Computes the Laplace cumulative distribution function (CDF).
+
+Returns the lower-tail probability $(D P(X <= x)).
+
+This overload uses location zero and scale one.
+
+Special values:
+$(TABLE
+    $(TR $(TH Input) $(TH Result))
+    $(TR $(TD $(D x == -T.infinity)) $(TD $(D 0)))
+    $(TR $(TD $(D x == 0)) $(TD $(D 0.5)))
+    $(TR $(TD $(D x == T.infinity)) $(TD $(D 1)))
+    $(TR $(TD NaN) $(TD NaN))
+)
 
 Params:
     x = value to evaluate CDF
@@ -100,10 +158,23 @@ T laplaceCDF(T)(const T x)
 /++
 Ditto, with location and scale parameters (by standardizing `x`).
 
+Returns the lower-tail probability $(D P(X <= x)).
+
+The table assumes a finite location and positive finite scale.
+
+Special values:
+$(TABLE
+    $(TR $(TH Input) $(TH Result))
+    $(TR $(TD $(D x == -T.infinity)) $(TD $(D 0)))
+    $(TR $(TD $(D x == location)) $(TD $(D 0.5)))
+    $(TR $(TD $(D x == T.infinity)) $(TD $(D 1)))
+    $(TR $(TD NaN) $(TD NaN))
+)
+
 Params:
     x = value to evaluate CDF
-    location = location parameter
-    scale = scale parameter
+    location = finite location parameter
+    scale = positive finite scale parameter
 +/
 @safe pure nothrow @nogc
 T laplaceCDF(T)(const T x, const T location, const T scale)
@@ -137,6 +208,20 @@ unittest
 /++
 Computes the Laplace complementary cumulative distribution function (CCDF).
 
+Returns the upper-tail probability $(D P(X > x)). Use this function directly
+when the upper tail is small, rather than subtracting the CDF from one.
+
+This overload uses location zero and scale one.
+
+Special values:
+$(TABLE
+    $(TR $(TH Input) $(TH Result))
+    $(TR $(TD $(D x == -T.infinity)) $(TD $(D 1)))
+    $(TR $(TD $(D x == 0)) $(TD $(D 0.5)))
+    $(TR $(TD $(D x == T.infinity)) $(TD $(D 0)))
+    $(TR $(TD NaN) $(TD NaN))
+)
+
 Params:
     x = value to evaluate CCDF
 
@@ -159,10 +244,24 @@ T laplaceCCDF(T)(const T x)
 /++
 Ditto, with location and scale parameters (by standardizing `x`).
 
+Returns the upper-tail probability $(D P(X > x)). Use this function directly
+when the upper tail is small, rather than subtracting the CDF from one.
+
+The table assumes a finite location and positive finite scale.
+
+Special values:
+$(TABLE
+    $(TR $(TH Input) $(TH Result))
+    $(TR $(TD $(D x == -T.infinity)) $(TD $(D 1)))
+    $(TR $(TD $(D x == location)) $(TD $(D 0.5)))
+    $(TR $(TD $(D x == T.infinity)) $(TD $(D 0)))
+    $(TR $(TD NaN) $(TD NaN))
+)
+
 Params:
     x = value to evaluate CCDF
-    location = location parameter
-    scale = scale parameter
+    location = finite location parameter
+    scale = positive finite scale parameter
 +/
 T laplaceCCDF(T)(const T x, const T location, const T scale)
     if (isFloatingPoint!T)
@@ -195,6 +294,19 @@ unittest
 /++
 Computes the Laplace inverse cumulative distribution function (InvCDF).
 
+Returns the quantile at cumulative probability $(D p).
+
+This overload uses location zero and scale one.
+
+Special values:
+$(TABLE
+    $(TR $(TH Input) $(TH Result))
+    $(TR $(TD $(D p == 0)) $(TD $(D -T.infinity)))
+    $(TR $(TD $(D p == 0.5)) $(TD $(D 0)))
+    $(TR $(TD $(D p == 1)) $(TD $(D T.infinity)))
+    $(TR $(TD $(D p < 0) or $(D p > 1) or NaN) $(TD Contract violation))
+)
+
 Params:
     p = value to evaluate InvCDF
 
@@ -219,10 +331,23 @@ T laplaceInvCDF(T)(const T p)
 /++
 Ditto, with location and scale parameters (by standardizing `x`).
 
+Returns the quantile at cumulative probability $(D p).
+
+The table assumes a finite location and positive finite scale.
+
+Special values:
+$(TABLE
+    $(TR $(TH Input) $(TH Result))
+    $(TR $(TD $(D p == 0)) $(TD $(D -T.infinity)))
+    $(TR $(TD $(D p == 0.5)) $(TD $(D location)))
+    $(TR $(TD $(D p == 1)) $(TD $(D T.infinity)))
+    $(TR $(TD $(D p < 0) or $(D p > 1) or NaN) $(TD Contract violation))
+)
+
 Params:
     p = value to evaluate InvCDF
-    location = location parameter
-    scale = scale parameter
+    location = finite location parameter
+    scale = positive finite scale parameter
 
 See_also:
     $(LINK2 https://en.wikipedia.org/wiki/Laplace_distribution, Laplace Distribution)
@@ -267,6 +392,20 @@ unittest
 /++
 Computes the Laplace log probability density function (LPDF).
 
+Returns the natural logarithm of the density. A negative value is valid;
+it is not a probability.
+
+This overload uses location zero and scale one.
+
+Special values:
+$(TABLE
+    $(TR $(TH Input) $(TH Result))
+    $(TR $(TD $(D x == -T.infinity)) $(TD $(D -T.infinity)))
+    $(TR $(TD $(D x == 0)) $(TD $(D -log(2))))
+    $(TR $(TD $(D x == T.infinity)) $(TD $(D -T.infinity)))
+    $(TR $(TD NaN) $(TD NaN))
+)
+
 Params:
     x = value to evaluate LPDF
 
@@ -286,10 +425,24 @@ T laplaceLPDF(T)(const T x)
 /++
 Ditto, with location and scale parameters (by standardizing `x`).
 
+Returns the natural logarithm of the density. A negative value is valid;
+it is not a probability.
+
+The table assumes a finite location and positive finite scale.
+
+Special values:
+$(TABLE
+    $(TR $(TH Input) $(TH Result))
+    $(TR $(TD $(D x == -T.infinity)) $(TD $(D -T.infinity)))
+    $(TR $(TD $(D x == location)) $(TD $(D -log(2) - log(scale))))
+    $(TR $(TD $(D x == T.infinity)) $(TD $(D -T.infinity)))
+    $(TR $(TD NaN) $(TD NaN))
+)
+
 Params:
     x = value to evaluate LPDF
-    location = location parameter
-    scale = scale parameter
+    location = finite location parameter
+    scale = positive finite scale parameter
 
 See_also:
     $(LINK2 https://en.wikipedia.org/wiki/Laplace_distribution, Laplace Distribution)

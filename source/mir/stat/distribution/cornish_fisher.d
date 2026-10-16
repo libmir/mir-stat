@@ -1,6 +1,23 @@
 /++
 This module contains algorithms for the $(LINK2 https://en.wikipedia.org/wiki/Cornish%E2%80%93Fisher_expansion, Cornish-Fisher Expansion).
 
+The Cornish-Fisher expansion adjusts normal quantiles using skewness and
+excess kurtosis. It is an approximation, not a distribution with a guaranteed
+CDF or density. Even with finite inputs, the truncated expansion can produce
+quantiles that are not increasing with probability or lie outside the intended
+distribution's support.
+
+Use finite moment parameters and a positive finite standard deviation. These
+moment requirements are not checked by contracts. Probability is checked by
+the underlying normal inverse CDF. With nonzero corrections, use interior
+probabilities and assess accuracy for the intended distribution, especially
+in the tails.
+
+The special-value tables assume parameters in the stated domain. Finite
+expressions are subject to floating-point rounding and range limits.
+Contract violations are not prescribed return values: disabling contracts
+does not make an invalid input supported.
+
 License: $(HTTP www.apache.org/licenses/LICENSE-2.0, Apache-2.0)
 
 Authors: John Michael Hall
@@ -24,10 +41,22 @@ nonzero corrections do not in general define valid endpoint quantiles.
 When both corrections are zero, the result is the normal quantile,
 including its infinite endpoints.
 
+Returns a Cornish-Fisher quantile approximation.
+
+Special values:
+$(TABLE
+    $(TR $(TH Input) $(TH Result))
+    $(TR $(TD $(D p == 0), zero skewness and excess kurtosis) $(TD $(D -T.infinity)))
+    $(TR $(TD $(D p == 0.5)) $(TD $(D mu - std * skewness / 6)))
+    $(TR $(TD $(D p == 1), zero skewness and excess kurtosis) $(TD $(D T.infinity)))
+    $(TR $(TD $(D p == 0) or $(D p == 1), nonzero corrections) $(TD No valid endpoint quantile is guaranteed))
+    $(TR $(TD $(D p < 0) or $(D p > 1) or NaN) $(TD Contract violation in the normal inverse CDF))
+)
+
 Params:
-    p = quantile to calculate inverse CDF
-    mu = mean
-    std = standard deviation
+    p = cumulative probability in [0, 1]; use interior probabilities with nonzero corrections
+    mu = finite mean
+    std = positive finite standard deviation
     skewness = skewness
     excessKurtosis = excess kurtosis (kurtosis - 3)
 
@@ -54,11 +83,33 @@ unittest
     0.99.cornishFisherInvCDF(0.1, 0.2, 0.1, 1).shouldApprox == 0.6259808;
 }
 
+/// Zero corrections recover normal quantiles, including the endpoints.
+version(mir_stat_test)
+@safe pure nothrow @nogc
+unittest
+{
+    assert(cornishFisherInvCDF(0.5, 3.0, 2.0, 0.0, 0.0) == 3.0);
+    assert(cornishFisherInvCDF(0.0) == -double.infinity);
+    assert(cornishFisherInvCDF(1.0) == double.infinity);
+}
+
 /++
 Ditto, but assumes mu = 0 and std = 1
 
+Returns a Cornish-Fisher quantile approximation.
+
+Special values:
+$(TABLE
+    $(TR $(TH Input) $(TH Result))
+    $(TR $(TD $(D p == 0), zero skewness and excess kurtosis) $(TD $(D -T.infinity)))
+    $(TR $(TD $(D p == 0.5)) $(TD $(D -skewness / 6)))
+    $(TR $(TD $(D p == 1), zero skewness and excess kurtosis) $(TD $(D T.infinity)))
+    $(TR $(TD $(D p == 0) or $(D p == 1), nonzero corrections) $(TD No valid endpoint quantile is guaranteed))
+    $(TR $(TD $(D p < 0) or $(D p > 1) or NaN) $(TD Contract violation in the normal inverse CDF))
+)
+
 Params:
-    p = quantile to calculate inverse CDF
+    p = cumulative probability in [0, 1]; use interior probabilities with nonzero corrections
     skewness = skewness (default = 0)
     excessKurtosis = excess kurtosis (kurtosis - 3) (default = 0)
 +/

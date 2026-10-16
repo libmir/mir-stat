@@ -1,6 +1,16 @@
 /++
 This module contains algorithms for the $(LINK2 https://en.wikipedia.org/wiki/Chi-squared_distribution, Chi-squared Distribution).
 
+These functions accept a positive integer number of degrees of freedom
+$(D k) and nonnegative observations. A chi-squared distribution is a gamma
+distribution with shape $(D k / 2.0) and scale two. The inverse CDF accepts
+both probability endpoints.
+
+The special-value tables assume finite distribution parameters in the stated
+domain. Finite expressions are subject to floating-point rounding and range
+limits. Contract violations are not prescribed return values: disabling
+contracts does not make an invalid input supported.
+
 License: $(HTTP www.apache.org/licenses/LICENSE-2.0, Apache-2.0)
 
 Authors: Ilia Ki, John Michael Hall
@@ -15,9 +25,21 @@ import mir.internal.utility: isFloatingPoint;
 /++
 Computes the Chi-squared probability density function (PDF).
 
+Returns a density, which may exceed one; it is not a point probability.
+
+Special values:
+$(TABLE
+    $(TR $(TH Input) $(TH Result))
+    $(TR $(TD $(D x == 0), $(D k == 1)) $(TD $(D T.infinity)))
+    $(TR $(TD $(D x == 0), $(D k == 2)) $(TD $(D 0.5)))
+    $(TR $(TD $(D x == 0), $(D k > 2)) $(TD $(D 0)))
+    $(TR $(TD $(D x == T.infinity)) $(TD $(D 0)))
+    $(TR $(TD $(D x < 0) or NaN) $(TD Contract violation))
+)
+
 Params:
     x = value to evaluate PDF
-    k = degrees of freedom
+    k = positive integer degrees of freedom
 
 See_also:
     $(LINK2 https://en.wikipedia.org/wiki/Chi-squared_distribution, Chi-squared Distribution)
@@ -44,12 +66,32 @@ unittest
     0.2.chi2PDF(2).shouldApprox == 0.4524187;
 }
 
+/// The density at zero changes at two degrees of freedom.
+version(mir_stat_test)
+@safe pure nothrow @nogc
+unittest
+{
+    assert(chi2PDF(0.0, 1u) == double.infinity);
+    assert(chi2PDF(0.0, 2u) == 0.5);
+    assert(chi2PDF(0.0, 3u) == 0.0);
+}
+
 /++
 Computes the Chi-squared cumulative distribution function (CDF).
 
+Returns the lower-tail probability $(D P(X <= x)).
+
+Special values:
+$(TABLE
+    $(TR $(TH Input) $(TH Result))
+    $(TR $(TD $(D x == 0)) $(TD $(D 0)))
+    $(TR $(TD $(D x == T.infinity)) $(TD $(D 1)))
+    $(TR $(TD $(D x < 0) or NaN) $(TD Contract violation))
+)
+
 Params:
     x = value to evaluate CDF
-    k = degrees of freedom
+    k = positive integer degrees of freedom
 
 See_also:
     $(LINK2 https://en.wikipedia.org/wiki/Chi-squared_distribution, Chi-squared Distribution)
@@ -77,9 +119,20 @@ unittest
 /++
 Computes the Chi-squared complementary cumulative distribution function (CCDF).
 
+Returns the upper-tail probability $(D P(X > x)). Use this function directly
+when the upper tail is small, rather than subtracting the CDF from one.
+
+Special values:
+$(TABLE
+    $(TR $(TH Input) $(TH Result))
+    $(TR $(TD $(D x == 0)) $(TD $(D 1)))
+    $(TR $(TD $(D x == T.infinity)) $(TD $(D 0)))
+    $(TR $(TD $(D x < 0) or NaN) $(TD Contract violation))
+)
+
 Params:
     x = value to evaluate CCDF
-    k = degrees of freedom
+    k = positive integer degrees of freedom
 
 See_also:
     $(LINK2 https://en.wikipedia.org/wiki/Chi-squared_distribution, Chi-squared Distribution)
@@ -107,9 +160,19 @@ unittest
 /++
 Computes the Chi-squared inverse cumulative distribution function (InvCDF).
 
+Returns the quantile at cumulative probability $(D p).
+
+Special values:
+$(TABLE
+    $(TR $(TH Input) $(TH Result))
+    $(TR $(TD $(D p == 0)) $(TD $(D 0)))
+    $(TR $(TD $(D p == 1)) $(TD $(D T.infinity)))
+    $(TR $(TD $(D p < 0) or $(D p > 1) or NaN) $(TD Contract violation))
+)
+
 Params:
     p = value to evaluate InvCDF
-    k = degrees of freedom
+    k = positive integer degrees of freedom
 
 See_also:
     $(LINK2 https://en.wikipedia.org/wiki/Chi-squared_distribution, Chi-squared Distribution)
@@ -138,9 +201,21 @@ unittest
 /++
 Computes the Chi-squared log probability density function (LPDF).
 
+Returns the natural logarithm of the density.
+
+Special values:
+$(TABLE
+    $(TR $(TH Input) $(TH Result))
+    $(TR $(TD $(D x == 0), $(D k == 1)) $(TD $(D T.infinity)))
+    $(TR $(TD $(D x == 0), $(D k == 2)) $(TD $(D -log(2))))
+    $(TR $(TD $(D x == 0), $(D k > 2)) $(TD $(D -T.infinity)))
+    $(TR $(TD $(D x == T.infinity)) $(TD $(D -T.infinity)))
+    $(TR $(TD $(D x < 0) or NaN) $(TD Contract violation))
+)
+
 Params:
     x = value to evaluate LPDF
-    k = degrees of freedom
+    k = positive integer degrees of freedom
 
 See_also:
     $(LINK2 https://en.wikipedia.org/wiki/Chi-squared_distribution, Chi-squared Distribution)

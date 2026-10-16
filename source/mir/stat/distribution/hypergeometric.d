@@ -11,6 +11,26 @@ default is `HypergeometricAlgo.direct`, which can be more time-consuming for
 large values of the parameters. Additional algorithms are provided to the user
 to choose the trade-off between running time and accuracy.
 
+All counts use $(D size_t), with $(D K <= N) and $(D n <= N).
+Write $(D lower = max(0, n - (N - K))) and $(D upper = min(n, K)) for the
+mathematical support bounds. Compute the lower bound with a conditional
+subtraction when using unsigned integers. PMF, LPMF, CDF, and CCDF require
+$(D lower <= k && k <= upper); they reject observations outside the support
+rather than extending the tails there.
+
+The default result type is $(D double); built-in floating-point result types
+can be selected explicitly. Only the direct PMF supports an $(D Fp) result,
+via $(D hypergeometricPMF!(Fp!128)), or the compatibility name
+$(D fp_hypergeometricPMF). Inverse CDF returns $(D size_t).
+Approximations retain the explicitly handled support boundaries and
+deterministic outcomes, but their interior probabilities need not equal
+the direct algorithm's results.
+
+Tables assume valid parameters except where an invalid input is listed.
+Finite expressions are subject to floating-point rounding and range limits.
+Contract violations are not prescribed return values: disabling contracts does
+not make an invalid input supported.
+
 License: $(HTTP www.apache.org/licenses/LICENSE-2.0, Apache-2.0)
 
 Authors: John Michael Hall
@@ -161,6 +181,19 @@ precision result instead of converting to a built-in floating-point type.
 Additional algorithms may be provided for calculating PMF that allow trading off
 time and accuracy. If `approxPoisson` is provided, `PoissonAlgo.gamma` is assumed.
 
+Returns $(D P(X == k)). The deterministic cases below apply to every
+algorithm, at the sole allowed observation.
+
+Special values:
+$(TABLE
+    $(TR $(TH Input) $(TH Result))
+    $(TR $(TD $(D n == 0) or $(D K == 0) (so $(D k == 0))) $(TD $(D 1)))
+    $(TR $(TD $(D n == N) (so $(D k == K))) $(TD $(D 1)))
+    $(TR $(TD $(D K == N) (so $(D k == n))) $(TD $(D 1)))
+    $(TR $(TD $(D K > N) or $(D n > N)) $(TD Contract violation))
+    $(TR $(TD $(D k < lower) or $(D k > upper)) $(TD Contract violation))
+)
+
 Params:
     k = value to evaluate PMF (e.g. number of correct draws of object of interest)
     N = total population size
@@ -302,6 +335,18 @@ Computes the direct PMF at the explicitly requested `Fp` precision.
 Coefficient products and division retain extended precision; counts are not
 narrowed to `uint`. Cost grows with the smaller side of each binomial
 coefficient, so very large central counts may still be expensive.
+
+The support requirements and deterministic outcomes are the same as for
+the built-in floating-point PMF.
+
+Special values:
+$(TABLE
+    $(TR $(TH Input) $(TH Result))
+    $(TR $(TD $(D n == 0) or $(D K == 0) (so $(D k == 0))) $(TD $(D 1)))
+    $(TR $(TD $(D n == N) or $(D K == N) (at the sole allowed outcome)) $(TD $(D 1)))
+    $(TR $(TD $(D K > N) or $(D n > N)) $(TD Contract violation))
+    $(TR $(TD $(D k < lower) or $(D k > upper)) $(TD Contract violation))
+)
 
 Params:
     k = number of successes drawn
@@ -575,6 +620,19 @@ Setting `hypergeometricAlgo = HypergeometricAlgo.direct` results in direct
 summation being used, which can result in significant slowdowns for large values
 of `k`. 
 
+Returns the inclusive lower-tail probability $(D P(X <= k)). All algorithms
+return one at the upper support boundary. For direct evaluation, the CDF at
+$(D lower) is the mass at that outcome, not generally zero.
+
+Special values:
+$(TABLE
+    $(TR $(TH Input) $(TH Result))
+    $(TR $(TD $(D k == upper)) $(TD $(D 1)))
+    $(TR $(TD $(D k == lower) (direct)) $(TD $(D hypergeometricPMF(lower, N, K, n))))
+    $(TR $(TD $(D K > N) or $(D n > N)) $(TD Contract violation))
+    $(TR $(TD $(D k < lower) or $(D k > upper)) $(TD Contract violation))
+)
+
 Params:
     k = value to evaluate CDF (e.g. number of correct draws of object of interest)
     N = total population size
@@ -744,6 +802,18 @@ time and accuracy. If `approxPoisson` is provided, `PoissonAlgo.gamma` is assume
 Setting `hypergeometricAlgo = HypergeometricAlgo.direct` results in direct
 summation being used, which can result in significant slowdowns for large values
 of `k`. 
+
+Returns the strict upper-tail probability $(D P(X > k)). All algorithms
+return zero at the upper support boundary.
+
+Special values:
+$(TABLE
+    $(TR $(TH Input) $(TH Result))
+    $(TR $(TD $(D k == upper)) $(TD $(D 0)))
+    $(TR $(TD $(D lower == upper) and $(D k == lower)) $(TD $(D 0)))
+    $(TR $(TD $(D K > N) or $(D n > N)) $(TD Contract violation))
+    $(TR $(TD $(D k < lower) or $(D k > upper)) $(TD Contract violation))
+)
 
 Params:
     k = value to evaluate CCDF (e.g. number of correct draws of object of interest)
@@ -1050,8 +1120,21 @@ Setting `hypergeometricAlgo = HypergeometricAlgo.direct` results in direct
 summation being used, which can result in significant slowdowns for large values
 of `k`. 
 
+The endpoint rules below apply to every algorithm. Zero is a boundary
+convention at $(D p == 0), not necessarily an attainable outcome.
+
+Special values:
+$(TABLE
+    $(TR $(TH Input) $(TH Result))
+    $(TR $(TD $(D p == 0)) $(TD $(D 0), even when $(D lower > 0)))
+    $(TR $(TD $(D p == 1)) $(TD $(D upper)))
+    $(TR $(TD $(D lower == upper) and $(D p > 0)) $(TD $(D upper)))
+    $(TR $(TD $(D p < 0), $(D p > 1), or NaN) $(TD Contract violation))
+    $(TR $(TD $(D K > N) or $(D n > N)) $(TD Contract violation))
+)
+
 Params:
-    p = value to evaluate InvCDF
+    p = cumulative probability in $(D [0, 1])
     N = total population size
     K = number of relevant objects in population
     n = number of draws
@@ -1091,6 +1174,20 @@ template hypergeometricInvCDF(T, string hypergeometricAlgo)
 template hypergeometricInvCDF(string hypergeometricAlgo)
 {
     mixin("alias hypergeometricInvCDF = .hypergeometricInvCDF!(double, HypergeometricAlgo." ~ hypergeometricAlgo ~ ");");
+}
+
+/// Sampling without replacement can make the lowest attainable count positive.
+version(mir_stat_test)
+@safe pure nothrow @nogc unittest
+{
+    // Draw four objects from five, of which three have the desired feature.
+    // At least two and at most three draws must have that feature.
+    assert(hypergeometricPMF(2, 5, 3, 4) == 0.6);
+    assert(hypergeometricCDF(3, 5, 3, 4) == 1);
+    assert(hypergeometricCCDF(3, 5, 3, 4) == 0);
+    assert(hypergeometricInvCDF(0.0, 5, 3, 4) == 0); // Endpoint convention.
+    assert(hypergeometricInvCDF(0.5, 5, 3, 4) == 2);
+    assert(hypergeometricInvCDF(1.0, 5, 3, 4) == 3);
 }
 
 ///
@@ -1301,6 +1398,17 @@ Computes the hypergeometric log probability mass function (LPMF).
 Counts retain their full `size_t` width. Large populations use binomial log
 probabilities to avoid subtracting large log-factorials. Outcomes with probability
 close to one have a separate calculation that preserves their small negative log.
+
+Returns the natural logarithm of $(D P(X == k)).
+
+Special values:
+$(TABLE
+    $(TR $(TH Input) $(TH Result))
+    $(TR $(TD $(D n == 0) or $(D K == 0) (so $(D k == 0))) $(TD $(D 0)))
+    $(TR $(TD $(D n == N) or $(D K == N) (at the sole allowed outcome)) $(TD $(D 0)))
+    $(TR $(TD $(D K > N) or $(D n > N)) $(TD Contract violation))
+    $(TR $(TD $(D k < lower) or $(D k > upper)) $(TD Contract violation))
+)
 
 Params:
     k = value to evaluate LPMF (e.g. number of correct draws of object of interest)

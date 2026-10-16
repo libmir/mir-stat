@@ -1,13 +1,27 @@
 /++
 This module contains algorithms for the $(LINK2 https://en.wikipedia.org/wiki/Beta_distribution, Beta Proportion Distribution).
 
-An alternate parameterization of the $(MREF mir,stat,distribution,beta) distribuion in terms of 
-the mean of the distribution and the sum of its shape parameters (also known as the sample
-size of the Beta distribution). 
+An alternate parameterization of the $(MREF mir,stat,distribution,beta)
+distribution in terms of its mean and the sum of its shape parameters.
 
 The shape parameters are computed as $(D mu * kappa) and
 $(D (1 - mu) * kappa). Computing both products directly preserves the
 smaller shape when the mean is close to zero or one.
+
+The mean must satisfy $(D 0 < mu < 1), and the concentration $(D kappa) must
+be positive. Larger concentration reduces the variance at a fixed mean:
+$(D mu * (1 - mu) / (kappa + 1)). Concentration need not be an integer or an
+actual observation count. Observations must lie in $(D [0, 1]).
+
+For the tables below, $(D alpha = mu * kappa) and
+$(D beta = (1 - mu) * kappa). Both computed shapes must remain positive
+and finite in the working floating-point type. The inverse CDF accepts
+both probability endpoints.
+
+The special-value tables assume finite distribution parameters in the stated
+domain. Finite expressions are subject to floating-point rounding and range
+limits. Contract violations are not prescribed return values: disabling
+contracts does not make an invalid input supported.
 
 License: $(HTTP www.apache.org/licenses/LICENSE-2.0, Apache-2.0)
 
@@ -26,6 +40,21 @@ import mir.internal.utility: isFloatingPoint;
 
 /++
 Computes the beta proportion probability density function (PDF).
+
+Returns a density, which may exceed one; it is not a point probability.
+The table uses $(D alpha = mu * kappa) and $(D beta = (1 - mu) * kappa).
+
+Special values:
+$(TABLE
+    $(TR $(TH Input) $(TH Result))
+    $(TR $(TD $(D x == 0), $(D alpha < 1)) $(TD $(D T.infinity)))
+    $(TR $(TD $(D x == 0), $(D alpha == 1)) $(TD $(D beta)))
+    $(TR $(TD $(D x == 0), $(D alpha > 1)) $(TD $(D 0)))
+    $(TR $(TD $(D x == 1), $(D beta < 1)) $(TD $(D T.infinity)))
+    $(TR $(TD $(D x == 1), $(D beta == 1)) $(TD $(D alpha)))
+    $(TR $(TD $(D x == 1), $(D beta > 1)) $(TD $(D 0)))
+    $(TR $(TD Outside $(D [0, 1]) or NaN) $(TD Contract violation))
+)
 
 Params:
     x = value to evaluate PDF
@@ -64,8 +93,30 @@ unittest
     assert(0.25.betaProportionPDF((1.0 / 9), 4.5).approxEqual(0.9228516));
 }
 
+/// At a fixed mean of one half, concentration changes both endpoint densities.
+version(mir_stat_test)
+@safe pure nothrow @nogc
+unittest
+{
+    assert(betaProportionPDF(0.0, 0.5, 1.0) == double.infinity);
+    assert(betaProportionPDF(0.0, 0.5, 2.0) == 1.0);
+    assert(betaProportionPDF(0.0, 0.5, 4.0) == 0.0);
+    assert(betaProportionPDF(1.0, 0.5, 4.0) == 0.0);
+}
+
 /++
-Computes the beta proportion cumulatve distribution function (CDF).
+Computes the beta proportion cumulative distribution function (CDF).
+
+Returns the lower-tail probability $(D P(X <= x)).
+The table uses $(D alpha = mu * kappa) and $(D beta = (1 - mu) * kappa).
+
+Special values:
+$(TABLE
+    $(TR $(TH Input) $(TH Result))
+    $(TR $(TD $(D x == 0)) $(TD $(D 0)))
+    $(TR $(TD $(D x == 1)) $(TD $(D 1)))
+    $(TR $(TD Outside $(D [0, 1]) or NaN) $(TD Contract violation))
+)
 
 Params:
     x = value to evaluate CDF
@@ -107,6 +158,18 @@ unittest
 /++
 Computes the beta proportion complementary cumulative distribution function (CCDF).
 
+Returns the upper-tail probability $(D P(X > x)). Use this function directly
+when the upper tail is small, rather than subtracting the CDF from one.
+The table uses $(D alpha = mu * kappa) and $(D beta = (1 - mu) * kappa).
+
+Special values:
+$(TABLE
+    $(TR $(TH Input) $(TH Result))
+    $(TR $(TD $(D x == 0)) $(TD $(D 1)))
+    $(TR $(TD $(D x == 1)) $(TD $(D 0)))
+    $(TR $(TD Outside $(D [0, 1]) or NaN) $(TD Contract violation))
+)
+
 Params:
     x = value to evaluate CCDF
     mu = mean, strictly between zero and one
@@ -114,7 +177,7 @@ Params:
 
 See_also:
     $(LINK2 https://en.wikipedia.org/wiki/Beta_distribution, Beta Proportion Distribution),
-    $(DISTREF beta, betaCDF)
+    $(DISTREF beta, betaCCDF)
 +/
 @safe pure nothrow @nogc
 T betaProportionCCDF(T)(const T x, const T mu, const T kappa)
@@ -146,6 +209,17 @@ unittest
 
 /++
 Computes the beta proportion inverse cumulative distribution function (InvCDF).
+
+Returns the quantile at cumulative probability $(D p).
+The table uses $(D alpha = mu * kappa) and $(D beta = (1 - mu) * kappa).
+
+Special values:
+$(TABLE
+    $(TR $(TH Input) $(TH Result))
+    $(TR $(TD $(D p == 0)) $(TD $(D 0)))
+    $(TR $(TD $(D p == 1)) $(TD $(D 1)))
+    $(TR $(TD $(D p < 0) or $(D p > 1) or NaN) $(TD Contract violation))
+)
 
 Params:
     p = value to evaluate InvCDF
@@ -186,6 +260,21 @@ unittest
 
 /++
 Computes the beta proportion log probability density function (LPDF).
+
+Returns the natural logarithm of the density.
+The table uses $(D alpha = mu * kappa) and $(D beta = (1 - mu) * kappa).
+
+Special values:
+$(TABLE
+    $(TR $(TH Input) $(TH Result))
+    $(TR $(TD $(D x == 0), $(D alpha < 1)) $(TD $(D T.infinity)))
+    $(TR $(TD $(D x == 0), $(D alpha == 1)) $(TD $(D log(beta))))
+    $(TR $(TD $(D x == 0), $(D alpha > 1)) $(TD $(D -T.infinity)))
+    $(TR $(TD $(D x == 1), $(D beta < 1)) $(TD $(D T.infinity)))
+    $(TR $(TD $(D x == 1), $(D beta == 1)) $(TD $(D log(alpha))))
+    $(TR $(TD $(D x == 1), $(D beta > 1)) $(TD $(D -T.infinity)))
+    $(TR $(TD Outside $(D [0, 1]) or NaN) $(TD Contract violation))
+)
 
 Params:
     x = value to evaluate LPDF

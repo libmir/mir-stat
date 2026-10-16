@@ -1,6 +1,16 @@
 /++
 This module contains algorithms for the $(LINK2 https://en.wikipedia.org/wiki/Pareto_distribution, Pareto Distribution).
 
+These functions describe the type-I Pareto distribution. $(D xMin) is the
+positive lower support boundary and $(D alpha) is the positive shape parameter.
+The forward functions require $(D x >= xMin); they do not extend below the
+support. The inverse CDF accepts both probability endpoints.
+
+The special-value tables assume finite distribution parameters in the stated
+domain. Finite expressions are subject to floating-point rounding and range
+limits. Contract violations are not prescribed return values: disabling
+contracts does not make an invalid input supported.
+
 License: $(HTTP www.apache.org/licenses/LICENSE-2.0, Apache-2.0)
 
 Authors: John Michael Hall
@@ -16,10 +26,20 @@ import mir.internal.utility: isFloatingPoint;
 /++
 Computes the pareto probability density function (PDF).
 
+Returns a density, which may exceed one; it is not a point probability.
+
+Special values:
+$(TABLE
+    $(TR $(TH Input) $(TH Result))
+    $(TR $(TD $(D x == xMin)) $(TD $(D alpha / xMin)))
+    $(TR $(TD $(D x == T.infinity)) $(TD $(D 0)))
+    $(TR $(TD $(D x < xMin) or NaN) $(TD Contract violation))
+)
+
 Params:
     x = value to evaluate PDF
-    xMin = scale parameter
-    alpha = shape parameter
+    xMin = positive lower support boundary (scale parameter)
+    alpha = positive shape parameter
 
 See_also:
     $(LINK2 https://en.wikipedia.org/wiki/Pareto_distribution, Pareto Distribution)
@@ -55,13 +75,32 @@ unittest
     3.0.paretoPDF(2, 4).shouldApprox == 0.2633745;
 }
 
+/// The density starts at the lower support boundary and tends to zero.
+version(mir_stat_test)
+@safe pure nothrow @nogc
+unittest
+{
+    assert(paretoPDF(2.0, 2.0, 4.0) == 2.0);
+    assert(paretoPDF(double.infinity, 2.0, 4.0) == 0.0);
+}
+
 /++
 Computes the pareto cumulative distribution function (CDF).
 
+Returns the lower-tail probability $(D P(X <= x)).
+
+Special values:
+$(TABLE
+    $(TR $(TH Input) $(TH Result))
+    $(TR $(TD $(D x == xMin)) $(TD $(D 0)))
+    $(TR $(TD $(D x == T.infinity)) $(TD $(D 1)))
+    $(TR $(TD $(D x < xMin) or NaN) $(TD Contract violation))
+)
+
 Params:
     x = value to evaluate CDF
-    xMin = scale parameter
-    alpha = shape parameter
+    xMin = positive lower support boundary (scale parameter)
+    alpha = positive shape parameter
 
 See_also:
     $(LINK2 https://en.wikipedia.org/wiki/Pareto_distribution, Pareto Distribution)
@@ -93,10 +132,21 @@ unittest
 /++
 Computes the pareto complementary cumulative distribution function (CCDF).
 
+Returns the upper-tail probability $(D P(X > x)). Use this function directly
+when the upper tail is small, rather than subtracting the CDF from one.
+
+Special values:
+$(TABLE
+    $(TR $(TH Input) $(TH Result))
+    $(TR $(TD $(D x == xMin)) $(TD $(D 1)))
+    $(TR $(TD $(D x == T.infinity)) $(TD $(D 0)))
+    $(TR $(TD $(D x < xMin) or NaN) $(TD Contract violation))
+)
+
 Params:
     x = value to evaluate CCDF
-    xMin = scale parameter
-    alpha = shape parameter
+    xMin = positive lower support boundary (scale parameter)
+    alpha = positive shape parameter
 
 See_also:
     $(LINK2 https://en.wikipedia.org/wiki/Pareto_distribution, Pareto Distribution)
@@ -128,10 +178,20 @@ unittest
 /++
 Computes the pareto inverse cumulative distribution function (InvCDF).
 
+Returns the quantile at cumulative probability $(D p).
+
+Special values:
+$(TABLE
+    $(TR $(TH Input) $(TH Result))
+    $(TR $(TD $(D p == 0)) $(TD $(D xMin)))
+    $(TR $(TD $(D p == 1)) $(TD $(D T.infinity)))
+    $(TR $(TD $(D p < 0) or $(D p > 1) or NaN) $(TD Contract violation))
+)
+
 Params:
     p = value to evaluate InvCDF
-    xMin = scale parameter
-    alpha = shape parameter
+    xMin = positive lower support boundary (scale parameter)
+    alpha = positive shape parameter
 
 See_also:
     $(LINK2 https://en.wikipedia.org/wiki/Pareto_distribution, Pareto Distribution)
@@ -172,10 +232,21 @@ unittest
 /++
 Computes the pareto log probability density function (LPDF).
 
+Returns the natural logarithm of the density. A negative value is valid;
+it is not a probability.
+
+Special values:
+$(TABLE
+    $(TR $(TH Input) $(TH Result))
+    $(TR $(TD $(D x == xMin)) $(TD $(D log(alpha) - log(xMin))))
+    $(TR $(TD $(D x == T.infinity)) $(TD $(D -T.infinity)))
+    $(TR $(TD $(D x < xMin) or NaN) $(TD Contract violation))
+)
+
 Params:
     x = value to evaluate LPDF
-    xMin = scale parameter
-    alpha = shape parameter
+    xMin = positive lower support boundary (scale parameter)
+    alpha = positive shape parameter
 
 See_also:
     $(LINK2 https://en.wikipedia.org/wiki/Pareto_distribution, Pareto Distribution)

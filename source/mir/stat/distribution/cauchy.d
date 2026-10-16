@@ -1,6 +1,16 @@
 /++
 This module contains algorithms for the $(LINK2 https://en.wikipedia.org/wiki/Cauchy_distribution, Cauchy Distribution).
 
+The one-argument overloads use location zero and scale one. The other
+overloads take a finite location and a positive finite scale. Location is
+the median, not a mean: the Cauchy distribution has no finite mean or
+variance. Scale is therefore not a standard deviation.
+
+The special-value tables assume finite distribution parameters in the stated
+domain. Finite expressions are subject to floating-point rounding and range
+limits. Contract violations are not prescribed return values: disabling
+contracts does not make an invalid input supported.
+
 License: $(HTTP www.apache.org/licenses/LICENSE-2.0, Apache-2.0)
 
 Authors: John Michael Hall
@@ -15,6 +25,19 @@ import mir.internal.utility: isFloatingPoint;
 
 /++
 Computes the Cauchy probability density function (PDF).
+
+Returns a density, which may exceed one; it is not a point probability.
+
+This overload uses location zero and scale one.
+
+Special values:
+$(TABLE
+    $(TR $(TH Input) $(TH Result))
+    $(TR $(TD $(D x == -T.infinity)) $(TD $(D 0)))
+    $(TR $(TD $(D x == 0)) $(TD $(D 1 / PI)))
+    $(TR $(TD $(D x == T.infinity)) $(TD $(D 0)))
+    $(TR $(TD NaN) $(TD NaN))
+)
 
 Params:
     x = value to evaluate PDF
@@ -38,10 +61,23 @@ T cauchyPDF(T)(const T x)
 /++
 Ditto, with location and scale parameters (by standardizing `x`).
 
+Returns a density, which may exceed one; it is not a point probability.
+
+The table assumes finite parameters and a positive scale.
+
+Special values:
+$(TABLE
+    $(TR $(TH Input) $(TH Result))
+    $(TR $(TD $(D x == -T.infinity)) $(TD $(D 0)))
+    $(TR $(TD $(D x == location)) $(TD $(D 1 / PI / scale)))
+    $(TR $(TD $(D x == T.infinity)) $(TD $(D 0)))
+    $(TR $(TD NaN) $(TD NaN))
+)
+
 Params:
     x = value to evaluate PDF
-    location = location parameter
-    scale = scale parameter
+    location = finite location parameter
+    scale = positive finite scale parameter
 +/
 @safe pure nothrow @nogc
 T cauchyPDF(T)(const T x, const T location, const T scale)
@@ -76,8 +112,30 @@ unittest
     cauchyPDF(3.0, 1, 2).shouldApprox == 0.07957747;
 }
 
+/// The density tends to zero in both tails, including with a location and scale.
+version(mir_stat_test)
+@safe pure nothrow @nogc
+unittest
+{
+    assert(cauchyPDF(-double.infinity) == 0);
+    assert(cauchyPDF(double.infinity, 2.0, 3.0) == 0);
+}
+
 /++
 Computes the Cauchy cumulative distribution function (CDF).
+
+Returns the lower-tail probability $(D P(X <= x)).
+
+This overload uses location zero and scale one.
+
+Special values:
+$(TABLE
+    $(TR $(TH Input) $(TH Result))
+    $(TR $(TD $(D x == -T.infinity)) $(TD $(D 0)))
+    $(TR $(TD $(D x == 0)) $(TD $(D 0.5)))
+    $(TR $(TD $(D x == T.infinity)) $(TD $(D 1)))
+    $(TR $(TD NaN) $(TD NaN))
+)
 
 Params:
     x = value to evaluate CDF
@@ -98,10 +156,23 @@ T cauchyCDF(T)(const T x)
 /++
 Ditto, with location and scale parameters (by standardizing `x`).
 
+Returns the lower-tail probability $(D P(X <= x)).
+
+The table assumes finite parameters and a positive scale.
+
+Special values:
+$(TABLE
+    $(TR $(TH Input) $(TH Result))
+    $(TR $(TD $(D x == -T.infinity)) $(TD $(D 0)))
+    $(TR $(TD $(D x == location)) $(TD $(D 0.5)))
+    $(TR $(TD $(D x == T.infinity)) $(TD $(D 1)))
+    $(TR $(TD NaN) $(TD NaN))
+)
+
 Params:
     x = value to evaluate CDF
-    location = location parameter
-    scale = scale parameter
+    location = finite location parameter
+    scale = positive finite scale parameter
 +/
 @safe pure nothrow @nogc
 T cauchyCDF(T)(const T x, const T location, const T scale)
@@ -139,6 +210,20 @@ unittest
 /++
 Computes the Cauchy complementary cumulative distribution function (CCDF).
 
+Returns the upper-tail probability $(D P(X > x)). Use this function directly
+when the upper tail is small, rather than subtracting the CDF from one.
+
+This overload uses location zero and scale one.
+
+Special values:
+$(TABLE
+    $(TR $(TH Input) $(TH Result))
+    $(TR $(TD $(D x == -T.infinity)) $(TD $(D 1)))
+    $(TR $(TD $(D x == 0)) $(TD $(D 0.5)))
+    $(TR $(TD $(D x == T.infinity)) $(TD $(D 0)))
+    $(TR $(TD NaN) $(TD NaN))
+)
+
 Params:
     x = value to evaluate CCDF
 
@@ -155,10 +240,24 @@ T cauchyCCDF(T)(const T x)
 /++
 Ditto, with location and scale parameters (by standardizing `x`).
 
+Returns the upper-tail probability $(D P(X > x)). Use this function directly
+when the upper tail is small, rather than subtracting the CDF from one.
+
+The table assumes finite parameters and a positive scale.
+
+Special values:
+$(TABLE
+    $(TR $(TH Input) $(TH Result))
+    $(TR $(TD $(D x == -T.infinity)) $(TD $(D 1)))
+    $(TR $(TD $(D x == location)) $(TD $(D 0.5)))
+    $(TR $(TD $(D x == T.infinity)) $(TD $(D 0)))
+    $(TR $(TD NaN) $(TD NaN))
+)
+
 Params:
     x = value to evaluate CCDF
-    location = location parameter
-    scale = scale parameter
+    location = finite location parameter
+    scale = positive finite scale parameter
 +/
 @safe pure nothrow @nogc
 T cauchyCCDF(T)(const T x, const T location, const T scale)
@@ -199,6 +298,19 @@ Computes the Cauchy inverse cumulative distribution function (InvCDF).
 Uses reciprocal tangents in the tails so small probabilities are not lost
 by subtracting one half.
 
+Returns the quantile at cumulative probability $(D p).
+
+This overload uses location zero and scale one.
+
+Special values:
+$(TABLE
+    $(TR $(TH Input) $(TH Result))
+    $(TR $(TD $(D p == 0)) $(TD $(D -T.infinity)))
+    $(TR $(TD $(D p == 0.5)) $(TD $(D 0)))
+    $(TR $(TD $(D p == 1)) $(TD $(D T.infinity)))
+    $(TR $(TD $(D p < 0) or $(D p > 1) or NaN) $(TD Contract violation))
+)
+
 Params:
     p = value to evaluate InvCDF
 
@@ -224,10 +336,23 @@ T cauchyInvCDF(T)(const T p)
 /++
 Ditto, with location and scale parameters.
 
+Returns the quantile at cumulative probability $(D p).
+
+The table assumes finite parameters and a positive scale.
+
+Special values:
+$(TABLE
+    $(TR $(TH Input) $(TH Result))
+    $(TR $(TD $(D p == 0)) $(TD $(D -T.infinity)))
+    $(TR $(TD $(D p == 0.5)) $(TD $(D location)))
+    $(TR $(TD $(D p == 1)) $(TD $(D T.infinity)))
+    $(TR $(TD $(D p < 0) or $(D p > 1) or NaN) $(TD Contract violation))
+)
+
 Params:
     p = value to evaluate InvCDF
-    location = location parameter
-    scale = scale parameter
+    location = finite location parameter
+    scale = positive finite scale parameter
 +/
 @safe pure nothrow @nogc
 T cauchyInvCDF(T)(const T p, const T location, const T scale)
@@ -292,6 +417,19 @@ unittest
 /++
 Computes the Cauchy log probability density function (LPDF).
 
+Returns the natural logarithm of the density.
+
+This overload uses location zero and scale one.
+
+Special values:
+$(TABLE
+    $(TR $(TH Input) $(TH Result))
+    $(TR $(TD $(D x == -T.infinity)) $(TD $(D -T.infinity)))
+    $(TR $(TD $(D x == 0)) $(TD $(D -log(PI))))
+    $(TR $(TD $(D x == T.infinity)) $(TD $(D -T.infinity)))
+    $(TR $(TD NaN) $(TD NaN))
+)
+
 Params:
     x = value to evaluate LPDF
 
@@ -314,10 +452,23 @@ T cauchyLPDF(T)(const T x)
 /++
 Ditto, with location and scale parameters (by standardizing `x`).
 
+Returns the natural logarithm of the density.
+
+The table assumes finite parameters and a positive scale.
+
+Special values:
+$(TABLE
+    $(TR $(TH Input) $(TH Result))
+    $(TR $(TD $(D x == -T.infinity)) $(TD $(D -T.infinity)))
+    $(TR $(TD $(D x == location)) $(TD $(D -log(PI) - log(scale))))
+    $(TR $(TD $(D x == T.infinity)) $(TD $(D -T.infinity)))
+    $(TR $(TD NaN) $(TD NaN))
+)
+
 Params:
     x = value to evaluate LPDF
-    location = location parameter
-    scale = scale parameter
+    location = finite location parameter
+    scale = positive finite scale parameter
 +/
 @safe pure nothrow @nogc
 T cauchyLPDF(T)(const T x, const T location, const T scale)

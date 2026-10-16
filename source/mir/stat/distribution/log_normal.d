@@ -1,6 +1,17 @@
 /++
 This module contains algorithms for the $(LINK2 https://en.wikipedia.org/wiki/Log-normal_distribution, Log-normal Distribution).
 
+The parameters describe the normal variable $(D log(x)): $(D mean) is its
+mean and $(D stdDev) is its positive standard deviation. They are not the
+mean and standard deviation of $(D x). The one-argument overloads use zero
+and one, respectively. Observations must be nonnegative; zero is accepted
+as a limiting endpoint. The inverse CDF accepts both probability endpoints.
+
+The special-value tables assume finite distribution parameters in the stated
+domain. Finite expressions are subject to floating-point rounding and range
+limits. Contract violations are not prescribed return values: disabling
+contracts does not make an invalid input supported.
+
 License: $(HTTP www.apache.org/licenses/LICENSE-2.0, Apache-2.0)
 
 Authors: John Michael Hall
@@ -15,6 +26,18 @@ import mir.internal.utility: isFloatingPoint;
 
 /++
 Computes the Log-normal probability density function (PDF).
+
+Returns a density, which may exceed one; it is not a point probability.
+
+This overload uses mean zero and standard deviation one for $(D log(x)).
+
+Special values:
+$(TABLE
+    $(TR $(TH Input) $(TH Result))
+    $(TR $(TD $(D x == 0)) $(TD $(D 0)))
+    $(TR $(TD $(D x == T.infinity)) $(TD $(D 0)))
+    $(TR $(TD $(D x < 0) or NaN) $(TD Contract violation))
+)
 
 Params:
     x = value to evaluate PDF
@@ -44,10 +67,22 @@ Ditto, with location and scale parameters for $(D log(x)).
 These are the mean and standard deviation of the underlying normal
 variable, not the mean and standard deviation of the log-normal variable.
 
+Returns a density, which may exceed one; it is not a point probability.
+
+The table assumes finite parameters and a positive scale.
+
+Special values:
+$(TABLE
+    $(TR $(TH Input) $(TH Result))
+    $(TR $(TD $(D x == 0)) $(TD $(D 0)))
+    $(TR $(TD $(D x == T.infinity)) $(TD $(D 0)))
+    $(TR $(TD $(D x < 0) or NaN) $(TD Contract violation))
+)
+
 Params:
     x = value to evaluate PDF
-    mean = location parameter
-    stdDev = scale parameter
+    mean = finite mean of log(x)
+    stdDev = positive finite standard deviation of log(x)
 +/
 @safe pure nothrow @nogc
 T logNormalPDF(T)(const T x, const T mean, const T stdDev)
@@ -100,8 +135,29 @@ unittest
     logNormalPDF(double.min_normal, 1, 2).shouldApprox == 0.0;
 }
 
+/// Zero and positive infinity are limiting endpoints with zero density.
+version(mir_stat_test)
+@safe pure nothrow @nogc
+unittest
+{
+    assert(logNormalPDF(0.0) == 0);
+    assert(logNormalPDF(double.infinity, 2.0, 3.0) == 0);
+}
+
 /++
 Computes the Log-normal cumulative distribution function (CDF).
+
+Returns the lower-tail probability $(D P(X <= x)).
+
+This overload uses mean zero and standard deviation one for $(D log(x)).
+
+Special values:
+$(TABLE
+    $(TR $(TH Input) $(TH Result))
+    $(TR $(TD $(D x == 0)) $(TD $(D 0)))
+    $(TR $(TD $(D x == T.infinity)) $(TD $(D 1)))
+    $(TR $(TD $(D x < 0) or NaN) $(TD Contract violation))
+)
 
 Params:
     x = value to evaluate CDF
@@ -124,10 +180,22 @@ Ditto, with location and scale parameters for $(D log(x)).
 These are the mean and standard deviation of the underlying normal
 variable, not the mean and standard deviation of the log-normal variable.
 
+Returns the lower-tail probability $(D P(X <= x)).
+
+The table assumes finite parameters and a positive scale.
+
+Special values:
+$(TABLE
+    $(TR $(TH Input) $(TH Result))
+    $(TR $(TD $(D x == 0)) $(TD $(D 0)))
+    $(TR $(TD $(D x == T.infinity)) $(TD $(D 1)))
+    $(TR $(TD $(D x < 0) or NaN) $(TD Contract violation))
+)
+
 Params:
     x = value to evaluate CDF
-    mean = location parameter
-    stdDev = scale parameter
+    mean = finite mean of log(x)
+    stdDev = positive finite standard deviation of log(x)
 +/
 @safe pure nothrow @nogc
 T logNormalCDF(T)(const T x, const T mean, const T stdDev)
@@ -162,6 +230,19 @@ unittest
 /++
 Computes the Log-normal complementary cumulative distribution function (CCDF).
 
+Returns the upper-tail probability $(D P(X > x)). Use this function directly
+when the upper tail is small, rather than subtracting the CDF from one.
+
+This overload uses mean zero and standard deviation one for $(D log(x)).
+
+Special values:
+$(TABLE
+    $(TR $(TH Input) $(TH Result))
+    $(TR $(TD $(D x == 0)) $(TD $(D 1)))
+    $(TR $(TD $(D x == T.infinity)) $(TD $(D 0)))
+    $(TR $(TD $(D x < 0) or NaN) $(TD Contract violation))
+)
+
 Params:
     x = value to evaluate CCDF
 
@@ -183,10 +264,23 @@ Ditto, with location and scale parameters for $(D log(x)).
 These are the mean and standard deviation of the underlying normal
 variable, not the mean and standard deviation of the log-normal variable.
 
+Returns the upper-tail probability $(D P(X > x)). Use this function directly
+when the upper tail is small, rather than subtracting the CDF from one.
+
+The table assumes finite parameters and a positive scale.
+
+Special values:
+$(TABLE
+    $(TR $(TH Input) $(TH Result))
+    $(TR $(TD $(D x == 0)) $(TD $(D 1)))
+    $(TR $(TD $(D x == T.infinity)) $(TD $(D 0)))
+    $(TR $(TD $(D x < 0) or NaN) $(TD Contract violation))
+)
+
 Params:
     x = value to evaluate CCDF
-    mean = location parameter
-    stdDev = scale parameter
+    mean = finite mean of log(x)
+    stdDev = positive finite standard deviation of log(x)
 +/
 @safe pure nothrow @nogc
 T logNormalCCDF(T)(const T x, const T mean, const T stdDev)
@@ -221,6 +315,19 @@ unittest
 /++
 Computes the Log-normal inverse cumulative distribution function (InvCDF).
 
+Returns the quantile at cumulative probability $(D p).
+
+This overload uses mean zero and standard deviation one for $(D log(x)).
+
+Special values:
+$(TABLE
+    $(TR $(TH Input) $(TH Result))
+    $(TR $(TD $(D p == 0)) $(TD $(D 0)))
+    $(TR $(TD $(D p == 0.5)) $(TD $(D 1)))
+    $(TR $(TD $(D p == 1)) $(TD $(D T.infinity)))
+    $(TR $(TD $(D p < 0) or $(D p > 1) or NaN) $(TD Contract violation))
+)
+
 Params:
     p = value to evaluate InvCDF
 
@@ -244,10 +351,23 @@ Ditto, with location and scale parameters for $(D log(x)).
 These are the mean and standard deviation of the underlying normal
 variable, not the mean and standard deviation of the log-normal variable.
 
+Returns the quantile at cumulative probability $(D p).
+
+The table assumes finite parameters and a positive scale.
+
+Special values:
+$(TABLE
+    $(TR $(TH Input) $(TH Result))
+    $(TR $(TD $(D p == 0)) $(TD $(D 0)))
+    $(TR $(TD $(D p == 0.5)) $(TD $(D exp(mean))))
+    $(TR $(TD $(D p == 1)) $(TD $(D T.infinity)))
+    $(TR $(TD $(D p < 0) or $(D p > 1) or NaN) $(TD Contract violation))
+)
+
 Params:
     p = value to evaluate InvCDF
-    mean = location parameter
-    stdDev = scale parameter
+    mean = finite mean of log(x)
+    stdDev = positive finite standard deviation of log(x)
 +/
 @safe pure nothrow @nogc
 T logNormalInvCDF(T)(const T p, const T mean, const T stdDev)
@@ -286,6 +406,18 @@ unittest
 /++
 Computes the Log-normal log probability density function (LPDF).
 
+Returns the natural logarithm of the density.
+
+This overload uses mean zero and standard deviation one for $(D log(x)).
+
+Special values:
+$(TABLE
+    $(TR $(TH Input) $(TH Result))
+    $(TR $(TD $(D x == 0)) $(TD $(D -T.infinity)))
+    $(TR $(TD $(D x == T.infinity)) $(TD $(D -T.infinity)))
+    $(TR $(TD $(D x < 0) or NaN) $(TD Contract violation))
+)
+
 Params:
     x = value to evaluate LPDF
 
@@ -309,10 +441,22 @@ Ditto, with location and scale parameters for $(D log(x)).
 These are the mean and standard deviation of the underlying normal
 variable, not the mean and standard deviation of the log-normal variable.
 
+Returns the natural logarithm of the density.
+
+The table assumes finite parameters and a positive scale.
+
+Special values:
+$(TABLE
+    $(TR $(TH Input) $(TH Result))
+    $(TR $(TD $(D x == 0)) $(TD $(D -T.infinity)))
+    $(TR $(TD $(D x == T.infinity)) $(TD $(D -T.infinity)))
+    $(TR $(TD $(D x < 0) or NaN) $(TD Contract violation))
+)
+
 Params:
     x = value to evaluate LPDF
-    mean = location parameter
-    stdDev = scale parameter
+    mean = finite mean of log(x)
+    stdDev = positive finite standard deviation of log(x)
 +/
 @safe pure nothrow @nogc
 T logNormalLPDF(T)(const T x, const T mean, const T stdDev)
