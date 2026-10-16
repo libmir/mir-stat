@@ -28,6 +28,10 @@ Computes the exponential probability density function (PDF).
 
 Returns a density, which may exceed one; it is not a point probability.
 
+For a large rate, scaling is applied between exponential factors when needed
+to preserve a representable tail density that would be lost by computing
+$(D exp(-lambda * x)) first.
+
 Special values:
 $(TABLE
     $(TR $(TH Input) $(TH Result))

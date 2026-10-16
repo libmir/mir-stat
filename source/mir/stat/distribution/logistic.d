@@ -62,6 +62,10 @@ Returns a density, which may exceed one; it is not a point probability.
 
 The table assumes finite parameters and a positive scale.
 
+For small scales, the tail calculation applies scaling between exponential
+factors when needed. This preserves representable densities even when the
+standardized density would underflow before division by the scale.
+
 Special values:
 $(TABLE
     $(TR $(TH Input) $(TH Result))

@@ -1,6 +1,26 @@
 /++
 This module contains algorithms for the $(LINK2 https://en.wikipedia.org/wiki/Poisson_distribution, Poisson Distribution).
 
+The count $(D k) is the number of events in an observation interval, and
+$(D lambda) is the expected number of events in that interval. Counts use
+$(D size_t). Forward functions and count-returning inverse CDFs require
+$(D lambda > 0): a zero rate is rejected even though it is a mathematical
+limiting case. Tables use a finite positive rate unless stated otherwise.
+
+Ordinary functions use built-in floating-point values. $(LREF fp_poissonPMF)
+is a separate $(D Fp) implementation with extended exponent range, not a
+full-precision replacement for every calculation. Normal approximations
+need not match the direct or gamma algorithms at finite counts.
+
+$(D poissonInvCDF!(PoissonAlgo.gamma)) has a different purpose from the other
+inverse algorithms: given a count and a cumulative probability, it solves
+for the rate. The other choices solve for a count at a supplied rate.
+
+Tables assume valid parameters except where an invalid input is listed.
+Finite expressions are subject to floating-point rounding and range limits.
+Contract violations are not prescribed return values: disabling contracts does
+not make an invalid input supported.
+
 License: $(HTTP www.apache.org/licenses/LICENSE-2.0, Apache-2.0)
 
 Authors: John Michael Hall
@@ -15,10 +35,10 @@ import mir.bignum.fp: Fp;
 import mir.internal.utility: isFloatingPoint;
 
 /++
-Algorithms used to calculate poisson dstribution.
+Algorithms used to calculate poisson distribution.
 
 `PoissonAlgo.direct` can be more time-consuming for large values of the number
-of events (`k`) or the rate of occurences (`lambda`). Additional algorithms are
+of events (`k`) or the rate of occurrences (`lambda`). Additional algorithms are
 provided to the user to choose the trade-off between running time and accuracy.
 
 See_also:
@@ -176,6 +196,17 @@ factorials, or exponentials overflow or underflow.
 The gamma algorithm falls back to the direct algorithm when subtracting adjacent
 CDF values would lose precision.
 
+Returns $(D P(X == k)). The zero-count formula below applies to the direct
+and gamma algorithms, not to normal approximations.
+
+Special values:
+$(TABLE
+    $(TR $(TH Input) $(TH Result))
+    $(TR $(TD $(D k == 0) (direct or gamma)) $(TD $(D exp(-lambda))))
+    $(TR $(TD $(D lambda == T.infinity) (direct)) $(TD $(D 0)))
+    $(TR $(TD $(D lambda <= 0) or NaN) $(TD Contract violation))
+)
+
 Params:
     poissonAlgo = algorithm for calculating PMF (default: PoissonAlgo.direct)
 
@@ -188,7 +219,7 @@ template poissonPMF(PoissonAlgo poissonAlgo = PoissonAlgo.direct)
     /++
     Params:
         k = value to evaluate PMF (e.g. number of events)
-        lambda = expected rate of occurence
+        lambda = positive expected event count in the observation interval
     +/
     T poissonPMF(T)(const size_t k, const T lambda)
         if (isFloatingPoint!T)
@@ -341,9 +372,22 @@ The exponential is seeded in `double` precision, then squared in the extended
 type when necessary to preserve its exponent range. This avoids premature
 underflow; it does not provide full coefficient-width transcendental accuracy.
 
+The rate is converted to $(D double) for validation and the exponential seed.
+A positive rate too small to remain positive after that conversion is rejected.
+If the conversion produces positive infinity, the function returns zero.
+Thus an $(D Fp) result does not imply that all rate precision or range is retained.
+
+Special values:
+$(TABLE
+    $(TR $(TH Input) $(TH Result))
+    $(TR $(TD $(D k == 0)) $(TD Extended-range approximation to $(D exp(-lambda))))
+    $(TR $(TD $(D cast(double)lambda == double.infinity)) $(TD $(D 0)))
+    $(TR $(TD $(D cast(double)lambda <= 0) or NaN) $(TD Contract violation))
+)
+
 Params:
-    k = value to evaluate PMF (e.g. number of "heads")
-    lambda = expected rate of occurence
+    k = number of events at which to evaluate PMF
+    lambda = positive expected event count in the observation interval
 
 See_also:
     $(LINK2 https://en.wikipedia.org/wiki/Poisson_distribution, Poisson Distribution)
@@ -469,10 +513,20 @@ T poissonCDFImpl(T, PoissonAlgo poissonAlgo)(const size_t k, const T lambda)
 }
 
 /++
-Computes the poisson cumulative distrivution function (CDF).
+Computes the poisson cumulative distribution function (CDF).
 
 The direct algorithm falls back to the incomplete gamma function when its
 unscaled sum cannot be evaluated reliably, or the count would require a long sum.
+
+Returns the inclusive lower-tail probability $(D P(X <= k)). The table
+specifies direct and gamma evaluation; normal approximations can differ.
+
+Special values:
+$(TABLE
+    $(TR $(TH Input) $(TH Result))
+    $(TR $(TD $(D k == 0)) $(TD $(D exp(-lambda))))
+    $(TR $(TD $(D lambda <= 0) or NaN) $(TD Contract violation))
+)
 
 Params:
     poissonAlgo = algorithm for calculating CDF (default: PoissonAlgo.direct)
@@ -486,7 +540,7 @@ template poissonCDF(PoissonAlgo poissonAlgo = PoissonAlgo.direct)
     /++
     Params:
         k = value to evaluate CDF (e.g. number of events)
-        lambda = expected rate of occurence
+        lambda = positive expected event count in the observation interval
     +/
     T poissonCDF(T)(const size_t k, const T lambda)
         if (isFloatingPoint!T)
@@ -607,10 +661,20 @@ T poissonCCDFImpl(T, PoissonAlgo poissonAlgo)(const size_t k, const T lambda)
 }
 
 /++
-Computes the poisson complementary cumulative distrivution function (CCDF).
+Computes the poisson complementary cumulative distribution function (CCDF).
 
 Returns the probability of strictly more than `k` events. The direct algorithm
 uses the incomplete gamma function for small upper tails to avoid cancellation.
+
+The table specifies direct and gamma evaluation; normal approximations can
+differ at finite counts.
+
+Special values:
+$(TABLE
+    $(TR $(TH Input) $(TH Result))
+    $(TR $(TD $(D k == 0)) $(TD $(D 1 - exp(-lambda))))
+    $(TR $(TD $(D lambda <= 0) or NaN) $(TD Contract violation))
+)
 
 Params:
     poissonAlgo = algorithm for calculating CCDF (default: PoissonAlgo.direct)
@@ -624,7 +688,7 @@ template poissonCCDF(PoissonAlgo poissonAlgo = PoissonAlgo.direct)
     /++
     Params:
         k = value to evaluate CCDF (e.g. number of events)
-        lambda = expected rate of occurence
+        lambda = positive expected event count in the observation interval
     +/
     T poissonCCDF(T)(const size_t k, const T lambda)
         if (isFloatingPoint!T)
@@ -827,13 +891,13 @@ size_t poissonInvCDFImpl(T, PoissonAlgo poissonAlgo)(const T p, const T lambda)
 }
 
 /++
-Computes the poisson inverse cumulative distrivution function (InvCDF).
+Computes the poisson inverse cumulative distribution function (InvCDF).
 
 For algorithms `PoissonAlgo.direct`, `PoissonAlgo.approxNormal`, and 
 `PoissonAlgo.approxNormalContinuityCorrection`, the inverse CDF returns the 
-number of events (`k`) given the probability (`p`) and rate of occurence
-(`lambda`). For the `Poisson.gamma` algorithm, the inverse CDF returns the rate
-of occurence (`lambda`) given the probability (`p`) and the number of events (`k`).
+number of events (`k`) given the probability (`p`) and rate of occurrence
+(`lambda`). For the `PoissonAlgo.gamma` algorithm, the inverse CDF returns the rate
+of occurrence (`lambda`) given the probability (`p`) and the number of events (`k`).
 
 For `PoissonAlgo.direct`, if the value of `lambda` is larger than 16, then an
 initial guess is made based on `PoissonAlgo.approxNormalContinuityCorrection`.
@@ -842,6 +906,22 @@ Count-returning algorithms return `0` at `p = 0` and `size_t.max` at `p = 1`,
 where no finite Poisson quantile exists. `size_t.max` also denotes a quantile
 outside the result type's range. The gamma algorithm instead solves for the
 rate and returns positive infinity at `p = 0` and zero at `p = 1`.
+
+Count results use $(D size_t.max) as a sentinel; this cannot distinguish an
+exact maximum count from an unbounded or out-of-range quantile. The gamma
+algorithm instead returns a floating-point rate.
+
+Special values:
+$(TABLE
+    $(TR $(TH Input) $(TH Result))
+    $(TR $(TD $(D p == 0) (count algorithms)) $(TD $(D 0)))
+    $(TR $(TD $(D p == 1) (count algorithms)) $(TD $(D size_t.max)))
+    $(TR $(TD $(D lambda == T.infinity) and $(D p > 0) (count algorithms)) $(TD $(D size_t.max)))
+    $(TR $(TD $(D p == 0) (gamma rate inversion)) $(TD $(D T.infinity)))
+    $(TR $(TD $(D p == 1) (gamma rate inversion)) $(TD $(D 0)))
+    $(TR $(TD $(D p < 0), $(D p > 1), or NaN) $(TD Contract violation))
+    $(TR $(TD $(D lambda <= 0) or NaN (count algorithms)) $(TD Contract violation))
+)
 
 Params:
     poissonAlgo = algorithm for calculating InvCDF (default: PoissonAlgo.direct)
@@ -857,8 +937,8 @@ template poissonInvCDF(PoissonAlgo poissonAlgo = PoissonAlgo.direct)
 {
     /++
     Params:
-        p = value to evaluate InvCDF
-        lambda = expected rate of occurence
+        p = cumulative probability in $(D [0, 1])
+        lambda = positive expected event count in the observation interval
     +/
     size_t poissonInvCDF(T)(const T p, const T lambda)
         if (isFloatingPoint!T)
@@ -877,7 +957,7 @@ template poissonInvCDF(PoissonAlgo poissonAlgo)
 {
     /++
     Params:
-        p = value to evaluate InvCDF
+        p = cumulative probability in $(D [0, 1])
         k = number of events
     +/
     T poissonInvCDF(T)(const T p, const size_t k)
@@ -1033,6 +1113,20 @@ unittest
     }
 }
 
+/// Count inversion and gamma rate inversion answer different questions.
+version(mir_stat_test)
+@safe pure nothrow @nogc unittest
+{
+    import mir.math.common: approxEqual, log;
+    // At a rate of one, the median event count is one.
+    assert(poissonInvCDF(0.5, 1.0) == 1);
+    // With zero events, CDF = exp(-lambda); solve exp(-lambda) = 1/2.
+    const rate = poissonInvCDF!(PoissonAlgo.gamma)(0.5, size_t(0));
+    assert(approxEqual(rate, log(2.0)));
+    assert(poissonInvCDF(1.0, 1.0) == size_t.max);
+    assert(poissonInvCDF!(PoissonAlgo.gamma)(1.0, size_t(0)) == 0);
+}
+
 /++
 Computes the poisson log probability mass function (LPMF).
 
@@ -1040,9 +1134,20 @@ For large counts, the calculation centers the logarithm around the mean rather
 than subtracting large log-factorial and power terms. This preserves accuracy
 when the count and rate are close.
 
+Returns the natural logarithm of $(D P(X == k)), which can remain finite
+when the PMF underflows to zero.
+
+Special values:
+$(TABLE
+    $(TR $(TH Input) $(TH Result))
+    $(TR $(TD $(D k == 0)) $(TD $(D -lambda)))
+    $(TR $(TD $(D lambda == T.infinity)) $(TD $(D -T.infinity)))
+    $(TR $(TD $(D lambda <= 0) or NaN) $(TD Contract violation))
+)
+
 Params:
-    k = value to evaluate LPMF (e.g. number of "heads")
-    lambda = expected rate of occurence
+    k = number of events at which to evaluate LPMF
+    lambda = positive expected event count in the observation interval
 
 See_also:
     $(LINK2 https://en.wikipedia.org/wiki/Poisson_distribution, Poisson Distribution)
