@@ -8,6 +8,16 @@
 /++
 This module contains algorithms for the $(LINK2 https://en.wikipedia.org/wiki/Normal_distribution, Normal Distribution).
 
+The one-argument overloads use mean zero and standard deviation one.
+The other overloads take a finite mean and a positive finite standard
+deviation. These parameter requirements are not enforced by contracts;
+zero or negative standard deviations do not describe a supported distribution.
+
+The special-value tables assume finite distribution parameters in the stated
+domain. Finite expressions are subject to floating-point rounding and range
+limits. Contract violations are not prescribed return values: disabling
+contracts does not make an invalid input supported.
+
 Compatibility:
 These functions are implemented in mir-stat. If importing both this module and
 $(D mir.math.func.normal), use a selective import or qualify calls to choose
@@ -28,7 +38,19 @@ import mir.math.common: exp, fabs, floor, log, sqrt;
 
 /++
 Computes the normal probability density function (PDF).
-The one-argument overload uses zero mean and unit standard deviation.
+
+Returns a density, which may exceed one; it is not a point probability.
+
+This overload uses mean zero and standard deviation one.
+
+Special values:
+$(TABLE
+    $(TR $(TH Input) $(TH Result))
+    $(TR $(TD $(D z == -T.infinity)) $(TD $(D 0)))
+    $(TR $(TD $(D z == 0)) $(TD $(D 1 / sqrt(2 * PI))))
+    $(TR $(TD $(D z == T.infinity)) $(TD $(D 0)))
+    $(TR $(TD NaN) $(TD NaN))
+)
 
 Params:
     z = standardized observation
@@ -44,10 +66,23 @@ T normalPDF(T)(const T z)
 /++
 Ditto, with location and scale parameters.
 
+Returns a density, which may exceed one; it is not a point probability.
+
+The table assumes finite parameters and a positive scale.
+
+Special values:
+$(TABLE
+    $(TR $(TH Input) $(TH Result))
+    $(TR $(TD $(D x == -T.infinity)) $(TD $(D 0)))
+    $(TR $(TD $(D x == mean)) $(TD $(D 1 / sqrt(2 * PI) / stdDev)))
+    $(TR $(TD $(D x == T.infinity)) $(TD $(D 0)))
+    $(TR $(TD NaN) $(TD NaN))
+)
+
 Params:
     x = observation
-    mean = mean
-    stdDev = standard deviation
+    mean = finite mean
+    stdDev = positive finite standard deviation
 +/
 @safe pure nothrow @nogc
 T normalPDF(T)(const T x, const T mean, const T stdDev)
@@ -73,11 +108,32 @@ unittest
     assert(normalPDF(2.0, 2.0, 3.0).approxEqual(normalPDF(0.0) / 3));
 }
 
+/// A normal density tends to zero in both tails.
+version(mir_stat_test)
+@safe pure nothrow @nogc
+unittest
+{
+    assert(normalPDF(-double.infinity) == 0);
+    assert(normalPDF(double.infinity, 2.0, 3.0) == 0);
+}
+
 /++
 Computes the normal cumulative distribution function (CDF).
-The one-argument overload uses zero mean and unit standard deviation.
 For a small upper-tail probability, use $(LREF normalCCDF) rather than
 subtracting the CDF from one.
+
+Returns the lower-tail probability $(D P(X <= x)).
+
+This overload uses mean zero and standard deviation one.
+
+Special values:
+$(TABLE
+    $(TR $(TH Input) $(TH Result))
+    $(TR $(TD $(D a == -T.infinity)) $(TD $(D 0)))
+    $(TR $(TD $(D a == 0)) $(TD $(D 0.5)))
+    $(TR $(TD $(D a == T.infinity)) $(TD $(D 1)))
+    $(TR $(TD NaN) $(TD NaN))
+)
 
 Params:
     a = standardized observation
@@ -121,10 +177,23 @@ T normalCDF(T)(const T a)
 /++
 Ditto, with location and scale parameters.
 
+Returns the lower-tail probability $(D P(X <= x)).
+
+The table assumes finite parameters and a positive scale.
+
+Special values:
+$(TABLE
+    $(TR $(TH Input) $(TH Result))
+    $(TR $(TD $(D x == -T.infinity)) $(TD $(D 0)))
+    $(TR $(TD $(D x == mean)) $(TD $(D 0.5)))
+    $(TR $(TD $(D x == T.infinity)) $(TD $(D 1)))
+    $(TR $(TD NaN) $(TD NaN))
+)
+
 Params:
     x = observation
-    mean = mean
-    stdDev = standard deviation
+    mean = finite mean
+    stdDev = positive finite standard deviation
 +/
 @safe pure nothrow @nogc
 T normalCDF(T)(const T x, const T mean, const T stdDev)
@@ -146,8 +215,20 @@ unittest
 
 /++
 Computes the normal inverse cumulative distribution function.
-The one-argument overload uses zero mean and unit standard deviation.
 Zero and one return negative and positive infinity, respectively.
+
+Returns the quantile at cumulative probability $(D p).
+
+This overload uses mean zero and standard deviation one.
+
+Special values:
+$(TABLE
+    $(TR $(TH Input) $(TH Result))
+    $(TR $(TD $(D p == 0)) $(TD $(D -T.infinity)))
+    $(TR $(TD $(D p == 0.5)) $(TD $(D 0)))
+    $(TR $(TD $(D p == 1)) $(TD $(D T.infinity)))
+    $(TR $(TD $(D p < 0) or $(D p > 1) or NaN) $(TD Contract violation))
+)
 
 Params:
     p = cumulative probability in [0, 1]
@@ -215,10 +296,23 @@ do
 /++
 Ditto, with location and scale parameters.
 
+Returns the quantile at cumulative probability $(D p).
+
+The table assumes finite parameters and a positive scale.
+
+Special values:
+$(TABLE
+    $(TR $(TH Input) $(TH Result))
+    $(TR $(TD $(D p == 0)) $(TD $(D -T.infinity)))
+    $(TR $(TD $(D p == 0.5)) $(TD $(D mean)))
+    $(TR $(TD $(D p == 1)) $(TD $(D T.infinity)))
+    $(TR $(TD $(D p < 0) or $(D p > 1) or NaN) $(TD Contract violation))
+)
+
 Params:
     p = cumulative probability in [0, 1]
-    mean = mean
-    stdDev = standard deviation
+    mean = finite mean
+    stdDev = positive finite standard deviation
 +/
 @safe pure nothrow @nogc
 T normalInvCDF(T)(const T p, const T mean, const T stdDev)
@@ -248,10 +342,24 @@ unittest
 /++
 Computes the normal complementary cumulative distribution function (CCDF)
 
+Returns the upper-tail probability $(D P(X > x)). Use this function directly
+when the upper tail is small, rather than subtracting the CDF from one.
+
+The table assumes finite parameters and a positive scale.
+
+Special values:
+$(TABLE
+    $(TR $(TH Input) $(TH Result))
+    $(TR $(TD $(D x == -T.infinity)) $(TD $(D 1)))
+    $(TR $(TD $(D x == mean)) $(TD $(D 0.5)))
+    $(TR $(TD $(D x == T.infinity)) $(TD $(D 0)))
+    $(TR $(TD NaN) $(TD NaN))
+)
+
 Params:
     x = value to evaluate CCDF
-    mean = mean
-    stdDev = standard deviation
+    mean = finite mean
+    stdDev = positive finite standard deviation
 
 See_also:
     $(LINK2 https://en.wikipedia.org/wiki/Normal_distribution, Normal Distribution)
@@ -263,7 +371,26 @@ T normalCCDF(T)(const T x, const T mean, const T stdDev)
     return normalCCDF(standardizedNormal(x, mean, stdDev));
 }
 
-/// ditto
+/++
+Computes the standard normal complementary cumulative distribution function (CCDF).
+
+Returns the upper-tail probability $(D P(X > x)). Use this function directly
+when the upper tail is small, rather than subtracting the CDF from one.
+
+This overload uses mean zero and standard deviation one.
+
+Special values:
+$(TABLE
+    $(TR $(TH Input) $(TH Result))
+    $(TR $(TD $(D a == -T.infinity)) $(TD $(D 1)))
+    $(TR $(TD $(D a == 0)) $(TD $(D 0.5)))
+    $(TR $(TD $(D a == T.infinity)) $(TD $(D 0)))
+    $(TR $(TD NaN) $(TD NaN))
+)
+
+Params:
+    a = standardized observation
++/
 @safe pure nothrow @nogc
 T normalCCDF(T)(const T a)
     if (isFloatingPoint!T)
@@ -307,10 +434,23 @@ unittest
 /++
 Computes the normal log probability density function (LPDF)
 
+Returns the natural logarithm of the density.
+
+The table assumes finite parameters and a positive scale.
+
+Special values:
+$(TABLE
+    $(TR $(TH Input) $(TH Result))
+    $(TR $(TD $(D x == -T.infinity)) $(TD $(D -T.infinity)))
+    $(TR $(TD $(D x == mean)) $(TD $(D -log(2 * PI) / 2 - log(stdDev))))
+    $(TR $(TD $(D x == T.infinity)) $(TD $(D -T.infinity)))
+    $(TR $(TD NaN) $(TD NaN))
+)
+
 Params:
     x = value to evaluate LPDF
-    mean = mean
-    stdDev = standard deviation
+    mean = finite mean
+    stdDev = positive finite standard deviation
 
 See_also:
     $(LINK2 https://en.wikipedia.org/wiki/Normal_distribution, Normal Distribution)
@@ -323,7 +463,25 @@ T normalLPDF(T)(const T x, const T mean, const T stdDev)
     return normalLPDF(standardizedNormal(x, mean, stdDev)) - log(stdDev);
 }
 
-/// ditto
+/++
+Computes the standard normal log probability density function (LPDF).
+
+Returns the natural logarithm of the density.
+
+This overload uses mean zero and standard deviation one.
+
+Special values:
+$(TABLE
+    $(TR $(TH Input) $(TH Result))
+    $(TR $(TD $(D x == -T.infinity)) $(TD $(D -T.infinity)))
+    $(TR $(TD $(D x == 0)) $(TD $(D -log(2 * PI) / 2)))
+    $(TR $(TD $(D x == T.infinity)) $(TD $(D -T.infinity)))
+    $(TR $(TD NaN) $(TD NaN))
+)
+
+Params:
+    x = standardized observation
++/
 @safe pure nothrow @nogc
 T normalLPDF(T)(const T x)
     if (isFloatingPoint!T)

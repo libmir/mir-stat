@@ -1,6 +1,17 @@
 /++
 This module contains algorithms for the $(LINK2 https://en.wikipedia.org/wiki/Rayleigh_distribution, Rayleigh Distribution).
 
+The one-argument overloads use scale one. The other overloads take a
+positive finite scale. The support is $(D x >= 0); negative observations
+are outside the supported domain, although the forward functions do not
+enforce this with a contract. Scale is not the standard deviation. The
+inverse CDF accepts both probability endpoints.
+
+The special-value tables assume finite distribution parameters in the stated
+domain. Finite expressions are subject to floating-point rounding and range
+limits. Contract violations are not prescribed return values: disabling
+contracts does not make an invalid input supported.
+
 License: $(HTTP www.apache.org/licenses/LICENSE-2.0, Apache-2.0)
 
 Authors: John Michael Hall
@@ -15,6 +26,19 @@ import mir.internal.utility: isFloatingPoint;
 
 /++
 Computes the Rayleigh probability density function (PDF).
+
+Returns a density, which may exceed one; it is not a point probability.
+
+This overload uses scale one.
+
+Special values:
+$(TABLE
+    $(TR $(TH Input) $(TH Result))
+    $(TR $(TD $(D x == 0)) $(TD $(D 0)))
+    $(TR $(TD $(D x == T.infinity)) $(TD $(D 0)))
+    $(TR $(TD NaN) $(TD NaN))
+    $(TR $(TD $(D x < 0)) $(TD Outside the supported domain (not checked by a contract)))
+)
 
 Params:
     x = value to evaluate PDF
@@ -41,9 +65,22 @@ Normalizes the observation before squaring, avoiding overflow or underflow
 from squaring the scale. Uses a logarithmic fallback when an underflowed
 intermediate could hide a representable scaled density.
 
+Returns a density, which may exceed one; it is not a point probability.
+
+The table assumes finite parameters and a positive scale.
+
+Special values:
+$(TABLE
+    $(TR $(TH Input) $(TH Result))
+    $(TR $(TD $(D x == 0)) $(TD $(D 0)))
+    $(TR $(TD $(D x == T.infinity)) $(TD $(D 0)))
+    $(TR $(TD NaN) $(TD NaN))
+    $(TR $(TD $(D x < 0)) $(TD Outside the supported domain (not checked by a contract)))
+)
+
 Params:
     x = value to evaluate PDF
-    scale = scale parameter
+    scale = positive finite scale parameter
 +/
 @safe pure nothrow @nogc
 T rayleighPDF(T)(const T x, const T scale)
@@ -80,8 +117,31 @@ unittest
     4.0.rayleighPDF(2.0).shouldApprox == 0.1353353;
 }
 
+/// The density is zero at both support endpoints.
+version(mir_stat_test)
+@safe pure nothrow @nogc
+unittest
+{
+    assert(rayleighPDF(0.0) == 0);
+    assert(rayleighPDF(double.infinity) == 0);
+    assert(rayleighPDF(double.infinity, 2.0) == 0);
+}
+
 /++
 Computes the Rayleigh cumulative distribution function (CDF).
+
+Returns the lower-tail probability $(D P(X <= x)).
+
+This overload uses scale one.
+
+Special values:
+$(TABLE
+    $(TR $(TH Input) $(TH Result))
+    $(TR $(TD $(D x == 0)) $(TD $(D 0)))
+    $(TR $(TD $(D x == T.infinity)) $(TD $(D 1)))
+    $(TR $(TD NaN) $(TD NaN))
+    $(TR $(TD $(D x < 0)) $(TD Outside the supported domain (not checked by a contract)))
+)
 
 Params:
     x = value to evaluate CDF
@@ -101,9 +161,22 @@ T rayleighCDF(T)(const T x)
 /++
 Ditto, with scale parameter.
 
+Returns the lower-tail probability $(D P(X <= x)).
+
+The table assumes finite parameters and a positive scale.
+
+Special values:
+$(TABLE
+    $(TR $(TH Input) $(TH Result))
+    $(TR $(TD $(D x == 0)) $(TD $(D 0)))
+    $(TR $(TD $(D x == T.infinity)) $(TD $(D 1)))
+    $(TR $(TD NaN) $(TD NaN))
+    $(TR $(TD $(D x < 0)) $(TD Outside the supported domain (not checked by a contract)))
+)
+
 Params:
     x = value to evaluate CDF
-    scale = scale parameter
+    scale = positive finite scale parameter
 +/
 T rayleighCDF(T)(const T x, const T scale)
     if (isFloatingPoint!T)
@@ -133,6 +206,20 @@ unittest
 /++
 Computes the Rayleigh complementary cumulative distribution function (CCDF).
 
+Returns the upper-tail probability $(D P(X > x)). Use this function directly
+when the upper tail is small, rather than subtracting the CDF from one.
+
+This overload uses scale one.
+
+Special values:
+$(TABLE
+    $(TR $(TH Input) $(TH Result))
+    $(TR $(TD $(D x == 0)) $(TD $(D 1)))
+    $(TR $(TD $(D x == T.infinity)) $(TD $(D 0)))
+    $(TR $(TD NaN) $(TD NaN))
+    $(TR $(TD $(D x < 0)) $(TD Outside the supported domain (not checked by a contract)))
+)
+
 Params:
     x = value to evaluate CCDF
 
@@ -151,9 +238,23 @@ T rayleighCCDF(T)(const T x)
 /++
 Ditto, with scale parameter.
 
+Returns the upper-tail probability $(D P(X > x)). Use this function directly
+when the upper tail is small, rather than subtracting the CDF from one.
+
+The table assumes finite parameters and a positive scale.
+
+Special values:
+$(TABLE
+    $(TR $(TH Input) $(TH Result))
+    $(TR $(TD $(D x == 0)) $(TD $(D 1)))
+    $(TR $(TD $(D x == T.infinity)) $(TD $(D 0)))
+    $(TR $(TD NaN) $(TD NaN))
+    $(TR $(TD $(D x < 0)) $(TD Outside the supported domain (not checked by a contract)))
+)
+
 Params:
     x = value to evaluate CCDF
-    scale = scale parameter
+    scale = positive finite scale parameter
 +/
 @safe pure nothrow @nogc
 T rayleighCCDF(T)(const T x, const T scale)
@@ -184,6 +285,18 @@ unittest
 /++
 Computes the Rayleigh inverse cumulative distribution function (InvCDF).
 
+Returns the quantile at cumulative probability $(D p).
+
+This overload uses scale one.
+
+Special values:
+$(TABLE
+    $(TR $(TH Input) $(TH Result))
+    $(TR $(TD $(D p == 0)) $(TD $(D 0)))
+    $(TR $(TD $(D p == 1)) $(TD $(D T.infinity)))
+    $(TR $(TD $(D p < 0) or $(D p > 1) or NaN) $(TD Contract violation))
+)
+
 Params:
     p = value to evaluate InvCDF
 
@@ -205,12 +318,24 @@ T rayleighInvCDF(T)(const T p)
 /++
 Ditto, with scale parameter.
 
+Returns the quantile at cumulative probability $(D p).
+
+The table assumes finite parameters and a positive scale.
+
+Special values:
+$(TABLE
+    $(TR $(TH Input) $(TH Result))
+    $(TR $(TD $(D p == 0)) $(TD $(D 0)))
+    $(TR $(TD $(D p == 1)) $(TD $(D T.infinity)))
+    $(TR $(TD $(D p < 0) or $(D p > 1) or NaN) $(TD Contract violation))
+)
+
 Params:
     p = value to evaluate InvCDF
-    scale = scale parameter
+    scale = positive finite scale parameter
 
 See_also:
-    $(LINK2 https://en.wikipedia.org/wiki/Logistic_distribution, Logistic probability distribution)
+    $(LINK2 https://en.wikipedia.org/wiki/Rayleigh_distribution, Rayleigh Distribution)
 +/
 @safe pure nothrow @nogc
 T rayleighInvCDF(T)(const T p, const T scale)
@@ -245,6 +370,19 @@ unittest
 /++
 Computes the Rayleigh log probability density function (LPDF).
 
+Returns the natural logarithm of the density.
+
+This overload uses scale one.
+
+Special values:
+$(TABLE
+    $(TR $(TH Input) $(TH Result))
+    $(TR $(TD $(D x == 0)) $(TD $(D -T.infinity)))
+    $(TR $(TD $(D x == T.infinity)) $(TD $(D -T.infinity)))
+    $(TR $(TD NaN) $(TD NaN))
+    $(TR $(TD $(D x < 0)) $(TD Outside the supported domain (not checked by a contract)))
+)
+
 Params:
     x = value to evaluate LPDF
 
@@ -266,9 +404,22 @@ T rayleighLPDF(T)(const T x)
 /++
 Ditto, with scale parameter.
 
+Returns the natural logarithm of the density.
+
+The table assumes finite parameters and a positive scale.
+
+Special values:
+$(TABLE
+    $(TR $(TH Input) $(TH Result))
+    $(TR $(TD $(D x == 0)) $(TD $(D -T.infinity)))
+    $(TR $(TD $(D x == T.infinity)) $(TD $(D -T.infinity)))
+    $(TR $(TD NaN) $(TD NaN))
+    $(TR $(TD $(D x < 0)) $(TD Outside the supported domain (not checked by a contract)))
+)
+
 Params:
     x = value to evaluate LPDF
-    scale = scale parameter
+    scale = positive finite scale parameter
 
 See_also:
     $(LINK2 https://en.wikipedia.org/wiki/Rayleigh_distribution, Rayleigh Distribution)
