@@ -28,6 +28,9 @@ T rayleighPDF(T)(const T x)
 {
     import mir.math.common: exp;
 
+    // At positive infinity, avoid the indeterminate product infinity * zero.
+    if (x == T.infinity)
+        return 0;
     return x * exp(-0.5 * x * x);
 }
 
@@ -254,6 +257,9 @@ T rayleighLPDF(T)(const T x)
 {
     import mir.math.common: log;
 
+    // The limiting log-density is negative infinity, not infinity - infinity.
+    if (x == T.infinity)
+        return -T.infinity;
     return log(x) - 0.5 * x * x;
 }
 
@@ -374,4 +380,30 @@ unittest
         assert(rayleighPDF(T.infinity, T(1)) == 0);
         assert(rayleighLPDF(T.infinity, T(1)) == -T.infinity);
     }}
+}
+
+// Standard and scaled densities agree at the upper endpoint and propagate NaN.
+version(mir_stat_test)
+@safe pure nothrow @nogc
+unittest
+{
+    import std.meta: AliasSeq;
+    import std.math: isNaN;
+
+    static foreach (T; AliasSeq!(float, double, real))
+    {
+        assert(rayleighPDF(T.infinity) == 0);
+        assert(rayleighLPDF(T.infinity) == -T.infinity);
+        assert(rayleighPDF(T.max) == 0);
+        assert(rayleighLPDF(T.max) == -T.infinity);
+        assert(rayleighPDF(T.nan).isNaN);
+        assert(rayleighLPDF(T.nan).isNaN);
+        foreach (scale; [T(0.5), T(1), T(2)])
+        {
+            assert(rayleighPDF(T.infinity, scale) == 0);
+            assert(rayleighLPDF(T.infinity, scale) == -T.infinity);
+            assert(rayleighPDF(T.nan, scale).isNaN);
+            assert(rayleighLPDF(T.nan, scale).isNaN);
+        }
+    }
 }
