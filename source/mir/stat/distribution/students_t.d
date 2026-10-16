@@ -1,6 +1,21 @@
 /++
 This module contains algorithms for the $(LINK2 https://en.wikipedia.org/wiki/Student%27s_t-distribution, Student's t Distribution).
 
+The two-argument overloads use location zero and scale one. $(D nu) is a
+positive number of degrees of freedom and may be nonintegral. Passing
+$(D nu == T.infinity) selects the normal-distribution limit.
+
+In the four-argument overloads, $(D mean) names the location and $(D stdDev)
+names the positive scale. The location is the median; the mean exists only
+for $(D nu > 1). For finite $(D nu > 2), the standard deviation is
+$(D stdDev * sqrt(nu / (nu - 2))). Thus the scale parameter is not generally
+the standard deviation.
+
+The special-value tables assume parameters in the stated domain. Finite
+expressions are subject to floating-point rounding and range limits.
+Contract violations are not prescribed return values: disabling contracts
+does not make an invalid input supported.
+
 License: $(HTTP www.apache.org/licenses/LICENSE-2.0, Apache-2.0)
 
 Authors: John Michael Hall
@@ -16,9 +31,21 @@ import mir.internal.utility: isFloatingPoint;
 /++
 Computes the Student's t probability density function (PDF).
 
+Returns a density, which may exceed one; it is not a point probability.
+This overload uses location zero and scale one.
+
+Special values:
+$(TABLE
+    $(TR $(TH Input) $(TH Result))
+    $(TR $(TD $(D x == -T.infinity)) $(TD $(D 0)))
+    $(TR $(TD $(D x == T.infinity)) $(TD $(D 0)))
+    $(TR $(TD NaN) $(TD NaN))
+    $(TR $(TD $(D nu == T.infinity)) $(TD Corresponding normal-distribution result))
+)
+
 Params:
     x = value to evaluate PDF
-    nu = degrees of freedom
+    nu = positive degrees of freedom; positive infinity selects the normal limit
 
 See_also:
     $(LINK2 https://en.wikipedia.org/wiki/Student%27s_t-distribution, Student's t Distribution)
@@ -46,11 +73,23 @@ T studentsTPDF(T)(const T x, const T nu)
 /++
 Ditto, with location and scale parameters (by standardizing `x`).
 
+Returns a density, which may exceed one; it is not a point probability.
+This overload uses a finite location and positive finite scale.
+
+Special values:
+$(TABLE
+    $(TR $(TH Input) $(TH Result))
+    $(TR $(TD $(D x == -T.infinity)) $(TD $(D 0)))
+    $(TR $(TD $(D x == T.infinity)) $(TD $(D 0)))
+    $(TR $(TD NaN) $(TD NaN))
+    $(TR $(TD $(D nu == T.infinity)) $(TD Corresponding normal-distribution result))
+)
+
 Params:
     x = value to evaluate PDF
-    nu = degrees of freedom
-    mean = location parameter
-    stdDev = positive scale parameter (not generally the standard deviation)
+    nu = positive degrees of freedom; positive infinity selects the normal limit
+    mean = finite location parameter (the mean exists only for nu > 1)
+    stdDev = positive finite scale parameter (not generally the standard deviation)
 +/
 @safe pure nothrow @nogc
 T studentsTPDF(T)(const T x, const T nu, const T mean, const T stdDev)
@@ -131,12 +170,36 @@ unittest
     studentsTPDF(3.0, 5, -1, 2).shouldApprox == (0.06509031) / 2;
 }
 
+/// The location is the median, including when the mean does not exist.
+version(mir_stat_test)
+@safe pure nothrow @nogc
+unittest
+{
+    assert(studentsTCDF(3.0, 1.0, 3.0, 2.0) == 0.5);
+    assert(studentsTInvCDF(0.5, 1.0, 3.0, 2.0) == 3.0);
+    assert(studentsTInvCDF(0.0, 1.0) == -double.infinity);
+    assert(studentsTInvCDF(1.0, 1.0) == double.infinity);
+}
+
 /++
 Computes the Student's t cumulative distribution function (CDF).
 
+Returns the lower-tail probability $(D P(X <= x)).
+This overload uses location zero and scale one.
+
+Special values:
+$(TABLE
+    $(TR $(TH Input) $(TH Result))
+    $(TR $(TD $(D x == -T.infinity)) $(TD $(D 0)))
+    $(TR $(TD $(D x == 0)) $(TD $(D 0.5)))
+    $(TR $(TD $(D x == T.infinity)) $(TD $(D 1)))
+    $(TR $(TD NaN) $(TD NaN))
+    $(TR $(TD $(D nu == T.infinity)) $(TD Corresponding normal-distribution result))
+)
+
 Params:
     x = value to evaluate CDF
-    nu = degrees of freedom
+    nu = positive degrees of freedom; positive infinity selects the normal limit
 
 See_also:
     $(LINK2 https://en.wikipedia.org/wiki/Student%27s_t-distribution, Student's t Distribution)
@@ -191,11 +254,24 @@ T studentsTCDF(T)(const T x, const T nu)
 /++
 Ditto, with location and scale parameters (by standardizing `x`).
 
+Returns the lower-tail probability $(D P(X <= x)).
+This overload uses a finite location and positive finite scale.
+
+Special values:
+$(TABLE
+    $(TR $(TH Input) $(TH Result))
+    $(TR $(TD $(D x == -T.infinity)) $(TD $(D 0)))
+    $(TR $(TD $(D x == mean)) $(TD $(D 0.5)))
+    $(TR $(TD $(D x == T.infinity)) $(TD $(D 1)))
+    $(TR $(TD NaN) $(TD NaN))
+    $(TR $(TD $(D nu == T.infinity)) $(TD Corresponding normal-distribution result))
+)
+
 Params:
     x = value to evaluate CDF
-    nu = degrees of freedom
-    mean = location parameter
-    stdDev = positive scale parameter (not generally the standard deviation)
+    nu = positive degrees of freedom; positive infinity selects the normal limit
+    mean = finite location parameter (the mean exists only for nu > 1)
+    stdDev = positive finite scale parameter (not generally the standard deviation)
 +/
 @safe pure nothrow @nogc
 T studentsTCDF(T)(const T x, const T nu, const T mean, const T stdDev)
@@ -275,9 +351,23 @@ unittest
 /++
 Computes the Student's t complementary cumulative distribution function (CCDF).
 
+Returns the upper-tail probability $(D P(X > x)). Use this function directly
+when the upper tail is small, rather than subtracting the CDF from one.
+This overload uses location zero and scale one.
+
+Special values:
+$(TABLE
+    $(TR $(TH Input) $(TH Result))
+    $(TR $(TD $(D x == -T.infinity)) $(TD $(D 1)))
+    $(TR $(TD $(D x == 0)) $(TD $(D 0.5)))
+    $(TR $(TD $(D x == T.infinity)) $(TD $(D 0)))
+    $(TR $(TD NaN) $(TD NaN))
+    $(TR $(TD $(D nu == T.infinity)) $(TD Corresponding normal-distribution result))
+)
+
 Params:
     x = value to evaluate CCDF
-    nu = degrees of freedom
+    nu = positive degrees of freedom; positive infinity selects the normal limit
 
 See_also:
     $(LINK2 https://en.wikipedia.org/wiki/Student%27s_t-distribution, Student's t Distribution)
@@ -295,11 +385,25 @@ T studentsTCCDF(T)(const T x, const T nu)
 /++
 Ditto, with location and scale parameters (by standardizing `x`).
 
+Returns the upper-tail probability $(D P(X > x)). Use this function directly
+when the upper tail is small, rather than subtracting the CDF from one.
+This overload uses a finite location and positive finite scale.
+
+Special values:
+$(TABLE
+    $(TR $(TH Input) $(TH Result))
+    $(TR $(TD $(D x == -T.infinity)) $(TD $(D 1)))
+    $(TR $(TD $(D x == mean)) $(TD $(D 0.5)))
+    $(TR $(TD $(D x == T.infinity)) $(TD $(D 0)))
+    $(TR $(TD NaN) $(TD NaN))
+    $(TR $(TD $(D nu == T.infinity)) $(TD Corresponding normal-distribution result))
+)
+
 Params:
     x = value to evaluate CCDF
-    nu = degrees of freedom
-    mean = location parameter
-    stdDev = positive scale parameter (not generally the standard deviation)
+    nu = positive degrees of freedom; positive infinity selects the normal limit
+    mean = finite location parameter (the mean exists only for nu > 1)
+    stdDev = positive finite scale parameter (not generally the standard deviation)
 +/
 @safe pure nothrow @nogc
 T studentsTCCDF(T)(const T x, const T nu, const T mean, const T stdDev)
@@ -379,9 +483,22 @@ unittest
 /++
 Computes the Student's t inverse cumulative distribution function (InvCDF).
 
+Returns the quantile at cumulative probability $(D p).
+This overload uses location zero and scale one.
+
+Special values:
+$(TABLE
+    $(TR $(TH Input) $(TH Result))
+    $(TR $(TD $(D p == 0)) $(TD $(D -T.infinity)))
+    $(TR $(TD $(D p == 0.5)) $(TD $(D 0)))
+    $(TR $(TD $(D p == 1)) $(TD $(D T.infinity)))
+    $(TR $(TD $(D p < 0) or $(D p > 1) or NaN) $(TD Contract violation))
+    $(TR $(TD $(D nu == T.infinity)) $(TD Corresponding normal-distribution result))
+)
+
 Params:
     p = value to evaluate InvCDF
-    nu = degrees of freedom
+    nu = positive degrees of freedom; positive infinity selects the normal limit
 
 See_also:
     $(LINK2 https://en.wikipedia.org/wiki/Student%27s_t-distribution, Student's t Distribution)
@@ -443,11 +560,24 @@ T studentsTInvCDF(T)(const T p, const T nu)
 /++
 Ditto, with location and scale parameters (by standardizing `x`).
 
+Returns the quantile at cumulative probability $(D p).
+This overload uses a finite location and positive finite scale.
+
+Special values:
+$(TABLE
+    $(TR $(TH Input) $(TH Result))
+    $(TR $(TD $(D p == 0)) $(TD $(D -T.infinity)))
+    $(TR $(TD $(D p == 0.5)) $(TD $(D mean)))
+    $(TR $(TD $(D p == 1)) $(TD $(D T.infinity)))
+    $(TR $(TD $(D p < 0) or $(D p > 1) or NaN) $(TD Contract violation))
+    $(TR $(TD $(D nu == T.infinity)) $(TD Corresponding normal-distribution result))
+)
+
 Params:
     p = value to evaluate InvCDF
-    nu = degrees of freedom
-    mean = location parameter
-    stdDev = positive scale parameter (not generally the standard deviation)
+    nu = positive degrees of freedom; positive infinity selects the normal limit
+    mean = finite location parameter (the mean exists only for nu > 1)
+    stdDev = positive finite scale parameter (not generally the standard deviation)
 +/
 @safe pure nothrow @nogc
 T studentsTInvCDF(T)(const T p, const T nu, const T mean, const T stdDev)
@@ -546,9 +676,21 @@ unittest
 /++
 Computes the Student's t log probability density function (LPDF).
 
+Returns the natural logarithm of the density.
+This overload uses location zero and scale one.
+
+Special values:
+$(TABLE
+    $(TR $(TH Input) $(TH Result))
+    $(TR $(TD $(D x == -T.infinity)) $(TD $(D -T.infinity)))
+    $(TR $(TD $(D x == T.infinity)) $(TD $(D -T.infinity)))
+    $(TR $(TD NaN) $(TD NaN))
+    $(TR $(TD $(D nu == T.infinity)) $(TD Corresponding normal-distribution result))
+)
+
 Params:
     x = value to evaluate LPDF
-    nu = degrees of freedom
+    nu = positive degrees of freedom; positive infinity selects the normal limit
 
 See_also:
     $(LINK2 https://en.wikipedia.org/wiki/Student%27s_t-distribution, Student's t Distribution)
@@ -572,11 +714,23 @@ T studentsTLPDF(T)(const T x, const T nu)
 /++
 Ditto, with location and scale parameters (by standardizing `x`).
 
+Returns the natural logarithm of the density.
+This overload uses a finite location and positive finite scale.
+
+Special values:
+$(TABLE
+    $(TR $(TH Input) $(TH Result))
+    $(TR $(TD $(D x == -T.infinity)) $(TD $(D -T.infinity)))
+    $(TR $(TD $(D x == T.infinity)) $(TD $(D -T.infinity)))
+    $(TR $(TD NaN) $(TD NaN))
+    $(TR $(TD $(D nu == T.infinity)) $(TD Corresponding normal-distribution result))
+)
+
 Params:
     x = value to evaluate LPDF
-    nu = degrees of freedom
-    mean = location parameter
-    stdDev = positive scale parameter (not generally the standard deviation)
+    nu = positive degrees of freedom; positive infinity selects the normal limit
+    mean = finite location parameter (the mean exists only for nu > 1)
+    stdDev = positive finite scale parameter (not generally the standard deviation)
 +/
 @safe pure nothrow @nogc
 T studentsTLPDF(T)(const T x, const T nu, const T mean, const T stdDev)

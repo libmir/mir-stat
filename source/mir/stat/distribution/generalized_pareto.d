@@ -1,6 +1,18 @@
 /++
 This module contains algorithms for the $(LINK2 https://en.wikipedia.org/wiki/Generalized_Pareto_distribution, Generalized Pareto Distribution).
 
+The parameters are finite location $(D mu), positive finite scale $(D sigma),
+and finite shape $(D xi). For $(D xi >= 0), the support is $(D x >= mu).
+For $(D xi < 0), it is $(D mu <= x && x <= b), where $(D b = mu - sigma / xi).
+The forward functions check these support restrictions with contracts.
+Shape zero gives an exponential distribution shifted by $(D mu), with
+rate $(D 1 / sigma).
+
+The special-value tables assume parameters in the stated domain. Finite
+expressions are subject to floating-point rounding and range limits.
+Contract violations are not prescribed return values: disabling contracts
+does not make an invalid input supported.
+
 License: $(HTTP www.apache.org/licenses/LICENSE-2.0, Apache-2.0)
 
 Authors: John Michael Hall
@@ -17,11 +29,28 @@ import mir.stat.internal.shape_transform: log1pScaled, expm1Scaled;
 /++
 Computes the generalized pareto probability density function (PDF).
 
+Returns a density, which may exceed one; it is not a point probability.
+Here $(D b = mu - sigma / xi) denotes a finite support boundary.
+Boundary formulas describe the limiting values; rounding the calculation of
+$(D b) can place an observation slightly inside or outside the support.
+
+Special values:
+$(TABLE
+    $(TR $(TH Input) $(TH Result))
+    $(TR $(TD $(D x == mu)) $(TD $(D 1 / sigma)))
+    $(TR $(TD $(D x == b), $(D -1 < xi && xi < 0)) $(TD $(D 0)))
+    $(TR $(TD $(D x == b), $(D xi == -1)) $(TD $(D 1 / sigma)))
+    $(TR $(TD $(D x == b), $(D xi < -1)) $(TD $(D T.infinity)))
+    $(TR $(TD $(D x == T.infinity), $(D xi >= 0)) $(TD $(D 0)))
+    $(TR $(TD Outside the support) $(TD Contract violation))
+    $(TR $(TD NaN) $(TD Contract violation))
+)
+
 Params:
     x = value to evaluate PDF
-    mu = location parameter
-    sigma = scale parameter
-    xi = shape parameter
+    mu = finite location parameter
+    sigma = positive finite scale parameter
+    xi = finite shape parameter
 
 See_also:
     $(LINK2 https://en.wikipedia.org/wiki/Generalized_Pareto_distribution, Generalized Pareto Distribution)
@@ -72,17 +101,43 @@ unittest
     5.0.generalizedParetoPDF(2, 3, 0).shouldApprox == 0.1226264803904808;
 }
 
+/// Negative shape gives a finite upper endpoint with a shape-dependent density.
+version(mir_stat_test)
+@safe pure nothrow @nogc
+unittest
+{
+    // With location zero and scale two, the upper endpoint is -2 / xi.
+    assert(generalizedParetoPDF(4.0, 0.0, 2.0, -0.5) == 0.0);
+    assert(generalizedParetoPDF(2.0, 0.0, 2.0, -1.0) == 0.5);
+    assert(generalizedParetoPDF(1.0, 0.0, 2.0, -2.0) == double.infinity);
+}
+
 /++
 Computes the generalized pareto cumulative distribution function (CDF).
 
 Evaluates the probability using $(D log1p) and $(D expm1) near cancellation,
 preserving small probabilities and the limit as the shape approaches zero.
 
+Returns the lower-tail probability $(D P(X <= x)).
+Here $(D b = mu - sigma / xi) denotes a finite support boundary.
+Boundary formulas describe the limiting values; rounding the calculation of
+$(D b) can place an observation slightly inside or outside the support.
+
+Special values:
+$(TABLE
+    $(TR $(TH Input) $(TH Result))
+    $(TR $(TD $(D x == mu)) $(TD $(D 0)))
+    $(TR $(TD $(D x == b), $(D xi < 0)) $(TD $(D 1)))
+    $(TR $(TD $(D x == T.infinity), $(D xi >= 0)) $(TD $(D 1)))
+    $(TR $(TD Outside the support) $(TD Contract violation))
+    $(TR $(TD NaN) $(TD Contract violation))
+)
+
 Params:
     x = value to evaluate CDF
-    mu = location parameter
-    sigma = scale parameter
-    xi = shape parameter
+    mu = finite location parameter
+    sigma = positive finite scale parameter
+    xi = finite shape parameter
 
 See_also:
     $(LINK2 https://en.wikipedia.org/wiki/Generalized_Pareto_distribution, Generalized Pareto Distribution)
@@ -118,11 +173,27 @@ unittest
 /++
 Computes the generalized pareto complementary cumulative distribution function (CCDF).
 
+Returns the upper-tail probability $(D P(X > x)). Use this function directly
+when the upper tail is small, rather than subtracting the CDF from one.
+Here $(D b = mu - sigma / xi) denotes a finite support boundary.
+Boundary formulas describe the limiting values; rounding the calculation of
+$(D b) can place an observation slightly inside or outside the support.
+
+Special values:
+$(TABLE
+    $(TR $(TH Input) $(TH Result))
+    $(TR $(TD $(D x == mu)) $(TD $(D 1)))
+    $(TR $(TD $(D x == b), $(D xi < 0)) $(TD $(D 0)))
+    $(TR $(TD $(D x == T.infinity), $(D xi >= 0)) $(TD $(D 0)))
+    $(TR $(TD Outside the support) $(TD Contract violation))
+    $(TR $(TD NaN) $(TD Contract violation))
+)
+
 Params:
     x = value to evaluate CCDF
-    mu = location parameter
-    sigma = scale parameter
-    xi = shape parameter
+    mu = finite location parameter
+    sigma = positive finite scale parameter
+    xi = finite shape parameter
 
 See_also:
     $(LINK2 https://en.wikipedia.org/wiki/Generalized_Pareto_distribution, Generalized Pareto Distribution)
@@ -160,11 +231,25 @@ Computes the generalized pareto inverse cumulative distribution function (InvCDF
 Uses $(D expm1) to preserve small nonzero shapes, and a stable logarithm of
 $(D 1 - p) to retain tiny probabilities.
 
+Returns the quantile at cumulative probability $(D p).
+Here $(D b = mu - sigma / xi) denotes a finite support boundary.
+Boundary formulas describe the limiting values; rounding the calculation of
+$(D b) can place an observation slightly inside or outside the support.
+
+Special values:
+$(TABLE
+    $(TR $(TH Input) $(TH Result))
+    $(TR $(TD $(D p == 0)) $(TD $(D mu)))
+    $(TR $(TD $(D p == 1), $(D xi < 0)) $(TD $(D b)))
+    $(TR $(TD $(D p == 1), $(D xi >= 0)) $(TD $(D T.infinity)))
+    $(TR $(TD $(D p < 0) or $(D p > 1) or NaN) $(TD Contract violation))
+)
+
 Params:
     p = value to evaluate InvCDF
-    mu = location parameter
-    sigma = scale parameter
-    xi = shape parameter
+    mu = finite location parameter
+    sigma = positive finite scale parameter
+    xi = finite shape parameter
 
 See_also:
     $(LINK2 https://en.wikipedia.org/wiki/Generalized_Pareto_distribution, Generalized Pareto Distribution)
@@ -197,11 +282,28 @@ unittest
 /++
 Computes the generalized pareto log probability density function (LPDF).
 
+Returns the natural logarithm of the density.
+Here $(D b = mu - sigma / xi) denotes a finite support boundary.
+Boundary formulas describe the limiting values; rounding the calculation of
+$(D b) can place an observation slightly inside or outside the support.
+
+Special values:
+$(TABLE
+    $(TR $(TH Input) $(TH Result))
+    $(TR $(TD $(D x == mu)) $(TD $(D -log(sigma))))
+    $(TR $(TD $(D x == b), $(D -1 < xi && xi < 0)) $(TD $(D -T.infinity)))
+    $(TR $(TD $(D x == b), $(D xi == -1)) $(TD $(D -log(sigma))))
+    $(TR $(TD $(D x == b), $(D xi < -1)) $(TD $(D T.infinity)))
+    $(TR $(TD $(D x == T.infinity), $(D xi >= 0)) $(TD $(D -T.infinity)))
+    $(TR $(TD Outside the support) $(TD Contract violation))
+    $(TR $(TD NaN) $(TD Contract violation))
+)
+
 Params:
     x = value to evaluate LPDF
-    mu = location parameter
-    sigma = scale parameter
-    xi = shape parameter
+    mu = finite location parameter
+    sigma = positive finite scale parameter
+    xi = finite shape parameter
 
 See_also:
     $(LINK2 https://en.wikipedia.org/wiki/Generalized_Pareto_distribution, Generalized Pareto Distribution)

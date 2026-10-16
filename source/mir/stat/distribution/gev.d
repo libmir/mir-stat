@@ -1,6 +1,23 @@
 /++
 This module contains algorithms for the $(LINK2 https://en.wikipedia.org/wiki/Generalized_extreme_value_distribution, Generalized Extreme Value (GEV) Distribution).
 
+The parameters are finite location $(D mu), positive finite scale $(D sigma),
+and finite shape $(D xi). Positive scale is a requirement of the distribution
+but is not enforced by a contract.
+
+For $(D xi > 0), the support is $(D x >= b); for $(D xi < 0), it is
+$(D x <= b), where $(D b = mu - sigma / xi). Shape zero gives the Gumbel
+distribution on the whole real line. The forward functions check the
+shape-dependent bounds with contracts rather than extending outside them.
+
+The implementation uses the Gumbel formulas when $(D fabs(xi) <= T.min_normal).
+Tables for nonzero shape refer to shapes outside this approximation range.
+
+The special-value tables assume parameters in the stated domain. Finite
+expressions are subject to floating-point rounding and range limits.
+Contract violations are not prescribed return values: disabling contracts
+does not make an invalid input supported.
+
 License: $(HTTP www.apache.org/licenses/LICENSE-2.0, Apache-2.0)
 
 Authors: Ilia Ki, John Michael Hall
@@ -19,11 +36,30 @@ import mir.math.common: fabs, exp, log;
 /++
 Computes the generalized extreme value (GEV) probability density function (PDF).
 
+Returns a density, which may exceed one; it is not a point probability.
+Here $(D b = mu - sigma / xi) denotes a finite support boundary.
+Boundary formulas describe the limiting values; rounding the calculation of
+$(D b) can place an observation slightly inside or outside the support.
+
+Special values:
+$(TABLE
+    $(TR $(TH Input) $(TH Result))
+    $(TR $(TD $(D x == b), $(D xi > 0)) $(TD $(D 0)))
+    $(TR $(TD $(D x == b), $(D -1 < xi && xi < 0)) $(TD $(D 0)))
+    $(TR $(TD $(D x == b), $(D xi == -1)) $(TD $(D 1 / sigma)))
+    $(TR $(TD $(D x == b), $(D xi < -1)) $(TD $(D T.infinity)))
+    $(TR $(TD $(D x == T.infinity), $(D xi >= 0)) $(TD $(D 0)))
+    $(TR $(TD $(D x == -T.infinity), $(D xi <= 0)) $(TD $(D 0)))
+    $(TR $(TD Outside the support) $(TD Contract violation))
+    $(TR $(TD NaN, $(D xi == 0)) $(TD NaN))
+    $(TR $(TD NaN, $(D xi != 0)) $(TD Contract violation))
+)
+
 Params:
     x = value to evaluate
-    mu = location
-    sigma = scale
-    xi = shape
+    mu = finite location
+    sigma = positive finite scale
+    xi = finite shape
 
 See_also:
     $(LINK2 https://en.wikipedia.org/wiki/Generalized_extreme_value_distribution, Generalized Extreme Value (GEV) Distribution)
@@ -72,14 +108,42 @@ unittest
     gevPDF(-1.0, 0, 1, 1).should == 0;
 }
 
+/// The sign of the shape determines which quantile endpoint is finite.
+version(mir_stat_test)
+@safe pure nothrow @nogc
+unittest
+{
+    assert(gevInvCDF(0.0, 0.0, 2.0, 0.5) == -4.0);
+    assert(gevInvCDF(1.0, 0.0, 2.0, -0.5) == 4.0);
+    assert(gevInvCDF(0.0, 0.0, 2.0, 0.0) == -double.infinity);
+    assert(gevInvCDF(1.0, 0.0, 2.0, 0.0) == double.infinity);
+}
+
 /++
-Computes the generalized extreme value (GEV) cumulatve distribution function (CDF).
+Computes the generalized extreme value (GEV) cumulative distribution function (CDF).
+
+Returns the lower-tail probability $(D P(X <= x)).
+Here $(D b = mu - sigma / xi) denotes a finite support boundary.
+Boundary formulas describe the limiting values; rounding the calculation of
+$(D b) can place an observation slightly inside or outside the support.
+
+Special values:
+$(TABLE
+    $(TR $(TH Input) $(TH Result))
+    $(TR $(TD $(D x == b), $(D xi > 0)) $(TD $(D 0)))
+    $(TR $(TD $(D x == -T.infinity), $(D xi <= 0)) $(TD $(D 0)))
+    $(TR $(TD $(D x == b), $(D xi < 0)) $(TD $(D 1)))
+    $(TR $(TD $(D x == T.infinity), $(D xi >= 0)) $(TD $(D 1)))
+    $(TR $(TD Outside the support) $(TD Contract violation))
+    $(TR $(TD NaN, $(D xi == 0)) $(TD NaN))
+    $(TR $(TD NaN, $(D xi != 0)) $(TD Contract violation))
+)
 
 Params:
     x = value to evaluate
-    mu = location
-    sigma = scale
-    xi = shape
+    mu = finite location
+    sigma = positive finite scale
+    xi = finite shape
 
 See_also:
     $(LINK2 https://en.wikipedia.org/wiki/Generalized_extreme_value_distribution, Generalized Extreme Value (GEV) Distribution)
@@ -123,7 +187,7 @@ unittest
 }
 
 /++
-Computes the generalized extreme value (GEV) complementary cumulatve distribution function (CCDF).
+Computes the generalized extreme value (GEV) complementary cumulative distribution function (CCDF).
 
 Evaluates the upper tail directly, rather than subtracting the CDF from one,
 so small probabilities are retained.
@@ -137,11 +201,29 @@ Implementation_Notes:
     DMD 2.102 uses a compensated logarithm instead of its problematic
     $(D log1p) implementation.
 
+Returns the upper-tail probability $(D P(X > x)). Use this function directly
+when the upper tail is small, rather than subtracting the CDF from one.
+Here $(D b = mu - sigma / xi) denotes a finite support boundary.
+Boundary formulas describe the limiting values; rounding the calculation of
+$(D b) can place an observation slightly inside or outside the support.
+
+Special values:
+$(TABLE
+    $(TR $(TH Input) $(TH Result))
+    $(TR $(TD $(D x == b), $(D xi > 0)) $(TD $(D 1)))
+    $(TR $(TD $(D x == -T.infinity), $(D xi <= 0)) $(TD $(D 1)))
+    $(TR $(TD $(D x == b), $(D xi < 0)) $(TD $(D 0)))
+    $(TR $(TD $(D x == T.infinity), $(D xi >= 0)) $(TD $(D 0)))
+    $(TR $(TD Outside the support) $(TD Contract violation))
+    $(TR $(TD NaN, $(D xi == 0)) $(TD NaN))
+    $(TR $(TD NaN, $(D xi != 0)) $(TD Contract violation))
+)
+
 Params:
     x = value to evaluate
-    mu = location
-    sigma = scale
-    xi = shape
+    mu = finite location
+    sigma = positive finite scale
+    xi = finite shape
 
 See_also:
     $(LINK2 https://en.wikipedia.org/wiki/Generalized_extreme_value_distribution, Generalized Extreme Value (GEV) Distribution)
@@ -284,11 +366,26 @@ Computes the generalized extreme value (GEV) inverse cumulative distribution fun
 
 Uses $(D expm1) to retain the zero-shape limit for small nonzero shapes.
 
+Returns the quantile at cumulative probability $(D p).
+Here $(D b = mu - sigma / xi) denotes a finite support boundary.
+Boundary formulas describe the limiting values; rounding the calculation of
+$(D b) can place an observation slightly inside or outside the support.
+
+Special values:
+$(TABLE
+    $(TR $(TH Input) $(TH Result))
+    $(TR $(TD $(D p == 0), $(D xi > 0)) $(TD $(D b)))
+    $(TR $(TD $(D p == 0), $(D xi <= 0)) $(TD $(D -T.infinity)))
+    $(TR $(TD $(D p == 1), $(D xi < 0)) $(TD $(D b)))
+    $(TR $(TD $(D p == 1), $(D xi >= 0)) $(TD $(D T.infinity)))
+    $(TR $(TD $(D p < 0) or $(D p > 1) or NaN) $(TD Contract violation))
+)
+
 Params:
     p = value to evaluate
-    mu = location
-    sigma = scale
-    xi = shape
+    mu = finite location
+    sigma = positive finite scale
+    xi = finite shape
 
 See_also:
     $(LINK2 https://en.wikipedia.org/wiki/Generalized_extreme_value_distribution, Generalized Extreme Value (GEV) Distribution)
@@ -320,11 +417,30 @@ unittest
 /++
 Computes the generalized extreme value (GEV) log probability density function (LPDF).
 
+Returns the natural logarithm of the density.
+Here $(D b = mu - sigma / xi) denotes a finite support boundary.
+Boundary formulas describe the limiting values; rounding the calculation of
+$(D b) can place an observation slightly inside or outside the support.
+
+Special values:
+$(TABLE
+    $(TR $(TH Input) $(TH Result))
+    $(TR $(TD $(D x == b), $(D xi > 0)) $(TD $(D -T.infinity)))
+    $(TR $(TD $(D x == b), $(D -1 < xi && xi < 0)) $(TD $(D -T.infinity)))
+    $(TR $(TD $(D x == b), $(D xi == -1)) $(TD $(D -log(sigma))))
+    $(TR $(TD $(D x == b), $(D xi < -1)) $(TD $(D T.infinity)))
+    $(TR $(TD $(D x == T.infinity), $(D xi >= 0)) $(TD $(D -T.infinity)))
+    $(TR $(TD $(D x == -T.infinity), $(D xi <= 0)) $(TD $(D -T.infinity)))
+    $(TR $(TD Outside the support) $(TD Contract violation))
+    $(TR $(TD NaN, $(D xi == 0)) $(TD NaN))
+    $(TR $(TD NaN, $(D xi != 0)) $(TD Contract violation))
+)
+
 Params:
     x = value to evaluate
-    mu = location
-    sigma = scale
-    xi = shape
+    mu = finite location
+    sigma = positive finite scale
+    xi = finite shape
 
 See_also:
     $(LINK2 https://en.wikipedia.org/wiki/Generalized_extreme_value_distribution, Generalized Extreme Value (GEV) Distribution)
