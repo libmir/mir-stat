@@ -56,9 +56,10 @@ T paretoPDF(T)(const T x, const T xMin, const T alpha)
     const T decay = alpha * paretoLogRatio(x, xMin);
     const T factor = alpha / x;
     const T tail = exp(-decay);
-    // Avoid separate powers of xMin and x. If either factor loses range,
-    // combine their logarithms before recovering the final density.
-    if (factor >= T.min_normal && factor <= T.max && tail >= T.min_normal)
+    // A normal tail cannot amplify rounding in a subnormal factor. Preserve
+    // direct multiplication instead of introducing logarithmic rounding error.
+    // Combine logarithms when the factor overflows or the tail loses range.
+    if (factor <= T.max && tail >= T.min_normal)
         return factor * tail;
     return exp(log(alpha) - log(x) - decay);
 }
@@ -82,6 +83,41 @@ unittest
 {
     assert(paretoPDF(2.0, 2.0, 4.0) == 2.0);
     assert(paretoPDF(double.infinity, 2.0, 4.0) == 0.0);
+}
+
+// Subnormal normalization factors do not require logarithmic rescaling.
+version(mir_stat_test)
+@safe pure nothrow @nogc
+unittest
+{
+    import std.meta: AliasSeq;
+    import std.math: ldexp;
+    import mir.math.common: fabs;
+
+    static foreach (T; AliasSeq!(float, double, real))
+    {{
+        const T x = ldexp(T(1), T.max_exp - 1);
+        const T unit = T.min_normal * T.epsilon;
+        // At the lower support boundary the density is exactly alpha / x.
+        foreach (T alpha; [T(0.5), T(1), T(3)])
+            assert(paretoPDF(x, x, alpha) == alpha / x);
+        assert(paretoPDF(T.max, T.max, T(1)) == T(1) / T.max);
+        // Preserve the smallest subnormal and round smaller factors to zero.
+        assert(paretoPDF(T(1), T(1), unit) == unit);
+        assert(paretoPDF(T(2), T(2), unit) == 0);
+        assert(paretoPDF(T(4), T(1), unit) == 0);
+        assert(paretoPDF(T(1), T(1), T.min_normal) == T.min_normal);
+        // For alpha == 1 and xMin == x / 2, the density is 1 / (2*x).
+        // Form the reference without overflowing 2*x.
+        const T expected = ldexp(T(1), -T.max_exp);
+        assert(fabs(paretoPDF(x, x / 2, T(1)) - expected) <= 2 * unit);
+        assert(paretoPDF(T.infinity, x, T(1)) == 0);
+    }}
+
+    // Exact-input, 100-digit Decimal reference for xMin / (x*x).
+    const double actual = paretoPDF(1e308, 5e307, 1.0);
+    const double expected = cast(double) 4.999999999999999945104681852797723516e-309L;
+    assert(fabs(actual - expected) <= 2 * double.min_normal * double.epsilon);
 }
 
 /++
