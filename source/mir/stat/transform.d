@@ -1277,6 +1277,11 @@ The returned view remains lazy: its median and spread are fixed when the
 function is called, while subsequent changes to the input are reflected in
 the transformed elements.
 
+For floating-point observations, the distance between two finite quantiles can
+exceed the range of their type. In that case, the view uses half the quantile
+distance and half the centered observation, preserving their ratio without
+forming the overflowing distance.
+
 Params:
     F = controls type of output
     quantileAlgo = algorithm for calculating quantile (default: `QuantileAlgo.type7`)
@@ -1355,6 +1360,31 @@ template robustScale(F,
             meanType!F median_value = temp.median!(F, allowModifySlice);
             quantileType!(F, quantileAlgo) high_quartile_value = temp.rcquantile!(F, quantileAlgo, allowModifySlice)(cast(F) 1 - low_quartile);
 
+            static if (isFloatingPoint!(slice.DeepElement) &&
+                       isFloatingPoint!(typeof(low_quartile_value)) &&
+                       isFloatingPoint!(typeof(median_value)))
+            {
+                import std.math: isFinite;
+                import mir.ndslice.topology: vmap;
+                const spread = high_quartile_value - low_quartile_value;
+                if (!isFinite(spread) && isFinite(low_quartile_value) &&
+                    isFinite(high_quartile_value))
+                {
+                    // The quantiles are finite, but their distance is too
+                    // large. Store half the distance and halve the numerator
+                    // too, so the ratio never needs the overflowing spread.
+                    // This decision only affects construction of the view.
+                    alias Difference = typeof(slice.DeepElement.init - median_value);
+                    alias Result = typeof(Difference.init / (meanType!F).init);
+                    FloatingScale!(Difference, Result) operation;
+                    operation.factor = 0.5;
+                    operation.center = cast(Difference) median_value * cast(Difference) 0.5;
+                    operation.divisor = high_quartile_value / 2 - low_quartile_value / 2;
+                    static if (allowModifySlice) return temp.vmap(operation);
+                    else return slice.vmap(operation);
+                }
+            }
+
             static if (allowModifySlice) {
                 return scale(temp, median_value, cast(meanType!F) (high_quartile_value - low_quartile_value));
             } else {
@@ -1422,6 +1452,46 @@ template robustScale(string quantileAlgo, bool allowModifySlice = false)
 template robustScale(bool allowModifySlice)
 {
     mixin("alias robustScale = .robustScale!(QuantileAlgo.type7, allowModifySlice);");
+}
+
+// Normalize finite quantile endpoints before their difference overflows.
+version(mir_stat_test)
+@safe pure nothrow @nogc unittest
+{
+    import std.meta: AliasSeq;
+    import mir.math.common: approxEqual;
+    import mir.ndslice.slice: sliced;
+    import mir.ndslice.dynamic: transposed;
+
+    static foreach (F; AliasSeq!(float, double, real))
+    {{
+        F[4] input = [-F.max, -F.max, F.max, F.max];
+        auto view = input[].robustScale;
+        assert(view[0] == -0.5 && view[3] == 0.5);
+        auto matrix = input[].sliced(2, 2).transposed.robustScale;
+        assert(matrix.shape == [2, 2]);
+        assert(matrix[0, 1] == 0.5);
+        input[0] = F.max / 2;
+        assert(view[0] == 0.25);
+
+        F[4] asymmetric = [-F.max, -F.max, 0, F.max];
+        auto centered = asymmetric[].robustScale;
+        assert(approxEqual(centered[0], F(-0.4)));
+        assert(approxEqual(centered[3], F(1.2)));
+        F[4] reorder = [F.max, -F.max, F.max, -F.max];
+        auto modified = reorder[].robustScale!true;
+        foreach (i; 0 .. reorder.length)
+            assert(modified[i] == (reorder[i] < 0 ? F(-0.5) : F(0.5)));
+
+        const F[4] finiteSpread = [-F.max / 2, -F.max / 2, F.max / 2, F.max / 2];
+        auto ordinary = finiteSpread[].robustScale;
+        assert(ordinary[0] == -0.5 && ordinary[3] == 0.5);
+    }}
+    // Preserve the existing wider arithmetic result for narrower summaries.
+    double[4] wide = [-float.max, -float.max, float.max, float.max];
+    auto narrowSummary = wide[].robustScale!float;
+    static assert(is(typeof(narrowSummary[0]) == double));
+    assert(narrowSummary[0] == -0.5 && narrowSummary[3] == 0.5);
 }
 
 /// robustScale vector
