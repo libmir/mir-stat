@@ -554,6 +554,13 @@ template scale(alias centralTendency = mean!(Summation.appropriate),
 }
 
 /++
+When both the observations and `m` are integral and `d` is floating point,
+subtract the integer values before converting the distance to the result type.
+This preserves small differences near large integer values and avoids wrapping
+subtraction. Mixed signed and unsigned values are compared by their numerical
+values. Distances exceeding `ulong.max` are formed from floating-point magnitudes
+and may incur additional rounding.
+
 Params:
     slice = slice
     m = value to subtract from slice
@@ -565,18 +572,143 @@ Params:
     import core.lifetime: move;
     import mir.ndslice.internal: LeftOp, ImplicitlyUnqual;
     import mir.ndslice.topology: vmap;
+    import std.traits: isIntegral, isFloatingPoint, Unqual;
     
     assert(d > 0, "scale: cannot divide by zero");
 
-    return slice.move.sweep!"-"(m).sweep!"/"(d);
+    static if (isIntegral!(slice.DeepElement) && isIntegral!T && isFloatingPoint!U)
+    {
+        alias Result = typeof((slice.DeepElement.init - T.init) / U.init);
+        IntegralScale!(Unqual!T, Result) operation;
+        operation.center = m;
+        operation.divisor = d;
+        return slice.move.vmap(operation);
+    }
+    else
+        return slice.move.sweep!"-"(m).sweep!"/"(d);
 }
-    
+
 /// ditto
 @fmamath auto scale(SliceLike, T, U)(SliceLike x, T m, U d)
     if (isConvertibleToSlice!SliceLike && !isSlice!SliceLike)
 {
     import mir.ndslice.slice: toSlice;
     return scale(x.toSlice, m, d);
+}
+
+// Own the supplied scalars, keeping the transformation lazy and allocation-free.
+private struct IntegralScale(T, F)
+{
+    T center;
+    F divisor;
+
+    F opCall(E)(E value) const @safe pure nothrow @nogc
+    {
+        import std.traits: isUnsigned;
+        static if (isUnsigned!E != isUnsigned!T)
+        {
+            // D's usual signed/unsigned comparison would reinterpret a negative
+            // operand as unsigned. Handle that case before comparing magnitudes.
+            static if (isUnsigned!E)
+            {
+                const signedValue = center;
+                const ulong positive = value;
+            }
+            else
+            {
+                const signedValue = value;
+                const ulong positive = center;
+            }
+            if (signedValue < 0)
+            {
+                const ulong magnitude = 0UL - cast(ulong) signedValue;
+                const ulong distance = positive + magnitude;
+                // Only mixed signed/unsigned inputs can require 65 bits. There
+                // is no cancellation here, so convert the two magnitudes if the
+                // exact distance cannot fit in ulong.
+                const F converted = distance < positive ?
+                    cast(F) positive + cast(F) magnitude : cast(F) distance;
+                static if (isUnsigned!E)
+                    return converted / divisor;
+                else
+                    return -converted / divisor;
+            }
+            const negative = cast(ulong) value < cast(ulong) center;
+        }
+        else
+            const negative = value < center;
+
+        return negative ?
+            -cast(F)(cast(ulong) center - cast(ulong) value) / divisor :
+            cast(F)(cast(ulong) value - cast(ulong) center) / divisor;
+    }
+}
+
+// Explicit integral centers preserve offsets without overflowing subtraction.
+version(mir_stat_test)
+@safe pure nothrow @nogc unittest
+{
+    import mir.ndslice.slice: sliced;
+    import mir.ndslice.dynamic: transposed;
+    import mir.math.common: approxEqual;
+    import std.meta: AliasSeq;
+
+    static foreach (F; AliasSeq!(float, double, real))
+    {{
+        enum long base = 1L << 60;
+        const(long)[3] nearby = [base - 1, base, base + 1];
+        auto view = nearby[].sliced.scale(base, F(2));
+        static assert(is(typeof(view[0]) == F));
+        assert(view[0] == F(-0.5));
+        assert(view[1] == 0);
+        assert(view[2] == F(0.5));
+
+        long[2] extremes = [long.min, long.max];
+        assert(extremes[].scale(long.min, F(2))[1] == cast(F) ulong.max / F(2));
+        assert(extremes[].scale(long.max, F(2))[0] == -cast(F) ulong.max / F(2));
+        ulong[2] unsignedValues = [ulong.max - 1, ulong.max];
+        assert(unsignedValues[].scale(ulong.max, F(2))[0] == F(-0.5));
+
+        // Mixed signedness includes negative centers, negative observations,
+        // positive operands, and distances that require more than 64 bits.
+        ulong[3] unsignedMixed = [0, 7, ulong.max];
+        auto positive = unsignedMixed[].scale(-1L, F(2));
+        assert(positive[0] == F(0.5));
+        assert(positive[1] == F(4));
+        assert(positive[2] == F(0x1p63));
+        long[3] signedMixed = [-1, 0, 7];
+        auto negative = signedMixed[].scale(ulong.max, F(2));
+        assert(negative[0] == -F(0x1p63));
+        assert(negative[1] == -cast(F) ulong.max / F(2));
+        assert(unsignedMixed[].scale(7L, F(2))[0] == F(-3.5));
+        assert(signedMixed[].scale(3UL, F(2))[2] == F(2));
+        assert(signedMixed[].scale(3UL, F(2))[0] == F(-2));
+        ulong[1] mixedNearby = [cast(ulong) base + 1];
+        assert(mixedNearby[].scale(base, F(2))[0] == F(0.5));
+        assert(nearby[].scale(cast(ulong) base, F(2))[0] == F(-0.5));
+        assert(unsignedMixed[].scale(long.min, F(2))[2].approxEqual(F(0x1.8p63)));
+        assert(extremes[].scale(ulong.max, F(2))[0].approxEqual(-F(0x1.8p63)));
+
+        int[2] small = [int.min, int.max];
+        assert(small[].scale(int.min, F(1))[1] == cast(F) uint.max);
+        assert(small[].scale(0L, F(2))[0] == F(int.min) / 2);
+        assert(small[].scale(1U, F(2))[0] == -(F(0x1p31) + 1) / 2);
+    }}
+
+    long[6] input = [0, 1, 2, 3, 4, 5];
+    auto matrix = input[].sliced(2, 3).transposed;
+    auto result = matrix.scale(2L, 2.0);
+    assert(result.shape == matrix.shape);
+    assert(result[2, 1] == 1.5);
+    input[5] = 7;
+    assert(result[2, 1] == 2.5); // The returned view still reads the input lazily.
+
+    int[2] integers = [1, 5];
+    auto integerResult = integers[].scale(1, 2);
+    static assert(is(typeof(integerResult[0]) == int));
+    assert(integerResult[1] == 2);
+    auto floatingCenter = integers[].scale(0.5, 2.0);
+    assert(floatingCenter[0] == 0.25);
 }
 
 /// Scale vector
