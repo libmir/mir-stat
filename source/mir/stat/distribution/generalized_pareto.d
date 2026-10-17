@@ -25,6 +25,7 @@ module mir.stat.distribution.generalized_pareto;
 
 import mir.internal.utility: isFloatingPoint;
 import mir.stat.internal.shape_transform: log1pScaled, expm1Scaled;
+import mir.stat.internal.standardize: standardize;
 
 /++
 Computes the generalized pareto probability density function (PDF).
@@ -64,7 +65,7 @@ T generalizedParetoPDF(T)(const T x, const T mu, const T sigma, const T xi)
 {
     import mir.math.common: exp;
 
-    const T z = (x - mu) / sigma;
+    const T z = standardize(x, mu, sigma);
     if (xi != 0) {
         const T u = xi * z;
         const T v = 1 + u;
@@ -230,7 +231,7 @@ T generalizedParetoCDF(T)(const T x, const T mu, const T sigma, const T xi)
 {
     import mir.stat.internal.one_minus_exp: oneMinusExpNeg;
 
-    const T z = (x - mu) / sigma;
+    const T z = standardize(x, mu, sigma);
     if (1 + xi * z <= 0)
         return 1;
     return oneMinusExpNeg(log1pScaled(z, xi));
@@ -286,7 +287,7 @@ T generalizedParetoCCDF(T)(const T x, const T mu, const T sigma, const T xi)
 {
     import mir.math.common: exp;
 
-    const T z = (x - mu) / sigma;
+    const T z = standardize(x, mu, sigma);
     const T h = 1 + xi * z <= 0 ? T.infinity : log1pScaled(z, xi);
     return exp(-h);
 }
@@ -397,7 +398,7 @@ T generalizedParetoLPDF(T)(const T x, const T mu, const T sigma, const T xi)
     import mir.math.common: log;
 
 
-    const T z = (x - mu) / sigma;
+    const T z = standardize(x, mu, sigma);
     if (xi != 0) {
         if (xi == -1)
             return -log(sigma);
@@ -520,5 +521,39 @@ unittest
             T(0.82842712474619009760337744841939615714L), 16 * T.epsilon, T(0)));
         assert(approxEqual(generalizedParetoInvCDF(T(.5), T(0), T(1), T(-.5)),
             T(0.58578643762690495119831127579030192143L), 16 * T.epsilon, T(0)));
+    }}
+}
+
+// A finite standardized observation can survive an overflowing subtraction.
+version(mir_stat_test)
+@safe pure nothrow @nogc
+unittest
+{
+    import std.meta: AliasSeq;
+    import mir.math.common: approxEqual, fabs, log;
+
+    static foreach (T; AliasSeq!(float, double, real))
+    {{
+        // (max - -max) / max is exactly two.
+        const T expected = (T(1) / 9) / T.max;
+        const T actual = generalizedParetoPDF(T.max, -T.max, T.max, T(1));
+        assert(actual > 0);
+        assert(fabs(actual - expected) <= 4 * T.min_normal * T.epsilon);
+        assert(approxEqual(generalizedParetoLPDF(T.max, -T.max, T.max, T(1)),
+            -2 * log(T(3)) - log(T.max), 16 * T.epsilon, T(0)));
+        assert(approxEqual(generalizedParetoCDF(T.max, -T.max, T.max, T(1)),
+            T(2) / 3, 16 * T.epsilon, T(0)));
+        assert(approxEqual(generalizedParetoCCDF(T.max, -T.max, T.max, T(1)),
+            T(1) / 3, 16 * T.epsilon, T(0)));
+        foreach (xi; [T(0), T(-.25)])
+        {
+            assert(approxEqual(generalizedParetoLPDF(T.max, -T.max, T.max, xi),
+                generalizedParetoLPDF(T(2), T(0), T(1), xi) - log(T.max),
+                16 * T.epsilon, T(0)));
+            assert(generalizedParetoCDF(T.max, -T.max, T.max, xi) ==
+                generalizedParetoCDF(T(2), T(0), T(1), xi));
+            assert(generalizedParetoCCDF(T.max, -T.max, T.max, xi) ==
+                generalizedParetoCCDF(T(2), T(0), T(1), xi));
+        }
     }}
 }
