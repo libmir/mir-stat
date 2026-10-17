@@ -3998,7 +3998,8 @@ auto quantileImpl(F, QuantileAlgo quantileAlgo, Iterator, G)(Slice!Iterator slic
 // Share rank calculation and partitioning, but select the result representation
 // at compile time. Scalar callers interpolate directly; callers such as integral
 // IQR retain the endpoints and fraction until after subtracting the quantiles.
-@fmamath private @safe pure nothrow @nogc
+// Package visibility also lets robustScale retain exact integral median parts.
+@fmamath package(mir.stat) @safe pure nothrow @nogc
 auto selectQuantile(QuantileAlgo quantileAlgo, F = void, Iterator, G)(Slice!Iterator slice, G p)
     if (isFloatingPoint!G)
 {
@@ -6999,7 +7000,9 @@ unittest
     assert(interquartileRange!double(floating[].sliced, 0, 0.5L) == 2);
 }
 
-private auto quantileSpread(F, QuantileAlgo algorithm, bool modify, S, P, Q)(
+// Shared with robustScale so integral spreads are not reconstructed by
+// subtracting two separately rounded quantiles.
+package(mir.stat) auto quantileSpread(F, QuantileAlgo algorithm, bool modify, S, P, Q)(
     S source, P lo, Q hi)
 {
     import std.traits: isIntegral, Unqual, CommonType;

@@ -199,7 +199,7 @@ unittest
 
     auto xCenterAlongDim = x.alongDim!0.map!center;
     auto resultAlongDim = result.alongDim!0;
-    assert(xCenterByDim.equal!(equal!approxEqual)(resultAlongDim));
+    assert(xCenterAlongDim.equal!(equal!approxEqual)(resultAlongDim));
 }
 
 /// Can also pass arguments to average function used by center
@@ -512,7 +512,7 @@ is equivalent to `center` when passing `d = 1`.
 
 Params:
     centralTendency = function used to center input, default is `mean`
-    dispersion = function used as divisor, default is `dispersion`
+    dispersion = function used as divisor, default is `standardDeviation`
 Returns:
     The scaled result
 See_also:
@@ -554,6 +554,20 @@ template scale(alias centralTendency = mean!(Summation.appropriate),
 }
 
 /++
+When both the observations and `m` are integral and `d` is floating point,
+subtract the integer values before converting the distance to the result type.
+This preserves small differences near large integer values and avoids wrapping
+subtraction. Mixed signed and unsigned values are compared by their numerical
+values. Distances exceeding `ulong.max` are formed from floating-point magnitudes
+and may incur additional rounding.
+
+For floating-point subtraction, a very large finite center can make the
+subtraction overflow even when division would bring the result back into range.
+In that case, this function prepares a lazy view that halves the observation,
+center, and divisor before evaluating the ratio. Ordinary inputs use a multiplier
+of one. The decision is made once when the view is created, and the divisor is
+only halved when doing so keeps it normal (or infinite).
+
 Params:
     slice = slice
     m = value to subtract from slice
@@ -565,18 +579,261 @@ Params:
     import core.lifetime: move;
     import mir.ndslice.internal: LeftOp, ImplicitlyUnqual;
     import mir.ndslice.topology: vmap;
+    import std.traits: isIntegral, isFloatingPoint, Unqual;
     
     assert(d > 0, "scale: cannot divide by zero");
 
-    return slice.move.sweep!"-"(m).sweep!"/"(d);
+    static if (isIntegral!(slice.DeepElement) && isIntegral!T && isFloatingPoint!U)
+    {
+        alias Result = typeof((slice.DeepElement.init - T.init) / U.init);
+        IntegralScale!(Unqual!T, Result) operation;
+        operation.center = m;
+        operation.divisor = d;
+        return slice.move.vmap(operation);
+    }
+    else static if ((isFloatingPoint!(slice.DeepElement) || isIntegral!(slice.DeepElement)) &&
+                    (isFloatingPoint!T || isIntegral!T) &&
+                    (isFloatingPoint!U || isIntegral!U) &&
+                    (isFloatingPoint!(slice.DeepElement) || isFloatingPoint!T))
+    {
+        alias Difference = typeof(slice.DeepElement.init - T.init);
+        alias Result = typeof(Difference.init / U.init);
+        FloatingScale!(Difference, Result) operation;
+        operation.prepare(m, d);
+        return slice.move.vmap(operation);
+    }
+    else
+        return slice.move.sweep!"-"(m).sweep!"/"(d);
 }
-    
+
 /// ditto
 @fmamath auto scale(SliceLike, T, U)(SliceLike x, T m, U d)
     if (isConvertibleToSlice!SliceLike && !isSlice!SliceLike)
 {
     import mir.ndslice.slice: toSlice;
     return scale(x.toSlice, m, d);
+}
+
+// Normalize once instead of branching on overflow at every element. The center
+// cutoff lies just below half an ULP at F.max: smaller centers cannot make a
+// finite observation overflow on subtraction under round-to-nearest arithmetic.
+private struct FloatingScale(F, R)
+{
+    F center;
+    R divisor;
+    // Both possible factors are exact in double. Using it for real avoids an
+    // extended-precision field/load, without changing the arithmetic type.
+    static if (is(F == real))
+        double factor;
+    else
+        F factor;
+
+    void prepare(F m, R d) @safe pure nothrow @nogc
+    {
+        import std.math: abs, isFinite;
+        // Halving must not round a subnormal divisor or erase it. This also
+        // permits a divisor <= 1 when R is wider than the subtraction type.
+        factor = isFinite(m) && abs(m) > F.max * (F.epsilon / 4) &&
+            d >= R.min_normal * 2 ? 0.5f : 1.0f;
+        center = m * factor;
+        divisor = d * factor;
+    }
+
+    R opCall(E)(E value) const @safe pure nothrow @nogc
+    {
+        return (cast(F) value * factor - center) / divisor;
+    }
+}
+
+// Own the supplied scalars, keeping the transformation lazy and allocation-free.
+private struct IntegralScale(T, F)
+{
+    T center;
+    F divisor;
+
+    F opCall(E)(E value) const @safe pure nothrow @nogc
+    {
+        import std.traits: isUnsigned;
+        static if (isUnsigned!E != isUnsigned!T)
+        {
+            // D's usual signed/unsigned comparison would reinterpret a negative
+            // operand as unsigned. Handle that case before comparing magnitudes.
+            static if (isUnsigned!E)
+            {
+                const signedValue = center;
+                const ulong positive = value;
+            }
+            else
+            {
+                const signedValue = value;
+                const ulong positive = center;
+            }
+            if (signedValue < 0)
+            {
+                const ulong magnitude = 0UL - cast(ulong) signedValue;
+                const ulong distance = positive + magnitude;
+                // Only mixed signed/unsigned inputs can require 65 bits. There
+                // is no cancellation here, so convert the two magnitudes if the
+                // exact distance cannot fit in ulong.
+                const F converted = distance < positive ?
+                    cast(F) positive + cast(F) magnitude : cast(F) distance;
+                static if (isUnsigned!E)
+                    return converted / divisor;
+                else
+                    return -converted / divisor;
+            }
+            const negative = cast(ulong) value < cast(ulong) center;
+        }
+        else
+            const negative = value < center;
+
+        return negative ?
+            -cast(F)(cast(ulong) center - cast(ulong) value) / divisor :
+            cast(F)(cast(ulong) value - cast(ulong) center) / divisor;
+    }
+}
+
+// Protect subtraction before division, including exceptional values and the
+// threshold where a finite subtraction first becomes capable of overflowing.
+version(mir_stat_test)
+@safe pure nothrow @nogc unittest
+{
+    import std.meta: AliasSeq;
+    import std.math: isNaN, nextUp, nextDown;
+    import mir.ndslice.slice: sliced;
+    import mir.ndslice.dynamic: transposed;
+
+    static foreach (F; AliasSeq!(float, double, real))
+    {{
+        F[4] input = [F.max, -F.max, 0, F.max / 2];
+        auto view = input[].scale(-F.max, F.max);
+        static assert(is(typeof(view[0]) == F));
+        assert(view[0] == 2);
+        assert(view[1] == 0);
+        assert(view[2] == 1);
+        assert(view[3] == F(1.5));
+        assert(input[].scale(F.max, F.max)[1] == -2);
+        assert(input[].scale(-F.max, F(0.5))[0] == F.infinity);
+
+        // An infinite divisor must produce zero for finite inputs, even when
+        // the original subtraction would produce infinity / infinity.
+        auto zero = input[].scale(-F.max, F.infinity);
+        assert(zero[0] == 0);
+        F[3] exceptional = [F.infinity, -F.infinity, F.nan];
+        auto special = exceptional[].scale(-F.max, F.max);
+        assert(special[0] == F.infinity);
+        assert(special[1] == -F.infinity);
+        assert(special[2].isNaN);
+        assert(exceptional[].scale(F.infinity, F(2))[0].isNaN);
+        assert(input[].scale(F.nan, F(2))[0].isNaN);
+
+        const F cutoff = F.max * (F.epsilon / 4);
+        assert(input[].scale(-cutoff, F.max)[0] == 1);
+        assert(input[].scale(-nextUp(cutoff), F.max)[0] == nextUp(F(1)));
+        assert(input[].scale(F.max, F.max)[3] == F(-0.5));
+
+        // Halving a tiny divisor would underflow or round it. Preserve the
+        // unscaled calculation, including exact cancellation at the center.
+        const F tiny = F.min_normal * F.epsilon;
+        assert(input[].scale(F.max, tiny)[0] == 0);
+        F[2] small = [tiny, -tiny];
+        auto ordinary = small[].scale(F(0), F(1));
+        assert(ordinary[0] == tiny && ordinary[1] == -tiny);
+        assert(input[].scale(F.max, F.min_normal)[0] == 0);
+        assert(input[].scale(F.max, F.min_normal * 2)[0] == 0);
+
+        F[2] close = [F.max, nextDown(F.max)];
+        auto centered = close[].scale(F.max, F.max);
+        assert(centered[1] == (nextDown(F.max) - F.max) / F.max);
+        auto matrix = input[].sliced(2, 2).transposed.scale(-F.max, F.max);
+        assert(matrix[1, 1] == F(1.5));
+        input[3] = F.max;
+        assert(matrix[1, 1] == 2);
+    }}
+
+    // A wider divisor/result can make the ratio finite even for divisors <= 1.
+    const(float)[1] narrow = [float.max];
+    auto wider = narrow[].scale(-float.max, 1.0);
+    static assert(is(typeof(wider[0]) == double));
+    assert(wider[0] == 2.0 * float.max);
+    assert(narrow[].scale(-float.max, 0.5)[0] == 4.0 * float.max);
+    assert(narrow[].scale(-float.max, 1e-100)[0] == (2.0 * float.max) / 1e-100);
+    auto integralDivisor = narrow[].scale(-float.max, 2);
+    static assert(is(typeof(integralDivisor[0]) == float));
+    assert(integralDivisor[0] == float.max);
+    int[2] integers = [1, 5];
+    assert(integers[].scale(0.5, 2.0)[1] == 2.25);
+    float[1] ordinaryInput = [1];
+    auto widerCenter = ordinaryInput[].scale(0.5, 2.0f);
+    static assert(is(typeof(widerCenter[0]) == double));
+    assert(widerCenter[0] == 0.25);
+}
+
+// Explicit integral centers preserve offsets without overflowing subtraction.
+version(mir_stat_test)
+@safe pure nothrow @nogc unittest
+{
+    import mir.ndslice.slice: sliced;
+    import mir.ndslice.dynamic: transposed;
+    import mir.math.common: approxEqual;
+    import std.meta: AliasSeq;
+
+    static foreach (F; AliasSeq!(float, double, real))
+    {{
+        enum long base = 1L << 60;
+        const(long)[3] nearby = [base - 1, base, base + 1];
+        auto view = nearby[].sliced.scale(base, F(2));
+        static assert(is(typeof(view[0]) == F));
+        assert(view[0] == F(-0.5));
+        assert(view[1] == 0);
+        assert(view[2] == F(0.5));
+
+        long[2] extremes = [long.min, long.max];
+        assert(extremes[].scale(long.min, F(2))[1] == cast(F) ulong.max / F(2));
+        assert(extremes[].scale(long.max, F(2))[0] == -cast(F) ulong.max / F(2));
+        ulong[2] unsignedValues = [ulong.max - 1, ulong.max];
+        assert(unsignedValues[].scale(ulong.max, F(2))[0] == F(-0.5));
+
+        // Mixed signedness includes negative centers, negative observations,
+        // positive operands, and distances that require more than 64 bits.
+        ulong[3] unsignedMixed = [0, 7, ulong.max];
+        auto positive = unsignedMixed[].scale(-1L, F(2));
+        assert(positive[0] == F(0.5));
+        assert(positive[1] == F(4));
+        assert(positive[2] == F(0x1p63));
+        long[3] signedMixed = [-1, 0, 7];
+        auto negative = signedMixed[].scale(ulong.max, F(2));
+        assert(negative[0] == -F(0x1p63));
+        assert(negative[1] == -cast(F) ulong.max / F(2));
+        assert(unsignedMixed[].scale(7L, F(2))[0] == F(-3.5));
+        assert(signedMixed[].scale(3UL, F(2))[2] == F(2));
+        assert(signedMixed[].scale(3UL, F(2))[0] == F(-2));
+        ulong[1] mixedNearby = [cast(ulong) base + 1];
+        assert(mixedNearby[].scale(base, F(2))[0] == F(0.5));
+        assert(nearby[].scale(cast(ulong) base, F(2))[0] == F(-0.5));
+        assert(unsignedMixed[].scale(long.min, F(2))[2].approxEqual(F(0x1.8p63)));
+        assert(extremes[].scale(ulong.max, F(2))[0].approxEqual(-F(0x1.8p63)));
+
+        int[2] small = [int.min, int.max];
+        assert(small[].scale(int.min, F(1))[1] == cast(F) uint.max);
+        assert(small[].scale(0L, F(2))[0] == F(int.min) / 2);
+        assert(small[].scale(1U, F(2))[0] == -(F(0x1p31) + 1) / 2);
+    }}
+
+    long[6] input = [0, 1, 2, 3, 4, 5];
+    auto matrix = input[].sliced(2, 3).transposed;
+    auto result = matrix.scale(2L, 2.0);
+    assert(result.shape == matrix.shape);
+    assert(result[2, 1] == 1.5);
+    input[5] = 7;
+    assert(result[2, 1] == 2.5); // The returned view still reads the input lazily.
+
+    int[2] integers = [1, 5];
+    auto integerResult = integers[].scale(1, 2);
+    static assert(is(typeof(integerResult[0]) == int));
+    assert(integerResult[1] == 2);
+    auto floatingCenter = integers[].scale(0.5, 2.0);
+    assert(floatingCenter[0] == 0.25);
 }
 
 /// Scale vector
@@ -921,12 +1178,109 @@ unittest
     assert(x.zscore(true).all!approxEqual(result2));
 }
 
+// Own only scalar summary values; the returned view must not borrow the
+// temporary quantile workspace. Unsigned magnitudes also cover differences
+// spanning the entire signed integer range without overflowing subtraction.
+private struct IntegralRobustScale(T, F)
+{
+    T anchor;
+    F half, divisor;
+
+    F opCall(T value) const @safe pure nothrow @nogc
+    {
+        const negative = value < anchor;
+        const ulong distance = negative ?
+            cast(ulong) anchor - cast(ulong) value :
+            cast(ulong) value - cast(ulong) anchor;
+        const F centered = negative ? -(cast(F) distance + half) :
+            cast(F) distance - half;
+        return centered / divisor;
+    }
+}
+
+// Integral translations must not change robust scaling, even when floating
+// conversion would make all observations equal. Compare every quantile rule
+// with the same small, exactly representable floating-point observations.
+version(mir_stat_test)
+@safe pure nothrow @nogc unittest
+{
+    import mir.ndslice.slice: sliced;
+    import mir.math.common: approxEqual;
+    import std.meta: AliasSeq;
+    enum long base = 1L << 60;
+    long[6] shifted = [base + 5, base, base + 4, base + 1, base + 3, base + 2];
+    double[6] small = [5, 0, 4, 1, 3, 2];
+    static foreach (F; AliasSeq!(float, double, real))
+    static foreach (algorithm; AliasSeq!(QuantileAlgo.type1, QuantileAlgo.type2,
+        QuantileAlgo.type3, QuantileAlgo.type4, QuantileAlgo.type5,
+        QuantileAlgo.type6, QuantileAlgo.type7, QuantileAlgo.type8, QuantileAlgo.type9))
+    {{
+        auto result = shifted[].sliced.robustScale!(F, algorithm);
+        auto expected = small[].sliced.robustScale!(F, algorithm);
+        foreach (i; 0 .. shifted.length)
+            assert(approxEqual(result[i], expected[i]));
+    }}
+    assert(shifted == [base + 5, base, base + 4, base + 1, base + 3, base + 2]);
+}
+
+// Preserve signed/unsigned endpoint differences, half-integer medians, shape,
+// and lazy reads without retaining references to the selection workspace.
+version(mir_stat_test)
+@safe pure nothrow @nogc unittest
+{
+    import mir.ndslice.slice: sliced;
+    import mir.ndslice.dynamic: transposed;
+    enum long base = 1L << 60;
+    long[5] values = [base, base + 1, base + 2, base + 3, base + 4];
+    auto view = values[].sliced.robustScale;
+    assert(view[0] == -1 && view[4] == 1);
+    values[0] = base + 1;
+    assert(view[0] == -0.5);
+    assert(view.lightConst[0] == -0.5);
+
+    const ulong[5] upper = [ulong.max - 4, ulong.max - 3, ulong.max - 2, ulong.max - 1, ulong.max];
+    auto upperView = upper[].sliced.robustScale;
+    assert(upperView[0] == -1 && upperView[2] == 0 && upperView[4] == 1);
+
+    long[5] full = [long.min, -1, 0, 1, long.max];
+    auto fullView = full[].sliced.robustScale!(long, "type1")(0.1);
+    assert(fullView[0] == -0.5 && fullView[2] == 0 && fullView[4] == 0.5);
+    long[2] endpoints = [long.min, long.max];
+    auto midpointView = endpoints[].sliced.robustScale;
+    endpoints[0] = 0;
+    // The saved median is -0.5, not zero, even when real equals double.
+    assert(midpointView[0] == 0x1p-64);
+
+    long[4] matrix = [base, base + 1, base + 2, base + 3];
+    auto transposedView = matrix[].sliced(2, 2).transposed.robustScale;
+    assert(transposedView.shape == [2, 2]);
+    assert(transposedView[0, 0] == -1 && transposedView[1, 1] == 1);
+    assert(transposedView[0, 1] == 1.0 / 3 && transposedView[1, 0] == -1.0 / 3);
+
+    long[5] unordered = [base + 4, base + 1, base, base + 3, base + 2];
+    auto reordered = unordered[].sliced.robustScale!true;
+    foreach (i; 0 .. unordered.length)
+        assert(reordered[i] == (cast(double)(unordered[i] - base) - 2) / 2);
+}
+
 /++
 Scales input using robust statistics.
 
 This function centers the input using the `median` and then `scale`s the data
 according to the quantile range defined by (`low_quartile`, 1 - `low_quartile`).
 By default, it uses the interquartile range, whereby `low_quartile` equals 0.25.
+
+For integral observations, the median and quantile spread retain small
+differences even when the observations share a large offset. Conversion to the
+floating-point result type happens after removing the integer median anchor.
+The returned view remains lazy: its median and spread are fixed when the
+function is called, while subsequent changes to the input are reflected in
+the transformed elements.
+
+For floating-point observations, the distance between two finite quantiles can
+exceed the range of their type. In that case, the view uses half the quantile
+distance and half the centered observation, preserving their ratio without
+forming the overflowing distance.
 
 Params:
     F = controls type of output
@@ -944,6 +1298,7 @@ template robustScale(F,
                      QuantileAlgo quantileAlgo = QuantileAlgo.type7, 
                      bool allowModifySlice = false)
 {
+    import mir.stat.descriptive.univariate: meanType;
     /++
     Params:
         slice = slice
@@ -971,19 +1326,76 @@ template robustScale(F,
             auto temp = slice.flattened;
         }
 
-        quantileType!(F, quantileAlgo) low_quartile_value = temp.rcquantile!(F, quantileAlgo, allowModifySlice)(low_quartile);
-        meanType!F median_value = temp.median!(F, allowModifySlice);
-        quantileType!(F, quantileAlgo) high_quartile_value = temp.rcquantile!(F, quantileAlgo, allowModifySlice)(cast(F) 1 - low_quartile);
+        import std.traits: isIntegral, isFloatingPoint, Unqual;
+        static if (isIntegral!(slice.DeepElement) && isFloatingPoint!(meanType!F))
+        {
+            import mir.ndslice.topology: vmap;
+            import mir.stat.descriptive.univariate: selectQuantile, quantileSpread;
+            alias Element = Unqual!(slice.DeepElement);
+            alias Result = meanType!F;
 
-        static if (allowModifySlice) {
-            return scale(temp, median_value, cast(meanType!F) (high_quartile_value - low_quartile_value));
-        } else {
-            return scale(slice, median_value, cast(meanType!F) (high_quartile_value - low_quartile_value));
+            // Both selections may reuse the workspace: it is either our copy
+            // or caller storage that we have permission to rearrange.
+            const spread = quantileSpread!(Result, quantileAlgo, true)(
+                temp, low_quartile, 1 - low_quartile);
+            assert(spread > 0, "scale: cannot divide by zero");
+            // Select the median last: partition order affects the cost of
+            // repeated selections in this shared workspace.
+            const middle = selectQuantile!(QuantileAlgo.type7)(temp, 0.5);
+
+            // An integer sample's median is an integer or half-integer.
+            // Split its midpoint without adding signed endpoints or rounding
+            // the large common offset through floating point.
+            const ulong gap = cast(ulong) middle.high - cast(ulong) middle.low;
+            IntegralRobustScale!(Element, Result) operation;
+            operation.anchor = middle.fraction == 0 ? middle.low :
+                cast(Element)(cast(ulong) middle.low + gap / 2);
+            operation.half = middle.fraction == 0 ? Result(0) : Result(gap & 1) / 2;
+            operation.divisor = spread;
+            static if (allowModifySlice) return temp.vmap(operation);
+            else return slice.vmap(operation);
+        }
+        else
+        {
+            quantileType!(F, quantileAlgo) low_quartile_value = temp.rcquantile!(F, quantileAlgo, allowModifySlice)(low_quartile);
+            meanType!F median_value = temp.median!(F, allowModifySlice);
+            quantileType!(F, quantileAlgo) high_quartile_value = temp.rcquantile!(F, quantileAlgo, allowModifySlice)(cast(F) 1 - low_quartile);
+
+            static if (isFloatingPoint!(slice.DeepElement) &&
+                       isFloatingPoint!(typeof(low_quartile_value)) &&
+                       isFloatingPoint!(typeof(median_value)))
+            {
+                import std.math: isFinite;
+                import mir.ndslice.topology: vmap;
+                const spread = high_quartile_value - low_quartile_value;
+                if (!isFinite(spread) && isFinite(low_quartile_value) &&
+                    isFinite(high_quartile_value))
+                {
+                    // The quantiles are finite, but their distance is too
+                    // large. Store half the distance and halve the numerator
+                    // too, so the ratio never needs the overflowing spread.
+                    // This decision only affects construction of the view.
+                    alias Difference = typeof(slice.DeepElement.init - median_value);
+                    alias Result = typeof(Difference.init / (meanType!F).init);
+                    FloatingScale!(Difference, Result) operation;
+                    operation.factor = 0.5;
+                    operation.center = cast(Difference) median_value * cast(Difference) 0.5;
+                    operation.divisor = high_quartile_value / 2 - low_quartile_value / 2;
+                    static if (allowModifySlice) return temp.vmap(operation);
+                    else return slice.vmap(operation);
+                }
+            }
+
+            static if (allowModifySlice) {
+                return scale(temp, median_value, cast(meanType!F) (high_quartile_value - low_quartile_value));
+            } else {
+                return scale(slice, median_value, cast(meanType!F) (high_quartile_value - low_quartile_value));
+            }
         }
     }
 
     /// ditto
-    @fmamath auto robustScale(SliceLike)(SliceLike x, F low_quartile = cast(F) 0.25)
+    @fmamath auto robustScale(SliceLike)(SliceLike x, meanType!F low_quartile = 0.25)
         if (isConvertibleToSlice!SliceLike && !isSlice!SliceLike)
     {
         import mir.ndslice.slice: toSlice;
@@ -1041,6 +1453,64 @@ template robustScale(string quantileAlgo, bool allowModifySlice = false)
 template robustScale(bool allowModifySlice)
 {
     mixin("alias robustScale = .robustScale!(QuantileAlgo.type7, allowModifySlice);");
+}
+
+// Normalize finite quantile endpoints before their difference overflows.
+version(mir_stat_test)
+@safe pure nothrow @nogc unittest
+{
+    import std.meta: AliasSeq;
+    import mir.math.common: approxEqual;
+    import mir.ndslice.slice: sliced;
+    import mir.ndslice.dynamic: transposed;
+
+    static foreach (F; AliasSeq!(float, double, real))
+    {{
+        F[4] input = [-F.max, -F.max, F.max, F.max];
+        auto view = input[].robustScale;
+        assert(view[0] == -0.5 && view[3] == 0.5);
+        auto matrix = input[].sliced(2, 2).transposed.robustScale;
+        assert(matrix.shape == [2, 2]);
+        assert(matrix[0, 1] == 0.5);
+        input[0] = F.max / 2;
+        assert(view[0] == 0.25);
+
+        F[4] asymmetric = [-F.max, -F.max, 0, F.max];
+        auto centered = asymmetric[].robustScale;
+        assert(approxEqual(centered[0], F(-0.4)));
+        assert(approxEqual(centered[3], F(1.2)));
+        F[4] reorder = [F.max, -F.max, F.max, -F.max];
+        auto modified = reorder[].robustScale!true;
+        foreach (i; 0 .. reorder.length)
+            assert(modified[i] == (reorder[i] < 0 ? F(-0.5) : F(0.5)));
+
+        const F[4] finiteSpread = [-F.max / 2, -F.max / 2, F.max / 2, F.max / 2];
+        auto ordinary = finiteSpread[].robustScale;
+        assert(ordinary[0] == -0.5 && ordinary[3] == 0.5);
+    }}
+    // Preserve the existing wider arithmetic result for narrower summaries.
+    double[4] wide = [-float.max, -float.max, float.max, float.max];
+    auto narrowSummary = wide[].robustScale!float;
+    static assert(is(typeof(narrowSummary[0]) == double));
+    assert(narrowSummary[0] == -0.5 && narrowSummary[3] == 0.5);
+}
+
+// The probability argument stays floating point even with an integral F.
+version(mir_stat_test)
+@safe pure nothrow @nogc unittest
+{
+    import mir.ndslice.slice: sliced;
+    import mir.rc.array: RCArray;
+    const long[5] values = [0, 1, 2, 3, 4];
+    auto arrayView = values[].robustScale!long;
+    auto sliceView = values[].sliced.robustScale!long;
+    assert(arrayView[0] == -1 && arrayView[4] == 1);
+    assert(arrayView[0] == sliceView[0]);
+    assert(values[].robustScale!(long, "type1")(0.1)[0] == -0.5);
+    auto owned = RCArray!long(5);
+    foreach (i; 0 .. values.length)
+        owned[i] = values[i];
+    assert(owned.robustScale!long[0] == -1);
 }
 
 /// robustScale vector
