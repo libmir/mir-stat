@@ -84,7 +84,15 @@ T generalizedParetoPDF(T)(const T x, const T mu, const T sigma, const T xi)
         }
         return exp(-(1 + xi) * log1pScaled(z, xi)) / sigma;
     } else {
-        return exp(-z) / sigma;
+        const T decay = exp(-z);
+        if (decay < T.min_normal && sigma < 1)
+        {
+            // Scale before forming the small density. Quarter-exponentials
+            // retain precision even when sigma is the smallest subnormal.
+            const T quarterDecay = exp(-z / 4);
+            return ((quarterDecay / sigma) * quarterDecay) * quarterDecay * quarterDecay;
+        }
+        return decay / sigma;
     }
 }
 
@@ -110,6 +118,77 @@ unittest
     assert(generalizedParetoPDF(4.0, 0.0, 2.0, -0.5) == 0.0);
     assert(generalizedParetoPDF(2.0, 0.0, 2.0, -1.0) == 0.5);
     assert(generalizedParetoPDF(1.0, 0.0, 2.0, -2.0) == double.infinity);
+}
+
+// The zero-shape exponential limit must retain scaled tail densities.
+version(mir_stat_test)
+@safe pure nothrow @nogc
+unittest
+{
+    import std.meta: AliasSeq;
+    import std.math: ldexp;
+    import mir.math.common: fabs;
+
+    static foreach (T; AliasSeq!(float, double, real))
+    {{
+        // Independent 90-digit references at exact binary inputs.
+        static if (T.max_exp == 128)
+        {
+            enum T exponent = 120;
+            enum T tinyExponent = 191;
+            enum T tinyExpected = 8.00245628516475785138969687948202631e-39L;
+            enum T expected = 6.52291358810724124141821303035571164e-15L;
+            enum T smallExponent = 90;
+            enum T smallExpected = 1.63880252479810308607222164267638868e-39L;
+        }
+        else static if (T.max_exp == 1024)
+        {
+            enum T exponent = 800;
+            enum T tinyExponent = 1450;
+            enum T tinyExpected = 3.79504197181520648721376487356687376e-307L;
+            enum T expected = 1.64842823987804998528024178106714402e-40L;
+            enum T smallExponent = 710;
+            enum T smallExpected = 8.95257245135025991216632140458264468e-309L;
+        }
+        else static if (T.max_exp == 16384)
+        {
+            enum T exponent = 11420;
+            enum T tinyExponent = 22750;
+            // The reference uses a 64-bit significand; adjust for the
+            // smaller minimum subnormal of wider formats.
+            const T tinyExpected = ldexp(T(1.73306716928370349897078093711548328e-4930L),
+                T.mant_dig - 64);
+            enum T expected = 6.76714733679691181158578826955688255e-29L;
+            enum T smallExponent = 11358;
+            enum T smallExpected = 3.83976405302577104196109564353492666e-4933L;
+        }
+        const T scale = ldexp(T(1), 2 - T.max_exp);
+        const T tolerance = T.mant_dig > 53 ? 2 * T.epsilon * exponent : 4 * T.epsilon;
+        const T actual = generalizedParetoPDF(exponent * scale, T(0), scale, T(0));
+        assert(actual > 0);
+        assert(fabs(actual / expected - 1) < tolerance);
+        const T smallActual = generalizedParetoPDF(smallExponent / 2, T(0), T(0.5), T(0));
+        assert(fabs(smallActual - smallExpected) <=
+            tolerance * smallExpected + 2 * T.min_normal * T.epsilon);
+        const T tinyScale = T.min_normal * T.epsilon;
+        const T tinyActual = generalizedParetoPDF(tinyExponent * tinyScale, T(0), tinyScale, T(0));
+        assert(tinyActual > 0);
+        assert(fabs(tinyActual / tinyExpected - 1) < 2 * tolerance);
+        // A nonzero location with exact subtraction retains the same density.
+        assert(generalizedParetoPDF(T(0), -exponent * scale, scale, T(0)) == actual);
+        assert(generalizedParetoPDF(T(0), T(0), scale, T(0)) == 1 / scale);
+        assert(generalizedParetoPDF(T.infinity, T(0), scale, T(0)) == 0);
+    }}
+
+    // Probe the underflowing primitive, leaving PDF regressions visible.
+    static if (__traits(compiles, {
+        import mir.math.common: exp;
+        enum double probe = exp(-800.0);
+    }))
+    {
+        enum double density = generalizedParetoPDF(800 * 1e-300, 0.0, 1e-300, 0.0);
+        static assert(fabs(density / 3.667874584177395251e-48 - 1) < 2e-13);
+    }
 }
 
 /++
