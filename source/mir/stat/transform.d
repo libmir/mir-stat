@@ -921,12 +921,104 @@ unittest
     assert(x.zscore(true).all!approxEqual(result2));
 }
 
+// Own only scalar summary values; the returned view must not borrow the
+// temporary quantile workspace. Unsigned magnitudes also cover differences
+// spanning the entire signed integer range without overflowing subtraction.
+private struct IntegralRobustScale(T, F)
+{
+    T anchor;
+    F half, divisor;
+
+    F opCall(T value) const @safe pure nothrow @nogc
+    {
+        const negative = value < anchor;
+        const ulong distance = negative ?
+            cast(ulong) anchor - cast(ulong) value :
+            cast(ulong) value - cast(ulong) anchor;
+        const F centered = negative ? -(cast(F) distance + half) :
+            cast(F) distance - half;
+        return centered / divisor;
+    }
+}
+
+// Integral translations must not change robust scaling, even when floating
+// conversion would make all observations equal. Compare every quantile rule
+// with the same small, exactly representable floating-point observations.
+version(mir_stat_test)
+@safe pure nothrow @nogc unittest
+{
+    import mir.ndslice.slice: sliced;
+    import mir.math.common: approxEqual;
+    import std.meta: AliasSeq;
+    enum long base = 1L << 60;
+    long[6] shifted = [base + 5, base, base + 4, base + 1, base + 3, base + 2];
+    double[6] small = [5, 0, 4, 1, 3, 2];
+    static foreach (F; AliasSeq!(float, double, real))
+    static foreach (algorithm; AliasSeq!(QuantileAlgo.type1, QuantileAlgo.type2,
+        QuantileAlgo.type3, QuantileAlgo.type4, QuantileAlgo.type5,
+        QuantileAlgo.type6, QuantileAlgo.type7, QuantileAlgo.type8, QuantileAlgo.type9))
+    {{
+        auto result = shifted[].sliced.robustScale!(F, algorithm);
+        auto expected = small[].sliced.robustScale!(F, algorithm);
+        foreach (i; 0 .. shifted.length)
+            assert(approxEqual(result[i], expected[i]));
+    }}
+    assert(shifted == [base + 5, base, base + 4, base + 1, base + 3, base + 2]);
+}
+
+// Preserve signed/unsigned endpoint differences, half-integer medians, shape,
+// and lazy reads without retaining references to the selection workspace.
+version(mir_stat_test)
+@safe pure nothrow @nogc unittest
+{
+    import mir.ndslice.slice: sliced;
+    import mir.ndslice.dynamic: transposed;
+    enum long base = 1L << 60;
+    long[5] values = [base, base + 1, base + 2, base + 3, base + 4];
+    auto view = values[].sliced.robustScale;
+    assert(view[0] == -1 && view[4] == 1);
+    values[0] = base + 1;
+    assert(view[0] == -0.5);
+    assert(view.lightConst[0] == -0.5);
+
+    const ulong[5] upper = [ulong.max - 4, ulong.max - 3, ulong.max - 2, ulong.max - 1, ulong.max];
+    auto upperView = upper[].sliced.robustScale;
+    assert(upperView[0] == -1 && upperView[2] == 0 && upperView[4] == 1);
+
+    long[5] full = [long.min, -1, 0, 1, long.max];
+    auto fullView = full[].sliced.robustScale!(long, "type1")(0.1);
+    assert(fullView[0] == -0.5 && fullView[2] == 0 && fullView[4] == 0.5);
+    long[2] endpoints = [long.min, long.max];
+    auto midpointView = endpoints[].sliced.robustScale;
+    endpoints[0] = 0;
+    // The saved median is -0.5, not zero, even when real equals double.
+    assert(midpointView[0] == 0x1p-64);
+
+    long[4] matrix = [base, base + 1, base + 2, base + 3];
+    auto transposedView = matrix[].sliced(2, 2).transposed.robustScale;
+    assert(transposedView.shape == [2, 2]);
+    assert(transposedView[0, 0] == -1 && transposedView[1, 1] == 1);
+    assert(transposedView[0, 1] == 1.0 / 3 && transposedView[1, 0] == -1.0 / 3);
+
+    long[5] unordered = [base + 4, base + 1, base, base + 3, base + 2];
+    auto reordered = unordered[].sliced.robustScale!true;
+    foreach (i; 0 .. unordered.length)
+        assert(reordered[i] == (cast(double)(unordered[i] - base) - 2) / 2);
+}
+
 /++
 Scales input using robust statistics.
 
 This function centers the input using the `median` and then `scale`s the data
 according to the quantile range defined by (`low_quartile`, 1 - `low_quartile`).
 By default, it uses the interquartile range, whereby `low_quartile` equals 0.25.
+
+For integral observations, the median and quantile spread retain small
+differences even when the observations share a large offset. Conversion to the
+floating-point result type happens after removing the integer median anchor.
+The returned view remains lazy: its median and spread are fixed when the
+function is called, while subsequent changes to the input are reflected in
+the transformed elements.
 
 Params:
     F = controls type of output
@@ -971,14 +1063,46 @@ template robustScale(F,
             auto temp = slice.flattened;
         }
 
-        quantileType!(F, quantileAlgo) low_quartile_value = temp.rcquantile!(F, quantileAlgo, allowModifySlice)(low_quartile);
-        meanType!F median_value = temp.median!(F, allowModifySlice);
-        quantileType!(F, quantileAlgo) high_quartile_value = temp.rcquantile!(F, quantileAlgo, allowModifySlice)(cast(F) 1 - low_quartile);
+        import std.traits: isIntegral, isFloatingPoint, Unqual;
+        static if (isIntegral!(slice.DeepElement) && isFloatingPoint!(meanType!F))
+        {
+            import mir.ndslice.topology: vmap;
+            import mir.stat.descriptive.univariate: selectQuantile, quantileSpread;
+            alias Element = Unqual!(slice.DeepElement);
+            alias Result = meanType!F;
 
-        static if (allowModifySlice) {
-            return scale(temp, median_value, cast(meanType!F) (high_quartile_value - low_quartile_value));
-        } else {
-            return scale(slice, median_value, cast(meanType!F) (high_quartile_value - low_quartile_value));
+            // Both selections may reuse the workspace: it is either our copy
+            // or caller storage that we have permission to rearrange.
+            const spread = quantileSpread!(Result, quantileAlgo, true)(
+                temp, low_quartile, 1 - low_quartile);
+            assert(spread > 0, "scale: cannot divide by zero");
+            // Select the median last: partition order affects the cost of
+            // repeated selections in this shared workspace.
+            const middle = selectQuantile!(QuantileAlgo.type7)(temp, 0.5);
+
+            // An integer sample's median is an integer or half-integer.
+            // Split its midpoint without adding signed endpoints or rounding
+            // the large common offset through floating point.
+            const ulong gap = cast(ulong) middle.high - cast(ulong) middle.low;
+            IntegralRobustScale!(Element, Result) operation;
+            operation.anchor = middle.fraction == 0 ? middle.low :
+                cast(Element)(cast(ulong) middle.low + gap / 2);
+            operation.half = middle.fraction == 0 ? Result(0) : Result(gap & 1) / 2;
+            operation.divisor = spread;
+            static if (allowModifySlice) return temp.vmap(operation);
+            else return slice.vmap(operation);
+        }
+        else
+        {
+            quantileType!(F, quantileAlgo) low_quartile_value = temp.rcquantile!(F, quantileAlgo, allowModifySlice)(low_quartile);
+            meanType!F median_value = temp.median!(F, allowModifySlice);
+            quantileType!(F, quantileAlgo) high_quartile_value = temp.rcquantile!(F, quantileAlgo, allowModifySlice)(cast(F) 1 - low_quartile);
+
+            static if (allowModifySlice) {
+                return scale(temp, median_value, cast(meanType!F) (high_quartile_value - low_quartile_value));
+            } else {
+                return scale(slice, median_value, cast(meanType!F) (high_quartile_value - low_quartile_value));
+            }
         }
     }
 
