@@ -561,6 +561,13 @@ subtraction. Mixed signed and unsigned values are compared by their numerical
 values. Distances exceeding `ulong.max` are formed from floating-point magnitudes
 and may incur additional rounding.
 
+For floating-point subtraction, a very large finite center can make the
+subtraction overflow even when division would bring the result back into range.
+In that case, this function prepares a lazy view that halves the observation,
+center, and divisor before evaluating the ratio. Ordinary inputs use a multiplier
+of one. The decision is made once when the view is created, and the divisor is
+only halved when doing so keeps it normal (or infinite).
+
 Params:
     slice = slice
     m = value to subtract from slice
@@ -584,6 +591,17 @@ Params:
         operation.divisor = d;
         return slice.move.vmap(operation);
     }
+    else static if ((isFloatingPoint!(slice.DeepElement) || isIntegral!(slice.DeepElement)) &&
+                    (isFloatingPoint!T || isIntegral!T) &&
+                    (isFloatingPoint!U || isIntegral!U) &&
+                    (isFloatingPoint!(slice.DeepElement) || isFloatingPoint!T))
+    {
+        alias Difference = typeof(slice.DeepElement.init - T.init);
+        alias Result = typeof(Difference.init / U.init);
+        FloatingScale!(Difference, Result) operation;
+        operation.prepare(m, d);
+        return slice.move.vmap(operation);
+    }
     else
         return slice.move.sweep!"-"(m).sweep!"/"(d);
 }
@@ -594,6 +612,37 @@ Params:
 {
     import mir.ndslice.slice: toSlice;
     return scale(x.toSlice, m, d);
+}
+
+// Normalize once instead of branching on overflow at every element. The center
+// cutoff lies just below half an ULP at F.max: smaller centers cannot make a
+// finite observation overflow on subtraction under round-to-nearest arithmetic.
+private struct FloatingScale(F, R)
+{
+    F center;
+    R divisor;
+    // Both possible factors are exact in double. Using it for real avoids an
+    // extended-precision field/load, without changing the arithmetic type.
+    static if (is(F == real))
+        double factor;
+    else
+        F factor;
+
+    void prepare(F m, R d) @safe pure nothrow @nogc
+    {
+        import std.math: abs, isFinite;
+        // Halving must not round a subnormal divisor or erase it. This also
+        // permits a divisor <= 1 when R is wider than the subtraction type.
+        factor = isFinite(m) && abs(m) > F.max * (F.epsilon / 4) &&
+            d >= R.min_normal * 2 ? 0.5f : 1.0f;
+        center = m * factor;
+        divisor = d * factor;
+    }
+
+    R opCall(E)(E value) const @safe pure nothrow @nogc
+    {
+        return (cast(F) value * factor - center) / divisor;
+    }
 }
 
 // Own the supplied scalars, keeping the transformation lazy and allocation-free.
@@ -642,6 +691,82 @@ private struct IntegralScale(T, F)
             -cast(F)(cast(ulong) center - cast(ulong) value) / divisor :
             cast(F)(cast(ulong) value - cast(ulong) center) / divisor;
     }
+}
+
+// Protect subtraction before division, including exceptional values and the
+// threshold where a finite subtraction first becomes capable of overflowing.
+version(mir_stat_test)
+@safe pure nothrow @nogc unittest
+{
+    import std.meta: AliasSeq;
+    import std.math: isNaN, nextUp, nextDown;
+    import mir.ndslice.slice: sliced;
+    import mir.ndslice.dynamic: transposed;
+
+    static foreach (F; AliasSeq!(float, double, real))
+    {{
+        F[4] input = [F.max, -F.max, 0, F.max / 2];
+        auto view = input[].scale(-F.max, F.max);
+        static assert(is(typeof(view[0]) == F));
+        assert(view[0] == 2);
+        assert(view[1] == 0);
+        assert(view[2] == 1);
+        assert(view[3] == F(1.5));
+        assert(input[].scale(F.max, F.max)[1] == -2);
+        assert(input[].scale(-F.max, F(0.5))[0] == F.infinity);
+
+        // An infinite divisor must produce zero for finite inputs, even when
+        // the original subtraction would produce infinity / infinity.
+        auto zero = input[].scale(-F.max, F.infinity);
+        assert(zero[0] == 0);
+        F[3] exceptional = [F.infinity, -F.infinity, F.nan];
+        auto special = exceptional[].scale(-F.max, F.max);
+        assert(special[0] == F.infinity);
+        assert(special[1] == -F.infinity);
+        assert(special[2].isNaN);
+        assert(exceptional[].scale(F.infinity, F(2))[0].isNaN);
+        assert(input[].scale(F.nan, F(2))[0].isNaN);
+
+        const F cutoff = F.max * (F.epsilon / 4);
+        assert(input[].scale(-cutoff, F.max)[0] == 1);
+        assert(input[].scale(-nextUp(cutoff), F.max)[0] == nextUp(F(1)));
+        assert(input[].scale(F.max, F.max)[3] == F(-0.5));
+
+        // Halving a tiny divisor would underflow or round it. Preserve the
+        // unscaled calculation, including exact cancellation at the center.
+        const F tiny = F.min_normal * F.epsilon;
+        assert(input[].scale(F.max, tiny)[0] == 0);
+        F[2] small = [tiny, -tiny];
+        auto ordinary = small[].scale(F(0), F(1));
+        assert(ordinary[0] == tiny && ordinary[1] == -tiny);
+        assert(input[].scale(F.max, F.min_normal)[0] == 0);
+        assert(input[].scale(F.max, F.min_normal * 2)[0] == 0);
+
+        F[2] close = [F.max, nextDown(F.max)];
+        auto centered = close[].scale(F.max, F.max);
+        assert(centered[1] == (nextDown(F.max) - F.max) / F.max);
+        auto matrix = input[].sliced(2, 2).transposed.scale(-F.max, F.max);
+        assert(matrix[1, 1] == F(1.5));
+        input[3] = F.max;
+        assert(matrix[1, 1] == 2);
+    }}
+
+    // A wider divisor/result can make the ratio finite even for divisors <= 1.
+    const(float)[1] narrow = [float.max];
+    auto wider = narrow[].scale(-float.max, 1.0);
+    static assert(is(typeof(wider[0]) == double));
+    assert(wider[0] == 2.0 * float.max);
+    assert(narrow[].scale(-float.max, 0.5)[0] == 4.0 * float.max);
+    assert(narrow[].scale(-float.max, 1e-100)[0] == (2.0 * float.max) / 1e-100);
+    auto integralDivisor = narrow[].scale(-float.max, 2);
+    static assert(is(typeof(integralDivisor[0]) == float));
+    assert(integralDivisor[0] == float.max);
+    int[2] integers = [1, 5];
+    assert(integers[].scale(0.5, 2.0)[1] == 2.25);
+    float[1] ordinaryInput = [1];
+    auto widerCenter = ordinaryInput[].scale(0.5, 2.0f);
+    static assert(is(typeof(widerCenter[0]) == double));
+    assert(widerCenter[0] == 0.25);
 }
 
 // Explicit integral centers preserve offsets without overflowing subtraction.
