@@ -199,7 +199,7 @@ unittest
 
     auto xCenterAlongDim = x.alongDim!0.map!center;
     auto resultAlongDim = result.alongDim!0;
-    assert(xCenterByDim.equal!(equal!approxEqual)(resultAlongDim));
+    assert(xCenterAlongDim.equal!(equal!approxEqual)(resultAlongDim));
 }
 
 /// Can also pass arguments to average function used by center
@@ -512,7 +512,7 @@ is equivalent to `center` when passing `d = 1`.
 
 Params:
     centralTendency = function used to center input, default is `mean`
-    dispersion = function used as divisor, default is `dispersion`
+    dispersion = function used as divisor, default is `standardDeviation`
 Returns:
     The scaled result
 See_also:
@@ -1298,6 +1298,7 @@ template robustScale(F,
                      QuantileAlgo quantileAlgo = QuantileAlgo.type7, 
                      bool allowModifySlice = false)
 {
+    import mir.stat.descriptive.univariate: meanType;
     /++
     Params:
         slice = slice
@@ -1394,7 +1395,7 @@ template robustScale(F,
     }
 
     /// ditto
-    @fmamath auto robustScale(SliceLike)(SliceLike x, F low_quartile = cast(F) 0.25)
+    @fmamath auto robustScale(SliceLike)(SliceLike x, meanType!F low_quartile = 0.25)
         if (isConvertibleToSlice!SliceLike && !isSlice!SliceLike)
     {
         import mir.ndslice.slice: toSlice;
@@ -1492,6 +1493,24 @@ version(mir_stat_test)
     auto narrowSummary = wide[].robustScale!float;
     static assert(is(typeof(narrowSummary[0]) == double));
     assert(narrowSummary[0] == -0.5 && narrowSummary[3] == 0.5);
+}
+
+// The probability argument stays floating point even with an integral F.
+version(mir_stat_test)
+@safe pure nothrow @nogc unittest
+{
+    import mir.ndslice.slice: sliced;
+    import mir.rc.array: RCArray;
+    const long[5] values = [0, 1, 2, 3, 4];
+    auto arrayView = values[].robustScale!long;
+    auto sliceView = values[].sliced.robustScale!long;
+    assert(arrayView[0] == -1 && arrayView[4] == 1);
+    assert(arrayView[0] == sliceView[0]);
+    assert(values[].robustScale!(long, "type1")(0.1)[0] == -0.5);
+    auto owned = RCArray!long(5);
+    foreach (i; 0 .. values.length)
+        owned[i] = values[i];
+    assert(owned.robustScale!long[0] == -1);
 }
 
 /// robustScale vector
