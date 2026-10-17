@@ -440,7 +440,13 @@ package(mir) BenchmarkTiming benchmarkWithGCStatistics(F)(size_t iterations,
         before = GC.profileStats();
         timer.reset();
         timer.start();
-        GC.collect();
+        static if (__traits(compiles, () @safe { GC.collect(); }))
+            GC.collect();
+        else
+        {
+            // Older runtimes omit the @safe annotation added in DMD PR #15493.
+            () @trusted { GC.collect(); }();
+        }
         timer.stop();
         after = GC.profileStats();
         result.finalCollection = BenchmarkPhase(timer.peek(),
@@ -455,6 +461,12 @@ version (mir_stat_test)
 unittest
 {
     import std.exception: assertThrown;
+
+    // Trusting the runtime collection call must not trust the user's callback.
+    static void unsafeOperation() @system {}
+    static assert(!__traits(compiles, () @safe {
+        benchmarkWithGCStatistics(1, &unsafeOperation, true);
+    }));
 
     size_t calls;
     auto timing = benchmarkWithGCStatistics(3, () { ++calls; });

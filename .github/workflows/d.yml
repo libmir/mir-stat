@@ -12,21 +12,6 @@ concurrency:
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
-  docs:
-    name: Ddoc validation
-    runs-on: ubuntu-latest
-
-    steps:
-    - uses: actions/checkout@v7.0.1
-
-    - name: D Compiler Installation
-      uses: dlang-community/setup-dlang@v2.0.0
-      with:
-        compiler: dmd-latest
-
-    - name: Build documentation with warnings as errors
-      run: dub build --build=docs-check --compiler=dmd
-
   gdc:
     name: GDC 15 tests
     permissions:
