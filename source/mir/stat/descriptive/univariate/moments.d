@@ -1060,7 +1060,7 @@ enum StandardizedMomentAlgo
     /// Calculates n-th standardized moment as E(((x - u) / sigma) ^^ N)
     scaled,
 
-    /// Calculates n-th standardized moment as E(((x - u) ^^ N) / ((x - u) ^^ (N / 2)))
+    /// Calculates E((x - u) ^^ N) / (sigma ^^ N), using the population standard deviation sigma.
     centered
 }
 
@@ -1073,6 +1073,8 @@ By default, if `F` is not floating point type, then the result will have a
 Params:
     F = controls type of output
     N = controls n-th standardized moment
+    standardizedMomentAlgo = algorithm for standardizing moments (default: StandardizedMomentAlgo.scaled)
+    varianceAlgo = algorithm for calculating variance (default: VarianceAlgo.twoPass)
     summation = algorithm for calculating sums (default: Summation.appropriate)
 
 Returns:
@@ -1107,7 +1109,16 @@ template standardizedMoment(F, size_t N,
                 import mir.math.common: pow;
 
                 momentAccumulator.put(r, varianceAccumulator.mean);
-                return momentAccumulator.moment / pow(varianceAccumulator.variance(true), N / 2);
+                auto variance = varianceAccumulator.variance(true);
+                auto result = momentAccumulator.moment / pow(variance, N / 2);
+                static if (N % 2 != 0) {
+                    import mir.math.common: sqrt;
+
+                    // The integer power accounts for all but one factor of sigma.
+                    return result / sqrt(variance);
+                } else {
+                    return result;
+                }
             }
         } else static if (N == 2) {
             return cast(G) 1.0;
@@ -1135,7 +1146,16 @@ template standardizedMoment(F, size_t N,
                 import mir.math.common: pow;
 
                 momentAccumulator.put(ar, varianceAccumulator.mean);
-                return momentAccumulator.moment / pow(varianceAccumulator.variance(true), N / 2);
+                auto variance = varianceAccumulator.variance(true);
+                auto result = momentAccumulator.moment / pow(variance, N / 2);
+                static if (N % 2 != 0) {
+                    import mir.math.common: sqrt;
+
+                    // The integer power accounts for all but one factor of sigma.
+                    return result / sqrt(variance);
+                } else {
+                    return result;
+                }
             }
         } else static if (N == 2) {
             return cast(G) 1.0;
@@ -1207,6 +1227,31 @@ unittest
 
     assert(standardizedMoment!(float, 2)([0, 1, 2, 3, 4, 5].sliced(3, 2)).approxEqual(6f / 6));
     static assert(is(typeof(standardizedMoment!(float, 2)([1, 2, 3])) == float));
+}
+
+// Asymmetric inputs exercise odd-order normalization in both overloads.
+version(mir_stat_test)
+@safe pure nothrow
+unittest
+{
+    import std.meta: AliasSeq;
+    import mir.math.common: approxEqual, sqrt;
+    import mir.ndslice.slice: sliced;
+
+    // For [0, 0, 1], standardized deviations are [-1, -1, 2] / sqrt(2).
+    // Thus the third, fourth, and fifth moments are 1/sqrt(2), 3/2,
+    // and 5/(2*sqrt(2)), independently of a positive input scale.
+    static foreach (F; AliasSeq!(float, double)) {
+        foreach (scale; [F(0.25), F(1), F(8)]) {
+            auto values = [F(0), F(0), scale];
+            static foreach (N; AliasSeq!(3, 4, 5)) {{
+                const expected = N == 3 ? F(1) / sqrt(F(2)) :
+                    N == 4 ? F(1.5) : F(2.5) / sqrt(F(2));
+                assert(standardizedMoment!(F, N, "centered")(values.sliced).approxEqual(expected));
+                assert(standardizedMoment!(F, N, "centered")(F(0), F(0), scale).approxEqual(expected));
+            }}
+        }
+    }
 }
 
 /// Standardized Moment of vector
