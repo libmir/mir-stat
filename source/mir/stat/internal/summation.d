@@ -1,6 +1,16 @@
 /++
 Internal summator merging for statistical accumulators.
 
+`mergeSummator` combines accumulated summation state. Matching summator types
+are merged directly when supported, preserving partial sums and compensation
+terms. Otherwise, the source sum is converted to the destination element type
+before being added. Callers manage observation counts and any additional
+statistical corrections.
+
+The helper has `package(mir.stat)` visibility and is intended for use inside
+mir.stat; it is not a public application API. See
+$(MREF mir,stat,descriptive,univariate) for the public statistical functions.
+
 License: $(HTTP www.apache.org/licenses/LICENSE-2.0, Apache-2.0)
 Authors: John Michael Hall
 Copyright: 2026 Mir Stat Authors.
