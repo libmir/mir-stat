@@ -43,6 +43,7 @@ sources_list = [
     'mir/stat/internal/one_minus_exp',
     'mir/stat/internal/shape_transform',
     'mir/stat/internal/standardize',
+    'mir/stat/internal/summation',
     'mir/stat/descriptive/histogram/package',
     'mir/stat/descriptive/histogram/api/rc',
     'mir/stat/descriptive/histogram/api/gc',

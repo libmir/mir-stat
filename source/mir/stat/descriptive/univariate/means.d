@@ -102,12 +102,10 @@ struct MeanAccumulator(T, Summation summation)
     ///
     void put(F = T)(MeanAccumulator!(F, summation) m)
     {
+        import mir.stat.internal.summation : mergeSummator;
+
         count += m.count;
-        static if (is(F == T))
-            // Merge saved partials and corrections before rounding to a scalar.
-            summator += m.summator;
-        else
-            summator.put(cast(T) m.summator);
+        mergeSummator(summator, m.summator);
     }
 }
 
@@ -177,6 +175,27 @@ unittest
         assert(source.sum == 1);
         assert(source.count == 3);
     }}
+}
+
+// Retain scalar merging for summators without a direct merge operation.
+version(mir_stat_test)
+@safe pure nothrow @nogc
+unittest
+{
+    alias Accumulator = MeanAccumulator!(double, Summation.decimal);
+    Accumulator source, merged;
+    source.put(1.0);
+    source.put(3.0);
+    merged.put(2.0);
+    merged.put(source);
+    assert(merged.count == 3 && merged.sum == 6);
+    assert(merged.mean == 2);
+    assert(source.count == 2 && source.sum == 4);
+    merged.put(Accumulator.init);
+    assert(merged.count == 3 && merged.sum == 6);
+    merged.put(merged);
+    assert(merged.count == 6 && merged.sum == 12);
+    assert(merged.mean == 2);
 }
 
 // Precise summation also retains overflow internally until later cancellation.
@@ -475,8 +494,6 @@ unittest
     position = 0;
     assert(mean(Single(values[], &position)) == double.infinity);
     assert(position == 2);
-
-
 }
 
 ///
