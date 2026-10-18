@@ -26,7 +26,7 @@ Copyright: 2022-3 Mir Stat Authors.
 
 module mir.stat.distribution.students_t;
 
-import mir.stat.internal.standardize: standardize;
+import mir.stat.internal.standardize: standardize, logDistance;
 
 import mir.internal.utility: isFloatingPoint;
 
@@ -746,7 +746,7 @@ T studentsTLPDF(T)(const T x, const T nu, const T mean, const T stdDev)
     {
         // A tiny scale can overflow z even though the scaled heavy-tail
         // density remains representable. Evaluate its exponent in logs.
-        const T logZ = studentsTLogDistance(x, mean) - log(stdDev);
+        const T logZ = logDistance(x, mean) - log(stdDev);
         return studentsTLogNormalization(nu)
             - (nu * T(0.5) + T(0.5)) * (2 * logZ - log(nu)) - log(stdDev);
     }
@@ -1012,18 +1012,6 @@ version(mir_stat_test)
     assert(approxEqual(studentsTInvCDF(1e-160, 2.0), -7.071067811865475237e79, 2e-13));
 }
 
-// Used only after a finite location/scale calculation overflowed.
-private @safe pure nothrow @nogc
-T studentsTLogDistance(T)(const T x, const T mean)
-{
-    import mir.math.common: fabs, log;
-    import mir.math.internal.log1p: log1p;
-    const T distance = fabs(x - mean);
-    if (distance <= T.max)
-        return log(distance);
-    const T a = fabs(x), b = fabs(mean);
-    return a > b ? log(a) + log1p(b / a) : log(b) + log1p(a / b);
-}
 
 // Overflow in an intermediate location/scale operation need not imply an
 // infinite standardized value or an unrepresentable final density/quantile.
@@ -1083,7 +1071,7 @@ T studentsTScaledCDF(T)(const T z, const T x, const T nu,
     import mir.math.common: fabs, exp, log;
     if (fabs(z) == T.infinity && fabs(x) <= T.max && fabs(mean) <= T.max && nu <= T.max)
     {
-        const T logZ = studentsTLogDistance(x, mean) - log(scale);
+        const T logZ = logDistance(x, mean) - log(scale);
         // z is beyond the finite range, so the leading power-law tail
         // differs from the complete beta integral by less than precision.
         const T tail = exp((nu * T(0.5)) * (log(nu) - 2 * logZ)

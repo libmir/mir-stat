@@ -25,7 +25,7 @@ module mir.stat.distribution.generalized_pareto;
 
 import mir.internal.utility: isFloatingPoint;
 import mir.stat.internal.shape_transform: log1pScaled, expm1Scaled;
-import mir.stat.internal.standardize: standardize;
+import mir.stat.internal.standardize: standardize, logDistance;
 
 /++
 Computes the generalized pareto probability density function (PDF).
@@ -66,6 +66,10 @@ T generalizedParetoPDF(T)(const T x, const T mu, const T sigma, const T xi)
     import mir.math.common: exp;
 
     const T z = standardize(x, mu, sigma);
+    if (z == T.infinity && xi > 0 && x <= T.max && mu >= -T.max)
+    {
+        return exp(generalizedParetoLPDF(x, mu, sigma, xi));
+    }
     if (xi != 0) {
         const T u = xi * z;
         const T v = 1 + u;
@@ -232,6 +236,10 @@ T generalizedParetoCDF(T)(const T x, const T mu, const T sigma, const T xi)
     import mir.stat.internal.one_minus_exp: oneMinusExpNeg;
 
     const T z = standardize(x, mu, sigma);
+    if (z == T.infinity && xi > 0 && x <= T.max && mu >= -T.max)
+    {
+        return oneMinusExpNeg(generalizedParetoOverflowLogV(x, mu, sigma, xi) / xi);
+    }
     if (1 + xi * z <= 0)
         return 1;
     return oneMinusExpNeg(log1pScaled(z, xi));
@@ -288,6 +296,10 @@ T generalizedParetoCCDF(T)(const T x, const T mu, const T sigma, const T xi)
     import mir.math.common: exp;
 
     const T z = standardize(x, mu, sigma);
+    if (z == T.infinity && xi > 0 && x <= T.max && mu >= -T.max)
+    {
+        return exp(-generalizedParetoOverflowLogV(x, mu, sigma, xi) / xi);
+    }
     const T h = 1 + xi * z <= 0 ? T.infinity : log1pScaled(z, xi);
     return exp(-h);
 }
@@ -399,6 +411,11 @@ T generalizedParetoLPDF(T)(const T x, const T mu, const T sigma, const T xi)
 
 
     const T z = standardize(x, mu, sigma);
+    if (z == T.infinity && xi > 0 && x <= T.max && mu >= -T.max)
+    {
+        const T logV = generalizedParetoOverflowLogV(x, mu, sigma, xi);
+        return -logV - logV / xi - log(sigma);
+    }
     if (xi != 0) {
         if (xi == -1)
             return -log(sigma);
@@ -556,4 +573,60 @@ unittest
                 generalizedParetoCCDF(T(2), T(0), T(1), xi));
         }
     }}
+}
+
+// Called only for positive shape and an overflowing standardized finite input.
+// Keep log(1 + xi*z): a tiny shape can make xi*z small even when z overflows.
+private @safe pure nothrow @nogc
+T generalizedParetoOverflowLogV(T)(T x, T mu, T sigma, T xi)
+{
+    import mir.math.common: exp, log;
+    import mir.math.internal.log1p: log1p;
+    const T logU = log(xi) + logDistance(x, mu) - log(sigma);
+    return logU > 0 ? logU + log1p(exp(-logU)) : log1p(exp(logU));
+}
+
+// Positive-shape tails remain representable after the standardized ratio overflows.
+version(mir_stat_test)
+@safe pure nothrow @nogc
+unittest
+{
+    import std.meta: AliasSeq;
+    import std.math: ldexp;
+    import mir.math.common: fabs, log, approxEqual;
+    static foreach (T; AliasSeq!(float, double, real))
+    {{
+        const T scale = T.min_normal / 4;
+        const T tolerance = 16 * T.epsilon * fabs(log(scale));
+        // At shape one and x=1, PDF=sigma/(1+sigma)^2 and CCDF=sigma/(1+sigma).
+        assert(approxEqual(generalizedParetoPDF(T(1), T(0), scale, T(1)),
+            scale, tolerance, T(0)));
+        assert(approxEqual(generalizedParetoCCDF(T(1), T(0), scale, T(1)),
+            scale, tolerance, T(0)));
+        assert(approxEqual(generalizedParetoLPDF(T(1), T(0), scale, T(1)),
+            log(scale), tolerance, T(0)));
+        // Finite opposite-signed inputs can overflow both subtraction and division.
+        const T logDistance = log(T.max) + T(0.693147180559945309417232121458176568L);
+        assert(approxEqual(generalizedParetoLPDF(T.max, -T.max, T(.5), T(1)),
+            log(T(.5)) - 2 * logDistance, tolerance, T(0)));
+        // Huge shapes have a small CDF despite an overflowing standardized ratio.
+        const T shape = ldexp(T(1), T.max_exp - 1);
+        const T logV = log(shape) - log(scale);
+        assert(approxEqual(generalizedParetoCDF(T(1), T(0), scale, shape),
+            logV / shape, tolerance, T(0)));
+        assert(approxEqual(generalizedParetoPDF(T(1), T(0), scale, shape),
+            1 / shape, tolerance, T(0)));
+        // A tiny shape must not turn log(1+xi*z) into log(xi*z).
+        assert(generalizedParetoPDF(T(1), T(0), scale, scale) == 0);
+        assert(generalizedParetoCCDF(T(1), T(0), scale, scale) == 0);
+        assert(generalizedParetoPDF(T.infinity, T(0), scale, T(1)) == 0);
+        assert(generalizedParetoLPDF(T.infinity, T(0), scale, T(1)) == -T.infinity);
+    }}
+    // Independent 100-digit references using the represented double scale.
+    assert(approxEqual(generalizedParetoPDF(1.0, 0.0, cast(double)1e-310L, 2.0),
+        3.53553390593273222135729868292082478e-156, 5e-13, 0.0));
+    assert(approxEqual(generalizedParetoLPDF(1.0, 0.0, cast(double)1e-310L, 2.0),
+        -357.940410184917000514448148513381452, 2e-15, 0.0));
+    assert(approxEqual(generalizedParetoCCDF(1.0, 0.0, cast(double)1e-310L, 2.0),
+        7.07106781186546444271459736584164956e-156, 5e-13, 0.0));
 }

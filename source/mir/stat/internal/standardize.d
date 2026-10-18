@@ -55,3 +55,18 @@ package(mir.stat) struct FloatingScale(F, R)
         return (cast(F) value * factor - center) / divisor;
     }
 }
+
+// Logarithm of the absolute distance between finite values, even when
+// their subtraction overflows. Equal inputs return negative infinity.
+package(mir.stat)
+@safe pure nothrow @nogc
+T logDistance(T)(const T x, const T mean)
+{
+    import mir.math.common: fabs, log;
+    import mir.math.internal.log1p: log1p;
+    const T distance = fabs(x - mean);
+    if (distance <= T.max)
+        return log(distance);
+    const T a = fabs(x), b = fabs(mean);
+    return a > b ? log(a) + log1p(b / a) : log(b) + log1p(a / b);
+}
