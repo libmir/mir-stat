@@ -282,27 +282,9 @@ version(mir_stat_test)
 private @safe pure nothrow @nogc
 T chi2CenteredLPDF(T)(const T x, const T k)
 {
-    pragma(inline, false);
-    import mir.math.common: log;
-    import mir.stat.constant: LOGSQRT2PI;
-    const T d = (x - k) / k;
-    const T t = d / (2 + d);
-    const T t2 = t * t;
-    // |t| < 1/3 here. Each extra term reduces the truncation error by
-    // at least nine; choose enough terms for the significand of T.
-    enum terms = (T.mant_dig + 2) / 3 + 2;
-    T polynomial = T(1) / (2 * terms + 1);
-    static foreach (j; 0 .. terms - 1)
-        polynomial = T(1) / (2 * (terms - j - 1) + 1) + t2 * polynomial;
-    const T sum = t * t2 * polynomial;
-    // Reuse log(1+d)=2*(t+sum); no second logarithm is needed.
-    const T a = k * T(0.5);
-    const T r = 1 / a, r2 = r * r;
-    // At a>=32 the first omitted Stirling term is below 1e-24.
-    const T correction = r * (T(1)/12 + r2 * (-T(1)/360 + r2 * (T(1)/1260
-        + r2 * (-T(1)/1680 + r2 * (T(1)/1188 + r2 * (-T(691)/360360 + r2 / 156))))));
-    return a * (-d * t + 2 * sum) - 2 * (t + sum) - T(0.5) * log(a)
-        - T(0.693147180559945309417232121458176568L) - T(LOGSQRT2PI) - correction;
+    import mir.stat.internal.gamma: centeredGammaLPDF;
+    return centeredGammaLPDF(k * T(0.5), (x - k) / k,
+        T(0.693147180559945309417232121458176568L));
 }
 
 // Independent 100-digit gamma-density references at a large-degree center.
