@@ -37,7 +37,9 @@ replacing the `gamma` function with the `factorial`).
 Both overloads use a logarithmic fallback when the direct calculation overflows
 or loses precision through underflow. The integer-shape overload retains the
 integer shape and uses a log-factorial in that fallback. Its direct factorial
-calculation is limited to shapes at most 32.
+calculation is limited to shapes at most 32. Near the mean, both overloads use
+a centered logarithmic calculation for shapes at least 32 to avoid subtracting
+large, nearly equal terms.
 
 Returns a density, which may exceed one; it is not a point probability.
 The $(D shape < 1) row applies only to the floating-point shape overload.
@@ -67,7 +69,8 @@ T gammaPDF(T)(const T x, const T shape, const T scale = 1)
     in (shape > 0, "shape must be greater than zero")
     in (scale > 0, "scale must be greater than zero")
 {
-    import mir.math.common: exp, pow, log;
+    import mir.math.common: exp, pow, log, fabs;
+    import mir.stat.internal.gamma: centeredGammaLPDF;
     import std.mathspecial: gamma, logGamma;
     
     if (x == 0) {
@@ -81,6 +84,8 @@ T gammaPDF(T)(const T x, const T shape, const T scale = 1)
     }
 
     const T x_scale = x / scale;
+    if (shape >= 32 && shape < T.infinity && fabs(x_scale - shape) < shape * T(0.5))
+        return exp(centeredGammaLPDF(shape, (x_scale - shape) / shape, log(scale)));
     const T decay = exp(-x_scale);
     const T density = decay * pow(x_scale, shape - 1) / cast(T) gamma(shape);
     // Keep the direct calculation when its intermediates retain precision.
@@ -104,7 +109,8 @@ T gammaPDF(T)(const T x, const size_t shape, const T scale = 1)
     in (shape > 0, "shape must be greater than zero")
     in (scale > 0, "scale must be greater than zero")
 {
-    import mir.math.common: exp, log, pow;
+    import mir.math.common: exp, log, pow, fabs;
+    import mir.stat.internal.gamma: centeredGammaLPDF;
     import mir.math.numeric: factorial;
     import mir.math.internal.log_binomial: logFactorial;
 
@@ -117,6 +123,12 @@ T gammaPDF(T)(const T x, const size_t shape, const T scale = 1)
     }
 
     const T x_scale = x / scale;
+    if (shape >= 32)
+    {
+        const real d = gammaIntegerDeviation(cast(real) x / scale, shape);
+        if (fabs(d) < 0.5L)
+            return cast(T) exp(centeredGammaLPDF(cast(real) shape, d, log(cast(real) scale)));
+    }
     // Bound the O(shape) factorial calculation, including when the direct
     // result would be discarded. Large shapes use the logarithmic paths.
     if (shape <= 32 && x_scale >= T.min_normal && x_scale < T.infinity)
@@ -660,8 +672,11 @@ Computes the gamma log probability density function (LPDF).
 `shape` values less than `1` are supported when it is a floating point type.
 
 If `shape` is passed as a `size_t` type (or a type convertible to that), then the
-LPDF is calculated using the relationship with the poisson distribution (i.e.
-replacing the `logGamma` function with the `logFactorial`).
+LPDF uses the relationship with the Poisson distribution outside the centered
+region (i.e. replacing the `logGamma` function with the `logFactorial`).
+
+Near the mean, both overloads use a centered logarithmic calculation for shapes
+at least 32 to avoid subtracting large, nearly equal terms.
 
 Returns the natural logarithm of the density.
 The $(D shape < 1) row applies only to the floating-point shape overload.
@@ -691,7 +706,8 @@ T gammaLPDF(T)(const T x, const T shape, const T scale = 1)
     in (shape > 0, "shape must be greater than zero")
     in (scale > 0, "scale must be greater than zero")
 {
-    import mir.math.common: log;
+    import mir.math.common: log, fabs;
+    import mir.stat.internal.gamma: centeredGammaLPDF;
     import std.mathspecial: logGamma;
 
     if (x == 0) {
@@ -705,6 +721,8 @@ T gammaLPDF(T)(const T x, const T shape, const T scale = 1)
     }
 
     const T x_scale = x / scale;
+    if (shape >= 32 && shape < T.infinity && fabs(x_scale - shape) < shape * T(0.5))
+        return centeredGammaLPDF(shape, (x_scale - shape) / shape, log(scale));
     if (x_scale == T.infinity && shape < T.infinity)
         return -T.infinity;
     // Preserve log(x/scale) if division erases a positive finite argument.
@@ -720,7 +738,8 @@ T gammaLPDF(T)(const T x, const size_t shape, const T scale = 1)
     in (shape > 0, "shape must be greater than zero")
     in (scale > 0, "scale must be greater than zero")
 {
-    import mir.math.common: log;
+    import mir.math.common: log, fabs;
+    import mir.stat.internal.gamma: centeredGammaLPDF;
     import mir.stat.distribution.poisson: poissonLPMF;
 
     if (x == 0) {
@@ -731,6 +750,12 @@ T gammaLPDF(T)(const T x, const size_t shape, const T scale = 1)
         } // note: shape cannot be equal to zero or less than 1 because it is size_t
     }
 
+    if (shape >= 32)
+    {
+        const real d = gammaIntegerDeviation(cast(real) x / scale, shape);
+        if (fabs(d) < 0.5L)
+            return cast(T) centeredGammaLPDF(cast(real) shape, d, log(cast(real) scale));
+    }
     return poissonLPMF(shape - 1, x / scale) - log(scale);
 }
 
@@ -920,6 +945,90 @@ version(mir_stat_test)
     import mir.math.common: approxEqual;
     assert(approxEqual(gammaCCDF(nextUp(0.0), 1e-20, 2.0),
         7.445560034370396311546470242271865683e-18, 4e-15, 0.0));
+}
+
+// Subtract the integer shape before rounding it to real. Splitting into
+// 32-bit pieces retains the low bits even when real has a 53-bit significand.
+private @safe pure nothrow @nogc
+real gammaIntegerDeviation(real z, size_t shape)
+{
+    const ulong n = shape;
+    const real high = cast(real)(n >> 32) * 0x1p32L;
+    const real low = cast(real)(n & 0xffff_ffffUL);
+    return ((z - high) - low) / cast(real) shape;
+}
+
+// Independent Stirling references evaluated at 100 digits. The omitted term
+// is below 1e-24 at shape 32. Inputs and scale factors are exact binary values.
+version(mir_stat_test)
+@safe pure nothrow @nogc unittest
+{
+    import std.meta: AliasSeq;
+    import std.math: nextDown, nextUp;
+    import mir.math.common: approxEqual, log, sqrt, fabs;
+    static foreach (T; AliasSeq!(float, double, real))
+    {{
+        const T[4][11] references = [
+            [T(16), T(32), T(-8.1419731638820922636800257754968422L), T(0.00029106231760271036219248660517330410L)],
+            [T(24), T(32), T(-3.5725548125289964223616191961020190L), T(0.028084012561923723427746583903197443L)],
+            [T(32), T(32), T(-2.6544105665237876717458300102933686L), T(0.070340287368503172304907580012890685L)],
+            [T(40), T(32), T(-3.7369604757832852429906822106884990L), T(0.023826414142882673214277625678006674L)],
+            [T(48), T(32), T(-6.0849922151706918304274234308985454L), T(0.0022767820485455311295046027692904304L)],
+            [T(48), T(64), T(-5.1236527120843981482390946229945173L), T(0.0059542340224259486528540672821358992L)],
+            [T(64), T(64), T(-2.9996821476221997195682972453833891L), T(0.049802895821191956932606474954171698L)],
+            [T(80), T(64), T(-4.9416384148269851062917065558638154L), T(0.0071428857699310740181210138706915467L)],
+            [T(1046528), T(1048576), T(-9.8510633707752965007187524616521756L), T(0.000052691133003553922202295958145961184L)],
+            [T(1048576), T(1048576), T(-7.8504104182769855364710749461596384L), T(0.00038959203974252935433477929103992296L)],
+            [T(1050624), T(1048576), T(-9.8497612804880668302545870954184054L), T(0.000052759786302758226126897171497416334L)]
+        ];
+        foreach (row; references)
+        {
+            foreach (scale; [T(0.5), T(1), T(2)])
+            {
+                const T x = row[0] * scale;
+                const T expectedLog = row[2] - log(scale);
+                const T expectedPDF = row[3] / scale;
+                const T tolerance = 256 * T.epsilon;
+                assert(approxEqual(gammaLPDF(x, row[1], scale), expectedLog, tolerance, T(0)));
+                assert(approxEqual(gammaPDF(x, row[1], scale), expectedPDF, tolerance, T(0)));
+                assert(approxEqual(gammaLPDF(x, cast(size_t) row[1], scale), expectedLog, tolerance, T(0)));
+                assert(approxEqual(gammaPDF(x, cast(size_t) row[1], scale), expectedPDF, tolerance, T(0)));
+            }
+        }
+        // Shape selection and both edges of the centered region.
+        foreach (shape; [nextDown(T(32)), T(32), nextUp(T(32))])
+        {
+            const T peak = T(-2.6544105665237876717458300102933686L);
+            assert(approxEqual(gammaLPDF(shape, shape), peak, 256 * T.epsilon, T(0)));
+        }
+        foreach (x; [nextDown(T(16)), T(16), nextUp(T(16)),
+                     nextDown(T(48)), T(48), nextUp(T(48))])
+        {
+            const T anchor = gammaLPDF(x < 32 ? T(16) : T(48), T(32));
+            assert(approxEqual(gammaLPDF(x, T(32)), anchor, 256 * T.epsilon, T(0)));
+        }
+        // At maximum finite shape the Stirling correction is negligible.
+        const T expectedLog = -log(T.max) / 2 - T(0.91893853320467274178032973640561764L);
+        const T expectedPDF = T(0.39894228040143267793994605993438187L) / sqrt(T.max);
+        assert(approxEqual(gammaLPDF(T.max, T.max), expectedLog, 16 * T.epsilon, T(0)));
+        assert(approxEqual(gammaPDF(T.max, T.max), expectedPDF,
+            16 * T.epsilon * fabs(log(T.max)), T(0)));
+        assert(gammaPDF(T.infinity, T(64)) == 0);
+        assert(gammaLPDF(T.infinity, T(64)) == -T.infinity);
+        assert(gammaPDF(T(0), size_t(64)) == 0);
+        assert(gammaLPDF(T(0), size_t(64)) == -T.infinity);
+    }}
+    static if (size_t.sizeof == 8)
+    {
+        assert(approxEqual(gammaLPDF(9007199388958720.0, size_t(9007199254740993UL)),
+            -20.287338808109116099046036465950292L, 2e-14, 0.0));
+        assert(approxEqual(gammaPDF(9007199388958720.0, size_t(9007199254740993UL)),
+            1.5463959483218087322598998798700129e-9L, 2e-13, 0.0));
+        assert(approxEqual(gammaLPDF(18446744082299486208.0, size_t(18446744073709551615UL)),
+            -25.099648311433363501395644745938436L, 2e-14, 0.0));
+        assert(approxEqual(gammaPDF(18446744082299486208.0, size_t(18446744073709551615UL)),
+            1.2570751480857620474490095477975747e-11L, 2e-13, 0.0));
+    }
 }
 
 // Large integer shapes must not attempt an O(shape) factorial calculation.
