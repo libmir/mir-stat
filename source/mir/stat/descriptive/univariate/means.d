@@ -103,7 +103,11 @@ struct MeanAccumulator(T, Summation summation)
     void put(F = T)(MeanAccumulator!(F, summation) m)
     {
         count += m.count;
-        summator.put(cast(T) m.summator);
+        static if (is(F == T))
+            // Merge saved partials and corrections before rounding to a scalar.
+            summator += m.summator;
+        else
+            summator.put(cast(T) m.summator);
     }
 }
 
@@ -148,6 +152,61 @@ unittest
     m1.put(y);
     m0.put(m1);
     assert(m0.mean == 29.25 / 12);
+}
+
+// Merging compensated sums must retain contributions below the rounded sum.
+version(mir_stat_test)
+@safe pure nothrow @nogc
+unittest
+{
+    import std.meta : AliasSeq;
+
+    static foreach (mode; AliasSeq!(Summation.kbn, Summation.kb2))
+    {{
+        MeanAccumulator!(double, mode) source, merged;
+        source.put(0x1p54);
+        source.put(1.0);
+        merged.put(source);
+        merged.put(-0x1p54);
+        assert(merged.count == 3);
+        assert(merged.sum == 1);
+        assert(merged.mean == 1.0 / 3);
+
+        // The merge must not consume or alter the source's corrections.
+        source.put(-0x1p54);
+        assert(source.sum == 1);
+        assert(source.count == 3);
+    }}
+}
+
+// Precise summation also retains overflow internally until later cancellation.
+// Copying this summator by value currently requires @system in mir-algorithm.
+version(mir_stat_test)
+pure nothrow @nogc
+unittest
+{
+    alias Accumulator = MeanAccumulator!(double, Summation.precise);
+    Accumulator source, merged;
+    source.put(double.max);
+    source.put(double.max);
+    source.put(1.0);
+    merged.put(source);
+    merged.put(-double.max);
+    merged.put(-double.max);
+    assert(merged.count == 5);
+    assert(merged.sum == 1);
+    assert(merged.mean == 0.2);
+
+    source.put(-double.max);
+    source.put(-double.max);
+    assert(source.sum == 1);
+
+    // Empty and self merges preserve the accumulated state and count.
+    merged.put(Accumulator.init);
+    assert(merged.count == 5 && merged.sum == 1);
+    merged.put(merged);
+    assert(merged.count == 10 && merged.sum == 2);
+    assert(merged.mean == 0.2);
 }
 
 /++
