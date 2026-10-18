@@ -359,6 +359,10 @@ T cauchyInvCDF(T)(const T p)
     import mir.math.common: fabs;
     import std.math.trigonometry: tan;
 
+    if (p == T(0.25))
+        return -1;
+    if (p == T(0.75))
+        return 1;
     const T centered = p - T(0.5);
     if (fabs(centered) <= T(0.25))
         return tan(T(PI) * centered);
@@ -394,8 +398,14 @@ T cauchyInvCDF(T)(const T p, const T location, const T scale)
     in (scale > 0, "scale must be greater than zero")
 {
     import mir.math.constant: PI, M_1_PI;
+    import mir.math.common: fabs;
     import std.math.trigonometry: tan;
 
+    // Exact quartiles avoid rounding tan(pi/4) above one before scaling.
+    if (p == T(0.25))
+        return location - scale;
+    if (p == T(0.75))
+        return location + scale;
     if (p >= T(0.25) && p <= T(0.75))
         return location + scale * tan(T(PI) * (p - T(0.5)));
     if (p == 0)
@@ -411,11 +421,24 @@ T cauchyInvCDF(T)(const T p, const T location, const T scale)
             const T ratio = scale / p;
             const T tail = ratio < T.infinity ? ratio * T(M_1_PI)
                 : (scale * T(M_1_PI)) / p;
+            if (tail == T.infinity && scale <= T.max && fabs(location) <= T.max)
+            {
+                const T halfTail = ((scale / 2) * T(M_1_PI)) / p;
+                return (location / 2 - halfTail) * 2;
+            }
             return location - tail;
         }
-        if (p < T(0.25))
-            return location - scale / tan(T(PI) * p);
-        return location + scale / tan(T(PI) * (1 - p));
+        const bool lower = p < T(0.25);
+        const T denominator = tan(T(PI) * (lower ? p : 1 - p));
+        const T tail = scale / denominator;
+        if (tail == T.infinity && scale <= T.max && fabs(location) <= T.max)
+        {
+            // A finite location can cancel an offset larger than T.max.
+            // Halve before division, combine the terms, then restore scale.
+            const T halfTail = (scale / 2) / denominator;
+            return (location / 2 + (lower ? -halfTail : halfTail)) * 2;
+        }
+        return lower ? location - tail : location + tail;
     }
     assert(0, "Should not be here");
 }
@@ -732,4 +755,50 @@ unittest
         3.183098861837906658401040881e-201, 4 * double.epsilon, 0.0));
     assert(approxEqual(cauchyLPDF(1.0, 0.0, double.min_normal / 4),
         -710.92744277923339701738912, 4 * double.epsilon, 0.0));
+}
+
+// A location can cancel an overflowing inverse-CDF offset.
+version(mir_stat_test)
+@safe pure nothrow @nogc
+unittest
+{
+    import std.meta: AliasSeq;
+    import mir.math.common: approxEqual, fabs;
+    import std.math: nextUp, nextDown;
+    static foreach (T; AliasSeq!(float, double, real))
+    {{
+        const T scale = T.max / 2;
+        const T sqrtTwo = T(1.41421356237309504880168872420969808L);
+        foreach (p; [T(.125), T(.875)])
+        {
+            const T sign = p < T(.5) ? T(-1) : T(1);
+            const T location = -sign * scale;
+            const T actual = cauchyInvCDF(p, location, scale);
+            // cot(pi/8)=1+sqrt(2); the location removes the unit term.
+            assert(approxEqual(actual / scale, sign * sqrtTwo, 16 * T.epsilon, T(0)));
+            assert(approxEqual(cauchyCDF(actual, location, scale), p, 16 * T.epsilon, T(0)));
+            assert(cauchyInvCDF(p, -location, scale) == sign * T.infinity);
+            assert(cauchyInvCDF(p, T(0), scale) == sign * T.infinity);
+        }
+        // Halving cannot recover a quantile whose final magnitude exceeds max.
+        assert(cauchyInvCDF(T(.03125), T.max, scale) == -T.infinity);
+        assert(cauchyInvCDF(T(.96875), -T.max, scale) == T.infinity);
+        const T tinyP = 16 * T.min_normal * T.epsilon;
+        const T tinyScale = (tinyP * T.max) * 4;
+        // cot(pi*p) ~ 1/(pi*p); reference is 1/2 - 4/pi.
+        const T expected = T(-0.773239544735162686151070106980114896L);
+        assert(approxEqual(cauchyInvCDF(tinyP, scale, tinyScale) / T.max,
+            expected, 16 * T.epsilon, T(0)));
+        assert(cauchyInvCDF(tinyP, -scale, tinyScale) == -T.infinity);
+        assert(cauchyInvCDF(T(0), scale, tinyScale) == -T.infinity);
+        assert(cauchyInvCDF(T(1), -scale, tinyScale) == T.infinity);
+        assert(cauchyInvCDF(T(.25)) == -1);
+        assert(cauchyInvCDF(T(.75)) == 1);
+        assert(cauchyInvCDF(T(.25), T.max, T.max) == 0);
+        assert(cauchyInvCDF(T(.75), -T.max, T.max) == 0);
+        assert(cauchyInvCDF(T(.5), scale, T.max) == scale);
+        foreach (p; [nextDown(T(.25)), nextUp(T(.25)), nextDown(T(.75)), nextUp(T(.75))])
+            assert(approxEqual(cauchyInvCDF(p), p < T(.5) ? T(-1) : T(1),
+                16 * T.epsilon, T(0)));
+    }}
 }
