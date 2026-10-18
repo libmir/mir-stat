@@ -1,19 +1,18 @@
 /++
-Univariate descriptive statistics. This package preserves the original import
-path and re-exports the specialized modules below. Each module keeps its
-algorithms, examples, and unit tests together.
+Univariate descriptive statistics.
+
+Import `mir.stat.descriptive.univariate` to access the functions below, or import
+a specialized module directly. The package re-exports the public declarations
+so existing imports remain valid.
 
 $(UL
-    $(LI $(MREF mir,stat,descriptive,univariate,means))
-    $(LI $(MREF mir,stat,descriptive,univariate,quantiles))
-    $(LI $(MREF mir,stat,descriptive,univariate,dispersions))
-    $(LI $(MREF mir,stat,descriptive,univariate,moments))
-    $(LI $(MREF mir,stat,descriptive,univariate,skewness_kurtosis))
-    $(LI $(MREF mir,stat,descriptive,univariate,entropies))
+    $(LI $(MREF mir,stat,descriptive,univariate,means): arithmetic, geometric, and harmonic means.)
+    $(LI $(MREF mir,stat,descriptive,univariate,quantiles): medians, ordinary and weighted quantiles, interquartile range, and median absolute deviation.)
+    $(LI $(MREF mir,stat,descriptive,univariate,dispersions): variance, standard deviation, coefficient of variation, and customizable dispersion.)
+    $(LI $(MREF mir,stat,descriptive,univariate,moments): raw, central, and standardized moments.)
+    $(LI $(MREF mir,stat,descriptive,univariate,skewness_kurtosis): skewness and kurtosis.)
+    $(LI $(MREF mir,stat,descriptive,univariate,entropies): entropy and its accumulator.)
 )
-
-$(LEGACY_ANCHOR MapSummator)$(REF MapSummator, mir, stat, descriptive, univariate, internal, summation)
-
 
 Note that used specialized summing algorithms execute more primitive operations
 than vanilla summation. Therefore, if in certain cases maximum speed is required
@@ -34,18 +33,14 @@ $(SCRIPT
 
 $(DIVC quickindex,
 $(BOOKTABLE,
-$(TR $(TH Category) $(TH Symbols))
+$(TR $(TH Category) $(TH Public symbols))
     $(TR $(TD Location) $(TD
+        $(LEGACY_ANCHOR mean)$(REF mean, mir, stat, descriptive, univariate, means)
         $(LEGACY_ANCHOR gmean)$(REF gmean, mir, stat, descriptive, univariate, means)
         $(LEGACY_ANCHOR hmean)$(REF hmean, mir, stat, descriptive, univariate, means)
-        $(LEGACY_ANCHOR mean)$(REF mean, mir, stat, descriptive, univariate, means)
         $(LEGACY_ANCHOR median)$(REF median, mir, stat, descriptive, univariate, quantiles)
     ))
-    $(TR $(TD Deviation) $(TD
-        $(LEGACY_ANCHOR dispersion)$(REF dispersion, mir, stat, descriptive, univariate, dispersions)
-        $(LEGACY_ANCHOR entropy)$(REF entropy, mir, stat, descriptive, univariate, entropies)
-        $(LEGACY_ANCHOR interquartileRange)$(REF interquartileRange, mir, stat, descriptive, univariate, quantiles)
-        $(LEGACY_ANCHOR medianAbsoluteDeviation)$(REF medianAbsoluteDeviation, mir, stat, descriptive, univariate, quantiles)
+    $(TR $(TD Quantiles) $(TD
         $(LEGACY_ANCHOR quantile)$(REF quantile, mir, stat, descriptive, univariate, quantiles)
         $(LEGACY_ANCHOR rcquantile)$(REF rcquantile, mir, stat, descriptive, univariate, quantiles)
         $(LEGACY_ANCHOR makeQuantile)$(REF makeQuantile, mir, stat, descriptive, univariate, quantiles)
@@ -53,54 +48,72 @@ $(TR $(TH Category) $(TH Symbols))
         $(LEGACY_ANCHOR weightedQuantile)$(REF weightedQuantile, mir, stat, descriptive, univariate, quantiles)
         $(LEGACY_ANCHOR rcWeightedQuantile)$(REF rcWeightedQuantile, mir, stat, descriptive, univariate, quantiles)
         $(LEGACY_ANCHOR makeWeightedQuantile)$(REF makeWeightedQuantile, mir, stat, descriptive, univariate, quantiles)
-        $(LEGACY_ANCHOR standardDeviation)$(REF standardDeviation, mir, stat, descriptive, univariate, dispersions)
-        $(LEGACY_ANCHOR variance)$(REF variance, mir, stat, descriptive, univariate, dispersions)
     ))
-    $(TR $(TD Higher Moments, etc.) $(TD
-        $(LEGACY_ANCHOR kurtosis)$(REF kurtosis, mir, stat, descriptive, univariate, skewness_kurtosis)
-        $(LEGACY_ANCHOR skewness)$(REF skewness, mir, stat, descriptive, univariate, skewness_kurtosis)
+    $(TR $(TD Dispersion) $(TD
+        $(REF variance, mir, stat, descriptive, univariate, dispersions)
+        $(REF standardDeviation, mir, stat, descriptive, univariate, dispersions)
+        $(REF coefficientOfVariation, mir, stat, descriptive, univariate, dispersions)
+        $(REF dispersion, mir, stat, descriptive, univariate, dispersions)
+        $(LEGACY_ANCHOR interquartileRange)$(REF interquartileRange, mir, stat, descriptive, univariate, quantiles)
+        $(LEGACY_ANCHOR medianAbsoluteDeviation)$(REF medianAbsoluteDeviation, mir, stat, descriptive, univariate, quantiles)
     ))
-    $(TR $(TD Other Moment Functions) $(TD
-        $(LEGACY_ANCHOR centralMoment)$(REF centralMoment, mir, stat, descriptive, univariate, moments)
-        $(LEGACY_ANCHOR coefficientOfVariation)$(REF coefficientOfVariation, mir, stat, descriptive, univariate, dispersions)
-        $(LEGACY_ANCHOR moment)$(REF moment, mir, stat, descriptive, univariate, moments)
+    $(TR $(TD Moments) $(TD
         $(LEGACY_ANCHOR rawMoment)$(REF rawMoment, mir, stat, descriptive, univariate, moments)
+        $(LEGACY_ANCHOR centralMoment)$(REF centralMoment, mir, stat, descriptive, univariate, moments)
         $(LEGACY_ANCHOR standardizedMoment)$(REF standardizedMoment, mir, stat, descriptive, univariate, moments)
+        $(LEGACY_ANCHOR moment)$(REF moment, mir, stat, descriptive, univariate, moments)
+    ))
+    $(TR $(TD Skewness and kurtosis) $(TD
+        $(LEGACY_ANCHOR skewness)$(REF skewness, mir, stat, descriptive, univariate, skewness_kurtosis)
+        $(LEGACY_ANCHOR kurtosis)$(REF kurtosis, mir, stat, descriptive, univariate, skewness_kurtosis)
+    ))
+    $(TR $(TD Entropy) $(TD
+        $(REF entropy, mir, stat, descriptive, univariate, entropies)
     ))
     $(TR $(TD Accumulators) $(TD
-        $(LEGACY_ANCHOR EntropyAccumulator)$(REF EntropyAccumulator, mir, stat, descriptive, univariate, entropies)
-        $(LEGACY_ANCHOR GMeanAccumulator)$(REF GMeanAccumulator, mir, stat, descriptive, univariate, means)
-        $(LEGACY_ANCHOR KurtosisAccumulator)$(REF KurtosisAccumulator, mir, stat, descriptive, univariate, skewness_kurtosis)
         $(LEGACY_ANCHOR MeanAccumulator)$(REF MeanAccumulator, mir, stat, descriptive, univariate, means)
+        $(LEGACY_ANCHOR GMeanAccumulator)$(REF GMeanAccumulator, mir, stat, descriptive, univariate, means)
+        $(REF VarianceAccumulator, mir, stat, descriptive, univariate, dispersions)
         $(LEGACY_ANCHOR MomentAccumulator)$(REF MomentAccumulator, mir, stat, descriptive, univariate, moments)
         $(LEGACY_ANCHOR SkewnessAccumulator)$(REF SkewnessAccumulator, mir, stat, descriptive, univariate, skewness_kurtosis)
-        $(LEGACY_ANCHOR VarianceAccumulator)$(REF VarianceAccumulator, mir, stat, descriptive, univariate, dispersions)
+        $(LEGACY_ANCHOR KurtosisAccumulator)$(REF KurtosisAccumulator, mir, stat, descriptive, univariate, skewness_kurtosis)
+        $(REF EntropyAccumulator, mir, stat, descriptive, univariate, entropies)
     ))
-    $(TR $(TD Algorithms) $(TD
-        $(LEGACY_ANCHOR KurtosisAlgo)$(REF KurtosisAlgo, mir, stat, descriptive, univariate, skewness_kurtosis)
-        $(LEGACY_ANCHOR MomentAlgo)$(REF MomentAlgo, mir, stat, descriptive, univariate, moments)
+    $(TR $(TD Algorithm selection) $(TD
         $(LEGACY_ANCHOR QuantileAlgo)$(REF QuantileAlgo, mir, stat, descriptive, univariate, quantiles)
         $(LEGACY_ANCHOR WeightedQuantileAlgo)$(REF WeightedQuantileAlgo, mir, stat, descriptive, univariate, quantiles)
-        $(LEGACY_ANCHOR SkewnessAlgo)$(REF SkewnessAlgo, mir, stat, descriptive, univariate, skewness_kurtosis)
+        $(REF VarianceAlgo, mir, stat, descriptive, univariate, dispersions)
+        $(LEGACY_ANCHOR MomentAlgo)$(REF MomentAlgo, mir, stat, descriptive, univariate, moments)
         $(LEGACY_ANCHOR StandardizedMomentAlgo)$(REF StandardizedMomentAlgo, mir, stat, descriptive, univariate, moments)
-        $(LEGACY_ANCHOR VarianceAlgo)$(REF VarianceAlgo, mir, stat, descriptive, univariate, dispersions)
+        $(LEGACY_ANCHOR SkewnessAlgo)$(REF SkewnessAlgo, mir, stat, descriptive, univariate, skewness_kurtosis)
+        $(LEGACY_ANCHOR KurtosisAlgo)$(REF KurtosisAlgo, mir, stat, descriptive, univariate, skewness_kurtosis)
     ))
-    $(TR $(TD Types) $(TD
-        $(LEGACY_ANCHOR entropyType)$(REF entropyType, mir, stat, descriptive, univariate, entropies)
-        $(LEGACY_ANCHOR gmeanType)$(REF gmeanType, mir, stat, descriptive, univariate, means)
-        $(LEGACY_ANCHOR hmeanType)$(REF hmeanType, mir, stat, descriptive, univariate, means)
-        $(LEGACY_ANCHOR meanType)$(REF meanType, mir, stat, descriptive, univariate, internal, types)
-        $(LEGACY_ANCHOR quantileType)$(REF quantileType, mir, stat, descriptive, univariate, quantiles)
-        $(LEGACY_ANCHOR statType)$(REF statType, mir, stat, descriptive, univariate, internal, types)
-        $(LEGACY_ANCHOR stdevType)$(REF stdevType, mir, stat, descriptive, univariate, internal, types)
+    $(TR $(TD Summation utility) $(TD
+        $(LEGACY_ANCHOR MapSummator)$(REF MapSummator, mir, stat, descriptive, univariate, internal, summation)
     ))
 ))
+
+$(B Internal type helpers)
+
+These helpers are internal to Mir: `quantileType` has `package(mir.stat)`
+visibility, and the others have `package(mir)` visibility. They are listed here
+for existing internal documentation links and are not public application APIs.
+
+$(UL
+    $(LI $(REF entropyType, mir, stat, descriptive, univariate, entropies))
+    $(LI $(LEGACY_ANCHOR gmeanType)$(REF gmeanType, mir, stat, descriptive, univariate, means))
+    $(LI $(LEGACY_ANCHOR hmeanType)$(REF hmeanType, mir, stat, descriptive, univariate, means))
+    $(LI $(LEGACY_ANCHOR meanType)$(REF meanType, mir, stat, descriptive, univariate, internal, types))
+    $(LI $(LEGACY_ANCHOR quantileType)$(REF quantileType, mir, stat, descriptive, univariate, quantiles))
+    $(LI $(LEGACY_ANCHOR statType)$(REF statType, mir, stat, descriptive, univariate, internal, types))
+    $(LI $(LEGACY_ANCHOR stdevType)$(REF stdevType, mir, stat, descriptive, univariate, internal, types))
+)
 
 License: $(HTTP www.apache.org/licenses/LICENSE-2.0, Apache-2.0)
 
 Several functions are borrowed from
 $(HTTP mir-algorithm.$(MIR_SITE)/mir_math_stat.html, mir.math.stat). An additional
-$(LEGACY_ANCHOR VarianceAlgo)$(REF VarianceAlgo, mir, stat, descriptive, univariate, dispersions) is provided in this code, which is the new default.
+$(REF VarianceAlgo, mir, stat, descriptive, univariate, dispersions) is provided in this code, which is the new default.
 
 Authors: John Michael Hall, Ilya Yaroshenko
 
