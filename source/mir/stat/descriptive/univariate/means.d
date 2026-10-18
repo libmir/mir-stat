@@ -102,8 +102,10 @@ struct MeanAccumulator(T, Summation summation)
     ///
     void put(F = T)(MeanAccumulator!(F, summation) m)
     {
+        import mir.stat.internal.summation : mergeSummator;
+
         count += m.count;
-        summator.put(cast(T) m.summator);
+        mergeSummator(summator, m.summator);
     }
 }
 
@@ -150,12 +152,155 @@ unittest
     assert(m0.mean == 29.25 / 12);
 }
 
+// Merging compensated sums must retain contributions below the rounded sum.
+version(mir_stat_test)
+@safe pure nothrow @nogc
+unittest
+{
+    import std.meta : AliasSeq;
+
+    static foreach (mode; AliasSeq!(Summation.kbn, Summation.kb2))
+    {{
+        MeanAccumulator!(double, mode) source, merged;
+        source.put(0x1p54);
+        source.put(1.0);
+        merged.put(source);
+        merged.put(-0x1p54);
+        assert(merged.count == 3);
+        assert(merged.sum == 1);
+        assert(merged.mean == 1.0 / 3);
+
+        // The merge must not consume or alter the source's corrections.
+        source.put(-0x1p54);
+        assert(source.sum == 1);
+        assert(source.count == 3);
+    }}
+}
+
+// Retain scalar merging for summators without a direct merge operation.
+version(mir_stat_test)
+@safe pure nothrow @nogc
+unittest
+{
+    alias Accumulator = MeanAccumulator!(double, Summation.decimal);
+    Accumulator source, merged;
+    source.put(1.0);
+    source.put(3.0);
+    merged.put(2.0);
+    merged.put(source);
+    assert(merged.count == 3 && merged.sum == 6);
+    assert(merged.mean == 2);
+    assert(source.count == 2 && source.sum == 4);
+    merged.put(Accumulator.init);
+    assert(merged.count == 3 && merged.sum == 6);
+    merged.put(merged);
+    assert(merged.count == 6 && merged.sum == 12);
+    assert(merged.mean == 2);
+}
+
+// Precise summation also retains overflow internally until later cancellation.
+// Copying this summator by value currently requires @system in mir-algorithm.
+version(mir_stat_test)
+pure nothrow @nogc
+unittest
+{
+    alias Accumulator = MeanAccumulator!(double, Summation.precise);
+    Accumulator source, merged;
+    source.put(double.max);
+    source.put(double.max);
+    source.put(1.0);
+    merged.put(source);
+    merged.put(-double.max);
+    merged.put(-double.max);
+    assert(merged.count == 5);
+    assert(merged.sum == 1);
+    assert(merged.mean == 0.2);
+
+    source.put(-double.max);
+    source.put(-double.max);
+    assert(source.sum == 1);
+
+    // Empty and self merges preserve the accumulated state and count.
+    merged.put(Accumulator.init);
+    assert(merged.count == 5 && merged.sum == 1);
+    merged.put(merged);
+    assert(merged.count == 10 && merged.sum == 2);
+    assert(merged.mean == 0.2);
+}
+
+// Retry a nonfinite floating-point mean without overflowing the raw sum.
+// The caller supplies an independently saved traversal of the same observations.
+private T recoverOverflowingMean(T, Range)(scope Range values, size_t count, T original)
+{
+    import std.math : abs, isFinite;
+
+    if (!count)
+        return original;
+
+    // A power of two at least twice the count leaves headroom for the large
+    // terms' sum. Multiplication by its reciprocal is exact unless it enters
+    // the subnormal range; keep those small terms in a separate unscaled sum.
+    T scale = 2;
+    for (size_t n = count - 1; n; n >>= 1)
+        scale *= 2;
+    const T inverse = 1 / scale;
+    const T threshold = T.min_normal * scale;
+    Summator!(T, Summation.precise) high, low;
+    T lower = T.infinity, upper = -T.infinity;
+    foreach (value; values)
+    {
+        const T x = cast(T) value;
+        // Genuine NaN/Inf inputs (including overflow on conversion to T) are
+        // not finite-input sum overflow. Preserve the original result.
+        if (!isFinite(x))
+            return original;
+        if (x < lower) lower = x;
+        if (x > upper) upper = x;
+        if (abs(x) < threshold)
+            low.put(x);
+        else
+            high.put(x * inverse);
+    }
+
+    const T highSum = high.sum;
+    const T unscaled = highSum * scale;
+    T result;
+    if (isFinite(unscaled))
+    {
+        // Cancellation can cross the two sums. Add the large subtotal to the
+        // still-precise small sum before rounding, so a tiny remainder is not
+        // lost by rounding the two opposing subtotals independently.
+        low.put(unscaled);
+        result = low.sum / cast(T) count;
+    }
+    else
+    {
+        // The unscaled subtotal itself overflows: divide before restoring its
+        // scale. At this magnitude the small sum cannot cancel the large one.
+        result = highSum * (scale / cast(T) count) + low.sum / cast(T) count;
+    }
+    // Rounding on rescaling must not leave the finite input interval.
+    return result < lower ? lower : result > upper ? upper : result;
+}
+
 /++
 Computes the mean of the input.
 
 By default, if `F` is not floating point type or complex type, then the result
 will have a `double` type if `F` is implicitly convertible to a floating point
 type or a type for which `isComplex!F` is true.
+
+For built-in floating-point results, a nonfinite result is retried with
+scaled precise summation when the input can be traversed again. This supports
+arrays, slices whose flattened view is a forward range, and other forward
+ranges. For example, the mean of two maximum finite values is still that
+maximum value, even though their sum overflows. A forward range's saved
+traversal must yield the same observations as the first traversal.
+
+The retry preserves the original result if an observation is nonfinite after
+conversion to the result type. Finite results use the selected summation
+algorithm without a retry; this is not a general correction for cancellation
+error. Single-pass inputs and $(LREF MeanAccumulator) do not retry.
 
 Params:
     F = controls type of output
@@ -169,7 +314,7 @@ See_also:
 template mean(F, Summation summation = Summation.appropriate)
 {
     import core.lifetime: move;
-    import std.traits: isIterable;
+    import std.traits: isIterable, isFloatingPoint;
 
     /++
     Params:
@@ -180,8 +325,28 @@ template mean(F, Summation summation = Summation.appropriate)
     {
         alias G = typeof(return);
         MeanAccumulator!(G, ResolveSummationType!(summation, Range, G)) mean;
+        static if (isFloatingPoint!G)
+        {
+            import std.range.primitives : isForwardRange, save;
+            static if (isSlice!Range)
+            {
+                import mir.ndslice.topology : flattened;
+                auto flat = r.flattened;
+                static if (isForwardRange!(typeof(flat)))
+                    auto saved = flat.save;
+            }
+            else static if (isForwardRange!Range)
+                auto saved = r.save;
+        }
         mean.put(r.move);
-        return mean.mean;
+        const result = mean.mean;
+        static if (__traits(compiles, saved))
+        {
+            import std.math : isFinite;
+            if (!isFinite(result))
+                return recoverOverflowingMean!G(saved.move, mean.count, result);
+        }
+        return result;
     }
 
     /++
@@ -193,7 +358,14 @@ template mean(F, Summation summation = Summation.appropriate)
         alias G = typeof(return);
         MeanAccumulator!(G, ResolveSummationType!(summation, const(G)[], G)) mean;
         mean.put(ar);
-        return mean.mean;
+        const result = mean.mean;
+        static if (isFloatingPoint!G)
+        {
+            import std.math : isFinite;
+            if (!isFinite(result))
+                return recoverOverflowingMean!G(ar, mean.count, result);
+        }
+        return result;
     }
 }
 
@@ -235,6 +407,93 @@ template mean(F, string summation)
 template mean(string summation)
 {
     mixin("alias mean = .mean!(Summation." ~ summation ~ ");");
+}
+
+// Finite observations can have a representable mean but an overflowing sum.
+version(mir_stat_test)
+@safe pure nothrow @nogc
+unittest
+{
+    import std.meta : AliasSeq;
+    import std.math : isNaN;
+    import mir.ndslice.slice : sliced;
+    import mir.ndslice.dynamic : transposed;
+
+    static foreach (T; AliasSeq!(float, double, real))
+    static foreach (mode; AliasSeq!(Summation.naive, Summation.pairwise,
+        Summation.kbn, Summation.kb2, Summation.precise))
+    {{
+        T[4] values = [T.max, T.max, T.max, T.max];
+        assert(mean!(T, mode)(values[]) == T.max);
+        assert(mean!(T, mode)(T.max, T.max) == T.max);
+        assert(mean!(T, mode)(values[].sliced) == T.max);
+        assert(mean!(T, mode)(values[].sliced(2, 2).transposed) == T.max);
+        assert(mean!(T, mode)(values[].sliced(2, 2).transposed[0]) == T.max);
+        values[] = -T.max;
+        assert(mean!(T, mode)(values[]) == -T.max);
+
+        T[] empty;
+        assert(isNaN(mean!(T, mode)(empty)));
+        assert(isNaN(mean!(T, mode)(T.nan, T(1))));
+        // Preserve the selected summator's handling of infinities.
+        MeanAccumulator!(T, mode) original;
+        original.put(T.infinity);
+        original.put(T(1));
+        const actual = mean!(T, mode)(T.infinity, T(1));
+        assert(isNaN(original.mean) ? isNaN(actual) : original.mean == actual);
+    }}
+
+    static foreach (T; AliasSeq!(float, double, real))
+    {{
+        // Dividing every input first would erase this subnormal remainder.
+        const T tiny = T.min_normal * T.epsilon;
+        T[9] values = [T.max, T.max, -T.max, -T.max,
+            tiny, tiny, tiny, tiny, tiny];
+        assert(mean!(T, Summation.naive)(values[]) == tiny);
+
+        // Cancellation between the scaled and unscaled groups must happen
+        // before their subtotals are rounded. The exact mean is 5/9 * tiny,
+        // which rounds to tiny rather than zero.
+        const T boundary = T.min_normal * 32;
+        T[9] cross = [T.max, T.max, -T.max, -T.max,
+            boundary, -boundary / 2, -boundary / 2, 5 * tiny, 0];
+        assert(mean!(T, Summation.naive)(cross[]) == tiny);
+        cross[] = -cross[];
+        assert(mean!(T, Summation.naive)(cross[]) == -tiny);
+    }}
+    // Conversion overflow is not repaired as if it were sum overflow.
+    assert(mean!float(double.max, double.max) == float.infinity);
+}
+
+// Save forward ranges before the first pass advances a shared cursor.
+version(mir_stat_test)
+unittest
+{
+    static struct Forward
+    {
+        const(double)[] data;
+        size_t* position;
+        size_t ownPosition;
+        bool empty() const { return (position ? *position : ownPosition) == data.length; }
+        double front() const { return data[position ? *position : ownPosition]; }
+        void popFront() { if (position) ++*position; else ++ownPosition; }
+        auto save() { return Forward(data, null, position ? *position : ownPosition); }
+    }
+    static struct Single
+    {
+        const(double)[] data;
+        size_t* position;
+        bool empty() const { return *position == data.length; }
+        double front() const { return data[*position]; }
+        void popFront() { ++*position; }
+    }
+    double[2] values = [double.max, double.max];
+    size_t position;
+    assert(mean(Forward(values[], &position)) == double.max);
+    assert(position == 2);
+    position = 0;
+    assert(mean(Single(values[], &position)) == double.infinity);
+    assert(position == 2);
 }
 
 ///
