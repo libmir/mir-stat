@@ -1,5 +1,40 @@
 /++
-Univariate quantiles and associated algorithms.
+Medians, ordinary and weighted quantiles, and robust measures of spread.
+
+Choose an ordinary or weighted quantile function for the input data.
+The `rc` and `make` variants provide allocation choices; $(REF quantileInto, mir, stat, descriptive, univariate, quantiles)
+writes into caller-provided output. The algorithm enums describe the available
+quantile definitions.
+
+Import `mir.stat.descriptive.univariate.quantiles` directly, or use
+$(MREF mir,stat,descriptive,univariate) for the complete univariate API.
+
+$(SCRIPT inhibitQuickIndex = 1;)
+
+$(DIVC quickindex,
+$(BOOKTABLE,
+$(TR $(TH Category) $(TH Declarations))
+    $(TR $(TD Ordinary quantiles) $(TD
+        $(REF median, mir, stat, descriptive, univariate, quantiles)$(NBSP)
+        $(REF quantile, mir, stat, descriptive, univariate, quantiles)$(NBSP)
+        $(REF rcquantile, mir, stat, descriptive, univariate, quantiles)$(NBSP)
+        $(REF makeQuantile, mir, stat, descriptive, univariate, quantiles)$(NBSP)
+        $(REF quantileInto, mir, stat, descriptive, univariate, quantiles)$(NBSP)
+    ))
+    $(TR $(TD Weighted quantiles) $(TD
+        $(REF weightedQuantile, mir, stat, descriptive, univariate, quantiles)$(NBSP)
+        $(REF rcWeightedQuantile, mir, stat, descriptive, univariate, quantiles)$(NBSP)
+        $(REF makeWeightedQuantile, mir, stat, descriptive, univariate, quantiles)$(NBSP)
+    ))
+    $(TR $(TD Measures of spread) $(TD
+        $(REF interquartileRange, mir, stat, descriptive, univariate, quantiles)$(NBSP)
+        $(REF medianAbsoluteDeviation, mir, stat, descriptive, univariate, quantiles)$(NBSP)
+    ))
+    $(TR $(TD Algorithm selection) $(TD
+        $(REF QuantileAlgo, mir, stat, descriptive, univariate, quantiles)$(NBSP)
+        $(REF WeightedQuantileAlgo, mir, stat, descriptive, univariate, quantiles)$(NBSP)
+    ))
+))
 
 License: $(HTTP www.apache.org/licenses/LICENSE-2.0, Apache-2.0)
 Authors: John Michael Hall, Ilya Yaroshenko

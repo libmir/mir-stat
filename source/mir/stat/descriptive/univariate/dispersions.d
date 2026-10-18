@@ -1,5 +1,31 @@
 /++
-Univariate dispersion and associated algorithms.
+Variance, standard deviation, and related measures of dispersion.
+
+Use the named functions for standard summaries, or $(REF dispersion, mir, stat, descriptive, univariate, dispersions)
+to choose the centering, transformation, and summary operations.
+$(REF VarianceAlgo, mir, stat, descriptive, univariate, dispersions) selects the variance calculation algorithm.
+
+Import `mir.stat.descriptive.univariate.dispersions` directly, or use
+$(MREF mir,stat,descriptive,univariate) for the complete univariate API.
+
+$(SCRIPT inhibitQuickIndex = 1;)
+
+$(DIVC quickindex,
+$(BOOKTABLE,
+$(TR $(TH Category) $(TH Declarations))
+    $(TR $(TD Functions) $(TD
+        $(REF variance, mir, stat, descriptive, univariate, dispersions)$(NBSP)
+        $(REF standardDeviation, mir, stat, descriptive, univariate, dispersions)$(NBSP)
+        $(REF coefficientOfVariation, mir, stat, descriptive, univariate, dispersions)$(NBSP)
+        $(REF dispersion, mir, stat, descriptive, univariate, dispersions)$(NBSP)
+    ))
+    $(TR $(TD Accumulator) $(TD
+        $(REF VarianceAccumulator, mir, stat, descriptive, univariate, dispersions)$(NBSP)
+    ))
+    $(TR $(TD Algorithm selection) $(TD
+        $(REF VarianceAlgo, mir, stat, descriptive, univariate, dispersions)$(NBSP)
+    ))
+))
 
 License: $(HTTP www.apache.org/licenses/LICENSE-2.0, Apache-2.0)
 Authors: John Michael Hall, Ilya Yaroshenko

@@ -1,5 +1,24 @@
 /++
-Univariate entropy and associated algorithms.
+Entropy and its accumulator.
+
+Use $(REF entropy, mir, stat, descriptive, univariate, entropies) for a range or array, or $(REF EntropyAccumulator, mir, stat, descriptive, univariate, entropies)
+to accumulate contributions through `put`.
+
+Import `mir.stat.descriptive.univariate.entropies` directly, or use
+$(MREF mir,stat,descriptive,univariate) for the complete univariate API.
+
+$(SCRIPT inhibitQuickIndex = 1;)
+
+$(DIVC quickindex,
+$(BOOKTABLE,
+$(TR $(TH Category) $(TH Declarations))
+    $(TR $(TD Function) $(TD
+        $(REF entropy, mir, stat, descriptive, univariate, entropies)$(NBSP)
+    ))
+    $(TR $(TD Accumulator) $(TD
+        $(REF EntropyAccumulator, mir, stat, descriptive, univariate, entropies)$(NBSP)
+    ))
+))
 
 License: $(HTTP www.apache.org/licenses/LICENSE-2.0, Apache-2.0)
 Authors: John Michael Hall, Ilya Yaroshenko

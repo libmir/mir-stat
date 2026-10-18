@@ -1,8 +1,34 @@
 /++
 Raw, central, and standardized moments.
 
+Select the moment order with the template parameter `N`. Use a named moment
+function or $(REF moment, mir, stat, descriptive, univariate, moments) with $(REF MomentAlgo, mir, stat, descriptive, univariate, moments) to select the kind of moment.
+
 Skewness and kurtosis are implemented in $(MREF mir,stat,descriptive,univariate,skewness_kurtosis)
 and re-exported here for compatibility.
+
+Import `mir.stat.descriptive.univariate.moments` directly, or use
+$(MREF mir,stat,descriptive,univariate) for the complete univariate API.
+
+$(SCRIPT inhibitQuickIndex = 1;)
+
+$(DIVC quickindex,
+$(BOOKTABLE,
+$(TR $(TH Category) $(TH Declarations))
+    $(TR $(TD Functions) $(TD
+        $(REF rawMoment, mir, stat, descriptive, univariate, moments)$(NBSP)
+        $(REF centralMoment, mir, stat, descriptive, univariate, moments)$(NBSP)
+        $(REF standardizedMoment, mir, stat, descriptive, univariate, moments)$(NBSP)
+        $(REF moment, mir, stat, descriptive, univariate, moments)$(NBSP)
+    ))
+    $(TR $(TD Accumulator) $(TD
+        $(REF MomentAccumulator, mir, stat, descriptive, univariate, moments)$(NBSP)
+    ))
+    $(TR $(TD Algorithm selection) $(TD
+        $(REF MomentAlgo, mir, stat, descriptive, univariate, moments)$(NBSP)
+        $(REF StandardizedMomentAlgo, mir, stat, descriptive, univariate, moments)$(NBSP)
+    ))
+))
 
 $(SCRIPT
 // Preserve links to shape statistics previously documented on this page.

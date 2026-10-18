@@ -1,5 +1,27 @@
 /++
-Univariate means and associated algorithms.
+Arithmetic, geometric, and harmonic means.
+
+Use the functions to summarize a range or array. The accumulator types
+provide the corresponding arithmetic and geometric mean operations through `put`.
+
+Import `mir.stat.descriptive.univariate.means` directly, or use
+$(MREF mir,stat,descriptive,univariate) for the complete univariate API.
+
+$(SCRIPT inhibitQuickIndex = 1;)
+
+$(DIVC quickindex,
+$(BOOKTABLE,
+$(TR $(TH Category) $(TH Declarations))
+    $(TR $(TD Functions) $(TD
+        $(REF mean, mir, stat, descriptive, univariate, means)$(NBSP)
+        $(REF gmean, mir, stat, descriptive, univariate, means)$(NBSP)
+        $(REF hmean, mir, stat, descriptive, univariate, means)$(NBSP)
+    ))
+    $(TR $(TD Accumulators) $(TD
+        $(REF MeanAccumulator, mir, stat, descriptive, univariate, means)$(NBSP)
+        $(REF GMeanAccumulator, mir, stat, descriptive, univariate, means)$(NBSP)
+    ))
+))
 
 License: $(HTTP www.apache.org/licenses/LICENSE-2.0, Apache-2.0)
 Authors: John Michael Hall, Ilya Yaroshenko

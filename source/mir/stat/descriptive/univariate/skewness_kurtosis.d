@@ -1,5 +1,32 @@
 /++
-Skewness and kurtosis: measures of distribution shape.
+Skewness and kurtosis.
+
+Use $(REF skewness, mir, stat, descriptive, univariate, skewness_kurtosis) and $(REF kurtosis, mir, stat, descriptive, univariate, skewness_kurtosis) to summarize distribution shape.
+Each statistic has an accumulator type and an enum selecting its calculation
+algorithm. See the function parameters for population and sample conventions
+and for raw versus excess kurtosis.
+
+Import `mir.stat.descriptive.univariate.skewness_kurtosis` directly, or use
+$(MREF mir,stat,descriptive,univariate) for the complete univariate API.
+
+$(SCRIPT inhibitQuickIndex = 1;)
+
+$(DIVC quickindex,
+$(BOOKTABLE,
+$(TR $(TH Category) $(TH Declarations))
+    $(TR $(TD Functions) $(TD
+        $(REF skewness, mir, stat, descriptive, univariate, skewness_kurtosis)$(NBSP)
+        $(REF kurtosis, mir, stat, descriptive, univariate, skewness_kurtosis)$(NBSP)
+    ))
+    $(TR $(TD Accumulators) $(TD
+        $(REF SkewnessAccumulator, mir, stat, descriptive, univariate, skewness_kurtosis)$(NBSP)
+        $(REF KurtosisAccumulator, mir, stat, descriptive, univariate, skewness_kurtosis)$(NBSP)
+    ))
+    $(TR $(TD Algorithm selection) $(TD
+        $(REF SkewnessAlgo, mir, stat, descriptive, univariate, skewness_kurtosis)$(NBSP)
+        $(REF KurtosisAlgo, mir, stat, descriptive, univariate, skewness_kurtosis)$(NBSP)
+    ))
+))
 
 License: $(HTTP www.apache.org/licenses/LICENSE-2.0, Apache-2.0)
 Authors: John Michael Hall, Ilya Yaroshenko
