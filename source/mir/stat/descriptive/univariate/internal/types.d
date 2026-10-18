@@ -1,5 +1,26 @@
 /++
-Univariate types and associated algorithms.
+Shared result-type helpers for univariate statistics.
+
+These templates select result types for the statistical implementations. All
+three have `package(mir)` visibility and are intended for use inside Mir;
+they are not public application APIs. See $(MREF mir,stat,descriptive,univariate)
+for the public statistical functions.
+
+$(SCRIPT inhibitQuickIndex = 1;)
+
+$(DIVC quickindex,
+$(BOOKTABLE,
+$(TR $(TH Helper) $(TH Purpose))
+    $(TR $(TD $(REF statType, mir, stat, descriptive, univariate, internal, types))
+        $(TD Select an unqualified floating-point result type, promote types
+        convertible to `double`, or handle supported complex types when enabled.))
+    $(TR $(TD $(REF meanType, mir, stat, descriptive, univariate, internal, types))
+        $(TD Infer a mean result type from the summation type and its arithmetic
+        operations, then apply $(REF statType, mir, stat, descriptive, univariate, internal, types).))
+    $(TR $(TD $(REF stdevType, mir, stat, descriptive, univariate, internal, types))
+        $(TD Use $(REF meanType, mir, stat, descriptive, univariate, internal, types)
+        and require a floating-point result for standard deviation and related statistics.))
+))
 
 License: $(HTTP www.apache.org/licenses/LICENSE-2.0, Apache-2.0)
 Authors: John Michael Hall, Ilya Yaroshenko

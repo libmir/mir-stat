@@ -1,5 +1,15 @@
 /++
-Univariate summation and associated algorithms.
+Summation of transformed inputs.
+
+$(REF MapSummator, mir, stat, descriptive, univariate, internal, summation)
+applies a function to each input before adding it to a summator. Supply values
+or ranges through `put` and retrieve the accumulated result through `sum`.
+Its template parameters select the transformation, element type, and summation
+algorithm.
+
+Although implemented in an internal module, `MapSummator` remains public and
+is re-exported by $(MREF mir,stat,descriptive,univariate). Existing applications
+can continue to import it through that package.
 
 License: $(HTTP www.apache.org/licenses/LICENSE-2.0, Apache-2.0)
 Authors: John Michael Hall, Ilya Yaroshenko
