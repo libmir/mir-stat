@@ -903,8 +903,10 @@ T studentsTLPDFFallback(T)(const T x, const T nu)
         return normalLPDF(x);
     const T square = x * x;
     T ratio = square / nu;
-    if (ratio == T.infinity)
+    if (ratio == T.infinity || (x != 0 && nu < 1 && square < T.min_normal))
     {
+        // A subnormal square can lose significant bits before division by
+        // a tiny nu restores the ratio. Rescale before squaring instead.
         const T scaled = fabs(x) / sqrt(nu);
         ratio = scaled * scaled;
     }
@@ -1135,4 +1137,48 @@ version(mir_stat_test)
     // turn a truly out-of-range result into a finite quantile.
     assert(studentsTInvCDF(p, 1.0, -double.max, 1e-11) == -double.infinity);
     assert(studentsTInvCDF(p, 1.0, double.max, 1e-10) == -double.infinity);
+}
+
+// Tiny degrees of freedom can make an underflowed square significant again.
+version(mir_stat_test)
+@safe pure nothrow @nogc unittest
+{
+    import std.meta: AliasSeq;
+    import std.math: nextDown, nextUp;
+    import mir.math.common: approxEqual, fabs, log, sqrt;
+    static foreach (T; AliasSeq!(float, double, real))
+    {{
+        foreach (nu; [T.min_normal * T.epsilon, T.min_normal / 2, T.min_normal * 2])
+        {
+            const T root = sqrt(nu);
+            // At these nu, the normalization is sqrt(nu)/2 to working
+            // precision. Its logarithmic evaluation sets the error scale.
+            const T tolerance = 8 * T.epsilon * fabs(log(nu));
+            foreach (factor; [T(0), T(.25), T(.5), T(1), T(1.5), T(2)])
+            {
+                const T x = root * factor;
+                const T expected = (root / 2) / sqrt(1 + factor * factor);
+                foreach (v; [x, -x])
+                {
+                    assert(approxEqual(studentsTPDF(v, nu), expected, tolerance, T(0)));
+                    assert(fabs(studentsTLPDF(v, nu) - log(expected)) <= tolerance);
+                }
+            }
+        }
+        // Check both sides of the normal/subnormal square boundary.
+        const T root = sqrt(T.min_normal);
+        const T nu = T.min_normal / 2;
+        foreach (x; [nextDown(root), root, nextUp(root)])
+        {
+            const T factor = x / root;
+            const T expected = (sqrt(nu) / 2) / sqrt(1 + 2 * factor * factor);
+            assert(approxEqual(studentsTPDF(x, nu), expected,
+                8 * T.epsilon * fabs(log(nu)), T(0)));
+        }
+    }}
+    // 100-digit reference for exact binary x=2^-538 and nu=2^-1074.
+    assert(approxEqual(studentsTPDF(0x1p-538, 0x1p-1074),
+        9.940479322862117841371961127712731866e-163, 2e-13, 0.0));
+    assert(fabs(studentsTLPDF(0x1p-538, 0x1p-1074)
+        - (-373.02475491690768134435402888965391)) < 2e-13);
 }
