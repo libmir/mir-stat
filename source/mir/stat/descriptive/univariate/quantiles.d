@@ -567,10 +567,10 @@ enum QuantileAlgo {
 }
 
 /++
-For all $(LREF QuantileAlgo) except $(LREF QuantileAlgo.type1) and $(LREF QuantileAlgo.type3),
+For all $(LREF QuantileAlgo) except $(LINK2 #.QuantileAlgo.type1, $(D QuantileAlgo.type1)) and $(LINK2 #.QuantileAlgo.type3, $(D QuantileAlgo.type3)),
 this is an alias to the $(MATHREF stat, meanType) of `T`
 
-For $(LREF QuantileAlgo.type1) and $(LREF QuantileAlgo.type3), this is an alias to the
+For $(LINK2 #.QuantileAlgo.type1, $(D QuantileAlgo.type1)) and $(LINK2 #.QuantileAlgo.type3, $(D QuantileAlgo.type3)), this is an alias to the
 $(MATHREF sum, elementType) of `T`.
 +/
 package(mir.stat)
@@ -919,7 +919,7 @@ enum WeightedQuantileAlgo
 
     No interpolation is performed. Equal values contribute their combined mass.
     With equal positive weights this corresponds mathematically to
-    $(LREF QuantileAlgo.type1), not the type7 default of $(LREF quantile).
+    $(LINK2 #.QuantileAlgo.type1, $(D QuantileAlgo.type1)), not the type7 default of $(LREF quantile).
     Quantiles can jump when a probability crosses a cumulative-weight boundary.
     +/
     inverseCDF,
@@ -1009,7 +1009,7 @@ enum WeightedQuantileAlgo
     with $(TT [(h-1)/nEff, h/nEff]), divided by the width $(TT 1/nEff).
     The estimate is the sum of these coefficients times observations.
 
-    Equal weights recover $(LREF QuantileAlgo.type7). Unequal weights can
+    Equal weights recover $(LINK2 #.QuantileAlgo.type7, $(D QuantileAlgo.type7)). Unequal weights can
     give contributions from more than two observations. This definition uses
     probability weights, not replication counts. Rescaling all weights has no
     mathematical effect, while splitting a row can change nEff and the result.
@@ -1040,7 +1040,7 @@ enum WeightedQuantileAlgo
     Uses the same uniform-interval construction as $(LREF type7), with
     $(TT h = (nEff + 1/3)*p + 1/3), clamped to [1, nEff].
 
-    Equal weights recover $(LREF QuantileAlgo.type8). The approximate
+    Equal weights recover $(LINK2 #.QuantileAlgo.type8, $(D QuantileAlgo.type8)). The approximate
     median-unbiasedness of unweighted type 8 is not promised for arbitrary
     weights. The weight, output-type, and endpoint rules of $(LREF type7)
     apply, including possible jumps at p=0 and p=1. Clamping h can produce
@@ -1063,7 +1063,7 @@ enum WeightedQuantileAlgo
     Otherwise return the selected value. Zero-weight rows are ignored.
 
     For equal positive weights this agrees mathematically with
-    $(LREF QuantileAlgo.type2). For example, the median of equally weighted
+    $(LINK2 #.QuantileAlgo.type2, $(D QuantileAlgo.type2)). For example, the median of equally weighted
     [0,10] is 5. A boundary inside a group of equal values does not trigger
     averaging with the next distinct value. This estimator remains discontinuous
     when probabilities or weights cross a cumulative-weight boundary.
@@ -1113,7 +1113,7 @@ enum WeightedQuantileAlgo
     Compute ordinary type 8 quantiles from observations stored with occurrence counts.
 
     Use this for the same frequency-table inputs as $(LREF frequencyType7)
-    when the desired unweighted quantile convention is $(LREF QuantileAlgo.type8).
+    when the desired unweighted quantile convention is $(LINK2 #.QuantileAlgo.type8, $(D QuantileAlgo.type8)).
     For example, if survey ratings are stored with the number of responses for
     each rating, this produces type 8 quantiles of those responses without
     allocating one observation per response. Choose $(LREF type8) when the
@@ -1578,7 +1578,7 @@ private auto dispatchWeightedQuantile(F, WeightedQuantileAlgo algorithm,
 Compute weighted quantile estimates with GC-allocated scratch and results.
 
 Use weights to change the probability mass assigned to observations, for example
-when reweighting simulated outcomes. $(LREF WeightedQuantileAlgo.inverseCDF)
+when reweighting simulated outcomes. $(LINK2 #.WeightedQuantileAlgo.inverseCDF, $(D WeightedQuantileAlgo.inverseCDF))
 returns observed values without interpolation; it is the default.
 
 Weights and observations must be one-dimensional arrays or Mir slices of equal
@@ -1635,7 +1635,7 @@ template weightedQuantile(F, WeightedQuantileAlgo algorithm = WeightedQuantileAl
     /++
     Params:
         weights = relative probability masses, or nonnegative whole-number occurrence counts
-            for $(LREF WeightedQuantileAlgo.frequencyType7) and $(LREF WeightedQuantileAlgo.frequencyType8)
+            for $(LINK2 #.WeightedQuantileAlgo.frequencyType7, $(D WeightedQuantileAlgo.frequencyType7)) and $(LINK2 #.WeightedQuantileAlgo.frequencyType8, $(D WeightedQuantileAlgo.frequencyType8))
         data = observations corresponding to the weights
         probabilities = scalar, array/slice, or variadic probabilities; omitted for quartiles
     +/
@@ -1655,7 +1655,7 @@ template weightedQuantile(WeightedQuantileAlgo algorithm = WeightedQuantileAlgo.
     /++
     Params:
         weights = relative probability masses, or nonnegative whole-number occurrence counts
-            for $(LREF WeightedQuantileAlgo.frequencyType7) and $(LREF WeightedQuantileAlgo.frequencyType8)
+            for $(LINK2 #.WeightedQuantileAlgo.frequencyType7, $(D WeightedQuantileAlgo.frequencyType7)) and $(LINK2 #.WeightedQuantileAlgo.frequencyType8, $(D WeightedQuantileAlgo.frequencyType8))
         data = observations corresponding to the weights
         probabilities = scalar, array/slice, or variadic probabilities; omitted for quartiles
     +/
@@ -1770,7 +1770,7 @@ template rcWeightedQuantile(F, WeightedQuantileAlgo algorithm = WeightedQuantile
     /++
     Params:
         weights = relative probability masses, or nonnegative whole-number occurrence counts
-            for $(LREF WeightedQuantileAlgo.frequencyType7) and $(LREF WeightedQuantileAlgo.frequencyType8)
+            for $(LINK2 #.WeightedQuantileAlgo.frequencyType7, $(D WeightedQuantileAlgo.frequencyType7)) and $(LINK2 #.WeightedQuantileAlgo.frequencyType8, $(D WeightedQuantileAlgo.frequencyType8))
         data = observations corresponding to the weights
         probabilities = scalar, array/slice, or variadic probabilities; omitted for quartiles
     +/
@@ -1790,7 +1790,7 @@ template rcWeightedQuantile(WeightedQuantileAlgo algorithm = WeightedQuantileAlg
     /++
     Params:
         weights = relative probability masses, or nonnegative whole-number occurrence counts
-            for $(LREF WeightedQuantileAlgo.frequencyType7) and $(LREF WeightedQuantileAlgo.frequencyType8)
+            for $(LINK2 #.WeightedQuantileAlgo.frequencyType7, $(D WeightedQuantileAlgo.frequencyType7)) and $(LINK2 #.WeightedQuantileAlgo.frequencyType8, $(D WeightedQuantileAlgo.frequencyType8))
         data = observations corresponding to the weights
         probabilities = scalar, array/slice, or variadic probabilities; omitted for quartiles
     +/
@@ -1837,7 +1837,7 @@ template makeWeightedQuantile(F, WeightedQuantileAlgo algorithm = WeightedQuanti
     Params:
         allocator = allocator for scratch and result storage
         weights = relative probability masses, or nonnegative whole-number occurrence counts
-            for $(LREF WeightedQuantileAlgo.frequencyType7) and $(LREF WeightedQuantileAlgo.frequencyType8)
+            for $(LINK2 #.WeightedQuantileAlgo.frequencyType7, $(D WeightedQuantileAlgo.frequencyType7)) and $(LINK2 #.WeightedQuantileAlgo.frequencyType8, $(D WeightedQuantileAlgo.frequencyType8))
         data = observations corresponding to the weights
         probabilities = scalar, array/slice, or variadic probabilities; omitted for quartiles
     +/
@@ -1857,7 +1857,7 @@ template makeWeightedQuantile(WeightedQuantileAlgo algorithm = WeightedQuantileA
     Params:
         allocator = allocator for scratch and result storage
         weights = relative probability masses, or nonnegative whole-number occurrence counts
-            for $(LREF WeightedQuantileAlgo.frequencyType7) and $(LREF WeightedQuantileAlgo.frequencyType8)
+            for $(LINK2 #.WeightedQuantileAlgo.frequencyType7, $(D WeightedQuantileAlgo.frequencyType7)) and $(LINK2 #.WeightedQuantileAlgo.frequencyType8, $(D WeightedQuantileAlgo.frequencyType8))
         data = observations corresponding to the weights
         probabilities = scalar, array/slice, or variadic probabilities; omitted for quartiles
     +/
@@ -3835,17 +3835,17 @@ By default, this function computes the result using $(LREF quantile), i.e.
 providing a low value, as in `result = quantile(x, 1 - low) - quantile(x, low)`
 and both a low and high value, as in `result = quantile(x, high) - quantile(x, low)`.
 
-For all $(LREF QuantileAlgo) except $(LREF QuantileAlgo.type1) and $(LREF QuantileAlgo.type3),
+For all $(LREF QuantileAlgo) except $(LINK2 #.QuantileAlgo.type1, $(D QuantileAlgo.type1)) and $(LINK2 #.QuantileAlgo.type3, $(D QuantileAlgo.type3)),
 by default, if `F` is not floating point type or complex type, then the result
 will have a `double` type if `F` is implicitly convertible to a floating point
 type or a type for which `isComplex!F` is true.
 
-For $(LREF QuantileAlgo.type1) and $(LREF QuantileAlgo.type3), the return type is the
+For $(LINK2 #.QuantileAlgo.type1, $(D QuantileAlgo.type1)) and $(LINK2 #.QuantileAlgo.type3, $(D QuantileAlgo.type3)), the return type is the
 $(MATHREF sum, elementType) of the input.
 
 Params:
     F = controls type of output
-    quantileAlgo = algorithm for calculating quantile (default: $(LREF QuantileAlgo.type7))
+    quantileAlgo = algorithm for calculating quantile (default: $(LINK2 #.QuantileAlgo.type7, $(D QuantileAlgo.type7)))
     allowModifySlice = controls whether the input is modified in place, default is false
 
 Returns:
