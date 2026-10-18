@@ -1634,6 +1634,24 @@ unittest
     assert(position == 3);
 }
 
+// Preserve assumeZeroMean's existing boundary results when recovery has no scale.
+// Unlike the centered algorithms, this algorithm has no minimum-count contract.
+version(mir_stat_test)
+@safe pure nothrow @nogc
+unittest
+{
+    import std.math : isNaN;
+
+    double[] empty;
+    // Population variance divides zero by zero; recovery must not read front.
+    assert(empty.standardDeviation!(VarianceAlgo.assumeZeroMean)(true).isNaN);
+    // A singleton sample also divides zero by zero. All observations are zero,
+    // so scaling cannot recover a standard deviation from the NaN variance.
+    double[1] zero = [0.0];
+    assert(zero[].standardDeviation!(VarianceAlgo.assumeZeroMean).isNaN);
+    assert(zero[].standardDeviation!(VarianceAlgo.assumeZeroMean)(true) == 0);
+}
+
 // Recover standard deviations whose squared values are outside the type's range.
 version(mir_stat_test)
 @safe pure nothrow @nogc
