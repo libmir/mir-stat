@@ -20,6 +20,8 @@ Copyright: 2023 Mir Stat Authors.
 
 module mir.stat.distribution.laplace;
 
+import mir.stat.internal.standardize: standardize;
+
 import mir.internal.utility: isFloatingPoint;
 
 /++
@@ -86,7 +88,7 @@ T laplacePDF(T)(const T x, const T location, const T scale)
     in (scale > 0, "scale must be greater than zero")
 {
     import mir.math.common: exp, fabs;
-    const T z = standardizedLaplace(x, location, scale);
+    const T z = standardize(x, location, scale);
     const T density = laplacePDF(z);
     // Scaling can recover a representable result after the standard density
     // has underflowed or lost precision in the subnormal range.
@@ -276,7 +278,7 @@ T laplaceCDF(T)(const T x, const T location, const T scale)
     if (isFloatingPoint!T)
     in (scale > 0, "scale must be greater than zero")
 {
-    return laplaceCDF(standardizedLaplace(x, location, scale));
+    return laplaceCDF(standardize(x, location, scale));
 }
 
 ///
@@ -362,7 +364,7 @@ T laplaceCCDF(T)(const T x, const T location, const T scale)
     if (isFloatingPoint!T)
     in (scale > 0, "scale must be greater than zero")
 {
-    return laplaceCCDF(standardizedLaplace(x, location, scale));
+    return laplaceCCDF(standardize(x, location, scale));
 }
 
 ///
@@ -548,7 +550,7 @@ T laplaceLPDF(T)(const T x, const T location, const T scale)
 {
     import mir.math.common: log;
 
-    return laplaceLPDF(standardizedLaplace(x, location, scale)) - log(scale);
+    return laplaceLPDF(standardize(x, location, scale)) - log(scale);
 }
 
 ///
@@ -571,18 +573,6 @@ unittest
     laplaceLPDF(-1.0, 2.0, 3.0).shouldApprox == log(0.06131324);
     laplaceLPDF(1.0, 2.0, 3.0).shouldApprox == log(0.1194219);
     laplaceLPDF(4.0, 2.0, 3.0).shouldApprox == log(0.08556952);
-}
-
-// Divide first only when subtracting finite opposite-signed values overflows.
-// In that case the divisions cannot cancel infinities of the same sign.
-private @safe pure nothrow @nogc
-T standardizedLaplace(T)(const T x, const T location, const T scale)
-{
-    import mir.math.common: fabs;
-    const T delta = x - location;
-    if (fabs(delta) == T.infinity && fabs(x) <= T.max && fabs(location) <= T.max)
-        return x / scale - location / scale;
-    return delta / scale;
 }
 
 // Finite location and scale can compensate for overflowing intermediates.

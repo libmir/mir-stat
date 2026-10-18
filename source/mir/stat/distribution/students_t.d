@@ -26,6 +26,8 @@ Copyright: 2022-3 Mir Stat Authors.
 
 module mir.stat.distribution.students_t;
 
+import mir.stat.internal.standardize: standardize, logDistance;
+
 import mir.internal.utility: isFloatingPoint;
 
 /++
@@ -98,7 +100,7 @@ T studentsTPDF(T)(const T x, const T nu, const T mean, const T stdDev)
     in (stdDev > 0, "stdDev must be greater than zero")
 {
     import mir.math.common: exp;
-    const T z = standardizedStudentT(x, mean, stdDev);
+    const T z = standardize(x, mean, stdDev);
     const T density = studentsTPDF(z, nu);
     if (density < T.min_normal && stdDev < 1)
         return exp(studentsTLPDF(x, nu, mean, stdDev));
@@ -279,7 +281,7 @@ T studentsTCDF(T)(const T x, const T nu, const T mean, const T stdDev)
     in (nu > 0, "nu must be greater than zero")
     in (stdDev > 0, "stdDev must be greater than zero")
 {
-    const T z = standardizedStudentT(x, mean, stdDev);
+    const T z = standardize(x, mean, stdDev);
     return studentsTScaledCDF(z, x, nu, mean, stdDev, false);
 }
 
@@ -411,7 +413,7 @@ T studentsTCCDF(T)(const T x, const T nu, const T mean, const T stdDev)
     in (nu > 0, "nu must be greater than zero")
     in (stdDev > 0, "stdDev must be greater than zero")
 {
-    const T z = standardizedStudentT(x, mean, stdDev);
+    const T z = standardize(x, mean, stdDev);
     return studentsTScaledCDF(z, x, nu, mean, stdDev, true);
 }
 
@@ -739,12 +741,12 @@ T studentsTLPDF(T)(const T x, const T nu, const T mean, const T stdDev)
     in (stdDev > 0, "stdDev must be greater than zero")
 {
     import mir.math.common: fabs, log;
-    const T z = standardizedStudentT(x, mean, stdDev);
+    const T z = standardize(x, mean, stdDev);
     if (fabs(z) == T.infinity && fabs(x) <= T.max && fabs(mean) <= T.max && nu <= T.max)
     {
         // A tiny scale can overflow z even though the scaled heavy-tail
         // density remains representable. Evaluate its exponent in logs.
-        const T logZ = studentsTLogDistance(x, mean) - log(stdDev);
+        const T logZ = logDistance(x, mean) - log(stdDev);
         return studentsTLogNormalization(nu)
             - (nu * T(0.5) + T(0.5)) * (2 * logZ - log(nu)) - log(stdDev);
     }
@@ -1009,29 +1011,7 @@ version(mir_stat_test)
     // nu=2 has the exact quantile (2p-1)/sqrt(2p(1-p)).
     assert(approxEqual(studentsTInvCDF(1e-160, 2.0), -7.071067811865475237e79, 2e-13));
 }
-// Preserve finite standardized observations when subtraction overflows.
-private @safe pure nothrow @nogc
-T standardizedStudentT(T)(const T x, const T mean, const T scale)
-{
-    import mir.math.common: fabs;
-    const T difference = x - mean;
-    if (fabs(difference) == T.infinity && fabs(x) <= T.max && fabs(mean) <= T.max)
-        return x / scale - mean / scale;
-    return difference / scale;
-}
 
-// Used only after a finite location/scale calculation overflowed.
-private @safe pure nothrow @nogc
-T studentsTLogDistance(T)(const T x, const T mean)
-{
-    import mir.math.common: fabs, log;
-    import mir.math.internal.log1p: log1p;
-    const T distance = fabs(x - mean);
-    if (distance <= T.max)
-        return log(distance);
-    const T a = fabs(x), b = fabs(mean);
-    return a > b ? log(a) + log1p(b / a) : log(b) + log1p(a / b);
-}
 
 // Overflow in an intermediate location/scale operation need not imply an
 // infinite standardized value or an unrepresentable final density/quantile.
@@ -1091,7 +1071,7 @@ T studentsTScaledCDF(T)(const T z, const T x, const T nu,
     import mir.math.common: fabs, exp, log;
     if (fabs(z) == T.infinity && fabs(x) <= T.max && fabs(mean) <= T.max && nu <= T.max)
     {
-        const T logZ = studentsTLogDistance(x, mean) - log(scale);
+        const T logZ = logDistance(x, mean) - log(scale);
         // z is beyond the finite range, so the leading power-law tail
         // differs from the complete beta integral by less than precision.
         const T tail = exp((nu * T(0.5)) * (log(nu) - 2 * logZ)

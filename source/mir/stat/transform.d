@@ -49,6 +49,7 @@ T4=$(TR $(TDNW $(LREF $1)) $(TD $2) $(TD $3) $(TD $4))
 module mir.stat.transform;
 
 import mir.math.common: fmamath;
+import mir.stat.internal.standardize: FloatingScale;
 import mir.math.sum: Summation;
 import mir.ndslice.slice: isConvertibleToSlice, isSlice, Slice, SliceKind;
 import mir.stat.descriptive.univariate: mean, QuantileAlgo, standardDeviation, VarianceAlgo;
@@ -612,37 +613,6 @@ Params:
 {
     import mir.ndslice.slice: toSlice;
     return scale(x.toSlice, m, d);
-}
-
-// Normalize once instead of branching on overflow at every element. The center
-// cutoff lies just below half an ULP at F.max: smaller centers cannot make a
-// finite observation overflow on subtraction under round-to-nearest arithmetic.
-private struct FloatingScale(F, R)
-{
-    F center;
-    R divisor;
-    // Both possible factors are exact in double. Using it for real avoids an
-    // extended-precision field/load, without changing the arithmetic type.
-    static if (is(F == real))
-        double factor;
-    else
-        F factor;
-
-    void prepare(F m, R d) @safe pure nothrow @nogc
-    {
-        import std.math: abs, isFinite;
-        // Halving must not round a subnormal divisor or erase it. This also
-        // permits a divisor <= 1 when R is wider than the subtraction type.
-        factor = isFinite(m) && abs(m) > F.max * (F.epsilon / 4) &&
-            d >= R.min_normal * 2 ? 0.5f : 1.0f;
-        center = m * factor;
-        divisor = d * factor;
-    }
-
-    R opCall(E)(E value) const @safe pure nothrow @nogc
-    {
-        return (cast(F) value * factor - center) / divisor;
-    }
 }
 
 // Own the supplied scalars, keeping the transformation lazy and allocation-free.

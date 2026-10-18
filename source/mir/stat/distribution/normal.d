@@ -33,6 +33,8 @@ Copyright: 2022-2026 Mir Stat Authors.
 
 module mir.stat.distribution.normal;
 
+import mir.stat.internal.standardize: standardize;
+
 import mir.internal.utility: isFloatingPoint;
 import mir.math.common: exp, fabs, floor, log, sqrt;
 
@@ -89,7 +91,7 @@ T normalPDF(T)(const T x, const T mean, const T stdDev)
     if (isFloatingPoint!T)
 {
     import mir.stat.constant: LOGSQRT2PI;
-    const T z = standardizedNormal(x, mean, stdDev);
+    const T z = standardize(x, mean, stdDev);
     const T density = normalPDF(z);
     // A subnormal intermediate loses precision before division by a small
     // scale. Delay exponentiation until the scale has been included.
@@ -199,7 +201,7 @@ Params:
 T normalCDF(T)(const T x, const T mean, const T stdDev)
     if (isFloatingPoint!T)
 {
-    return normalCDF(standardizedNormal(x, mean, stdDev));
+    return normalCDF(standardize(x, mean, stdDev));
 }
 
 ///
@@ -368,7 +370,7 @@ See_also:
 T normalCCDF(T)(const T x, const T mean, const T stdDev)
     if (isFloatingPoint!T)
 {
-    return normalCCDF(standardizedNormal(x, mean, stdDev));
+    return normalCCDF(standardize(x, mean, stdDev));
 }
 
 /++
@@ -460,7 +462,7 @@ T normalLPDF(T)(const T x, const T mean, const T stdDev)
     if (isFloatingPoint!T)
 {
     import mir.math.common: log;
-    return normalLPDF(standardizedNormal(x, mean, stdDev)) - log(stdDev);
+    return normalLPDF(standardize(x, mean, stdDev)) - log(stdDev);
 }
 
 /++
@@ -490,19 +492,6 @@ T normalLPDF(T)(const T x)
 
     // Halve before squaring: x*x can overflow while x*x/2 still fits.
     return (-T(0.5) * x) * x - T(LOGSQRT2PI);
-}
-
-// Divide first only when subtraction overflows for finite observations.
-// In that case x and mean have opposite signs, so the divisions cannot
-// introduce cancellation between infinities. Keep the usual rounding otherwise.
-private @safe pure nothrow @nogc
-T standardizedNormal(T)(T x, T mean, T stdDev)
-{
-    import mir.math.common: fabs;
-    const T delta = x - mean;
-    if (fabs(delta) == T.infinity && fabs(x) <= T.max && fabs(mean) <= T.max)
-        return x / stdDev - mean / stdDev;
-    return delta / stdDev;
 }
 
 version(mir_stat_test)

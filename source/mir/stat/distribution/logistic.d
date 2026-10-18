@@ -21,6 +21,8 @@ Copyright: 2023 Mir Stat Authors.
 
 module mir.stat.distribution.logistic;
 
+import mir.stat.internal.standardize: standardize;
+
 import mir.internal.utility: isFloatingPoint;
 
 /++
@@ -87,7 +89,7 @@ T logisticPDF(T)(const T x, const T location, const T scale)
 {
     import mir.math.common: exp, fabs;
 
-    const T z = (x - location) / scale;
+    const T z = standardize(x, location, scale);
     const T density = logisticPDF(z);
     if (density < T.min_normal && scale < 1)
     {
@@ -268,7 +270,7 @@ T logisticCDF(T)(const T x, const T location, const T scale)
     if (isFloatingPoint!T)
     in (scale > 0, "scale must be greater than zero")
 {
-    return logisticCDF((x - location) / scale);
+    return logisticCDF(standardize(x, location, scale));
 }
 
 ///
@@ -349,7 +351,7 @@ T logisticCCDF(T)(const T x, const T location, const T scale)
     if (isFloatingPoint!T)
     in (scale > 0, "scale must be greater than zero")
 {
-    return logisticCCDF((x - location) / scale);
+    return logisticCCDF(standardize(x, location, scale));
 }
 
 ///
@@ -561,7 +563,7 @@ T logisticLPDF(T)(const T x, const T location, const T scale)
 {
     import mir.math.common: log;
 
-    return logisticLPDF((x - location) / scale) - log(scale);
+    return logisticLPDF(standardize(x, location, scale)) - log(scale);
 }
 
 ///
@@ -584,4 +586,34 @@ unittest
     logisticLPDF(-1.0, 2.0, 3.0).shouldApprox == log(0.06553731);
     logisticLPDF(1.0, 2.0, 3.0).shouldApprox == log(0.08106072);
     logisticLPDF(4.0, 2.0, 3.0).shouldApprox == log(0.07471913);
+}
+
+// A finite standardized value survives an overflowing location subtraction.
+version(mir_stat_test)
+@safe pure nothrow @nogc
+unittest
+{
+    import std.meta: AliasSeq;
+    import mir.math.common: approxEqual, fabs, log;
+
+    static foreach (T; AliasSeq!(float, double, real))
+    {{
+        const T scale = T.max * T(0.75);
+        foreach (sign; [T(-1), T(1)])
+        {
+            const T x = sign * scale;
+            const T location = -x;
+            const T z = sign * 2;
+            const T expected = logisticPDF(z) / scale;
+            const T actual = logisticPDF(x, location, scale);
+            assert(actual > 0);
+            assert(fabs(actual - expected) <= 8 * T.min_normal * T.epsilon);
+            assert(approxEqual(logisticLPDF(x, location, scale),
+                logisticLPDF(z) - log(scale), 32 * T.epsilon, T(0)));
+            assert(approxEqual(logisticCDF(x, location, scale),
+                logisticCDF(z), 32 * T.epsilon, T(0)));
+            assert(approxEqual(logisticCCDF(x, location, scale),
+                logisticCCDF(z), 32 * T.epsilon, T(0)));
+        }
+    }}
 }
