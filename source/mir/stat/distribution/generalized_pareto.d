@@ -582,6 +582,23 @@ T generalizedParetoOverflowLogV(T)(T x, T mu, T sigma, T xi)
 {
     import mir.math.common: exp, log;
     import mir.math.internal.log1p: log1p;
+    import std.math: frexp, ldexp;
+
+    // Form xi*(x-mu)/sigma from binary significands before using logarithms.
+    // Reconstructing a small product through log/exp can lose enough precision
+    // to overflow the subsequent division by xi near the largest finite LPDF.
+    const T delta = x - mu;
+    const int adjustment = delta == T.infinity ? 1 : 0;
+    const T distance = adjustment ? x / 2 - mu / 2 : delta;
+    int distanceExponent, shapeExponent, scaleExponent;
+    const T distanceFraction = frexp(distance, distanceExponent);
+    const T shapeFraction = frexp(xi, shapeExponent);
+    const T scaleFraction = frexp(sigma, scaleExponent);
+    const T u = ldexp((shapeFraction * distanceFraction) / scaleFraction,
+        shapeExponent + distanceExponent - scaleExponent + adjustment);
+    if (u <= T.max)
+        return log1p(u);
+
     const T logU = log(xi) + logDistance(x, mu) - log(sigma);
     return logU > 0 ? logU + log1p(exp(-logU)) : log1p(exp(logU));
 }
@@ -629,4 +646,19 @@ unittest
         -357.940410184917000514448148513381452, 2e-15, 0.0));
     assert(approxEqual(generalizedParetoCCDF(1.0, 0.0, cast(double)1e-310L, 2.0),
         7.07106781186546444271459736584164956e-156, 5e-13, 0.0));
+}
+
+// Logarithmic reconstruction must not overflow a representable log density.
+version(mir_stat_test)
+@safe pure nothrow @nogc
+unittest
+{
+    import mir.math.common: fabs;
+    // Exact binary inputs; independent 100-digit reference.
+    const double scale = double.min_normal / 4;
+    const double shape = 16 * double.min_normal * double.epsilon;
+    const double actual = generalizedParetoLPDF(1.0, 0.0, scale, shape);
+    const double expected = -1.79769313486230313435132416870324388E+308;
+    assert(actual > -double.infinity);
+    assert(fabs(actual / expected - 1) <= 4 * double.epsilon);
 }
