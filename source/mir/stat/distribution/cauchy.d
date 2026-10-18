@@ -152,6 +152,10 @@ T cauchyCDF(T)(const T x)
     import mir.math.constant: M_1_PI;
     import std.math.trigonometry: atan;
 
+    // atan(x) approaches -pi/2 in the lower tail. Use its reciprocal
+    // identity before adding one half can cancel the small probability.
+    if (x < -1)
+        return T(M_1_PI) * atan(-1 / x);
     return 0.5 + T(M_1_PI) * atan(x);
 }
 
@@ -181,7 +185,21 @@ T cauchyCDF(T)(const T x, const T location, const T scale)
     if (isFloatingPoint!T)
     in (scale > 0, "scale must be greater than zero")
 {
-    return cauchyCDF(standardize(x, location, scale));
+    import mir.math.constant: M_1_PI;
+    import std.math.trigonometry: atan;
+
+    const T z = standardize(x, location, scale);
+    if (z < -1)
+    {
+        // Form the reciprocal from the original inputs: z may have
+        // overflowed even when the tail probability is representable.
+        const T distance = location - x;
+        const T reciprocal = distance == T.infinity
+            ? (scale / (location / 2 - x / 2)) / 2
+            : scale / distance;
+        return T(M_1_PI) * atan(reciprocal);
+    }
+    return cauchyCDF(z);
 }
 
 ///
@@ -266,7 +284,7 @@ T cauchyCCDF(T)(const T x, const T location, const T scale)
     if (isFloatingPoint!T)
     in (scale > 0, "scale must be greater than zero")
 {
-    return cauchyCDF(standardize(location, x, scale));
+    return cauchyCDF(location, x, scale);
 }
 
 ///
@@ -599,4 +617,55 @@ unittest
                 cauchyCCDF(z), 32 * T.epsilon, T(0)));
         }
     }}
+}
+
+// Reciprocal arctangents retain small tails without cancellation or ratio overflow.
+version(mir_stat_test)
+@safe pure nothrow @nogc
+unittest
+{
+    import std.meta: AliasSeq;
+    import std.math: isNaN, nextDown, nextUp;
+    import mir.math.common: fabs, approxEqual;
+    static foreach (T; AliasSeq!(float, double, real))
+    {{
+        const T inversePi = T(0.318309886183790671537767526745028724L);
+        const T large = 1 / T.epsilon;
+        // atan(1/large) differs from 1/large by less than working precision.
+        const T expected = inversePi / large;
+        assert(approxEqual(cauchyCDF(-large), expected, 4 * T.epsilon, T(0)));
+        assert(cauchyCCDF(large) == cauchyCDF(-large));
+        assert(cauchyCDF(-T.infinity) == 0);
+        assert(cauchyCDF(T.infinity) == 1);
+        assert(cauchyCCDF(T.infinity) == 0);
+        assert(cauchyCCDF(-T.infinity) == 1);
+        assert(cauchyCDF(T.nan).isNaN);
+        assert(cauchyCCDF(T.nan).isNaN);
+        assert(cauchyCDF(T(0)) == T(.5));
+        assert(cauchyCDF(-T(0)) == T(.5));
+        // Check both sides of the reciprocal-identity cutoff.
+        foreach (x; [nextDown(T(-1)), T(-1), nextUp(T(-1))])
+            assert(approxEqual(cauchyCDF(x), T(.25), 4 * T.epsilon, T(0)));
+
+        const T unit = T.min_normal * T.epsilon;
+        foreach (scale; [T.min_normal / 4, unit * 16])
+        {
+            const T tail = inversePi * scale;
+            assert(cauchyCDF(T(-1), T(0), scale) > 0);
+            assert(fabs(cauchyCDF(T(-1), T(0), scale) - tail) <= unit);
+            assert(cauchyCCDF(T(1), T(0), scale) == cauchyCDF(T(-1), T(0), scale));
+            assert(cauchyCDF(T(0), T(1), scale) == cauchyCDF(T(-1), T(0), scale));
+            assert(cauchyCDF(-T.infinity, T(0), scale) == 0);
+            assert(cauchyCCDF(T.infinity, T(0), scale) == 0);
+        }
+        // The distance also overflows; the reciprocal still fits.
+        const T tail = ((inversePi / T.max) / 2) / 2;
+        const T actual = cauchyCDF(-T.max, T.max, T(.5));
+        assert(actual > 0);
+        assert(fabs(actual - tail) <= 2 * unit);
+        assert(cauchyCCDF(T.max, -T.max, T(.5)) == actual);
+    }}
+    // Independent arctangent reference, rounded from 100-digit arithmetic.
+    assert(approxEqual(cauchyCCDF(1e20),
+        3.18309886183790671537767526745028724e-21, 4 * double.epsilon, 0.0));
 }
