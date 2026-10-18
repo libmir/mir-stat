@@ -21,6 +21,8 @@ Copyright: 2023 Mir Stat Authors.
 
 module mir.stat.distribution.cauchy;
 
+import mir.stat.internal.standardize: standardize;
+
 import mir.internal.utility: isFloatingPoint;
 
 /++
@@ -84,7 +86,7 @@ T cauchyPDF(T)(const T x, const T location, const T scale)
     if (isFloatingPoint!T)
     in (scale > 0, "scale must be greater than zero")
 {
-    return cauchyPDF((x - location) / scale) / scale;
+    return cauchyPDF(standardize(x, location, scale)) / scale;
 }
 
 ///
@@ -179,7 +181,7 @@ T cauchyCDF(T)(const T x, const T location, const T scale)
     if (isFloatingPoint!T)
     in (scale > 0, "scale must be greater than zero")
 {
-    return cauchyCDF((x - location) / scale);
+    return cauchyCDF(standardize(x, location, scale));
 }
 
 ///
@@ -264,7 +266,7 @@ T cauchyCCDF(T)(const T x, const T location, const T scale)
     if (isFloatingPoint!T)
     in (scale > 0, "scale must be greater than zero")
 {
-    return cauchyCDF((location - x) / scale);
+    return cauchyCDF(standardize(location, x, scale));
 }
 
 ///
@@ -477,7 +479,7 @@ T cauchyLPDF(T)(const T x, const T location, const T scale)
 {
     import mir.math.common: log;
 
-    return cauchyLPDF((x - location) / scale) - log(scale);
+    return cauchyLPDF(standardize(x, location, scale)) - log(scale);
 }
 
 ///
@@ -565,6 +567,36 @@ unittest
             assert(approxEqual(at, cutoff == T(.25) ? T(-1) : T(1), 8 * T.epsilon, T(0)));
             assert(approxEqual(cauchyInvCDF(nextDown(cutoff)), at, 8 * T.epsilon, T(0)));
             assert(approxEqual(cauchyInvCDF(nextUp(cutoff)), at, 8 * T.epsilon, T(0)));
+        }
+    }}
+}
+
+// A finite standardized value survives an overflowing location subtraction.
+version(mir_stat_test)
+@safe pure nothrow @nogc
+unittest
+{
+    import std.meta: AliasSeq;
+    import mir.math.common: approxEqual, fabs, log;
+
+    static foreach (T; AliasSeq!(float, double, real))
+    {{
+        const T scale = T.max * T(0.75);
+        foreach (sign; [T(-1), T(1)])
+        {
+            const T x = sign * scale;
+            const T location = -x;
+            const T z = sign * 2;
+            const T expected = cauchyPDF(z) / scale;
+            const T actual = cauchyPDF(x, location, scale);
+            assert(actual > 0);
+            assert(fabs(actual - expected) <= 8 * T.min_normal * T.epsilon);
+            assert(approxEqual(cauchyLPDF(x, location, scale),
+                cauchyLPDF(z) - log(scale), 32 * T.epsilon, T(0)));
+            assert(approxEqual(cauchyCDF(x, location, scale),
+                cauchyCDF(z), 32 * T.epsilon, T(0)));
+            assert(approxEqual(cauchyCCDF(x, location, scale),
+                cauchyCCDF(z), 32 * T.epsilon, T(0)));
         }
     }}
 }
