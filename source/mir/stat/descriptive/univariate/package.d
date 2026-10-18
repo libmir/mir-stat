@@ -1,0 +1,235 @@
+/++
+Univariate descriptive statistics.
+
+Import `mir.stat.descriptive.univariate` to access the functions below, or import
+a specialized module directly. The package re-exports the public declarations
+so existing imports remain valid.
+
+Note that used specialized summing algorithms execute more primitive operations
+than vanilla summation. Therefore, if in certain cases maximum speed is required
+at expense of precision, one can use $(REF_ALTTEXT $(TT Summation.fast), Summation.fast, mir, math, sum)$(NBSP).
+
+$(SCRIPT inhibitQuickIndex = 1;)
+$(SCRIPT
+// Retain links to declarations and members from the former single-module page.
+(function () {
+    var owners = {"EntropyAccumulator": "entropies", "GMeanAccumulator": "means", "KurtosisAccumulator": "skewness_kurtosis", "KurtosisAlgo": "skewness_kurtosis", "MapSummator": "internal_summation", "MeanAccumulator": "means", "MomentAccumulator": "moments", "MomentAlgo": "moments", "QuantileAlgo": "quantiles", "SkewnessAccumulator": "skewness_kurtosis", "SkewnessAlgo": "skewness_kurtosis", "StandardizedMomentAlgo": "moments", "VarianceAccumulator": "dispersions", "VarianceAlgo": "dispersions", "WeightedQuantileAlgo": "quantiles", "centralMoment": "moments", "coefficientOfVariation": "dispersions", "dispersion": "dispersions", "entropy": "entropies", "entropyType": "entropies", "gmean": "means", "gmeanType": "means", "hmean": "means", "hmeanType": "means", "interquartileRange": "quantiles", "kurtosis": "skewness_kurtosis", "makeQuantile": "quantiles", "makeWeightedQuantile": "quantiles", "mean": "means", "meanType": "internal_types", "median": "quantiles", "medianAbsoluteDeviation": "quantiles", "moment": "moments", "quantile": "quantiles", "quantileInto": "quantiles", "quantileType": "quantiles", "rawMoment": "moments", "rcWeightedQuantile": "quantiles", "rcquantile": "quantiles", "skewness": "skewness_kurtosis", "standardDeviation": "dispersions", "standardizedMoment": "moments", "statType": "internal_types", "stdevType": "internal_types", "variance": "dispersions", "weightedQuantile": "quantiles"};
+    var anchor = window.location.hash.substring(1);
+    var symbol = anchor.replace(/^\./, '').split('.')[0];
+    if (Object.prototype.hasOwnProperty.call(owners, symbol)) {
+        window.location.replace('mir_stat_descriptive_univariate_' + owners[symbol] + '.html#' + anchor);
+    }
+})();
+)
+
+$(DIVC quickindex,
+$(BOOKTABLE,
+$(TR $(TH Module) $(TH Public declarations))
+    $(TR $(TD $(MREF mir,stat,descriptive,univariate,means) $(BR)
+        $(SMALL Arithmetic, geometric, and harmonic means.))
+        $(TD
+            $(B Functions:)
+            $(LEGACY_ANCHOR mean)$(REF mean, mir, stat, descriptive, univariate, means)$(NBSP)
+            $(LEGACY_ANCHOR gmean)$(REF gmean, mir, stat, descriptive, univariate, means)$(NBSP)
+            $(LEGACY_ANCHOR hmean)$(REF hmean, mir, stat, descriptive, univariate, means)$(NBSP)
+            $(BR)
+            $(B Accumulators:)
+            $(LEGACY_ANCHOR MeanAccumulator)$(REF MeanAccumulator, mir, stat, descriptive, univariate, means)$(NBSP)
+            $(LEGACY_ANCHOR GMeanAccumulator)$(REF GMeanAccumulator, mir, stat, descriptive, univariate, means)$(NBSP)
+        )
+    )
+    $(TR $(TD $(MREF mir,stat,descriptive,univariate,quantiles) $(BR)
+        $(SMALL Medians, quantiles, and robust measures of spread.))
+        $(TD
+            $(B Ordinary quantiles:)
+            $(LEGACY_ANCHOR median)$(REF median, mir, stat, descriptive, univariate, quantiles)$(NBSP)
+            $(LEGACY_ANCHOR quantile)$(REF quantile, mir, stat, descriptive, univariate, quantiles)$(NBSP)
+            $(LEGACY_ANCHOR rcquantile)$(REF rcquantile, mir, stat, descriptive, univariate, quantiles)$(NBSP)
+            $(LEGACY_ANCHOR makeQuantile)$(REF makeQuantile, mir, stat, descriptive, univariate, quantiles)$(NBSP)
+            $(LEGACY_ANCHOR quantileInto)$(REF quantileInto, mir, stat, descriptive, univariate, quantiles)$(NBSP)
+            $(BR)
+            $(B Weighted quantiles:)
+            $(LEGACY_ANCHOR weightedQuantile)$(REF weightedQuantile, mir, stat, descriptive, univariate, quantiles)$(NBSP)
+            $(LEGACY_ANCHOR rcWeightedQuantile)$(REF rcWeightedQuantile, mir, stat, descriptive, univariate, quantiles)$(NBSP)
+            $(LEGACY_ANCHOR makeWeightedQuantile)$(REF makeWeightedQuantile, mir, stat, descriptive, univariate, quantiles)$(NBSP)
+            $(BR)
+            $(B Spread:)
+            $(LEGACY_ANCHOR interquartileRange)$(REF interquartileRange, mir, stat, descriptive, univariate, quantiles)$(NBSP)
+            $(LEGACY_ANCHOR medianAbsoluteDeviation)$(REF medianAbsoluteDeviation, mir, stat, descriptive, univariate, quantiles)$(NBSP)
+            $(BR)
+            $(B Algorithms:)
+            $(LEGACY_ANCHOR QuantileAlgo)$(REF QuantileAlgo, mir, stat, descriptive, univariate, quantiles)$(NBSP)
+            $(LEGACY_ANCHOR WeightedQuantileAlgo)$(REF WeightedQuantileAlgo, mir, stat, descriptive, univariate, quantiles)$(NBSP)
+        )
+    )
+    $(TR $(TD $(MREF mir,stat,descriptive,univariate,dispersions) $(BR)
+        $(SMALL Variance, standard deviation, and related measures.))
+        $(TD
+            $(B Functions:)
+            $(REF variance, mir, stat, descriptive, univariate, dispersions)$(NBSP)
+            $(REF standardDeviation, mir, stat, descriptive, univariate, dispersions)$(NBSP)
+            $(REF coefficientOfVariation, mir, stat, descriptive, univariate, dispersions)$(NBSP)
+            $(REF dispersion, mir, stat, descriptive, univariate, dispersions)$(NBSP)
+            $(BR)
+            $(B Accumulator:)
+            $(REF VarianceAccumulator, mir, stat, descriptive, univariate, dispersions)$(NBSP)
+            $(BR)
+            $(B Algorithm:)
+            $(REF VarianceAlgo, mir, stat, descriptive, univariate, dispersions)$(NBSP)
+        )
+    )
+    $(TR $(TD $(MREF mir,stat,descriptive,univariate,moments) $(BR)
+        $(SMALL Raw, central, and standardized moments.))
+        $(TD
+            $(B Functions:)
+            $(LEGACY_ANCHOR rawMoment)$(REF rawMoment, mir, stat, descriptive, univariate, moments)$(NBSP)
+            $(LEGACY_ANCHOR centralMoment)$(REF centralMoment, mir, stat, descriptive, univariate, moments)$(NBSP)
+            $(LEGACY_ANCHOR standardizedMoment)$(REF standardizedMoment, mir, stat, descriptive, univariate, moments)$(NBSP)
+            $(LEGACY_ANCHOR moment)$(REF moment, mir, stat, descriptive, univariate, moments)$(NBSP)
+            $(BR)
+            $(B Accumulator:)
+            $(LEGACY_ANCHOR MomentAccumulator)$(REF MomentAccumulator, mir, stat, descriptive, univariate, moments)$(NBSP)
+            $(BR)
+            $(B Algorithms:)
+            $(LEGACY_ANCHOR MomentAlgo)$(REF MomentAlgo, mir, stat, descriptive, univariate, moments)$(NBSP)
+            $(LEGACY_ANCHOR StandardizedMomentAlgo)$(REF StandardizedMomentAlgo, mir, stat, descriptive, univariate, moments)$(NBSP)
+        )
+    )
+    $(TR $(TD $(MREF mir,stat,descriptive,univariate,skewness_kurtosis) $(BR)
+        $(SMALL Skewness and kurtosis.))
+        $(TD
+            $(B Functions:)
+            $(LEGACY_ANCHOR skewness)$(REF skewness, mir, stat, descriptive, univariate, skewness_kurtosis)$(NBSP)
+            $(LEGACY_ANCHOR kurtosis)$(REF kurtosis, mir, stat, descriptive, univariate, skewness_kurtosis)$(NBSP)
+            $(BR)
+            $(B Accumulators:)
+            $(LEGACY_ANCHOR SkewnessAccumulator)$(REF SkewnessAccumulator, mir, stat, descriptive, univariate, skewness_kurtosis)$(NBSP)
+            $(LEGACY_ANCHOR KurtosisAccumulator)$(REF KurtosisAccumulator, mir, stat, descriptive, univariate, skewness_kurtosis)$(NBSP)
+            $(BR)
+            $(B Algorithms:)
+            $(LEGACY_ANCHOR SkewnessAlgo)$(REF SkewnessAlgo, mir, stat, descriptive, univariate, skewness_kurtosis)$(NBSP)
+            $(LEGACY_ANCHOR KurtosisAlgo)$(REF KurtosisAlgo, mir, stat, descriptive, univariate, skewness_kurtosis)$(NBSP)
+        )
+    )
+    $(TR $(TD $(MREF mir,stat,descriptive,univariate,entropies) $(BR)
+        $(SMALL Entropy and its accumulator.))
+        $(TD
+            $(B Function:)
+            $(REF entropy, mir, stat, descriptive, univariate, entropies)$(NBSP)
+            $(BR)
+            $(B Accumulator:)
+            $(REF EntropyAccumulator, mir, stat, descriptive, univariate, entropies)$(NBSP)
+        )
+    )
+))
+
+$(B Summation utility)
+
+$(LEGACY_ANCHOR MapSummator)$(REF MapSummator, mir, stat, descriptive, univariate, internal, summation) applies a function to each input before summing.
+It remains publicly available through this package; its implementation is in
+$(MREF mir,stat,descriptive,univariate,internal,summation).
+
+$(B Internal type helpers)
+
+These helpers are internal to Mir: `quantileType` has `package(mir.stat)`
+visibility, and the others have `package(mir)` visibility. They are listed here
+for existing internal documentation links and are not public application APIs.
+
+$(UL
+    $(LI $(REF entropyType, mir, stat, descriptive, univariate, entropies))
+    $(LI $(LEGACY_ANCHOR gmeanType)$(REF gmeanType, mir, stat, descriptive, univariate, means))
+    $(LI $(LEGACY_ANCHOR hmeanType)$(REF hmeanType, mir, stat, descriptive, univariate, means))
+    $(LI $(LEGACY_ANCHOR meanType)$(REF meanType, mir, stat, descriptive, univariate, internal, types))
+    $(LI $(LEGACY_ANCHOR quantileType)$(REF quantileType, mir, stat, descriptive, univariate, quantiles))
+    $(LI $(LEGACY_ANCHOR statType)$(REF statType, mir, stat, descriptive, univariate, internal, types))
+    $(LI $(LEGACY_ANCHOR stdevType)$(REF stdevType, mir, stat, descriptive, univariate, internal, types))
+)
+
+License: $(HTTP www.apache.org/licenses/LICENSE-2.0, Apache-2.0)
+
+Several functions are borrowed from
+$(HTTP mir-algorithm.$(MIR_SITE)/mir_math_stat.html, mir.math.stat). An additional
+$(REF VarianceAlgo, mir, stat, descriptive, univariate, dispersions) is provided in this code, which is the new default.
+
+Authors: John Michael Hall, Ilya Yaroshenko
+
+Copyright: 2022-3 Mir Stat Authors.
+
+Macros:
+LEGACY_ANCHOR = <span id="$0"></span><span id=".$0"></span>
+SUBREF = $(REF_ALTTEXT $(TT $2), $2, mir, stat, $1)$(NBSP)
+MATHREF = $(GREF_ALTTEXT mir-algorithm, $(TT $2), $2, mir, math, $1)$(NBSP)
+MATHREF_ALT = $(GREF_ALTTEXT mir-algorithm, $(B $(TT $2)), $2, mir, math, $1)$(NBSP)
+NDSLICEREF = $(GREF_ALTTEXT mir-algorithm, $(TT $2), $2, mir, ndslice, $1)$(NBSP)
+T2=$(TR $(TDNW $(LREF $1)) $(TD $+))
+T3=$(TR $(TDNW $(LREF $1)) $(TD $2) $(TD $3))
+T4=$(TR $(TDNW $(LREF $1)) $(TD $2) $(TD $3) $(TD $4))
++/
+
+module mir.stat.descriptive.univariate;
+
+///
+public import mir.math.sum: Summation;
+
+///
+public import mir.stat.descriptive.univariate.means;
+
+///
+public import mir.stat.descriptive.univariate.quantiles;
+
+///
+public import mir.stat.descriptive.univariate.dispersions: dispersion, variance, standardDeviation, coefficientOfVariation, VarianceAlgo, VarianceAccumulator;
+
+///
+public import mir.stat.descriptive.univariate.moments;
+
+///
+public import mir.stat.descriptive.univariate.entropies: entropy, EntropyAccumulator, entropyType;
+
+///
+public import mir.stat.descriptive.univariate.internal.types;
+
+///
+public import mir.stat.descriptive.univariate.internal.summation;
+
+// Keep the historical import path usable alongside direct family imports.
+version(mir_stat_test)
+@safe pure nothrow
+unittest
+{
+    import legacy = mir.stat.descriptive.univariate;
+    import means = mir.stat.descriptive.univariate.means;
+    import quantiles = mir.stat.descriptive.univariate.quantiles;
+    import dispersions = mir.stat.descriptive.univariate.dispersions;
+    import moments = mir.stat.descriptive.univariate.moments;
+    import skewnessKurtosis = mir.stat.descriptive.univariate.skewness_kurtosis;
+    import entropies = mir.stat.descriptive.univariate.entropies;
+    import mir.stat.descriptive.univariate: mean, entropy, dispersion;
+
+    static assert(__traits(isSame, mean, means.mean));
+    static assert(__traits(isSame, legacy.MeanAccumulator, means.MeanAccumulator));
+    static assert(__traits(isSame, legacy.QuantileAlgo, quantiles.QuantileAlgo));
+    static assert(__traits(isSame, legacy.VarianceAccumulator, dispersions.VarianceAccumulator));
+    static assert(__traits(isSame, legacy.MomentAccumulator, moments.MomentAccumulator));
+    static assert(__traits(isSame, moments.skewness, skewnessKurtosis.skewness));
+    static assert(__traits(isSame, legacy.skewness, skewnessKurtosis.skewness));
+    static assert(__traits(isSame, moments.kurtosis, skewnessKurtosis.kurtosis));
+    static assert(__traits(isSame, legacy.kurtosis, skewnessKurtosis.kurtosis));
+    static assert(__traits(isSame, moments.SkewnessAccumulator, skewnessKurtosis.SkewnessAccumulator));
+    static assert(__traits(isSame, legacy.SkewnessAccumulator, skewnessKurtosis.SkewnessAccumulator));
+    static assert(__traits(isSame, moments.KurtosisAccumulator, skewnessKurtosis.KurtosisAccumulator));
+    static assert(__traits(isSame, legacy.KurtosisAccumulator, skewnessKurtosis.KurtosisAccumulator));
+    static assert(__traits(isSame, moments.SkewnessAlgo, skewnessKurtosis.SkewnessAlgo));
+    static assert(__traits(isSame, legacy.SkewnessAlgo, skewnessKurtosis.SkewnessAlgo));
+    static assert(__traits(isSame, moments.KurtosisAlgo, skewnessKurtosis.KurtosisAlgo));
+    static assert(__traits(isSame, legacy.KurtosisAlgo, skewnessKurtosis.KurtosisAlgo));
+    static assert(__traits(isSame, entropy, entropies.entropy));
+    static assert(__traits(isSame, dispersion, dispersions.dispersion));
+    static assert(__traits(compiles, legacy.MapSummator!("a * a", double, Summation.naive)));
+
+    assert(mir.stat.descriptive.univariate.mean([1.0, 3.0]) == 2);
+    assert(mir.stat.descriptive.univariate.dispersion([1.0, 3.0]) == 1);
+    assert(mir.stat.descriptive.univariate.entropy([1.0]) == 0);
+    assert(legacy.median([1.0, 3.0]) == 2);
+    assert(legacy.rawMoment!1([1.0, 3.0]) == 2);
+}
