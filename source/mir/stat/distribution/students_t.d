@@ -26,6 +26,8 @@ Copyright: 2022-3 Mir Stat Authors.
 
 module mir.stat.distribution.students_t;
 
+import mir.stat.internal.standardize: standardize;
+
 import mir.internal.utility: isFloatingPoint;
 
 /++
@@ -98,7 +100,7 @@ T studentsTPDF(T)(const T x, const T nu, const T mean, const T stdDev)
     in (stdDev > 0, "stdDev must be greater than zero")
 {
     import mir.math.common: exp;
-    const T z = standardizedStudentT(x, mean, stdDev);
+    const T z = standardize(x, mean, stdDev);
     const T density = studentsTPDF(z, nu);
     if (density < T.min_normal && stdDev < 1)
         return exp(studentsTLPDF(x, nu, mean, stdDev));
@@ -279,7 +281,7 @@ T studentsTCDF(T)(const T x, const T nu, const T mean, const T stdDev)
     in (nu > 0, "nu must be greater than zero")
     in (stdDev > 0, "stdDev must be greater than zero")
 {
-    const T z = standardizedStudentT(x, mean, stdDev);
+    const T z = standardize(x, mean, stdDev);
     return studentsTScaledCDF(z, x, nu, mean, stdDev, false);
 }
 
@@ -411,7 +413,7 @@ T studentsTCCDF(T)(const T x, const T nu, const T mean, const T stdDev)
     in (nu > 0, "nu must be greater than zero")
     in (stdDev > 0, "stdDev must be greater than zero")
 {
-    const T z = standardizedStudentT(x, mean, stdDev);
+    const T z = standardize(x, mean, stdDev);
     return studentsTScaledCDF(z, x, nu, mean, stdDev, true);
 }
 
@@ -739,7 +741,7 @@ T studentsTLPDF(T)(const T x, const T nu, const T mean, const T stdDev)
     in (stdDev > 0, "stdDev must be greater than zero")
 {
     import mir.math.common: fabs, log;
-    const T z = standardizedStudentT(x, mean, stdDev);
+    const T z = standardize(x, mean, stdDev);
     if (fabs(z) == T.infinity && fabs(x) <= T.max && fabs(mean) <= T.max && nu <= T.max)
     {
         // A tiny scale can overflow z even though the scaled heavy-tail
@@ -1008,16 +1010,6 @@ version(mir_stat_test)
             0.318309886183790671537767526745028724, 2e-13));
     // nu=2 has the exact quantile (2p-1)/sqrt(2p(1-p)).
     assert(approxEqual(studentsTInvCDF(1e-160, 2.0), -7.071067811865475237e79, 2e-13));
-}
-// Preserve finite standardized observations when subtraction overflows.
-private @safe pure nothrow @nogc
-T standardizedStudentT(T)(const T x, const T mean, const T scale)
-{
-    import mir.math.common: fabs;
-    const T difference = x - mean;
-    if (fabs(difference) == T.infinity && fabs(x) <= T.max && fabs(mean) <= T.max)
-        return x / scale - mean / scale;
-    return difference / scale;
 }
 
 // Used only after a finite location/scale calculation overflowed.
