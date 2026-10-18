@@ -53,7 +53,7 @@ import mir.stat.descriptive.univariate.internal.types: statType, meanType;
 /++
 Accumulates `sum(x * ln(x))` without normalization or negation.
 
-Inputs must be nonnegative; zero contributes zero. See $(LREF entropy) for
+Inputs must be nonnegative; zero contributes zero. See $(LINK2 #.entropy, $(D entropy)) for
 the sign convention and interpretation for probability inputs.
 +/
 struct EntropyAccumulator(T, Summation summation)
