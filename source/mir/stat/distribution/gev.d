@@ -86,7 +86,12 @@ T gevPDF(T)(const T x, const T mu, const T sigma, const T xi)
     auto a = exp(-log1pScaled(s, xi));
     if (a == T.infinity)
         return 0;
-    return a * exp(-a) / (v * sigma);
+    const T denominator = v * sigma;
+    if (denominator == T.infinity && v <= T.max)
+        // Both divisors are positive; their product can overflow even when
+        // the final subnormal density is representable.
+        return (a * exp(-a) / v) / sigma;
+    return a * exp(-a) / denominator;
 }
 
 ///
@@ -671,5 +676,28 @@ unittest
                     32 * T.epsilon, T(0)));
             }
         }
+    }}
+}
+
+// The shape factor and scale can overflow only when multiplied together.
+version(mir_stat_test)
+@safe pure nothrow @nogc
+unittest
+{
+    import std.meta: AliasSeq;
+    import mir.math.common: fabs;
+    static foreach (T; AliasSeq!(float, double, real))
+    {{
+        const T scale = T.max * T(.75);
+        // Shape one, z=2: exp(-1/3)/(9*sigma), from a 100-digit reference.
+        const T expected = T(0.07961459006375436115840045521393107416145689553571990634898557856970045302610026434542123210168610513L) / scale;
+        const T actual = gevPDF(scale, -scale, scale, T(1));
+        assert(actual > 0);
+        assert(fabs(actual - expected) <= 4 * T.min_normal * T.epsilon);
+        // Negative shape with negative z reaches the same finite denominator factor.
+        const T reflected = gevPDF(-scale, scale, scale, T(-1));
+        const T reflectedExpected = T(0.0497870683678639429793424156500617766L) / scale;
+        assert(reflected > 0);
+        assert(fabs(reflected - reflectedExpected) <= 4 * T.min_normal * T.epsilon);
     }}
 }
