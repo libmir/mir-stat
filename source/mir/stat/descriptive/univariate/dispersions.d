@@ -1087,6 +1087,19 @@ By default, if `F` is not floating point type or complex type, then the result
 will have a `double` type if `F` is implicitly convertible to a floating point
 type or a type for which `isComplex!F` is true.
 
+Large integer observations that differ by small amounts can lose those
+differences when converted to the floating-point accumulator type. For example,
+the five `long` values `(1L << 60) + [0, 1, 2, 3, 4]` have sample variance
+`2.5`, but the default calculation returns zero because their conversions to
+`double` are identical. A more accurate summation algorithm cannot recover
+differences already lost during conversion.
+
+When the data has a known common offset, subtracting it in integer arithmetic
+before calling `variance` can preserve the differences. Ensure that the
+subtractions fit the integer type. This translation preserves variance about
+the mean, but must not be used with `VarianceAlgo.assumeZeroMean`, which
+calculates squared distances from zero.
+
 Params:
     F = controls type of output
     varianceAlgo = algorithm for calculating variance (default: VarianceAlgo.hybrid)
@@ -1519,6 +1532,11 @@ standard deviation even when its square is not representable. Recovery uses
 compensated two-pass variance, except that `assumeZeroMean` retains its
 zero-centered definition. Ordinary positive normal variances use the selected
 algorithm unchanged. Single-pass inputs do not receive this recovery.
+
+Integer inputs retain the conversion limitation described for $(LREF variance):
+large integers separated by small differences can produce a zero standard
+deviation. The scaled floating-point recovery does not repair this loss of
+integer precision.
 
 Params:
     F = controls type of output
