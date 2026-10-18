@@ -31,12 +31,13 @@ Computes the gamma probability density function (PDF).
 `shape` values less than `1` are supported when it is a floating point type.
 
 If `shape` is passed as a `size_t` type (or a type convertible to that), then the
-PDF is calculated using the relationship with the poisson distribution (i.e.
+direct PDF calculation uses the relationship with the Poisson distribution (i.e.
 replacing the `gamma` function with the `factorial`).
 
 Both overloads use a logarithmic fallback when the direct calculation overflows
 or loses precision through underflow. The integer-shape overload retains the
-integer shape and uses a log-factorial in that fallback.
+integer shape and uses a log-factorial in that fallback. Its direct factorial
+calculation is limited to shapes at most 32.
 
 Returns a density, which may exceed one; it is not a point probability.
 The $(D shape < 1) row applies only to the floating-point shape overload.
@@ -116,7 +117,9 @@ T gammaPDF(T)(const T x, const size_t shape, const T scale = 1)
     }
 
     const T x_scale = x / scale;
-    if (x_scale >= T.min_normal && x_scale < T.infinity)
+    // Bound the O(shape) factorial calculation, including when the direct
+    // result would be discarded. Large shapes use the logarithmic paths.
+    if (shape <= 32 && x_scale >= T.min_normal && x_scale < T.infinity)
     {
         const T decay = exp(-x_scale);
         const T density = decay * pow(x_scale, shape - 1) / cast(T) factorial(shape - 1);
@@ -917,4 +920,13 @@ version(mir_stat_test)
     import mir.math.common: approxEqual;
     assert(approxEqual(gammaCCDF(nextUp(0.0), 1e-20, 2.0),
         7.445560034370396311546470242271865683e-18, 4e-15, 0.0));
+}
+
+// Large integer shapes must not attempt an O(shape) factorial calculation.
+version(mir_stat_test)
+@safe pure nothrow @nogc unittest
+{
+    import std.meta: AliasSeq;
+    static foreach (T; AliasSeq!(float, double, real))
+        assert(gammaPDF(T(1), size_t(1_000_000_000)) == 0);
 }
