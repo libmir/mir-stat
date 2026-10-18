@@ -8,6 +8,7 @@ $(UL
     $(LI $(MREF mir,stat,descriptive,univariate,quantiles))
     $(LI $(MREF mir,stat,descriptive,univariate,dispersions))
     $(LI $(MREF mir,stat,descriptive,univariate,moments))
+    $(LI $(MREF mir,stat,descriptive,univariate,skewness_kurtosis))
     $(LI $(MREF mir,stat,descriptive,univariate,entropies))
 )
 
@@ -22,7 +23,7 @@ $(SCRIPT inhibitQuickIndex = 1;)
 $(SCRIPT
 // Retain links to declarations and members from the former single-module page.
 (function () {
-    var owners = {"EntropyAccumulator": "entropies", "GMeanAccumulator": "means", "KurtosisAccumulator": "moments", "KurtosisAlgo": "moments", "MapSummator": "internal_summation", "MeanAccumulator": "means", "MomentAccumulator": "moments", "MomentAlgo": "moments", "QuantileAlgo": "quantiles", "SkewnessAccumulator": "moments", "SkewnessAlgo": "moments", "StandardizedMomentAlgo": "moments", "VarianceAccumulator": "dispersions", "VarianceAlgo": "dispersions", "WeightedQuantileAlgo": "quantiles", "centralMoment": "moments", "coefficientOfVariation": "dispersions", "dispersion": "dispersions", "entropy": "entropies", "entropyType": "entropies", "gmean": "means", "gmeanType": "means", "hmean": "means", "hmeanType": "means", "interquartileRange": "quantiles", "kurtosis": "moments", "makeQuantile": "quantiles", "makeWeightedQuantile": "quantiles", "mean": "means", "meanType": "internal_types", "median": "quantiles", "medianAbsoluteDeviation": "quantiles", "moment": "moments", "quantile": "quantiles", "quantileInto": "quantiles", "quantileType": "quantiles", "rawMoment": "moments", "rcWeightedQuantile": "quantiles", "rcquantile": "quantiles", "skewness": "moments", "standardDeviation": "dispersions", "standardizedMoment": "moments", "statType": "internal_types", "stdevType": "internal_types", "variance": "dispersions", "weightedQuantile": "quantiles"};
+    var owners = {"EntropyAccumulator": "entropies", "GMeanAccumulator": "means", "KurtosisAccumulator": "skewness_kurtosis", "KurtosisAlgo": "skewness_kurtosis", "MapSummator": "internal_summation", "MeanAccumulator": "means", "MomentAccumulator": "moments", "MomentAlgo": "moments", "QuantileAlgo": "quantiles", "SkewnessAccumulator": "skewness_kurtosis", "SkewnessAlgo": "skewness_kurtosis", "StandardizedMomentAlgo": "moments", "VarianceAccumulator": "dispersions", "VarianceAlgo": "dispersions", "WeightedQuantileAlgo": "quantiles", "centralMoment": "moments", "coefficientOfVariation": "dispersions", "dispersion": "dispersions", "entropy": "entropies", "entropyType": "entropies", "gmean": "means", "gmeanType": "means", "hmean": "means", "hmeanType": "means", "interquartileRange": "quantiles", "kurtosis": "skewness_kurtosis", "makeQuantile": "quantiles", "makeWeightedQuantile": "quantiles", "mean": "means", "meanType": "internal_types", "median": "quantiles", "medianAbsoluteDeviation": "quantiles", "moment": "moments", "quantile": "quantiles", "quantileInto": "quantiles", "quantileType": "quantiles", "rawMoment": "moments", "rcWeightedQuantile": "quantiles", "rcquantile": "quantiles", "skewness": "skewness_kurtosis", "standardDeviation": "dispersions", "standardizedMoment": "moments", "statType": "internal_types", "stdevType": "internal_types", "variance": "dispersions", "weightedQuantile": "quantiles"};
     var anchor = window.location.hash.substring(1);
     var symbol = anchor.replace(/^\./, '').split('.')[0];
     if (Object.prototype.hasOwnProperty.call(owners, symbol)) {
@@ -56,8 +57,8 @@ $(TR $(TH Category) $(TH Symbols))
         $(LEGACY_ANCHOR variance)$(REF variance, mir, stat, descriptive, univariate, dispersions)
     ))
     $(TR $(TD Higher Moments, etc.) $(TD
-        $(LEGACY_ANCHOR kurtosis)$(REF kurtosis, mir, stat, descriptive, univariate, moments)
-        $(LEGACY_ANCHOR skewness)$(REF skewness, mir, stat, descriptive, univariate, moments)
+        $(LEGACY_ANCHOR kurtosis)$(REF kurtosis, mir, stat, descriptive, univariate, skewness_kurtosis)
+        $(LEGACY_ANCHOR skewness)$(REF skewness, mir, stat, descriptive, univariate, skewness_kurtosis)
     ))
     $(TR $(TD Other Moment Functions) $(TD
         $(LEGACY_ANCHOR centralMoment)$(REF centralMoment, mir, stat, descriptive, univariate, moments)
@@ -69,18 +70,18 @@ $(TR $(TH Category) $(TH Symbols))
     $(TR $(TD Accumulators) $(TD
         $(LEGACY_ANCHOR EntropyAccumulator)$(REF EntropyAccumulator, mir, stat, descriptive, univariate, entropies)
         $(LEGACY_ANCHOR GMeanAccumulator)$(REF GMeanAccumulator, mir, stat, descriptive, univariate, means)
-        $(LEGACY_ANCHOR KurtosisAccumulator)$(REF KurtosisAccumulator, mir, stat, descriptive, univariate, moments)
+        $(LEGACY_ANCHOR KurtosisAccumulator)$(REF KurtosisAccumulator, mir, stat, descriptive, univariate, skewness_kurtosis)
         $(LEGACY_ANCHOR MeanAccumulator)$(REF MeanAccumulator, mir, stat, descriptive, univariate, means)
         $(LEGACY_ANCHOR MomentAccumulator)$(REF MomentAccumulator, mir, stat, descriptive, univariate, moments)
-        $(LEGACY_ANCHOR SkewnessAccumulator)$(REF SkewnessAccumulator, mir, stat, descriptive, univariate, moments)
+        $(LEGACY_ANCHOR SkewnessAccumulator)$(REF SkewnessAccumulator, mir, stat, descriptive, univariate, skewness_kurtosis)
         $(LEGACY_ANCHOR VarianceAccumulator)$(REF VarianceAccumulator, mir, stat, descriptive, univariate, dispersions)
     ))
     $(TR $(TD Algorithms) $(TD
-        $(LEGACY_ANCHOR KurtosisAlgo)$(REF KurtosisAlgo, mir, stat, descriptive, univariate, moments)
+        $(LEGACY_ANCHOR KurtosisAlgo)$(REF KurtosisAlgo, mir, stat, descriptive, univariate, skewness_kurtosis)
         $(LEGACY_ANCHOR MomentAlgo)$(REF MomentAlgo, mir, stat, descriptive, univariate, moments)
         $(LEGACY_ANCHOR QuantileAlgo)$(REF QuantileAlgo, mir, stat, descriptive, univariate, quantiles)
         $(LEGACY_ANCHOR WeightedQuantileAlgo)$(REF WeightedQuantileAlgo, mir, stat, descriptive, univariate, quantiles)
-        $(LEGACY_ANCHOR SkewnessAlgo)$(REF SkewnessAlgo, mir, stat, descriptive, univariate, moments)
+        $(LEGACY_ANCHOR SkewnessAlgo)$(REF SkewnessAlgo, mir, stat, descriptive, univariate, skewness_kurtosis)
         $(LEGACY_ANCHOR StandardizedMomentAlgo)$(REF StandardizedMomentAlgo, mir, stat, descriptive, univariate, moments)
         $(LEGACY_ANCHOR VarianceAlgo)$(REF VarianceAlgo, mir, stat, descriptive, univariate, dispersions)
     ))
@@ -152,6 +153,7 @@ unittest
     import quantiles = mir.stat.descriptive.univariate.quantiles;
     import dispersions = mir.stat.descriptive.univariate.dispersions;
     import moments = mir.stat.descriptive.univariate.moments;
+    import skewnessKurtosis = mir.stat.descriptive.univariate.skewness_kurtosis;
     import entropies = mir.stat.descriptive.univariate.entropies;
     import mir.stat.descriptive.univariate: mean, entropy, dispersion;
 
@@ -160,6 +162,18 @@ unittest
     static assert(__traits(isSame, legacy.QuantileAlgo, quantiles.QuantileAlgo));
     static assert(__traits(isSame, legacy.VarianceAccumulator, dispersions.VarianceAccumulator));
     static assert(__traits(isSame, legacy.MomentAccumulator, moments.MomentAccumulator));
+    static assert(__traits(isSame, moments.skewness, skewnessKurtosis.skewness));
+    static assert(__traits(isSame, legacy.skewness, skewnessKurtosis.skewness));
+    static assert(__traits(isSame, moments.kurtosis, skewnessKurtosis.kurtosis));
+    static assert(__traits(isSame, legacy.kurtosis, skewnessKurtosis.kurtosis));
+    static assert(__traits(isSame, moments.SkewnessAccumulator, skewnessKurtosis.SkewnessAccumulator));
+    static assert(__traits(isSame, legacy.SkewnessAccumulator, skewnessKurtosis.SkewnessAccumulator));
+    static assert(__traits(isSame, moments.KurtosisAccumulator, skewnessKurtosis.KurtosisAccumulator));
+    static assert(__traits(isSame, legacy.KurtosisAccumulator, skewnessKurtosis.KurtosisAccumulator));
+    static assert(__traits(isSame, moments.SkewnessAlgo, skewnessKurtosis.SkewnessAlgo));
+    static assert(__traits(isSame, legacy.SkewnessAlgo, skewnessKurtosis.SkewnessAlgo));
+    static assert(__traits(isSame, moments.KurtosisAlgo, skewnessKurtosis.KurtosisAlgo));
+    static assert(__traits(isSame, legacy.KurtosisAlgo, skewnessKurtosis.KurtosisAlgo));
     static assert(__traits(isSame, entropy, entropies.entropy));
     static assert(__traits(isSame, dispersion, dispersions.dispersion));
     static assert(__traits(compiles, legacy.MapSummator!("a * a", double, Summation.naive)));

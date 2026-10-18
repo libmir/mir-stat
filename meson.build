@@ -32,6 +32,7 @@ sources_list = [
     'mir/stat/descriptive/univariate/internal/summation',
     'mir/stat/descriptive/univariate/dispersions',
     'mir/stat/descriptive/univariate/moments',
+    'mir/stat/descriptive/univariate/skewness_kurtosis',
     'mir/stat/descriptive/univariate/entropies',
     'mir/stat/descriptive/histogram/breaks',
     'mir/stat/descriptive/histogram/axis',
