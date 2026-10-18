@@ -475,6 +475,8 @@ unittest
     position = 0;
     assert(mean(Single(values[], &position)) == double.infinity);
     assert(position == 2);
+
+
 }
 
 ///

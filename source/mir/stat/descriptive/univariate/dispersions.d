@@ -1430,11 +1430,95 @@ unittest
     assert(x.sliced.variance!float.approxEqual(54.76562 / 11));
 }
 
+/*
+Recover a representable standard deviation when squaring the observations or
+residuals overflowed or underflowed. Scaling by a power of two keeps nearby
+observations distinct; subtracting a fixed normalized observation avoids a
+rounded mean creating a spread in constant inputs. The original variance is
+computed first, so its contracts and ordinary results remain unchanged.
+*/
+private T recoverStandardDeviation(T, VarianceAlgo algo, Range)(
+    Range values, bool isPopulation, T originalVariance)
+{
+    import std.math : abs, frexp, ldexp, isFinite, sqrt;
+    import std.range.primitives : empty, front, save;
+
+    if (values.empty)
+        return sqrt(originalVariance);
+    const first = cast(T) values.front;
+    // Zero can mean either identical observations or underflowed squares.
+    // Equality is cheaper to check than computing the scale for every value.
+    if (originalVariance == 0 && isFinite(first))
+    {
+        static if (algo == VarianceAlgo.assumeZeroMean)
+            const canBeConstant = first == 0;
+        else
+            enum canBeConstant = true;
+        if (canBeConstant)
+        {
+            bool equal = true;
+            foreach (x; values.save)
+                if (cast(T) x != first)
+                {
+                    equal = false;
+                    break;
+                }
+            if (equal)
+                return 0;
+        }
+    }
+
+    T maximum = 0;
+    foreach (x; values.save)
+    {
+        const value = cast(T) x;
+        if (!isFinite(value))
+            return sqrt(originalVariance);
+        if (abs(value) > maximum)
+            maximum = abs(value);
+    }
+    if (maximum == 0)
+        return sqrt(originalVariance);
+    int exponent;
+    frexp(maximum, exponent);
+    const scale = ldexp(T(0.5), exponent);
+    static if (algo == VarianceAlgo.assumeZeroMean)
+        enum anchor = T(0);
+    else
+        const anchor = first / scale;
+    size_t count;
+    Summator!(T, Summation.kbn) sum;
+    foreach (x; values.save)
+    {
+        sum.put(cast(T) x / scale - anchor);
+        ++count;
+    }
+    static if (algo == VarianceAlgo.assumeZeroMean)
+        enum center = T(0);
+    else
+        const center = sum.sum / count;
+    Summator!(T, Summation.kbn) squares;
+    foreach (x; values)
+    {
+        const residual = (cast(T) x / scale - anchor) - center;
+        squares.put(residual * residual);
+    }
+    const v = squares.sum / (count + isPopulation - 1);
+    return sqrt(v) * scale;
+}
+
 /++
 Calculates the standard deviation of the input
 
 By default, if `F` is not floating point type, then the result will have a
 `double` type if `F` is implicitly convertible to a floating point type.
+
+For replayable floating-point inputs, a nonfinite, negative, zero, or
+subnormal variance triggers a scaled recalculation. This can preserve a
+standard deviation even when its square is not representable. Recovery uses
+compensated two-pass variance, except that `assumeZeroMean` retains its
+zero-centered definition. Ordinary positive normal variances use the selected
+algorithm unchanged. Single-pass inputs do not receive this recovery.
 
 Params:
     F = controls type of output
@@ -1460,7 +1544,25 @@ template standardDeviation(
     {
         import core.lifetime: move;
         alias G = typeof(return);
-        return r.move.variance!(G, varianceAlgo, ResolveSummationType!(summation, Range, G))(isPopulation).sqrt;
+        import std.range.primitives : isForwardRange, ElementType, save;
+        import std.traits : isFloatingPoint;
+        static if (isSlice!Range)
+        {
+            import mir.ndslice.topology : flattened;
+            auto flat = r.flattened;
+            static if (isForwardRange!(typeof(flat)) && isFloatingPoint!(ElementType!(typeof(flat))))
+                auto saved = flat.save;
+        }
+        else static if (isForwardRange!Range && isFloatingPoint!(ElementType!Range))
+            auto saved = r.save;
+        const v = r.move.variance!(G, varianceAlgo, ResolveSummationType!(summation, Range, G))(isPopulation);
+        static if (__traits(compiles, saved))
+        {
+            import std.math : isFinite;
+            if (!isFinite(v) || v < G.min_normal)
+                return recoverStandardDeviation!(G, varianceAlgo)(saved.move, isPopulation, v);
+        }
+        return v.sqrt;
     }
 
     /++
@@ -1470,8 +1572,100 @@ template standardDeviation(
     @fmamath stdevType!F standardDeviation(scope const F[] ar...)
     {
         alias G = typeof(return);
-        return ar.variance!(G, varianceAlgo, ResolveSummationType!(summation, const(G)[], G)).sqrt;
+        const v = ar.variance!(G, varianceAlgo, ResolveSummationType!(summation, const(G)[], G));
+        static if (isFloatingPoint!F)
+        {
+            import std.math : isFinite;
+            if (!isFinite(v) || v < G.min_normal)
+                return recoverStandardDeviation!(G, varianceAlgo)(ar, false, v);
+        }
+        return v.sqrt;
     }
+}
+
+// Save the forward cursor independently before computing variance.
+version(mir_stat_test)
+unittest
+{
+    static struct Forward
+    {
+        const(double)[] data;
+        size_t* position;
+        size_t ownPosition;
+        bool empty() const { return (position ? *position : ownPosition) == data.length; }
+        double front() const { return data[position ? *position : ownPosition]; }
+        void popFront() { if (position) ++*position; else ++ownPosition; }
+        auto save() { return Forward(data, null, position ? *position : ownPosition); }
+    }
+    static struct Single
+    {
+        const(double)[] data;
+        size_t* position;
+        bool empty() const { return *position == data.length; }
+        double front() const { return data[*position]; }
+        void popFront() { ++*position; }
+    }
+    size_t position;
+    // Standard-deviation recovery also needs an independent saved cursor.
+    double[3] spread = [-1e200, 0, 1e200];
+    position = 0;
+    assert(standardDeviation!(VarianceAlgo.online)(Forward(spread[], &position)) == 1e200);
+    assert(position == 3);
+    position = 0;
+    assert(standardDeviation!(VarianceAlgo.online)(Single(spread[], &position)) == double.infinity);
+    assert(position == 3);
+}
+
+// Recover standard deviations whose squared values are outside the type's range.
+version(mir_stat_test)
+@safe pure nothrow @nogc
+unittest
+{
+    import std.meta : AliasSeq;
+    import std.math : sqrt, abs, isNaN;
+    import mir.ndslice.slice : sliced;
+    import mir.ndslice.dynamic : transposed;
+
+    static foreach (T; AliasSeq!(float, double, real))
+    {{
+        foreach (magnitude; [T.max / 4, T.min_normal, T.min_normal * T.epsilon])
+        {
+            T[3] values = [-magnitude, 0, magnitude];
+            static foreach (algo; AliasSeq!(VarianceAlgo.naive, VarianceAlgo.online,
+                VarianceAlgo.twoPass, VarianceAlgo.hybrid, VarianceAlgo.assumeZeroMean))
+            {{
+                assert(values[].standardDeviation!(T, algo) == magnitude);
+                const population = values[].standardDeviation!(T, algo)(true);
+                const expected = magnitude * sqrt(T(2) / 3);
+                assert(abs(population - expected) <= 4 * T.epsilon * magnitude
+                    + T.min_normal * T.epsilon);
+            }}
+        }
+        T[3] extremes = [-T.max, 0, T.max];
+        assert(extremes[].standardDeviation!(T, VarianceAlgo.naive) == T.max);
+        assert(standardDeviation!T(-T.max, T(0), T.max) == T.max);
+        T[3] largeConstant;
+        largeConstant[] = T.max / 4;
+        const rms = largeConstant[].standardDeviation!(T, VarianceAlgo.assumeZeroMean)(true);
+        assert(abs(rms / (T.max / 4) - 1) <= 2 * T.epsilon);
+        T[5] identical;
+        identical[] = T.max;
+        assert(identical[].standardDeviation == 0);
+        T[3] zero;
+        zero[] = 0;
+        assert(zero[].standardDeviation == 0);
+        T[3] constant = [T(3), T(3), T(3)];
+        assert(constant[].standardDeviation!(T, VarianceAlgo.assumeZeroMean)(true) == 3);
+        T[2] invalid = [T.infinity, T.infinity];
+        assert(invalid[].standardDeviation.isNaN);
+    }}
+    double[3] tiny = [-2e-162, 0, 2e-162];
+    assert(abs(tiny[].standardDeviation / 2e-162 - 1) <= 2 * double.epsilon);
+    const double[6] matrix = [-1e200, 0, 1e200, -1e200, 0, 1e200];
+    assert(matrix[].sliced(2, 3).transposed[0].standardDeviation == 0);
+    const expected = 1e200 * sqrt(4.0 / 5);
+    assert(abs(matrix[].sliced(2, 3).transposed.standardDeviation / expected - 1)
+        <= 4 * double.epsilon);
 }
 
 /// ditto
@@ -1605,11 +1799,9 @@ unittest
     auto y = x.standardDeviation;
     assert(y.approxEqual(sqrt(54.76562 / 11)));
 
-    // The naive algorithm is numerically unstable in this case
-    auto z0 = x.standardDeviation!"naive";
-    assert(!z0.approxEqual(y));
-
-    // But the two-pass algorithm provides a consistent answer
+    // Prefer two-pass for large offsets. Naive variance can lose the spread;
+    // recovery catches zero or negative results, but not an inaccurate positive result.
+    // The two-pass algorithm provides a consistent answer
     auto z1 = x.standardDeviation!"twoPass";
     assert(z1.approxEqual(y));
 }
