@@ -21,7 +21,7 @@ Copyright: 2023 Mir Stat Authors.
 
 module mir.stat.distribution.cauchy;
 
-import mir.stat.internal.standardize: standardize;
+import mir.stat.internal.standardize: standardize, logDistance;
 
 import mir.internal.utility: isFloatingPoint;
 
@@ -86,7 +86,19 @@ T cauchyPDF(T)(const T x, const T location, const T scale)
     if (isFloatingPoint!T)
     in (scale > 0, "scale must be greater than zero")
 {
-    return cauchyPDF(standardize(x, location, scale)) / scale;
+    import mir.math.common: fabs;
+    import mir.math.constant: M_1_PI;
+
+    const T density = cauchyPDF(standardize(x, location, scale));
+    if (density < T.min_normal && scale < 1)
+    {
+        // In this tail, scale^2/distance^2 is below working precision.
+        // Divide before multiplying to retain a density lost by squaring
+        // the standardized observation or scaling a subnormal density.
+        const T distance = fabs(x - location);
+        return (scale / distance) * (T(M_1_PI) / distance);
+    }
+    return density / scale;
 }
 
 ///
@@ -495,9 +507,14 @@ T cauchyLPDF(T)(const T x, const T location, const T scale)
     if (isFloatingPoint!T)
     in (scale > 0, "scale must be greater than zero")
 {
-    import mir.math.common: log;
+    import mir.math.common: log, fabs;
+    import mir.stat.constant: LOGPI;
 
-    return cauchyLPDF(standardize(x, location, scale)) - log(scale);
+    const T z = standardize(x, location, scale);
+    if (fabs(z) == T.infinity && fabs(x) <= T.max && fabs(location) <= T.max)
+        // The standardized ratio can overflow while its logarithm remains finite.
+        return log(scale) - 2 * logDistance(x, location) - T(LOGPI);
+    return cauchyLPDF(z) - log(scale);
 }
 
 ///
@@ -668,4 +685,51 @@ unittest
     // Independent arctangent reference, rounded from 100-digit arithmetic.
     assert(approxEqual(cauchyCCDF(1e20),
         3.18309886183790671537767526745028724e-21, 4 * double.epsilon, 0.0));
+}
+
+// Recover densities before dividing by a small scale can amplify underflow.
+version(mir_stat_test)
+@safe pure nothrow @nogc
+unittest
+{
+    import std.meta: AliasSeq;
+    import std.math: ldexp, isNaN;
+    import mir.math.common: fabs, log, approxEqual;
+    static foreach (T; AliasSeq!(float, double, real))
+    {{
+        const T inversePi = T(0.318309886183790671537767526745028724L);
+        const T logPi = T(1.14472988584940017414342735135305871L);
+        const T unit = T.min_normal * T.epsilon;
+        // All references below neglect a relative correction smaller than epsilon.
+        foreach (scale; [ldexp(T(1), -T.max_exp / 2 - 4), T.min_normal / 4, unit * 16])
+        {
+            const T expected = scale * inversePi;
+            foreach (sign; [T(-1), T(1)])
+            {
+                const T actual = cauchyPDF(sign, T(0), scale);
+                assert(actual > 0);
+                assert(fabs(actual - expected) <= 4 * T.epsilon * expected + unit);
+                assert(approxEqual(cauchyLPDF(sign, T(0), scale),
+                    log(scale) - logPi, 8 * T.epsilon, T(0)));
+            }
+            assert(cauchyPDF(T(0), T(1), scale) == cauchyPDF(T(-1), T(0), scale));
+            assert(cauchyPDF(T.infinity, T(0), scale) == 0);
+            assert(cauchyLPDF(T.infinity, T(0), scale) == -T.infinity);
+            assert(cauchyPDF(T.nan, T(0), scale).isNaN);
+            assert(cauchyLPDF(T.nan, T(0), scale).isNaN);
+        }
+        // A subnormal standard density can scale back into the normal range.
+        const T distance = ldexp(T(1), -T.max_exp / 4);
+        const T expected = (unit / distance) * (inversePi / distance);
+        assert(approxEqual(cauchyPDF(distance, T(0), unit), expected, 4 * T.epsilon, unit));
+        // Overflowing subtraction still has a finite logarithmic density.
+        const T expectedLog = log(T(.5)) - 2 * (log(T.max) +
+            T(0.693147180559945309417232121458176568L)) - logPi;
+        assert(approxEqual(cauchyLPDF(T.max, -T.max, T(.5)), expectedLog, 8 * T.epsilon, T(0)));
+    }}
+    // Independent 100-digit references for the represented double scale.
+    assert(approxEqual(cauchyPDF(1.0, 0.0, 1e-200),
+        3.183098861837906658401040881e-201, 4 * double.epsilon, 0.0));
+    assert(approxEqual(cauchyLPDF(1.0, 0.0, double.min_normal / 4),
+        -710.92744277923339701738912, 4 * double.epsilon, 0.0));
 }
