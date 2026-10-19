@@ -1,5 +1,10 @@
 /++
-Entropy and its accumulator.
+Entropy sum and its accumulator.
+
+These APIs compute `sum(x * ln(x))` using the natural logarithm, with a zero
+contribution for `x == 0`. They do not normalize inputs or negate the sum.
+For probabilities that sum to one, the result is the negative of Shannon
+entropy in nats.
 
 Use $(REF entropy, mir, stat, descriptive, univariate, entropies) for a range or array, or $(REF EntropyAccumulator, mir, stat, descriptive, univariate, entropies)
 to accumulate contributions through `put`.
@@ -45,7 +50,12 @@ import std.traits: isIterable, isMutable;
 
 import mir.stat.descriptive.univariate.internal.types: statType, meanType;
 
-///
+/++
+Accumulates `sum(x * ln(x))` without normalization or negation.
+
+Inputs must be nonnegative; zero contributes zero. See $(LINK2 #.entropy, $(D entropy)) for
+the sign convention and interpretation for probability inputs.
++/
 struct EntropyAccumulator(T, Summation summation)
 {
     import mir.math.internal.xlogy: xlog;
@@ -54,7 +64,7 @@ struct EntropyAccumulator(T, Summation summation)
 
     ///
     Summator!(T, summation) summator;
-    ///
+    /// Returns the accumulated sum of `x * ln(x)`.
     F entropy(F = T)() const @safe @property pure nothrow @nogc
     {
         return cast(F) summator.sum;
@@ -161,14 +171,24 @@ template entropyType(T)
 }
 
 /++
-Computes the entropy of the input.
+Computes `sum(x * ln(x))`, using the natural logarithm.
+
+Inputs must be nonnegative. Each zero contributes zero, following the
+limit of `x * ln(x)` as `x` approaches zero from above. Negative inputs
+violate an assertion when assertions are enabled.
+
+The input is not normalized, and the sum is not negated. For probabilities
+that sum to one, negate the result to obtain Shannon entropy in nats.
+Values greater than one are also accepted, so arbitrary nonnegative inputs
+can produce a positive result. For example, `[0.5, 0.5]` produces `-ln(2)`,
+while `[1, 1]` produces zero rather than normalizing the two values.
 By default, if `F` is not a floating point type, then the result will have a
 `double` type if `F` is implicitly convertible to a floating point type.
 Params:
     F = controls type of output
     summation = algorithm for summing the individual entropy values (default: Summation.appropriate)
 Returns:
-    The entropy of all the elements in the input, must be floating point type
+    The sum of `x * ln(x)` over the input, with a floating point result
 See_also:
     $(MATHREF sum, Summation)
 +/
