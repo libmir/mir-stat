@@ -658,15 +658,15 @@ struct RelativeFrequencyAccumulator(Storage, Axis...)
     must accommodate accumulated weights; overflow is not checked.
 
     Params:
-        weight = finite, nonnegative contribution
-        coordinates = one compatible coordinate per axis
+        inputs = one compatible coordinate per axis, followed by a finite, nonnegative weight
     +/
-    void putWeighted(W, T...)(W weight, T coordinates)
-        if (acceptsHistogramWeight!(CountType, W) && T.length == N && acceptsArguments!T &&
-            __traits(compiles, histogramAccumulator.putWeighted(W.init, T.init)))
+    void putWeighted(T...)(T inputs)
+        if (T.length == N + 1 && acceptsHistogramWeight!(CountType, T[$ - 1]) &&
+            acceptsArguments!(T[0 .. $ - 1]) &&
+            __traits(compiles, histogramAccumulator.putWeighted(T.init)))
     {
-        histogramAccumulator.putWeighted(weight, coordinates);
-        const CountType added = weight;
+        histogramAccumulator.putWeighted(inputs);
+        const CountType added = inputs[$ - 1];
         if (added != 0) _total += added;
     }
 
@@ -706,9 +706,9 @@ unittest
     alias A = IntegralAxis!(double, AxisOptions(false, true, true));
     double[4] storage = 0;
     auto f = RelativeFrequencyAccumulator!(double[], A)(storage[], A(2, 0));
-    f.putWeighted(0.5, 0.25);
-    f.putWeighted(1.5, 1.25);
-    f.putWeighted(2.0, -1.0);
+    f.putWeighted(0.25, 0.5);
+    f.putWeighted(1.25, 1.5);
+    f.putWeighted(-1.0, 2.0);
     assert(f.total == 4 && f.counts == [2.0, 0.5, 1.5, 0]);
     assert(f.relativeFrequency(0) == 0.125);
     assert(f.relativeFrequency!(double, Normalization.ordinary)(0) == 0.25);
@@ -717,7 +717,7 @@ unittest
     assert(f.cumulativeRelativeFrequencies!(double, Normalization.ordinary)() == [0.25, 1.0]);
     f.put(0.75);
     assert(f.total == 5 && f.counts[1] == 1.5);
-    f.putWeighted(0.0, 1.25);
+    f.putWeighted(1.25, 0.0);
     assert(f.total == 5);
 }
 
@@ -3929,8 +3929,8 @@ private void testOrdinaryNormalizationViews()()
     auto weighted = RelativeFrequencyAccumulator!(typeof(weightedStorage), A)(weightedStorage, A(2, 0));
     auto live = weighted.relativeFrequencyBins!(double, BinCoverage.all)();
     auto conditional = weighted.densityBins!(double, Normalization.ordinary)();
-    weighted.putWeighted(0.5, 0.25);
-    weighted.putWeighted(1.5, 1.25);
+    weighted.putWeighted(0.25, 0.5);
+    weighted.putWeighted(1.25, 1.5);
     assert(weighted.total == 5 && live[1].count == 0.5);
     assert(live[1].relativeFrequency == 0.1);
     assert(conditional.front.density == 0.25 && conditional.back.density == 0.75);
@@ -4011,11 +4011,11 @@ unittest
     alias A = IntegralAxis!(double, AxisOptions());
     double[2][2] storage = 0;
     auto f = RelativeFrequencyAccumulator!(typeof(storage), A, A)(storage, A(2, 0), A(2, 0));
-    f.putWeighted(0.5, 0.5, 1.5);
+    f.putWeighted(0.5, 1.5, 0.5);
     foreach (weight; [-1.0, double.nan, double.infinity, -double.infinity])
-        rejects(() { f.putWeighted(weight, 0.5, 1.5); });
-    rejects(() { f.putWeighted(1.0, 0.5, 3.0); });
-    rejects(() { f.putWeighted(0.0, 0.5, 3.0); });
+        rejects(() { f.putWeighted(0.5, 1.5, weight); });
+    rejects(() { f.putWeighted(0.5, 3.0, 1.0); });
+    rejects(() { f.putWeighted(0.5, 3.0, 0.0); });
     assert(f.total == 0.5 && f.counts[0][1] == 0.5);
     assert(f.counts[0][0] == 0 && f.counts[1][0] == 0 && f.counts[1][1] == 0);
     auto m = f.rcMarginal!1();
@@ -4025,11 +4025,11 @@ unittest
 
     uint[2] integral = 0;
     auto integerWeights = RelativeFrequencyAccumulator!(uint[], A)(integral[], A(2, 0));
-    rejects(() { integerWeights.putWeighted(-1, 0.5); });
+    rejects(() { integerWeights.putWeighted(0.5, -1); });
     assert(integerWeights.total == 0 && integerWeights.counts[0] == 0);
     int[2] signed = 0;
     auto signedWeights = RelativeFrequencyAccumulator!(int[], A)(signed[], A(2, 0));
-    rejects(() { signedWeights.putWeighted(uint.max, 0.5); });
+    rejects(() { signedWeights.putWeighted(0.5, uint.max); });
     assert(signedWeights.total == 0 && signedWeights.counts[0] == 0);
 }
 
@@ -4045,10 +4045,10 @@ unittest
     double[4] storage = 0;
     auto counts = storage[].sliced(2, 2).transposed;
     auto f = RelativeFrequencyAccumulator!(typeof(counts), A, A)(counts, A(2, 0), A(2, 0));
-    f.putWeighted(0.0, 0.5, 1.5);
+    f.putWeighted(0.5, 1.5, 0.0);
     assert(f.total == 0 && isNaN(f.relativeFrequency(0, 1)));
-    f.putWeighted(0.5, 0.5, 1.5);
-    f.putWeighted(1.5, 1.5, 0.5);
+    f.putWeighted(0.5, 1.5, 0.5);
+    f.putWeighted(1.5, 0.5, 1.5);
     assert(f.total == 2 && f.relativeFrequency(0, 1) == 0.25);
     assert(f.density(1, 0) == 0.75);
 }
@@ -4066,8 +4066,8 @@ unittest
         T[2] storage = T(0);
         auto f = RelativeFrequencyAccumulator!(T[], A)(storage[], A(2, 0));
         const T weight = T(0.5);
-        f.putWeighted(weight, 0.5);
-        f.putWeighted(1, 1.5);
+        f.putWeighted(0.5, weight);
+        f.putWeighted(1.5, 1);
         static assert(is(typeof(f.total) == T));
         assert(f.total == T(1.5) && f.counts[0] == weight);
         assert(f.relativeFrequency(1) == 2.0 / 3);
@@ -4084,9 +4084,9 @@ unittest
     alias F = RelativeFrequencyAccumulator!(double[2][2], A, A);
     double[2][2] zeros = 0;
     auto destination = F(zeros, A(2, 0), A(2, 0));
-    destination.putWeighted(0.5, 0, 1);
+    destination.putWeighted(0, 1, 0.5);
     auto source = F(zeros, A(2, 0), A(2, 0));
-    source.putWeighted(1.5, 1, 0);
+    source.putWeighted(1, 0, 1.5);
     const frozen = source;
     destination.put(frozen);
     assert(destination.total == 2);

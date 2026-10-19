@@ -490,7 +490,7 @@ unittest
     f.put(1, 0);
     assert(f.total == 2);
     assert(f.relativeFrequency(0, 1) == 0.5);
-    f.putWeighted(0.5, 0, 1);
+    f.putWeighted(0, 1, 0.5);
     assert(f.total == 2.5);
     assert(f.relativeFrequency(0, 1) == 0.6);
 }
@@ -500,10 +500,10 @@ private mixin WeightedHistogramFactory!(allocateCounts) weightedImplementation;
 
 /++
 Construct a weighted histogram with garbage-collected counts.
-Supply weights, observations, and the usual histogram axis arguments.
+Supply observations, weights, and the usual histogram axis arguments.
 Built-in arrays and Mir slices are accepted. Their shapes must match; matching
 multidimensional slices are traversed elementwise into a one-axis histogram.
-For joint counts, use weightedHistogram(weights, x, y, xAxis, yAxis).
+For joint counts, use weightedHistogram(x, y, weights, xAxis, yAxis).
 Supply one coordinate collection per explicit axis. All coordinate collections
 and weights must have matching ranks and shapes. The default counter type
 remains double; an explicit leading numeric type overrides it.
@@ -516,12 +516,12 @@ Bin-count rules operate on observations, without weighting the rule itself.
 Axis ownership and count ownership follow $(LREF histogram).
 
 An explicit accumulator Cell type summarizes weighted samples:
-weightedHistogram!Cell(weights, samples, coordinates, axis). Supply one coordinate
-collection per axis, followed by explicit axis instances. Weights precede samples,
-matching putWeightedSample and the numeric weighted factories. For example,
+weightedHistogram!Cell(samples, coordinates, weights, axis). Supply one coordinate
+collection per axis, then weights, followed by explicit axis instances. Samples
+and coordinates precede weights, matching putWeightedSample. For example,
 WMeanAccumulator computes weighted mean measurements by location. Input shapes
 must match as described for $(LREF histogram). Insertion calls
-putWeightedSample(weight, sample, coordinates...), so cells receive put(sample, weight).
+putWeightedSample(sample, coordinates..., weight), so cells receive put(sample, weight).
 The cell determines weight validity, attributes, and reference lifetimes;
 no separate numeric count or total is maintained.
 +/
@@ -529,20 +529,17 @@ template weightedHistogram(Options...)
 {
     static assert(!isAdaptiveCountSelection!Options,
         "AdaptiveCounts supports only unweighted histogram construction");
-    auto weightedHistogram(Weights, Data, Args...)(auto ref Weights weights,
-        auto ref Data data, auto ref Args args)
-        if (isSampleCellSelection!Options)
+    auto weightedHistogram(Args...)(auto ref Args args)
     {
+        import mir.stat.descriptive.histogram.api.factory: weightedHistogramWeightIndex;
+        enum weightIndex = weightedHistogramWeightIndex!(isSampleCellSelection!Options, Args);
         NoAllocationContext context;
-        return batchImplementation.batchFactory!(Options[0], HistogramBatchKind.weightedSamples)(context, weights, data, args);
-    }
-
-    auto weightedHistogram(Weights, Data, Args...)(
-        scope auto ref Weights weights, scope auto ref Data data, auto ref Args args)
-        if (!isSampleCellSelection!Options)
-    {
-        NoAllocationContext context;
-        return weightedImplementation.weightedFactory!Options(context, weights, data, args);
+        static if (isSampleCellSelection!Options)
+            return batchImplementation.batchFactory!(Options[0], HistogramBatchKind.weightedSamples)(
+                context, args[weightIndex], args[0 .. weightIndex], args[weightIndex + 1 .. $]);
+        else
+            return weightedImplementation.weightedFactory!Options(
+                context, args[weightIndex], args[0 .. weightIndex], args[weightIndex + 1 .. $]);
     }
 }
 
@@ -555,13 +552,13 @@ unittest
     double[3] observations = [0.25, 0.75, 1.25];
     double[3] weights = [0.5, 1.5, 2.0];
     auto h = weightedHistogram!RegularAxis(
-        weights, observations, 2u, 0.0, 2.0);
+        observations, weights, 2u, 0.0, 2.0);
     assert(h.counts == [2.0, 2.0]);
 }
 
 /++
-For weighted joint counts, pass weights first, then all coordinate collections
-and axis instances. Each bin stores
+For weighted joint counts, pass all coordinate collections, then weights,
+then axis instances. Each bin stores
 the sum of weights for its coordinate pairs.
 +/
 version(mir_stat_test)
@@ -572,7 +569,7 @@ unittest
     alias A = IntegralAxis!(int, AxisOptions());
     int[3] x = [0, 0, 1], y = [1, 1, 0];
     double[3] weights = [0.5, 1.5, 3.0];
-    auto h = weightedHistogram(weights, x, y, A(2, 0), A(2, 0));
+    auto h = weightedHistogram(x, y, weights, A(2, 0), A(2, 0));
     assert(h.counts[0, 1] == 2.0);
     assert(h.counts[1, 0] == 3.0);
     assert(h.counts[0, 0] == 0);
@@ -589,7 +586,7 @@ use the weighted histogram factory's coordinate/weight ordering and explicit axe
 Use relativeFrequency!(double, Normalization.ordinary) to normalize by ordinary
 bin weights only, without discarding the underflow/overflow counts.
 The result supports the same relative-frequency, cumulative, and density accessors
-as the unweighted relative-frequency factory. Use putWeighted(weight, coordinates...)
+as the unweighted relative-frequency factory. Use putWeighted(coordinates..., weight)
 for subsequent weighted observations; put adds unit weight. Both update the total.
 If the selected normalization total is zero, relative frequencies are NaN.
 +/
@@ -615,11 +612,11 @@ unittest
     import mir.stat.descriptive.histogram.axis: RegularAxis;
     double[3] observations = [0.25, 0.75, 1.25];
     double[3] weights = [0.5, 1.5, 2.0];
-    auto f = weightedRelativeFrequencyHistogram!RegularAxis(weights, observations, 2u, 0.0, 2.0);
+    auto f = weightedRelativeFrequencyHistogram!RegularAxis(observations, weights, 2u, 0.0, 2.0);
     assert(f.total == 4.0);
     assert(f.relativeFrequency(0) == 0.5);
     // Later weighted observations update both the bin and the denominator.
-    f.putWeighted(2.0, 0.25);
+    f.putWeighted(0.25, 2.0);
     assert(f.total == 6.0);
     assert(f.relativeFrequency(0) == 2.0 / 3);
 }
@@ -637,12 +634,12 @@ unittest
     {
         weights[0] = weight;
         bool rejected;
-        try { auto h = weightedHistogram!RegularAxis(weights, data, 2u, 0.0, 2.0); }
+        try { auto h = weightedHistogram!RegularAxis(data, weights, 2u, 0.0, 2.0); }
         catch (AssertError) { rejected = true; }
         assert(rejected);
     }
     weights[0] = 0;
-    auto f = weightedRelativeFrequencyHistogram!RegularAxis(weights, data, 2u, 0.0, 2.0);
+    auto f = weightedRelativeFrequencyHistogram!RegularAxis(data, weights, 2u, 0.0, 2.0);
     assert(f.total == 0 && f.counts == [0, 0]);
 }
 
@@ -972,8 +969,8 @@ unittest
     alias Cell = WMeanAccumulator!(double, Summation.pairwise, AssumeWeights.primary);
     auto coordinate = RegularAxis!(double, AxisOptions())(2, 0.0, 2.0);
     auto reports = histogram!Cell(coordinate, coordinate);
-    reports.putWeightedSample(2.0, 10.0, 0.5, 0.5);
-    reports.putWeightedSample(6.0, 30.0, 0.5, 1.5);
+    reports.putWeightedSample(10.0, 0.5, 0.5, 2.0);
+    reports.putWeightedSample(30.0, 0.5, 1.5, 6.0);
 
     auto byLatitude = reports.marginal!0();
     assert(byLatitude.counts[0].weight == 8.0);
@@ -1052,12 +1049,12 @@ Later putWeighted calls update bin weights and the total without moving edges.
 Params:
     Counts = numeric counter type, double by default
     algorithm = weighted quantile definition, inverseCDF by default
-    weights = probability masses, or occurrence counts for frequency algorithms
     data = one-dimensional observations, as an array or Mir slice
+    weights = probability masses, or occurrence counts for frequency algorithms
     probabilities = positive bin count or probability array/slice
 +/
 auto weightedPercentogram(Counts = double, WeightedQuantileAlgo algorithm = WeightedQuantileAlgo.inverseCDF,
-    Weights, Data, P)(scope auto ref Weights weights, scope auto ref Data data,
+    Data, Weights, P)(scope auto ref Data data, scope auto ref Weights weights,
     scope auto ref P probabilities)
     if (!isQuantileAxis!P)
 {
@@ -1068,10 +1065,10 @@ auto weightedPercentogram(Counts = double, WeightedQuantileAlgo algorithm = Weig
 
 /// ditto
 auto weightedPercentogram(Counts = double, WeightedQuantileAlgo algorithm = WeightedQuantileAlgo.inverseCDF,
-    Weights, Data)(scope auto ref Weights weights, scope auto ref Data data)
+    Data, Weights)(scope auto ref Data data, scope auto ref Weights weights)
 {
     import mir.stat.descriptive.histogram.api.factory: weightedPercentogramBinCount;
-    return weightedPercentogram!(Counts, algorithm)(weights, data, weightedPercentogramBinCount(weights));
+    return weightedPercentogram!(Counts, algorithm)(data, weights, weightedPercentogramBinCount(weights));
 }
 
 /// Reweighting outcomes changes the median boundary and the observed bin masses.
@@ -1082,13 +1079,13 @@ unittest
     import mir.ndslice.slice: sliced;
     const double[4] values = [0, 10, 20, 30];
     const double[4] equal = [1, 1, 1, 1], weights = [1, 1, 6, 2];
-    auto original = weightedPercentogram(equal, values, 2);
-    auto reweighted = weightedPercentogram(weights[].sliced, values[].sliced, 2);
+    auto original = weightedPercentogram(values, equal, 2);
+    auto reweighted = weightedPercentogram(values[].sliced, weights[].sliced, 2);
     assert(original.bins()[0].bin.high == 10);
     assert(reweighted.bins()[0].bin.high == 20);
     assert(reweighted.counts == [0.0, 2, 8, 0]);
     assert(reweighted.relativeFrequency(1) == 0.8);
-    reweighted.putWeighted(2.0, 15.0);
+    reweighted.putWeighted(15.0, 2.0);
     assert(reweighted.total == 12 && reweighted.counts[1] == 4);
 }
 
@@ -1210,8 +1207,7 @@ Zero-weight observations are ignored. Inputs are unchanged.
 The axis can subsequently count a different sample with different weights.
 +/
 auto weightedQuantileAxis(WeightedQuantileAlgo algorithm = WeightedQuantileAlgo.inverseCDF,
-    Weights, Data, P)(scope auto ref Weights weights,
-    scope auto ref Data data, scope auto ref P probabilities)
+    Data, Weights, P)(scope auto ref Data data, scope auto ref Weights weights, scope auto ref P probabilities)
 {
     import mir.stat.descriptive.histogram.api.factory: computeQuantileAxisEdges;
     import mir.stat.descriptive.histogram.axis: preparedQuantileAxis;
@@ -1227,10 +1223,10 @@ version(mir_stat_test)
 unittest
 {
     double[4] reference = [0, 10, 20, 30], weights = [1, 1, 6, 2];
-    auto prepared = weightedQuantileAxis(weights, reference, 2);
+    auto prepared = weightedQuantileAxis(reference, weights, 2);
     assert(prepared.bin(0).high == 20);
     double[3] later = [double.nan, 10, 25], laterWeights = [0, 3, 1];
-    auto p = weightedPercentogram(laterWeights, later, prepared);
+    auto p = weightedPercentogram(later, laterWeights, prepared);
     assert(p.counts == [0, 3, 1, 0] && p.total == 4);
     assert(p.relativeFrequency(0) == 0.75);
 }
@@ -1243,7 +1239,7 @@ private template computeWeightedAxisQuantiles(WeightedQuantileAlgo algorithm)
     {
         import mir.stat.descriptive.univariate: weightedQuantile;
         return weightedQuantile!algorithm(
-            weights, data, probabilities);
+            data, weights, probabilities);
     }
 }
 
@@ -1254,8 +1250,8 @@ finite and nonnegative; zero-weight observations are ignored, including nonfinit
 values. Positive-weight observations must be finite. Shapes must match.
 No quantile algorithm is selected here because the boundaries are already fixed.
 +/
-auto weightedPercentogram(Counts = double, Weights, Data, Axis)(
-    scope auto ref Weights weights, scope auto ref Data data, Axis axis)
+auto weightedPercentogram(Counts = double, Data, Weights, Axis)(
+    scope auto ref Data data, scope auto ref Weights weights, Axis axis)
     if (isQuantileAxis!Axis)
 {
     import mir.stat.descriptive.histogram.api.factory: weightedPercentogramOnAxis;

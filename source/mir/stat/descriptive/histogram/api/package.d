@@ -1,6 +1,14 @@
 /++
 Factory functions for histogram counts, relative frequencies, and per-bin summaries.
 
+Weighted APIs take all observation inputs before weights, followed by axis or
+probability configuration. Custom-allocation factories take the allocator first.
+For example: `weightedHistogram(x, y, weights, xAxis, yAxis)` and
+`rcWeightedPercentogram(values, weights, probabilities)`. Incremental updates use
+`putWeighted(x, y, weight)` or `putWeightedSample(sample, x, y, weight)`.
+Existing weight-first calls must be reordered, even when their argument types
+still allow them to compile.
+
 Choose a storage policy, then the kind of result:
 $(TABLE
 $(TR $(TH Result) $(TH GC storage) $(TH Reference-counted storage) $(TH Caller-selected allocator))
@@ -22,7 +30,7 @@ to histogram or relative-frequency factories to create empty counts, including
 joint counts for multiple axes, then insert observations through put or putWeighted.
 Populate numeric joint counts by passing one coordinate collection per explicit
 axis: histogram(x, y, xAxis, yAxis). Weighted construction uses
-weightedHistogram(weights, x, y, xAxis, yAxis). All input shapes must match.
+weightedHistogram(x, y, weights, xAxis, yAxis). All input shapes must match.
 A single multidimensional observation slice still contributes to one axis.
 
 For per-bin summaries, choose an accumulator cell type such as Summator or
@@ -141,7 +149,7 @@ unittest
     const bins = cast(size_t) ceil(pow(effectiveSize, 1.0 / 3));
 
     assert(bins == 2); // The row-count default requests three bins.
-    auto result = rcWeightedPercentogram(weights, outcomes, bins);
+    auto result = rcWeightedPercentogram(outcomes, weights, bins);
     assert(result.total == 52);
 }
 
@@ -168,7 +176,7 @@ unittest
     assert(bins == 3); // Counting the three table rows would request two.
     auto compact = rcWeightedPercentogram!(
         double, WeightedQuantileAlgo.frequencyType7)(
-            frequencies, outcomes, bins);
+            outcomes, frequencies, bins);
     auto repeated = rcpercentogram(expanded);
 
     assert(compact.counts == repeated.counts);

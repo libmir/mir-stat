@@ -194,7 +194,7 @@ package void testAccumulatorMarginal(alias project, alias dispose = null)()
             {
                 const value = 4.0 * (3 * i + j + 1);
                 static if (is(Cell == Weighted))
-                    h.putWeightedSample(cast(double)(j + 1), value, i - 1, j - 1);
+                    h.putWeightedSample(value, i - 1, j - 1, cast(double)(j + 1));
                 else
                     h.putSample(value, i - 1, j - 1);
             }
@@ -388,7 +388,7 @@ package void testAxisOnlyFactory(alias factory, alias dispose = null)()
         assert(h.counts.shape == [4, 4]);
         foreach (cell; h.counts.field)
             assert(cell == 0);
-        h.putWeighted(2u, -1.0, 2.0);
+        h.putWeighted(-1.0, 2.0, 2u);
         assert(h.counts[0, 3] == 2);
         const view = h.bins;
         assert(view.front.value == 0);
@@ -1620,7 +1620,7 @@ package void fillWeightedPercentogram(H, Weights, Data)(ref H histogram,
     alias Boundary = typeof(histogram.axis).BinType;
     foreach (i; 0 .. masses.length)
         if (masses[i] > 0)
-            histogram.putWeighted(masses[i], quantileAxisCoordinate!Boundary(values[i]));
+            histogram.putWeighted(quantileAxisCoordinate!Boundary(values[i]), masses[i]);
 }
 
 package auto buildWeightedPercentogram(alias allocate, alias quantiles, alias histogram,
@@ -1653,36 +1653,36 @@ package void testWeightedPercentograms(alias factory, alias release = null)()
     const double[5] data = [double.nan, 0, 10, 20, 30];
     const double[5] weights = [0, 1, 1, 6, 2], scaled = [0, 2, 2, 12, 4];
     const double[3] levels = [0, 0.5, 1];
-    auto result = factory(weights, data, levels);
+    auto result = factory(data, weights, levels);
     scope(exit) { static if (!is(typeof(release) == typeof(null))) release(result); }
     auto p = histogramOf(result);
     assert(p.counts == [0.0, 2, 8, 0] && p.total == 10);
     assert(p.bins()[0].bin.high == 20 && p.bins()[1].bin.high == nextUp(30.0));
     assert(p.density(0) * 20 == 0.2);
-    auto rescaled = factory(scaled, data, 2);
+    auto rescaled = factory(data, scaled, 2);
     scope(exit) { static if (!is(typeof(release) == typeof(null))) release(rescaled); }
     assert(histogramOf(rescaled).bins()[0].bin.high == 20);
     assert(histogramOf(rescaled).relativeFrequency(1) == p.relativeFrequency(1));
-    auto automatic = factory(weights, data);
+    auto automatic = factory(data, weights);
     scope(exit) { static if (!is(typeof(release) == typeof(null))) release(automatic); }
     assert(histogramOf(automatic).counts == p.counts);
     // Restrict the quantile interval: both tails retain their weights.
     const int[5] x = [0, 1, 2, 3, 4], w = [1, 1, 1, 1, 1];
     const double[3] middle = [0.25, 0.5, 0.75];
-    auto trimmed = factory(w, x, middle);
+    auto trimmed = factory(x, w, middle);
     scope(exit) { static if (!is(typeof(release) == typeof(null))) release(trimmed); }
     auto t = histogramOf(trimmed);
     assert(t.counts == [1.0, 1, 2, 1]);
     assert(t.relativeFrequency!(double, Normalization.ordinary)(1) == 2.0 / 3);
     // Ties compact boundaries while preserving all weighted observations.
     const int[5] tied = [0, 0, 0, 10, 20];
-    auto compact = factory(w, tied, 4);
+    auto compact = factory(tied, w, 4);
     scope(exit) { static if (!is(typeof(release) == typeof(null))) release(compact); }
     assert(histogramOf(compact).axis.N_bin == 2);
     assert(histogramOf(compact).counts == [0.0, 3, 2, 0]);
     const double[8] backing = [0, -1, 10, -1, 20, -1, 30, -1];
     const double[8] massBacking = [1, -1, 1, -1, 6, -1, 2, -1];
-    auto strided = factory(massBacking[].sliced.stride(2), backing[].sliced.stride(2), levels[].sliced);
+    auto strided = factory(backing[].sliced.stride(2), massBacking[].sliced.stride(2), levels[].sliced);
     scope(exit) { static if (!is(typeof(release) == typeof(null))) release(strided); }
     assert(histogramOf(strided).counts == p.counts);
 }
@@ -1822,10 +1822,32 @@ package void insertWeighted(H, Data, Weights)(ref H h, scope Data data, scope We
     foreach (i; 0 .. data.length)
     {
         static if (Data.N == 1)
-            h.putWeighted(weights[i], data[i]);
+            h.putWeighted(data[i], weights[i]);
         else
             insertWeighted(h, data[i], weights[i]);
     }
+}
+
+// Public weighted batches put all observations before the weight collection.
+// Explicit-axis batches locate weights immediately before their trailing axes;
+// ordinary one-axis construction keeps axis templates and bin-count rules.
+package template weightedHistogramWeightIndex(bool samples, Args...)
+{
+    static assert(Args.length >= 2, "Supply observations followed by weights");
+    static if (samples)
+    {
+        static assert(Args.length >= 4 && Args.length % 2 == 0,
+            "Supply samples, coordinates, weights, then explicit axes");
+        enum weightIndex = Args.length / 2;
+        static assert(areHistogramAxes!(Args[weightIndex + 1 .. $]),
+            "Sample batches require explicit axis instances");
+        enum weightedHistogramWeightIndex = weightIndex;
+    }
+    else static if (Args.length >= 3 && Args.length % 2 == 1 &&
+        areHistogramAxes!(Args[(Args.length + 1) / 2 .. $]))
+        enum weightedHistogramWeightIndex = (Args.length - 1) / 2;
+    else
+        enum weightedHistogramWeightIndex = 1;
 }
 
 // Two or more coordinate collections followed by the same number of axes.
@@ -1856,7 +1878,7 @@ package void testJointNumericFactories(alias factory, alias weightedFactory)()
     assert(h.counts[0, 0] == 1 && h.counts[1, 1] == 1);
     assert(h.counts[2, 0] == 1 && h.counts[3, 1] == 1);
     assert(h.counts[1, 0] == 0);
-    auto w = weightedFactory(weights[].sliced(2, 2), x, y, X(2, 0), Y(2, 0, 2));
+    auto w = weightedFactory(x, y, weights[].sliced(2, 2), X(2, 0), Y(2, 0, 2));
     static assert(is(w.CountType == double));
     assert(w.counts[0, 0] == 1 && w.counts[1, 1] == 2);
     assert(w.counts[2, 0] == 3 && w.counts[3, 1] == 4);
@@ -1875,14 +1897,14 @@ package void testJointNumericFactories(alias factory, alias weightedFactory)()
     uint[2] integralWeights = [2, 3];
     auto three = factory(same, same[], same, X(2, 0), X(2, 0), X(2, 0));
     assert(three.counts[1, 1, 1] == 2);
-    auto integral = weightedFactory!uint(integralWeights, same, same[], X(2, 0), X(2, 0));
+    auto integral = weightedFactory!uint(same, same[], integralWeights, X(2, 0), X(2, 0));
     assert(integral.counts[1, 1] == 5);
     static assert(is(integral.CountType == uint));
-    auto weightedThree = weightedFactory(integralWeights, same, same, same,
+    auto weightedThree = weightedFactory(same, same, same, integralWeights,
         X(2, 0), X(2, 0), X(2, 0));
     assert(weightedThree.counts[1, 1, 1] == 5);
     static assert(!__traits(compiles, factory(x, ys[], X(2, 0), Y(2, 0, 2))));
-    static assert(!__traits(compiles, weightedFactory!uint(weights[].sliced(2, 2), x, y, X(2, 0), Y(2, 0, 2))));
+    static assert(!__traits(compiles, weightedFactory!uint(x, y, weights[].sliced(2, 2), X(2, 0), Y(2, 0, 2))));
     static assert(!__traits(compiles, factory!RegularAxis(same, same, X(2, 0), X(2, 0))));
 
     static auto fromLocal()
@@ -1896,7 +1918,7 @@ package void testJointNumericFactories(alias factory, alias weightedFactory)()
     {
         int[2] a = [0, 0], b = [0, 1];
         double[2] localWeights = [0.5, 1.5];
-        return weightedFactory(localWeights, a, b, X(2, 0), X(2, 0));
+        return weightedFactory(a, b, localWeights, X(2, 0), X(2, 0));
     }
     auto weightedOwned = weightedFromLocal();
     assert(weightedOwned.counts[1, 1] == 0.5 && weightedOwned.counts[1, 2] == 1.5);
@@ -1912,7 +1934,7 @@ package void testJointNumericFactories(alias factory, alias weightedFactory)()
             double[3] edges = [0, 1, 2];
             int[2] a = [0, 1], localWeights = [1, 2];
             auto axis = VariableAxis!(double*, AxisOptions())(edges[].sliced);
-            return weightedFactory(localWeights, a, a, axis, X(2, 0));
+            return weightedFactory(a, a, localWeights, axis, X(2, 0));
         }));
     }
 }
@@ -1932,14 +1954,16 @@ Shared construction for numeric joint batches and accumulator-cell batches.
 Public factories select the cell type, batch kind, and allocation callbacks;
 this helper owns the common validation, allocation, and insertion sequence.
 
-Arguments are ordered as leading value collections, coordinate collections,
-then explicit axis instances. For D axes:
+This private helper receives leading weight/sample collections, coordinate
+collections, then explicit axes. Public factories translate their data-first
+arguments to this internal layout; insertion moves the weight behind the row
+coordinates before calling the public accumulation method. For D axes:
 
     kind              leading collections    row update
     counts            none                   put(coordinates...)
-    weightedCounts    weights                putWeighted(weight, coordinates...)
+    weightedCounts    weights                putWeighted(coordinates..., weight)
     samples           samples                putSample(sample, coordinates...)
-    weightedSamples   weights, samples       putWeightedSample(weight, sample, coordinates...)
+    weightedSamples   weights, samples       putWeightedSample(sample, coordinates..., weight)
 
 There are D coordinate collections and D axes. For example, a weighted sample
 batch with (weights, samples, x, y, xAxis, yAxis) has leadingCollections = 2,
@@ -2014,7 +2038,10 @@ package mixin template HistogramBatchFactory(alias allocate, alias release = nul
         auto h = batchAxes.axisFactory!Cell(context, args[collections .. $]);
         static if (!is(typeof(release) == typeof(null)))
             scope(failure) release(context, h.counts);
-        insertHistogramInputs!(method, 0)(h, args[0 .. collections]);
+        static if (kind == HistogramBatchKind.weightedCounts || kind == HistogramBatchKind.weightedSamples)
+            insertHistogramInputs!(method, 0)(h, args[1 .. collections], args[0]);
+        else
+            insertHistogramInputs!(method, 0)(h, args[0 .. collections]);
         return h;
     }
 }
@@ -2106,8 +2133,8 @@ package void testSampleFactories(alias factory, alias weightedFactory, alias rel
     {
         const double[4] weights = [2, 6, 1, 3];
         const int[4] same = [0, 0, 0, 0];
-        auto h = weightedFactory!WeightedCell(weights[].sliced(2, 2), samples,
-            same[].sliced(2, 2), A(2, 0));
+        auto h = weightedFactory!WeightedCell(samples, same[].sliced(2, 2),
+            weights[].sliced(2, 2), A(2, 0));
         scope(exit) { static if (!is(typeof(release) == typeof(null))) release(h); }
         assert(h.counts[1].wmean == 290.0 / 12);
     }
@@ -2122,7 +2149,7 @@ package void testSampleFactories(alias factory, alias weightedFactory, alias rel
     static assert(!__traits(compiles, factory!Cell(samples, x[], A(2, 0))));
     static assert(!__traits(compiles, factory!Cell(samples, xs, 2)));
     static assert(!__traits(compiles, factory!uint(samples, xs, A(2, 0))));
-    static assert(!__traits(compiles, weightedFactory!Cell(samples, samples, xs, A(2, 0))));
+    static assert(!__traits(compiles, weightedFactory!Cell(samples, xs, samples, A(2, 0))));
 }
 
 version(mir_stat_test_lifetime)
@@ -2192,7 +2219,7 @@ unittest
         assert(rejected);
     }
     rejects(() { auto h = rchistogram!Cell(samples[], coordinates[0 .. 4], A(2, 0)); });
-    rejects(() { auto h = rcWeightedHistogram!WeightedCell(samples[0 .. 4], samples[], coordinates[], A(2, 0)); });
+    rejects(() { auto h = rcWeightedHistogram!WeightedCell(samples[], coordinates[], samples[0 .. 4], A(2, 0)); });
     rejects(() { auto h = rchistogram!Cell(samples[].sliced(2, 4), coordinates[].sliced(4, 2), A(2, 0)); });
 }
 
@@ -2237,20 +2264,20 @@ unittest
         assert(empty.counts[0].sum == 0);
         auto summary = factory!Sum(samples, coordinates, A(1, 0));
         assert(summary.counts[0].sum == 40);
-        auto weighted = weightedFactory!Mean(weights, samples, coordinates, A(1, 0));
+        auto weighted = weightedFactory!Mean(samples, coordinates, weights, A(1, 0));
         assert(weighted.counts[0].wmean == 25);
         auto data = [7];
         auto references = [data[]];
         uint[1] masses = [1];
         int[1] locations = [0];
-        auto retained = weightedFactory!BorrowingCell(masses, references, locations, A(1, 0));
+        auto retained = weightedFactory!BorrowingCell(references, locations, masses, A(1, 0));
         assert(retained.counts[0].data[0] == 7);
         static assert(!__traits(compiles, () @safe {
             int[1] local = [7];
             int[][1] references = [local[]];
             uint[1] masses = [1];
             int[1] locations = [0];
-            return weightedFactory!BorrowingCell(masses, references, locations, A(1, 0));
+            return weightedFactory!BorrowingCell(references, locations, masses, A(1, 0));
         }));
     }
     check!(histogram, weightedHistogram)();
@@ -2326,7 +2353,7 @@ package void testAdaptiveFactory(alias factory)()
     auto copy = h;
     copy.put(0);
     assert(proxy.count() == 301 && view[0].count == 301);
-    static assert(!__traits(compiles, h.putWeighted(2, 0)));
+    static assert(!__traits(compiles, h.putWeighted(0, 2)));
     const frozen = h;
     assert(frozen.bins[0].count == 301);
     static assert(!__traits(compiles, frozen.put(0)));
@@ -2446,7 +2473,7 @@ package void testAdaptiveRelativeFactory(alias factory)()
     assert(snapshot[1] == 258.0 / 259);
     auto all = f.bins!(BinCoverage.all)();
     assert(all[0].count == 1 && all[3].count == 1);
-    static assert(!__traits(compiles, f.putWeighted(1u, 0)));
+    static assert(!__traits(compiles, f.putWeighted(0, 1u)));
     static assert(!__traits(compiles, f.put(f)));
     static assert(!__traits(compiles, ++f.counts[0]));
 
@@ -2679,7 +2706,7 @@ package void testQuantileAxes(alias create, alias copy, alias make, alias counts
     assert(fromStrided.high == nextUp(2.0f) && backing[4] == 2);
     const double[3] mixedValues = [0.5, 1.5, 2.0];
     const uint[3] mixedWeights = [2, 3, 4];
-    auto mixed = weightedMake(mixedWeights, mixedValues, fromStrided);
+    auto mixed = weightedMake(mixedValues, mixedWeights, fromStrided);
     assert(mixed.total == 9 && mixed.counts == [0, 2, 7, 0]);
 
     // Selection algorithms and supplied boundaries keep adjacent 64-bit integers exact.
@@ -2705,9 +2732,9 @@ package void testQuantileAxes(alias create, alias copy, alias make, alias counts
     auto floatingAxis = copy(floatingEdges);
     assert(make(observation, floatingAxis).counts == [0, 1, 0, 0]);
     const uint[3] equalWeights = [1, 1, 1];
-    auto weightedExact = weightedCreate(equalWeights, large, thirds);
+    auto weightedExact = weightedCreate(large, equalWeights, thirds);
     static assert(is(typeof(weightedExact).BinType == long));
-    assert(weightedMake(equalWeights, large, weightedExact).counts == [0, 1, 2, 0]);
+    assert(weightedMake(large, equalWeights, weightedExact).counts == [0, 1, 2, 0]);
 
     auto alternate = create!(QuantileAlgo.type1)(values, levels);
     assert(alternate.N_bin == 2);
@@ -2716,13 +2743,13 @@ package void testQuantileAxes(alias create, alias copy, alias make, alias counts
     static foreach (algo; [WeightedQuantileAlgo.inverseCDF, WeightedQuantileAlgo.type7,
         WeightedQuantileAlgo.frequencyType8])
     {{
-        auto wa = weightedCreate!algo(weights, values, levels);
-        auto wf = weightedMake(weights, values, wa);
-        auto reference = weightedMake!(double, algo)(weights, values, levels);
+        auto wa = weightedCreate!algo(values, weights, levels);
+        auto wf = weightedMake(values, weights, wa);
+        auto reference = weightedMake!(double, algo)(values, weights, levels);
         assert(wf.counts == reference.counts && wf.total == 5);
     }}
     double[2] zero = [0, 0], missing = [double.nan, double.infinity];
-    auto zeroMass = weightedMake(zero, missing, axis);
+    auto zeroMass = weightedMake(missing, zero, axis);
     assert(zeroMass.total == 0);
 
 }
@@ -2744,8 +2771,8 @@ package void testQuantileAxisRejections(alias create, alias copy, alias make, al
     double[2] missing = [double.nan, double.infinity];
     auto axis = create(values, 2);
     double[2] badWeights = [-1, 1], two = [0, 1];
-    rejects(() { weightedMake(badWeights, two, axis); });
-    rejects(() { weightedMake(weights, two, axis); });
+    rejects(() { weightedMake(two, badWeights, axis); });
+    rejects(() { weightedMake(two, weights, axis); });
     rejects(() { make(missing, axis); });
     rejects(() { create(values, 0); });
     rejects(() { create(values, size_t.max); });
