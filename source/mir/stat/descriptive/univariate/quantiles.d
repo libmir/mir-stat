@@ -1577,6 +1577,10 @@ private auto dispatchWeightedQuantile(F, WeightedQuantileAlgo algorithm,
 /++
 Compute weighted quantile estimates with GC-allocated scratch and results.
 
+Pass observations first, then weights, followed by probabilities, as in
+`weightedQuantile(data, weights, probabilities)`. This matches the data-first
+argument order of weighted means and sums.
+
 Use weights to change the probability mass assigned to observations, for example
 when reweighting simulated outcomes. $(LINK2 #.WeightedQuantileAlgo.inverseCDF, $(D WeightedQuantileAlgo.inverseCDF))
 returns observed values without interpolation; it is the default.
@@ -1634,13 +1638,13 @@ template weightedQuantile(F, WeightedQuantileAlgo algorithm = WeightedQuantileAl
 {
     /++
     Params:
+        data = observations corresponding to the weights
         weights = relative probability masses, or nonnegative whole-number occurrence counts
             for $(LINK2 #.WeightedQuantileAlgo.frequencyType7, $(D WeightedQuantileAlgo.frequencyType7)) and $(LINK2 #.WeightedQuantileAlgo.frequencyType8, $(D WeightedQuantileAlgo.frequencyType8))
-        data = observations corresponding to the weights
         probabilities = scalar, array/slice, or variadic probabilities; omitted for quartiles
     +/
-    auto weightedQuantile(Weights, Data, P...)(
-        scope auto ref Weights weights, scope auto ref Data data,
+    auto weightedQuantile(Data, Weights, P...)(
+        scope auto ref Data data, scope auto ref Weights weights,
         scope auto ref P probabilities)
     {
         QuantileContext context;
@@ -1654,13 +1658,13 @@ template weightedQuantile(WeightedQuantileAlgo algorithm = WeightedQuantileAlgo.
 {
     /++
     Params:
+        data = observations corresponding to the weights
         weights = relative probability masses, or nonnegative whole-number occurrence counts
             for $(LINK2 #.WeightedQuantileAlgo.frequencyType7, $(D WeightedQuantileAlgo.frequencyType7)) and $(LINK2 #.WeightedQuantileAlgo.frequencyType8, $(D WeightedQuantileAlgo.frequencyType8))
-        data = observations corresponding to the weights
         probabilities = scalar, array/slice, or variadic probabilities; omitted for quartiles
     +/
-    auto weightedQuantile(Weights, Data, P...)(
-        scope auto ref Weights weights, scope auto ref Data data,
+    auto weightedQuantile(Data, Weights, P...)(
+        scope auto ref Data data, scope auto ref Weights weights,
         scope auto ref P probabilities)
     {
         alias F = WeightedQuantileResult!(Data, algorithm);
@@ -1668,6 +1672,25 @@ template weightedQuantile(WeightedQuantileAlgo algorithm = WeightedQuantileAlgo.
         return dispatchWeightedQuantile!(F, algorithm, QuantileAllocation.gc)(
             context, weights, data, probabilities);
     }
+}
+
+// Same-typed inputs must be interpreted as observations first in every API.
+// Mallocator deallocation makes the custom-allocation calls @system.
+version(mir_stat_test)
+@system pure nothrow
+unittest
+{
+    import std.experimental.allocator.mallocator: Mallocator;
+
+    const double[3] data = [2, 10, 20], weights = [1, 1, 8];
+    // The cumulative masses are 1, 2, 10: the median observation is 20.
+    // Reversing these arrays would instead select 8.
+    assert(weightedQuantile(data, weights, 0.5) == 20);
+    assert(weightedQuantile!double(data, weights, 0.5) == 20);
+    assert(rcWeightedQuantile(data, weights, 0.5) == 20);
+    assert(rcWeightedQuantile!double(data, weights, 0.5) == 20);
+    assert(makeWeightedQuantile(Mallocator.instance, data, weights, 0.5) == 20);
+    assert(makeWeightedQuantile!double(Mallocator.instance, data, weights, 0.5) == 20);
 }
 
 /// Increasing an outcome's probability mass moves the median toward it.
@@ -1679,11 +1702,11 @@ unittest
     const int[4] values = [0, 10, 20, 30];
     const double[4] equal = [1, 1, 1, 1];
     const double[4] reweighted = [1, 1, 1, 97];
-    assert(weightedQuantile(equal, values, 0.5) == 10);
-    assert(weightedQuantile(reweighted, values, 0.5) == 30);
-    assert(weightedQuantile(reweighted, values) == [0, 30, 30, 30, 30]);
+    assert(weightedQuantile(values, equal, 0.5) == 10);
+    assert(weightedQuantile(values, reweighted, 0.5) == 30);
+    assert(weightedQuantile(values, reweighted) == [0, 30, 30, 30, 30]);
     import mir.math.common: approxEqual;
-    auto smooth = weightedQuantile!(WeightedQuantileAlgo.harrellDavis)(reweighted, values, 0.5);
+    auto smooth = weightedQuantile!(WeightedQuantileAlgo.harrellDavis)(values, reweighted, 0.5);
     static assert(is(typeof(smooth) == double));
     assert(smooth.approxEqual(29.450762222351227));
 }
@@ -1699,10 +1722,10 @@ unittest
     const double[4] values = [1, 2, 3, 10000];
     const double[4] weights = [1, 4, 4, 1];
     auto median = weightedQuantile!(WeightedQuantileAlgo.trimmedHarrellDavis)(
-        weights[].sliced, values[].sliced, 0.5);
+        values[].sliced, weights[].sliced, 0.5);
     assert(median.approxEqual(2.5));
-    assert(weightedQuantile(weights, values, 0.5) == 2);
-    auto smooth = weightedQuantile!(WeightedQuantileAlgo.harrellDavis)(weights, values, 0.5);
+    assert(weightedQuantile(values, weights, 0.5) == 2);
+    auto smooth = weightedQuantile!(WeightedQuantileAlgo.harrellDavis)(values, weights, 0.5);
     assert(smooth.approxEqual(292.59361886338557));
 }
 
@@ -1716,12 +1739,12 @@ unittest
     import mir.ndslice.slice: sliced;
     const int[4] values = [0, 10, 20, 30];
     const int[4] equal = [1, 1, 1, 1], weights = [1, 1, 1, 7];
-    auto q7 = weightedQuantile!(WeightedQuantileAlgo.type7)(equal, values, 0.25);
-    auto q8 = weightedQuantile!(WeightedQuantileAlgo.type8)(equal, values, 0.25);
+    auto q7 = weightedQuantile!(WeightedQuantileAlgo.type7)(values, equal, 0.25);
+    auto q8 = weightedQuantile!(WeightedQuantileAlgo.type8)(values, equal, 0.25);
     assert(q7.approxEqual(7.5));
     assert(q8.approxEqual(25.0 / 6));
     auto reweighted = weightedQuantile!(WeightedQuantileAlgo.type7)(
-        weights[].sliced, values[].sliced, [0.25, 0.5, 0.75]);
+        values[].sliced, weights[].sliced, [0.25, 0.5, 0.75]);
     assert(reweighted[0].approxEqual(25.0));
     assert(reweighted[1].approxEqual(375.0 / 13));
     assert(reweighted[2].approxEqual(30.0));
@@ -1735,9 +1758,9 @@ unittest
 {
     const int[4] values = [0, 0, 10, 20], weights = [1, 1, 1, 1];
     auto q = weightedQuantile!(WeightedQuantileAlgo.averagedInverseCDF)(
-        weights, values, [0.25, 0.5, 0.75]);
+        values, weights, [0.25, 0.5, 0.75]);
     assert(q == [0.0, 5.0, 15.0]);
-    assert(weightedQuantile(weights, values, 0.5) == 0);
+    assert(weightedQuantile(values, weights, 0.5) == 0);
 }
 
 /// Frequency counts reproduce repeated observations without allocating them.
@@ -1748,9 +1771,9 @@ unittest
 {
     const int[2] values = [0, 10], counts = [2, 2], once = [1, 1];
     alias frequency = weightedQuantile!(WeightedQuantileAlgo.frequencyType7);
-    assert(frequency(counts, values, 0.25) == 0);
-    assert(frequency(once, values, 0.25) == 2.5);
-    assert(weightedQuantile!(WeightedQuantileAlgo.type7)(counts, values, 0.25) == 2.5);
+    assert(frequency(values, counts, 0.25) == 0);
+    assert(frequency(values, once, 0.25) == 2.5);
+    assert(weightedQuantile!(WeightedQuantileAlgo.type7)(values, counts, 0.25) == 2.5);
 }
 
 /++
@@ -1759,6 +1782,7 @@ Uses the definitions, input requirements, and numerical rules of $(LREF weighted
 Inputs remain unchanged. A scalar probability returns a scalar; otherwise the
 owning RC result survives the inputs. Omitted probabilities request quartiles.
 RC allocation supports $(TT @nogc) use, including scratch storage.
+Pass observations before weights: `rcWeightedQuantile(data, weights, probabilities)`.
 
 Params:
     F = explicit result type; inferred from observations when omitted
@@ -1769,13 +1793,13 @@ template rcWeightedQuantile(F, WeightedQuantileAlgo algorithm = WeightedQuantile
 {
     /++
     Params:
+        data = observations corresponding to the weights
         weights = relative probability masses, or nonnegative whole-number occurrence counts
             for $(LINK2 #.WeightedQuantileAlgo.frequencyType7, $(D WeightedQuantileAlgo.frequencyType7)) and $(LINK2 #.WeightedQuantileAlgo.frequencyType8, $(D WeightedQuantileAlgo.frequencyType8))
-        data = observations corresponding to the weights
         probabilities = scalar, array/slice, or variadic probabilities; omitted for quartiles
     +/
-    auto rcWeightedQuantile(Weights, Data, P...)(
-        scope auto ref Weights weights, scope auto ref Data data,
+    auto rcWeightedQuantile(Data, Weights, P...)(
+        scope auto ref Data data, scope auto ref Weights weights,
         scope auto ref P probabilities)
     {
         QuantileContext context;
@@ -1789,13 +1813,13 @@ template rcWeightedQuantile(WeightedQuantileAlgo algorithm = WeightedQuantileAlg
 {
     /++
     Params:
+        data = observations corresponding to the weights
         weights = relative probability masses, or nonnegative whole-number occurrence counts
             for $(LINK2 #.WeightedQuantileAlgo.frequencyType7, $(D WeightedQuantileAlgo.frequencyType7)) and $(LINK2 #.WeightedQuantileAlgo.frequencyType8, $(D WeightedQuantileAlgo.frequencyType8))
-        data = observations corresponding to the weights
         probabilities = scalar, array/slice, or variadic probabilities; omitted for quartiles
     +/
-    auto rcWeightedQuantile(Weights, Data, P...)(
-        scope auto ref Weights weights, scope auto ref Data data,
+    auto rcWeightedQuantile(Data, Weights, P...)(
+        scope auto ref Data data, scope auto ref Weights weights,
         scope auto ref P probabilities)
     {
         alias F = WeightedQuantileResult!(Data, algorithm);
@@ -1813,7 +1837,7 @@ unittest
     import mir.ndslice.slice: sliced;
     const int[4] values = [30, 10, 20, 0];
     const double[4] weights = [5, 1, 1, 1];
-    auto result = rcWeightedQuantile(weights[].sliced, values[].sliced, 0.0, 0.25, 1.0);
+    auto result = rcWeightedQuantile(values[].sliced, weights[].sliced, 0.0, 0.25, 1.0);
     assert(result == [0, 10, 30]);
     assert(values[] == [30, 10, 20, 0]);
 }
@@ -1825,6 +1849,8 @@ Scratch is released before returning, including on failure. A scalar result
 requires no disposal. For a result slice, the caller must dispose its field with
 the same allocator after all uses. Attributes depend on the allocator.
 Inputs remain unchanged; omitted probabilities request quartiles.
+The allocator comes first, then observations and weights:
+`makeWeightedQuantile(allocator, data, weights, probabilities)`.
 
 Params:
     F = explicit result type; inferred from observations when omitted
@@ -1836,13 +1862,13 @@ template makeWeightedQuantile(F, WeightedQuantileAlgo algorithm = WeightedQuanti
     /++
     Params:
         allocator = allocator for scratch and result storage
+        data = observations corresponding to the weights
         weights = relative probability masses, or nonnegative whole-number occurrence counts
             for $(LINK2 #.WeightedQuantileAlgo.frequencyType7, $(D WeightedQuantileAlgo.frequencyType7)) and $(LINK2 #.WeightedQuantileAlgo.frequencyType8, $(D WeightedQuantileAlgo.frequencyType8))
-        data = observations corresponding to the weights
         probabilities = scalar, array/slice, or variadic probabilities; omitted for quartiles
     +/
-    auto makeWeightedQuantile(Allocator, Weights, Data, P...)(
-        ref Allocator allocator, scope auto ref Weights weights, scope auto ref Data data,
+    auto makeWeightedQuantile(Allocator, Data, Weights, P...)(
+        ref Allocator allocator, scope auto ref Data data, scope auto ref Weights weights,
         scope auto ref P probabilities)
     {
         return dispatchWeightedQuantile!(F, algorithm, QuantileAllocation.custom)(
@@ -1856,13 +1882,13 @@ template makeWeightedQuantile(WeightedQuantileAlgo algorithm = WeightedQuantileA
     /++
     Params:
         allocator = allocator for scratch and result storage
+        data = observations corresponding to the weights
         weights = relative probability masses, or nonnegative whole-number occurrence counts
             for $(LINK2 #.WeightedQuantileAlgo.frequencyType7, $(D WeightedQuantileAlgo.frequencyType7)) and $(LINK2 #.WeightedQuantileAlgo.frequencyType8, $(D WeightedQuantileAlgo.frequencyType8))
-        data = observations corresponding to the weights
         probabilities = scalar, array/slice, or variadic probabilities; omitted for quartiles
     +/
-    auto makeWeightedQuantile(Allocator, Weights, Data, P...)(
-        ref Allocator allocator, scope auto ref Weights weights, scope auto ref Data data,
+    auto makeWeightedQuantile(Allocator, Data, Weights, P...)(
+        ref Allocator allocator, scope auto ref Data data, scope auto ref Weights weights,
         scope auto ref P probabilities)
     {
         alias F = WeightedQuantileResult!(Data, algorithm);
@@ -1880,10 +1906,10 @@ unittest
     import std.experimental.allocator: dispose;
     const int[3] values = [0, 10, 20];
     const int[3] weights = [1, 2, 1];
-    auto result = makeWeightedQuantile(Mallocator.instance, weights, values);
+    auto result = makeWeightedQuantile(Mallocator.instance, values, weights);
     scope(exit) Mallocator.instance.dispose(result.field);
     assert(result == [0, 0, 10, 10, 20]);
-    assert(makeWeightedQuantile!double(Mallocator.instance, weights, values, 0.5) == 10.0);
+    assert(makeWeightedQuantile!double(Mallocator.instance, values, weights, 0.5) == 10.0);
 }
 
 // A decoding container must expose its converted element type explicitly.
@@ -1912,22 +1938,22 @@ unittest
     short[3] raw = [1, 3, 5];
     const int[3] weights = [1, 1, 1];
     auto packed = PackedMeasurements!true(raw[]);
-    static assert(!__traits(compiles, weightedQuantile(weights, packed, 0.5)));
-    static assert(!__traits(compiles, rcWeightedQuantile(weights, packed, 0.5)));
+    static assert(!__traits(compiles, weightedQuantile(packed, weights, 0.5)));
+    static assert(!__traits(compiles, rcWeightedQuantile(packed, weights, 0.5)));
     static assert(!__traits(compiles,
-        makeWeightedQuantile(Mallocator.instance, weights, packed, 0.5)));
+        makeWeightedQuantile(Mallocator.instance, packed, weights, 0.5)));
 
     // A conversion that preserves the element type remains valid.
     auto unchanged = PackedMeasurements!false(raw[]);
-    assert(rcWeightedQuantile(weights, unchanged, 0.5) == 3);
+    assert(rcWeightedQuantile(unchanged, weights, 0.5) == 3);
 
     auto decoded = packed.asSlice;
-    auto gcMedian = weightedQuantile(weights, decoded, 0.5);
-    auto rcMedian = rcWeightedQuantile(weights, decoded, 0.5);
+    auto gcMedian = weightedQuantile(decoded, weights, 0.5);
+    auto rcMedian = rcWeightedQuantile(decoded, weights, 0.5);
     static assert(is(typeof(gcMedian) == double) && is(typeof(rcMedian) == double));
     assert(gcMedian == 1.5 && rcMedian == 1.5);
     // Selecting a different output type remains supported.
-    auto explicitMedian = rcWeightedQuantile!float(weights, decoded, 0.5);
+    auto explicitMedian = rcWeightedQuantile!float(decoded, weights, 0.5);
     static assert(is(typeof(explicitMedian) == float));
     assert(explicitMedian == 1.5f);
 }
@@ -1941,29 +1967,29 @@ unittest
     const double[5] weights = [0, 1, 1, 2, 1];
     const double[5] scaled = [0, 8, 8, 16, 8];
     const double[5] levels = [1, 0.5, 0, 0.25, 0.75];
-    auto result = rcWeightedQuantile(weights, values, levels);
+    auto result = rcWeightedQuantile(values, weights, levels);
     assert(result == [30.0, 10, 0, 10, 10]);
-    assert(result == rcWeightedQuantile(scaled, values, levels));
+    assert(result == rcWeightedQuantile(values, scaled, levels));
     const double[3] mergedValues = [0, 10, 30];
     const double[3] mergedWeights = [1, 3, 1];
-    assert(result == rcWeightedQuantile(mergedWeights, mergedValues, levels));
+    assert(result == rcWeightedQuantile(mergedValues, mergedWeights, levels));
 
     const int[4] data = [30, 10, 20, 0];
     const int[4] equal = [1, 1, 1, 1];
-    assert(rcWeightedQuantile(equal, data) == rcquantile!(QuantileAlgo.type1)(data));
-    assert(rcWeightedQuantile(equal, data, 0.5) == 10);
-    assert(rcWeightedQuantile(equal, data, 0.5 + double.epsilon) == 20);
+    assert(rcWeightedQuantile(data, equal) == rcquantile!(QuantileAlgo.type1)(data));
+    assert(rcWeightedQuantile(data, equal, 0.5) == 10);
+    assert(rcWeightedQuantile(data, equal, 0.5 + double.epsilon) == 20);
     const ulong[2] large = [ulong.max - 1, ulong.max];
     const int[2] pair = [1, 1];
-    assert(rcWeightedQuantile(pair, large, 0.5) == ulong.max - 1);
-    assert(rcWeightedQuantile(pair, large, 1.0) == ulong.max);
+    assert(rcWeightedQuantile(large, pair, 0.5) == ulong.max - 1);
+    assert(rcWeightedQuantile(large, pair, 1.0) == ulong.max);
 
     const real[2] huge = [real.max, real.max];
     const real[2] tiny = [real.min_normal, real.min_normal];
-    assert(rcWeightedQuantile(huge, large, 0.5) == ulong.max - 1);
-    assert(rcWeightedQuantile(tiny, large, 0.5) == ulong.max - 1);
+    assert(rcWeightedQuantile(large, huge, 0.5) == ulong.max - 1);
+    assert(rcWeightedQuantile(large, tiny, 0.5) == ulong.max - 1);
     const int[2] single = [0, 1];
-    assert(rcWeightedQuantile(single, large) ==
+    assert(rcWeightedQuantile(large, single) ==
         [ulong.max, ulong.max, ulong.max, ulong.max, ulong.max]);
 }
 
@@ -1977,15 +2003,15 @@ unittest
         const int[3] data = [20, 0, 10];
         const int[3] weights = [1, 1, 2];
         const float[2] levels = [0, 1];
-        return weightedQuantile!float(weights, data, levels);
+        return weightedQuantile!float(data, weights, levels);
     }
     assert(fromLocal() == [0.0f, 20.0f]);
     const int[2] data = [0, 10];
     const int[2] weights = [1, 1];
-    assert(weightedQuantile!double(weights, data, 0.0, 1.0) == [0.0, 10]);
-    assert(rcWeightedQuantile!float(weights, data, 0.5f) == 0.0f);
+    assert(weightedQuantile!double(data, weights, 0.0, 1.0) == [0.0, 10]);
+    assert(rcWeightedQuantile!float(data, weights, 0.5f) == 0.0f);
     const double[] empty = [];
-    assert(rcWeightedQuantile(weights, data, empty).length == 0);
+    assert(rcWeightedQuantile(data, weights, empty).length == 0);
 }
 
 // Strided Mir slices and RC results with independent lifetimes.
@@ -2000,8 +2026,8 @@ unittest
         const int[6] data = [20, -1, 0, -1, 10, -1];
         const int[6] weights = [1, -1, 1, -1, 2, -1];
         const double[4] levels = [0, -1, 1, -1];
-        return rcWeightedQuantile(weights[].sliced(3, 2).transposed[0],
-            data[].sliced(3, 2).transposed[0], levels[].sliced(2, 2).transposed[0]);
+        return rcWeightedQuantile(data[].sliced(3, 2).transposed[0],
+            weights[].sliced(3, 2).transposed[0], levels[].sliced(2, 2).transposed[0]);
     }
     auto result = fromLocal();
     assert(result == [0, 20]);
@@ -2029,7 +2055,7 @@ unittest
     SafeAllocator allocator;
     const int[3] values = [0, 10, 20];
     const int[3] weights = [1, 2, 1];
-    auto result = makeWeightedQuantile(allocator, weights, values);
+    auto result = makeWeightedQuantile(allocator, values, weights);
     assert(result == [0, 0, 10, 10, 20]);
 }
 
@@ -2046,22 +2072,22 @@ unittest
     foreach (bad; [-1.0, double.nan, double.infinity])
     {
         double[2] badWeights = [1, bad];
-        assertThrown!AssertError(rcWeightedQuantile(badWeights, data, 0.5));
+        assertThrown!AssertError(rcWeightedQuantile(data, badWeights, 0.5));
     }
     const double[2] zero = [0, 0];
-    assertThrown!AssertError(rcWeightedQuantile(zero, data, 0.5));
-    assertThrown!AssertError(rcWeightedQuantile(weights[0 .. 1], data, 0.5));
-    assertThrown!AssertError(rcWeightedQuantile(weights[0 .. 0], data[0 .. 0], 0.5));
+    assertThrown!AssertError(rcWeightedQuantile(data, zero, 0.5));
+    assertThrown!AssertError(rcWeightedQuantile(data, weights[0 .. 1], 0.5));
+    assertThrown!AssertError(rcWeightedQuantile(data[0 .. 0], weights[0 .. 0], 0.5));
     foreach (bad; [double.nan, double.infinity])
     {
         double[2] badData = [0, bad];
-        assertThrown!AssertError(rcWeightedQuantile(weights, badData, 0.5));
+        assertThrown!AssertError(rcWeightedQuantile(badData, weights, 0.5));
     }
     foreach (bad; [-0.1, 1.1, double.nan, double.infinity])
-        assertThrown!AssertError(rcWeightedQuantile(weights, data, bad));
+        assertThrown!AssertError(rcWeightedQuantile(data, weights, bad));
 
     QuantileTestAllocator!() allocator;
-    auto result = makeWeightedQuantile(allocator, weights, data, 0.0, 1.0);
+    auto result = makeWeightedQuantile(allocator, data, weights, 0.0, 1.0);
     assert(result == [0.0, 10]);
     assert(allocator.allocations == 2 && allocator.releases == 1);
     allocator.dispose(result.field);
@@ -2069,10 +2095,10 @@ unittest
 
     QuantileTestAllocator!true failing;
     failing.failAt = 2;
-    assertThrown!Exception(makeWeightedQuantile(failing, weights, data));
+    assertThrown!Exception(makeWeightedQuantile(failing, data, weights));
     assert(failing.allocations == 2 && failing.releases == 1);
     QuantileTestAllocator!() invalid;
-    assertThrown!AssertError(makeWeightedQuantile(invalid, weights, data, 0.0, 2.0));
+    assertThrown!AssertError(makeWeightedQuantile(invalid, data, weights, 0.0, 2.0));
     assert(invalid.allocations == 2 && invalid.releases == 2);
 }
 
@@ -2086,33 +2112,33 @@ unittest
     const double[3] values = [0, 10, 100];
     const double[3] zero = [1, 0, 1];
     const double[3] tiny = [1, 0.000001, 1];
-    assert(hd(zero, values, 0.5).approxEqual(50.0));
-    assert(hd(tiny, values, 0.5).approxEqual(49.999974535212, 1e-12, 1e-12));
-    assert(hd(tiny, values, 0.4).approxEqual(34.43961434178727, 1e-12, 1e-12));
+    assert(hd(values, zero, 0.5).approxEqual(50.0));
+    assert(hd(values, tiny, 0.5).approxEqual(49.999974535212, 1e-12, 1e-12));
+    assert(hd(values, tiny, 0.4).approxEqual(34.43961434178727, 1e-12, 1e-12));
     const double[3] splitValues = [0, 10, 30];
     const double[3] splitWeights = [1, 2, 1];
     const double[4] duplicateValues = [0, 10, 10, 30];
     const double[4] equal = [1, 1, 1, 1];
-    assert(hd(splitWeights, splitValues, 0.5).approxEqual(11.680673694094532));
-    assert(hd(equal, duplicateValues, 0.5).approxEqual(11.265849975501613));
+    assert(hd(splitValues, splitWeights, 0.5).approxEqual(11.680673694094532));
+    assert(hd(duplicateValues, equal, 0.5).approxEqual(11.265849975501613));
 
     const double[3] tailValues = [0, 1, 1e12];
     const double[3] tailWeights = [1, 1, 1e-12];
-    assert(hd(tailWeights, tailValues, 0.75).approxEqual(1142.889745000284, 1e-12, 1e-12));
-    assert(hd(tailWeights, tailValues, 0.5).approxEqual(0.5000006002111957, 1e-12, 1e-12));
+    assert(hd(tailValues, tailWeights, 0.75).approxEqual(1142.889745000284, 1e-12, 1e-12));
+    assert(hd(tailValues, tailWeights, 0.5).approxEqual(0.5000006002111957, 1e-12, 1e-12));
     // The difficult beta tail is less accurate on platforms with double-sized real.
-    assert(hd(tailWeights, tailValues, 1 - 1e-8).approxEqual(999999195275.2699, 1e-10, 0));
+    assert(hd(tailValues, tailWeights, 1 - 1e-8).approxEqual(999999195275.2699, 1e-10, 0));
     const double[4] outlier = [1, 2, 3, 10000];
     const double[4] outlierWeights = [1, 4, 4, 1];
-    assert(hd(outlierWeights, outlier, 0.5).approxEqual(292.59361886338557));
+    assert(hd(outlier, outlierWeights, 0.5).approxEqual(292.59361886338557));
     double[64] regularValues, regularWeights;
     foreach (i; 0 .. regularValues.length)
     {
         regularValues[i] = cast(double) i * i;
         regularWeights[i] = 1;
     }
-    assert(hd(regularWeights, regularValues, 0.5).approxEqual(1007.8484848484848, 1e-12, 1e-12));
-    assert(hd(tailWeights, tailValues, 1e-8).approxEqual(2.044415538269786e-9, 1e-12, 1e-22));
+    assert(hd(regularValues, regularWeights, 0.5).approxEqual(1007.8484848484848, 1e-12, 1e-12));
+    assert(hd(tailValues, tailWeights, 1e-8).approxEqual(2.044415538269786e-9, 1e-12, 1e-22));
 }
 
 // Equal-weight HD with two values has a beta(1.5,1.5) median of their midpoint.
@@ -2131,23 +2157,23 @@ unittest
         const real[2] weights = [real.max, real.max];
         const real[2] extreme = [-real.max, real.max];
         const real[2] positive = [real.max / 2, real.max];
-        auto mid = hd(weights, extreme, 0.5);
+        auto mid = hd(extreme, weights, 0.5);
         assert(isFinite(mid) && (mid / real.max).approxEqual(0.0L, 0.0L, 1e-14L));
-        auto positiveMid = hd(weights, positive, 0.5);
+        auto positiveMid = hd(positive, weights, 0.5);
         assert(isFinite(positiveMid) && (positiveMid / real.max).approxEqual(0.75L));
         const real[2] constant = [real.max, real.max];
-        assert(hd(weights, constant, 0.25) == real.max);
+        assert(hd(constant, weights, 0.25) == real.max);
         const double[3] singleValues = [double.nan, 7, double.infinity];
         const int[3] singleWeights = [0, 1, 0];
-        assert(hd(singleWeights, singleValues) == [7.0, 7, 7, 7, 7]);
+        assert(hd(singleValues, singleWeights) == [7.0, 7, 7, 7, 7]);
         const int[2] integerValues = [0, 10];
         const int[2] integerWeights = [1, 1];
-        static assert(is(typeof(hd(integerWeights, integerValues, 0.5)) == double));
+        static assert(is(typeof(hd(integerValues, integerWeights, 0.5)) == double));
         const float[2] floatValues = [0, 10];
-        static assert(is(typeof(hd(integerWeights, floatValues, 0.5)) == float));
+        static assert(is(typeof(hd(floatValues, integerWeights, 0.5)) == float));
         static assert(!__traits(compiles,
-            rcWeightedQuantile!(int, algorithm)(integerWeights, integerValues, 0.5)));
-        assert(hd(integerWeights, integerValues, 0.0, 1.0) == [0.0, 10]);
+            rcWeightedQuantile!(int, algorithm)(integerValues, integerWeights, 0.5)));
+        assert(hd(integerValues, integerWeights, 0.0, 1.0) == [0.0, 10]);
     }}
 }
 
@@ -2167,8 +2193,8 @@ unittest
         const int[4] values = [0, 10, 20, 30];
         double[21] levels;
         foreach (i; 0 .. levels.length) levels[i] = i / 20.0;
-        auto result = hd(weights, values, levels);
-        auto scaledResult = hd(scaled, values, levels);
+        auto result = hd(values, weights, levels);
+        auto scaledResult = hd(values, scaled, levels);
         foreach (i; 0 .. levels.length)
         {
             assert(result[i] >= 0 && result[i] <= 30);
@@ -2197,16 +2223,16 @@ unittest
         const double[3] levels = [0, 0.5, 1];
         auto values = data[].sliced(3, 2).transposed[0];
         auto masses = weights[].sliced(3, 2).transposed[0];
-        auto gc = weightedQuantile!algorithm(masses, values, levels);
-        auto rc = rcWeightedQuantile!algorithm(masses, values, levels);
+        auto gc = weightedQuantile!algorithm(values, masses, levels);
+        auto rc = rcWeightedQuantile!algorithm(values, masses, levels);
         QuantileTestAllocator!() allocator;
-        auto custom = makeWeightedQuantile!(double, algorithm)(allocator, masses, values, levels);
+        auto custom = makeWeightedQuantile!(double, algorithm)(allocator, values, masses, levels);
         assert(allocator.allocations == 2 && allocator.releases == 1);
         foreach (i; 0 .. levels.length)
             assert(gc[i].approxEqual(rc[i]) && gc[i].approxEqual(custom[i]));
         allocator.dispose(custom.field);
         assert(allocator.releases == 2);
-        auto scalar = makeWeightedQuantile!algorithm(allocator, masses, values, 0.5);
+        auto scalar = makeWeightedQuantile!algorithm(allocator, values, masses, 0.5);
         assert(scalar.approxEqual(algorithm == WeightedQuantileAlgo.harrellDavis ?
             11.680673694094532 : algorithm == WeightedQuantileAlgo.trimmedHarrellDavis ?
             10.753130990579251 : 10.0));
@@ -2224,19 +2250,19 @@ unittest
     alias thd = rcWeightedQuantile!(WeightedQuantileAlgo.trimmedHarrellDavis);
     const double[3] values = [0, 10, 100];
     const double[3] zero = [1, 0, 1], tiny = [1, 0.000001, 1];
-    assert(thd(zero, values, 0.5).approxEqual(50.0));
-    assert(thd(tiny, values, 0.5).approxEqual(49.999968881235418, 1e-12, 1e-12));
-    assert(thd(tiny, values, 0.4).approxEqual(24.518539568626075, 1e-12, 1e-12));
+    assert(thd(values, zero, 0.5).approxEqual(50.0));
+    assert(thd(values, tiny, 0.5).approxEqual(49.999968881235418, 1e-12, 1e-12));
+    assert(thd(values, tiny, 0.4).approxEqual(24.518539568626075, 1e-12, 1e-12));
     const int[3] tiedWeights = [1, 2, 1], tiedValues = [0, 10, 30];
     const int[4] splitWeights = [1, 1, 1, 1], splitValues = [0, 10, 10, 30];
-    assert(thd(tiedWeights, tiedValues, 0.5).approxEqual(10.753130990579251));
-    assert(thd(splitWeights, splitValues, 0.5).approxEqual(10.0));
+    assert(thd(tiedValues, tiedWeights, 0.5).approxEqual(10.753130990579251));
+    assert(thd(splitValues, splitWeights, 0.5).approxEqual(10.0));
     const double[3] tailValues = [0, 1, 1e12], tailWeights = [1, 1, 1e-12];
-    assert(thd(tailWeights, tailValues, 0.5).approxEqual(0.500000000000389, 1e-12, 1e-12));
-    assert(thd(tailWeights, tailValues, 0.75).approxEqual(1193.996801217712, 1e-12, 1e-12));
+    assert(thd(tailValues, tailWeights, 0.5).approxEqual(0.500000000000389, 1e-12, 1e-12));
+    assert(thd(tailValues, tailWeights, 0.75).approxEqual(1193.996801217712, 1e-12, 1e-12));
     // Prefixes round to one, but the independently summed suffix retains mass.
     const double[3] roundedValues = [0, 1, 1e30], roundedWeights = [1, 1, 1e-30];
-    assert(thd(roundedWeights, roundedValues, 0.99).approxEqual(1.2890527282600647e29, 1e-12, 0));
+    assert(thd(roundedValues, roundedWeights, 0.99).approxEqual(1.2890527282600647e29, 1e-12, 0));
 }
 
 // The interval is fixed-width, with boundary modes and symmetric/asymmetric
@@ -2275,7 +2301,7 @@ unittest
             foreach (k; 0 .. 41)
             {
                 const p = k / 40.0;
-                const actual = rcWeightedQuantile!algorithm(weights[0 .. n], values[0 .. n], p);
+                const actual = rcWeightedQuantile!algorithm(values[0 .. n], weights[0 .. n], p);
                 const expected = n == 1 ? values[0] :
                     rcquantile!(double, ordinary)(values[0 .. n], p);
                 assert(actual.approxEqual(expected, 1e-12, 1e-12));
@@ -2295,23 +2321,23 @@ unittest
         alias q = rcWeightedQuantile!algorithm;
         const double[4] values = [0, 1, 1, 100];
         const double[4] zero = [1, 0, 0, 1], tiny = [1, 1e-6, 1e-6, 1];
-        assert(q(zero, values, 0.5).approxEqual(50.0));
-        assert(q(tiny, values, 0.5).approxEqual(49.999901999902, 1e-12, 1e-12));
+        assert(q(values, zero, 0.5).approxEqual(50.0));
+        assert(q(values, tiny, 0.5).approxEqual(49.999901999902, 1e-12, 1e-12));
         const int[3] concentrated = [1, 1, 8], points = [0, 10, 20];
         const int[3] reflected = [0, -10, -20];
         const expected = algorithm == WeightedQuantileAlgo.type7 ? 15.454555757575758 : 170.0 / 11;
-        assert(q(concentrated, points, 1e-6).approxEqual(expected, 1e-12, 1e-12));
-        assert(q(concentrated, points, 0.0) == 0);
-        assert(q(concentrated, points, 1.0) == 20);
-        assert(q(concentrated, points, 0.25).approxEqual(-q(concentrated, reflected, 0.75)));
+        assert(q(points, concentrated, 1e-6).approxEqual(expected, 1e-12, 1e-12));
+        assert(q(points, concentrated, 0.0) == 0);
+        assert(q(points, concentrated, 1.0) == 20);
+        assert(q(points, concentrated, 0.25).approxEqual(-q(reflected, concentrated, 0.75)));
         const int[3] unsplitValues = [0, 10, 30], unsplitWeights = [1, 2, 1];
         const int[4] splitValues = [0, 10, 10, 30], splitWeights = [1, 1, 1, 1];
-        assert(q(unsplitWeights, unsplitValues, 0.01).approxEqual(
+        assert(q(unsplitValues, unsplitWeights, 0.01).approxEqual(
             algorithm == WeightedQuantileAlgo.type7 ? 3.5 : 10.0 / 3));
-        assert(q(splitWeights, splitValues, 0.01).approxEqual(
+        assert(q(splitValues, splitWeights, 0.01).approxEqual(
             algorithm == WeightedQuantileAlgo.type7 ? 0.3 : 0.0, 1e-12, 1e-12));
         const int[4] multiValues = [0, 10, 20, 40], multiWeights = [3, 1, 1, 4];
-        assert(q(multiWeights, multiValues, 0.5).approxEqual(70.0 / 3));
+        assert(q(multiValues, multiWeights, 0.5).approxEqual(70.0 / 3));
     }}
 }
 
@@ -2324,9 +2350,9 @@ unittest
     import std.math: nextafter;
     alias q = rcWeightedQuantile!(WeightedQuantileAlgo.averagedInverseCDF);
     const int[4] values = [0, 0, 10, 20], weights = [1, 1, 1, 1];
-    assert(q(weights, values, nextafter(0.5, 0.0)) == 0);
-    assert(q(weights, values, 0.5) == 5);
-    assert(q(weights, values, nextafter(0.5, 1.0)) == 10);
+    assert(q(values, weights, nextafter(0.5, 0.0)) == 0);
+    assert(q(values, weights, 0.5) == 5);
+    assert(q(values, weights, nextafter(0.5, 1.0)) == 10);
     const int[3] combinedValues = [0, 10, 20], combinedWeights = [2, 1, 1];
     const int[3] scaled = [8, 4, 4];
     const int[5] zeroWeights = [1, 0, 1, 1, 1];
@@ -2334,25 +2360,25 @@ unittest
     foreach (i; 0 .. 17)
     {
         const p = i / 16.0;
-        const result = q(weights, values, p);
-        assert(result == q(combinedWeights, combinedValues, p));
-        assert(result == q(scaled, combinedValues, p));
-        assert(result == q(zeroWeights, zeroValues, p));
+        const result = q(values, weights, p);
+        assert(result == q(combinedValues, combinedWeights, p));
+        assert(result == q(combinedValues, scaled, p));
+        assert(result == q(zeroValues, zeroWeights, p));
         assert(result.approxEqual(rcquantile!(double, QuantileAlgo.type2)(values, p)));
     }
     const int[2] equal = [1, 1];
     const real[2] negative = [-real.max, -real.max / 2];
-    assert((q(equal, negative, 0.5) / real.max).approxEqual(-0.75L));
+    assert((q(negative, equal, 0.5) / real.max).approxEqual(-0.75L));
     // Neighboring same-sign values at the bottom of the representable range.
     const real tiny = nextafter(0.0L, 1.0L);
     const real[2] subnormal = [tiny, 3 * tiny];
-    assert(q(equal, subnormal, 0.5) == 2 * tiny);
+    assert(q(subnormal, equal, 0.5) == 2 * tiny);
     const real[2] mixedSigns = [-tiny, 2 * tiny];
-    assert(q(equal, mixedSigns, 0.5L) == 0);
+    assert(q(mixedSigns, equal, 0.5L) == 0);
     assert(rcquantile(mixedSigns, 0.5L) == 0);
     static foreach (algorithm; [WeightedQuantileAlgo.frequencyType7,
         WeightedQuantileAlgo.frequencyType8])
-        assert(rcWeightedQuantile!algorithm(equal, mixedSigns, 0.5L) == 0);
+        assert(rcWeightedQuantile!algorithm(mixedSigns, equal, 0.5L) == 0);
 }
 
 // Compare conceptual replication against genuinely expanded samples, including
@@ -2378,23 +2404,23 @@ unittest
             {
                 const p = k / 20.0;
                 const expected = rcquantile!(double, ordinary)(expanded[0 .. n], p);
-                assert(q(counts, values, p).approxEqual(expected, 1e-12, 1e-12));
-                assert(q(floating, values, p).approxEqual(expected, 1e-12, 1e-12));
+                assert(q(values, counts, p).approxEqual(expected, 1e-12, 1e-12));
+                assert(q(values, floating, p).approxEqual(expected, 1e-12, 1e-12));
             }
         }
         const int[2] ones = [1, 1];
         const real[2] extremes = [-real.max, real.max];
-        assert(q(ones, extremes, 0.5) == 0);
+        assert(q(extremes, ones, 0.5) == 0);
         const real[2] positive = [real.max / 2, real.max];
-        assert((q(ones, positive, 0.5) / real.max).approxEqual(0.75L));
+        assert((q(positive, ones, 0.5) / real.max).approxEqual(0.75L));
         const int[2] single = [0, 1], data = [0, 10];
-        assert(q(single, data) == [10.0, 10, 10, 10, 10]);
+        assert(q(data, single) == [10.0, 10, 10, 10, 10]);
         // Large counts stay compact; total equals the supported maximum.
         const ulong[2] large = [weightedQuantileMaxFrequency - 1, 1];
-        assert(q(large, data, 0.5) == 0);
-        assert(q(large, data, 1.0) == 10);
-        static assert(is(typeof(q(ones, data, 0.5)) == double));
-        static assert(!__traits(compiles, rcWeightedQuantile!(int, algorithm)(ones, data, 0.5)));
+        assert(q(data, large, 0.5) == 0);
+        assert(q(data, large, 1.0) == 10);
+        static assert(is(typeof(q(data, ones, 0.5)) == double));
+        static assert(!__traits(compiles, rcWeightedQuantile!(int, algorithm)(data, ones, 0.5)));
     }}
 }
 
@@ -2412,14 +2438,14 @@ unittest
         foreach (bad; [0.5, -1.0, double.nan, double.infinity, 18446744073709551616.0])
         {
             double[2] counts = [bad, 1];
-            assertThrown!AssertError(rcWeightedQuantile!algorithm(counts, data, 0.5));
+            assertThrown!AssertError(rcWeightedQuantile!algorithm(data, counts, 0.5));
         }
         const ulong[2] overflow = [weightedQuantileMaxFrequency, 1];
-        assertThrown!AssertError(rcWeightedQuantile!algorithm(overflow, data, 0.5));
+        assertThrown!AssertError(rcWeightedQuantile!algorithm(data, overflow, 0.5));
         static if (real.mant_dig < 64)
         {
             const ulong[2] tooLarge = [weightedQuantileMaxFrequency + 1, 0];
-            assertThrown!AssertError(rcWeightedQuantile!algorithm(tooLarge, data, 0.5));
+            assertThrown!AssertError(rcWeightedQuantile!algorithm(data, tooLarge, 0.5));
         }
     }}
 }
@@ -2439,23 +2465,23 @@ unittest
     static foreach (algorithm; [WeightedQuantileAlgo.type7, WeightedQuantileAlgo.type8])
     {{
         alias q = rcWeightedQuantile!algorithm;
-        assert((q(weights, values, 0.5) / tiny).approxEqual(2.0L));
-        assert((q(weights, reflected, 0.5) / tiny).approxEqual(-2.0L));
-        assert(q(weights, zeros, 0.5) == 0);
+        assert((q(values, weights, 0.5) / tiny).approxEqual(2.0L));
+        assert((q(reflected, weights, 0.5) / tiny).approxEqual(-2.0L));
+        assert(q(zeros, weights, 0.5) == 0);
         const real[5] upper = [-real.max, tiny, 2*tiny, 3*tiny, 4*tiny];
         const int[5] equal = [1, 1, 1, 1, 1];
         // Exercise the independently accumulated upper-mass path as well.
         const expected = algorithm == WeightedQuantileAlgo.type7 ? 3.0L : 10.0L/3;
-        assert((q(equal, upper, 0.75) / tiny).approxEqual(expected));
+        assert((q(upper, equal, 0.75) / tiny).approxEqual(expected));
     }}
     alias trimmed = rcWeightedQuantile!(WeightedQuantileAlgo.trimmedHarrellDavis);
     const int[5] equal = [1, 1, 1, 1, 1];
     const real[5] five = [tiny, 2*tiny, 3*tiny, 4*tiny, real.max];
     const real[5] negative = [-tiny, -2*tiny, -3*tiny, -4*tiny, -real.max];
     const real[5] retainedZero = [-real.max, 0, 0, 0, real.max];
-    assert((trimmed(equal, five, 0.5) / tiny).approxEqual(3.0L));
-    assert((trimmed(equal, negative, 0.5) / tiny).approxEqual(-3.0L));
-    assert(trimmed(equal, retainedZero, 0.5) == 0);
+    assert((trimmed(five, equal, 0.5) / tiny).approxEqual(3.0L));
+    assert((trimmed(negative, equal, 0.5) / tiny).approxEqual(-3.0L));
+    assert(trimmed(retainedZero, equal, 0.5) == 0);
 }
 
 private enum QuantileAllocation { gc, rc, custom }
@@ -3687,7 +3713,7 @@ unittest
     assert(rcquantile(extremes, 0.5) == -0.5);
     static foreach (algorithm; [WeightedQuantileAlgo.averagedInverseCDF,
         WeightedQuantileAlgo.frequencyType7, WeightedQuantileAlgo.frequencyType8])
-        assert(rcWeightedQuantile!algorithm(weights, extremes, 0.5) == -0.5);
+        assert(rcWeightedQuantile!algorithm(extremes, weights, 0.5) == -0.5);
     ulong[2] nearby = [ulong.max - 2, ulong.max];
     assert(rcquantile!(QuantileAlgo.type1)(nearby, 1.0) == ulong.max);
 }

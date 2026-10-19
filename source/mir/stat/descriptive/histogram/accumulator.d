@@ -69,7 +69,7 @@ bins from zero; storage indices are shifted by one when underflow is enabled.
 The same layout applies to one-dimensional histograms.
 
 Bin views traverse ordinary joint bins with the last axis advancing fastest.
-Use putWeighted(weight, coordinates...) to accumulate weights instead of unit
+Use putWeighted(coordinates..., weight) to accumulate weights instead of unit
 counts. Bin counts then represent sums of weights; this accumulator maintains
 neither a separate observation count nor a running total.
 
@@ -81,7 +81,7 @@ quantity from the coordinates: for example, grouping purchases by customer age
 and accumulating purchase amounts gives total sales revenue for each age group.
 
 Use putSample(sample, coordinates...) or
-putWeightedSample(weight, sample, coordinates...) to update the selected cell.
+putWeightedSample(sample, coordinates..., weight) to update the selected cell.
 Caller-provided cells retain their existing state, including their normal default
 initialization. Numeric counting operations require numeric cells; sample
 operations forward to the stored accumulator's put method. Marginalization
@@ -101,7 +101,7 @@ $(UL
         requires a real numeric weight implicitly convertible to the counter type.)
     $(LI putSample(sample, coordinates...) requires a nonnumeric cell with a
         callable cell.put(sample).)
-    $(LI putWeightedSample(weight, sample, coordinates...) requires a nonnumeric
+    $(LI putWeightedSample(sample, coordinates..., weight) requires a nonnumeric
         cell with a callable cell.put(sample, weight).)
     $(LI Histogram merging requires matching cell and axis types. A cell must
         accept put(sourceCell) or += sourceCell with a const source cell;
@@ -551,29 +551,30 @@ public:
 
     /++
     Record a weighted sample in the selected accumulator.
-    Weight comes first, as in putWeighted; the cell receives put(sample, weight).
+    Supply the sample, one coordinate per axis, then the weight.
+    The cell receives put(sample, weight).
     The cell determines weight validity and semantics, including zero weights.
     No separate histogram count or total is maintained. All coordinates are
     checked before the cell is updated.
 
     Params:
-        weight = weight passed to the cell after the sample
         sample = value being accumulated
-        coordinates = one compatible coordinate per axis
+        inputs = one compatible coordinate per axis, followed by the weight passed to the cell
     +/
-    void putWeightedSample(W, S, T...)(auto ref W weight, auto ref S sample, T coordinates)
-        if (T.length == N && acceptsArguments!T && acceptsSamples!(S, W))
+    void putWeightedSample(S, T...)(auto ref S sample, auto ref T inputs)
+        if (T.length == N + 1 && acceptsArguments!(T[0 .. $ - 1]) && acceptsSamples!(S, T[$ - 1]))
     {
-        const indices = storageIndices(coordinates);
+        const indices = storageIndices(inputs[0 .. $ - 1]);
         static if (isSlice!Storage)
-            counts[indices].put(sample, weight);
+            counts[indices].put(sample, inputs[$ - 1]);
         else
-            putArraySample(counts, indices, sample, weight);
+            putArraySample(counts, indices, sample, inputs[$ - 1]);
     }
 
     /++
     Add a finite, nonnegative weight to one bin without maintaining a total.
-    Supply exactly one coordinate per axis. Ordinary put continues to add one.
+    Supply exactly one coordinate per axis, followed by the weight.
+    Ordinary put continues to add one.
     Weight must be implicitly convertible to CountType and within its range;
     floating-point storage may round it to the counter precision. Fractional
     weights require floating-point counters. Counters must accommodate accumulated
@@ -581,13 +582,14 @@ public:
     before changing storage. A zero weight still validates coordinates.
 
     Params:
-        weight = finite, nonnegative contribution to the selected bin
-        coordinates = one compatible coordinate per axis
+        inputs = one compatible coordinate per axis, followed by a finite, nonnegative weight
     +/
-    void putWeighted(W, T...)(W weight, T coordinates)
-        if (isNumeric!StoredCountType && acceptsHistogramWeight!(CountType, W) &&
-            T.length == N && acceptsArguments!T)
+    void putWeighted(T...)(T inputs)
+        if (T.length == N + 1 && isNumeric!StoredCountType &&
+            acceptsHistogramWeight!(CountType, T[$ - 1]) && acceptsArguments!(T[0 .. $ - 1]))
     {
+        alias W = T[$ - 1];
+        auto weight = inputs[$ - 1];
         import std.traits: isFloatingPoint;
         import std.math: isFinite;
         static if (isFloatingPoint!(Unqual!W))
@@ -595,7 +597,7 @@ public:
         assert(weight >= 0 && weight <= CountType.max,
             "HistogramAccumulator.putWeighted: weight must be nonnegative and fit CountType");
         const CountType added = weight;
-        const indices = storageIndices(coordinates);
+        const indices = storageIndices(inputs[0 .. $ - 1]);
         if (added == 0) return;
         static if (N == 1)
             counts[indices[0]] += added;
@@ -756,9 +758,9 @@ unittest
     auto readings = HistogramAccumulator!(typeof(storage), Coordinate, Coordinate)(
         storage, Coordinate(2, 0.0, 2.0), Coordinate(2, 0.0, 2.0));
 
-    // Weight first, then the reported mean, then latitude and longitude.
-    readings.putWeightedSample(2.0, 10.0, 0.5, 1.5);
-    readings.putWeightedSample(6.0, 30.0, 0.5, 1.5);
+    // Reported mean, latitude, longitude, then weight.
+    readings.putWeightedSample(10.0, 0.5, 1.5, 2.0);
+    readings.putWeightedSample(30.0, 0.5, 1.5, 6.0);
     assert(readings.counts[0][1].weight == 8.0);
     assert(readings.counts[0][1].wmean == 25.0);
     // Nested static storage is copied into the histogram, so inspect its cells.
@@ -792,8 +794,8 @@ unittest
         }
         else
         {
-            h.putWeightedSample(2.0, 10.0, 0);
-            other.putWeightedSample(6.0, 30.0, 0);
+            h.putWeightedSample(10.0, 0, 2.0);
+            other.putWeightedSample(30.0, 0, 6.0);
         }
         h.put(other);
         static if (is(Cell == Sum))
@@ -934,9 +936,9 @@ unittest
     static assert(!__traits(compiles, all[1].value.put(1.0)));
     static assert(!__traits(compiles, h.putSample(1.0, 0.5)));
     static assert(!__traits(compiles, h.putSample(1.0, "bad", 0.5)));
-    static assert(!__traits(compiles, h.putWeightedSample(1.0, 2.0, 0.5, 0.5)));
+    static assert(!__traits(compiles, h.putWeightedSample(2.0, 0.5, 0.5, 1.0)));
     static assert(!__traits(compiles, h.put(0.5, 0.5)));
-    static assert(!__traits(compiles, h.putWeighted(1.0, 0.5, 0.5)));
+    static assert(!__traits(compiles, h.putWeighted(0.5, 0.5, 1.0)));
     assert(h.rcMarginal!0().counts[0].count == 3);
     static assert(!__traits(compiles, all[0].count));
 }
@@ -950,13 +952,13 @@ unittest
     alias A = IntegralAxis!(double, AxisOptions(false, true, true));
     double[4] storage = 0; // underflow, two ordinary bins, overflow
     auto h = HistogramAccumulator!(double[], A)(storage[], A(2, 0));
-    h.putWeighted(0.5, 0.25);
-    h.putWeighted(1.5, 1.25);
+    h.putWeighted(0.25, 0.5);
+    h.putWeighted(1.25, 1.5);
     h.put(0.75); // Unweighted insertion still adds one.
-    h.putWeighted(2.0, -1.0);
+    h.putWeighted(-1.0, 2.0);
     assert(h.counts == [2.0, 1.5, 1.5, 0]);
     assert(h.underflow == 2);
-    h.putWeighted(0.0, 1.25);
+    h.putWeighted(1.25, 0.0);
     assert(h.counts[2] == 1.5);
 }
 
@@ -4105,15 +4107,15 @@ unittest
     alias A = IntegralAxis!(double, AxisOptions(false, true, true));
     double[4][4] nested = 0;
     auto h = HistogramAccumulator!(typeof(nested), A, A)(nested, A(2, 0), A(2, 0));
-    h.putWeighted(0.5, 0.25, 1.25);
-    h.putWeighted(2.0, -1.0, 3.0);
+    h.putWeighted(0.25, 1.25, 0.5);
+    h.putWeighted(-1.0, 3.0, 2.0);
     assert(h.counts[1][2] == 0.5 && h.counts[0][3] == 2);
     auto marginal = h.rcMarginal!0();
     assert(marginal.counts == [2.0, 0.5, 0, 0]);
     double[16] raw = 0;
     auto view = raw[].sliced(4, 4).transposed;
     auto other = HistogramAccumulator!(typeof(view), A, A)(view, A(2, 0), A(2, 0));
-    other.putWeighted(1.5, 0.25, 1.25);
+    other.putWeighted(0.25, 1.25, 1.5);
     other.put(h);
     assert(other.counts[1, 2] == 2 && other.counts[0, 3] == 2);
     assert(raw[9] == 2);
@@ -4128,12 +4130,12 @@ unittest
     alias A = IntegralAxis!(double, AxisOptions());
     uint[2] storage = 0;
     auto h = HistogramAccumulator!(uint[], A)(storage[], A(2, 0));
-    h.putWeighted(3u, 0.5);
+    h.putWeighted(0.5, 3u);
     assert(h.counts == [3u, 0u]);
     static assert(!__traits(compiles, h.putWeighted(0.5, 0.5)));
-    static assert(!__traits(compiles, h.putWeighted(1u, 0.5, 1.5)));
+    static assert(!__traits(compiles, h.putWeighted(0.5, 1.5, 1u)));
     static assert(!__traits(compiles, h.putWeighted(1u)));
-    static assert(!__traits(compiles, h.putWeighted(1u, "invalid coordinate")));
+    static assert(!__traits(compiles, h.putWeighted("invalid coordinate", 1u)));
 }
 
 // A borrowed write-through proxy exercises the storage interface without
@@ -4188,7 +4190,7 @@ unittest
     const readOnly = h;
     assert(readOnly.bins[1].count == 2);
     static assert(!__traits(compiles, readOnly.put(0, 1)));
-    static assert(!__traits(compiles, h.putWeighted(2u, 0, 1)));
+    static assert(!__traits(compiles, h.putWeighted(0, 1, 2u)));
     static assert(!__traits(compiles, h.putSample(2u, 0, 1)));
     static assert(!__traits(compiles, h.put(h)));
     const ulong[2] frozen = [3, 4];
@@ -4219,7 +4221,7 @@ unittest
     auto writer = scopedBuffer!(char, 256);
     print(writer, h.bins.front);
     assert(writer.data == "bin(low=0, high=1): count=2");
-    static assert(!__traits(compiles, h.putWeighted(1u, 0)));
+    static assert(!__traits(compiles, h.putWeighted(0, 1u)));
 
     // Nested arrays of proxies use the same value/snapshot contract.
     // Initialize static cells directly; older frontends infer dynamic inner literals.

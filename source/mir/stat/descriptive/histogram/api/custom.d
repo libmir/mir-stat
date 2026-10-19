@@ -74,8 +74,8 @@ unittest
     }
     static foreach (make; AliasSeq!(makeWeightedHistogram, makeWeightedRelativeFrequencyHistogram))
     {
-        assertThrown!AssertError(make(allocator, weights, x, shortInput, A(2, 0), A(2, 0)));
-        assertThrown!AssertError(make(allocator, shortInput, x, y, A(2, 0), A(2, 0)));
+        assertThrown!AssertError(make(allocator, x, shortInput, weights, A(2, 0), A(2, 0)));
+        assertThrown!AssertError(make(allocator, x, y, shortInput, A(2, 0), A(2, 0)));
     }
     assert(allocator.allocations == 0);
     static foreach (make; AliasSeq!(makeHistogram, makeRelativeFrequencyHistogram))
@@ -84,7 +84,7 @@ unittest
     }
     static foreach (make; AliasSeq!(makeWeightedHistogram, makeWeightedRelativeFrequencyHistogram))
     {
-        assertThrown!Exception(make(allocator, weights, x, y[].sliced.map!fail, A(2, 0), A(2, 0)));
+        assertThrown!Exception(make(allocator, x, y[].sliced.map!fail, weights, A(2, 0), A(2, 0)));
     }
     assert(allocator.allocations == 4 && allocator.releases == 4);
 }
@@ -186,7 +186,7 @@ unittest
     CountingAllocator allocator;
     assertThrown!Exception(makeHistogram!Cell(allocator, samples, coordinates, A(1, 0)));
     assert(allocator.allocations == 1 && allocator.releases == 1);
-    assertThrown!Exception(makeWeightedHistogram!Cell(allocator, weights, samples, coordinates, A(1, 0)));
+    assertThrown!Exception(makeWeightedHistogram!Cell(allocator, samples, coordinates, weights, A(1, 0)));
     assert(allocator.allocations == 2 && allocator.releases == 2);
 }
 
@@ -527,8 +527,8 @@ unittest
     auto longitude = latitude;
     auto readings = makeHistogram!Cell(Mallocator.instance, latitude, longitude);
     scope(exit) Mallocator.instance.dispose(readings.counts.field);
-    readings.putWeightedSample(2.0, 10.0, 0.5, 1.5);
-    readings.putWeightedSample(6.0, 30.0, 0.5, 1.5);
+    readings.putWeightedSample(10.0, 0.5, 1.5, 2.0);
+    readings.putWeightedSample(30.0, 0.5, 1.5, 6.0);
     assert(readings.counts[0, 1].wmean == 25.0);
 }
 
@@ -1239,7 +1239,7 @@ unittest
     f.put(1, 0);
     assert(f.total == 2);
     assert(f.relativeFrequency(0, 1) == 0.5);
-    f.putWeighted(0.5, 0, 1);
+    f.putWeighted(0, 1, 0.5);
     assert(f.total == 2.5);
     assert(f.relativeFrequency(0, 1) == 0.6);
 }
@@ -1320,12 +1320,12 @@ unittest
     assert(allocator.allocations == 2 && allocator.releases == 2);
 
     uint[1] weights = [2];
-    auto weighted = makeWeightedHistogram(allocator, weights, values, ThrowingCopyAxis());
+    auto weighted = makeWeightedHistogram(allocator, values, weights, ThrowingCopyAxis());
     assert(weighted.counts[0] == 2);
     allocator.deallocate(cast(void[]) weighted.counts.field);
     assert(allocator.allocations == 3 && allocator.releases == 3);
     assertThrown!Exception(makeWeightedRelativeFrequencyHistogram(
-        allocator, weights, values, ThrowingCopyAxis()));
+        allocator, values, weights, ThrowingCopyAxis()));
     assert(allocator.allocations == 4 && allocator.releases == 4);
 }
 
@@ -1380,10 +1380,10 @@ private mixin WeightedHistogramFactory!(allocateCounts, releaseCounts) weightedI
 
 /++
 Construct a weighted histogram with caller-allocated counts.
-Supply weights, observations, and the usual histogram axis arguments after the allocator.
+Supply observations, weights, and the usual histogram axis arguments after the allocator.
 Built-in arrays and Mir slices are accepted. Their shapes must match; matching
 multidimensional slices are traversed elementwise into a one-axis histogram.
-For joint counts, use makeWeightedHistogram(allocator, weights, x, y, xAxis, yAxis).
+For joint counts, use makeWeightedHistogram(allocator, x, y, weights, xAxis, yAxis).
 Supply one coordinate collection per explicit axis. All coordinate collections
 and weights must have matching ranks and shapes. The default counter type
 remains double; an explicit leading numeric type overrides it.
@@ -1395,8 +1395,8 @@ Integral counters require integral weights. Counts must accommodate their sums.
 Bin-count rules operate on observations, without weighting the rule itself.
 Axis ownership and explicit count disposal follow $(LREF makeHistogram).
 
-With an accumulator Cell type, makeWeightedHistogram!Cell(allocator, weights,
-samples, coordinates, axis) summarizes weighted measurements. Supply one
+With an accumulator Cell type, makeWeightedHistogram!Cell(allocator, samples,
+coordinates, weights, axis) summarizes weighted measurements. Supply one
 coordinate collection per axis and then explicit axis instances. Argument
 ordering, cell insertion, shape, and lifetime rules follow
 $(REF weightedHistogram, mir, stat, descriptive, histogram, api, gc).
@@ -1405,18 +1405,16 @@ template makeWeightedHistogram(Options...)
 {
     static assert(!isAdaptiveCountSelection!Options,
         "AdaptiveCounts supports only unweighted histogram construction");
-    auto makeWeightedHistogram(Allocator, Weights, Data, Args...)(ref Allocator allocator, auto ref Weights weights,
-        auto ref Data data, auto ref Args args)
-        if (isSampleCellSelection!Options)
+    auto makeWeightedHistogram(Allocator, Args...)(ref Allocator allocator, auto ref Args args)
     {
-        return batchImplementation.batchFactory!(Options[0], HistogramBatchKind.weightedSamples)(allocator, weights, data, args);
-    }
-
-    auto makeWeightedHistogram(Allocator, Weights, Data, Args...)(ref Allocator allocator,
-        scope auto ref Weights weights, scope auto ref Data data, auto ref Args args)
-        if (!isSampleCellSelection!Options)
-    {
-        return weightedImplementation.weightedFactory!Options(allocator, weights, data, args);
+        import mir.stat.descriptive.histogram.api.factory: weightedHistogramWeightIndex;
+        enum weightIndex = weightedHistogramWeightIndex!(isSampleCellSelection!Options, Args);
+        static if (isSampleCellSelection!Options)
+            return batchImplementation.batchFactory!(Options[0], HistogramBatchKind.weightedSamples)(
+                allocator, args[weightIndex], args[0 .. weightIndex], args[weightIndex + 1 .. $]);
+        else
+            return weightedImplementation.weightedFactory!Options(
+                allocator, args[weightIndex], args[0 .. weightIndex], args[weightIndex + 1 .. $]);
     }
 }
 
@@ -1431,14 +1429,14 @@ unittest
     double[3] observations = [0.25, 0.75, 1.25];
     double[3] weights = [0.5, 1.5, 2.0];
     auto h = makeWeightedHistogram!RegularAxis(
-        Mallocator.instance, weights, observations, 2u, 0.0, 2.0);
+        Mallocator.instance, observations, weights, 2u, 0.0, 2.0);
     scope(exit) Mallocator.instance.dispose(h.counts.field);
     assert(h.counts == [2.0, 2.0]);
 }
 
 /++
 Populate weighted accumulator cells with
-`makeWeightedHistogram!Cell(allocator, weights, samples, coordinates..., axes...)`.
+`makeWeightedHistogram!Cell(allocator, samples, coordinates..., weights, axes...)`.
 Supply one coordinate collection per axis. Corresponding elements select a
 joint bin and update its cell with the sample and weight.
 
@@ -1465,7 +1463,7 @@ unittest
     alias A = IntegralAxis!(int, AxisOptions());
     alias Cell = WMeanAccumulator!(double, Summation.pairwise, AssumeWeights.primary);
     auto readings = makeWeightedHistogram!Cell(
-        Mallocator.instance, weights, measurements, latitude, longitude,
+        Mallocator.instance, measurements, latitude, longitude, weights,
         A(2, 0), A(2, 0));
     scope(exit) Mallocator.instance.dispose(readings.counts.field);
     assert(readings.counts[0, 1].wmean == 25);
@@ -1473,8 +1471,8 @@ unittest
 }
 
 /++
-For weighted joint counts, pass weights first, then all coordinate collections
-and axis instances. Each bin stores
+For weighted joint counts, pass all coordinate collections, then weights,
+then axis instances. Each bin stores
 the sum of weights for its coordinate pairs.
 +/
 version(mir_stat_test)
@@ -1487,7 +1485,7 @@ unittest
     alias A = IntegralAxis!(int, AxisOptions());
     int[3] x = [0, 0, 1], y = [1, 1, 0];
     double[3] weights = [0.5, 1.5, 3.0];
-    auto h = makeWeightedHistogram(Mallocator.instance, weights, x, y, A(2, 0), A(2, 0));
+    auto h = makeWeightedHistogram(Mallocator.instance, x, y, weights, A(2, 0), A(2, 0));
     scope(exit) Mallocator.instance.dispose(h.counts.field);
     assert(h.counts[0, 1] == 2.0);
     assert(h.counts[1, 0] == 3.0);
@@ -1505,7 +1503,7 @@ use the weighted histogram factory's coordinate/weight ordering and explicit axe
 Use relativeFrequency!(double, Normalization.ordinary) to normalize by ordinary
 bin weights only, without discarding the underflow/overflow counts.
 The result supports the same relative-frequency, cumulative, and density accessors
-as the unweighted relative-frequency factory. Use putWeighted(weight, coordinates...)
+as the unweighted relative-frequency factory. Use putWeighted(coordinates..., weight)
 for subsequent weighted observations; put adds unit weight. Both update the total.
 If the selected normalization total is zero, relative frequencies are NaN.
 Count ownership and final disposal of the read-only count view follow
@@ -1536,13 +1534,13 @@ unittest
     import std.experimental.allocator: dispose;
     double[3] observations = [0.25, 0.75, 1.25];
     double[3] weights = [0.5, 1.5, 2.0];
-    auto f = makeWeightedRelativeFrequencyHistogram!RegularAxis(Mallocator.instance, weights, observations, 2u, 0.0, 2.0);
+    auto f = makeWeightedRelativeFrequencyHistogram!RegularAxis(Mallocator.instance, observations, weights, 2u, 0.0, 2.0);
     // Counts are read-only; cast only for final manual deallocation.
     scope(exit) Mallocator.instance.deallocate(cast(void[]) f.counts.field);
     assert(f.total == 4.0);
     assert(f.relativeFrequency(0) == 0.5);
     // Later weighted observations update both the bin and the denominator.
-    f.putWeighted(2.0, 0.25);
+    f.putWeighted(0.25, 2.0);
     assert(f.total == 6.0);
     assert(f.relativeFrequency(0) == 2.0 / 3);
 }
@@ -1557,7 +1555,7 @@ unittest
     SafeAllocator allocator;
     double[2] data = [0.5, 1.5];
     uint[2] weights = [1, 2];
-    auto h = makeWeightedHistogram!RegularAxis(allocator, weights, data, 2u, 0.0, 2.0);
+    auto h = makeWeightedHistogram!RegularAxis(allocator, data, weights, 2u, 0.0, 2.0);
     assert(h.counts == [1, 2]);
     allocator.dispose(h.counts.field);
     assert(allocator.allocations == 1 && allocator.releases == 1);
@@ -1577,9 +1575,9 @@ unittest
     double[4] data = [0, 1, 2, 3];
     double[4] weights = [1, 2, 3, 4];
     assertThrown!AssertError(makeWeightedHistogram!RegularAxis(
-        allocator, weights[0 .. 3], data, 4u, 0.0, 4.0));
+        allocator, data, weights[0 .. 3], 4u, 0.0, 4.0));
     assertThrown!AssertError(makeWeightedHistogram!RegularAxis(
-        allocator, weights[].sliced(1, 4), data[].sliced(2, 2), 4u, 0.0, 4.0));
+        allocator, data[].sliced(2, 2), weights[].sliced(1, 4), 4u, 0.0, 4.0));
     assert(allocator.allocations == 0 && allocator.releases == 0);
     static double failOnTwo(double x) @safe pure
     {
@@ -1587,10 +1585,10 @@ unittest
         return x;
     }
     assertThrown!Exception(makeWeightedHistogram!RegularAxis(
-        allocator, weights, data[].sliced.map!failOnTwo, 4u, 0.0, 4.0));
+        allocator, data[].sliced.map!failOnTwo, weights, 4u, 0.0, 4.0));
     assert(allocator.allocations == 1 && allocator.releases == 1);
     assertThrown!Exception(makeWeightedRelativeFrequencyHistogram!RegularAxis(
-        allocator, weights[].sliced.map!failOnTwo, data, 4u, 0.0, 4.0));
+        allocator, data, weights[].sliced.map!failOnTwo, 4u, 0.0, 4.0));
     assert(allocator.allocations == 2 && allocator.releases == 2);
 }
 
@@ -2165,13 +2163,13 @@ Params:
     Counts = numeric counter type, double by default
     algorithm = weighted quantile definition, inverseCDF by default
     allocator = allocator providing allocation and nonthrowing deallocation
-    weights = probability masses, or occurrence counts for frequency algorithms
     data = one-dimensional observations, as an array or Mir slice
+    weights = probability masses, or occurrence counts for frequency algorithms
     probabilities = positive bin count or probability array/slice
 +/
 auto makeWeightedPercentogram(Counts = double,
-    WeightedQuantileAlgo algorithm = WeightedQuantileAlgo.inverseCDF, Allocator, Weights, Data, P)(
-    ref Allocator allocator, scope auto ref Weights weights, scope auto ref Data data,
+    WeightedQuantileAlgo algorithm = WeightedQuantileAlgo.inverseCDF, Allocator, Data, Weights, P)(
+    ref Allocator allocator, scope auto ref Data data, scope auto ref Weights weights,
     scope auto ref P probabilities)
     if (!isQuantileAxis!P)
 {
@@ -2196,11 +2194,11 @@ auto makeWeightedPercentogram(Counts = double,
 
 /// ditto
 auto makeWeightedPercentogram(Counts = double,
-    WeightedQuantileAlgo algorithm = WeightedQuantileAlgo.inverseCDF, Allocator, Weights, Data)(
-    ref Allocator allocator, scope auto ref Weights weights, scope auto ref Data data)
+    WeightedQuantileAlgo algorithm = WeightedQuantileAlgo.inverseCDF, Allocator, Data, Weights)(
+    ref Allocator allocator, scope auto ref Data data, scope auto ref Weights weights)
 {
     import mir.stat.descriptive.histogram.api.factory: weightedPercentogramBinCount;
-    return makeWeightedPercentogram!(Counts, algorithm)(allocator, weights, data,
+    return makeWeightedPercentogram!(Counts, algorithm)(allocator, data, weights,
         weightedPercentogramBinCount(weights));
 }
 
@@ -2211,7 +2209,7 @@ unittest
 {
     import std.experimental.allocator.mallocator: Mallocator;
     const int[4] values = [0, 10, 20, 30], weights = [1, 1, 6, 2];
-    auto p = makeWeightedPercentogram(Mallocator.instance, weights, values, 2);
+    auto p = makeWeightedPercentogram(Mallocator.instance, values, weights, 2);
     scope(exit) p.dispose(Mallocator.instance);
     assert(p.histogram.bins()[0].bin.high == 20);
     assert(p.histogram.counts == [0.0, 2, 8, 0]);
@@ -2226,7 +2224,7 @@ unittest
     import std.exception: assertThrown;
     const int[5] data = [0, 0, 0, 10, 20], weights = [1, 1, 1, 1, 1];
     PercentogramAllocator!() allocator;
-    auto p = makeWeightedPercentogram(allocator, weights, data, 4);
+    auto p = makeWeightedPercentogram(allocator, data, weights, 4);
     assert(p.histogram.axis.N_bin == 2);
     assert(allocator.allocations == 4 && allocator.releases == 2);
     p.dispose(allocator);
@@ -2235,7 +2233,7 @@ unittest
     {
         PercentogramAllocator!true failing;
         failing.failAt = failure;
-        assertThrown!Exception(makeWeightedPercentogram(failing, weights, data, 4));
+        assertThrown!Exception(makeWeightedPercentogram(failing, data, weights, 4));
         assert(failing.releases == failure - 1);
     }
 }
@@ -2259,7 +2257,7 @@ unittest
             return value;
         }
         auto mapped = values[].sliced.map!read;
-        assertThrown!Exception(makeWeightedPercentogram(allocator, weights, mapped, levels));
+        assertThrown!Exception(makeWeightedPercentogram(allocator, mapped, weights, levels));
         assert(calls == failure);
         assert(allocator.allocations == (failure == 1 ? 0 : failure == 4 ? 1 : 3));
         assert(allocator.releases == allocator.allocations);
@@ -2273,7 +2271,7 @@ unittest
 {
     SafeAllocator allocator;
     const int[3] values = [0, 10, 20], weights = [1, 1, 1];
-    auto p = makeWeightedPercentogram!(double, WeightedQuantileAlgo.type7)(allocator, weights, values);
+    auto p = makeWeightedPercentogram!(double, WeightedQuantileAlgo.type7)(allocator, values, weights);
     assert(p.histogram.total == 3);
     p.dispose(allocator);
     assert(allocator.allocations == allocator.releases);
@@ -2286,9 +2284,9 @@ unittest
 {
     import std.experimental.allocator.mallocator: Mallocator;
     import mir.stat.descriptive.histogram.api.factory: testWeightedPercentograms;
-    static auto make(W, D, P...)(scope auto ref W weights, scope auto ref D data, scope auto ref P p)
+    static auto make(D, W, P...)(scope auto ref D data, scope auto ref W weights, scope auto ref P p)
     {
-        return makeWeightedPercentogram(Mallocator.instance, weights, data, p);
+        return makeWeightedPercentogram(Mallocator.instance, data, weights, p);
     }
     static void release(T)(ref T value) { value.dispose(Mallocator.instance); }
     testWeightedPercentograms!(make, release)();
@@ -2458,8 +2456,7 @@ The result exposes axis and requires dispose with the same allocator after
 all borrowed axes, histograms, and views are finished.
 +/
 auto makeWeightedQuantileAxis(WeightedQuantileAlgo algorithm = WeightedQuantileAlgo.inverseCDF,
-    Allocator, Weights, Data, P)(ref Allocator allocator, scope auto ref Weights weights,
-    scope auto ref Data data, scope auto ref P probabilities)
+    Allocator, Data, Weights, P)(ref Allocator allocator, scope auto ref Data data, scope auto ref Weights weights, scope auto ref P probabilities)
 {
     import mir.stat.descriptive.histogram.api.factory: computeQuantileAxisEdges;
     import mir.stat.descriptive.histogram.axis: preparedQuantileAxis;
@@ -2476,11 +2473,11 @@ unittest
     import std.experimental.allocator.mallocator: Mallocator;
     import std.experimental.allocator: dispose;
     double[4] reference = [0, 10, 20, 30], weights = [1, 1, 6, 2];
-    auto prepared = makeWeightedQuantileAxis(Mallocator.instance, weights, reference, 2);
+    auto prepared = makeWeightedQuantileAxis(Mallocator.instance, reference, weights, 2);
     scope(exit) prepared.dispose(Mallocator.instance);
     assert(prepared.axis.bin(0).high == 20);
     double[3] later = [double.nan, 10, 25], laterWeights = [0, 3, 1];
-    auto p = makeWeightedPercentogram(Mallocator.instance, laterWeights, later, prepared.axis);
+    auto p = makeWeightedPercentogram(Mallocator.instance, later, laterWeights, prepared.axis);
     scope(exit) Mallocator.instance.dispose(cast(typeof(p).CountType[]) p.counts.field);
     assert(p.counts == [0, 3, 1, 0] && p.total == 4);
     assert(p.relativeFrequency(0) == 0.75);
@@ -2494,7 +2491,7 @@ private template computeWeightedAxisQuantiles(WeightedQuantileAlgo algorithm)
     {
         import mir.stat.descriptive.univariate: makeWeightedQuantile;
         return makeWeightedQuantile!algorithm(
-            allocator, weights, data, probabilities);
+            allocator, data, weights, probabilities);
     }
 }
 
@@ -2507,8 +2504,8 @@ No quantile algorithm is selected here because the boundaries are already fixed.
 Only counts are allocated here. Dispose fixed counts as for
 makeWeightedRelativeFrequencyHistogram; boundary ownership stays with the caller.
 +/
-auto makeWeightedPercentogram(Counts = double, Allocator, Weights, Data, Axis)(
-    ref Allocator allocator, scope auto ref Weights weights, scope auto ref Data data, Axis axis)
+auto makeWeightedPercentogram(Counts = double, Allocator, Data, Weights, Axis)(
+    ref Allocator allocator, scope auto ref Data data, scope auto ref Weights weights, Axis axis)
     if (isQuantileAxis!Axis)
 {
     import mir.stat.descriptive.histogram.api.factory: weightedPercentogramOnAxis;
@@ -2603,7 +2600,7 @@ unittest
         assertThrown!Exception(makeQuantileAxis(allocator, values, 2));
         assert(allocator.live == 0);
         allocator = FailingAllocator(failure);
-        assertThrown!Exception(makeWeightedQuantileAxis(allocator, weights, values, 2));
+        assertThrown!Exception(makeWeightedQuantileAxis(allocator, values, weights, 2));
         assert(allocator.live == 0);
     }
     FailingAllocator allocator;
@@ -2620,8 +2617,8 @@ unittest
     assertThrown!Exception(makePercentogram(allocator, values[].sliced.map!duringInsertion, owner.axis));
     assert(allocator.live == 1); // Supplied axis ownership was not taken by the factory.
     calls = 0;
-    assertThrown!Exception(makeWeightedPercentogram(allocator, weights,
-        values[].sliced.map!duringInsertion, owner.axis));
+    assertThrown!Exception(makeWeightedPercentogram(allocator, values[].sliced.map!duringInsertion,
+        weights, owner.axis));
     assert(allocator.live == 1);
     owner.dispose(allocator);
     assert(allocator.live == 0);
