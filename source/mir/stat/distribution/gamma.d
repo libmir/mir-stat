@@ -906,10 +906,12 @@ T gammaSmallRatioLogCDF(T)(const T x, const T shape, const T scale)
     pragma(inline, false);
     import mir.math.common: log;
     import std.mathspecial: logGamma;
-    // logGamma(1+a)=-EulerGamma*a+O(a*a). Avoid rounding 1+a to 1
-    // when this first-order term matters to a small complementary tail.
-    const T logNext = shape < T.epsilon
-        ? -T(0.577215664901532860606512090082402431L) * shape
+    // Forming 1+a loses small shape bits even with an accurate logGamma.
+    // For a*a <= epsilon, the quadratic expansion omits O(a^3), at most
+    // O(epsilon*a), which is negligible relative to a*log(x/scale) here.
+    const T logNext = shape * shape <= T.epsilon
+        ? shape * (-T(0.577215664901532860606512090082402431L)
+            + shape * T(0.822467033424113218236207583323012595L))
         : T(logGamma(1 + shape));
     return shape * (log(x) - log(scale)) - logNext;
 }
@@ -1038,4 +1040,17 @@ version(mir_stat_test)
     import std.meta: AliasSeq;
     static foreach (T; AliasSeq!(float, double, real))
         assert(gammaPDF(T(1), size_t(1_000_000_000)) == 0);
+}
+
+// Preserve small shape bits before evaluating logGamma(1+shape). References
+// use the exact binary double inputs and high-precision gamma arithmetic.
+version(mir_stat_test)
+@safe pure nothrow @nogc unittest
+{
+    import std.math: nextUp;
+    import mir.math.common: approxEqual;
+    assert(approxEqual(gammaCCDF(nextUp(0.0), 1e-8),
+        7.438600896118198025322571949534157411e-6, 4e-15, 0.0));
+    assert(approxEqual(gammaCDF(nextUp(0.0), 1e-8),
+        0.999992561399103881801974677428050466, 4e-15, 0.0));
 }
