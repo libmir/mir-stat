@@ -292,13 +292,22 @@ struct VarianceAccumulator(T, VarianceAlgo varianceAlgo, Summation summation)
     void put(U, VarianceAlgo varAlgo, Summation sumAlgo)(VarianceAccumulator!(U, varAlgo, sumAlgo) v)
         if (varAlgo != VarianceAlgo.assumeZeroMean)
     {
+        // An empty source has no mean and contributes no observations.
+        if (!v.count)
+            return;
         size_t oldCount = count;
-        T delta = v.mean!T;
+        T delta;
+        delta = 0;
         if (oldCount > 0) {
-            delta -= meanAccumulator.mean;
+            delta = v.mean!T - meanAccumulator.mean;
         }
+        // With an empty destination, keep the correction zero without squaring
+        // the source mean. Share the updates with the ordinary merge path.
         meanAccumulator.put!T(v.meanAccumulator);
-        centeredSummatorOfSquares.put(v.centeredSumOfSquares!T + delta * delta * v.count * oldCount / count);
+        // Apply the count ratio before multiplying by delta twice, avoiding
+        // intermediate overflow when the final correction is representable.
+        centeredSummatorOfSquares.put(v.centeredSumOfSquares!T
+            + delta * (delta * (cast(T) v.count * (cast(T) oldCount / count))));
     }
 
 const:
@@ -393,6 +402,89 @@ unittest
     v.put(w);
     assert(v.variance(true).approxEqual(54.76562 / 12));
     assert(v.variance(false).approxEqual(54.76562 / 11));
+}
+
+// Empty merges are identities; nonempty and self merges preserve the statistics.
+version(mir_stat_test)
+@safe pure nothrow @nogc
+unittest
+{
+    import std.meta: AliasSeq;
+    import std.math: fabs;
+
+    static foreach (T; AliasSeq!(float, double, real))
+    static foreach (algo; AliasSeq!(VarianceAlgo.online, VarianceAlgo.hybrid))
+    static foreach (mode; AliasSeq!(Summation.naive, Summation.pairwise, Summation.kbn))
+    {{
+        alias Accumulator = VarianceAccumulator!(T, algo, mode);
+        Accumulator empty, values;
+        values.put(T(1));
+        values.put(T(3));
+        values.put(empty);
+        assert(values.count == 2 && values.variance(false) == 2);
+        empty.put(empty);
+        assert(empty.count == 0);
+        empty.put(values);
+        assert(empty.count == 2 && empty.variance(false) == 2);
+
+        Accumulator constant, destination;
+        constant.put(T.max / 8);
+        constant.put(T.max / 8);
+        destination.put(constant);
+        assert(destination.count == 2 && destination.variance(false) == 0);
+        assert(constant.count == 2 && constant.variance(false) == 0);
+
+        values.put(values);
+        assert(values.count == 4);
+        assert(fabs(values.variance(false) - T(4) / 3) <= 8 * T.epsilon);
+    }}
+}
+
+// Count factors and squaring can overflow before a finite merge correction.
+version(mir_stat_test)
+@safe pure nothrow @nogc
+unittest
+{
+    import std.meta: AliasSeq;
+    import std.math: fabs;
+
+    static foreach (T; AliasSeq!(float, double, real))
+    static foreach (algo; AliasSeq!(VarianceAlgo.online, VarianceAlgo.hybrid))
+    {{
+        alias Accumulator = VarianceAccumulator!(T, algo, Summation.naive);
+        // Binary powers give an exact correction of 8*x*x for two groups of 16.
+        static if (T.max_exp == 128)
+            enum T x = 0x1p60f;
+        else static if (T.max_exp == 1024)
+            enum T x = 0x1p508;
+        else
+            enum T x = 0x1p8189L;
+        Accumulator left, right;
+        foreach (i; 0 .. 16)
+        {
+            left.put(T(0));
+            right.put(x);
+        }
+        left.put(right);
+        assert(left.count == 32);
+        assert(left.centeredSumOfSquares == x * (x * 8));
+        assert(fabs(left.variance(false) / (x * (x * (T(8) / 31))) - 1)
+            <= 8 * T.epsilon);
+
+        // For two singletons the correction is x*x/2, even when x*x overflows.
+        static if (T.max_exp == 128)
+            enum T large = 0x1.4p64f;
+        else static if (T.max_exp == 1024)
+            enum T large = 0x1.4p512;
+        else
+            enum T large = 0x1.4p8192L;
+        Accumulator first, second;
+        first.put(T(0));
+        second.put(large);
+        first.put(second);
+        assert(first.count == 2);
+        assert(first.variance(false) == large * (large / 2));
+    }}
 }
 
 // Can put accumulator (naive)
@@ -870,13 +962,22 @@ struct VarianceAccumulator(T, VarianceAlgo varianceAlgo, Summation summation)
     void put(U, VarianceAlgo varAlgo, Summation sumAlgo)(VarianceAccumulator!(U, varAlgo, sumAlgo) v)
         if (varAlgo != VarianceAlgo.assumeZeroMean)
     {
+        // An empty source has no mean and contributes no observations.
+        if (!v.count)
+            return;
         size_t oldCount = count;
-        T delta = v.mean!T;
+        T delta;
+        delta = 0;
         if (oldCount > 0) {
-            delta -= meanAccumulator.mean;
+            delta = v.mean!T - meanAccumulator.mean;
         }
+        // With an empty destination, keep the correction zero without squaring
+        // the source mean. Share the updates with the ordinary merge path.
         meanAccumulator.put!T(v.meanAccumulator);
-        centeredSummatorOfSquares.put(v.centeredSumOfSquares!T + delta * delta * v.count * oldCount / count);
+        // Apply the count ratio before multiplying by delta twice, avoiding
+        // intermediate overflow when the final correction is representable.
+        centeredSummatorOfSquares.put(v.centeredSumOfSquares!T
+            + delta * (delta * (cast(T) v.count * (cast(T) oldCount / count))));
     }
 
 const:
