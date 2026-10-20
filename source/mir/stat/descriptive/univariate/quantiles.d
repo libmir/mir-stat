@@ -6,6 +6,13 @@ The `rc` and `make` variants provide allocation choices; $(REF quantileInto, mir
 writes into caller-provided output. The algorithm enums describe the available
 quantile definitions.
 
+For weighted means and sums, see
+$(REF wmean, mir, stat, descriptive, weighted) and
+$(REF wsum, mir, stat, descriptive, weighted) in
+$(MREF mir,stat,descriptive,weighted). These functions and weighted quantiles
+take observations before weights. Their normalization and weight requirements
+depend on the selected statistic; see each function's documentation.
+
 Import `mir.stat.descriptive.univariate.quantiles` directly, or use
 $(MREF mir,stat,descriptive,univariate) for the complete univariate API.
 

@@ -1,5 +1,30 @@
 /++
-This module contains algorithms for descriptive statistics with weights.
+Weighted means, sums, and their accumulators.
+
+For separate observation and weight inputs, use `wmean(values, weights)` or
+`wsum(values, weights)`. The default weighted mean divides the weighted sum
+by the total weight; the weighted sum does not normalize.
+$(LREF AssumeWeights) controls whether the mean assumes weights already sum
+to one. This assumption skips normalization; it does not normalize the inputs.
+
+$(BOOKTABLE,
+$(TR $(TH Task) $(TH Declarations))
+$(TR $(TD Weighted mean) $(TD $(LREF wmean) $(LREF WMeanAccumulator)))
+$(TR $(TD Weighted sum) $(TD $(LREF wsum) $(LREF WSummator)))
+$(TR $(TD Mean normalization assumption) $(TD $(LREF AssumeWeights)))
+)
+
+Related weighted quantiles are defined in
+$(MREF mir,stat,descriptive,univariate,quantiles):
+$(REF weightedQuantile, mir, stat, descriptive, univariate, quantiles),
+$(REF rcWeightedQuantile, mir, stat, descriptive, univariate, quantiles), and
+$(REF makeWeightedQuantile, mir, stat, descriptive, univariate, quantiles).
+They also take observations before weights. Quantile weights must be finite
+and nonnegative, with positive total weight. Probability-weight algorithms
+interpret relative masses; frequency algorithms interpret occurrence counts.
+See $(REF WeightedQuantileAlgo, mir, stat, descriptive, univariate, quantiles)
+for the available definitions and the quantile function documentation for
+their input requirements.
 
 License: $(HTTP www.apache.org/licenses/LICENSE-2.0, Apache-2.0)
 
