@@ -2280,6 +2280,16 @@ unittest
 /++
 Computes the weighted mean of the input.
 
+Weights are algebraic multipliers and may be signed. By default, the weighted
+sum is divided by the total weight, which must be nonzero (checked by assertion).
+AssumeWeights.sumToOne skips that division and its nonzero-total check; it is a
+caller assumption, not a normalization or validation step. No finite or
+nonnegative-weight validation is performed.
+
+Zero-weight observations are still multiplied, so a floating-point NaN or
+infinity multiplied by zero propagates NaN. Unlike weighted quantiles,
+zero weights do not exclude observations.
+
 By default, if `F` is not floating point type or complex type, then the result
 will have a `double` type if `F` is implicitly convertible to a floating point
 type or a type for which `isComplex!F` is true.
@@ -2287,8 +2297,9 @@ type or a type for which `isComplex!F` is true.
 Params:
     F = controls type of output
     summation = algorithm for calculating sums (default: Summation.appropriate)
-    assumeWeights = true if weights are assumed to add to 1 (default = AssumeWeights.primary)
+    assumeWeights = whether weights are assumed to sum to one (default: AssumeWeights.primary)
     G = controls the type of weights
+    weightsSummation = algorithm for summing weights (default: Summation.appropriate)
 Returns:
     The weighted mean of all the elements in the input, must be floating point or complex type
 
@@ -2481,6 +2492,19 @@ unittest
     wmean!float([0, 1, 2, 3, 4, 5].sliced(3, 2), [1, 2, 3, 4, 5, 6].sliced(3, 2)).shouldApprox == 70.0 / 21;
 
     static assert(is(typeof(wmean!float([1, 2, 3], [1, 2, 3])) == float));
+}
+
+/// Signed weights can place the mean outside the observation range.
+/// Zero weights do not filter NaNs; normalized weights can skip division.
+version(mir_stat_test)
+@safe pure nothrow
+unittest
+{
+    import std.math: isNaN;
+    assert(wmean([2.0, 8.0], [-1.0, 2.0]) == 14);
+    assert(wmean([double.nan, 8.0], [0.0, 1.0]).isNaN);
+    assert(wmean!(double, Summation.appropriate, AssumeWeights.sumToOne)(
+        [2.0, 8.0], [0.25, 0.75]) == 6.5);
 }
 
 /// If weights are not provided, then behaves like mean

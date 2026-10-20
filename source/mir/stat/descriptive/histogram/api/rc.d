@@ -983,6 +983,31 @@ template rcWeightedHistogram(Options...)
     }
 }
 
+/++
+Combine weighted sensor reports on a two-dimensional grid.
+Pass measurements, coordinates, weights, then axes. At (0, 1), the combined
+mean is (2 * 10 + 6 * 30) / (2 + 6) = 25; at (1, 0), it is 50.
+The cell retains weighted sum and total weight rather than a numeric bin count.
+The histogram owns reference-counted cells.
++/
+version(mir_stat_test)
+@safe pure nothrow @nogc
+unittest
+{
+    import mir.stat.descriptive.univariate.means: WMeanAccumulator, AssumeWeights;
+    import mir.math.sum: Summation;
+    import mir.stat.descriptive.histogram.axis: IntegralAxis, AxisOptions;
+    double[3] measurements = [10, 30, 50], weights = [2, 6, 1];
+    int[3] latitude = [0, 0, 1], longitude = [1, 1, 0];
+    alias A = IntegralAxis!(int, AxisOptions());
+    alias Cell = WMeanAccumulator!(double, Summation.pairwise, AssumeWeights.primary);
+    auto readings = rcWeightedHistogram!Cell(
+        measurements, latitude, longitude, weights, A(2, 0), A(2, 0));
+    assert(readings.counts[0, 1].wmean == 25);
+    assert(readings.counts[0, 1].weight == 8);
+    assert(readings.counts[1, 0].wmean == 50);
+}
+
 /// Total observation weights in two equal-width bins.
 version(mir_stat_test)
 @safe pure nothrow @nogc

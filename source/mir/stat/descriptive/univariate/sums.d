@@ -377,6 +377,12 @@ unittest
 /++
 Computes the weighted sum of the input.
 
+Weights are algebraic multipliers: signed weights are permitted and no
+normalization or finite/nonnegative-weight validation is performed.
+Zero-weight observations are still multiplied, so a floating-point NaN or
+infinity multiplied by zero contributes NaN. Unlike weighted quantiles,
+zero weights do not exclude observations.
+
 Params:
     F = controls type of output
     summation = algorithm for calculating sums (default: Summation.appropriate)
@@ -491,8 +497,18 @@ unittest
 
     wsum!float([0, 1, 2, 3, 4, 5].sliced(3, 2), [1, 2, 3, 4, 5, 6].sliced(3, 2)).should == 70;
 
-    import mir.stat.descriptive.univariate.means: wmean;
-    static assert(is(typeof(wmean!float([1, 2, 3], [1, 2, 3])) == float));
+    static assert(is(typeof(wsum!float([1, 2, 3], [1, 2, 3])) == float));
+}
+
+/// Signed weights contribute algebraically; zero weights do not filter NaNs.
+version(mir_stat_test)
+@safe pure nothrow
+unittest
+{
+    import std.math: isNaN;
+    assert(wsum([2.0, 8.0], [-1.0, 2.0]) == 14);
+    assert(wsum([2.0, 8.0], [0.0, 0.0]) == 0);
+    assert(wsum([double.nan, 8.0], [0.0, 1.0]).isNaN);
 }
 
 /// If weights are not provided, then behaves like sum
