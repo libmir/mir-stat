@@ -138,6 +138,9 @@ def main():
         configured_tests = None
         if args.tests_with_examples:
             configured_tests = json.loads((build / "meson-info/intro-tests.json").read_text())
+            # Single-file extraction writes to stdout, but the pinned extractor
+            # still creates ./out. Create it once before parallel jobs can race.
+            (build / "out").mkdir(exist_ok=True)
         run(["ninja", "-C", build, "-j2"], "build.log", source)
         run(["meson", "test", "-C", build, "--no-rebuild", "--print-errorlogs"],
             "test.log", source)
