@@ -2395,46 +2395,29 @@ template wmean(F, AssumeWeights assumeWeights, Summation summation = Summation.a
                G = F, Summation weightsSummation = Summation.appropriate)
     if (!is(F : AssumeWeights))
 {
-    import mir.math.common: fmamath;
-    import mir.ndslice.slice: isConvertibleToSlice;
-    import mir.stat.descriptive.univariate.internal.types: meanType;
-    import std.traits: isIterable;
-
-    /++
-    Params:
-        s = slice-like
-        w = weights
-    +/
-    @fmamath meanType!F wmean(SliceA, SliceB)(SliceA s, SliceB w)
-        if (isConvertibleToSlice!SliceA && isConvertibleToSlice!SliceB)
-    {
-        import core.lifetime: move;
-        import mir.math.sum: sumType;
-
-        alias H = typeof(return);
-        return .wmean!(H, summation, assumeWeights, G, weightsSummation)(s.move, w.move);
-    }
-
-    /++
-    Params:
-        r = range, must be finite iterable
-    +/
-    @fmamath meanType!Range wmean(Range)(Range r)
-        if (isIterable!Range)
-    {
-        import core.lifetime: move;
-
-        alias F = typeof(return);
-        return .wmean!(F, summation, assumeWeights, G, weightsSummation)(r.move);
-    }
+    alias wmean = .wmean!(F, summation, assumeWeights, G, weightsSummation);
 }
 
+// AssumeWeights has a bool base type. Preserve the original argument type so
+// enum calls select the enum overload, while boolean-compatible constants retain
+// the legacy string-summation form.
 /// ditto
-template wmean(F, bool assumeWeights, string summation = "appropriate",
+template wmean(F, alias assumeWeights, string summation = "appropriate",
+               G = F, string weightsSummation = "appropriate")
+    if (!is(F : AssumeWeights) && !is(typeof(assumeWeights) == AssumeWeights) &&
+        __traits(compiles, { enum bool value = assumeWeights; }))
+{
+    mixin("alias wmean = .wmean!(F, Summation." ~ summation ~ ", cast(AssumeWeights) assumeWeights, G, Summation." ~ weightsSummation ~ ");");
+}
+
+// Preserve enum calls that previously used the bool overload with an explicit
+// string summation argument. Requiring that argument avoids the short-form clash.
+/// ditto
+template wmean(F, AssumeWeights assumeWeights, string summation,
                G = F, string weightsSummation = "appropriate")
     if (!is(F : AssumeWeights))
 {
-    mixin("alias wmean = .wmean!(F, Summation." ~ summation ~ ", cast(AssumeWeights) assumeWeights, G, Summation." ~ weightsSummation ~ ");");
+    mixin("alias wmean = .wmean!(F, Summation." ~ summation ~ ", assumeWeights, G, Summation." ~ weightsSummation ~ ");");
 }
 
 /// ditto
@@ -2494,6 +2477,48 @@ unittest
     static assert(is(typeof(wmean!float([1, 2, 3], [1, 2, 3])) == float));
 }
 
+// The typed assumption shorthand must not also match the legacy bool overload.
+// Exercise both input shapes and preserve explicit output/weight types.
+version(mir_stat_test)
+@safe pure nothrow
+unittest
+{
+    import mir.stat.descriptive.weighted: legacyMean = wmean;
+    import mir.ndslice.slice: sliced;
+    enum normalized = true;
+    enum one = 1;
+    auto values = [2, 8];
+    auto weights = [0.25, 0.75];
+    static foreach (assumption; [AssumeWeights.primary, AssumeWeights.sumToOne])
+    {{
+        auto result = wmean!(float, assumption)(values, weights);
+        static assert(is(typeof(result) == float));
+        assert(result == 6.5f);
+        assert(wmean!(float, assumption, Summation.pairwise, double,
+            Summation.kbn)(values.sliced, weights.sliced) == result);
+        assert(legacyMean!(float, assumption)(values, weights) == result);
+    }}
+    assert(wmean!(float, AssumeWeights.sumToOne, "appropriate")(values, weights) == 6.5f);
+    assert(wmean!(float, AssumeWeights.primary, "pairwise", double, "kbn")(
+        values, [1.0, 3.0]) == 6.5f);
+    assert(wmean!(float, normalized)(values, weights) == 6.5f);
+    assert(wmean!(float, one)(values, weights) == 6.5f);
+    assert(wmean!(float, false)(values, [1.0, 3.0]) == 6.5f);
+    assert(wmean!(float, true, "pairwise", double, "kbn")(values, weights) == 6.5f);
+    assert(wmean!(float, "pairwise", true, double, "kbn")(values, weights) == 6.5f);
+    assert(wmean!true(values, weights) == 6.5);
+    assert(wmean!(float, Summation.pairwise, AssumeWeights.sumToOne,
+        double, Summation.kbn)(values, weights) == 6.5f);
+
+    // This form previously compiled with an explicit summation argument but
+    // inferred double from the integer range instead of honoring float.
+    auto singleInput = wmean!(float, AssumeWeights.primary, Summation.pairwise)(values);
+    static assert(is(typeof(singleInput) == float));
+    assert(singleInput == 5.0f);
+    assert(wmean!(float, AssumeWeights.primary)(values.sliced) == 5.0f);
+    static assert(!__traits(compiles, wmean!(float, 2)(values, weights)));
+}
+
 /// Signed weights can place the mean outside the observation range.
 /// Zero weights do not filter NaNs; normalized weights can skip division.
 version(mir_stat_test)
@@ -2503,8 +2528,7 @@ unittest
     import std.math: isNaN;
     assert(wmean([2.0, 8.0], [-1.0, 2.0]) == 14);
     assert(wmean([double.nan, 8.0], [0.0, 1.0]).isNaN);
-    assert(wmean!(double, Summation.appropriate, AssumeWeights.sumToOne)(
-        [2.0, 8.0], [0.25, 0.75]) == 6.5);
+    assert(wmean!(double, AssumeWeights.sumToOne)([2.0, 8.0], [0.25, 0.75]) == 6.5);
 }
 
 /// If weights are not provided, then behaves like mean
