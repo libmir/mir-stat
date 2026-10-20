@@ -43,6 +43,11 @@ the library test and at least one extracted-example suite, rejects skipped
 tests, and does not hard-code the example count. Build and test logs are
 uploaded as `meson-test-logs` even on failure.
 
+The driver creates the pinned extractor's default `out` directory before
+starting parallel example extraction. Single-file results go to stdout, but
+the extractor still creates this directory and otherwise races on first use.
+All build modes retain two Ninja build jobs.
+
 Use `--tests-only` for library tests without HTML or extracted examples.
 Run `python3 tools/test_build_docs.py` for driver regression checks.
 
