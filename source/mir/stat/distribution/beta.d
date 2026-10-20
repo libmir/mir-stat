@@ -218,7 +218,8 @@ subtracting the CDF from one is also inaccurate when the remaining upper tail
 is tiny. For $(D x < 1.0 / 16), $(D alpha <= 1), and $(D beta <= 128), a
 fallback can instead add the probability between $(D x) and an interior
 point to the upper tail starting at that point. Other parameter regimes use
-Phobos's reflected incomplete-beta calculation and retain its accuracy limits.
+Phobos's complementary incomplete-beta function, whose accuracy depends on
+the installed Phobos version.
 
 Returns the upper-tail probability $(D P(X > x)). Use this function directly
 when the upper tail is small, rather than subtracting the CDF from one.
@@ -247,11 +248,11 @@ T betaCCDF(T)(const T x, const T alpha, const T beta)
     in (alpha > 0, "alpha must be greater than zero")
     in (beta > 0, "beta must be greater than zero")
 {
-    import std.mathspecial: betaIncomplete;
+    import std.mathspecial: betaIncompleteCompl;
 
     if (x < T(0.0625) && alpha <= 1 && beta <= 128)
         return cast(T) betaSmallInputCCDF(x, alpha, beta);
-    return betaIncomplete(beta, alpha, 1 - x);
+    return betaIncompleteCompl(alpha, beta, x);
 }
 
 ///
@@ -848,4 +849,17 @@ unittest
             assert(approxEqual(betaLPDF(T(1) / 3, T(0x1p100L), T(0x1p101L)),
                 offPeak, 64 * T.epsilon));
     }}
+}
+
+// Keep the original float input when delegating outside the bounded fallback.
+// Forming 1-x in float rounds both inputs to one. References were computed
+// independently with high-precision incomplete-beta arithmetic.
+version(mir_stat_test)
+@safe pure nothrow @nogc unittest
+{
+    import mir.math.common: approxEqual;
+    assert(approxEqual(betaCCDF(0x1p-30f, 0.5f, 129f),
+        0.999609267860570611262336622325055137f, 4 * float.epsilon, 0.0f));
+    assert(approxEqual(betaCCDF(0x1p-30f, 0.125f, 1000.5f),
+        0.812841910175758869528918774417910939f, 4 * float.epsilon, 0.0f));
 }
