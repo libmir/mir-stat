@@ -1194,16 +1194,33 @@ struct GMeanAccumulator(T)
     ///
     ProdAccumulator!T prodAccumulator;
 
-    ///
+    /++
+    Return the geometric mean in type `F`. Zero and infinite results are
+    preserved when `F` has a narrower exponent range than the stored product.
+
+    The average product exponent is computed in `F`. For very large or very
+    small observations, rounding this exponent can reduce the accuracy of
+    the result even when the stored product does not overflow or underflow.
+    +/
     F gmean(F = T)() const @property
         if (isFloatingPoint!F)
     {
         import mir.math.common: exp2, floor;
+        import std.math : isFinite;
 
         const F root = nthroot(cast(F) prodAccumulator.mantissa, count);
         const F exponent = cast(F) prodAccumulator.exp / count;
         if (count && (exponent >= F.max_exp || exponent < F.min_exp - 1))
         {
+            // A narrower result type can overflow or underflow the scaling
+            // factor even when the root is zero or infinite. Preserve the root
+            // instead of producing NaN from zero * infinity or infinity * zero.
+            // Same-range and wider results keep the original scaling path.
+            static if (F.max_exp < T.max_exp || F.min_exp > T.min_exp)
+            {
+                if (root == 0 || !isFinite(root))
+                    return root;
+            }
             // Keep exp2 in the normal range and apply the mantissa before
             // the final scaling, which may legitimately produce a subnormal.
             const F halfExponent = floor(exponent / 2);
@@ -1317,6 +1334,28 @@ unittest
     mixed = GMeanAccumulator!double.init;
     mixed.put(cast(double) (float.min_normal * float.epsilon));
     assert(mixed.gmean!float == float.min_normal * float.epsilon);
+}
+
+// Preserve special values when the result has a narrower exponent range.
+version(mir_stat_test)
+@safe pure nothrow @nogc
+unittest
+{
+    import std.math : isNaN;
+    GMeanAccumulator!double zero, infinite;
+    zero.put(0.0);
+    infinite.put(double.infinity);
+    foreach (i; 0 .. 32)
+    {
+        zero.put(double.max);
+        infinite.put(double.min_normal * double.epsilon);
+    }
+    assert(zero.gmean!float == 0);
+    assert(infinite.gmean!float == float.infinity);
+    infinite.put(0.0);
+    assert(infinite.gmean!float.isNaN);
+    // Empty input retains its existing result.
+    assert(GMeanAccumulator!double.init.gmean == double.infinity);
 }
 
 ///
