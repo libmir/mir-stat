@@ -219,7 +219,8 @@ is tiny. For $(D x < 1.0 / 16), $(D alpha <= 1), and $(D beta <= 128), a
 fallback can instead add the probability between $(D x) and an interior
 point to the upper tail starting at that point. Other parameter regimes use
 Phobos's complementary incomplete-beta function, whose accuracy depends on
-the installed Phobos version.
+the installed Phobos version. Versions without that function use the reflected
+calculation with the subtraction performed in $(D real).
 
 Returns the upper-tail probability $(D P(X > x)). Use this function directly
 when the upper tail is small, rather than subtracting the CDF from one.
@@ -248,11 +249,16 @@ T betaCCDF(T)(const T x, const T alpha, const T beta)
     in (alpha > 0, "alpha must be greater than zero")
     in (beta > 0, "beta must be greater than zero")
 {
-    import std.mathspecial: betaIncompleteCompl;
+    static import std.mathspecial;
 
     if (x < T(0.0625) && alpha <= 1 && beta <= 128)
         return cast(T) betaSmallInputCCDF(x, alpha, beta);
-    return betaIncompleteCompl(alpha, beta, x);
+    static if (__traits(hasMember, std.mathspecial, "betaIncompleteCompl"))
+        return std.mathspecial.betaIncompleteCompl(alpha, beta, x);
+    else
+        // Older Phobos has no complement API. Promote before subtracting so
+        // float inputs retain their displacement from one.
+        return std.mathspecial.betaIncomplete(beta, alpha, 1 - cast(real) x);
 }
 
 ///
