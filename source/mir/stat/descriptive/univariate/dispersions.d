@@ -48,7 +48,7 @@ import mir.internal.utility: isFloatingPoint;
 import mir.math.common: fmamath;
 import mir.math.sum: Summator, ResolveSummationType;
 import mir.ndslice.slice: isConvertibleToSlice, isSlice, Slice, SliceKind;
-import std.traits: isIterable, isMutable;
+import std.traits: isIntegral, isIterable, isMutable;
 
 import mir.stat.descriptive.univariate.internal.types: statType, meanType, stdevType;
 import mir.stat.descriptive.univariate.means: mean, MeanAccumulator;
@@ -304,10 +304,20 @@ struct VarianceAccumulator(T, VarianceAlgo varianceAlgo, Summation summation)
         // With an empty destination, keep the correction zero without squaring
         // the source mean. Share the updates with the ordinary merge path.
         meanAccumulator.put!T(v.meanAccumulator);
-        // Apply the count ratio before multiplying by delta twice, avoiding
-        // intermediate overflow when the final correction is representable.
-        centeredSummatorOfSquares.put(v.centeredSumOfSquares!T
-            + delta * (delta * (cast(T) v.count * (cast(T) oldCount / count))));
+        static if (isIntegral!T)
+        {
+            // Preserve integer division after multiplication: the count ratio
+            // alone would truncate to zero for two nonempty accumulators.
+            centeredSummatorOfSquares.put(v.centeredSumOfSquares!T
+                + delta * delta * v.count * oldCount / count);
+        }
+        else
+        {
+            // Apply the count ratio before multiplying by delta twice, avoiding
+            // intermediate overflow when the final correction is representable.
+            centeredSummatorOfSquares.put(v.centeredSumOfSquares!T
+                + delta * (delta * (cast(T) v.count * (cast(T) oldCount / count))));
+        }
     }
 
 const:
@@ -437,6 +447,30 @@ unittest
         values.put(values);
         assert(values.count == 4);
         assert(fabs(values.variance(false) - T(4) / 3) <= 8 * T.epsilon);
+    }}
+}
+
+// Explicit integer accumulators retain multiplication before integer division.
+version(mir_stat_test)
+@safe pure nothrow @nogc
+unittest
+{
+    import std.meta: AliasSeq;
+
+    static foreach (algo; AliasSeq!(VarianceAlgo.online, VarianceAlgo.hybrid))
+    {{
+        alias Accumulator = VarianceAccumulator!(ulong, algo, Summation.naive);
+        Accumulator left, right, empty;
+        left.put(0UL);
+        right.put(2UL);
+        left.put(right);
+        assert(left.count == 2);
+        assert(left.centeredSumOfSquares == 2);
+        assert(left.variance(false) == 2);
+        left.put(empty);
+        assert(left.count == 2 && left.centeredSumOfSquares == 2);
+        empty.put(left);
+        assert(empty.count == 2 && empty.centeredSumOfSquares == 2);
     }}
 }
 
@@ -974,10 +1008,20 @@ struct VarianceAccumulator(T, VarianceAlgo varianceAlgo, Summation summation)
         // With an empty destination, keep the correction zero without squaring
         // the source mean. Share the updates with the ordinary merge path.
         meanAccumulator.put!T(v.meanAccumulator);
-        // Apply the count ratio before multiplying by delta twice, avoiding
-        // intermediate overflow when the final correction is representable.
-        centeredSummatorOfSquares.put(v.centeredSumOfSquares!T
-            + delta * (delta * (cast(T) v.count * (cast(T) oldCount / count))));
+        static if (isIntegral!T)
+        {
+            // Preserve integer division after multiplication: the count ratio
+            // alone would truncate to zero for two nonempty accumulators.
+            centeredSummatorOfSquares.put(v.centeredSumOfSquares!T
+                + delta * delta * v.count * oldCount / count);
+        }
+        else
+        {
+            // Apply the count ratio before multiplying by delta twice, avoiding
+            // intermediate overflow when the final correction is representable.
+            centeredSummatorOfSquares.put(v.centeredSumOfSquares!T
+                + delta * (delta * (cast(T) v.count * (cast(T) oldCount / count))));
+        }
     }
 
 const:
