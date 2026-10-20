@@ -765,9 +765,10 @@ private T recoverHarmonicMean(T, Range)(Range values, T original)
     bool hasZero;
     foreach (value; values.save)
     {
-        const T x = cast(T) value;
-        if (isNaN(x) || x < 0)
+        // Check before narrowing: a negative observation can round to -0.
+        if (isNaN(value) || value < 0)
             return original;
+        const T x = cast(T) value;
         ++count;
         hasZero |= x == 0;
         if (x > 0 && x < scale)
@@ -804,6 +805,8 @@ overflow, or when reciprocals are too small to retain normal precision.
 The recalculation applies to nonnegative observations, including zero and
 positive infinity, and uses compensated summation. A zero observation gives
 zero unless a negative value or NaN is also present.
+Recovery arithmetic uses the result type; requesting a narrower result type
+can still lose values when observations are converted to that type.
 
 Ordinary inputs retain the selected summation algorithm. Negative or NaN
 observations retain the original calculation, as do single-pass inputs and
@@ -980,6 +983,11 @@ unittest
     const double[4] matrix = [double.max, double.max, double.max, double.max];
     assert(matrix[].sliced(2, 2).transposed.hmean == double.max);
     assert(matrix[].sliced(2, 2).transposed[0].hmean == double.max);
+
+    // A negative double must not become an accepted zero during float recovery.
+    const double tiny = cast(double)(float.min_normal * float.epsilon) / 2;
+    const double[2] mixed = [-tiny, tiny];
+    assert(mixed[].hmean!float.isNaN);
 }
 
 // Recovery must use an independent saved traversal, not an advanced cursor.
