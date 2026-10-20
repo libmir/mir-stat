@@ -1100,6 +1100,22 @@ subtractions fit the integer type. This translation preserves variance about
 the mean, but must not be used with `VarianceAlgo.assumeZeroMean`, which
 calculates squared distances from zero.
 
+Floating-point observations can also lose accuracy when their spread is very
+small compared with their common offset. The two-pass calculation measures
+distances from a rounded mean. If the exact mean lies between representable
+values, this can overestimate the variance even when the observations
+themselves are represented exactly. For example, the two `double` values
+`1.0` and `1.0 + double.epsilon` have sample variance
+`double.epsilon * double.epsilon / 2`; the default calculation returns twice
+that value. The absolute error is tiny in this example, but the relative
+error is large.
+
+For tightly clustered floating-point data, subtracting a nearby common offset
+before calling `variance` can improve accuracy by allowing the mean of the
+differences to be represented more accurately. Choose an offset for which
+the subtractions remain finite. As with integer centering, this workaround
+applies to variance about the mean, not `VarianceAlgo.assumeZeroMean`.
+
 Params:
     F = controls type of output
     varianceAlgo = algorithm for calculating variance (default: VarianceAlgo.hybrid)
@@ -1289,6 +1305,21 @@ unittest
     // And the assumeZeroMean algorithm is way off
     auto z3 = x.variance!"assumeZeroMean";
     assert(z3.approxEqual(1.2e19 / 11));
+}
+
+/// Center tightly clustered observations before calculating their variance.
+version(mir_stat_test)
+@safe pure nothrow @nogc
+unittest
+{
+    import mir.ndslice.slice : sliced;
+    import mir.ndslice.topology : map;
+
+    const double[2] observations = [1.0, 1.0 + double.epsilon];
+    // Subtract the common offset lazily; no intermediate array is needed.
+    auto centered = observations[].sliced.map!(x => x - 1.0);
+    const expected = double.epsilon * double.epsilon / 2;
+    assert(centered.variance == expected);
 }
 
 /// Can also set algorithm or output type
@@ -1537,6 +1568,12 @@ Integer inputs retain the conversion limitation described for $(LREF variance):
 large integers separated by small differences can produce a zero standard
 deviation. The scaled floating-point recovery does not repair this loss of
 integer precision.
+
+Positive normal variances can still be inaccurate for tightly clustered
+floating-point observations, as described for $(LREF variance). Taking their
+square root does not remove that error, and these results do not trigger
+scaled recovery. Subtracting a nearby common offset before calling
+`standardDeviation` can help, except when using `VarianceAlgo.assumeZeroMean`.
 
 Params:
     F = controls type of output
