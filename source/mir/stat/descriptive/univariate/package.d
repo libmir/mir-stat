@@ -26,18 +26,30 @@ $(DIVC quickindex,
 $(BOOKTABLE,
 $(TR $(TH Module) $(TH Public declarations))
     $(TR $(TD $(MREF mir,stat,descriptive,univariate,means) $(BR)
-        $(SMALL Arithmetic, geometric, and harmonic means.))
+        $(SMALL Arithmetic, geometric, harmonic, and weighted means.))
         $(TD
             $(B Functions:)
             $(LEGACY_ANCHOR mean)$(REF mean, mir, stat, descriptive, univariate, means)$(NBSP)
             $(LEGACY_ANCHOR gmean)$(REF gmean, mir, stat, descriptive, univariate, means)$(NBSP)
             $(LEGACY_ANCHOR hmean)$(REF hmean, mir, stat, descriptive, univariate, means)$(NBSP)
+            $(REF wmean, mir, stat, descriptive, univariate, means)$(NBSP)
             $(BR)
             $(B Accumulators:)
             $(LEGACY_ANCHOR MeanAccumulator)$(REF MeanAccumulator, mir, stat, descriptive, univariate, means)$(NBSP)
             $(LEGACY_ANCHOR GMeanAccumulator)$(REF GMeanAccumulator, mir, stat, descriptive, univariate, means)$(NBSP)
+            $(REF WMeanAccumulator, mir, stat, descriptive, univariate, means)$(NBSP)
+            $(BR)
+            $(B Weight assumptions:)
+            $(REF AssumeWeights, mir, stat, descriptive, univariate, means)$(NBSP)
         )
     )
+    $(TR $(TD $(MREF mir,stat,descriptive,univariate,sums) $(BR)
+        $(SMALL Weighted sums.)) $(TD
+        $(B Function:)
+        $(REF wsum, mir, stat, descriptive, univariate, sums)$(NBSP)
+        $(BR)
+        $(B Accumulator:)
+        $(REF WSummator, mir, stat, descriptive, univariate, sums)$(NBSP)))
     $(TR $(TD $(MREF mir,stat,descriptive,univariate,quantiles) $(BR)
         $(SMALL Medians, quantiles, and robust measures of spread.))
         $(TD
@@ -173,6 +185,9 @@ public import mir.math.sum: Summation;
 
 ///
 public import mir.stat.descriptive.univariate.means;
+
+///
+public import mir.stat.descriptive.univariate.sums;
 
 ///
 public import mir.stat.descriptive.univariate.quantiles;

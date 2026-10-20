@@ -518,7 +518,7 @@ version(mir_stat_test)
 unittest
 {
     import mir.math.sum: Summation;
-    import mir.stat.descriptive.weighted: WMeanAccumulator, AssumeWeights;
+    import mir.stat.descriptive.univariate.means: WMeanAccumulator, AssumeWeights;
     import mir.stat.descriptive.histogram.axis: RegularAxis, AxisOptions;
     import std.experimental.allocator: dispose;
     import std.experimental.allocator.mallocator: Mallocator;
@@ -1452,7 +1452,7 @@ version(mir_stat_test)
 @system pure nothrow @nogc
 unittest
 {
-    import mir.stat.descriptive.weighted: WMeanAccumulator, AssumeWeights;
+    import mir.stat.descriptive.univariate.means: WMeanAccumulator, AssumeWeights;
     import mir.math.sum: Summation;
     import mir.stat.descriptive.histogram.axis: IntegralAxis, AxisOptions;
     import std.experimental.allocator.mallocator: Mallocator;

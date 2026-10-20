@@ -964,7 +964,7 @@ version(mir_stat_test)
 unittest
 {
     import mir.math.sum: Summation;
-    import mir.stat.descriptive.weighted: WMeanAccumulator, AssumeWeights;
+    import mir.stat.descriptive.univariate.means: WMeanAccumulator, AssumeWeights;
     import mir.stat.descriptive.histogram.axis: RegularAxis, AxisOptions;
     alias Cell = WMeanAccumulator!(double, Summation.pairwise, AssumeWeights.primary);
     auto coordinate = RegularAxis!(double, AxisOptions())(2, 0.0, 2.0);

@@ -10,7 +10,7 @@ $(BOOKTABLE ,
     $(TR $(TDNW $(MREF mir,stat,descriptive,aliases)) $(TD Aliases for common functions ))
     $(TR $(TDNW $(MREF mir,stat,descriptive,multivariate)) $(TD Multivariate Descriptive statistics ))
     $(TR $(TDNW $(MREF mir,stat,descriptive,univariate)) $(TD Univariate descriptive statistics, including ordinary and weighted quantiles ))
-    $(TR $(TDNW $(MREF mir,stat,descriptive,weighted)) $(TD Weighted means, sums, and their accumulators ))
+    $(TR $(TDNW $(MREF mir,stat,descriptive,weighted)) $(TD Compatibility imports for weighted means and sums ))
 )
 
 License: $(HTTP www.apache.org/licenses/LICENSE-2.0, Apache-2.0)
