@@ -54,6 +54,14 @@ import mir.stat.descriptive.univariate.internal.types: statType, meanType, stdev
 import mir.stat.descriptive.univariate.means: mean, MeanAccumulator;
 import mir.stat.descriptive.univariate.quantiles: median;
 
+// DMD's optimized inliner can diagnose division by zero in a guarded
+// integer mean read. __traits(compiles) succeeds before that optimization,
+// so use a compiler condition until a fixed DMD version is established.
+version (DigitalMars)
+    private enum workaroundDmdGuardedIntegerMean = true;
+else
+    private enum workaroundDmdGuardedIntegerMean = false;
+
 /++
 Variance algorithms.
 
@@ -281,7 +289,15 @@ struct VarianceAccumulator(T, VarianceAlgo varianceAlgo, Summation summation)
     void put()(T x)
     {
         T delta = x;
-        if (count > 0) {
+        static if (workaroundDmdGuardedIntegerMean && isIntegral!T)
+        {
+            // DMD can fold the guarded mean of a known-empty integer
+            // accumulator into division by zero. Keep the guard and mean
+            // calculation together in a conditional expression.
+            delta = count ? x - meanAccumulator.mean : x;
+        }
+        else if (count > 0)
+        {
             delta -= meanAccumulator.mean;
         }
         meanAccumulator.put(x);
@@ -985,7 +1001,15 @@ struct VarianceAccumulator(T, VarianceAlgo varianceAlgo, Summation summation)
     void put()(T x)
     {
         T delta = x;
-        if (count > 0) {
+        static if (workaroundDmdGuardedIntegerMean && isIntegral!T)
+        {
+            // DMD can fold the guarded mean of a known-empty integer
+            // accumulator into division by zero. Keep the guard and mean
+            // calculation together in a conditional expression.
+            delta = count ? x - meanAccumulator.mean : x;
+        }
+        else if (count > 0)
+        {
             delta -= meanAccumulator.mean;
         }
         meanAccumulator.put(x);
@@ -2325,6 +2349,7 @@ unittest
 {
     import mir.stat.descriptive.univariate.means: mean;
     import mir.stat.descriptive.univariate.quantiles: median;
+
     import mir.functional: naryFun;
     import mir.math.common: approxEqual, fabs, sqrt;
 
