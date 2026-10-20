@@ -9,6 +9,15 @@ For example: `weightedHistogram(x, y, weights, xAxis, yAxis)` and
 Existing weight-first calls must be reordered, even when their argument types
 still allow them to compile.
 
+Weight validity depends on the result. Numeric weighted histograms require
+finite, nonnegative weights but allow all-zero counts. Computing weighted
+quantile boundaries for percentograms or quantile axes requires at least one
+positive weight and ignores zero-weight observations. Histograms of accumulator
+cells delegate weight semantics to the cell: for example,
+$(REF WMeanAccumulator, mir, stat, descriptive, univariate, means) permits signed
+weights and does not skip zero-weight products. These rules do not change with
+the storage policy.
+
 Choose a storage policy, then the kind of result:
 $(TABLE
 $(TR $(TH Result) $(TH GC storage) $(TH Reference-counted storage) $(TH Caller-selected allocator))
@@ -98,9 +107,9 @@ and dispose. A makePercentogram call with that axis allocates only counts and re
 a relative-frequency accumulator: dispose its fixed counts separately, and dispose
 the boundary owner only after all histograms and views are finished using it.
 
-See $(REF rc, mir, stat, descriptive, histogram, api) for axis-selection examples,
-$(REF gc, mir, stat, descriptive, histogram, api) for GC factories, and
-$(REF custom, mir, stat, descriptive, histogram, api) for allocation and disposal.
+See $(MREF mir, stat, descriptive, histogram, api, rc) for axis-selection examples,
+$(MREF mir, stat, descriptive, histogram, api, gc) for GC factories, and
+$(MREF mir, stat, descriptive, histogram, api, custom) for allocation and disposal.
 
 License: $(HTTP www.apache.org/licenses/LICENSE-2.0, Apache-2.0)
 
