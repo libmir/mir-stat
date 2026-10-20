@@ -743,12 +743,75 @@ unittest
     static assert(is(hmeanType!(Bar[]) == Complex!float));
 }
 
+/*
+Recover a nonnegative harmonic mean when its reciprocal calculation overflows
+or enters the subnormal range. Dividing the smallest positive observation by
+each observation produces ratios in [0, 1], including at least one ratio of 1.
+Their sum cannot underflow, and multiplying the scale by count / sum avoids
+forming the potentially unrepresentable reciprocal of an observation.
+
+Only replayable built-in floating-point inputs use this recovery. NaN and
+negative observations retain the original result; they do not satisfy the
+nonnegative-input argument above. Callers save the traversal before consuming
+it and check the reciprocal mean once, outside the ordinary reduction loop.
+*/
+private T recoverHarmonicMean(T, Range)(Range values, T original)
+{
+    import std.math : isNaN;
+    import std.range.primitives : save;
+
+    T scale = T.infinity, upper = 0;
+    size_t count;
+    bool hasZero;
+    foreach (value; values.save)
+    {
+        // Check before narrowing: a negative observation can round to -0.
+        if (isNaN(value) || value < 0)
+            return original;
+        const T x = cast(T) value;
+        ++count;
+        hasZero |= x == 0;
+        if (x > 0 && x < scale)
+            scale = x;
+        if (x > upper)
+            upper = x;
+    }
+    // A zero dominates the reciprocal sum, but only after ruling out NaN and
+    // negative inputs. Preserve the original sign when it already yielded zero.
+    if (hasZero)
+        return original == 0 ? original : T(0);
+    if (!count || scale == T.infinity)
+        return original;
+
+    Summator!(T, Summation.kbn) ratios;
+    foreach (value; values)
+        ratios.put(scale / cast(T) value);
+    const result = scale * (cast(T) count / ratios.sum);
+    // Rescaling must not round outside the interval of positive observations.
+    return result < scale ? scale : result > upper ? upper : result;
+}
+
 /++
 Computes the harmonic mean of the input.
 
 By default, if `F` is not floating point type or complex type, then the result
 will have a `double` type if `F` is implicitly convertible to a floating point
 type or a type for which `isComplex!F` is true.
+
+For replayable built-in floating-point inputs and results, a nonfinite, zero,
+or subnormal reciprocal mean triggers a scaled recalculation. This avoids losing
+a representable harmonic mean when individual reciprocals or their sum
+overflow, or when reciprocals are too small to retain normal precision.
+The recalculation applies to nonnegative observations, including zero and
+positive infinity, and uses compensated summation. A zero observation gives
+zero unless a negative value or NaN is also present.
+Recovery arithmetic uses the result type; requesting a narrower result type
+can still lose values when observations are converted to that type.
+
+Ordinary inputs retain the selected summation algorithm. Negative or NaN
+observations retain the original calculation, as do single-pass inputs and
+complex or user-defined element types. A saved forward traversal must yield
+the same observations as the original traversal.
 
 Params:
     F = controls type of output
@@ -776,17 +839,39 @@ template hmean(F, Summation summation = Summation.appropriate)
         alias G = typeof(return);
         auto numerator = cast(G) 1;
 
+        import std.range.primitives : isForwardRange, ElementType, save;
+        static if (isFloatingPoint!G)
+        {
+            static if (isSlice!Range)
+            {
+                import mir.ndslice.topology : flattened;
+                auto flat = r.flattened;
+                static if (isForwardRange!(typeof(flat)) && isFloatingPoint!(ElementType!(typeof(flat))))
+                    auto saved = flat.save;
+            }
+            else static if (isForwardRange!Range && isFloatingPoint!(ElementType!Range))
+                auto saved = r.save;
+        }
+
         static if (summation == Summation.fast && __traits(compiles, r.move.map!"numerator / a"))
         {
-            return numerator / r.move.map!"numerator / a".mean!(G, summation);
+            auto inverseMean = r.move.map!"numerator / a".mean!(G, summation);
         }
         else
         {
             MeanAccumulator!(G, ResolveSummationType!(summation, Range, G)) imean;
             foreach (e; r)
                 imean.put(numerator / e);
-            return numerator / imean.mean;
+            auto inverseMean = imean.mean;
         }
+        auto result = numerator / inverseMean;
+        static if (__traits(compiles, saved))
+        {
+            import std.math : isNormal;
+            if (!isNormal(inverseMean))
+                return recoverHarmonicMean!G(saved.move, result);
+        }
+        return result;
     }
 
     /++
@@ -801,15 +886,23 @@ template hmean(F, Summation summation = Summation.appropriate)
 
         static if (summation == Summation.fast && __traits(compiles, ar.map!"numerator / a"))
         {
-            return numerator / ar.map!"numerator / a".mean!(G, summation);
+            auto inverseMean = ar.map!"numerator / a".mean!(G, summation);
         }
         else
         {
             MeanAccumulator!(G, ResolveSummationType!(summation, const(G)[], G)) imean;
             foreach (e; ar)
                 imean.put(numerator / e);
-            return numerator / imean.mean;
+            auto inverseMean = imean.mean;
         }
+        auto result = numerator / inverseMean;
+        static if (isFloatingPoint!G && isFloatingPoint!F)
+        {
+            import std.math : isNormal;
+            if (!isNormal(inverseMean))
+                return recoverHarmonicMean!G(ar, result);
+        }
+        return result;
     }
 }
 
@@ -851,6 +944,81 @@ template hmean(F, string summation)
 template hmean(string summation)
 {
     mixin("alias hmean = .hmean!(Summation." ~ summation ~ ");");
+}
+
+// Recover representable means despite overflowing or subnormal reciprocals.
+version(mir_stat_test)
+@safe pure nothrow @nogc
+unittest
+{
+    import std.meta : AliasSeq;
+    import std.math : isNaN, abs;
+    import mir.ndslice.slice : sliced;
+    import mir.ndslice.dynamic : transposed;
+    static foreach (T; AliasSeq!(float, double, real))
+    static foreach (mode; AliasSeq!(Summation.naive, Summation.pairwise,
+        Summation.kbn, Summation.kb2, Summation.precise, Summation.fast))
+    {{
+        foreach (x; [T.min_normal * T.epsilon, T.min_normal / 4, T.max])
+        {
+            const T[2] values = [x, x];
+            assert(values[].hmean!(T, mode) == x);
+            assert(hmean!(T, mode)(x, x) == x);
+            assert(values[].sliced.hmean!(T, mode) == x);
+        }
+        // H(x, 2x) = 4x/3, independently of the implementation.
+        const T x = T.min_normal / 4;
+        const T expected = x * (T(4) / 3);
+        assert(abs(hmean!(T, mode)(x, 2*x) - expected)
+            <= 2 * T.min_normal * T.epsilon);
+        assert(hmean!(T, mode)(T(0), T(4)) == 0);
+        assert(hmean!(T, mode)(T.infinity, T(4)) == 8);
+        assert(hmean!(T, mode)(T.infinity, T.infinity) == T.infinity);
+        assert(hmean!(T, mode)(T.nan, T(4)).isNaN);
+        assert(hmean!(T, mode)(T(0), T.nan).isNaN);
+        assert(hmean!(T, mode)(T(-2), T(4)) == -8);
+        const T[] empty;
+        assert(empty.hmean!(T, mode).isNaN);
+    }}
+    const double[4] matrix = [double.max, double.max, double.max, double.max];
+    assert(matrix[].sliced(2, 2).transposed.hmean == double.max);
+    assert(matrix[].sliced(2, 2).transposed[0].hmean == double.max);
+
+    // A negative double must not become an accepted zero during float recovery.
+    const double tiny = cast(double)(float.min_normal * float.epsilon) / 2;
+    const double[2] mixed = [-tiny, tiny];
+    assert(mixed[].hmean!float.isNaN);
+}
+
+// Recovery must use an independent saved traversal, not an advanced cursor.
+version(mir_stat_test)
+unittest
+{
+    static struct Forward
+    {
+        const(double)[] data;
+        size_t* position;
+        size_t ownPosition;
+        bool empty() const { return (position ? *position : ownPosition) == data.length; }
+        double front() const { return data[position ? *position : ownPosition]; }
+        void popFront() { if (position) ++*position; else ++ownPosition; }
+        auto save() { return Forward(data, null, position ? *position : ownPosition); }
+    }
+    static struct Single
+    {
+        const(double)[] data;
+        size_t* position;
+        bool empty() const { return *position == data.length; }
+        double front() const { return data[*position]; }
+        void popFront() { ++*position; }
+    }
+    double[2] values = [double.min_normal / 4, double.min_normal / 4];
+    size_t position;
+    assert(hmean(Forward(values[], &position)) == values[0]);
+    assert(position == 2);
+    position = 0;
+    assert(hmean!(Summation.naive)(Single(values[], &position)) == 0);
+    assert(position == 2);
 }
 
 /// Harmonic mean of vector
@@ -1034,16 +1202,33 @@ struct GMeanAccumulator(T)
     ///
     ProdAccumulator!T prodAccumulator;
 
-    ///
+    /++
+    Return the geometric mean in type `F`. Zero and infinite results are
+    preserved when `F` has a narrower exponent range than the stored product.
+
+    The average product exponent is computed in `F`. For very large or very
+    small observations, rounding this exponent can reduce the accuracy of
+    the result even when the stored product does not overflow or underflow.
+    +/
     F gmean(F = T)() const @property
         if (isFloatingPoint!F)
     {
         import mir.math.common: exp2, floor;
+        import std.math : isFinite;
 
         const F root = nthroot(cast(F) prodAccumulator.mantissa, count);
         const F exponent = cast(F) prodAccumulator.exp / count;
         if (count && (exponent >= F.max_exp || exponent < F.min_exp - 1))
         {
+            // A narrower result type can overflow or underflow the scaling
+            // factor even when the root is zero or infinite. Preserve the root
+            // instead of producing NaN from zero * infinity or infinity * zero.
+            // Same-range and wider results keep the original scaling path.
+            static if (F.max_exp < T.max_exp || F.min_exp > T.min_exp)
+            {
+                if (root == 0 || !isFinite(root))
+                    return root;
+            }
             // Keep exp2 in the normal range and apply the mantissa before
             // the final scaling, which may legitimately produce a subnormal.
             const F halfExponent = floor(exponent / 2);
@@ -1157,6 +1342,28 @@ unittest
     mixed = GMeanAccumulator!double.init;
     mixed.put(cast(double) (float.min_normal * float.epsilon));
     assert(mixed.gmean!float == float.min_normal * float.epsilon);
+}
+
+// Preserve special values when the result has a narrower exponent range.
+version(mir_stat_test)
+@safe pure nothrow @nogc
+unittest
+{
+    import std.math : isNaN;
+    GMeanAccumulator!double zero, infinite;
+    zero.put(0.0);
+    infinite.put(double.infinity);
+    foreach (i; 0 .. 32)
+    {
+        zero.put(double.max);
+        infinite.put(double.min_normal * double.epsilon);
+    }
+    assert(zero.gmean!float == 0);
+    assert(infinite.gmean!float == float.infinity);
+    infinite.put(0.0);
+    assert(infinite.gmean!float.isNaN);
+    // Empty input retains its existing result.
+    assert(GMeanAccumulator!double.init.gmean == double.infinity);
 }
 
 ///
