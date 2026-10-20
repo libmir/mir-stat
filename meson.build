@@ -21,6 +21,7 @@ sources_list = [
     'mir/stat/descriptive/univariate/package',
     'mir/stat/descriptive/univariate/internal/types',
     'mir/stat/descriptive/univariate/means',
+    'mir/stat/descriptive/univariate/sums',
     'mir/stat/descriptive/univariate/quantiles',
     'mir/stat/descriptive/univariate/internal/summation',
     'mir/stat/descriptive/univariate/dispersions',

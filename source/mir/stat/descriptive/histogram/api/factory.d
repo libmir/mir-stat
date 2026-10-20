@@ -172,7 +172,7 @@ package void testAccumulatorMarginal(alias project, alias dispose = null)()
     import std.math: isNaN;
     import mir.math.sum: Summator, Summation;
     import mir.stat.descriptive.univariate: MeanAccumulator;
-    import mir.stat.descriptive.weighted: WMeanAccumulator, AssumeWeights;
+    import mir.stat.descriptive.univariate.means: WMeanAccumulator, AssumeWeights;
     import mir.stat.descriptive.histogram.accumulator: HistogramAccumulator, BinCoverage;
     import mir.stat.descriptive.histogram.axis: IntegralAxis, AxisOptions;
     import mir.ndslice.slice: sliced;
@@ -2110,7 +2110,7 @@ package void testSampleFactories(alias factory, alias weightedFactory, alias rel
 {
     import mir.math.sum: Summator, Summation;
     import mir.stat.descriptive.histogram.axis: IntegralAxis, AxisOptions;
-    import mir.stat.descriptive.weighted: WMeanAccumulator, AssumeWeights;
+    import mir.stat.descriptive.univariate.means: WMeanAccumulator, AssumeWeights;
     import mir.ndslice.slice: sliced;
     import mir.ndslice.topology: stride;
     alias Cell = Summator!(double, Summation.pairwise);
@@ -2203,7 +2203,7 @@ unittest
 {
     import mir.stat.descriptive.histogram.api.rc: rchistogram, rcWeightedHistogram;
     import mir.math.sum: Summator, Summation;
-    import mir.stat.descriptive.weighted: WMeanAccumulator, AssumeWeights;
+    import mir.stat.descriptive.univariate.means: WMeanAccumulator, AssumeWeights;
     import mir.stat.descriptive.histogram.axis: IntegralAxis, AxisOptions;
     import mir.ndslice.slice: sliced;
     import core.exception: AssertError;
@@ -2241,7 +2241,7 @@ unittest
     import mir.stat.descriptive.histogram.api.rc: rchistogram, rcWeightedHistogram;
     import mir.stat.descriptive.histogram.axis: IntegralAxis, AxisOptions;
     import mir.math.sum: Summator, Summation;
-    import mir.stat.descriptive.weighted: WMeanAccumulator, AssumeWeights;
+    import mir.stat.descriptive.univariate.means: WMeanAccumulator, AssumeWeights;
     alias A = IntegralAxis!(int, AxisOptions());
     import mir.ndslice.slice: sliced;
     alias Sum = Summator!(double, Summation.pairwise);

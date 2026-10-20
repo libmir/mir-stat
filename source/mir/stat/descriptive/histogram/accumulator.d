@@ -749,7 +749,7 @@ version(mir_stat_test)
 unittest
 {
     import mir.math.sum: Summation;
-    import mir.stat.descriptive.weighted: WMeanAccumulator, AssumeWeights;
+    import mir.stat.descriptive.univariate.means: WMeanAccumulator, AssumeWeights;
     import mir.stat.descriptive.histogram.axis: RegularAxis, AxisOptions;
 
     alias Cell = WMeanAccumulator!(double, Summation.pairwise, AssumeWeights.primary);
@@ -774,7 +774,7 @@ unittest
 {
     import std.meta: AliasSeq;
     import mir.math.sum: Summator, Summation;
-    import mir.stat.descriptive.weighted: WMeanAccumulator, AssumeWeights;
+    import mir.stat.descriptive.univariate.means: WMeanAccumulator, AssumeWeights;
     import mir.stat.descriptive.histogram.axis: IntegralAxis, AxisOptions;
     import mir.ndslice.slice: sliced;
     alias A = IntegralAxis!(int, AxisOptions());

@@ -7,9 +7,8 @@ writes into caller-provided output. The algorithm enums describe the available
 quantile definitions.
 
 For weighted means and sums, see
-$(REF wmean, mir, stat, descriptive, weighted) and
-$(REF wsum, mir, stat, descriptive, weighted) in
-$(MREF mir,stat,descriptive,weighted). These functions and weighted quantiles
+$(REF wmean, mir, stat, descriptive, univariate, means) and
+$(REF wsum, mir, stat, descriptive, univariate, sums). These functions and weighted quantiles
 take observations before weights. Their normalization and weight requirements
 depend on the selected statistic; see each function's documentation.
 
