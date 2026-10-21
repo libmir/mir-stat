@@ -17,7 +17,7 @@ T4=$(TR $(TDNW $(LREF $1)) $(TD $2) $(TD $3) $(TD $4))
 
 module mir.stat.descriptive.histogram.breaks;
 
-import mir.math.stat: VarianceAlgo;
+import mir.stat.descriptive.univariate.dispersions: VarianceAlgo;
 import mir.primitives: hasShape;
 import mir.stat.descriptive.univariate: QuantileAlgo;
 import std.traits: isIntegral;
@@ -276,9 +276,17 @@ breaks is then calculated using `binsFromWidth`.
 
 It is considered optimal for normally distributed random samples.
 
+The default `hybrid` algorithm uses a two-pass variance calculation for batch
+inputs. Select `VarianceAlgo.online` explicitly for online accumulation.
+Compared with earlier releases, the default algorithm and its rounding can
+change the selected bin count near a boundary. Algorithm arguments use
+`VarianceAlgo` from `mir.stat.descriptive.univariate.dispersions`; the legacy
+`mir.math.stat.VarianceAlgo` is no longer accepted.
+
 Params:
     CountType = the type that is used to count in histogram bins
-    varianceAlgo = Algorithm used to calculate variance
+    varianceAlgo = Algorithm used to calculate variance (default: `VarianceAlgo.hybrid`).
+        Uses `VarianceAlgo` from `mir.stat.descriptive.univariate.dispersions`.
 Returns:
     The number of breaks
 
@@ -288,8 +296,8 @@ See_also:
     $(LREF binsFromWidth),
     $(WEB en.wikipedia.org/wiki/Histogram, Histogram)
 +/
-template scott(CountType, VarianceAlgo varianceAlgo = VarianceAlgo.online)
-    if(isIntegral!CountType)
+template scott(CountType, VarianceAlgo varianceAlgo = VarianceAlgo.hybrid)
+    if (isIntegral!CountType)
 {
     import mir.internal.utility: isFloatingPoint;
     import mir.ndslice.slice: Slice, SliceKind, hasAsSlice;
@@ -304,7 +312,8 @@ template scott(CountType, VarianceAlgo varianceAlgo = VarianceAlgo.online)
     {
         import core.lifetime: move;
         import mir.math.common: pow, sqrt;
-        import mir.math.stat: meanType, VarianceAccumulator;
+        import mir.stat.descriptive.univariate.internal.types: meanType;
+        import mir.stat.descriptive.univariate.dispersions: VarianceAccumulator;
         import mir.math.sum: ResolveSummationType, Summation;
         import mir.primitives: elementCount;
 
@@ -319,9 +328,10 @@ template scott(CountType, VarianceAlgo varianceAlgo = VarianceAlgo.online)
 
 /++
 Params:
-    varianceAlgo = Algorithm used to calculate variance
+    varianceAlgo = Algorithm used to calculate variance (default: `VarianceAlgo.hybrid`).
+        Uses `VarianceAlgo` from `mir.stat.descriptive.univariate.dispersions`.
 +/
-template scott(VarianceAlgo varianceAlgo = VarianceAlgo.online)
+template scott(VarianceAlgo varianceAlgo = VarianceAlgo.hybrid)
 {
     import mir.internal.utility: isFloatingPoint;
     import mir.ndslice.slice: Slice, SliceKind, hasAsSlice;
@@ -353,6 +363,34 @@ unittest
 
     auto l = x.scott;
     assert(l == 3);
+}
+
+// The default and explicit algorithms use mir-stat's variance implementation.
+version(mir_stat_test)
+@safe pure nothrow @nogc unittest
+{
+    import mir.ndslice.slice: sliced;
+    import mir.ndslice.topology: stride;
+    import std.meta: AliasSeq;
+
+    foreach (T; AliasSeq!(float, double, real))
+    {
+        immutable T[12] values = [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11];
+        assert(scott(values[]) == 3);
+        assert(scott!uint(values[]) == 3);
+        static assert(is(typeof(scott!uint(values[])) == uint));
+        assert(scott(values[]) == scott!(VarianceAlgo.hybrid)(values[]));
+        foreach (algorithm; AliasSeq!(VarianceAlgo.online, VarianceAlgo.hybrid,
+            VarianceAlgo.twoPass, VarianceAlgo.naive))
+        {
+            assert(scott!algorithm(values[]) == 3);
+            assert(scott!(uint, algorithm)(values[].sliced) == 3);
+        }
+        immutable T[6] centered = [-2.5, -1.5, -0.5, 0.5, 1.5, 2.5];
+        assert(scott!(VarianceAlgo.assumeZeroMean)(centered[]) == scott(centered[]));
+        immutable T[6] alternate = [0, 2, 4, 6, 8, 10];
+        assert(scott(values[].sliced.stride(2)) == scott(alternate[]));
+    }
 }
 
 // withAsSlice test
