@@ -31,7 +31,16 @@ public import mir.math.sum: Summation;
 import mir.math.sum: ResolveSummationType, Summator;
 
 /++
-Output range for wsum.
+Output range for $(LREF wsum).
+
+Merging another accumulator through `put` adds its rounded weighted sum.
+Low-order corrections retained by compensated or precise summation are not
+transferred. Later cancellation can therefore give a different result from
+inserting all observations into one accumulator, even when both accumulators
+use the same summation algorithm.
+
+When those corrections matter, pass the observation and weight batches to one
+accumulator instead of merging already accumulated results.
 +/
 struct WSummator(T, Summation summation, U = T)
 {
@@ -127,13 +136,23 @@ struct WSummator(T, Summation summation, U = T)
         wsummator.put(x);
     }
 
-    ///
+    /// Adds the other accumulator's rounded weighted sum; see the precision limitation above.
     void put(F = T, G = U)(WSummator!(F, summation, G) wm)
     {
         wsummator.put(cast(T) wm.wsummator);
     }
 }
 
+/// Insert successive batches into one accumulator to retain summation corrections.
+version(mir_stat_test)
+@safe pure nothrow
+unittest
+{
+    WSummator!(double, Summation.kbn) accumulator;
+    accumulator.put([0x1p54, 1.0], [1.0, 1.0]);
+    accumulator.put([-0x1p54], [1.0]);
+    assert(accumulator.wsum == 1);
+}
 ///
 version(mir_stat_test)
 @safe pure nothrow

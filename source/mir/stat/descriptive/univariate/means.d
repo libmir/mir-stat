@@ -1715,7 +1715,16 @@ enum AssumeWeights : bool
 }
 
 /++
-Output range for wmean.
+Output range for $(LREF wmean).
+
+Merging another accumulator through `put` adds its rounded weighted sum and
+rounded total weight. Low-order corrections retained by compensated or precise
+summation are not transferred. Later cancellation can therefore give a different
+result from inserting all observations into one accumulator, even when both
+accumulators use the same summation algorithm.
+
+When those corrections matter, pass the observation and weight batches to one
+accumulator instead of merging already accumulated results.
 +/
 struct WMeanAccumulator(T, Summation summation, AssumeWeights assumeWeights,
                         U = T, Summation weightsSummation = summation)
@@ -1855,7 +1864,7 @@ struct WMeanAccumulator(T, Summation summation, AssumeWeights assumeWeights,
         wsummator.put(x);
     }
 
-    ///
+    /// Adds the other accumulator's rounded weighted sum and total weight; see the precision limitation above.
     void put(F = T, G = U)(WMeanAccumulator!(F, summation, assumeWeights, G, weightsSummation) wm)
         if (!assumeWeights) // because calculating is easier. When assumeWeightsSumtoOne = true, need to divide original wsummator and wm by 2.
     {
@@ -1864,6 +1873,18 @@ struct WMeanAccumulator(T, Summation summation, AssumeWeights assumeWeights,
     }
 }
 
+/// Insert successive batches into one accumulator to retain summation corrections.
+version(mir_stat_test)
+@safe pure nothrow
+unittest
+{
+    WMeanAccumulator!(double, Summation.kbn, AssumeWeights.primary) accumulator;
+    accumulator.put([0x1p54, 1.0], [1.0, 1.0]);
+    accumulator.put([-0x1p54], [1.0]);
+    assert(accumulator.wsum == 1);
+    assert(accumulator.weight == 3);
+    assert(accumulator.wmean == 1.0 / 3);
+}
 // Capture the shape before summation consumes a shared input cursor.
 version(mir_stat_test)
 @safe pure nothrow
