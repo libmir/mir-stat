@@ -1,5 +1,18 @@
 /++
-This module contains algorithms for histogram axes.
+Histogram axes, bin descriptions, and boundary options.
+
+An axis maps a coordinate to an ordinary bin or an enabled end bin. Choose
+$(LREF IntegralAxis) for unit steps, $(LREF RegularAxis) for equal-width intervals,
+$(LREF TransformAxis) for spacing in transformed coordinates, or
+$(LREF VariableAxis) for supplied boundaries. $(LREF EnumAxis) and
+$(LREF CategoryAxis) group enum values and categories. $(LREF QuantileAxis)
+wraps prepared quantile boundaries; its allocating factories are in
+$(MREF mir, stat, descriptive, histogram, api).
+
+$(LREF AxisOptions) selects interval closure and supported underflow, overflow,
+and circular behavior. Numeric intervals default to left-closed, right-open.
+An axis describes bin geometry independently of the histogram's count storage;
+borrowed boundaries must remain valid while the axis is in use.
 
 Bin-count rules are supplied as template aliases, such as functions or function
 templates. Runtime callbacks that capture local variables are not supported.

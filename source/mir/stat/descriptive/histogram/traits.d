@@ -1,5 +1,11 @@
 /++
-This module contains algorithms for traits used when dealing with histograms.
+Axis traits, histogram storage extents, and counter selection.
+
+$(LREF isAxis) checks the axis interface, $(LREF hasAxisOptions) detects boundary
+options, and $(LREF BinTypeOf) extracts the coordinate type. Bin-count and storage
+extent helpers distinguish ordinary bins from enabled underflow and overflow
+cells. $(LREF DefaultCountType) is the default fixed counter type;
+$(LREF AdaptiveCounts) selects unsigned counters that widen together as needed.
 
 License: $(HTTP www.apache.org/licenses/LICENSE-2.0, Apache-2.0)
 
@@ -20,6 +26,7 @@ module mir.stat.descriptive.histogram.traits;
 import mir.stat.descriptive.histogram.axis: AxisOptions, IntegralAxis,
         RegularAxis, TransformAxis, EnumAxis, CategoryAxis;
 
+/// Default fixed-width counter type for unweighted histogram factories.
 alias DefaultCountType = size_t;
 
 /++
@@ -36,8 +43,9 @@ Storage does not shrink. Incrementing ulong.max is an unrecoverable error.
 
 GC factories use GC state and buffers. RC factories and makeHistogram use RC
 state and buffers; adaptive counts must not be disposed through a custom
-allocator. Axis ownership is unchanged. Weighted and relative-frequency
-factories do not accept this selection.
+allocator. Axis ownership is unchanged. Unweighted relative-frequency and
+percentogram factories also accept this selection; their totals remain ulong
+and must not overflow. Weighted factories do not accept this selection.
 +/
 struct AdaptiveCounts(Initial = ubyte)
     if (is(Initial == ubyte) || is(Initial == ushort) ||

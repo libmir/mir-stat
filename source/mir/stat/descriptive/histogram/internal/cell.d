@@ -1,6 +1,11 @@
 /++
 Internal helpers for updating and merging histogram cells.
 
+Separates numeric count reads, including adaptive count proxies, from mutation
+requirements. Sample insertion and merging dispatch to the supported cell
+operations. These package helpers keep accumulator and factory constraints
+consistent; they are not public histogram entry points.
+
 License: $(HTTP www.apache.org/licenses/LICENSE-2.0, Apache-2.0)
 Authors: John Michael Hall
 Copyright: 2026 Mir Stat Authors.

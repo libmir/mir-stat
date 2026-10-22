@@ -1,5 +1,17 @@
 /++
-This module contains algorithms for relative frequency statistics.
+Histogram totals, relative frequencies, cumulative frequencies, and densities.
+
+$(LREF RelativeFrequencyAccumulator) wraps numeric histogram counts and maintains
+their total during insertion. Weighted counts represent sums of weights.
+$(LREF Normalization) selects all recorded counts or only ordinary joint bins as
+the denominator; a zero selected total produces NaNs.
+
+Accessors provide scalar probabilities and read-only bin views, one-dimensional
+cumulative frequencies, and densities for axes with numeric bin bounds. Density
+uses bin width or joint bin volume. Counts supplied at construction contribute
+to the initial total and must not be mutated through external aliases afterward.
+See $(MREF mir, stat, descriptive, histogram, api) for allocating factories,
+including percentograms with prepared quantile boundaries.
 
 License: $(HTTP www.apache.org/licenses/LICENSE-2.0, Apache-2.0)
 

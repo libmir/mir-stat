@@ -1,6 +1,21 @@
 /++
 Construct histograms using a caller-selected allocator.
 
+Use $(LREF makeHistogram) for counts or per-bin accumulator cells,
+$(LREF makeRelativeFrequencyHistogram) for normalized counts, and
+$(LREF makePercentogram) for quantile-based bins. The allocator is the first
+argument; weighted variants take observations before weights.
+$(LREF makeQuantileAxis) prepares reusable boundaries, and $(LREF makeMarginal)
+projects joint counts onto selected axes.
+
+Fixed count storage requires explicit disposal through the allocator after all
+histograms and views using it are finished. Convenience percentograms and
+quantile-axis owners provide dispose methods for their owned allocations.
+Adaptive counts are an exception: they use reference-counted state and buffers,
+independently of the supplied allocator, and must not be disposed through it.
+See each factory for the ownership of its result and
+$(MREF mir, stat, descriptive, histogram, api) for the storage-policy comparison.
+
 License: $(HTTP www.apache.org/licenses/LICENSE-2.0, Apache-2.0)
 Authors: John Michael Hall
 Copyright: 2026 Mir Stat Authors.

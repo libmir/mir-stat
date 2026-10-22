@@ -1,5 +1,17 @@
 /++
-This module contains a histogram accumulator and read-only bin views.
+Incremental histogram accumulation and read-only bin views over supplied storage.
+
+$(LREF HistogramAccumulator) combines one or more axes with a built-in array or
+Mir ndslice. Numeric cells support counting and weighted insertion; accumulator
+cells receive samples through putSample or putWeightedSample. Compatible
+histograms can merge their cell contents.
+
+Construction preserves existing cells and checks storage extents, including
+enabled underflow and overflow bins. Bin views traverse ordinary bins by default,
+with the last axis advancing fastest for joint histograms. See
+$(MREF mir, stat, descriptive, histogram, api) for factories that allocate storage,
+and $(MREF mir, stat, descriptive, histogram, relative_frequency) for maintained
+totals and normalized statistics.
 
 License: $(HTTP www.apache.org/licenses/LICENSE-2.0, Apache-2.0)
 
