@@ -1686,7 +1686,12 @@ private void putter2(Slices, T, U, Summation summation1, Summation summation2)
 {
     import mir.functional: Tuple;
     static if (is(Slices == Tuple!(V1, V2), V1, V2)) {
-        seed1.put(slices[0]);
+        // Keep direct insertion when supported. Decimal summation cannot consume
+        // the mapped weight's reference wrapper; use its numeric value instead.
+        static if (__traits(compiles, seed1.put(slices[0])))
+            seed1.put(slices[0]);
+        else
+            seed1.put(cast(T) slices[0]);
         seed2.put(slices[1]);
     } else {
         import mir.ndslice.internal: frontOf2;
@@ -1885,6 +1890,35 @@ unittest
     assert(accumulator.weight == 3);
     assert(accumulator.wmean == 1.0 / 3);
 }
+// Decimal weight summation accepts mapped weights as values, like scalar put.
+version(mir_stat_test)
+@safe pure nothrow
+unittest
+{
+    import mir.ndslice.slice: sliced;
+    import mir.ndslice.dynamic: transposed;
+
+    static foreach (mode; [Summation.naive, Summation.decimal])
+    {{
+        alias Accumulator = WMeanAccumulator!(double, mode,
+            AssumeWeights.primary, double, Summation.decimal);
+        const values = [2.0, 8.0, 4.0, 6.0];
+        const weights = [1.0, 3.0, 2.0, 2.0];
+        Accumulator scalar, batch, matrix;
+        foreach (i; 0 .. values.length)
+            scalar.put(values[i], weights[i]);
+        batch.put(values, weights);
+        matrix.put(values.sliced(2, 2).transposed,
+                   weights.sliced(2, 2).transposed);
+        assert(batch.wsum == 46);
+        assert(batch.weight == 8);
+        assert(batch.wmean == scalar.wmean);
+        assert(matrix.wmean == scalar.wmean);
+        batch.put(values[0 .. 0], weights[0 .. 0]);
+        assert(batch.wmean == scalar.wmean);
+    }}
+}
+
 // Capture the shape before summation consumes a shared input cursor.
 version(mir_stat_test)
 @safe pure nothrow
