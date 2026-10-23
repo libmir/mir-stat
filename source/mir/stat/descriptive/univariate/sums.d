@@ -72,14 +72,9 @@ struct WSummator(T, Summation summation, U = T)
 
         import mir.ndslice.slice: Contiguous;
         import mir.ndslice.topology: zip, map;
-        import mir.functional: naryFun;
-        import mir.math.sum: elementType;
-
-        // Preserve the existing mapping for matching types, including its code generation.
-        static if (is(elementType!Slice1 == T) && is(elementType!Slice2 == U))
-            alias product = naryFun!"a * b";
-        else
-            alias product = weightedProduct;
+        // String lambdas enable fast math and can discard NaN * 0. Keep the
+        // same numeric multiplication and conversions as scalar insertion.
+        alias product = weightedProduct;
 
         assert(s._lengths == w._lengths, "WMeanAcumulator.put: both slices must have the same lengths");
 
@@ -528,6 +523,21 @@ unittest
     assert(wsum([2.0, 8.0], [-1.0, 2.0]) == 14);
     assert(wsum([2.0, 8.0], [0.0, 0.0]) == 0);
     assert(wsum([double.nan, 8.0], [0.0, 1.0]).isNaN);
+}
+
+// Optimized batch multiplication must not fold NaN * 0 or infinity * 0 to zero.
+version(mir_stat_test)
+@safe pure nothrow
+unittest
+{
+    import std.meta: AliasSeq;
+    import std.math: isNaN;
+    static foreach (T; AliasSeq!(float, double, real))
+        static foreach (mode; [Summation.naive, Summation.pairwise])
+        {
+            assert(wsum!(T, mode)([T.nan, T(8)], [T(0), T(1)]).isNaN);
+            assert(wsum!(T, mode)([T.infinity, T(8)], [T(0), T(1)]).isNaN);
+        }
 }
 
 /// If weights are not provided, then behaves like sum
