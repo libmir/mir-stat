@@ -1686,7 +1686,12 @@ private void putter2(Slices, T, U, Summation summation1, Summation summation2)
 {
     import mir.functional: Tuple;
     static if (is(Slices == Tuple!(V1, V2), V1, V2)) {
-        seed1.put(slices[0]);
+        // Keep direct insertion when supported. Decimal summation cannot consume
+        // the mapped weight's reference wrapper; use its numeric value instead.
+        static if (__traits(compiles, seed1.put(slices[0])))
+            seed1.put(slices[0]);
+        else
+            seed1.put(cast(T) slices[0]);
         seed2.put(slices[1]);
     } else {
         import mir.ndslice.internal: frontOf2;
@@ -1715,7 +1720,16 @@ enum AssumeWeights : bool
 }
 
 /++
-Output range for wmean.
+Output range for $(LREF wmean).
+
+Merging another accumulator through `put` adds its rounded weighted sum and
+rounded total weight. Low-order corrections retained by compensated or precise
+summation are not transferred. Later cancellation can therefore give a different
+result from inserting all observations into one accumulator, even when both
+accumulators use the same summation algorithm.
+
+When those corrections matter, pass the observation and weight batches to one
+accumulator instead of merging already accumulated results.
 +/
 struct WMeanAccumulator(T, Summation summation, AssumeWeights assumeWeights,
                         U = T, Summation weightsSummation = summation)
@@ -1770,14 +1784,9 @@ struct WMeanAccumulator(T, Summation summation, AssumeWeights assumeWeights,
 
         import mir.ndslice.slice: Contiguous;
         import mir.ndslice.topology: zip, map;
-        import mir.functional: naryFun;
-        import mir.math.sum: elementType;
-
-        // Preserve the existing mapping for matching types, including its code generation.
-        static if (is(elementType!Slice1 == T) && is(elementType!Slice2 == U))
-            alias product = naryFun!"a * b";
-        else
-            alias product = weightedProduct;
+        // String lambdas enable fast math and can discard NaN * 0. Keep the
+        // same numeric multiplication and conversions as scalar insertion.
+        alias product = weightedProduct;
 
         assert(s._lengths == w._lengths, "WMeanAcumulator.put: both slices must have the same lengths");
 
@@ -1855,13 +1864,54 @@ struct WMeanAccumulator(T, Summation summation, AssumeWeights assumeWeights,
         wsummator.put(x);
     }
 
-    ///
+    /// Adds the other accumulator's rounded weighted sum and total weight; see the precision limitation above.
     void put(F = T, G = U)(WMeanAccumulator!(F, summation, assumeWeights, G, weightsSummation) wm)
         if (!assumeWeights) // because calculating is easier. When assumeWeightsSumtoOne = true, need to divide original wsummator and wm by 2.
     {
         weights.put(cast(U) wm.weights);
         wsummator.put(cast(T) wm.wsummator);
     }
+}
+
+/// Insert successive batches into one accumulator to retain summation corrections.
+version(mir_stat_test)
+@safe pure nothrow
+unittest
+{
+    WMeanAccumulator!(double, Summation.kbn, AssumeWeights.primary) accumulator;
+    accumulator.put([0x1p54, 1.0], [1.0, 1.0]);
+    accumulator.put([-0x1p54], [1.0]);
+    assert(accumulator.wsum == 1);
+    assert(accumulator.weight == 3);
+    assert(accumulator.wmean == 1.0 / 3);
+}
+// Decimal weight summation accepts mapped weights as values, like scalar put.
+version(mir_stat_test)
+@safe pure nothrow
+unittest
+{
+    import mir.ndslice.slice: sliced;
+    import mir.ndslice.dynamic: transposed;
+
+    static foreach (mode; [Summation.naive, Summation.decimal])
+    {{
+        alias Accumulator = WMeanAccumulator!(double, mode,
+            AssumeWeights.primary, double, Summation.decimal);
+        const values = [2.0, 8.0, 4.0, 6.0];
+        const weights = [1.0, 3.0, 2.0, 2.0];
+        Accumulator scalar, batch, matrix;
+        foreach (i; 0 .. values.length)
+            scalar.put(values[i], weights[i]);
+        batch.put(values, weights);
+        matrix.put(values.sliced(2, 2).transposed,
+                   weights.sliced(2, 2).transposed);
+        assert(batch.wsum == 46);
+        assert(batch.weight == 8);
+        assert(batch.wmean == scalar.wmean);
+        assert(matrix.wmean == scalar.wmean);
+        batch.put(values[0 .. 0], weights[0 .. 0]);
+        assert(batch.wmean == scalar.wmean);
+    }}
 }
 
 // Capture the shape before summation consumes a shared input cursor.
@@ -2529,6 +2579,21 @@ unittest
     assert(wmean([2.0, 8.0], [-1.0, 2.0]) == 14);
     assert(wmean([double.nan, 8.0], [0.0, 1.0]).isNaN);
     assert(wmean!(double, AssumeWeights.sumToOne)([2.0, 8.0], [0.25, 0.75]) == 6.5);
+}
+
+// Optimized batch multiplication must not fold NaN * 0 or infinity * 0 to zero.
+version(mir_stat_test)
+@safe pure nothrow
+unittest
+{
+    import std.meta: AliasSeq;
+    import std.math: isNaN;
+    static foreach (T; AliasSeq!(float, double, real))
+        static foreach (mode; [Summation.naive, Summation.pairwise])
+        {
+            assert(wmean!(T, mode, AssumeWeights.primary)([T.nan, T(8)], [T(0), T(1)]).isNaN);
+            assert(wmean!(T, mode, AssumeWeights.primary)([T.infinity, T(8)], [T(0), T(1)]).isNaN);
+        }
 }
 
 /// If weights are not provided, then behaves like mean

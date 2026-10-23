@@ -31,7 +31,16 @@ public import mir.math.sum: Summation;
 import mir.math.sum: ResolveSummationType, Summator;
 
 /++
-Output range for wsum.
+Output range for $(LREF wsum).
+
+Merging another accumulator through `put` adds its rounded weighted sum.
+Low-order corrections retained by compensated or precise summation are not
+transferred. Later cancellation can therefore give a different result from
+inserting all observations into one accumulator, even when both accumulators
+use the same summation algorithm.
+
+When those corrections matter, pass the observation and weight batches to one
+accumulator instead of merging already accumulated results.
 +/
 struct WSummator(T, Summation summation, U = T)
 {
@@ -63,14 +72,9 @@ struct WSummator(T, Summation summation, U = T)
 
         import mir.ndslice.slice: Contiguous;
         import mir.ndslice.topology: zip, map;
-        import mir.functional: naryFun;
-        import mir.math.sum: elementType;
-
-        // Preserve the existing mapping for matching types, including its code generation.
-        static if (is(elementType!Slice1 == T) && is(elementType!Slice2 == U))
-            alias product = naryFun!"a * b";
-        else
-            alias product = weightedProduct;
+        // String lambdas enable fast math and can discard NaN * 0. Keep the
+        // same numeric multiplication and conversions as scalar insertion.
+        alias product = weightedProduct;
 
         assert(s._lengths == w._lengths, "WMeanAcumulator.put: both slices must have the same lengths");
 
@@ -127,13 +131,23 @@ struct WSummator(T, Summation summation, U = T)
         wsummator.put(x);
     }
 
-    ///
+    /// Adds the other accumulator's rounded weighted sum; see the precision limitation above.
     void put(F = T, G = U)(WSummator!(F, summation, G) wm)
     {
         wsummator.put(cast(T) wm.wsummator);
     }
 }
 
+/// Insert successive batches into one accumulator to retain summation corrections.
+version(mir_stat_test)
+@safe pure nothrow
+unittest
+{
+    WSummator!(double, Summation.kbn) accumulator;
+    accumulator.put([0x1p54, 1.0], [1.0, 1.0]);
+    accumulator.put([-0x1p54], [1.0]);
+    assert(accumulator.wsum == 1);
+}
 ///
 version(mir_stat_test)
 @safe pure nothrow
@@ -509,6 +523,21 @@ unittest
     assert(wsum([2.0, 8.0], [-1.0, 2.0]) == 14);
     assert(wsum([2.0, 8.0], [0.0, 0.0]) == 0);
     assert(wsum([double.nan, 8.0], [0.0, 1.0]).isNaN);
+}
+
+// Optimized batch multiplication must not fold NaN * 0 or infinity * 0 to zero.
+version(mir_stat_test)
+@safe pure nothrow
+unittest
+{
+    import std.meta: AliasSeq;
+    import std.math: isNaN;
+    static foreach (T; AliasSeq!(float, double, real))
+        static foreach (mode; [Summation.naive, Summation.pairwise])
+        {
+            assert(wsum!(T, mode)([T.nan, T(8)], [T(0), T(1)]).isNaN);
+            assert(wsum!(T, mode)([T.infinity, T(8)], [T(0), T(1)]).isNaN);
+        }
 }
 
 /// If weights are not provided, then behaves like sum
