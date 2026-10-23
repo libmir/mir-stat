@@ -228,11 +228,26 @@ struct MomentAccumulator(T, size_t N, Summation summation)
         put((x - m) * (1 / s));
     }
 
-    ///
+    /++
+    Combine counts and accumulated powers without modifying the source.
+    KBN, KB2, and precise summation preserve the source's correction terms
+    rather than first rounding them to a single value. For centered or
+    standardized moments, both accumulators must use the same center and scale.
+    +/
     void put()(MomentAccumulator!(T, N, summation) m)
     {
         count += m.count;
-        summator.put(m.summator.sum);
+        static if (summation == Summation.kbn || summation == Summation.kb2 ||
+            summation == Summation.precise)
+        {
+            import mir.stat.internal.summation: mergeSummator;
+
+            // Preserve corrections that would be lost by rounding the source
+            // to one value. The by-value parameter also makes self-merges safe.
+            mergeSummator(summator, m.summator);
+        }
+        else
+            summator.put(m.summator.sum);
     }
 
     ///
@@ -365,6 +380,43 @@ unittest
         const float[4] interleaved = [value, float.nan, value, float.nan];
         auto strided = interleaved[].sliced(2, 2).transposed[0];
         assert(M(strided).moment == expected);
+    }}
+}
+
+// Merging preserves the correction terms needed by later cancellation.
+// Exact powers of two make the expected remainder independent of rounding.
+version(mir_stat_test)
+pure nothrow @nogc
+unittest
+{
+    import std.meta: AliasSeq;
+
+    static foreach (T; AliasSeq!(float, double, real))
+    static foreach (mode; [Summation.kbn, Summation.kb2, Summation.precise])
+    static foreach (N; [1, 3])
+    {{
+        alias M = MomentAccumulator!(T, N, mode);
+        // The selected power is finite, but adding one to it cannot be
+        // represented in a single T on this platform.
+        enum T large = N == 1 ? T(0x1p100) : T(0x1p30);
+        M source;
+        source.put(large);
+        source.put(T(1));
+        M target;
+        target.put(source);
+        target.put(-large);
+        assert(target.count == 3 && target.sumOfPower == 1);
+        // Merging must not consume the source's corrections.
+        source.put(-large);
+        assert(source.count == 3 && source.sumOfPower == 1);
+        M empty;
+        target.put(empty);
+        assert(target.count == 3 && target.sumOfPower == 1);
+        target.put(target);
+        assert(target.count == 6 && target.sumOfPower == 2);
+        M fresh;
+        fresh.put(empty);
+        assert(fresh.count == 0 && fresh.sumOfPower == 0);
     }}
 }
 
