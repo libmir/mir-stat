@@ -1590,6 +1590,9 @@ argument order of weighted means and sums.
 Use weights to change the probability mass assigned to observations, for example
 when reweighting simulated outcomes. $(LINK2 #.WeightedQuantileAlgo.inverseCDF, $(D WeightedQuantileAlgo.inverseCDF))
 returns observed values without interpolation; it is the default.
+With equal weights, this matches ordinary type 1, not the interpolating type 7
+default of $(LREF quantile). Select $(LINK2 #.WeightedQuantileAlgo.type7, $(D WeightedQuantileAlgo.type7))
+explicitly when that equal-weight convention is wanted.
 
 Weights and observations must be one-dimensional arrays or Mir slices of equal
 length. Weights must be finite and nonnegative, with at least one positive weight.
@@ -1697,6 +1700,35 @@ unittest
     assert(rcWeightedQuantile!double(data, weights, 0.5) == 20);
     assert(makeWeightedQuantile(Mallocator.instance, data, weights, 0.5) == 20);
     assert(makeWeightedQuantile!double(Mallocator.instance, data, weights, 0.5) == 20);
+}
+
+/// Select an observed value using cumulative weights, without interpolation.
+version(mir_stat_test)
+@safe pure nothrow
+unittest
+{
+    const int[3] values = [0, 10, 20];
+    const int[3] weights = [1, 2, 1];
+    // Sorted cumulative weights are 1, 3, 4. Half the total is 2,
+    // so the median is the first observation whose cumulative weight reaches 2.
+    auto median = weightedQuantile(values, weights, 0.5);
+    static assert(is(typeof(median) == int));
+    assert(median == 10);
+    // At an exact boundary, select the observation on that boundary.
+    assert(weightedQuantile(values, weights, 0.25) == 0);
+    assert(weightedQuantile(values, weights) == [0, 0, 10, 10, 20]);
+}
+
+/// Zero weights exclude observations, including from the minimum and maximum.
+version(mir_stat_test)
+@safe pure nothrow
+unittest
+{
+    const double[5] values = [double.nan, -100, 10, 20, 100];
+    const int[5] weights = [0, 0, 1, 1, 0];
+    // Only 10 and 20 participate. A zero-weight NaN is ignored too;
+    // a NaN with positive weight would violate the input requirements.
+    assert(weightedQuantile(values, weights, 0.0, 0.5, 1.0) == [10.0, 10, 20]);
 }
 
 /// Increasing an outcome's probability mass moves the median toward it.
