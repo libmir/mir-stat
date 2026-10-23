@@ -109,7 +109,9 @@ struct MomentAccumulator(T, size_t N, Summation summation)
             import mir.primitives: elementCount;
 
             count += r.elementCount;
-            summator.put(r.map!(a => a.powi(N)));
+            // Match scalar insertion: convert before taking the power, so a
+            // narrower input does not overflow or underflow before summation.
+            summator.put(r.map!(a => (cast(T) a).powi(N)));
         }
         else
         {
@@ -333,6 +335,36 @@ unittest
             assert(centeredRange.count == 3 && centeredRange.sumOfPower == centeredSum);
             assert(scaledRange.count == 3 && scaledRange.sumOfPower == scaledSum);
         }}
+    }}
+}
+
+// Widen observations before taking powers in a shaped batch, as scalar
+// insertion does. Powers of two give exact, independent expected results.
+version(mir_stat_test)
+@safe pure nothrow @nogc
+unittest
+{
+    import mir.ndslice.slice: sliced;
+    import mir.ndslice.dynamic: transposed;
+
+    alias M = MomentAccumulator!(double, 2, Summation.naive);
+    static foreach (value; [0x1p80f, 0x1p-80f])
+    {{
+        const float[2] values = [value, value];
+        enum double expected = value > 1 ? 0x1p160 : 0x1p-160;
+        M scalar;
+        foreach (x; values)
+            scalar.put(x);
+        auto batch = M(values[]);
+        auto slice = M(values[].sliced);
+        assert(scalar.moment == expected);
+        assert(batch.count == 2 && batch.moment == expected);
+        assert(slice.count == 2 && slice.moment == expected);
+        assert(rawMoment!(double, 2, Summation.naive)(values[].sliced) == expected);
+
+        const float[4] interleaved = [value, float.nan, value, float.nan];
+        auto strided = interleaved[].sliced(2, 2).transposed[0];
+        assert(M(strided).moment == expected);
     }}
 }
 
