@@ -1,6 +1,12 @@
 /++
 Factory functions for histogram counts, relative frequencies, and per-bin summaries.
 
+This package re-exports $(MREF mir, stat, descriptive, histogram, api, gc),
+$(MREF mir, stat, descriptive, histogram, api, rc), and
+$(MREF mir, stat, descriptive, histogram, api, custom). The table below maps each
+result to its storage-policy variants. For axes and direct accumulation over
+existing storage, see $(MREF mir, stat, descriptive, histogram).
+
 Weighted APIs take all observation inputs before weights, followed by axis or
 probability configuration. Custom-allocation factories take the allocator first.
 For example: `weightedHistogram(x, y, weights, xAxis, yAxis)` and
@@ -62,7 +68,7 @@ counts are released automatically. Allocating counts does not take
 ownership of borrowed axis boundaries.
 
 Weighted percentograms use weights both to choose quantile boundaries and to
-accumulate bin masses. Pass weights before observations; select a WeightedQuantileAlgo
+accumulate bin masses. Pass observations before weights; select a WeightedQuantileAlgo
 explicitly to change the default inverseCDF definition. They use fixed numeric
 counters and the same GC, RC, or explicit-disposal ownership policies as percentograms.
 

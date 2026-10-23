@@ -1,6 +1,12 @@
 /++
 Shared initialization and axis overloads for histogram factories.
 
+This implementation module supplies allocation-policy mixins, input validation,
+and common construction paths used by the GC, RC, and custom-allocation APIs.
+It also shares batch insertion and marginal projection support. Public factory
+entry points are re-exported by $(MREF mir, stat, descriptive, histogram, api);
+applications should use those entry points.
+
 Bin-count rules are supplied as template aliases, such as functions or function
 templates. Runtime callbacks that capture local variables are not supported.
 

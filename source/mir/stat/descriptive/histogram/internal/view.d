@@ -1,6 +1,11 @@
 /++
 Internal helpers for histogram views and row traversal.
 
+Detects nested-array rank and whether storage and axes support read-only bin
+views. Shared row-traversal handling preserves const RC slice lifetimes on
+affected DMD versions. Public bin views are exposed by the accumulator and
+relative-frequency modules.
+
 License: $(HTTP www.apache.org/licenses/LICENSE-2.0, Apache-2.0)
 Authors: John Michael Hall
 Copyright: 2026 Mir Stat Authors.

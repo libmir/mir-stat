@@ -1,6 +1,17 @@
 /++
 Factories for histograms with garbage-collected count storage.
 
+Use $(LREF histogram) for counts or per-bin accumulator cells,
+$(LREF relativeFrequencyHistogram) for normalized counts, and $(LREF percentogram)
+for quantile-based bins. Weighted variants take observations before weights.
+$(LREF quantileAxis) prepares reusable boundaries, and $(LREF marginal) projects
+joint counts onto selected axes.
+
+Counts are managed by the GC. Adaptive counters also use GC state and may
+allocate during insertion. Count allocation does not extend the lifetime of
+borrowed axis boundaries. See $(MREF mir, stat, descriptive, histogram, api)
+for argument conventions and the corresponding RC and custom-allocation APIs.
+
 License: $(HTTP www.apache.org/licenses/LICENSE-2.0, Apache-2.0)
 Authors: John Michael Hall
 Copyright: 2026 Mir Stat Authors.

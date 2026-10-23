@@ -1,6 +1,11 @@
 /++
 Internal helpers for histogram projections.
 
+Validates the selected marginal axes and merges source cells into a separate,
+initialized destination. Traversal includes enabled underflow and overflow cells
+and supports nested arrays and Mir slices. The public marginal factories select
+and allocate the result storage; these helpers perform the shared projection.
+
 License: $(HTTP www.apache.org/licenses/LICENSE-2.0, Apache-2.0)
 Authors: John Michael Hall
 Copyright: 2026 Mir Stat Authors.

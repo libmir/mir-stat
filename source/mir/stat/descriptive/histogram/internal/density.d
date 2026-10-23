@@ -1,6 +1,11 @@
 /++
 Internal numeric bin geometry for histogram densities.
 
+Detects axes with numeric interval bounds and accumulates bin widths as a scaled
+volume. Density accessors use this representation to avoid intermediate overflow
+or underflow from directly multiplying widths across joint axes. Public accessors
+are in $(MREF mir, stat, descriptive, histogram, relative_frequency).
+
 License: $(HTTP www.apache.org/licenses/LICENSE-2.0, Apache-2.0)
 Authors: John Michael Hall
 Copyright: 2026 Mir Stat Authors.

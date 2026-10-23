@@ -1,5 +1,12 @@
 /++
-This module contains algorithms for calculating breaks for histograms.
+Rules for choosing the number of histogram bins from observations.
+
+$(LREF sturges) uses the observation count, $(LREF scott) uses sample dispersion,
+and $(LREF freedmanDiaconis) uses the interquartile range. These functions return
+a bin count, not an array of boundary coordinates. Axis and histogram factories
+accept bin-count rules as template aliases and use the result to construct bins.
+See $(MREF mir, stat, descriptive, histogram, axis) for axis construction and
+$(MREF mir, stat, descriptive, histogram, api) for allocating factories.
 
 License: $(HTTP www.apache.org/licenses/LICENSE-2.0, Apache-2.0)
 

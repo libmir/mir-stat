@@ -1,5 +1,16 @@
 /++
-This module contains an API for creating reference-counted histograms.
+Factories for histograms with reference-counted count storage.
+
+Use $(LREF rchistogram) for counts or per-bin accumulator cells,
+$(LREF rcRelativeFrequencyHistogram) for normalized counts, and
+$(LREF rcpercentogram) for quantile-based bins. Weighted variants take
+observations before weights. $(LREF rcQuantileAxis) prepares reusable boundaries,
+and $(LREF rcMarginal) projects joint counts onto selected axes.
+
+Count storage is released automatically when its last owner is destroyed.
+Copies share their backing counts; allocating counts does not take ownership
+of borrowed axis boundaries. See $(MREF mir, stat, descriptive, histogram, api)
+for argument conventions and the corresponding GC and custom-allocation APIs.
 
 Bin-count rules are supplied as template aliases, such as functions or function
 templates. Runtime callbacks that capture local variables are not supported.
