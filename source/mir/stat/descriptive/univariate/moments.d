@@ -206,6 +206,26 @@ struct MomentAccumulator(T, size_t N, Summation summation)
         summator.put(x.powi(N));
     }
 
+    /++
+    Accumulate the N-th power of $(D x - m).
+    Use the same center for every observation contributing to this moment;
+    previously accumulated powers are not adjusted when the center changes.
+    +/
+    void put()(T x, T m)
+    {
+        put(x - m);
+    }
+
+    /++
+    Accumulate the N-th power of $(D (x - m) * (1 / s)), matching batch insertion.
+    Use the same center and scale for every observation. The caller supplies
+    the scale; this overload does not estimate it from the observations.
+    +/
+    void put()(T x, T m, T s)
+    {
+        put((x - m) * (1 / s));
+    }
+
     ///
     void put()(MomentAccumulator!(T, N, summation) m)
     {
@@ -254,6 +274,66 @@ struct MomentAccumulator(T, size_t N, Summation summation)
     {
         this.put(x, m, s);
     }
+}
+
+// Centered and standardized scalar constructors and non-shaped input ranges
+// use the same fixed center/scale as array insertion.
+version(mir_stat_test)
+@safe pure nothrow @nogc
+unittest
+{
+    import mir.math.common: approxEqual;
+    import mir.primitives: hasShape;
+
+    static struct Input(T)
+    {
+        const(T)[] values;
+        @property bool empty() const { return values.length == 0; }
+        @property T front() const { return values[0]; }
+        void popFront() { values = values[1 .. $]; }
+    }
+    static assert(!hasShape!(Input!double));
+
+    import std.meta: AliasSeq;
+    static foreach (T; AliasSeq!(float, double, real))
+    {{
+        const T[3] values = [-1, 1, 5];
+        static foreach (N; 1 .. 5)
+        {{
+            alias M = MomentAccumulator!(T, N, Summation.naive);
+            enum centeredSum = [2, 20, 56, 272][N - 1];
+            enum scaledSum = [1, 5, 7, 17][N - 1];
+            enum firstCentered = [-2, 4, -8, 16][N - 1];
+            enum firstScaled = [-1, 1, -1, 1][N - 1];
+            auto centered = M(values[0], T(1));
+            auto scaled = M(values[0], T(1), T(2));
+            assert(centered.count == 1 && centered.sumOfPower == firstCentered);
+            assert(scaled.count == 1 && scaled.sumOfPower == firstScaled);
+            foreach (x; values[1 .. $])
+            {
+                centered.put(x, T(1));
+                scaled.put(x, T(1), T(2));
+            }
+            auto centeredRange = M(Input!T(values[]), T(1));
+            auto scaledRange = M(Input!T(values[]), T(1), T(2));
+            auto centeredBatch = M(values[], T(1));
+            auto scaledBatch = M(values[], T(1), T(2));
+            foreach (result; [centered, centeredRange, centeredBatch])
+            {
+                assert(result.count == 3 && result.sumOfPower == centeredSum);
+                assert(result.moment.approxEqual(T(centeredSum) / 3));
+            }
+            foreach (result; [scaled, scaledRange, scaledBatch])
+            {
+                assert(result.count == 3 && result.sumOfPower == scaledSum);
+                assert(result.moment.approxEqual(T(scaledSum) / 3));
+            }
+            centeredRange.put(Input!T(values[0 .. 0]), T(1));
+            scaledRange.put(Input!T(values[0 .. 0]), T(1), T(2));
+            assert(centeredRange.count == 3 && centeredRange.sumOfPower == centeredSum);
+            assert(scaledRange.count == 3 && scaledRange.sumOfPower == scaledSum);
+        }}
+    }}
 }
 
 /// Raw moment
