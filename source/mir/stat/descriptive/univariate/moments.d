@@ -958,6 +958,10 @@ unittest
 /++
 Calculates the n-th central moment of the input.
 
+For orders above one, inputs that cannot be converted to a slice must be
+forward ranges. The mean and moment calculations use separate traversals of
+the same observations.
+
 By default, if `F` is not floating point type or complex type, then the result
 will have a `double` type if `F` is implicitly convertible to a floating point
 type or a type for which `isComplex!F` is true.
@@ -987,8 +991,24 @@ template centralMoment(F, size_t N, Summation summation = Summation.appropriate)
         static if (N > 1) {
             MeanAccumulator!(G, ResolveSummationType!(summation, Range, G)) meanAccumulator;
             MomentAccumulator!(G, N, ResolveSummationType!(summation, Range, G)) momentAccumulator;
-            meanAccumulator.put(r.lightScope);
-            momentAccumulator.put(r, meanAccumulator.mean);
+            static if (isSlice!Range) {
+                meanAccumulator.put(r.lightScope);
+                alias momentRange = r;
+            } else static if (isConvertibleToSlice!Range) {
+                import mir.ndslice.slice: toSlice;
+                // Retain the converted owner while both passes borrow its storage.
+                auto slice = r.toSlice;
+                auto momentRange = slice.lightScope;
+                meanAccumulator.put(momentRange);
+            } else {
+                import std.range.primitives: isForwardRange, save;
+                static assert(isForwardRange!Range,
+                    "centralMoment requires a forward range for multiple passes");
+                // A shallow copy may share the original cursor.
+                meanAccumulator.put(r.save);
+                alias momentRange = r;
+            }
+            momentAccumulator.put(momentRange, meanAccumulator.mean);
             return momentAccumulator.moment;
         } else {
             return cast(G) 0.0;
@@ -1231,6 +1251,10 @@ enum StandardizedMomentAlgo
 /++
 Calculates the n-th standardized moment of the input.
 
+For orders above two, inputs that cannot be converted to a slice must be
+forward ranges. Calculating the center and scale must leave a traversal
+available for the moment calculation.
+
 By default, if `F` is not floating point type, then the result will have a
 `double` type if `F` is implicitly convertible to a floating point type.
 
@@ -1262,17 +1286,33 @@ template standardizedMoment(F, size_t N,
     {
         alias G = typeof(return);
         static if (N > 2) {
-            auto varianceAccumulator = VarianceAccumulator!(G, varianceAlgo, ResolveSummationType!(summation, Range, G))(r.lightScope);
+            static if (isSlice!Range) {
+                auto varianceAccumulator = VarianceAccumulator!(G, varianceAlgo, ResolveSummationType!(summation, Range, G))(r.lightScope);
+                alias momentRange = r;
+            } else static if (isConvertibleToSlice!Range) {
+                import mir.ndslice.slice: toSlice;
+                // Retain the converted owner while both passes borrow its storage.
+                auto slice = r.toSlice;
+                auto momentRange = slice.lightScope;
+                auto varianceAccumulator = VarianceAccumulator!(G, varianceAlgo, ResolveSummationType!(summation, Range, G))(momentRange);
+            } else {
+                import std.range.primitives: isForwardRange, save;
+                static assert(isForwardRange!Range,
+                    "standardizedMoment requires a forward range for multiple passes");
+                // Preserve the observations for the subsequent moment pass.
+                auto varianceAccumulator = VarianceAccumulator!(G, varianceAlgo, ResolveSummationType!(summation, Range, G))(r.save);
+                alias momentRange = r;
+            }
             MomentAccumulator!(G, N, ResolveSummationType!(summation, Range, G)) momentAccumulator;
             static if (standardizedMomentAlgo == StandardizedMomentAlgo.scaled) {
                 import mir.math.common: sqrt;
 
-                momentAccumulator.put(r, varianceAccumulator.mean, varianceAccumulator.variance(true).sqrt);
+                momentAccumulator.put(momentRange, varianceAccumulator.mean, varianceAccumulator.variance(true).sqrt);
                 return momentAccumulator.moment;
             } else static if (standardizedMomentAlgo == StandardizedMomentAlgo.centered) {
                 import mir.math.common: pow;
 
-                momentAccumulator.put(r, varianceAccumulator.mean);
+                momentAccumulator.put(momentRange, varianceAccumulator.mean);
                 auto variance = varianceAccumulator.variance(true);
                 auto result = momentAccumulator.moment / pow(variance, N / 2);
                 static if (N % 2 != 0) {
@@ -1825,4 +1865,94 @@ unittest
                           2.0, 7.5, 5.0, 1.0, 1.5, 0.0];
 
     assert(x.sliced.moment!(3, "standardized").approxEqual(12.000999 / 12));
+}
+
+// Public multi-pass functions save forward ranges before consuming their cursor.
+version(mir_stat_test)
+@safe pure nothrow
+unittest
+{
+    import mir.math.common: approxEqual;
+    import std.meta: AliasSeq;
+
+    static struct Input(T, bool replayable)
+    {
+        const(T)[] data;
+        size_t[] cursor;
+        size_t ownPosition;
+        size_t position() const { return cursor.length ? cursor[0] : ownPosition; }
+        bool empty() const { return position == data.length; }
+        T front() const { return data[position]; }
+        void popFront() { if (cursor.length) ++cursor[0]; else ++ownPosition; }
+        static if (replayable)
+            auto save() { return typeof(this)(data, null, position); }
+    }
+
+    static foreach (T; AliasSeq!(float, double, real))
+    {{
+        const T[3] values = [0, 1, 5];
+        // Explicit range instantiation also supports array-to-slice conversion.
+        alias central = centralMoment!(T, 3, Summation.naive);
+        alias standard = standardizedMoment!(T, 3);
+        assert(central!(const(T)[])(values[]) == 6);
+        assert(standard!(const(T)[])(values[]).approxEqual(standard(values[])));
+        size_t[1] cursor;
+        auto input = Input!(T, true)(values[], cursor[]);
+        assert(centralMoment!(T, 3, Summation.naive)(input).approxEqual(T(6)));
+        assert(cursor[0] == values.length);
+        cursor[0] = 0;
+        assert(moment!(T, 3, MomentAlgo.central, Summation.naive)(input).approxEqual(T(6)));
+        static foreach (algo; [VarianceAlgo.twoPass, VarianceAlgo.hybrid, VarianceAlgo.online, VarianceAlgo.naive])
+        static foreach (method; [StandardizedMomentAlgo.scaled, StandardizedMomentAlgo.centered])
+        {{
+            cursor[0] = 0;
+            auto expected = standardizedMoment!(T, 3, method, algo, Summation.naive)(values[]);
+            auto result = standardizedMoment!(T, 3, method, algo, Summation.naive)(input);
+            assert(result.approxEqual(expected));
+            assert(cursor[0] == values.length);
+        }}
+        cursor[0] = 0;
+        assert(moment!(T, 3, MomentAlgo.standardized, Summation.naive)(input)
+            .approxEqual(standardizedMoment!(T, 3)(values[])));
+        cursor[0] = 0;
+        auto single = Input!(T, false)(values[], cursor[]);
+        static assert(!__traits(compiles, centralMoment!(T, 2)(single)));
+        static assert(!__traits(compiles, standardizedMoment!(T, 3)(single)));
+        // Constant low-order results and raw moments do not need another pass.
+        assert(centralMoment!(T, 1)(single) == 0);
+        assert(standardizedMoment!(T, 2)(single) == 1);
+        assert(cursor[0] == 0);
+        assert(rawMoment!(T, 1, Summation.naive)(single) == 2);
+        assert(cursor[0] == values.length);
+    }}
+}
+
+// Owning arrays are converted once and borrowed for both moment passes.
+version(mir_stat_test)
+@safe pure nothrow
+unittest
+{
+    import mir.math.common: approxEqual;
+    import mir.rc.array: RCArray;
+    import std.meta: AliasSeq;
+
+    static foreach (T; AliasSeq!(float, double, real))
+    {{
+        auto owner = RCArray!T(3);
+        owner[0] = 0;
+        owner[1] = 1;
+        owner[2] = 5;
+        assert(centralMoment!(T, 3, Summation.naive)(owner) == 6);
+        assert(moment!(T, 3, MomentAlgo.central, Summation.naive)(owner) == 6);
+        static foreach (method; [StandardizedMomentAlgo.scaled, StandardizedMomentAlgo.centered])
+        {{
+            auto expected = standardizedMoment!(T, 3, method)(owner.asSlice.lightScope);
+            assert(standardizedMoment!(T, 3, method)(owner).approxEqual(expected));
+        }}
+        assert(moment!(T, 3, MomentAlgo.standardized)(owner)
+            .approxEqual(standardizedMoment!(T, 3)(owner.asSlice.lightScope)));
+        // The caller retains ownership and the observations are unchanged.
+        assert(owner.length == 3);
+        assert(owner[0] == 0 && owner[1] == 1 && owner[2] == 5);
+    }}
 }
