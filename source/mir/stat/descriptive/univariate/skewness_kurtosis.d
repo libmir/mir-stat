@@ -55,6 +55,24 @@ import mir.stat.descriptive.univariate.internal.types: statType, meanType, stdev
 import mir.stat.descriptive.univariate.means: mean, MeanAccumulator;
 import mir.stat.descriptive.univariate.dispersions: variance, standardDeviation, VarianceAlgo, VarianceAccumulator;
 
+// Merge stored moments only when their representation and summation state match.
+// Add recentering corrections separately: combining them with a rounded incoming
+// total would discard the low-order parts before the destination can retain them.
+// Three-pass higher moments are scaled, and naive moments are uncentered;
+// their getters must still perform the conversion to centered moments.
+// Mixed types/modes retain the existing conversion through the public getter.
+// Kahan is excluded because Summator's += does not transfer its correction.
+private template canMergeShapeMoment(T, Summation summation, V, string member)
+{
+    static if (__traits(hasMember, V, member) &&
+        (summation == Summation.kbn || summation == Summation.kb2 ||
+         summation == Summation.precise || summation == Summation.pairwise))
+        enum canMergeShapeMoment = is(typeof(__traits(getMember, V, member)) ==
+            Summator!(T, summation));
+    else
+        enum canMergeShapeMoment = false;
+}
+
 /++
 Skewness algorithms.
 
@@ -161,8 +179,18 @@ struct SkewnessAccumulator(T, SkewnessAlgo skewnessAlgo, Summation summation)
     void put(U, Summation sumAlgo)(SkewnessAccumulator!(U, skewnessAlgo, sumAlgo) v)
     {
         meanAccumulator.put(v.meanAccumulator);
-        summatorOfSquares.put(v.sumOfSquares!T);
-        summatorOfCubes.put(v.sumOfCubes!T);
+        static if (canMergeShapeMoment!(T, summation, typeof(v), "summatorOfSquares"))
+        {
+            summatorOfSquares += v.summatorOfSquares;
+        }
+        else
+            summatorOfSquares.put(v.sumOfSquares!T);
+        static if (canMergeShapeMoment!(T, summation, typeof(v), "summatorOfCubes"))
+        {
+            summatorOfCubes += v.summatorOfCubes;
+        }
+        else
+            summatorOfCubes.put(v.sumOfCubes!T);
     }
 
 const:
@@ -390,8 +418,18 @@ struct SkewnessAccumulator(T, SkewnessAlgo skewnessAlgo, Summation summation)
             // No recentering is needed; avoid evaluating powers of a possibly
             // large mean only to multiply them by a zero destination count.
             meanAccumulator.put!T(v.meanAccumulator);
-            centeredSummatorOfSquares.put(v.centeredSumOfSquares!T);
-            centeredSummatorOfCubes.put(v.centeredSumOfCubes!T);
+            static if (canMergeShapeMoment!(T, summation, typeof(v), "centeredSummatorOfSquares"))
+            {
+                centeredSummatorOfSquares += v.centeredSummatorOfSquares;
+            }
+            else
+                centeredSummatorOfSquares.put(v.centeredSumOfSquares!T);
+            static if (canMergeShapeMoment!(T, summation, typeof(v), "centeredSummatorOfCubes"))
+            {
+                centeredSummatorOfCubes += v.centeredSummatorOfCubes;
+            }
+            else
+                centeredSummatorOfCubes.put(v.centeredSumOfCubes!T);
             return;
         }
         T delta = v.mean;
@@ -406,10 +444,23 @@ struct SkewnessAccumulator(T, SkewnessAlgo skewnessAlgo, Summation summation)
         T inverseCount = T(1) / count;
         T oldFraction = cast(T) oldCount * inverseCount;
         T newFraction = cast(T) v.count * inverseCount;
-        centeredSummatorOfCubes.put(v.centeredSumOfCubes!T +
-                                    delta * delta * delta * newFraction * oldCount * (countDifference * inverseCount) +
+        static if (canMergeShapeMoment!(T, summation, typeof(v), "centeredSummatorOfCubes"))
+        {
+            centeredSummatorOfCubes.put(delta * delta * delta * newFraction * oldCount * (countDifference * inverseCount) +
                                     3 * delta * (oldFraction * v.centeredSumOfSquares!T - newFraction * centeredSumOfSquares!T));
-        centeredSummatorOfSquares.put(v.centeredSumOfSquares!T + delta * delta * newFraction * oldCount);
+            centeredSummatorOfCubes += v.centeredSummatorOfCubes;
+        }
+        else
+            centeredSummatorOfCubes.put(v.centeredSumOfCubes!T +
+                                        delta * delta * delta * newFraction * oldCount * (countDifference * inverseCount) +
+                                        3 * delta * (oldFraction * v.centeredSumOfSquares!T - newFraction * centeredSumOfSquares!T));
+        static if (canMergeShapeMoment!(T, summation, typeof(v), "centeredSummatorOfSquares"))
+        {
+            centeredSummatorOfSquares.put(delta * delta * newFraction * oldCount);
+            centeredSummatorOfSquares += v.centeredSummatorOfSquares;
+        }
+        else
+            centeredSummatorOfSquares.put(v.centeredSumOfSquares!T + delta * delta * newFraction * oldCount);
     }
 
 const:
@@ -1052,8 +1103,18 @@ struct SkewnessAccumulator(T, SkewnessAlgo skewnessAlgo, Summation summation)
     void put(U, Summation sumAlgo)(SkewnessAccumulator!(U, skewnessAlgo, sumAlgo) v)
     {
         _count += v.count;
-        centeredSummatorOfSquares.put(v.centeredSumOfSquares!T);
-        centeredSummatorOfCubes.put(v.centeredSumOfCubes!T);
+        static if (canMergeShapeMoment!(T, summation, typeof(v), "centeredSummatorOfSquares"))
+        {
+            centeredSummatorOfSquares += v.centeredSummatorOfSquares;
+        }
+        else
+            centeredSummatorOfSquares.put(v.centeredSumOfSquares!T);
+        static if (canMergeShapeMoment!(T, summation, typeof(v), "centeredSummatorOfCubes"))
+        {
+            centeredSummatorOfCubes += v.centeredSummatorOfCubes;
+        }
+        else
+            centeredSummatorOfCubes.put(v.centeredSumOfCubes!T);
     }
 
 const:
@@ -1334,8 +1395,18 @@ struct SkewnessAccumulator(T, SkewnessAlgo skewnessAlgo, Summation summation)
             // No recentering is needed; avoid evaluating powers of a possibly
             // large mean only to multiply them by a zero destination count.
             meanAccumulator.put!T(v.meanAccumulator);
-            centeredSummatorOfSquares.put(v.centeredSumOfSquares!T);
-            centeredSummatorOfCubes.put(v.centeredSumOfCubes!T);
+            static if (canMergeShapeMoment!(T, summation, typeof(v), "centeredSummatorOfSquares"))
+            {
+                centeredSummatorOfSquares += v.centeredSummatorOfSquares;
+            }
+            else
+                centeredSummatorOfSquares.put(v.centeredSumOfSquares!T);
+            static if (canMergeShapeMoment!(T, summation, typeof(v), "centeredSummatorOfCubes"))
+            {
+                centeredSummatorOfCubes += v.centeredSummatorOfCubes;
+            }
+            else
+                centeredSummatorOfCubes.put(v.centeredSumOfCubes!T);
             return;
         }
         T delta = v.mean;
@@ -1350,10 +1421,23 @@ struct SkewnessAccumulator(T, SkewnessAlgo skewnessAlgo, Summation summation)
         T inverseCount = T(1) / count;
         T oldFraction = cast(T) oldCount * inverseCount;
         T newFraction = cast(T) v.count * inverseCount;
-        centeredSummatorOfCubes.put(v.centeredSumOfCubes!T +
-                                    delta * delta * delta * newFraction * oldCount * (countDifference * inverseCount) +
+        static if (canMergeShapeMoment!(T, summation, typeof(v), "centeredSummatorOfCubes"))
+        {
+            centeredSummatorOfCubes.put(delta * delta * delta * newFraction * oldCount * (countDifference * inverseCount) +
                                     3 * delta * (oldFraction * v.centeredSumOfSquares!T - newFraction * centeredSumOfSquares!T));
-        centeredSummatorOfSquares.put(v.centeredSumOfSquares!T + delta * delta * newFraction * oldCount);
+            centeredSummatorOfCubes += v.centeredSummatorOfCubes;
+        }
+        else
+            centeredSummatorOfCubes.put(v.centeredSumOfCubes!T +
+                                        delta * delta * delta * newFraction * oldCount * (countDifference * inverseCount) +
+                                        3 * delta * (oldFraction * v.centeredSumOfSquares!T - newFraction * centeredSumOfSquares!T));
+        static if (canMergeShapeMoment!(T, summation, typeof(v), "centeredSummatorOfSquares"))
+        {
+            centeredSummatorOfSquares.put(delta * delta * newFraction * oldCount);
+            centeredSummatorOfSquares += v.centeredSummatorOfSquares;
+        }
+        else
+            centeredSummatorOfSquares.put(v.centeredSumOfSquares!T + delta * delta * newFraction * oldCount);
     }
 
 const:
@@ -2183,9 +2267,24 @@ struct KurtosisAccumulator(T, KurtosisAlgo kurtosisAlgo, Summation summation)
     void put(U, Summation sumAlgo)(KurtosisAccumulator!(U, kurtosisAlgo, sumAlgo) v)
     {
         meanAccumulator.put(v.meanAccumulator);
-        summatorOfSquares.put(v.sumOfSquares!T);
-        summatorOfCubes.put(v.sumOfCubes!T);
-        summatorOfQuarts.put(v.sumOfQuarts!T);
+        static if (canMergeShapeMoment!(T, summation, typeof(v), "summatorOfSquares"))
+        {
+            summatorOfSquares += v.summatorOfSquares;
+        }
+        else
+            summatorOfSquares.put(v.sumOfSquares!T);
+        static if (canMergeShapeMoment!(T, summation, typeof(v), "summatorOfCubes"))
+        {
+            summatorOfCubes += v.summatorOfCubes;
+        }
+        else
+            summatorOfCubes.put(v.sumOfCubes!T);
+        static if (canMergeShapeMoment!(T, summation, typeof(v), "summatorOfQuarts"))
+        {
+            summatorOfQuarts += v.summatorOfQuarts;
+        }
+        else
+            summatorOfQuarts.put(v.sumOfQuarts!T);
     }
 
 const:
@@ -2484,9 +2583,24 @@ struct KurtosisAccumulator(T, KurtosisAlgo kurtosisAlgo, Summation summation)
             // No recentering is needed; avoid evaluating powers of a possibly
             // large mean only to multiply them by a zero destination count.
             meanAccumulator.put!T(v.meanAccumulator);
-            centeredSummatorOfSquares.put(v.centeredSumOfSquares!T);
-            centeredSummatorOfCubes.put(v.centeredSumOfCubes!T);
-            centeredSummatorOfQuarts.put(v.centeredSumOfQuarts!T);
+            static if (canMergeShapeMoment!(T, summation, typeof(v), "centeredSummatorOfSquares"))
+            {
+                centeredSummatorOfSquares += v.centeredSummatorOfSquares;
+            }
+            else
+                centeredSummatorOfSquares.put(v.centeredSumOfSquares!T);
+            static if (canMergeShapeMoment!(T, summation, typeof(v), "centeredSummatorOfCubes"))
+            {
+                centeredSummatorOfCubes += v.centeredSummatorOfCubes;
+            }
+            else
+                centeredSummatorOfCubes.put(v.centeredSumOfCubes!T);
+            static if (canMergeShapeMoment!(T, summation, typeof(v), "centeredSummatorOfQuarts"))
+            {
+                centeredSummatorOfQuarts += v.centeredSummatorOfQuarts;
+            }
+            else
+                centeredSummatorOfQuarts.put(v.centeredSumOfQuarts!T);
             return;
         }
         T delta = v.mean;
@@ -2502,14 +2616,35 @@ struct KurtosisAccumulator(T, KurtosisAlgo kurtosisAlgo, Summation summation)
         T oldFraction = cast(T) oldCount * inverseCount;
         T newFraction = cast(T) v.count * inverseCount;
         // a*b*(a*a-a*b+b*b)/n^3 = a*(b/n)*((a/n)^2-(a/n)*(b/n)+(b/n)^2).
-        centeredSummatorOfQuarts.put(v.centeredSumOfQuarts!T +
-                               delta * delta * delta * delta * newFraction * oldCount * (oldFraction * oldFraction - oldFraction * newFraction + newFraction * newFraction) +
+        static if (canMergeShapeMoment!(T, summation, typeof(v), "centeredSummatorOfQuarts"))
+        {
+            centeredSummatorOfQuarts.put(delta * delta * delta * delta * newFraction * oldCount * (oldFraction * oldFraction - oldFraction * newFraction + newFraction * newFraction) +
                                6 * delta * delta * (oldFraction * oldFraction * v.centeredSumOfSquares!T + newFraction * newFraction * centeredSumOfSquares!T) +
                                4 * delta * (oldFraction * v.centeredSumOfCubes!T - newFraction * centeredSumOfCubes!T));
-        centeredSummatorOfCubes.put(v.centeredSumOfCubes!T +
-                               delta * delta * delta * newFraction * oldCount * (countDifference * inverseCount) +
+            centeredSummatorOfQuarts += v.centeredSummatorOfQuarts;
+        }
+        else
+            centeredSummatorOfQuarts.put(v.centeredSumOfQuarts!T +
+                                   delta * delta * delta * delta * newFraction * oldCount * (oldFraction * oldFraction - oldFraction * newFraction + newFraction * newFraction) +
+                                   6 * delta * delta * (oldFraction * oldFraction * v.centeredSumOfSquares!T + newFraction * newFraction * centeredSumOfSquares!T) +
+                                   4 * delta * (oldFraction * v.centeredSumOfCubes!T - newFraction * centeredSumOfCubes!T));
+        static if (canMergeShapeMoment!(T, summation, typeof(v), "centeredSummatorOfCubes"))
+        {
+            centeredSummatorOfCubes.put(delta * delta * delta * newFraction * oldCount * (countDifference * inverseCount) +
                                3 * delta * (oldFraction * v.centeredSumOfSquares!T - newFraction * centeredSumOfSquares!T));
-        centeredSummatorOfSquares.put(v.centeredSumOfSquares!T + delta * delta * newFraction * oldCount);
+            centeredSummatorOfCubes += v.centeredSummatorOfCubes;
+        }
+        else
+            centeredSummatorOfCubes.put(v.centeredSumOfCubes!T +
+                                   delta * delta * delta * newFraction * oldCount * (countDifference * inverseCount) +
+                                   3 * delta * (oldFraction * v.centeredSumOfSquares!T - newFraction * centeredSumOfSquares!T));
+        static if (canMergeShapeMoment!(T, summation, typeof(v), "centeredSummatorOfSquares"))
+        {
+            centeredSummatorOfSquares.put(delta * delta * newFraction * oldCount);
+            centeredSummatorOfSquares += v.centeredSummatorOfSquares;
+        }
+        else
+            centeredSummatorOfSquares.put(v.centeredSumOfSquares!T + delta * delta * newFraction * oldCount);
     }
 
 const:
@@ -3349,9 +3484,24 @@ struct KurtosisAccumulator(T, KurtosisAlgo kurtosisAlgo, Summation summation)
     void put(U, Summation sumAlgo)(KurtosisAccumulator!(U, kurtosisAlgo, sumAlgo) v)
     {
         _count += v.count;
-        centeredSummatorOfSquares.put(v.centeredSumOfSquares!T);
-        centeredSummatorOfCubes.put(v.centeredSumOfCubes!T);
-        centeredSummatorOfQuarts.put(v.centeredSumOfQuarts!T);
+        static if (canMergeShapeMoment!(T, summation, typeof(v), "centeredSummatorOfSquares"))
+        {
+            centeredSummatorOfSquares += v.centeredSummatorOfSquares;
+        }
+        else
+            centeredSummatorOfSquares.put(v.centeredSumOfSquares!T);
+        static if (canMergeShapeMoment!(T, summation, typeof(v), "centeredSummatorOfCubes"))
+        {
+            centeredSummatorOfCubes += v.centeredSummatorOfCubes;
+        }
+        else
+            centeredSummatorOfCubes.put(v.centeredSumOfCubes!T);
+        static if (canMergeShapeMoment!(T, summation, typeof(v), "centeredSummatorOfQuarts"))
+        {
+            centeredSummatorOfQuarts += v.centeredSummatorOfQuarts;
+        }
+        else
+            centeredSummatorOfQuarts.put(v.centeredSumOfQuarts!T);
     }
 
 const:
@@ -3670,9 +3820,24 @@ struct KurtosisAccumulator(T, KurtosisAlgo kurtosisAlgo, Summation summation)
             // No recentering is needed; avoid evaluating powers of a possibly
             // large mean only to multiply them by a zero destination count.
             meanAccumulator.put!T(v.meanAccumulator);
-            centeredSummatorOfSquares.put(v.centeredSumOfSquares!T);
-            centeredSummatorOfCubes.put(v.centeredSumOfCubes!T);
-            centeredSummatorOfQuarts.put(v.centeredSumOfQuarts!T);
+            static if (canMergeShapeMoment!(T, summation, typeof(v), "centeredSummatorOfSquares"))
+            {
+                centeredSummatorOfSquares += v.centeredSummatorOfSquares;
+            }
+            else
+                centeredSummatorOfSquares.put(v.centeredSumOfSquares!T);
+            static if (canMergeShapeMoment!(T, summation, typeof(v), "centeredSummatorOfCubes"))
+            {
+                centeredSummatorOfCubes += v.centeredSummatorOfCubes;
+            }
+            else
+                centeredSummatorOfCubes.put(v.centeredSumOfCubes!T);
+            static if (canMergeShapeMoment!(T, summation, typeof(v), "centeredSummatorOfQuarts"))
+            {
+                centeredSummatorOfQuarts += v.centeredSummatorOfQuarts;
+            }
+            else
+                centeredSummatorOfQuarts.put(v.centeredSumOfQuarts!T);
             return;
         }
         T delta = v.mean;
@@ -3688,14 +3853,35 @@ struct KurtosisAccumulator(T, KurtosisAlgo kurtosisAlgo, Summation summation)
         T oldFraction = cast(T) oldCount * inverseCount;
         T newFraction = cast(T) v.count * inverseCount;
         // a*b*(a*a-a*b+b*b)/n^3 = a*(b/n)*((a/n)^2-(a/n)*(b/n)+(b/n)^2).
-        centeredSummatorOfQuarts.put(v.centeredSumOfQuarts!T +
-                               delta * delta * delta * delta * newFraction * oldCount * (oldFraction * oldFraction - oldFraction * newFraction + newFraction * newFraction) +
+        static if (canMergeShapeMoment!(T, summation, typeof(v), "centeredSummatorOfQuarts"))
+        {
+            centeredSummatorOfQuarts.put(delta * delta * delta * delta * newFraction * oldCount * (oldFraction * oldFraction - oldFraction * newFraction + newFraction * newFraction) +
                                6 * delta * delta * (oldFraction * oldFraction * v.centeredSumOfSquares!T + newFraction * newFraction * centeredSumOfSquares!T) +
                                4 * delta * (oldFraction * v.centeredSumOfCubes!T - newFraction * centeredSumOfCubes!T));
-        centeredSummatorOfCubes.put(v.centeredSumOfCubes!T +
-                               delta * delta * delta * newFraction * oldCount * (countDifference * inverseCount) +
+            centeredSummatorOfQuarts += v.centeredSummatorOfQuarts;
+        }
+        else
+            centeredSummatorOfQuarts.put(v.centeredSumOfQuarts!T +
+                                   delta * delta * delta * delta * newFraction * oldCount * (oldFraction * oldFraction - oldFraction * newFraction + newFraction * newFraction) +
+                                   6 * delta * delta * (oldFraction * oldFraction * v.centeredSumOfSquares!T + newFraction * newFraction * centeredSumOfSquares!T) +
+                                   4 * delta * (oldFraction * v.centeredSumOfCubes!T - newFraction * centeredSumOfCubes!T));
+        static if (canMergeShapeMoment!(T, summation, typeof(v), "centeredSummatorOfCubes"))
+        {
+            centeredSummatorOfCubes.put(delta * delta * delta * newFraction * oldCount * (countDifference * inverseCount) +
                                3 * delta * (oldFraction * v.centeredSumOfSquares!T - newFraction * centeredSumOfSquares!T));
-        centeredSummatorOfSquares.put(v.centeredSumOfSquares!T + delta * delta * newFraction * oldCount);
+            centeredSummatorOfCubes += v.centeredSummatorOfCubes;
+        }
+        else
+            centeredSummatorOfCubes.put(v.centeredSumOfCubes!T +
+                                   delta * delta * delta * newFraction * oldCount * (countDifference * inverseCount) +
+                                   3 * delta * (oldFraction * v.centeredSumOfSquares!T - newFraction * centeredSumOfSquares!T));
+        static if (canMergeShapeMoment!(T, summation, typeof(v), "centeredSummatorOfSquares"))
+        {
+            centeredSummatorOfSquares.put(delta * delta * newFraction * oldCount);
+            centeredSummatorOfSquares += v.centeredSummatorOfSquares;
+        }
+        else
+            centeredSummatorOfSquares.put(v.centeredSumOfSquares!T + delta * delta * newFraction * oldCount);
     }
 
 const:
@@ -4836,5 +5022,132 @@ unittest
             result.centeredSummatorOfSquares.put(T(n));
         assert(result.skewness(true) == 0);
         assert(result.skewness(false) == 0);
+    }}
+}
+
+// Preserve corrections when raw or zero-centered moment sums are merged.
+version(mir_stat_test)
+pure nothrow
+unittest
+{
+    import std.meta: AliasSeq;
+    static foreach (T; AliasSeq!(float, double, real))
+    static foreach (sum; [Summation.kbn, Summation.kb2, Summation.precise])
+    static foreach (algo; [SkewnessAlgo.naive, SkewnessAlgo.assumeZeroMean])
+    {{
+        T large = 1;
+        foreach (i; 0 .. T.mant_dig / 3 + 2)
+            large *= 2;
+        alias A = SkewnessAccumulator!(T, algo, sum);
+        A source, result, copied;
+        source.put(large);
+        source.put(T(1));
+        result.put(-large);
+        result.put(source);
+        copied.put(source);
+        copied.put(-large);
+        static if (algo == SkewnessAlgo.naive) {
+            assert(result.sumOfCubes == 1);
+            assert(copied.sumOfCubes == 1);
+        } else {
+            assert(result.centeredSumOfCubes == 1);
+            assert(copied.centeredSumOfCubes == 1);
+        }
+    }}
+}
+
+// Isolate state transfer from recentering with synthetic, equal-mean moments.
+// These fixtures test summation state, not moments of an observation dataset.
+version(mir_stat_test)
+pure nothrow
+unittest
+{
+    import std.meta: AliasSeq;
+    static foreach (T; AliasSeq!(float, double, real))
+    static foreach (sum; [Summation.kbn, Summation.kb2, Summation.precise])
+    static foreach (destinationAlgo; [KurtosisAlgo.online, KurtosisAlgo.hybrid])
+    static foreach (sourceAlgo; [KurtosisAlgo.online, KurtosisAlgo.hybrid, KurtosisAlgo.twoPass])
+    {{
+        T large = 1;
+        foreach (i; 0 .. T.mant_dig)
+            large *= 2;
+        alias A = KurtosisAccumulator!(T, destinationAlgo, sum);
+        KurtosisAccumulator!(T, sourceAlgo, sum) source;
+        source.meanAccumulator.put(T(0));
+        source.centeredSummatorOfSquares.put(large);
+        source.centeredSummatorOfSquares.put(T(1));
+        source.centeredSummatorOfCubes.put(large);
+        source.centeredSummatorOfCubes.put(T(1));
+        source.centeredSummatorOfQuarts.put(large);
+        source.centeredSummatorOfQuarts.put(T(1));
+        A result, copied, tail;
+        tail.meanAccumulator.put(T(0));
+        tail.centeredSummatorOfSquares.put(T(1));
+        tail.centeredSummatorOfCubes.put(-large);
+        tail.centeredSummatorOfQuarts.put(T(1));
+        result.put(tail);
+        result.put(source);
+        copied.put(source);
+        copied.put(tail);
+        foreach (ref value; [result, copied]) {
+            assert(value.centeredSumOfSquares == large + 2);
+            assert(value.centeredSumOfCubes == 1);
+            assert(value.centeredSumOfQuarts == large + 2);
+        }
+        assert(source.centeredSumOfCubes == large);
+    }}
+}
+
+// Only equivalent moment representations and summator types transfer state.
+version(mir_stat_test)
+unittest
+{
+    alias Centered = KurtosisAccumulator!(double, KurtosisAlgo.twoPass, Summation.kbn);
+    alias Scaled = KurtosisAccumulator!(double, KurtosisAlgo.threePass, Summation.kbn);
+    static assert(canMergeShapeMoment!(double, Summation.kbn, Centered, "centeredSummatorOfCubes"));
+    static assert(canMergeShapeMoment!(double, Summation.kbn, Scaled, "centeredSummatorOfSquares"));
+    static assert(!canMergeShapeMoment!(double, Summation.kbn, Scaled, "centeredSummatorOfCubes"));
+    static assert(!canMergeShapeMoment!(float, Summation.kbn, Centered, "centeredSummatorOfCubes"));
+    static assert(!canMergeShapeMoment!(double, Summation.kb2, Centered, "centeredSummatorOfCubes"));
+}
+
+version(mir_stat_test)
+@safe pure nothrow
+unittest
+{
+    static foreach (algo; [SkewnessAlgo.online, SkewnessAlgo.hybrid])
+    {{
+        alias A = SkewnessAccumulator!(double, algo, Summation.kbn);
+        A source, tail, result, copied;
+        enum double large = 9007199254740992.0;
+        source.meanAccumulator.put(0.0);
+        source.centeredSummatorOfSquares.put(large);
+        source.centeredSummatorOfSquares.put(1.0);
+        source.centeredSummatorOfCubes.put(large);
+        source.centeredSummatorOfCubes.put(1.0);
+        tail.meanAccumulator.put(0.0);
+        tail.centeredSummatorOfSquares.put(1.0);
+        tail.centeredSummatorOfCubes.put(-large);
+        result.put(tail);
+        result.put(source);
+        copied.put(source);
+        copied.put(tail);
+        assert(result.centeredSumOfSquares == large + 2);
+        assert(copied.centeredSumOfSquares == large + 2);
+        assert(result.centeredSumOfCubes == 1);
+        assert(copied.centeredSumOfCubes == 1);
+    }}
+    static foreach (algo; [KurtosisAlgo.naive, KurtosisAlgo.assumeZeroMean])
+    {{
+        alias A = KurtosisAccumulator!(double, algo, Summation.kbn);
+        A source, result;
+        source.put(262144.0);
+        source.put(1.0);
+        result.put(-262144.0);
+        result.put(source);
+        static if (algo == KurtosisAlgo.naive)
+            assert(result.sumOfCubes == 1);
+        else
+            assert(result.centeredSumOfCubes == 1);
     }}
 }
