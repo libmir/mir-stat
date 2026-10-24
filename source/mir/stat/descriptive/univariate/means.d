@@ -2880,3 +2880,22 @@ unittest
     x.wmean.shouldApprox == 29.25 / 12;
     x.wmean(w).shouldApprox == 203.0 / 78;
 }
+
+// Repeated pairwise mean merges must not exhaust the partial-sum buffer.
+version(mir_stat_test)
+@safe pure nothrow @nogc
+unittest
+{
+    MeanAccumulator!(double, Summation.pairwise) source, result;
+    source.put(1.0);
+    source.put(1.0);
+    foreach (i; 0 .. 100) {
+        result.put(source);
+        assert(result.count == 2 * (i + 1));
+        assert(result.sum == 2.0 * (i + 1));
+        assert(result.mean == 1);
+    }
+    result.put(result);
+    assert(result.count == 400 && result.sum == 400);
+    assert(source.count == 2 && source.sum == 2);
+}

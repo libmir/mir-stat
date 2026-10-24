@@ -107,6 +107,22 @@ enum VarianceAlgo
     hybrid
 }
 
+// Transfer stored square-sum corrections only when their representation and
+// summator type match. Naive variance stores raw squares; online, two-pass,
+// and hybrid variance store centered squares. Other sources still need their
+// public getter's conversion. Kahan does not transfer its correction through
+// +=, and pairwise direct merging is unsafe in supported dependency releases.
+private template canMergeVarianceSquares(T, Summation summation, V, string member)
+{
+    static if (__traits(hasMember, V, member) &&
+        (summation == Summation.kbn || summation == Summation.kb2 ||
+         summation == Summation.precise))
+        enum canMergeVarianceSquares = is(typeof(__traits(getMember, V, member)) ==
+            Summator!(T, summation));
+    else
+        enum canMergeVarianceSquares = false;
+}
+
 ///
 struct VarianceAccumulator(T, VarianceAlgo varianceAlgo, Summation summation)
     if (isMutable!T && varianceAlgo == VarianceAlgo.naive)
@@ -155,7 +171,10 @@ struct VarianceAccumulator(T, VarianceAlgo varianceAlgo, Summation summation)
     void put(U, Summation sumAlgo)(VarianceAccumulator!(U, varianceAlgo, sumAlgo) v)
     {
         meanAccumulator.put(v.meanAccumulator);
-        summatorOfSquares.put(v.sumOfSquares!T);
+        static if (canMergeVarianceSquares!(T, summation, typeof(v), "summatorOfSquares"))
+            summatorOfSquares += v.summatorOfSquares;
+        else
+            summatorOfSquares.put(v.sumOfSquares!T);
     }
 
 const:
@@ -311,6 +330,12 @@ struct VarianceAccumulator(T, VarianceAlgo varianceAlgo, Summation summation)
     void put(U, VarianceAlgo varAlgo, Summation sumAlgo)(VarianceAccumulator!(U, varAlgo, sumAlgo) v)
         if (varAlgo != VarianceAlgo.assumeZeroMean)
     {
+        // Keep the small KBN merge inline: an out-of-line call otherwise
+        // forces accumulator copies and spills in LDC's ordinary merge loop.
+        version (LDC)
+            static if (isFloatingPoint!T && summation == Summation.kbn &&
+                canMergeVarianceSquares!(T, summation, typeof(v), "centeredSummatorOfSquares"))
+                pragma(inline, true);
         // An empty source has no mean and contributes no observations.
         if (!v.count)
             return;
@@ -323,7 +348,18 @@ struct VarianceAccumulator(T, VarianceAlgo varianceAlgo, Summation summation)
         // With an empty destination, keep the correction zero without squaring
         // the source mean. Share the updates with the ordinary merge path.
         meanAccumulator.put!T(v.meanAccumulator);
-        static if (isIntegral!T)
+        static if (canMergeVarianceSquares!(T, summation, typeof(v), "centeredSummatorOfSquares"))
+        {
+            // Merge the saved correction before adding the shift between means;
+            // rounding either together with the source sum can discard it.
+            centeredSummatorOfSquares += v.centeredSummatorOfSquares;
+            static if (isIntegral!T)
+                centeredSummatorOfSquares.put(delta * delta * v.count * oldCount / count);
+            else
+                centeredSummatorOfSquares.put(
+                    delta * (delta * (cast(T) v.count * (cast(T) oldCount / count))));
+        }
+        else static if (isIntegral!T)
         {
             // Preserve integer division after multiplication: the count ratio
             // alone would truncate to zero for two nonempty accumulators.
@@ -810,7 +846,10 @@ struct VarianceAccumulator(T, VarianceAlgo varianceAlgo, Summation summation)
     void put(U, Summation sumAlgo)(VarianceAccumulator!(U, varianceAlgo, sumAlgo) v)
     {
         _count += v.count;
-        centeredSummatorOfSquares.put(v.centeredSumOfSquares!T);
+        static if (canMergeVarianceSquares!(T, summation, typeof(v), "centeredSummatorOfSquares"))
+            centeredSummatorOfSquares += v.centeredSummatorOfSquares;
+        else
+            centeredSummatorOfSquares.put(v.centeredSumOfSquares!T);
     }
 
 const:
@@ -1026,6 +1065,12 @@ struct VarianceAccumulator(T, VarianceAlgo varianceAlgo, Summation summation)
     void put(U, VarianceAlgo varAlgo, Summation sumAlgo)(VarianceAccumulator!(U, varAlgo, sumAlgo) v)
         if (varAlgo != VarianceAlgo.assumeZeroMean)
     {
+        // Keep the small KBN merge inline: an out-of-line call otherwise
+        // forces accumulator copies and spills in LDC's ordinary merge loop.
+        version (LDC)
+            static if (isFloatingPoint!T && summation == Summation.kbn &&
+                canMergeVarianceSquares!(T, summation, typeof(v), "centeredSummatorOfSquares"))
+                pragma(inline, true);
         // An empty source has no mean and contributes no observations.
         if (!v.count)
             return;
@@ -1038,7 +1083,18 @@ struct VarianceAccumulator(T, VarianceAlgo varianceAlgo, Summation summation)
         // With an empty destination, keep the correction zero without squaring
         // the source mean. Share the updates with the ordinary merge path.
         meanAccumulator.put!T(v.meanAccumulator);
-        static if (isIntegral!T)
+        static if (canMergeVarianceSquares!(T, summation, typeof(v), "centeredSummatorOfSquares"))
+        {
+            // Merge the saved correction before adding the shift between means;
+            // rounding either together with the source sum can discard it.
+            centeredSummatorOfSquares += v.centeredSummatorOfSquares;
+            static if (isIntegral!T)
+                centeredSummatorOfSquares.put(delta * delta * v.count * oldCount / count);
+            else
+                centeredSummatorOfSquares.put(
+                    delta * (delta * (cast(T) v.count * (cast(T) oldCount / count))));
+        }
+        else static if (isIntegral!T)
         {
             // Preserve integer division after multiplication: the count ratio
             // alone would truncate to zero for two nonempty accumulators.
@@ -2918,4 +2974,66 @@ unittest
         assert(appended.variance(true).approxEqual(T(6.5)));
         assert(cursor[0] == values.length);
     }}
+}
+
+// Retain low-order square sums when merging compensated accumulators.
+version(mir_stat_test)
+pure nothrow
+unittest
+{
+    static foreach (mode; [Summation.kbn, Summation.kb2, Summation.precise])
+    {
+        static foreach (algo; [VarianceAlgo.naive, VarianceAlgo.assumeZeroMean])
+        {{
+            alias A = VarianceAccumulator!(double, algo, mode);
+            A source, result;
+            source.put(0x1p27);
+            source.put(1.0);
+            result.put(1.0);
+            result.put(1.0);
+            result.put(source);
+            // 2^54 + 3 rounds to 2^54 + 4; scalarizing the source loses 1.
+            static if (algo == VarianceAlgo.naive)
+                assert(result.sumOfSquares == 0x1p54 + 4);
+            else
+                assert(result.centeredSumOfSquares == 0x1p54 + 4);
+            assert(result.count == 4 && source.count == 2);
+        }}
+        static foreach (algo; [VarianceAlgo.online, VarianceAlgo.hybrid])
+        {{
+            alias A = VarianceAccumulator!(double, algo, mode);
+            alias B = VarianceAccumulator!(double, VarianceAlgo.twoPass, mode);
+            auto source = B([0x1p27, -0x1p27, 1.0, -1.0]);
+            A result;
+            result.put([1.0, -1.0, 1.0, -1.0]);
+            result.put(source);
+            // Exact M2 is 2^55 + 6, rounded to 2^55 + 8.
+            assert(result.centeredSumOfSquares == 0x1p55 + 8);
+            assert(result.count == 8 && result.mean == 0);
+            A copied;
+            copied.put(source);
+            copied.put([1.0, -1.0, 1.0, -1.0]);
+            assert(copied.centeredSumOfSquares == result.centeredSumOfSquares);
+            result.put(result);
+            assert(result.count == 16);
+            assert(result.centeredSumOfSquares == 0x1p56 + 16);
+            assert(source.count == 4 && source.centeredSumOfSquares == 0x1p55);
+
+            // A raw-square source must still be converted to centered squares.
+            auto raw = VarianceAccumulator!(double, VarianceAlgo.naive, mode)([2.0, 4.0]);
+            A shifted;
+            shifted.put([6.0, 8.0]);
+            shifted.put(raw);
+            assert(shifted.mean == 5 && shifted.centeredSumOfSquares == 20);
+            A centered;
+            centered.put([2.0, 4.0]);
+            A other;
+            other.put([6.0, 8.0]);
+            centered.put(other);
+            assert(centered.mean == 5 && centered.centeredSumOfSquares == 20);
+            A empty;
+            centered.put(empty);
+            assert(centered.count == 4 && centered.centeredSumOfSquares == 20);
+        }}
+    }
 }
