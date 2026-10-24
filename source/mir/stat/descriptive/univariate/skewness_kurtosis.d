@@ -4832,13 +4832,46 @@ unittest
     }}
 }
 
+// Compile each of the 48 cases separately: expanding the entire matrix into
+// one function causes excessive work in Windows DMD's optimized inliner.
+// Production calls inside each case remain eligible for inlining.
+version(mir_stat_test)
+pragma(inline, false)
+private void checkFirstObservation(T, A)() @safe pure nothrow
+{
+    import mir.math.common: approxEqual;
+    foreach (sign; [-1, 1]) {
+        A result;
+        // Cubing or taking the fourth power overflows, but four copies
+        // can still be summed without overflowing the mean accumulator.
+        T x = sign * (T.max / 8);
+        foreach (i; 0 .. 4) {
+            result.put(x);
+            assert(result.count == i + 1 && result.mean == x);
+            assert(result.centeredSumOfSquares == 0);
+            assert(result.centeredSumOfCubes == 0);
+            static if (__traits(hasMember, A, "centeredSumOfQuarts"))
+                assert(result.centeredSumOfQuarts == 0);
+        }
+    }
+
+    // Subsequent observations still update each centered sum.
+    A result;
+    foreach (T x; [T(0), T(1), T(5)])
+        result.put(x);
+    assert(result.count == 3 && result.mean == 2);
+    assert(result.centeredSumOfSquares.approxEqual(T(14), T(8) * T.epsilon, T(8) * T.epsilon));
+    assert(result.centeredSumOfCubes.approxEqual(T(18), T(8) * T.epsilon, T(8) * T.epsilon));
+    static if (__traits(hasMember, A, "centeredSumOfQuarts"))
+        assert(result.centeredSumOfQuarts.approxEqual(T(98), T(8) * T.epsilon, T(8) * T.epsilon));
+}
+
 // A large first observation must not contaminate zero centered moments.
 version(mir_stat_test)
 @safe pure nothrow
 unittest
 {
     import std.meta: AliasSeq;
-    import mir.math.common: approxEqual;
 
     static foreach (T; AliasSeq!(float, double, real))
     static foreach (sum; [Summation.naive, Summation.kbn, Summation.kb2, Summation.precise])
@@ -4847,32 +4880,7 @@ unittest
         SkewnessAccumulator!(T, SkewnessAlgo.hybrid, sum),
         KurtosisAccumulator!(T, KurtosisAlgo.online, sum),
         KurtosisAccumulator!(T, KurtosisAlgo.hybrid, sum)))
-    {{
-        foreach (sign; [-1, 1]) {
-            A result;
-            // Cubing or taking the fourth power overflows, but four copies
-            // can still be summed without overflowing the mean accumulator.
-            T x = sign * (T.max / 8);
-            foreach (i; 0 .. 4) {
-                result.put(x);
-                assert(result.count == i + 1 && result.mean == x);
-                assert(result.centeredSumOfSquares == 0);
-                assert(result.centeredSumOfCubes == 0);
-                static if (__traits(hasMember, A, "centeredSumOfQuarts"))
-                    assert(result.centeredSumOfQuarts == 0);
-            }
-        }
-
-        // Subsequent observations still update each centered sum.
-        A result;
-        foreach (T x; [T(0), T(1), T(5)])
-            result.put(x);
-        assert(result.count == 3 && result.mean == 2);
-        assert(result.centeredSumOfSquares.approxEqual(T(14), T(8) * T.epsilon, T(8) * T.epsilon));
-        assert(result.centeredSumOfCubes.approxEqual(T(18), T(8) * T.epsilon, T(8) * T.epsilon));
-        static if (__traits(hasMember, A, "centeredSumOfQuarts"))
-            assert(result.centeredSumOfQuarts.approxEqual(T(98), T(8) * T.epsilon, T(8) * T.epsilon));
-    }}
+        checkFirstObservation!(T, A)();
 }
 
 // Count powers must not overflow while accumulating valid finite moments.
