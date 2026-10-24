@@ -373,14 +373,27 @@ struct SkewnessAccumulator(T, SkewnessAlgo skewnessAlgo, Summation summation)
     void put(U, SkewnessAlgo skewAlgo, Summation sumAlgo)(SkewnessAccumulator!(U, skewAlgo, sumAlgo) v)
         if (skewAlgo != SkewnessAlgo.assumeZeroMean)
     {
+        // An empty source has no mean and contributes no observations.
+        if (!v.count)
+            return;
         size_t oldCount = count;
-        T delta = v.mean;
-        if (oldCount > 0) {
-            delta -= mean;
+        if (!oldCount) {
+            // No recentering is needed; avoid evaluating powers of a possibly
+            // large mean only to multiply them by a zero destination count.
+            meanAccumulator.put!T(v.meanAccumulator);
+            centeredSummatorOfSquares.put(v.centeredSumOfSquares!T);
+            centeredSummatorOfCubes.put(v.centeredSumOfCubes!T);
+            return;
         }
+        T delta = v.mean;
+        delta -= mean;
+        // Subtract counts before conversion, but preserve the sign when the
+        // incoming batch is larger. size_t subtraction alone would wrap.
+        T countDifference = oldCount >= v.count
+            ? cast(T) (oldCount - v.count) : -cast(T) (v.count - oldCount);
         meanAccumulator.put!T(v.meanAccumulator);
         centeredSummatorOfCubes.put(v.centeredSumOfCubes!T +
-                                    delta * delta * delta * v.count * oldCount * (oldCount - v.count) / (count * count) +
+                                    delta * delta * delta * v.count * oldCount * countDifference / (count * count) +
                                     3 * delta * (oldCount * v.centeredSumOfSquares!T - v.count * centeredSumOfSquares!T) / count);
         centeredSummatorOfSquares.put(v.centeredSumOfSquares!T + delta * delta * v.count * oldCount / count);
     }
@@ -1290,14 +1303,27 @@ struct SkewnessAccumulator(T, SkewnessAlgo skewnessAlgo, Summation summation)
     void put(U, SkewnessAlgo skewAlgo, Summation sumAlgo)(SkewnessAccumulator!(U, skewAlgo, sumAlgo) v)
         if (skewAlgo != SkewnessAlgo.assumeZeroMean)
     {
+        // An empty source has no mean and contributes no observations.
+        if (!v.count)
+            return;
         size_t oldCount = count;
-        T delta = v.mean;
-        if (oldCount > 0) {
-            delta -= mean;
+        if (!oldCount) {
+            // No recentering is needed; avoid evaluating powers of a possibly
+            // large mean only to multiply them by a zero destination count.
+            meanAccumulator.put!T(v.meanAccumulator);
+            centeredSummatorOfSquares.put(v.centeredSumOfSquares!T);
+            centeredSummatorOfCubes.put(v.centeredSumOfCubes!T);
+            return;
         }
+        T delta = v.mean;
+        delta -= mean;
+        // Subtract counts before conversion, but preserve the sign when the
+        // incoming batch is larger. size_t subtraction alone would wrap.
+        T countDifference = oldCount >= v.count
+            ? cast(T) (oldCount - v.count) : -cast(T) (v.count - oldCount);
         meanAccumulator.put!T(v.meanAccumulator);
         centeredSummatorOfCubes.put(v.centeredSumOfCubes!T +
-                                    delta * delta * delta * v.count * oldCount * (oldCount - v.count) / (count * count) +
+                                    delta * delta * delta * v.count * oldCount * countDifference / (count * count) +
                                     3 * delta * (oldCount * v.centeredSumOfSquares!T - v.count * centeredSumOfSquares!T) / count);
         centeredSummatorOfSquares.put(v.centeredSumOfSquares!T + delta * delta * v.count * oldCount / count);
     }
@@ -2406,18 +2432,32 @@ struct KurtosisAccumulator(T, KurtosisAlgo kurtosisAlgo, Summation summation)
     ///
     void put(U, KurtosisAlgo kurtAlgo, Summation sumAlgo)(KurtosisAccumulator!(U, kurtAlgo, sumAlgo) v)
     {
+        // An empty source has no mean and contributes no observations.
+        if (!v.count)
+            return;
         size_t oldCount = count;
-        T delta = v.mean;
-        if (oldCount > 0) {
-            delta -= mean;
+        if (!oldCount) {
+            // No recentering is needed; avoid evaluating powers of a possibly
+            // large mean only to multiply them by a zero destination count.
+            meanAccumulator.put!T(v.meanAccumulator);
+            centeredSummatorOfSquares.put(v.centeredSumOfSquares!T);
+            centeredSummatorOfCubes.put(v.centeredSumOfCubes!T);
+            centeredSummatorOfQuarts.put(v.centeredSumOfQuarts!T);
+            return;
         }
+        T delta = v.mean;
+        delta -= mean;
+        // Subtract counts before conversion, but preserve the sign when the
+        // incoming batch is larger. size_t subtraction alone would wrap.
+        T countDifference = oldCount >= v.count
+            ? cast(T) (oldCount - v.count) : -cast(T) (v.count - oldCount);
         meanAccumulator.put!T(v.meanAccumulator);
         centeredSummatorOfQuarts.put(v.centeredSumOfQuarts!T +
                                delta * delta * delta * delta * ((v.count * oldCount) * (oldCount * oldCount - v.count * oldCount + v.count * v.count)) / (count * count * count) +
                                6 * delta * delta * ((oldCount * oldCount) * v.centeredSumOfSquares!T + (v.count * v.count) * centeredSumOfSquares!T) / (count * count) +
                                4 * delta * (oldCount * v.centeredSumOfCubes!T - v.count * centeredSumOfCubes!T) / count);
         centeredSummatorOfCubes.put(v.centeredSumOfCubes!T +
-                               delta * delta * delta * v.count * oldCount * (oldCount - v.count) / (count * count) +
+                               delta * delta * delta * v.count * oldCount * countDifference / (count * count) +
                                3 * delta * (oldCount * v.centeredSumOfSquares!T - v.count * centeredSumOfSquares!T) / count);
         centeredSummatorOfSquares.put(v.centeredSumOfSquares!T + delta * delta * v.count * oldCount / count);
     }
@@ -3541,18 +3581,32 @@ struct KurtosisAccumulator(T, KurtosisAlgo kurtosisAlgo, Summation summation)
     ///
     void put(U, KurtosisAlgo kurtAlgo, Summation sumAlgo)(KurtosisAccumulator!(U, kurtAlgo, sumAlgo) v)
     {
+        // An empty source has no mean and contributes no observations.
+        if (!v.count)
+            return;
         size_t oldCount = count;
-        T delta = v.mean;
-        if (oldCount > 0) {
-            delta -= mean;
+        if (!oldCount) {
+            // No recentering is needed; avoid evaluating powers of a possibly
+            // large mean only to multiply them by a zero destination count.
+            meanAccumulator.put!T(v.meanAccumulator);
+            centeredSummatorOfSquares.put(v.centeredSumOfSquares!T);
+            centeredSummatorOfCubes.put(v.centeredSumOfCubes!T);
+            centeredSummatorOfQuarts.put(v.centeredSumOfQuarts!T);
+            return;
         }
+        T delta = v.mean;
+        delta -= mean;
+        // Subtract counts before conversion, but preserve the sign when the
+        // incoming batch is larger. size_t subtraction alone would wrap.
+        T countDifference = oldCount >= v.count
+            ? cast(T) (oldCount - v.count) : -cast(T) (v.count - oldCount);
         meanAccumulator.put!T(v.meanAccumulator);
         centeredSummatorOfQuarts.put(v.centeredSumOfQuarts!T +
                                delta * delta * delta * delta * ((v.count * oldCount) * (oldCount * oldCount - v.count * oldCount + v.count * v.count)) / (count * count * count) +
                                6 * delta * delta * ((oldCount * oldCount) * v.centeredSumOfSquares!T + (v.count * v.count) * centeredSumOfSquares!T) / (count * count) +
                                4 * delta * (oldCount * v.centeredSumOfCubes!T - v.count * centeredSumOfCubes!T) / count);
         centeredSummatorOfCubes.put(v.centeredSumOfCubes!T +
-                               delta * delta * delta * v.count * oldCount * (oldCount - v.count) / (count * count) +
+                               delta * delta * delta * v.count * oldCount * countDifference / (count * count) +
                                3 * delta * (oldCount * v.centeredSumOfSquares!T - v.count * centeredSumOfSquares!T) / count);
         centeredSummatorOfSquares.put(v.centeredSumOfSquares!T + delta * delta * v.count * oldCount / count);
     }
@@ -4350,4 +4404,70 @@ unittest
     assert(y.kurtosis!"assumeZeroMean"(false, true).approxEqual(4.006470));
     assert(y.kurtosis!"assumeZeroMean"(true).approxEqual(0.171904));
     assert(y.kurtosis!"assumeZeroMean"(true, true).approxEqual(3.171904));
+}
+
+// Parallel merges preserve signed count differences and empty identities.
+version(mir_stat_test)
+@safe pure nothrow
+unittest
+{
+    import mir.math.common: approxEqual;
+    import std.meta: AliasSeq;
+
+    static foreach (T; AliasSeq!(float, double, real))
+    static foreach (hybrid; [false, true])
+    {{
+        alias S = SkewnessAccumulator!(T,
+            hybrid ? SkewnessAlgo.hybrid : SkewnessAlgo.online, Summation.naive);
+        alias K = KurtosisAccumulator!(T,
+            hybrid ? KurtosisAlgo.hybrid : KurtosisAlgo.online, Summation.naive);
+        static foreach (A; AliasSeq!(S, K))
+        {{
+            // The incoming batch is larger; reversing the merge must agree.
+            A left, right;
+            left.put(T(0));
+            right.put(T(1));
+            right.put(T(2));
+            auto reverse = right;
+            reverse.put(left);
+            left.put(right);
+            foreach (result; [left, reverse])
+            {
+                assert(result.count == 3 && result.mean == 1);
+                assert(result.centeredSumOfSquares.approxEqual(T(2)));
+                assert(result.centeredSumOfCubes == 0);
+                static if (is(A == K))
+                    assert(result.centeredSumOfQuarts.approxEqual(T(2)));
+            }
+            // Empty merges do not contaminate a valid accumulator.
+            A empty;
+            left.put(empty);
+            assert(left.count == 3 && left.mean == 1);
+            assert(left.centeredSumOfSquares.approxEqual(T(2)));
+            assert(left.centeredSumOfCubes == 0);
+            static if (is(A == K))
+                assert(left.centeredSumOfQuarts.approxEqual(T(2)));
+            empty.put(empty);
+            assert(empty.count == 0 && empty.centeredSumOfSquares == 0);
+            // Copying into an empty target needs no powers of the large mean.
+            static if (is(A == K))
+                alias Batch = KurtosisAccumulator!(T, KurtosisAlgo.twoPass, Summation.naive);
+            else
+                alias Batch = SkewnessAccumulator!(T, SkewnessAlgo.twoPass, Summation.naive);
+            auto large = Batch([T(0x1p100), T(0x1p100)]);
+            empty.put(large);
+            assert(empty.count == 2 && empty.mean == T(0x1p100));
+            assert(empty.centeredSumOfSquares == 0);
+            assert(empty.centeredSumOfCubes == 0);
+            static if (is(A == K))
+                assert(empty.centeredSumOfQuarts == 0);
+            // By-value source parameters preserve self-merge behavior.
+            left.put(left);
+            assert(left.count == 6 && left.mean == 1);
+            assert(left.centeredSumOfSquares.approxEqual(T(4)));
+            assert(left.centeredSumOfCubes == 0);
+            static if (is(A == K))
+                assert(left.centeredSumOfQuarts.approxEqual(T(4)));
+        }}
+    }}
 }
