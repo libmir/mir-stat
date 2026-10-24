@@ -4999,6 +4999,28 @@ unittest
     }}
 }
 
+// Separate the cases so Windows DMD's optimized inliner does not combine the
+// entire large-count test matrix into one function. Production calls inside
+// each case remain eligible for inlining.
+version(mir_stat_test)
+pragma(inline, false)
+private void checkLargeCountSkewness(T, SkewnessAlgo algo)() @safe pure nothrow
+{
+    enum size_t n = size_t.sizeof == 8 ? (1UL << 33) : (1U << 17);
+    SkewnessAccumulator!(T, algo, Summation.naive) result;
+    // Equal numbers of -1 and +1 have zero skewness.
+    static if (algo == SkewnessAlgo.assumeZeroMean)
+        result._count = n;
+    else
+        result.meanAccumulator.count = n;
+    static if (algo == SkewnessAlgo.naive)
+        result.summatorOfSquares.put(T(n));
+    else
+        result.centeredSummatorOfSquares.put(T(n));
+    assert(result.skewness(true) == 0);
+    assert(result.skewness(false) == 0);
+}
+
 // The naive skewness correction must not multiply counts as integers either.
 version(mir_stat_test)
 @safe pure nothrow
@@ -5010,21 +5032,7 @@ unittest
     static foreach (algo; [SkewnessAlgo.naive, SkewnessAlgo.online,
         SkewnessAlgo.twoPass, SkewnessAlgo.threePass,
         SkewnessAlgo.assumeZeroMean, SkewnessAlgo.hybrid])
-    {{
-        enum size_t n = size_t.sizeof == 8 ? (1UL << 33) : (1U << 17);
-        SkewnessAccumulator!(T, algo, Summation.naive) result;
-        // Equal numbers of -1 and +1 have zero skewness.
-        static if (algo == SkewnessAlgo.assumeZeroMean)
-            result._count = n;
-        else
-            result.meanAccumulator.count = n;
-        static if (algo == SkewnessAlgo.naive)
-            result.summatorOfSquares.put(T(n));
-        else
-            result.centeredSummatorOfSquares.put(T(n));
-        assert(result.skewness(true) == 0);
-        assert(result.skewness(false) == 0);
-    }}
+        checkLargeCountSkewness!(T, algo)();
 }
 
 // Preserve corrections when raw or zero-centered moment sums are merged.
@@ -5058,6 +5066,42 @@ unittest
     }}
 }
 
+// Keep the 54 compensated merge cases separately optimized instead of
+// expanding them into a single large function in Windows DMD.
+version(mir_stat_test)
+pragma(inline, false)
+private void checkCenteredMomentMerge(T, Summation sum,
+    KurtosisAlgo destinationAlgo, KurtosisAlgo sourceAlgo)() pure nothrow
+{
+    T large = 1;
+    foreach (i; 0 .. T.mant_dig)
+        large *= 2;
+    alias A = KurtosisAccumulator!(T, destinationAlgo, sum);
+    KurtosisAccumulator!(T, sourceAlgo, sum) source;
+    source.meanAccumulator.put(T(0));
+    source.centeredSummatorOfSquares.put(large);
+    source.centeredSummatorOfSquares.put(T(1));
+    source.centeredSummatorOfCubes.put(large);
+    source.centeredSummatorOfCubes.put(T(1));
+    source.centeredSummatorOfQuarts.put(large);
+    source.centeredSummatorOfQuarts.put(T(1));
+    A result, copied, tail;
+    tail.meanAccumulator.put(T(0));
+    tail.centeredSummatorOfSquares.put(T(1));
+    tail.centeredSummatorOfCubes.put(-large);
+    tail.centeredSummatorOfQuarts.put(T(1));
+    result.put(tail);
+    result.put(source);
+    copied.put(source);
+    copied.put(tail);
+    foreach (ref value; [result, copied]) {
+        assert(value.centeredSumOfSquares == large + 2);
+        assert(value.centeredSumOfCubes == 1);
+        assert(value.centeredSumOfQuarts == large + 2);
+    }
+    assert(source.centeredSumOfCubes == large);
+}
+
 // Isolate state transfer from recentering with synthetic, equal-mean moments.
 // These fixtures test summation state, not moments of an observation dataset.
 version(mir_stat_test)
@@ -5069,35 +5113,7 @@ unittest
     static foreach (sum; [Summation.kbn, Summation.kb2, Summation.precise])
     static foreach (destinationAlgo; [KurtosisAlgo.online, KurtosisAlgo.hybrid])
     static foreach (sourceAlgo; [KurtosisAlgo.online, KurtosisAlgo.hybrid, KurtosisAlgo.twoPass])
-    {{
-        T large = 1;
-        foreach (i; 0 .. T.mant_dig)
-            large *= 2;
-        alias A = KurtosisAccumulator!(T, destinationAlgo, sum);
-        KurtosisAccumulator!(T, sourceAlgo, sum) source;
-        source.meanAccumulator.put(T(0));
-        source.centeredSummatorOfSquares.put(large);
-        source.centeredSummatorOfSquares.put(T(1));
-        source.centeredSummatorOfCubes.put(large);
-        source.centeredSummatorOfCubes.put(T(1));
-        source.centeredSummatorOfQuarts.put(large);
-        source.centeredSummatorOfQuarts.put(T(1));
-        A result, copied, tail;
-        tail.meanAccumulator.put(T(0));
-        tail.centeredSummatorOfSquares.put(T(1));
-        tail.centeredSummatorOfCubes.put(-large);
-        tail.centeredSummatorOfQuarts.put(T(1));
-        result.put(tail);
-        result.put(source);
-        copied.put(source);
-        copied.put(tail);
-        foreach (ref value; [result, copied]) {
-            assert(value.centeredSumOfSquares == large + 2);
-            assert(value.centeredSumOfCubes == 1);
-            assert(value.centeredSumOfQuarts == large + 2);
-        }
-        assert(source.centeredSumOfCubes == large);
-    }}
+        checkCenteredMomentMerge!(T, sum, destinationAlgo, sourceAlgo)();
 }
 
 // Only equivalent moment representations and summator types transfer state.
