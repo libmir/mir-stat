@@ -227,8 +227,8 @@ const:
     {
         import mir.math.common: sqrt;
 
-        return scaledSumOfCubes!F(isPopulation) * count /
-            ((count + isPopulation - 1) * (count + 2 * isPopulation - 2));
+        return scaledSumOfCubes!F(isPopulation) *
+            (cast(F) count / (count - 2 + 2 * isPopulation)) / (count - 1 + isPopulation);
         /+ equivalent to
         F mu = mean!F;
         F avg_centeredSumOfCubes = sumOfCubes!F / count - 3 * mu * variance!F(true) - (mu * mu * mu);
@@ -370,8 +370,11 @@ struct SkewnessAccumulator(T, SkewnessAlgo skewnessAlgo, Summation summation)
         }
         meanAccumulator.put(x);
         T deltaNew = x - mean;
-        centeredSummatorOfCubes.put(deltaOld * deltaOld * deltaOld * (count - 1) * (count - 2) / (count * count) -
-                                    3 * deltaOld * centeredSumOfSquares / count);
+        // Form count ratios before multiplying: integer count powers can wrap,
+        // and floating count powers can overflow even when the result is finite.
+        T inverseCount = T(1) / count;
+        centeredSummatorOfCubes.put(deltaOld * deltaOld * deltaOld * (cast(T) (count - 1) * inverseCount) * ((cast(T) count - 2) * inverseCount) -
+                                    3 * deltaOld * centeredSumOfSquares * inverseCount);
         centeredSummatorOfSquares.put(deltaOld * deltaNew);
     }
 
@@ -398,10 +401,15 @@ struct SkewnessAccumulator(T, SkewnessAlgo skewnessAlgo, Summation summation)
         T countDifference = oldCount >= v.count
             ? cast(T) (oldCount - v.count) : -cast(T) (v.count - oldCount);
         meanAccumulator.put!T(v.meanAccumulator);
+        // Form count ratios before multiplying: integer count powers can wrap,
+        // and floating count powers can overflow even when the result is finite.
+        T inverseCount = T(1) / count;
+        T oldFraction = cast(T) oldCount * inverseCount;
+        T newFraction = cast(T) v.count * inverseCount;
         centeredSummatorOfCubes.put(v.centeredSumOfCubes!T +
-                                    delta * delta * delta * v.count * oldCount * countDifference / (count * count) +
-                                    3 * delta * (oldCount * v.centeredSumOfSquares!T - v.count * centeredSumOfSquares!T) / count);
-        centeredSummatorOfSquares.put(v.centeredSumOfSquares!T + delta * delta * v.count * oldCount / count);
+                                    delta * delta * delta * newFraction * oldCount * (countDifference * inverseCount) +
+                                    3 * delta * (oldFraction * v.centeredSumOfSquares!T - newFraction * centeredSumOfSquares!T));
+        centeredSummatorOfSquares.put(v.centeredSumOfSquares!T + delta * delta * newFraction * oldCount);
     }
 
 const:
@@ -1306,8 +1314,11 @@ struct SkewnessAccumulator(T, SkewnessAlgo skewnessAlgo, Summation summation)
         }
         meanAccumulator.put(x);
         T deltaNew = x - mean;
-        centeredSummatorOfCubes.put(deltaOld * deltaOld * deltaOld * (count - 1) * (count - 2) / (count * count) -
-                                    3 * deltaOld * centeredSumOfSquares / count);
+        // Form count ratios before multiplying: integer count powers can wrap,
+        // and floating count powers can overflow even when the result is finite.
+        T inverseCount = T(1) / count;
+        centeredSummatorOfCubes.put(deltaOld * deltaOld * deltaOld * (cast(T) (count - 1) * inverseCount) * ((cast(T) count - 2) * inverseCount) -
+                                    3 * deltaOld * centeredSumOfSquares * inverseCount);
         centeredSummatorOfSquares.put(deltaOld * deltaNew);
     }
 
@@ -1334,10 +1345,15 @@ struct SkewnessAccumulator(T, SkewnessAlgo skewnessAlgo, Summation summation)
         T countDifference = oldCount >= v.count
             ? cast(T) (oldCount - v.count) : -cast(T) (v.count - oldCount);
         meanAccumulator.put!T(v.meanAccumulator);
+        // Form count ratios before multiplying: integer count powers can wrap,
+        // and floating count powers can overflow even when the result is finite.
+        T inverseCount = T(1) / count;
+        T oldFraction = cast(T) oldCount * inverseCount;
+        T newFraction = cast(T) v.count * inverseCount;
         centeredSummatorOfCubes.put(v.centeredSumOfCubes!T +
-                                    delta * delta * delta * v.count * oldCount * countDifference / (count * count) +
-                                    3 * delta * (oldCount * v.centeredSumOfSquares!T - v.count * centeredSumOfSquares!T) / count);
-        centeredSummatorOfSquares.put(v.centeredSumOfSquares!T + delta * delta * v.count * oldCount / count);
+                                    delta * delta * delta * newFraction * oldCount * (countDifference * inverseCount) +
+                                    3 * delta * (oldFraction * v.centeredSumOfSquares!T - newFraction * centeredSumOfSquares!T));
+        centeredSummatorOfSquares.put(v.centeredSumOfSquares!T + delta * delta * newFraction * oldCount);
     }
 
 const:
@@ -1462,6 +1478,7 @@ unittest
 {
     import mir.math.sum: Summation;
     import mir.test: should;
+    import mir.math.common: approxEqual;
     import std.algorithm: map;
     import std.range: chunks, iota;
 
@@ -1473,9 +1490,10 @@ unittest
     v2.skewness(true).should == 0;
     SkewnessAccumulator!(double, SkewnessAlgo.hybrid, Summation.naive) v3;
     v3.put(x1.chunks(1));
-    v3.skewness(true).should == 0;
+    // Incremental merging can leave roundoff in the symmetric third moment.
+    assert(v3.skewness(true).approxEqual(0.0, 8 * double.epsilon, 8 * double.epsilon));
     auto v4 = SkewnessAccumulator!(double, SkewnessAlgo.hybrid, Summation.naive)(x1.chunks(1));
-    v4.skewness(true).should == 0;
+    assert(v4.skewness(true).approxEqual(0.0, 8 * double.epsilon, 8 * double.epsilon));
 }
 
 // Can put slice
@@ -2264,10 +2282,15 @@ const:
     }
     do
     {
-        F mult1 = cast(F) count * (count + isPopulation - 1) * (count - isPopulation + 1) / ((count + 2 * isPopulation - 2) * (count + 3 * isPopulation - 3));
-        F mult2 = cast(F) (count + isPopulation - 1) * (count + isPopulation - 1) / ((count + 2 * isPopulation - 2) * (count + 3 * isPopulation - 3));
+        // The bias corrections are ratios of nearby counts. Do not form
+        // their integer products or large intermediate floating powers.
+        F correction = cast(F) (count - 1 + isPopulation) / (count - 2 + 2 * isPopulation);
+        F inverseAdjustedCount = F(1) / (count - 3 + 3 * isPopulation);
+        F mult1 = cast(F) count * correction *
+            ((cast(F) (count - isPopulation) + 1) * inverseAdjustedCount);
+        F mult2 = correction * (cast(F) (count - 1 + isPopulation) * inverseAdjustedCount);
         F s = centeredSumOfSquares!F;
-        return centeredSumOfQuarts!F / (s * s) * mult1 + 3 * (isRaw - mult2);
+        return (centeredSumOfQuarts!F / s) * (mult1 / s) + 3 * (isRaw - mult2);
     }
 }
 
@@ -2439,11 +2462,14 @@ struct KurtosisAccumulator(T, KurtosisAlgo kurtosisAlgo, Summation summation)
         }
         meanAccumulator.put(x);
         T deltaNew = x - mean;
-        centeredSummatorOfQuarts.put(deltaOld * deltaOld * deltaOld * deltaOld * ((count - 1) * (count * count - 3 * count + 3)) / (count * count * count) +
-                                6 * deltaOld * deltaOld * centeredSumOfSquares!T / (count * count) -
-                                4 * deltaOld * centeredSumOfCubes!T / count);
-        centeredSummatorOfCubes.put(deltaOld * deltaOld * deltaOld * (count - 1) * (count - 2) / (count * count) -
-                               3 * deltaOld * centeredSumOfSquares!T / count);
+        // Form count ratios before multiplying: integer count powers can wrap,
+        // and floating count powers can overflow even when the result is finite.
+        T inverseCount = T(1) / count;
+        centeredSummatorOfQuarts.put(deltaOld * deltaOld * deltaOld * deltaOld * (cast(T) (count - 1) * inverseCount) * (1 - 3 * inverseCount + 3 * inverseCount * inverseCount) +
+                                6 * deltaOld * deltaOld * centeredSumOfSquares!T * inverseCount * inverseCount -
+                                4 * deltaOld * centeredSumOfCubes!T * inverseCount);
+        centeredSummatorOfCubes.put(deltaOld * deltaOld * deltaOld * (cast(T) (count - 1) * inverseCount) * ((cast(T) count - 2) * inverseCount) -
+                               3 * deltaOld * centeredSumOfSquares!T * inverseCount);
         centeredSummatorOfSquares.put(deltaOld * deltaNew);
     }
 
@@ -2470,14 +2496,20 @@ struct KurtosisAccumulator(T, KurtosisAlgo kurtosisAlgo, Summation summation)
         T countDifference = oldCount >= v.count
             ? cast(T) (oldCount - v.count) : -cast(T) (v.count - oldCount);
         meanAccumulator.put!T(v.meanAccumulator);
+        // Form count ratios before multiplying: integer count powers can wrap,
+        // and floating count powers can overflow even when the result is finite.
+        T inverseCount = T(1) / count;
+        T oldFraction = cast(T) oldCount * inverseCount;
+        T newFraction = cast(T) v.count * inverseCount;
+        // a*b*(a*a-a*b+b*b)/n^3 = a*(b/n)*((a/n)^2-(a/n)*(b/n)+(b/n)^2).
         centeredSummatorOfQuarts.put(v.centeredSumOfQuarts!T +
-                               delta * delta * delta * delta * ((v.count * oldCount) * (oldCount * oldCount - v.count * oldCount + v.count * v.count)) / (count * count * count) +
-                               6 * delta * delta * ((oldCount * oldCount) * v.centeredSumOfSquares!T + (v.count * v.count) * centeredSumOfSquares!T) / (count * count) +
-                               4 * delta * (oldCount * v.centeredSumOfCubes!T - v.count * centeredSumOfCubes!T) / count);
+                               delta * delta * delta * delta * newFraction * oldCount * (oldFraction * oldFraction - oldFraction * newFraction + newFraction * newFraction) +
+                               6 * delta * delta * (oldFraction * oldFraction * v.centeredSumOfSquares!T + newFraction * newFraction * centeredSumOfSquares!T) +
+                               4 * delta * (oldFraction * v.centeredSumOfCubes!T - newFraction * centeredSumOfCubes!T));
         centeredSummatorOfCubes.put(v.centeredSumOfCubes!T +
-                               delta * delta * delta * v.count * oldCount * countDifference / (count * count) +
-                               3 * delta * (oldCount * v.centeredSumOfSquares!T - v.count * centeredSumOfSquares!T) / count);
-        centeredSummatorOfSquares.put(v.centeredSumOfSquares!T + delta * delta * v.count * oldCount / count);
+                               delta * delta * delta * newFraction * oldCount * (countDifference * inverseCount) +
+                               3 * delta * (oldFraction * v.centeredSumOfSquares!T - newFraction * centeredSumOfSquares!T));
+        centeredSummatorOfSquares.put(v.centeredSumOfSquares!T + delta * delta * newFraction * oldCount);
     }
 
 const:
@@ -2557,10 +2589,15 @@ const:
     }
     do
     {
-        F mult1 = cast(F) count * (count + isPopulation - 1) * (count - isPopulation + 1) / ((count + 2 * isPopulation - 2) * (count + 3 * isPopulation - 3));
-        F mult2 = cast(F) (count + isPopulation - 1) * (count + isPopulation - 1) / ((count + 2 * isPopulation - 2) * (count + 3 * isPopulation - 3));
+        // The bias corrections are ratios of nearby counts. Do not form
+        // their integer products or large intermediate floating powers.
+        F correction = cast(F) (count - 1 + isPopulation) / (count - 2 + 2 * isPopulation);
+        F inverseAdjustedCount = F(1) / (count - 3 + 3 * isPopulation);
+        F mult1 = cast(F) count * correction *
+            ((cast(F) (count - isPopulation) + 1) * inverseAdjustedCount);
+        F mult2 = correction * (cast(F) (count - 1 + isPopulation) * inverseAdjustedCount);
         F s = centeredSumOfSquares!F;
-        return centeredSumOfQuarts!F / (s * s) * mult1 + 3 * (isRaw - mult2);
+        return (centeredSumOfQuarts!F / s) * (mult1 / s) + 3 * (isRaw - mult2);
     }
 }
 
@@ -2882,10 +2919,15 @@ const:
     }
     do
     {
-        F mult1 = cast(F) count * (count + isPopulation - 1) * (count - isPopulation + 1) / ((count + 2 * isPopulation - 2) * (count + 3 * isPopulation - 3));
-        F mult2 = cast(F) (count + isPopulation - 1) * (count + isPopulation - 1) / ((count + 2 * isPopulation - 2) * (count + 3 * isPopulation - 3));
+        // The bias corrections are ratios of nearby counts. Do not form
+        // their integer products or large intermediate floating powers.
+        F correction = cast(F) (count - 1 + isPopulation) / (count - 2 + 2 * isPopulation);
+        F inverseAdjustedCount = F(1) / (count - 3 + 3 * isPopulation);
+        F mult1 = cast(F) count * correction *
+            ((cast(F) (count - isPopulation) + 1) * inverseAdjustedCount);
+        F mult2 = correction * (cast(F) (count - 1 + isPopulation) * inverseAdjustedCount);
         F s = centeredSumOfSquares!F;
-        return centeredSumOfQuarts!F / (s * s) * mult1 + 3 * (isRaw - mult2);
+        return (centeredSumOfQuarts!F / s) * (mult1 / s) + 3 * (isRaw - mult2);
     }
 }
 
@@ -3107,12 +3149,14 @@ const:
     F scaledSumOfCubes(F = T)(bool isPopulation)
     {
         import mir.math.common: sqrt;
-        return scaledSumOfCubes!F * (count + isPopulation - 1) * sqrt(cast(F) count + isPopulation - 1) / count / sqrt(cast(F) count);
+        F correction = cast(F) (count - 1 + isPopulation) / count;
+        return scaledSumOfCubes!F * correction * sqrt(correction);
     }
     ///
     F scaledSumOfQuarts(F = T)(bool isPopulation)
     {
-        return scaledSumOfQuarts!F * (count + isPopulation - 1) * (count + isPopulation - 1) / cast(F) count / cast(F) count;
+        F correction = cast(F) (count - 1 + isPopulation) / count;
+        return scaledSumOfQuarts!F * correction * correction;
     }
     ///
     F skewness(F = T)(bool isPopulation)
@@ -3142,8 +3186,13 @@ const:
     {
         // formula for other kurtosis accumulators doesn't work here since we are
         // enforcing the scaling uses population variance and not that it can switch
-        F mult1 = cast(F) (count + isPopulation - 1) * (count - isPopulation + 1) / (count * (count + 2 * isPopulation - 2) * (count + 3 * isPopulation - 3));
-        F mult2 = cast(F) (count + isPopulation - 1) * (count + isPopulation - 1) / ((count + 2 * isPopulation - 2) * (count + 3 * isPopulation - 3));
+        // The stored fourth sum is already scaled by population variance.
+        // Use count ratios for the bias correction, then divide by count.
+        F correction = cast(F) (count - 1 + isPopulation) / (count - 2 + 2 * isPopulation);
+        F inverseAdjustedCount = F(1) / (count - 3 + 3 * isPopulation);
+        F mult1 = correction *
+            ((cast(F) (count - isPopulation) + 1) * inverseAdjustedCount) / count;
+        F mult2 = correction * (cast(F) (count - 1 + isPopulation) * inverseAdjustedCount);
 
         return scaledSumOfQuarts!F * mult1 + 3 * (isRaw - mult2);
     }
@@ -3387,10 +3436,15 @@ const:
     }
     do
     {
-        F mult1 = cast(F) count * (count + isPopulation - 1) * (count - isPopulation + 1) / ((count + 2 * isPopulation - 2) * (count + 3 * isPopulation - 3));
-        F mult2 = cast(F) (count + isPopulation - 1) * (count + isPopulation - 1) / ((count + 2 * isPopulation - 2) * (count + 3 * isPopulation - 3));
+        // The bias corrections are ratios of nearby counts. Do not form
+        // their integer products or large intermediate floating powers.
+        F correction = cast(F) (count - 1 + isPopulation) / (count - 2 + 2 * isPopulation);
+        F inverseAdjustedCount = F(1) / (count - 3 + 3 * isPopulation);
+        F mult1 = cast(F) count * correction *
+            ((cast(F) (count - isPopulation) + 1) * inverseAdjustedCount);
+        F mult2 = correction * (cast(F) (count - 1 + isPopulation) * inverseAdjustedCount);
         F s = centeredSumOfSquares!F;
-        return centeredSumOfQuarts!F / (s * s) * mult1 + 3 * (isRaw - mult2);
+        return (centeredSumOfQuarts!F / s) * (mult1 / s) + 3 * (isRaw - mult2);
     }
 }
 
@@ -3594,11 +3648,14 @@ struct KurtosisAccumulator(T, KurtosisAlgo kurtosisAlgo, Summation summation)
         }
         meanAccumulator.put(x);
         T deltaNew = x - mean;
-        centeredSummatorOfQuarts.put(deltaOld * deltaOld * deltaOld * deltaOld * ((count - 1) * (count * count - 3 * count + 3)) / (count * count * count) +
-                                6 * deltaOld * deltaOld * centeredSumOfSquares!T / (count * count) -
-                                4 * deltaOld * centeredSumOfCubes!T / count);
-        centeredSummatorOfCubes.put(deltaOld * deltaOld * deltaOld * (count - 1) * (count - 2) / (count * count) -
-                               3 * deltaOld * centeredSumOfSquares!T / count);
+        // Form count ratios before multiplying: integer count powers can wrap,
+        // and floating count powers can overflow even when the result is finite.
+        T inverseCount = T(1) / count;
+        centeredSummatorOfQuarts.put(deltaOld * deltaOld * deltaOld * deltaOld * (cast(T) (count - 1) * inverseCount) * (1 - 3 * inverseCount + 3 * inverseCount * inverseCount) +
+                                6 * deltaOld * deltaOld * centeredSumOfSquares!T * inverseCount * inverseCount -
+                                4 * deltaOld * centeredSumOfCubes!T * inverseCount);
+        centeredSummatorOfCubes.put(deltaOld * deltaOld * deltaOld * (cast(T) (count - 1) * inverseCount) * ((cast(T) count - 2) * inverseCount) -
+                               3 * deltaOld * centeredSumOfSquares!T * inverseCount);
         centeredSummatorOfSquares.put(deltaOld * deltaNew);
     }
 
@@ -3625,14 +3682,20 @@ struct KurtosisAccumulator(T, KurtosisAlgo kurtosisAlgo, Summation summation)
         T countDifference = oldCount >= v.count
             ? cast(T) (oldCount - v.count) : -cast(T) (v.count - oldCount);
         meanAccumulator.put!T(v.meanAccumulator);
+        // Form count ratios before multiplying: integer count powers can wrap,
+        // and floating count powers can overflow even when the result is finite.
+        T inverseCount = T(1) / count;
+        T oldFraction = cast(T) oldCount * inverseCount;
+        T newFraction = cast(T) v.count * inverseCount;
+        // a*b*(a*a-a*b+b*b)/n^3 = a*(b/n)*((a/n)^2-(a/n)*(b/n)+(b/n)^2).
         centeredSummatorOfQuarts.put(v.centeredSumOfQuarts!T +
-                               delta * delta * delta * delta * ((v.count * oldCount) * (oldCount * oldCount - v.count * oldCount + v.count * v.count)) / (count * count * count) +
-                               6 * delta * delta * ((oldCount * oldCount) * v.centeredSumOfSquares!T + (v.count * v.count) * centeredSumOfSquares!T) / (count * count) +
-                               4 * delta * (oldCount * v.centeredSumOfCubes!T - v.count * centeredSumOfCubes!T) / count);
+                               delta * delta * delta * delta * newFraction * oldCount * (oldFraction * oldFraction - oldFraction * newFraction + newFraction * newFraction) +
+                               6 * delta * delta * (oldFraction * oldFraction * v.centeredSumOfSquares!T + newFraction * newFraction * centeredSumOfSquares!T) +
+                               4 * delta * (oldFraction * v.centeredSumOfCubes!T - newFraction * centeredSumOfCubes!T));
         centeredSummatorOfCubes.put(v.centeredSumOfCubes!T +
-                               delta * delta * delta * v.count * oldCount * countDifference / (count * count) +
-                               3 * delta * (oldCount * v.centeredSumOfSquares!T - v.count * centeredSumOfSquares!T) / count);
-        centeredSummatorOfSquares.put(v.centeredSumOfSquares!T + delta * delta * v.count * oldCount / count);
+                               delta * delta * delta * newFraction * oldCount * (countDifference * inverseCount) +
+                               3 * delta * (oldFraction * v.centeredSumOfSquares!T - newFraction * centeredSumOfSquares!T));
+        centeredSummatorOfSquares.put(v.centeredSumOfSquares!T + delta * delta * newFraction * oldCount);
     }
 
 const:
@@ -3712,10 +3775,15 @@ const:
     }
     do
     {
-        F mult1 = cast(F) count * (count + isPopulation - 1) * (count - isPopulation + 1) / ((count + 2 * isPopulation - 2) * (count + 3 * isPopulation - 3));
-        F mult2 = cast(F) (count + isPopulation - 1) * (count + isPopulation - 1) / ((count + 2 * isPopulation - 2) * (count + 3 * isPopulation - 3));
+        // The bias corrections are ratios of nearby counts. Do not form
+        // their integer products or large intermediate floating powers.
+        F correction = cast(F) (count - 1 + isPopulation) / (count - 2 + 2 * isPopulation);
+        F inverseAdjustedCount = F(1) / (count - 3 + 3 * isPopulation);
+        F mult1 = cast(F) count * correction *
+            ((cast(F) (count - isPopulation) + 1) * inverseAdjustedCount);
+        F mult2 = correction * (cast(F) (count - 1 + isPopulation) * inverseAdjustedCount);
         F s = centeredSumOfSquares!F;
-        return centeredSumOfQuarts!F / (s * s) * mult1 + 3 * (isRaw - mult2);
+        return (centeredSumOfQuarts!F / s) * (mult1 / s) + 3 * (isRaw - mult2);
     }
 }
 
@@ -4284,7 +4352,10 @@ unittest
     assert(y.approxEqual(0.223394));
     static assert(is(typeof(y) == double));
 
-    assert(x.kurtosis!float.approxEqual(0.223394));
+    // The exact sample excess is 32076/143585. Allow float roundoff in
+    // the moment sums and subtraction of the bias correction near four.
+    assert(x.kurtosis!float.approxEqual(32076.0f / 143585,
+        16 * float.epsilon, 16 * float.epsilon));
 }
 
 /++
@@ -4579,6 +4650,7 @@ version(mir_stat_test)
 unittest
 {
     import std.meta: AliasSeq;
+    import mir.math.common: approxEqual;
 
     static foreach (T; AliasSeq!(float, double, real))
     static foreach (sum; [Summation.naive, Summation.kbn, Summation.kb2, Summation.precise])
@@ -4608,9 +4680,161 @@ unittest
         foreach (T x; [T(0), T(1), T(5)])
             result.put(x);
         assert(result.count == 3 && result.mean == 2);
-        assert(result.centeredSumOfSquares == 14);
-        assert(result.centeredSumOfCubes == 18);
+        assert(result.centeredSumOfSquares.approxEqual(T(14), T(8) * T.epsilon, T(8) * T.epsilon));
+        assert(result.centeredSumOfCubes.approxEqual(T(18), T(8) * T.epsilon, T(8) * T.epsilon));
         static if (__traits(hasMember, A, "centeredSumOfQuarts"))
-            assert(result.centeredSumOfQuarts == 98);
+            assert(result.centeredSumOfQuarts.approxEqual(T(98), T(8) * T.epsilon, T(8) * T.epsilon));
+    }}
+}
+
+// Count powers must not overflow while accumulating valid finite moments.
+version(mir_stat_test)
+@safe pure nothrow
+unittest
+{
+    import std.meta: AliasSeq;
+    import mir.math.common: approxEqual;
+
+    // Build repeated observations through the public API without a huge array.
+    static A repeated(A, T)(T value, size_t n)
+    {
+        A result, block;
+        block.put(value);
+        while (n) {
+            if (n & 1)
+                result.put(block);
+            n >>= 1;
+            if (n)
+                block.put(block);
+        }
+        return result;
+    }
+
+    static foreach (T; AliasSeq!(float, double, real))
+    static foreach (A; AliasSeq!(
+        SkewnessAccumulator!(T, SkewnessAlgo.online, Summation.naive),
+        SkewnessAccumulator!(T, SkewnessAlgo.hybrid, Summation.naive),
+        KurtosisAccumulator!(T, KurtosisAlgo.online, Summation.naive),
+        KurtosisAccumulator!(T, KurtosisAlgo.hybrid, Summation.naive)))
+    {{
+        enum size_t largeCount = size_t.sizeof == 8 ? (1UL << 32) : (1U << 17);
+        foreach (size_t n; [size_t(256), size_t(65536), largeCount]) {
+            auto result = repeated!A(T(0), n);
+            result.put(repeated!A(T(1), n));
+            // Half zeros, half ones: mean=1/2, M2=n/2, M3=0, M4=n/8.
+            assert(result.count == 2 * n && result.mean == T(0.5));
+            assert(result.centeredSumOfSquares == T(n) / 2);
+            assert(result.centeredSumOfCubes == 0);
+            assert(result.skewness(true) == 0);
+            static if (__traits(hasMember, A, "centeredSumOfQuarts")) {
+                assert(result.centeredSumOfQuarts == T(n) / 8);
+                assert(result.kurtosis(true, false).approxEqual(T(-2)));
+            }
+        }
+
+        static if (size_t.sizeof == 8) {
+            // Converting these counts before subtracting would lose the
+            // one-observation difference in float and double.
+            enum size_t group = 1UL << 54;
+            auto unequal = repeated!A(T(0), group + 1);
+            unequal.put(repeated!A(T(1), group));
+            assert(unequal.centeredSumOfCubes.approxEqual(T(0.25)));
+            auto reversed = repeated!A(T(1), group);
+            reversed.put(repeated!A(T(0), group + 1));
+            assert(reversed.centeredSumOfCubes.approxEqual(T(0.25)));
+        }
+        enum size_t n = 1U << 22;
+        auto result = repeated!A(T(0), n - 1);
+        result.put(T(1));
+        // Evaluate the centered observations directly, independently of the
+        // online count coefficients: n-1 copies of -1/n and one of 1-1/n.
+        T zeroDeviation = -T(1) / n;
+        T oneDeviation = 1 + zeroDeviation;
+        T m2 = (n - 1) * zeroDeviation * zeroDeviation + oneDeviation * oneDeviation;
+        T m3 = (n - 1) * zeroDeviation * zeroDeviation * zeroDeviation +
+            oneDeviation * oneDeviation * oneDeviation;
+        assert(result.centeredSumOfSquares.approxEqual(m2, T(16) * T.epsilon, T(16) * T.epsilon));
+        assert(result.centeredSumOfCubes.approxEqual(m3, T(16) * T.epsilon, T(16) * T.epsilon));
+        static if (__traits(hasMember, A, "centeredSumOfQuarts")) {
+            T m4 = (n - 1) * zeroDeviation * zeroDeviation * zeroDeviation * zeroDeviation +
+                oneDeviation * oneDeviation * oneDeviation * oneDeviation;
+            assert(result.centeredSumOfQuarts.approxEqual(m4, T(16) * T.epsilon, T(16) * T.epsilon));
+        }
+    }}
+}
+
+// Isolate large-count normalization from the algorithms that collect moments.
+version(mir_stat_test)
+@safe pure nothrow
+unittest
+{
+    import std.meta: AliasSeq;
+    import mir.math.common: approxEqual;
+
+    static foreach (T; AliasSeq!(float, double, real))
+    static foreach (algo; [KurtosisAlgo.naive, KurtosisAlgo.online,
+        KurtosisAlgo.twoPass, KurtosisAlgo.threePass,
+        KurtosisAlgo.assumeZeroMean, KurtosisAlgo.hybrid])
+    {{
+        enum size_t largeCount = size_t.sizeof == 8 ? (1UL << 33) : (1U << 17);
+        foreach (size_t n; [size_t(4096), largeCount, size_t.max - 1]) {
+            KurtosisAccumulator!(T, algo, Summation.naive) result;
+            // Equal numbers of -1 and +1: mean=0, M2=M4=n, M3=0.
+            static if (algo == KurtosisAlgo.assumeZeroMean)
+                result._count = n;
+            else
+                result.meanAccumulator.count = n;
+            static if (algo == KurtosisAlgo.naive) {
+                result.summatorOfSquares.put(T(n));
+                result.summatorOfQuarts.put(T(n));
+            } else {
+                result.centeredSummatorOfSquares.put(T(n));
+                static if (algo == KurtosisAlgo.threePass)
+                    result.scaledSummatorOfQuarts.put(T(n));
+                else
+                    result.centeredSummatorOfQuarts.put(T(n));
+            }
+            assert(result.skewness(true) == 0);
+            assert(result.skewness(false) == 0);
+            assert(result.kurtosis(true, true).approxEqual(T(1)));
+            assert(result.kurtosis(true, false).approxEqual(T(-2)));
+            // The sample excess simplifies to -2*(n-1)/(n-3).
+            T sampleExcess = -T(2) * (T(n - 1) / (n - 3));
+            assert(result.kurtosis(false, false).approxEqual(sampleExcess));
+            assert(result.kurtosis(false, true).approxEqual(sampleExcess + 3));
+            static if (algo == KurtosisAlgo.threePass) {
+                T correction = T(n - 1) / n;
+                assert(result.scaledSumOfQuarts(true).approxEqual(T(n)));
+                assert(result.scaledSumOfQuarts(false).approxEqual(T(n) * correction * correction));
+            }
+        }
+    }}
+}
+
+// The naive skewness correction must not multiply counts as integers either.
+version(mir_stat_test)
+@safe pure nothrow
+unittest
+{
+    import std.meta: AliasSeq;
+
+    static foreach (T; AliasSeq!(float, double, real))
+    static foreach (algo; [SkewnessAlgo.naive, SkewnessAlgo.online,
+        SkewnessAlgo.twoPass, SkewnessAlgo.threePass,
+        SkewnessAlgo.assumeZeroMean, SkewnessAlgo.hybrid])
+    {{
+        enum size_t n = size_t.sizeof == 8 ? (1UL << 33) : (1U << 17);
+        SkewnessAccumulator!(T, algo, Summation.naive) result;
+        // Equal numbers of -1 and +1 have zero skewness.
+        static if (algo == SkewnessAlgo.assumeZeroMean)
+            result._count = n;
+        else
+            result.meanAccumulator.count = n;
+        static if (algo == SkewnessAlgo.naive)
+            result.summatorOfSquares.put(T(n));
+        else
+            result.centeredSummatorOfSquares.put(T(n));
+        assert(result.skewness(true) == 0);
+        assert(result.skewness(false) == 0);
     }}
 }
