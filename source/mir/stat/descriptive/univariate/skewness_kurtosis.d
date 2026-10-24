@@ -4959,52 +4959,60 @@ unittest
     }}
 }
 
+// Keep the 18 cases in separate functions to reduce Windows DMD's
+// optimized compilation cost. Production calls inside each case may inline.
+version(mir_stat_test)
+pragma(inline, false)
+private void checkLargeCountKurtosis(T, KurtosisAlgo algo)() @safe pure nothrow
+{
+    import mir.math.common: approxEqual;
+
+    enum size_t largeCount = size_t.sizeof == 8 ? (1UL << 33) : (1U << 17);
+    foreach (size_t n; [size_t(4096), largeCount, size_t.max - 1]) {
+        KurtosisAccumulator!(T, algo, Summation.naive) result;
+        // Equal numbers of -1 and +1: mean=0, M2=M4=n, M3=0.
+        static if (algo == KurtosisAlgo.assumeZeroMean)
+            result._count = n;
+        else
+            result.meanAccumulator.count = n;
+        static if (algo == KurtosisAlgo.naive) {
+            result.summatorOfSquares.put(T(n));
+            result.summatorOfQuarts.put(T(n));
+        } else {
+            result.centeredSummatorOfSquares.put(T(n));
+            static if (algo == KurtosisAlgo.threePass)
+                result.scaledSummatorOfQuarts.put(T(n));
+            else
+                result.centeredSummatorOfQuarts.put(T(n));
+        }
+        assert(result.skewness(true) == 0);
+        assert(result.skewness(false) == 0);
+        assert(result.kurtosis(true, true).approxEqual(T(1)));
+        assert(result.kurtosis(true, false).approxEqual(T(-2)));
+        // The sample excess simplifies to -2*(n-1)/(n-3).
+        T sampleExcess = -T(2) * (T(n - 1) / (n - 3));
+        assert(result.kurtosis(false, false).approxEqual(sampleExcess));
+        assert(result.kurtosis(false, true).approxEqual(sampleExcess + 3));
+        static if (algo == KurtosisAlgo.threePass) {
+            T correction = T(n - 1) / n;
+            assert(result.scaledSumOfQuarts(true).approxEqual(T(n)));
+            assert(result.scaledSumOfQuarts(false).approxEqual(T(n) * correction * correction));
+        }
+    }
+}
+
 // Isolate large-count normalization from the algorithms that collect moments.
 version(mir_stat_test)
 @safe pure nothrow
 unittest
 {
     import std.meta: AliasSeq;
-    import mir.math.common: approxEqual;
 
     static foreach (T; AliasSeq!(float, double, real))
     static foreach (algo; [KurtosisAlgo.naive, KurtosisAlgo.online,
         KurtosisAlgo.twoPass, KurtosisAlgo.threePass,
         KurtosisAlgo.assumeZeroMean, KurtosisAlgo.hybrid])
-    {{
-        enum size_t largeCount = size_t.sizeof == 8 ? (1UL << 33) : (1U << 17);
-        foreach (size_t n; [size_t(4096), largeCount, size_t.max - 1]) {
-            KurtosisAccumulator!(T, algo, Summation.naive) result;
-            // Equal numbers of -1 and +1: mean=0, M2=M4=n, M3=0.
-            static if (algo == KurtosisAlgo.assumeZeroMean)
-                result._count = n;
-            else
-                result.meanAccumulator.count = n;
-            static if (algo == KurtosisAlgo.naive) {
-                result.summatorOfSquares.put(T(n));
-                result.summatorOfQuarts.put(T(n));
-            } else {
-                result.centeredSummatorOfSquares.put(T(n));
-                static if (algo == KurtosisAlgo.threePass)
-                    result.scaledSummatorOfQuarts.put(T(n));
-                else
-                    result.centeredSummatorOfQuarts.put(T(n));
-            }
-            assert(result.skewness(true) == 0);
-            assert(result.skewness(false) == 0);
-            assert(result.kurtosis(true, true).approxEqual(T(1)));
-            assert(result.kurtosis(true, false).approxEqual(T(-2)));
-            // The sample excess simplifies to -2*(n-1)/(n-3).
-            T sampleExcess = -T(2) * (T(n - 1) / (n - 3));
-            assert(result.kurtosis(false, false).approxEqual(sampleExcess));
-            assert(result.kurtosis(false, true).approxEqual(sampleExcess + 3));
-            static if (algo == KurtosisAlgo.threePass) {
-                T correction = T(n - 1) / n;
-                assert(result.scaledSumOfQuarts(true).approxEqual(T(n)));
-                assert(result.scaledSumOfQuarts(false).approxEqual(T(n) * correction * correction));
-            }
-        }
-    }}
+        checkLargeCountKurtosis!(T, algo)();
 }
 
 // Separate the cases so Windows DMD's optimized inliner does not combine the
