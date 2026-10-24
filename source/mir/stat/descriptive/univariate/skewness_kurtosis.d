@@ -83,12 +83,16 @@ enum SkewnessAlgo
     /++
     Calculates skewness by first calculating the mean, then calculating
     E((x - E(x)) ^^ 3) / (E((x - E(x)) ^^ 2) ^^ 1.5)
+
+    Inputs that cannot be converted to a slice must be forward ranges.
     +/
     twoPass,
 
     /++
     Calculates skewness by first calculating the mean, then the standard deviation, then calculating
     E(((x - E(x)) / (E((x - E(x)) ^^ 2) ^^ 0.5)) ^^ 3)
+
+    Inputs that cannot be converted to a slice must be forward ranges.
     +/
     threePass,
 
@@ -98,8 +102,8 @@ enum SkewnessAlgo
     assumeZeroMean,
 
     /++
-    When slices, slice-like objects, or ranges are the inputs, uses the two-pass
-    algorithm. When an individual data-point is added, uses the online algorithm.
+    Uses the two-pass algorithm for slices, slice-like objects, and forward ranges.
+    Single-pass inputs and individual data points use the online algorithm.
     +/
     hybrid
 }
@@ -621,7 +625,7 @@ struct SkewnessAccumulator(T, SkewnessAlgo skewnessAlgo, Summation summation)
 {
     import mir.math.sum: elementType, Summator;
     import mir.ndslice.slice: isConvertibleToSlice, isSlice, Slice, SliceKind;
-    import std.range: isInputRange;
+    import std.range: isInputRange, isForwardRange, save;
 
     ///
     private MeanAccumulator!(T, summation) meanAccumulator;
@@ -656,13 +660,14 @@ struct SkewnessAccumulator(T, SkewnessAlgo skewnessAlgo, Summation summation)
 
     ///
     this(Range)(Range range)
-        if (isInputRange!Range && !isConvertibleToSlice!Range && is(elementType!Range : T))
+        if (isForwardRange!Range && !isConvertibleToSlice!Range && is(elementType!Range : T))
     {
         import std.algorithm: map;
-        meanAccumulator.put(range);
+        // Save every traversal that is followed by another pass over the input.
+        meanAccumulator.put(range.save);
 
         auto centeredRangeMultiplier = range.map!(a => (a - mean)).map!("a * a", "a * a * a");
-        centeredSummatorOfSquares.put(centeredRangeMultiplier.map!"a[0]");
+        centeredSummatorOfSquares.put(centeredRangeMultiplier.save.map!"a[0]");
         centeredSummatorOfCubes.put(centeredRangeMultiplier.map!"a[1]");
     }
 
@@ -801,7 +806,7 @@ struct SkewnessAccumulator(T, SkewnessAlgo skewnessAlgo, Summation summation)
 {
     import mir.math.sum: elementType, Summator;
     import mir.ndslice.slice: isConvertibleToSlice, isSlice, Slice, SliceKind;
-    import std.range: isInputRange;
+    import std.range: isInputRange, isForwardRange, save;
 
     ///
     private MeanAccumulator!(T, summation) meanAccumulator;
@@ -842,14 +847,15 @@ struct SkewnessAccumulator(T, SkewnessAlgo skewnessAlgo, Summation summation)
 
     ///
     this(Range)(Range range)
-        if (isInputRange!Range && !isConvertibleToSlice!Range && is(elementType!Range : T))
+        if (isForwardRange!Range && !isConvertibleToSlice!Range && is(elementType!Range : T))
     {
         import mir.math.common: sqrt;
         import std.algorithm: map;
 
-        meanAccumulator.put(range);
+        // Save every traversal that is followed by another pass over the input.
+        meanAccumulator.put(range.save);
         auto centeredRange = range.map!(a => (a - mean));
-        centeredSummatorOfSquares.put(centeredRange.map!"a * a");
+        centeredSummatorOfSquares.put(centeredRange.save.map!"a * a");
         T stdP = variance!T(true).sqrt;
         auto scaledRange = centeredRange.map!(a => a / stdP);
         scaledSummatorOfCubes.put(scaledRange.map!"a * a * a");
@@ -1214,7 +1220,7 @@ struct SkewnessAccumulator(T, SkewnessAlgo skewnessAlgo, Summation summation)
 {
     import mir.math.sum: elementType, Summator;
     import mir.ndslice.slice: isConvertibleToSlice, isSlice, Slice, SliceKind;
-    import std.range: isInputRange;
+    import std.range: isInputRange, isForwardRange, save;
     import std.traits: isIterable;
 
     ///
@@ -1252,12 +1258,13 @@ struct SkewnessAccumulator(T, SkewnessAlgo skewnessAlgo, Summation summation)
     this(Range)(Range range)
         if (isIterable!Range && !isConvertibleToSlice!Range)
     {
-        static if (isInputRange!Range && is(elementType!Range : T)) {
+        static if (isForwardRange!Range && is(elementType!Range : T)) {
             import std.algorithm: map;
-            meanAccumulator.put(range);
+            // Save every traversal that is followed by another pass over the input.
+            meanAccumulator.put(range.save);
 
             auto centeredRangeMultiplier = range.map!(a => (a - mean)).map!("a * a", "a * a * a");
-            centeredSummatorOfSquares.put(centeredRangeMultiplier.map!"a[0]");
+            centeredSummatorOfSquares.put(centeredRangeMultiplier.save.map!"a[0]");
             centeredSummatorOfCubes.put(centeredRangeMultiplier.map!"a[1]");
         } else {
             this.put(range);
@@ -1274,7 +1281,8 @@ struct SkewnessAccumulator(T, SkewnessAlgo skewnessAlgo, Summation summation)
     void put(Range)(Range r)
         if (isIterable!Range)
     {
-        static if (isInputRange!Range && is(elementType!Range : T)) {
+        static if (isInputRange!Range && is(elementType!Range : T) &&
+            (isConvertibleToSlice!Range || isForwardRange!Range)) {
             auto v = typeof(this)(r);
             this.put(v);
         } else {
@@ -2058,12 +2066,16 @@ enum KurtosisAlgo
     /++
     Calculates kurtosis by first calculating the mean, then calculating
     E((x - E(x)) ^^ 4) / (E((x - E(x)) ^^ 2) ^^ 2)
+
+    Inputs that cannot be converted to a slice must be forward ranges.
     +/
     twoPass,
 
     /++
     Calculates kurtosis by first calculating the mean, then the standard deviation, then calculating
     E(((x - E(x)) / (E((x - E(x)) ^^ 2) ^^ 0.5)) ^^ 4)
+
+    Inputs that cannot be converted to a slice must be forward ranges.
     +/
     threePass,
 
@@ -2073,8 +2085,8 @@ enum KurtosisAlgo
     assumeZeroMean,
 
     /++
-    When slices, slice-like objects, or ranges are the inputs, uses the two-pass
-    algorithm. When an individual data-point is added, uses the online algorithm.
+    Uses the two-pass algorithm for slices, slice-like objects, and forward ranges.
+    Single-pass inputs and individual data points use the online algorithm.
     +/
     hybrid
 }
@@ -2738,7 +2750,7 @@ struct KurtosisAccumulator(T, KurtosisAlgo kurtosisAlgo, Summation summation)
 {
     import mir.math.sum: elementType, Summator;
     import mir.ndslice.slice: isConvertibleToSlice, isSlice, Slice, SliceKind;
-    import std.range: isInputRange;
+    import std.range: isInputRange, isForwardRange, save;
 
     ///
     private MeanAccumulator!(T, summation) meanAccumulator;
@@ -2776,14 +2788,15 @@ struct KurtosisAccumulator(T, KurtosisAlgo kurtosisAlgo, Summation summation)
 
     ///
     this(Range)(Range range)
-        if (isInputRange!Range && !isConvertibleToSlice!Range && is(elementType!Range : T))
+        if (isForwardRange!Range && !isConvertibleToSlice!Range && is(elementType!Range : T))
     {
         import std.algorithm: map;
-        meanAccumulator.put(range);
+        // Save every traversal that is followed by another pass over the input.
+        meanAccumulator.put(range.save);
 
         auto centeredRangeMultiplier = range.map!(a => (a - mean)).map!("a * a", "a * a * a", "a * a * a * a");
-        centeredSummatorOfSquares.put(centeredRangeMultiplier.map!"a[0]");
-        centeredSummatorOfCubes.put(centeredRangeMultiplier.map!"a[1]");
+        centeredSummatorOfSquares.put(centeredRangeMultiplier.save.map!"a[0]");
+        centeredSummatorOfCubes.put(centeredRangeMultiplier.save.map!"a[1]");
         centeredSummatorOfQuarts.put(centeredRangeMultiplier.map!"a[2]");
     }
 
@@ -2972,7 +2985,7 @@ struct KurtosisAccumulator(T, KurtosisAlgo kurtosisAlgo, Summation summation)
 {
     import mir.math.sum: elementType, Summator;
     import mir.ndslice.slice: isConvertibleToSlice, isSlice, Slice, SliceKind;
-    import std.range: isInputRange;
+    import std.range: isInputRange, isForwardRange, save;
 
     ///
     private MeanAccumulator!(T, summation) meanAccumulator;
@@ -3016,18 +3029,19 @@ struct KurtosisAccumulator(T, KurtosisAlgo kurtosisAlgo, Summation summation)
 
     ///
     this(Range)(Range range)
-        if (isInputRange!Range && !isConvertibleToSlice!Range && is(elementType!Range : T))
+        if (isForwardRange!Range && !isConvertibleToSlice!Range && is(elementType!Range : T))
     {
         import mir.math.common: sqrt;
         import std.algorithm: map;
 
-        meanAccumulator.put(range);
+        // Save every traversal that is followed by another pass over the input.
+        meanAccumulator.put(range.save);
         auto centeredRange = range.map!(a => (a - mean));
-        centeredSummatorOfSquares.put(centeredRange.map!"a * a");
+        centeredSummatorOfSquares.put(centeredRange.save.map!"a * a");
         auto rangeMap = centeredRange.
             map!(a => a / variance(true).sqrt).
             map!("(a * a) * a", "(a * a) * (a * a)");
-        scaledSummatorOfCubes.put(rangeMap.map!"a[0]");
+        scaledSummatorOfCubes.put(rangeMap.save.map!"a[0]");
         scaledSummatorOfQuarts.put(rangeMap.map!"a[1]");
     }
 
@@ -3486,7 +3500,7 @@ struct KurtosisAccumulator(T, KurtosisAlgo kurtosisAlgo, Summation summation)
 {
     import mir.math.sum: elementType, Summator;
     import mir.ndslice.slice: isConvertibleToSlice, isSlice, Slice, SliceKind;
-    import std.range: isInputRange;
+    import std.range: isInputRange, isForwardRange, save;
     import std.traits: isIterable;
 
     ///
@@ -3527,13 +3541,14 @@ struct KurtosisAccumulator(T, KurtosisAlgo kurtosisAlgo, Summation summation)
     this(Range)(Range range)
         if (isIterable!Range && !isConvertibleToSlice!Range)
     {
-        static if (isInputRange!Range && is(elementType!Range : T)) {
+        static if (isForwardRange!Range && is(elementType!Range : T)) {
             import std.algorithm: map;
-            meanAccumulator.put(range);
+            // Save every traversal that is followed by another pass over the input.
+            meanAccumulator.put(range.save);
 
             auto centeredRangeMultiplier = range.map!(a => (a - mean)).map!("a * a", "a * a * a", "a * a * a * a");
-            centeredSummatorOfSquares.put(centeredRangeMultiplier.map!"a[0]");
-            centeredSummatorOfCubes.put(centeredRangeMultiplier.map!"a[1]");
+            centeredSummatorOfSquares.put(centeredRangeMultiplier.save.map!"a[0]");
+            centeredSummatorOfCubes.put(centeredRangeMultiplier.save.map!"a[1]");
             centeredSummatorOfQuarts.put(centeredRangeMultiplier.map!"a[2]");
         } else {
             this.put(range);
@@ -3550,7 +3565,8 @@ struct KurtosisAccumulator(T, KurtosisAlgo kurtosisAlgo, Summation summation)
     void put(Range)(Range r)
         if (isIterable!Range)
     {
-        static if (isInputRange!Range && is(elementType!Range : T)) {
+        static if (isInputRange!Range && is(elementType!Range : T) &&
+            (isConvertibleToSlice!Range || isForwardRange!Range)) {
             auto v = typeof(this)(r);
             this.put(v);
         } else {
@@ -4468,6 +4484,83 @@ unittest
             assert(left.centeredSumOfCubes == 0);
             static if (is(A == K))
                 assert(left.centeredSumOfQuarts.approxEqual(T(4)));
+        }}
+    }}
+}
+
+// Multi-pass ranges need independent cursors for every accumulated power.
+version(mir_stat_test)
+@safe pure nothrow
+unittest
+{
+    import mir.math.common: approxEqual;
+    import std.meta: AliasSeq;
+
+    static struct Input(T, bool replayable)
+    {
+        const(T)[] values;
+        size_t[] cursor;
+        size_t ownPosition;
+        size_t position() const { return cursor.length ? cursor[0] : ownPosition; }
+        bool empty() const { return position == values.length; }
+        T front() const { return values[position]; }
+        void popFront() { if (cursor.length) ++cursor[0]; else ++ownPosition; }
+        static if (replayable)
+            auto save() { return typeof(this)(values, null, position); }
+    }
+    static foreach (T; AliasSeq!(float, double, real))
+    {{
+        const T[3] values = [0, 1, 5];
+        static foreach (algo; [SkewnessAlgo.twoPass, SkewnessAlgo.threePass, SkewnessAlgo.hybrid])
+        {{
+            size_t[1] cursor;
+            alias A = SkewnessAccumulator!(T, algo, Summation.naive);
+            auto result = A(Input!(T, true)(values[], cursor[]));
+            assert(result.count == 3 && result.mean == 2);
+            assert(result.centeredSumOfSquares.approxEqual(T(14)));
+            assert(result.centeredSumOfCubes.approxEqual(T(18)));
+            assert(result.skewness(true).approxEqual(A(values[]).skewness(true)));
+            assert(cursor[0] == values.length);
+            static if (algo != SkewnessAlgo.hybrid)
+                static assert(!__traits(compiles, A(Input!(T, false)(values[], cursor[]))));
+        }}
+        static foreach (algo; [KurtosisAlgo.twoPass, KurtosisAlgo.threePass, KurtosisAlgo.hybrid])
+        {{
+            size_t[1] cursor;
+            alias A = KurtosisAccumulator!(T, algo, Summation.naive);
+            auto result = A(Input!(T, true)(values[], cursor[]));
+            assert(result.count == 3 && result.mean == 2);
+            assert(result.centeredSumOfSquares.approxEqual(T(14)));
+            assert(result.centeredSumOfCubes.approxEqual(T(18)));
+            assert(result.centeredSumOfQuarts.approxEqual(T(98)));
+            assert(result.scaledSumOfQuarts(true).approxEqual(A(values[]).scaledSumOfQuarts(true)));
+            assert(cursor[0] == values.length);
+            static if (algo != KurtosisAlgo.hybrid)
+                static assert(!__traits(compiles, A(Input!(T, false)(values[], cursor[]))));
+        }}
+        alias S = SkewnessAccumulator!(T, SkewnessAlgo.hybrid, Summation.naive);
+        alias K = KurtosisAccumulator!(T, KurtosisAlgo.hybrid, Summation.naive);
+        static foreach (A; AliasSeq!(S, K))
+        static foreach (replayable; [false, true])
+        {{
+            size_t[1] cursor;
+            auto input = Input!(T, replayable)(values[], cursor[]);
+            auto constructed = A(input);
+            assert(constructed.count == 3 && constructed.mean == 2);
+            assert(constructed.centeredSumOfCubes.approxEqual(T(18)));
+            static if (is(A == K))
+                assert(constructed.centeredSumOfQuarts.approxEqual(T(98)));
+            assert(cursor[0] == values.length);
+            cursor[0] = 0;
+            A appended;
+            appended.put(T(-2));
+            appended.put(input);
+            assert(appended.count == 4 && appended.mean == 1);
+            assert(appended.centeredSumOfSquares.approxEqual(T(26)));
+            assert(appended.centeredSumOfCubes.approxEqual(T(36)));
+            static if (is(A == K))
+                assert(appended.centeredSumOfQuarts.approxEqual(T(338)));
+            assert(cursor[0] == values.length);
         }}
     }}
 }
