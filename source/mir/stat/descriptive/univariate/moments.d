@@ -109,7 +109,9 @@ struct MomentAccumulator(T, size_t N, Summation summation)
             import mir.primitives: elementCount;
 
             count += r.elementCount;
-            summator.put(r.map!(a => a.powi(N)));
+            // Match scalar insertion: convert before taking the power, so a
+            // narrower input does not overflow or underflow before summation.
+            summator.put(r.map!(a => (cast(T) a).powi(N)));
         }
         else
         {
@@ -206,11 +208,46 @@ struct MomentAccumulator(T, size_t N, Summation summation)
         summator.put(x.powi(N));
     }
 
-    ///
+    /++
+    Accumulate the N-th power of $(D x - m).
+    Use the same center for every observation contributing to this moment;
+    previously accumulated powers are not adjusted when the center changes.
+    +/
+    void put()(T x, T m)
+    {
+        put(x - m);
+    }
+
+    /++
+    Accumulate the N-th power of $(D (x - m) * (1 / s)), matching batch insertion.
+    Use the same center and scale for every observation. The caller supplies
+    the scale; this overload does not estimate it from the observations.
+    +/
+    void put()(T x, T m, T s)
+    {
+        put((x - m) * (1 / s));
+    }
+
+    /++
+    Combine counts and accumulated powers without modifying the source.
+    KBN, KB2, and precise summation preserve the source's correction terms
+    rather than first rounding them to a single value. For centered or
+    standardized moments, both accumulators must use the same center and scale.
+    +/
     void put()(MomentAccumulator!(T, N, summation) m)
     {
         count += m.count;
-        summator.put(m.summator.sum);
+        static if (summation == Summation.kbn || summation == Summation.kb2 ||
+            summation == Summation.precise)
+        {
+            import mir.stat.internal.summation: mergeSummator;
+
+            // Preserve corrections that would be lost by rounding the source
+            // to one value. The by-value parameter also makes self-merges safe.
+            mergeSummator(summator, m.summator);
+        }
+        else
+            summator.put(m.summator.sum);
     }
 
     ///
@@ -254,6 +291,133 @@ struct MomentAccumulator(T, size_t N, Summation summation)
     {
         this.put(x, m, s);
     }
+}
+
+// Centered and standardized scalar constructors and non-shaped input ranges
+// use the same fixed center/scale as array insertion.
+version(mir_stat_test)
+@safe pure nothrow @nogc
+unittest
+{
+    import mir.math.common: approxEqual;
+    import mir.primitives: hasShape;
+
+    static struct Input(T)
+    {
+        const(T)[] values;
+        @property bool empty() const { return values.length == 0; }
+        @property T front() const { return values[0]; }
+        void popFront() { values = values[1 .. $]; }
+    }
+    static assert(!hasShape!(Input!double));
+
+    import std.meta: AliasSeq;
+    static foreach (T; AliasSeq!(float, double, real))
+    {{
+        const T[3] values = [-1, 1, 5];
+        static foreach (N; 1 .. 5)
+        {{
+            alias M = MomentAccumulator!(T, N, Summation.naive);
+            enum centeredSum = [2, 20, 56, 272][N - 1];
+            enum scaledSum = [1, 5, 7, 17][N - 1];
+            enum firstCentered = [-2, 4, -8, 16][N - 1];
+            enum firstScaled = [-1, 1, -1, 1][N - 1];
+            auto centered = M(values[0], T(1));
+            auto scaled = M(values[0], T(1), T(2));
+            assert(centered.count == 1 && centered.sumOfPower == firstCentered);
+            assert(scaled.count == 1 && scaled.sumOfPower == firstScaled);
+            foreach (x; values[1 .. $])
+            {
+                centered.put(x, T(1));
+                scaled.put(x, T(1), T(2));
+            }
+            auto centeredRange = M(Input!T(values[]), T(1));
+            auto scaledRange = M(Input!T(values[]), T(1), T(2));
+            auto centeredBatch = M(values[], T(1));
+            auto scaledBatch = M(values[], T(1), T(2));
+            foreach (result; [centered, centeredRange, centeredBatch])
+            {
+                assert(result.count == 3 && result.sumOfPower == centeredSum);
+                assert(result.moment.approxEqual(T(centeredSum) / 3));
+            }
+            foreach (result; [scaled, scaledRange, scaledBatch])
+            {
+                assert(result.count == 3 && result.sumOfPower == scaledSum);
+                assert(result.moment.approxEqual(T(scaledSum) / 3));
+            }
+            centeredRange.put(Input!T(values[0 .. 0]), T(1));
+            scaledRange.put(Input!T(values[0 .. 0]), T(1), T(2));
+            assert(centeredRange.count == 3 && centeredRange.sumOfPower == centeredSum);
+            assert(scaledRange.count == 3 && scaledRange.sumOfPower == scaledSum);
+        }}
+    }}
+}
+
+// Widen observations before taking powers in a shaped batch, as scalar
+// insertion does. Powers of two give exact, independent expected results.
+version(mir_stat_test)
+@safe pure nothrow @nogc
+unittest
+{
+    import mir.ndslice.slice: sliced;
+    import mir.ndslice.dynamic: transposed;
+
+    alias M = MomentAccumulator!(double, 2, Summation.naive);
+    static foreach (value; [0x1p80f, 0x1p-80f])
+    {{
+        const float[2] values = [value, value];
+        enum double expected = value > 1 ? 0x1p160 : 0x1p-160;
+        M scalar;
+        foreach (x; values)
+            scalar.put(x);
+        auto batch = M(values[]);
+        auto slice = M(values[].sliced);
+        assert(scalar.moment == expected);
+        assert(batch.count == 2 && batch.moment == expected);
+        assert(slice.count == 2 && slice.moment == expected);
+        assert(rawMoment!(double, 2, Summation.naive)(values[].sliced) == expected);
+
+        const float[4] interleaved = [value, float.nan, value, float.nan];
+        auto strided = interleaved[].sliced(2, 2).transposed[0];
+        assert(M(strided).moment == expected);
+    }}
+}
+
+// Merging preserves the correction terms needed by later cancellation.
+// Exact powers of two make the expected remainder independent of rounding.
+version(mir_stat_test)
+pure nothrow @nogc
+unittest
+{
+    import std.meta: AliasSeq;
+
+    static foreach (T; AliasSeq!(float, double, real))
+    static foreach (mode; [Summation.kbn, Summation.kb2, Summation.precise])
+    static foreach (N; [1, 3])
+    {{
+        alias M = MomentAccumulator!(T, N, mode);
+        // The selected power is finite, but adding one to it cannot be
+        // represented in a single T on this platform.
+        enum T large = N == 1 ? T(0x1p100) : T(0x1p30);
+        M source;
+        source.put(large);
+        source.put(T(1));
+        M target;
+        target.put(source);
+        target.put(-large);
+        assert(target.count == 3 && target.sumOfPower == 1);
+        // Merging must not consume the source's corrections.
+        source.put(-large);
+        assert(source.count == 3 && source.sumOfPower == 1);
+        M empty;
+        target.put(empty);
+        assert(target.count == 3 && target.sumOfPower == 1);
+        target.put(target);
+        assert(target.count == 6 && target.sumOfPower == 2);
+        M fresh;
+        fresh.put(empty);
+        assert(fresh.count == 0 && fresh.sumOfPower == 0);
+    }}
 }
 
 /// Raw moment
@@ -794,6 +958,10 @@ unittest
 /++
 Calculates the n-th central moment of the input.
 
+For orders above one, inputs that cannot be converted to a slice must be
+forward ranges. The mean and moment calculations use separate traversals of
+the same observations.
+
 By default, if `F` is not floating point type or complex type, then the result
 will have a `double` type if `F` is implicitly convertible to a floating point
 type or a type for which `isComplex!F` is true.
@@ -823,8 +991,24 @@ template centralMoment(F, size_t N, Summation summation = Summation.appropriate)
         static if (N > 1) {
             MeanAccumulator!(G, ResolveSummationType!(summation, Range, G)) meanAccumulator;
             MomentAccumulator!(G, N, ResolveSummationType!(summation, Range, G)) momentAccumulator;
-            meanAccumulator.put(r.lightScope);
-            momentAccumulator.put(r, meanAccumulator.mean);
+            static if (isSlice!Range) {
+                meanAccumulator.put(r.lightScope);
+                alias momentRange = r;
+            } else static if (isConvertibleToSlice!Range) {
+                import mir.ndslice.slice: toSlice;
+                // Retain the converted owner while both passes borrow its storage.
+                auto slice = r.toSlice;
+                auto momentRange = slice.lightScope;
+                meanAccumulator.put(momentRange);
+            } else {
+                import std.range.primitives: isForwardRange, save;
+                static assert(isForwardRange!Range,
+                    "centralMoment requires a forward range for multiple passes");
+                // A shallow copy may share the original cursor.
+                meanAccumulator.put(r.save);
+                alias momentRange = r;
+            }
+            momentAccumulator.put(momentRange, meanAccumulator.mean);
             return momentAccumulator.moment;
         } else {
             return cast(G) 0.0;
@@ -1067,6 +1251,10 @@ enum StandardizedMomentAlgo
 /++
 Calculates the n-th standardized moment of the input.
 
+For orders above two, inputs that cannot be converted to a slice must be
+forward ranges. Calculating the center and scale must leave a traversal
+available for the moment calculation.
+
 By default, if `F` is not floating point type, then the result will have a
 `double` type if `F` is implicitly convertible to a floating point type.
 
@@ -1098,17 +1286,33 @@ template standardizedMoment(F, size_t N,
     {
         alias G = typeof(return);
         static if (N > 2) {
-            auto varianceAccumulator = VarianceAccumulator!(G, varianceAlgo, ResolveSummationType!(summation, Range, G))(r.lightScope);
+            static if (isSlice!Range) {
+                auto varianceAccumulator = VarianceAccumulator!(G, varianceAlgo, ResolveSummationType!(summation, Range, G))(r.lightScope);
+                alias momentRange = r;
+            } else static if (isConvertibleToSlice!Range) {
+                import mir.ndslice.slice: toSlice;
+                // Retain the converted owner while both passes borrow its storage.
+                auto slice = r.toSlice;
+                auto momentRange = slice.lightScope;
+                auto varianceAccumulator = VarianceAccumulator!(G, varianceAlgo, ResolveSummationType!(summation, Range, G))(momentRange);
+            } else {
+                import std.range.primitives: isForwardRange, save;
+                static assert(isForwardRange!Range,
+                    "standardizedMoment requires a forward range for multiple passes");
+                // Preserve the observations for the subsequent moment pass.
+                auto varianceAccumulator = VarianceAccumulator!(G, varianceAlgo, ResolveSummationType!(summation, Range, G))(r.save);
+                alias momentRange = r;
+            }
             MomentAccumulator!(G, N, ResolveSummationType!(summation, Range, G)) momentAccumulator;
             static if (standardizedMomentAlgo == StandardizedMomentAlgo.scaled) {
                 import mir.math.common: sqrt;
 
-                momentAccumulator.put(r, varianceAccumulator.mean, varianceAccumulator.variance(true).sqrt);
+                momentAccumulator.put(momentRange, varianceAccumulator.mean, varianceAccumulator.variance(true).sqrt);
                 return momentAccumulator.moment;
             } else static if (standardizedMomentAlgo == StandardizedMomentAlgo.centered) {
                 import mir.math.common: pow;
 
-                momentAccumulator.put(r, varianceAccumulator.mean);
+                momentAccumulator.put(momentRange, varianceAccumulator.mean);
                 auto variance = varianceAccumulator.variance(true);
                 auto result = momentAccumulator.moment / pow(variance, N / 2);
                 static if (N % 2 != 0) {
@@ -1661,4 +1865,94 @@ unittest
                           2.0, 7.5, 5.0, 1.0, 1.5, 0.0];
 
     assert(x.sliced.moment!(3, "standardized").approxEqual(12.000999 / 12));
+}
+
+// Public multi-pass functions save forward ranges before consuming their cursor.
+version(mir_stat_test)
+@safe pure nothrow
+unittest
+{
+    import mir.math.common: approxEqual;
+    import std.meta: AliasSeq;
+
+    static struct Input(T, bool replayable)
+    {
+        const(T)[] data;
+        size_t[] cursor;
+        size_t ownPosition;
+        size_t position() const { return cursor.length ? cursor[0] : ownPosition; }
+        bool empty() const { return position == data.length; }
+        T front() const { return data[position]; }
+        void popFront() { if (cursor.length) ++cursor[0]; else ++ownPosition; }
+        static if (replayable)
+            auto save() { return typeof(this)(data, null, position); }
+    }
+
+    static foreach (T; AliasSeq!(float, double, real))
+    {{
+        const T[3] values = [0, 1, 5];
+        // Explicit range instantiation also supports array-to-slice conversion.
+        alias central = centralMoment!(T, 3, Summation.naive);
+        alias standard = standardizedMoment!(T, 3);
+        assert(central!(const(T)[])(values[]) == 6);
+        assert(standard!(const(T)[])(values[]).approxEqual(standard(values[])));
+        size_t[1] cursor;
+        auto input = Input!(T, true)(values[], cursor[]);
+        assert(centralMoment!(T, 3, Summation.naive)(input).approxEqual(T(6)));
+        assert(cursor[0] == values.length);
+        cursor[0] = 0;
+        assert(moment!(T, 3, MomentAlgo.central, Summation.naive)(input).approxEqual(T(6)));
+        static foreach (algo; [VarianceAlgo.twoPass, VarianceAlgo.hybrid, VarianceAlgo.online, VarianceAlgo.naive])
+        static foreach (method; [StandardizedMomentAlgo.scaled, StandardizedMomentAlgo.centered])
+        {{
+            cursor[0] = 0;
+            auto expected = standardizedMoment!(T, 3, method, algo, Summation.naive)(values[]);
+            auto result = standardizedMoment!(T, 3, method, algo, Summation.naive)(input);
+            assert(result.approxEqual(expected));
+            assert(cursor[0] == values.length);
+        }}
+        cursor[0] = 0;
+        assert(moment!(T, 3, MomentAlgo.standardized, Summation.naive)(input)
+            .approxEqual(standardizedMoment!(T, 3)(values[])));
+        cursor[0] = 0;
+        auto single = Input!(T, false)(values[], cursor[]);
+        static assert(!__traits(compiles, centralMoment!(T, 2)(single)));
+        static assert(!__traits(compiles, standardizedMoment!(T, 3)(single)));
+        // Constant low-order results and raw moments do not need another pass.
+        assert(centralMoment!(T, 1)(single) == 0);
+        assert(standardizedMoment!(T, 2)(single) == 1);
+        assert(cursor[0] == 0);
+        assert(rawMoment!(T, 1, Summation.naive)(single) == 2);
+        assert(cursor[0] == values.length);
+    }}
+}
+
+// Owning arrays are converted once and borrowed for both moment passes.
+version(mir_stat_test)
+@safe pure nothrow
+unittest
+{
+    import mir.math.common: approxEqual;
+    import mir.rc.array: RCArray;
+    import std.meta: AliasSeq;
+
+    static foreach (T; AliasSeq!(float, double, real))
+    {{
+        auto owner = RCArray!T(3);
+        owner[0] = 0;
+        owner[1] = 1;
+        owner[2] = 5;
+        assert(centralMoment!(T, 3, Summation.naive)(owner) == 6);
+        assert(moment!(T, 3, MomentAlgo.central, Summation.naive)(owner) == 6);
+        static foreach (method; [StandardizedMomentAlgo.scaled, StandardizedMomentAlgo.centered])
+        {{
+            auto expected = standardizedMoment!(T, 3, method)(owner.asSlice.lightScope);
+            assert(standardizedMoment!(T, 3, method)(owner).approxEqual(expected));
+        }}
+        assert(moment!(T, 3, MomentAlgo.standardized)(owner)
+            .approxEqual(standardizedMoment!(T, 3)(owner.asSlice.lightScope)));
+        // The caller retains ownership and the observations are unchanged.
+        assert(owner.length == 3);
+        assert(owner[0] == 0 && owner[1] == 1 && owner[2] == 5);
+    }}
 }
