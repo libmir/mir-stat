@@ -62,11 +62,13 @@ import mir.stat.descriptive.univariate.dispersions: variance, standardDeviation,
 // their getters must still perform the conversion to centered moments.
 // Mixed types/modes retain the existing conversion through the public getter.
 // Kahan is excluded because Summator's += does not transfer its correction.
+// Keep pairwise scalar merging: supported mir-algorithm releases have a counter
+// defect in direct merges that can overflow the partial-sum buffer.
 private template canMergeShapeMoment(T, Summation summation, V, string member)
 {
     static if (__traits(hasMember, V, member) &&
         (summation == Summation.kbn || summation == Summation.kb2 ||
-         summation == Summation.precise || summation == Summation.pairwise))
+         summation == Summation.precise))
         enum canMergeShapeMoment = is(typeof(__traits(getMember, V, member)) ==
             Summator!(T, summation));
     else
@@ -5149,5 +5151,32 @@ unittest
             assert(result.sumOfCubes == 1);
         else
             assert(result.centeredSumOfCubes == 1);
+    }}
+}
+
+// Repeated pairwise batch merges must not use the dependency's direct-state
+// merge: its counter adjustment can exhaust the partial-sum buffer.
+version(mir_stat_test)
+@safe pure nothrow @nogc
+unittest
+{
+    import std.meta: AliasSeq;
+    static foreach (A; AliasSeq!(
+        SkewnessAccumulator!(double, SkewnessAlgo.assumeZeroMean, Summation.pairwise),
+        KurtosisAccumulator!(double, KurtosisAlgo.assumeZeroMean, Summation.pairwise)))
+    {{
+        A batch, result;
+        batch.put(1.0);
+        batch.put(1.0);
+        foreach (i; 0 .. 100) {
+            result.put(batch);
+            assert(result.count == 2 * (i + 1));
+            assert(result.centeredSumOfSquares == 2.0 * (i + 1));
+            assert(result.centeredSumOfCubes == 2.0 * (i + 1));
+            static if (__traits(hasMember, A, "centeredSumOfQuarts"))
+                assert(result.centeredSumOfQuarts == 2.0 * (i + 1));
+        }
+        assert(batch.count == 2);
+        assert(batch.centeredSumOfSquares == 2);
     }}
 }
