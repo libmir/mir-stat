@@ -362,9 +362,11 @@ struct SkewnessAccumulator(T, SkewnessAlgo skewnessAlgo, Summation summation)
     ///
     void put()(T x)
     {
-        T deltaOld = x;
+        // The first observation has zero centered moments. Avoid raising x
+        // to a power that could overflow before multiplication by zero.
+        T deltaOld = T(0);
         if (count > 0) {
-            deltaOld -= mean;
+            deltaOld = x - mean;
         }
         meanAccumulator.put(x);
         T deltaNew = x - mean;
@@ -1296,9 +1298,11 @@ struct SkewnessAccumulator(T, SkewnessAlgo skewnessAlgo, Summation summation)
     ///
     void put()(T x)
     {
-        T deltaOld = x;
+        // The first observation has zero centered moments. Avoid raising x
+        // to a power that could overflow before multiplication by zero.
+        T deltaOld = T(0);
         if (count > 0) {
-            deltaOld -= mean;
+            deltaOld = x - mean;
         }
         meanAccumulator.put(x);
         T deltaNew = x - mean;
@@ -2427,9 +2431,11 @@ struct KurtosisAccumulator(T, KurtosisAlgo kurtosisAlgo, Summation summation)
     ///
     void put()(T x)
     {
-        T deltaOld = x;
+        // The first observation has zero centered moments. Avoid raising x
+        // to a power that could overflow before multiplication by zero.
+        T deltaOld = T(0);
         if (count > 0) {
-            deltaOld -= mean;
+            deltaOld = x - mean;
         }
         meanAccumulator.put(x);
         T deltaNew = x - mean;
@@ -3580,9 +3586,11 @@ struct KurtosisAccumulator(T, KurtosisAlgo kurtosisAlgo, Summation summation)
     ///
     void put()(T x)
     {
-        T deltaOld = x;
+        // The first observation has zero centered moments. Avoid raising x
+        // to a power that could overflow before multiplication by zero.
+        T deltaOld = T(0);
         if (count > 0) {
-            deltaOld -= mean;
+            deltaOld = x - mean;
         }
         meanAccumulator.put(x);
         T deltaNew = x - mean;
@@ -4562,5 +4570,47 @@ unittest
                 assert(appended.centeredSumOfQuarts.approxEqual(T(338)));
             assert(cursor[0] == values.length);
         }}
+    }}
+}
+
+// A large first observation must not contaminate zero centered moments.
+version(mir_stat_test)
+@safe pure nothrow
+unittest
+{
+    import std.meta: AliasSeq;
+
+    static foreach (T; AliasSeq!(float, double, real))
+    static foreach (sum; [Summation.naive, Summation.kbn, Summation.kb2, Summation.precise])
+    static foreach (A; AliasSeq!(
+        SkewnessAccumulator!(T, SkewnessAlgo.online, sum),
+        SkewnessAccumulator!(T, SkewnessAlgo.hybrid, sum),
+        KurtosisAccumulator!(T, KurtosisAlgo.online, sum),
+        KurtosisAccumulator!(T, KurtosisAlgo.hybrid, sum)))
+    {{
+        foreach (sign; [-1, 1]) {
+            A result;
+            // Cubing or taking the fourth power overflows, but four copies
+            // can still be summed without overflowing the mean accumulator.
+            T x = sign * (T.max / 8);
+            foreach (i; 0 .. 4) {
+                result.put(x);
+                assert(result.count == i + 1 && result.mean == x);
+                assert(result.centeredSumOfSquares == 0);
+                assert(result.centeredSumOfCubes == 0);
+                static if (__traits(hasMember, A, "centeredSumOfQuarts"))
+                    assert(result.centeredSumOfQuarts == 0);
+            }
+        }
+
+        // Subsequent observations still update each centered sum.
+        A result;
+        foreach (T x; [T(0), T(1), T(5)])
+            result.put(x);
+        assert(result.count == 3 && result.mean == 2);
+        assert(result.centeredSumOfSquares == 14);
+        assert(result.centeredSumOfCubes == 18);
+        static if (__traits(hasMember, A, "centeredSumOfQuarts"))
+            assert(result.centeredSumOfQuarts == 98);
     }}
 }
