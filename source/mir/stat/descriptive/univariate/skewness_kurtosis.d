@@ -4832,13 +4832,46 @@ unittest
     }}
 }
 
+// Compile each of the 48 cases separately: expanding the entire matrix into
+// one function causes excessive work in Windows DMD's optimized inliner.
+// Production calls inside each case remain eligible for inlining.
+version(mir_stat_test)
+pragma(inline, false)
+private void checkFirstObservation(T, A)() @safe pure nothrow
+{
+    import mir.math.common: approxEqual;
+    foreach (sign; [-1, 1]) {
+        A result;
+        // Cubing or taking the fourth power overflows, but four copies
+        // can still be summed without overflowing the mean accumulator.
+        T x = sign * (T.max / 8);
+        foreach (i; 0 .. 4) {
+            result.put(x);
+            assert(result.count == i + 1 && result.mean == x);
+            assert(result.centeredSumOfSquares == 0);
+            assert(result.centeredSumOfCubes == 0);
+            static if (__traits(hasMember, A, "centeredSumOfQuarts"))
+                assert(result.centeredSumOfQuarts == 0);
+        }
+    }
+
+    // Subsequent observations still update each centered sum.
+    A result;
+    foreach (T x; [T(0), T(1), T(5)])
+        result.put(x);
+    assert(result.count == 3 && result.mean == 2);
+    assert(result.centeredSumOfSquares.approxEqual(T(14), T(8) * T.epsilon, T(8) * T.epsilon));
+    assert(result.centeredSumOfCubes.approxEqual(T(18), T(8) * T.epsilon, T(8) * T.epsilon));
+    static if (__traits(hasMember, A, "centeredSumOfQuarts"))
+        assert(result.centeredSumOfQuarts.approxEqual(T(98), T(8) * T.epsilon, T(8) * T.epsilon));
+}
+
 // A large first observation must not contaminate zero centered moments.
 version(mir_stat_test)
 @safe pure nothrow
 unittest
 {
     import std.meta: AliasSeq;
-    import mir.math.common: approxEqual;
 
     static foreach (T; AliasSeq!(float, double, real))
     static foreach (sum; [Summation.naive, Summation.kbn, Summation.kb2, Summation.precise])
@@ -4847,32 +4880,7 @@ unittest
         SkewnessAccumulator!(T, SkewnessAlgo.hybrid, sum),
         KurtosisAccumulator!(T, KurtosisAlgo.online, sum),
         KurtosisAccumulator!(T, KurtosisAlgo.hybrid, sum)))
-    {{
-        foreach (sign; [-1, 1]) {
-            A result;
-            // Cubing or taking the fourth power overflows, but four copies
-            // can still be summed without overflowing the mean accumulator.
-            T x = sign * (T.max / 8);
-            foreach (i; 0 .. 4) {
-                result.put(x);
-                assert(result.count == i + 1 && result.mean == x);
-                assert(result.centeredSumOfSquares == 0);
-                assert(result.centeredSumOfCubes == 0);
-                static if (__traits(hasMember, A, "centeredSumOfQuarts"))
-                    assert(result.centeredSumOfQuarts == 0);
-            }
-        }
-
-        // Subsequent observations still update each centered sum.
-        A result;
-        foreach (T x; [T(0), T(1), T(5)])
-            result.put(x);
-        assert(result.count == 3 && result.mean == 2);
-        assert(result.centeredSumOfSquares.approxEqual(T(14), T(8) * T.epsilon, T(8) * T.epsilon));
-        assert(result.centeredSumOfCubes.approxEqual(T(18), T(8) * T.epsilon, T(8) * T.epsilon));
-        static if (__traits(hasMember, A, "centeredSumOfQuarts"))
-            assert(result.centeredSumOfQuarts.approxEqual(T(98), T(8) * T.epsilon, T(8) * T.epsilon));
-    }}
+        checkFirstObservation!(T, A)();
 }
 
 // Count powers must not overflow while accumulating valid finite moments.
@@ -4951,52 +4959,60 @@ unittest
     }}
 }
 
+// Keep the 18 cases in separate functions to reduce Windows DMD's
+// optimized compilation cost. Production calls inside each case may inline.
+version(mir_stat_test)
+pragma(inline, false)
+private void checkLargeCountKurtosis(T, KurtosisAlgo algo)() @safe pure nothrow
+{
+    import mir.math.common: approxEqual;
+
+    enum size_t largeCount = size_t.sizeof == 8 ? (1UL << 33) : (1U << 17);
+    foreach (size_t n; [size_t(4096), largeCount, size_t.max - 1]) {
+        KurtosisAccumulator!(T, algo, Summation.naive) result;
+        // Equal numbers of -1 and +1: mean=0, M2=M4=n, M3=0.
+        static if (algo == KurtosisAlgo.assumeZeroMean)
+            result._count = n;
+        else
+            result.meanAccumulator.count = n;
+        static if (algo == KurtosisAlgo.naive) {
+            result.summatorOfSquares.put(T(n));
+            result.summatorOfQuarts.put(T(n));
+        } else {
+            result.centeredSummatorOfSquares.put(T(n));
+            static if (algo == KurtosisAlgo.threePass)
+                result.scaledSummatorOfQuarts.put(T(n));
+            else
+                result.centeredSummatorOfQuarts.put(T(n));
+        }
+        assert(result.skewness(true) == 0);
+        assert(result.skewness(false) == 0);
+        assert(result.kurtosis(true, true).approxEqual(T(1)));
+        assert(result.kurtosis(true, false).approxEqual(T(-2)));
+        // The sample excess simplifies to -2*(n-1)/(n-3).
+        T sampleExcess = -T(2) * (T(n - 1) / (n - 3));
+        assert(result.kurtosis(false, false).approxEqual(sampleExcess));
+        assert(result.kurtosis(false, true).approxEqual(sampleExcess + 3));
+        static if (algo == KurtosisAlgo.threePass) {
+            T correction = T(n - 1) / n;
+            assert(result.scaledSumOfQuarts(true).approxEqual(T(n)));
+            assert(result.scaledSumOfQuarts(false).approxEqual(T(n) * correction * correction));
+        }
+    }
+}
+
 // Isolate large-count normalization from the algorithms that collect moments.
 version(mir_stat_test)
 @safe pure nothrow
 unittest
 {
     import std.meta: AliasSeq;
-    import mir.math.common: approxEqual;
 
     static foreach (T; AliasSeq!(float, double, real))
     static foreach (algo; [KurtosisAlgo.naive, KurtosisAlgo.online,
         KurtosisAlgo.twoPass, KurtosisAlgo.threePass,
         KurtosisAlgo.assumeZeroMean, KurtosisAlgo.hybrid])
-    {{
-        enum size_t largeCount = size_t.sizeof == 8 ? (1UL << 33) : (1U << 17);
-        foreach (size_t n; [size_t(4096), largeCount, size_t.max - 1]) {
-            KurtosisAccumulator!(T, algo, Summation.naive) result;
-            // Equal numbers of -1 and +1: mean=0, M2=M4=n, M3=0.
-            static if (algo == KurtosisAlgo.assumeZeroMean)
-                result._count = n;
-            else
-                result.meanAccumulator.count = n;
-            static if (algo == KurtosisAlgo.naive) {
-                result.summatorOfSquares.put(T(n));
-                result.summatorOfQuarts.put(T(n));
-            } else {
-                result.centeredSummatorOfSquares.put(T(n));
-                static if (algo == KurtosisAlgo.threePass)
-                    result.scaledSummatorOfQuarts.put(T(n));
-                else
-                    result.centeredSummatorOfQuarts.put(T(n));
-            }
-            assert(result.skewness(true) == 0);
-            assert(result.skewness(false) == 0);
-            assert(result.kurtosis(true, true).approxEqual(T(1)));
-            assert(result.kurtosis(true, false).approxEqual(T(-2)));
-            // The sample excess simplifies to -2*(n-1)/(n-3).
-            T sampleExcess = -T(2) * (T(n - 1) / (n - 3));
-            assert(result.kurtosis(false, false).approxEqual(sampleExcess));
-            assert(result.kurtosis(false, true).approxEqual(sampleExcess + 3));
-            static if (algo == KurtosisAlgo.threePass) {
-                T correction = T(n - 1) / n;
-                assert(result.scaledSumOfQuarts(true).approxEqual(T(n)));
-                assert(result.scaledSumOfQuarts(false).approxEqual(T(n) * correction * correction));
-            }
-        }
-    }}
+        checkLargeCountKurtosis!(T, algo)();
 }
 
 // Separate the cases so Windows DMD's optimized inliner does not combine the

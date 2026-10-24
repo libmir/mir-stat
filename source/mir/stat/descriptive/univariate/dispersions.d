@@ -469,40 +469,48 @@ unittest
     assert(v.variance(false).approxEqual(54.76562 / 11));
 }
 
+// Keep the 18 cases in separate functions to reduce Windows DMD's
+// optimized compilation cost. Production calls inside each case may inline.
+version(mir_stat_test)
+pragma(inline, false)
+private void checkVarianceMergeIdentities(T, VarianceAlgo algo, Summation mode)() @safe pure nothrow @nogc
+{
+    import std.math: fabs;
+
+    alias Accumulator = VarianceAccumulator!(T, algo, mode);
+    Accumulator empty, values;
+    values.put(T(1));
+    values.put(T(3));
+    values.put(empty);
+    assert(values.count == 2 && values.variance(false) == 2);
+    empty.put(empty);
+    assert(empty.count == 0);
+    empty.put(values);
+    assert(empty.count == 2 && empty.variance(false) == 2);
+
+    Accumulator constant, destination;
+    constant.put(T.max / 8);
+    constant.put(T.max / 8);
+    destination.put(constant);
+    assert(destination.count == 2 && destination.variance(false) == 0);
+    assert(constant.count == 2 && constant.variance(false) == 0);
+
+    values.put(values);
+    assert(values.count == 4);
+    assert(fabs(values.variance(false) - T(4) / 3) <= 8 * T.epsilon);
+}
+
 // Empty merges are identities; nonempty and self merges preserve the statistics.
 version(mir_stat_test)
 @safe pure nothrow @nogc
 unittest
 {
     import std.meta: AliasSeq;
-    import std.math: fabs;
 
     static foreach (T; AliasSeq!(float, double, real))
     static foreach (algo; AliasSeq!(VarianceAlgo.online, VarianceAlgo.hybrid))
     static foreach (mode; AliasSeq!(Summation.naive, Summation.pairwise, Summation.kbn))
-    {{
-        alias Accumulator = VarianceAccumulator!(T, algo, mode);
-        Accumulator empty, values;
-        values.put(T(1));
-        values.put(T(3));
-        values.put(empty);
-        assert(values.count == 2 && values.variance(false) == 2);
-        empty.put(empty);
-        assert(empty.count == 0);
-        empty.put(values);
-        assert(empty.count == 2 && empty.variance(false) == 2);
-
-        Accumulator constant, destination;
-        constant.put(T.max / 8);
-        constant.put(T.max / 8);
-        destination.put(constant);
-        assert(destination.count == 2 && destination.variance(false) == 0);
-        assert(constant.count == 2 && constant.variance(false) == 0);
-
-        values.put(values);
-        assert(values.count == 4);
-        assert(fabs(values.variance(false) - T(4) / 3) <= 8 * T.epsilon);
-    }}
+        checkVarianceMergeIdentities!(T, algo, mode)();
 }
 
 // Explicit integer accumulators retain multiplication before integer division.
