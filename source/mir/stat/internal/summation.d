@@ -24,6 +24,8 @@ Preserve partial sums and corrections when matching summator types support a
 direct merge. Otherwise retain scalar conversion to the destination element
 type. In particular, decimal summators currently lack a direct merge, and
 cross-type merges retain the existing conversion path and its constraints.
+Pairwise sums use scalar merging because direct merges in supported dependency
+releases can corrupt the counter and exceed the partial-sum buffer.
 
 Capability detection is compile-time only. Counts and any statistical merge
 corrections remain the caller's responsibility. Source and target must be
@@ -34,7 +36,8 @@ modified.
 package(mir.stat) void mergeSummator(T, U, Summation mode)(
     ref Summator!(T, mode) target, ref const Summator!(U, mode) source)
 {
-    static if (is(T == U) && __traits(compiles, target += source))
+    static if (mode != Summation.pairwise && is(T == U) &&
+        __traits(compiles, target += source))
         target += source;
     else
         target.put(cast(T) source);
@@ -65,4 +68,24 @@ unittest
     mergeSummator(decimalTarget, savedDecimal);
     assert(decimalTarget.sum == 3);
     assert(savedDecimal.sum == 2);
+}
+
+// Keep repeated pairwise merges within the dependency's valid scalar path.
+version(mir_stat_test)
+@safe pure nothrow @nogc
+unittest
+{
+    Summator!(double, Summation.pairwise) source, result;
+    source.put(1.0);
+    source.put(1.0);
+    foreach (i; 0 .. 100) {
+        mergeSummator(result, source);
+        assert(result.sum == 2.0 * (i + 1));
+    }
+    assert(source.sum == 2);
+    Summator!(double, Summation.pairwise) empty;
+    mergeSummator(result, empty);
+    assert(result.sum == 200);
+    result.put(1.0);
+    assert(result.sum == 201);
 }
