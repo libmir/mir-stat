@@ -89,6 +89,9 @@ enum VarianceAlgo
     Calculates variance using a two-pass algorithm whereby the input is first
     centered and then the sum of squares is calculated from that. As in:
     E((x - E(x)) ^^ 2)
+
+    Non-slice ranges must be forward ranges so each pass can traverse the same
+    observations.
     +/
     twoPass,
 
@@ -98,8 +101,8 @@ enum VarianceAlgo
     assumeZeroMean,
 
     /++
-    When slices, slice-like objects, or ranges are the inputs, uses the two-pass
-    algorithm. When an individual data-point is added, uses the online algorithm.
+    Uses the two-pass algorithm for slices, slice-like objects, and forward ranges.
+    Single-pass inputs and individual data points use the online algorithm.
     +/
     hybrid
 }
@@ -624,7 +627,7 @@ struct VarianceAccumulator(T, VarianceAlgo varianceAlgo, Summation summation)
 {
     import mir.math.sum: elementType, Summator;
     import mir.ndslice.slice: isConvertibleToSlice, isSlice, Slice, SliceKind;
-    import std.range: isInputRange;
+    import std.range: isInputRange, isForwardRange, save;
 
     ///
     private MeanAccumulator!(T, summation) meanAccumulator;
@@ -654,10 +657,11 @@ struct VarianceAccumulator(T, VarianceAlgo varianceAlgo, Summation summation)
 
     ///
     this(Range)(Range range)
-        if (isInputRange!Range && !isConvertibleToSlice!Range && is(elementType!Range : T))
+        if (isForwardRange!Range && !isConvertibleToSlice!Range && is(elementType!Range : T))
     {
         import std.algorithm: map;
-        meanAccumulator.put(range);
+        // A copy may share its cursor; save an independent first traversal.
+        meanAccumulator.put(range.save);
 
         auto centeredRangeMultiplier = range.map!(a => (a - mean)).map!("a * a");
         centeredSummatorOfSquares.put(centeredRangeMultiplier);
@@ -938,7 +942,7 @@ struct VarianceAccumulator(T, VarianceAlgo varianceAlgo, Summation summation)
 {
     import mir.math.sum: elementType, Summator;
     import mir.ndslice.slice: isConvertibleToSlice, isSlice, Slice, SliceKind;
-    import std.range: isInputRange;
+    import std.range: isInputRange, isForwardRange, save;
 
     ///
     private MeanAccumulator!(T, summation) meanAccumulator;
@@ -970,10 +974,11 @@ struct VarianceAccumulator(T, VarianceAlgo varianceAlgo, Summation summation)
     this(Range)(Range range)
         if (isIterable!Range && !isConvertibleToSlice!Range)
     {
-        static if (isInputRange!Range && is(elementType!Range : T))
+        static if (isForwardRange!Range && is(elementType!Range : T))
         {
             import std.algorithm: map;
-            meanAccumulator.put(range);
+            // A copy may share its cursor; save an independent first traversal.
+            meanAccumulator.put(range.save);
 
             auto centeredRangeMultiplier = range.map!(a => (a - mean)).map!("a * a");
             centeredSummatorOfSquares.put(centeredRangeMultiplier);
@@ -986,7 +991,8 @@ struct VarianceAccumulator(T, VarianceAlgo varianceAlgo, Summation summation)
     void put(Range)(Range r)
         if (isIterable!Range)
     {
-        static if (isInputRange!Range && is(elementType!Range : T)) {
+        static if (isInputRange!Range && is(elementType!Range : T) &&
+            (isConvertibleToSlice!Range || isForwardRange!Range)) {
             auto v = typeof(this)(r);
             this.put(v);
         } else{
@@ -2857,4 +2863,59 @@ unittest
 
     assert(x.sliced.coefficientOfVariation.approxEqual(2.231299 / 2.437500));
     assert(x.sliced.coefficientOfVariation!float.approxEqual(2.231299 / 2.437500));
+}
+
+// Copies can share a cursor even when save provides an independent traversal.
+version(mir_stat_test)
+@safe pure nothrow
+unittest
+{
+    import mir.math.common: approxEqual;
+    import std.meta: AliasSeq;
+    import std.range.primitives: isForwardRange, isInputRange;
+
+    static struct Input(T, bool replayable)
+    {
+        const(T)[] data;
+        size_t[] cursor;
+        size_t ownPosition;
+        size_t position() const { return cursor.length ? cursor[0] : ownPosition; }
+        bool empty() const { return position == data.length; }
+        T front() const { return data[position]; }
+        void popFront() { if (cursor.length) ++cursor[0]; else ++ownPosition; }
+        static if (replayable)
+            auto save() { return typeof(this)(data, null, position); }
+    }
+
+    static foreach (T; AliasSeq!(float, double, real))
+    {{
+        const T[3] values = [0, 1, 5];
+        static assert(isForwardRange!(Input!(T, true)));
+        static assert(isInputRange!(Input!(T, false)));
+        static assert(!isForwardRange!(Input!(T, false)));
+        static foreach (algo; [VarianceAlgo.twoPass, VarianceAlgo.hybrid])
+        {{
+            size_t[1] cursor;
+            auto result = VarianceAccumulator!(T, algo, Summation.naive)(Input!(T, true)(values[], cursor[]));
+            assert(result.count == 3 && result.mean == 2);
+            assert(result.variance(true).approxEqual(T(14) / 3));
+            assert(cursor[0] == values.length);
+        }}
+        size_t[1] cursor;
+        auto single = Input!(T, false)(values[], cursor[]);
+        alias TwoPass = VarianceAccumulator!(T, VarianceAlgo.twoPass, Summation.naive);
+        static assert(!__traits(compiles, TwoPass(single)));
+        alias Hybrid = VarianceAccumulator!(T, VarianceAlgo.hybrid, Summation.naive);
+        auto result = Hybrid(single);
+        assert(result.count == 3 && result.mean == 2);
+        assert(result.variance(true).approxEqual(T(14) / 3));
+        assert(cursor[0] == values.length);
+        cursor[0] = 0;
+        Hybrid appended;
+        appended.put(T(-2));
+        appended.put(single);
+        assert(appended.count == 4 && appended.mean == 1);
+        assert(appended.variance(true).approxEqual(T(6.5)));
+        assert(cursor[0] == values.length);
+    }}
 }
