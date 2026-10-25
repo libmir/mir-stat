@@ -690,6 +690,12 @@ enum QuantileAlgo {
     type2,
     /++
     SAS definition: nearest even order statistic.
+
+    Switch between one-based ranks k and k+1 at the represented probability
+    (k+0.5)/n, calculated in the probability type promoted to at least double.
+    At that boundary, select the observation with the even one-based rank.
+    Probabilities immediately below or above select rank k or k+1,
+    respectively. Clamp to the first and last observations at the endpoints.
     +/
     type3,
     /++
@@ -960,13 +966,37 @@ auto selectQuantile(QuantileAlgo quantileAlgo, F = void, Iterator, G)(Slice!Iter
                 gamma = probability < boundary ? 0 : probability > boundary ? 1 : 0.5;
         }
     }
+    else static if (quantileAlgo == QuantileAlgo.type3)
+    {
+        // Type 3 switches at half ranks and selects the even one-based rank
+        // on a tie. Compare p with the boundary before multiplication can
+        // round a neighboring probability onto that tie.
+        const GG position = n * probability;
+        const size_t rank = position >= n ? n : cast(size_t)position;
+        if (rank == 0)
+        {
+            j = j_1 = 0;
+            gamma = 0;
+        }
+        else if (rank >= n)
+        {
+            j = j_1 = n - 1;
+            gamma = 0;
+        }
+        else
+        {
+            j = rank - 1;
+            j_1 = rank;
+            const GG boundary = (cast(GG)rank + 0.5) / n;
+            gamma = probability < boundary ? 0 : probability > boundary ? 1 :
+                (rank % 2 == 0 ? 0 : 1);
+        }
+    }
     else
     {
         GG m;
 
-        static if (quantileAlgo == QuantileAlgo.type3) {
-            m = -0.5;
-        } else static if (quantileAlgo == QuantileAlgo.type4) {
+        static if (quantileAlgo == QuantileAlgo.type4) {
             m = 0;
         } else static if (quantileAlgo == QuantileAlgo.type5) {
             m = 0.5;
@@ -1002,15 +1032,7 @@ auto selectQuantile(QuantileAlgo quantileAlgo, F = void, Iterator, G)(Slice!Iter
 
         g -= j;
 
-        static if (quantileAlgo == QuantileAlgo.type3) {
-            if (g == 0 && (j + 1) % 2 == 0) { //need to adjust because 0-based indexing
-                gamma = 0;
-            } else {
-                gamma = 1;
-            }
-        } else {
-            gamma = g;
-        }
+        gamma = g;
 
     }
 
@@ -4856,4 +4878,48 @@ unittest
     testQuantileRankBoundaries!float();
     testQuantileRankBoundaries!double();
     testQuantileRankBoundaries!real();
+}
+
+// Type 3 uses half-rank boundaries, with ties resolved by one-based parity.
+version(mir_stat_test)
+@safe pure nothrow @nogc
+private void testNearestEvenQuantileBoundaries(G)()
+{
+    import mir.ndslice.slice: sliced;
+    import std.math: nextafter;
+    import std.traits: CommonType;
+
+    alias W = CommonType!(G, double);
+    foreach (n; 2 .. 33)
+    {
+        long[32] values;
+        // Exercise selection on unsorted integral observations as well.
+        foreach (i; 0 .. n) values[i] = n - 1 - i;
+        foreach (j; 0 .. n + 1)
+        {
+            const G center = j == 0 ? 0 : j == n ? 1 : (cast(G)j + 0.5) / n;
+            foreach (G p; [nextafter(center, cast(G)0), center,
+                          nextafter(center, cast(G)1)])
+            {
+                size_t rank = 1;
+                while (rank < n && cast(W)p > (cast(W)rank + 0.5) / n) ++rank;
+                long expected = rank - 1;
+                if (rank < n && cast(W)p == (cast(W)rank + 0.5) / n && rank % 2)
+                    ++expected;
+                auto sample = values[0 .. n].sliced;
+                assert((quantileImpl!(long, QuantileAlgo.type3)(sample, p)) == expected);
+                auto parts = selectQuantile!(QuantileAlgo.type3)(sample, p);
+                assert(parts.low == expected && parts.high == expected && parts.fraction == 0);
+            }
+        }
+    }
+}
+
+version(mir_stat_test)
+@safe pure nothrow @nogc
+unittest
+{
+    testNearestEvenQuantileBoundaries!float();
+    testNearestEvenQuantileBoundaries!double();
+    testNearestEvenQuantileBoundaries!real();
 }
