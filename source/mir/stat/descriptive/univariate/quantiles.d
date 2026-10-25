@@ -994,23 +994,31 @@ auto selectQuantile(QuantileAlgo quantileAlgo, F = void, Iterator, G)(Slice!Iter
     }
     else
     {
-        GG m;
-
-        static if (quantileAlgo == QuantileAlgo.type4) {
-            m = 0;
-        } else static if (quantileAlgo == QuantileAlgo.type5) {
-            m = 0.5;
-        } else static if (quantileAlgo == QuantileAlgo.type6) {
-            m = probability;
-        } else static if (quantileAlgo == QuantileAlgo.type7) {
-            m = 1 - probability;
-        } else static if (quantileAlgo == QuantileAlgo.type8) {
-            m = (probability + 1) / 3;
-        } else static if (quantileAlgo == QuantileAlgo.type9) {
-            m = probability / 4 + cast(GG) 3 / 8;
+        GG g;
+        static if (quantileAlgo == QuantileAlgo.type7)
+        {
+            // Form the zero-based rank directly. Adding and subtracting one
+            // would erase tiny positive probabilities before interpolation.
+            g = (n - 1) * probability;
         }
+        else
+        {
+            GG m;
 
-        GG g = n * probability + m - 1; //note: 0-based, not 1-based indexing
+            static if (quantileAlgo == QuantileAlgo.type4) {
+                m = 0;
+            } else static if (quantileAlgo == QuantileAlgo.type5) {
+                m = 0.5;
+            } else static if (quantileAlgo == QuantileAlgo.type6) {
+                m = probability;
+            } else static if (quantileAlgo == QuantileAlgo.type8) {
+                m = (probability + 1) / 3;
+            } else static if (quantileAlgo == QuantileAlgo.type9) {
+                m = probability / 4 + cast(GG) 3 / 8;
+            }
+
+            g = n * probability + m - 1; //note: 0-based, not 1-based indexing
+        }
 
         GG pre_j = floor(g);
         GG pre_j_1 = pre_j + 1;
@@ -4922,4 +4930,32 @@ unittest
     testNearestEvenQuantileBoundaries!float();
     testNearestEvenQuantileBoundaries!double();
     testNearestEvenQuantileBoundaries!real();
+}
+
+// Type 7 must preserve a positive interpolation fraction near probability zero.
+version(mir_stat_test)
+@safe pure nothrow @nogc
+private void testTinyType7Probabilities(T)()
+{
+    import mir.ndslice.slice: sliced;
+
+    T[2] values = [0, 1];
+    foreach (T p; [T.epsilon / 4, cast(T)1e-20, T.min_normal,
+                  T.min_normal * T.epsilon])
+    {
+        assert(p > 0);
+        assert((quantileImpl!(T, QuantileAlgo.type7)(values[].sliced, p)) == p);
+        auto parts = selectQuantile!(QuantileAlgo.type7)(values[].sliced, p);
+        assert(parts.low == 0 && parts.high == 1 && parts.fraction == p);
+        assert(interquartileRange!T(values[].sliced, T(0), p) == p);
+    }
+}
+
+version(mir_stat_test)
+@safe pure nothrow @nogc
+unittest
+{
+    testTinyType7Probabilities!float();
+    testTinyType7Probabilities!double();
+    testTinyType7Probabilities!real();
 }
