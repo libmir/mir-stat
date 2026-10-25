@@ -98,7 +98,12 @@ struct EntropyAccumulator(T, Summation summation)
     ///
     void put(U)(EntropyAccumulator!(U, summation) e)
     {
-        summator.put(e.summator.sum);
+        import mir.stat.internal.summation : mergeSummator;
+
+        static if (is(T == U))
+            mergeSummator(summator, e.summator);
+        else
+            summator.put(e.summator.sum);
     }
 }
 
@@ -185,7 +190,7 @@ while `[1, 1]` produces zero rather than normalizing the two values.
 By default, if `F` is not a floating point type, then the result will have a
 `double` type if `F` is implicitly convertible to a floating point type.
 Params:
-    F = controls type of output
+    F = controls the calculation and output type; inputs are converted before computing `x * ln(x)`
     summation = algorithm for summing the individual entropy values (default: Summation.appropriate)
 Returns:
     The sum of `x * ln(x)` over the input, with a floating point result
@@ -201,7 +206,7 @@ template entropy(F, Summation summation = Summation.appropriate)
     Params:
         r = range, must be finite iterable
     +/
-    @fmamath entropyType!Range entropy(Range)(Range r)
+    @fmamath entropyType!F entropy(Range)(Range r)
         if (isIterable!Range)
     {
         alias G = typeof(return);
@@ -429,4 +434,96 @@ unittest
 
     assert(x.sliced.entropy.approxEqual(-2.327497));
     assert(x.sliced.entropy!float.approxEqual(-2.327497));
+}
+
+// Explicit result types apply to the calculation, not just the final cast.
+version(mir_stat_test)
+@safe pure nothrow @nogc
+unittest
+{
+    import mir.ndslice.slice : sliced;
+    import mir.ndslice.topology : map;
+    import std.algorithm.iteration : rangeMap = map;
+    import std.math.traits : isFinite;
+    import std.meta : AliasSeq;
+
+    double[2] values = [0.25, 0.75];
+    static foreach (T; AliasSeq!(float, double, real))
+    {
+        static assert(is(typeof(entropy!T(values[])) == T));
+        static assert(is(typeof(entropy!T(values[].sliced)) == T));
+        static assert(is(typeof(entropy!T(values[].sliced.map!(a => a))) == T));
+        static assert(is(typeof(entropy!T(values[].rangeMap!(a => a))) == T));
+        assert(entropy!T(values[]) == entropy!T(cast(T) 0.25, cast(T) 0.75));
+        assert(entropy!T(values[].sliced) == entropy!T(values[]));
+        assert(entropy!T(values[].rangeMap!(a => a)) == entropy!T(values[]));
+    }
+    const double[1] tiny = [1e-100];
+    assert(entropy!float(tiny[]) == 0);
+    assert(entropy!float(tiny[].sliced) == 0);
+    float[1] large = [float.max / 4];
+    assert(isFinite(entropy!double(large[])));
+    assert(isFinite(entropy!double(large[].sliced)));
+    static assert(is(typeof(entropy(values[])) == double));
+    static assert(is(typeof(entropy(large[].sliced)) == float));
+    static assert(is(typeof(entropy!(float, "kbn")(values[].sliced)) == float));
+}
+
+// Merging must retain the source's low-order compensation, even when its
+// rounded sum cannot represent that correction. Cancel the large term through
+// the public summator to inspect the retained state without logarithm error.
+// Copying a precise summator is @system in the supported dependency version.
+version(mir_stat_test)
+pure nothrow @nogc
+unittest
+{
+    import mir.math.internal.xlogy : xlog;
+    import std.meta : AliasSeq;
+
+    static foreach (T; AliasSeq!(float, double, real))
+    static foreach (mode; [Summation.kbn, Summation.kb2, Summation.precise])
+    {{
+        alias A = EntropyAccumulator!(T, mode);
+        A source, merged;
+        const large = xlog(cast(T) 0x1p70);
+        const small = xlog(cast(T) 0.5);
+        source.put(cast(T) 0x1p70);
+        source.put(cast(T) 0.5);
+        merged.put(source);
+        merged.put(A.init);
+        merged.summator.put(-large);
+        assert(merged.entropy == small);
+        source.put(source);
+        source.summator.put(-large);
+        source.summator.put(-large);
+        assert(source.entropy == 2 * small);
+    }}
+}
+
+// Preserve the scalar fallback for pairwise, decimal, and cross-type merges.
+version(mir_stat_test)
+@safe pure nothrow @nogc
+unittest
+{
+    import mir.math.internal.xlogy : xlog;
+
+    static foreach (mode; [Summation.naive, Summation.pairwise, Summation.decimal])
+    {{
+        alias A = EntropyAccumulator!(double, mode);
+        A source, merged;
+        source.put(2.0);
+        foreach (i; 0 .. 100)
+            merged.put(source);
+        const expected = 100 * xlog(2.0);
+        assert(merged.entropy >= expected * (1 - 128 * double.epsilon));
+        assert(merged.entropy <= expected * (1 + 128 * double.epsilon));
+        merged.put(A.init);
+        source.put(source);
+        assert(source.entropy == 2 * xlog(2.0));
+    }}
+    EntropyAccumulator!(float, Summation.kbn) source;
+    EntropyAccumulator!(double, Summation.kbn) merged;
+    source.put(0.5f);
+    merged.put(source);
+    assert(merged.entropy == cast(double) source.entropy);
 }
