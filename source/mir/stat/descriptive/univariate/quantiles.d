@@ -3963,6 +3963,57 @@ unittest
     assert(interquartileRange!double(floating[].sliced, 0, 0.5L) == 2);
 }
 
+// Floating spreads retain interpolation offsets until the final subtraction.
+version(mir_stat_test)
+@safe pure nothrow @nogc
+unittest
+{
+    import mir.ndslice.slice: sliced;
+    double[2] adjacent = [0x1p60, 0x1p60 + 256];
+    assert(interquartileRange(adjacent[].sliced) == 128);
+    assert(interquartileRange(adjacent[].sliced, 0.75, 0.25) == -128);
+    assert(interquartileRange(adjacent[].sliced, 0.5, 0.5) == 0);
+    double[5] values = [0x1p60, 0x1p60 + 256, 0x1p60 + 512,
+        0x1p60 + 768, 0x1p60 + 1024];
+    const original = values;
+    assert(interquartileRange!float(values[].sliced) == 512);
+    assert(values == original);
+    assert(interquartileRange!(float, QuantileAlgo.type7, true)(values[].sliced) == 512);
+    assert(interquartileRange!(QuantileAlgo.type1)(adjacent[].sliced) == 256);
+}
+
+// Weighted endpoint distances can fit even when their subtraction overflows.
+version(mir_stat_test)
+@safe pure nothrow @nogc
+unittest
+{
+    import mir.ndslice.slice: sliced;
+    import std.math: isNaN;
+    import std.meta: AliasSeq;
+    static foreach (T; AliasSeq!(float, double, real))
+    {{
+        T[2] extremes = [-T.max, T.max];
+        assert(interquartileRange(extremes[].sliced) == T.max);
+        assert(interquartileRange(extremes[].sliced, 0, 1) == T.infinity);
+        assert(interquartileRange(extremes[].sliced, 0.5, 0.5) == 0);
+        T[2] infinite = [T.infinity, T.infinity];
+        assert(interquartileRange(infinite[].sliced).isNaN);
+    }}
+}
+
+// Scale a finite endpoint distance without overflowing the subtraction when
+// the weighted distance still fits. Zero weight contributes nothing, even
+// when the unweighted distance would overflow.
+private W weightedQuantileGap(W, T, G)(T a, T b, G fraction)
+{
+    const W weight = fraction;
+    if (weight == 0)
+        return 0;
+    const W x = a, y = b, gap = y - x;
+    import std.math: isFinite;
+    return isFinite(gap) ? gap * weight : y * weight - x * weight;
+}
+
 // Shared with robustScale so integral spreads are not reconstructed by
 // subtracting two separately rounded quantiles.
 package(mir.stat) auto quantileSpread(F, QuantileAlgo algorithm, bool modify, S, P, Q)(
@@ -4023,6 +4074,50 @@ package(mir.stat) auto quantileSpread(F, QuantileAlgo algorithm, bool modify, S,
             return cast(F)(anchor + (upperOffset - lowerOffset));
         }
     }
+    else static if (isFloatingPoint!T && isFloatingPoint!F)
+    {
+        static if (modify) scope auto workspace = source.flattened;
+        else
+        {
+            import mir.ndslice.allocation: rcslice;
+            auto owner = rcslice!T([source.elementCount], T.init);
+            scope auto flat = source.lightScope.flattened;
+            foreach (i; 0 .. flat.length)
+                owner[i] = flat[i];
+            scope auto workspace = owner.lightScope;
+        }
+        auto lower = selectQuantile!algorithm(workspace, lowerProbability);
+        auto upper = selectQuantile!algorithm(workspace, upperProbability);
+        alias Work = CommonType!(T, F, Level, double);
+        import std.math: isFinite;
+        if (!isFinite(lower.low) || !isFinite(lower.high) ||
+            !isFinite(upper.low) || !isFinite(upper.high))
+        {
+            const Work a = lower.fraction == 0 ? cast(Work)lower.low :
+                interpolateQuantile!Work(lower.low, lower.high, lower.fraction);
+            const Work b = upper.fraction == 0 ? cast(Work)upper.low :
+                interpolateQuantile!Work(upper.low, upper.high, upper.fraction);
+            return cast(F)(b - a);
+        }
+        const negative = lowerProbability > upperProbability;
+        if (negative)
+        {
+            auto tmp = lower;
+            lower = upper;
+            upper = tmp;
+        }
+        // Retain the selected observations until subtraction. Separately
+        // rounded quantiles can lose a small spread around a large offset.
+        // For ordered probabilities, combine nonnegative interval lengths.
+        Work value;
+        if (lower.low == upper.low && lower.high == upper.high)
+            value = weightedQuantileGap!Work(lower.low, lower.high, upper.fraction - lower.fraction);
+        else
+            value = (cast(Work)upper.low - cast(Work)lower.high) +
+                weightedQuantileGap!Work(lower.low, lower.high, 1 - lower.fraction) +
+                weightedQuantileGap!Work(upper.low, upper.high, upper.fraction);
+        return cast(F)(negative ? -value : value);
+    }
     else
     {
         auto values = rcquantile!(F, algorithm, modify)(source, lowerProbability, upperProbability);
@@ -4038,7 +4133,11 @@ large offset to floating point. Selection algorithms retain integral results;
 the difference must fit the result type. Probabilities remain floating point
 regardless of the result type.
 
-By default, this function computes the result using $(LREF quantile), i.e.
+For floating-point observations, interpolation and subtraction are combined
+before rounding to the result type. This preserves small spreads around large
+common offsets that can be lost by subtracting separately rounded quantiles.
+
+By default, this function computes the result defined by $(LREF quantile), i.e.
 `result = quantile(x, 0.75) - quantile(x, 0.25)`. There are also overloads for
 providing a low value, as in `result = quantile(x, 1 - low) - quantile(x, low)`
 and both a low and high value, as in `result = quantile(x, high) - quantile(x, low)`.
