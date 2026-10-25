@@ -674,14 +674,28 @@ enum QuantileAlgo {
     $(H4 Discontinuous sample quantile)
 
     Inverse of empirical distribution function.
+
+    For a sample of length n, discontinuities use the represented value of
+    rank/n, calculated in the probability type promoted to at least double.
+    At a discontinuity, select the lower observation; immediately above it,
+    select the next observation. Comparing probabilities directly avoids
+    treating neighboring probabilities as ties when n*p rounds to an integer.
     +/
     type1,
     /++
-    Similar to type1, but averages at discontinuities.
+    Similar to type1, but averages at discontinuities, using the same
+    represented rank/n boundaries. For example, with ten sorted observations,
+    p = 0.1 averages the first two observations.
     +/
     type2,
     /++
     SAS definition: nearest even order statistic.
+
+    Switch between one-based ranks k and k+1 at the represented probability
+    (k+0.5)/n, calculated in the probability type promoted to at least double.
+    At that boundary, select the observation with the even one-based rank.
+    Probabilities immediately below or above select rank k or k+1,
+    respectively. Clamp to the first and last observations at the endpoints.
     +/
     type3,
     /++
@@ -922,73 +936,111 @@ auto selectQuantile(QuantileAlgo quantileAlgo, F = void, Iterator, G)(Slice!Iter
     static if (is(F == void)) alias Parts = QuantileParts!(T, GG);
     const GG probability = p;
 
-    GG m;
-
-    static if (quantileAlgo == QuantileAlgo.type1) {
-        m = 0;
-    } else static if (quantileAlgo == QuantileAlgo.type2) {
-        m = 0;
-    } else static if (quantileAlgo == QuantileAlgo.type3) {
-        m = -0.5;
-    } else static if (quantileAlgo == QuantileAlgo.type4) {
-        m = 0;
-    } else static if (quantileAlgo == QuantileAlgo.type5) {
-        m = 0.5;
-    } else static if (quantileAlgo == QuantileAlgo.type6) {
-        m = probability;
-    } else static if (quantileAlgo == QuantileAlgo.type7) {
-        m = 1 - probability;
-    } else static if (quantileAlgo == QuantileAlgo.type8) {
-        m = (probability + 1) / 3;
-    } else static if (quantileAlgo == QuantileAlgo.type9) {
-        m = probability / 4 + cast(GG) 3 / 8;
-    }
-
-    GG g = n * probability + m - 1; //note: 0-based, not 1-based indexing
-
-    GG pre_j = floor(g);
-    GG pre_j_1 = pre_j + 1;
-    size_t j;
-    if (pre_j >= (n - 1)) { //note: 0-based, not 1-based indexing
-        j = n - 1;
-    } else if (pre_j < 0) {
-        j = 0;
-    } else {
-        j = cast(size_t) pre_j;
-    }
-
-    size_t j_1;
-    if (pre_j_1 >= (n - 1)) { //note: 0-based, not 1-based indexing
-        j_1 = n - 1;
-    } else if (pre_j_1 < 0) {
-        j_1 = 0;
-    } else {
-        j_1 = cast(size_t) pre_j_1;
-    }
-
-    g -= j;
+    size_t j, j_1;
     GG gamma;
+    static if (quantileAlgo == QuantileAlgo.type1 || quantileAlgo == QuantileAlgo.type2)
+    {
+        // Locate the nearest discontinuity, then compare probabilities directly.
+        // Multiplying n*p can round a neighboring probability onto an integer.
+        const GG nearest = n * probability + 0.5;
+        // Clamp before converting: a rounded n can exceed size_t.max.
+        const size_t rank = nearest >= n ? n : cast(size_t)nearest;
+        if (rank == 0)
+        {
+            j = j_1 = 0;
+            gamma = 0;
+        }
+        else if (rank >= n)
+        {
+            j = j_1 = n - 1;
+            gamma = 0;
+        }
+        else
+        {
+            j = rank - 1;
+            j_1 = rank;
+            const GG boundary = cast(GG)rank / n;
+            static if (quantileAlgo == QuantileAlgo.type1)
+                gamma = probability <= boundary ? 0 : 1;
+            else
+                gamma = probability < boundary ? 0 : probability > boundary ? 1 : 0.5;
+        }
+    }
+    else static if (quantileAlgo == QuantileAlgo.type3)
+    {
+        // Type 3 switches at half ranks and selects the even one-based rank
+        // on a tie. Compare p with the boundary before multiplication can
+        // round a neighboring probability onto that tie.
+        const GG position = n * probability;
+        const size_t rank = position >= n ? n : cast(size_t)position;
+        if (rank == 0)
+        {
+            j = j_1 = 0;
+            gamma = 0;
+        }
+        else if (rank >= n)
+        {
+            j = j_1 = n - 1;
+            gamma = 0;
+        }
+        else
+        {
+            j = rank - 1;
+            j_1 = rank;
+            const GG boundary = (cast(GG)rank + 0.5) / n;
+            gamma = probability < boundary ? 0 : probability > boundary ? 1 :
+                (rank % 2 == 0 ? 0 : 1);
+        }
+    }
+    else
+    {
+        GG g;
+        static if (quantileAlgo == QuantileAlgo.type7)
+        {
+            // Form the zero-based rank directly. Adding and subtracting one
+            // would erase tiny positive probabilities before interpolation.
+            g = (n - 1) * probability;
+        }
+        else
+        {
+            GG m;
 
-    static if (quantileAlgo == QuantileAlgo.type1) {
-        if (g == 0) {
-            gamma = 0;
-        } else {
-            gamma = 1;
+            static if (quantileAlgo == QuantileAlgo.type4) {
+                m = 0;
+            } else static if (quantileAlgo == QuantileAlgo.type5) {
+                m = 0.5;
+            } else static if (quantileAlgo == QuantileAlgo.type6) {
+                m = probability;
+            } else static if (quantileAlgo == QuantileAlgo.type8) {
+                m = (probability + 1) / 3;
+            } else static if (quantileAlgo == QuantileAlgo.type9) {
+                m = probability / 4 + cast(GG) 3 / 8;
+            }
+
+            g = n * probability + m - 1; //note: 0-based, not 1-based indexing
         }
-    } else static if (quantileAlgo == QuantileAlgo.type2) {
-        if (g == 0) {
-            gamma = 0.5;
+
+        GG pre_j = floor(g);
+        GG pre_j_1 = pre_j + 1;
+        if (pre_j >= (n - 1)) { //note: 0-based, not 1-based indexing
+            j = n - 1;
+        } else if (pre_j < 0) {
+            j = 0;
         } else {
-            gamma = 1;
+            j = cast(size_t) pre_j;
         }
-    } else static if (quantileAlgo == QuantileAlgo.type3) {
-        if (g == 0 && (j + 1) % 2 == 0) { //need to adjust because 0-based indexing
-            gamma = 0;
+
+        // Types 4-9 have g >= -1, so floor(g) + 1 is already nonnegative.
+        if (pre_j_1 >= (n - 1)) { //note: 0-based, not 1-based indexing
+            j_1 = n - 1;
         } else {
-            gamma = 1;
+            j_1 = cast(size_t) pre_j_1;
         }
-    } else {
+
+        g -= j;
+
         gamma = g;
+
     }
 
     if (gamma == 0) {
@@ -1002,8 +1054,11 @@ auto selectQuantile(QuantileAlgo quantileAlgo, F = void, Iterator, G)(Slice!Iter
     } else if (j != j_1) {
         partitionAt(slice, j_1);
         partitionAt(slice[0 .. j_1], j);
-        static if (is(F == void)) return Parts(slice[j], slice[j_1], gamma);
-        else return interpolateQuantile!F(slice[j], slice[j_1], gamma);
+        // Type 2 reaches interpolation only for an exact boundary average.
+        static if (quantileAlgo == QuantileAlgo.type2) enum GG fraction = 0.5;
+        else alias fraction = gamma;
+        static if (is(F == void)) return Parts(slice[j], slice[j_1], fraction);
+        else return interpolateQuantile!F(slice[j], slice[j_1], fraction);
     } else {
         partitionAt(slice, j);
         static if (is(F == void)) return Parts(slice[j], slice[j], 0);
@@ -4785,4 +4840,121 @@ unittest
     foreach (i, ref value; owner)
         value = data[i];
     assert(medianAbsoluteDeviation(owner) == 1.5);
+}
+
+// Preserve ties and distinguish adjacent probabilities at represented rank/n
+// boundaries. A linear reference search does not rely on multiplying n*p.
+version(mir_stat_test)
+@safe pure nothrow @nogc
+private void testQuantileRankBoundaries(G)()
+{
+    import mir.ndslice.slice: sliced;
+    import std.math: nextafter;
+    import std.traits: CommonType;
+
+    alias W = CommonType!(G, double);
+    foreach (n; 2 .. 33)
+    {
+        double[32] values;
+        foreach (i; 0 .. n) values[i] = i;
+        foreach (j; 0 .. n + 1)
+        {
+            const G center = cast(G)j / n;
+            foreach (G p; [nextafter(center, cast(G)0), center,
+                          nextafter(center, cast(G)1)])
+            {
+                size_t rank = 1;
+                while (rank < n && cast(W)p > cast(W)rank / n) ++rank;
+                const double lower = rank - 1;
+                const double average = lower +
+                    (rank < n && cast(W)p == cast(W)rank / n ? 0.5 : 0);
+                auto sample = values[0 .. n].sliced;
+                assert((quantileImpl!(double, QuantileAlgo.type1)(sample, p)) == lower);
+                assert((quantileImpl!(double, QuantileAlgo.type2)(sample, p)) == average);
+                auto parts = selectQuantile!(QuantileAlgo.type2)(sample, p);
+                assert(parts.low + (parts.high - parts.low) * parts.fraction == average);
+            }
+        }
+    }
+}
+
+version(mir_stat_test)
+@safe pure nothrow @nogc
+unittest
+{
+    testQuantileRankBoundaries!float();
+    testQuantileRankBoundaries!double();
+    testQuantileRankBoundaries!real();
+}
+
+// Type 3 uses half-rank boundaries, with ties resolved by one-based parity.
+version(mir_stat_test)
+@safe pure nothrow @nogc
+private void testNearestEvenQuantileBoundaries(G)()
+{
+    import mir.ndslice.slice: sliced;
+    import std.math: nextafter;
+    import std.traits: CommonType;
+
+    alias W = CommonType!(G, double);
+    foreach (n; 2 .. 33)
+    {
+        long[32] values;
+        // Exercise selection on unsorted integral observations as well.
+        foreach (i; 0 .. n) values[i] = n - 1 - i;
+        foreach (j; 0 .. n + 1)
+        {
+            const G center = j == 0 ? 0 : j == n ? 1 : (cast(G)j + 0.5) / n;
+            foreach (G p; [nextafter(center, cast(G)0), center,
+                          nextafter(center, cast(G)1)])
+            {
+                size_t rank = 1;
+                while (rank < n && cast(W)p > (cast(W)rank + 0.5) / n) ++rank;
+                long expected = rank - 1;
+                if (rank < n && cast(W)p == (cast(W)rank + 0.5) / n && rank % 2)
+                    ++expected;
+                auto sample = values[0 .. n].sliced;
+                assert((quantileImpl!(long, QuantileAlgo.type3)(sample, p)) == expected);
+                auto parts = selectQuantile!(QuantileAlgo.type3)(sample, p);
+                assert(parts.low == expected && parts.high == expected && parts.fraction == 0);
+            }
+        }
+    }
+}
+
+version(mir_stat_test)
+@safe pure nothrow @nogc
+unittest
+{
+    testNearestEvenQuantileBoundaries!float();
+    testNearestEvenQuantileBoundaries!double();
+    testNearestEvenQuantileBoundaries!real();
+}
+
+// Type 7 must preserve a positive interpolation fraction near probability zero.
+version(mir_stat_test)
+@safe pure nothrow @nogc
+private void testTinyType7Probabilities(T)()
+{
+    import mir.ndslice.slice: sliced;
+
+    T[2] values = [0, 1];
+    foreach (T p; [T.epsilon / 4, cast(T)1e-20, T.min_normal,
+                  T.min_normal * T.epsilon])
+    {
+        assert(p > 0);
+        assert((quantileImpl!(T, QuantileAlgo.type7)(values[].sliced, p)) == p);
+        auto parts = selectQuantile!(QuantileAlgo.type7)(values[].sliced, p);
+        assert(parts.low == 0 && parts.high == 1 && parts.fraction == p);
+        assert(interquartileRange!T(values[].sliced, T(0), p) == p);
+    }
+}
+
+version(mir_stat_test)
+@safe pure nothrow @nogc
+unittest
+{
+    testTinyType7Probabilities!float();
+    testTinyType7Probabilities!double();
+    testTinyType7Probabilities!real();
 }
