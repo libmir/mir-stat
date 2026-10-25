@@ -1030,10 +1030,9 @@ auto selectQuantile(QuantileAlgo quantileAlgo, F = void, Iterator, G)(Slice!Iter
             j = cast(size_t) pre_j;
         }
 
+        // Types 4-9 have g >= -1, so floor(g) + 1 is already nonnegative.
         if (pre_j_1 >= (n - 1)) { //note: 0-based, not 1-based indexing
             j_1 = n - 1;
-        } else if (pre_j_1 < 0) {
-            j_1 = 0;
         } else {
             j_1 = cast(size_t) pre_j_1;
         }
