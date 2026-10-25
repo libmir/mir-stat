@@ -116,7 +116,16 @@ template median(F, bool allowModify = false)
                 auto temp = val.lightScope.flattened;
                 return .median!(G, true)(temp);
             } else {
-                return mean!G(slice);
+                import std.traits: isIntegral;
+                static if ((isIntegral!(slice.DeepElement) ||
+                            isFloatingPoint!(slice.DeepElement)) && isFloatingPoint!G) {
+                    // Retain integral endpoints until averaging; converting
+                    // them independently can lose cancellation at the midpoint.
+                    auto flat = slice.flattened;
+                    return len == 1 ? cast(G) flat[0] : medianMidpoint!G(flat[0], flat[1]);
+                } else {
+                    return mean!G(slice);
+                }
             }
         } else {
             import mir.ndslice.sorting: partitionAt;
@@ -129,9 +138,13 @@ template median(F, bool allowModify = false)
                 if (len % 2 == 1) {
                     return cast(G) temp[half_n];
                 } else {
-                    //move largest value in first half of slice to half_n - 1
+                    // The lower-half partition cannot change the upper median.
+                    // Read it first to avoid combining the final two loads after
+                    // partitioning has just written individual elements.
+                    auto upper = temp[half_n];
+                    // Move the largest value in the first half to half_n - 1.
                     partitionAt(temp[0 .. half_n], half_n - 1);
-                    return (temp[half_n - 1] + temp[half_n]) / cast(G) 2;
+                    return medianMidpoint!G(temp[half_n - 1], upper);
                 }
             } else {
                 return smallMedianImpl!(G)(temp);
@@ -400,6 +413,35 @@ unittest
     assert(y == 8.5);
 }
 
+// Average selected observations without overflowing their sum or converting
+// wide integers before cancellation. Keep generic arithmetic for other types.
+private F medianMidpoint(F, T)(T a, T b)
+{
+    import std.traits: isIntegral, CommonType;
+
+    static if (isFloatingPoint!T && isFloatingPoint!F) {
+        import std.math: fabs;
+        alias Work = CommonType!(T, F, double);
+        const Work x = a, y = b, sum = x + y;
+        // Every float sum fits in double. For wider inputs, halve separately
+        // only on overflow; adding first otherwise preserves tiny midpoints.
+        static if (T.sizeof >= double.sizeof) {
+            if (fabs(sum) > Work.max)
+                return cast(F)(x * 0.5 + y * 0.5);
+        }
+        return cast(F)(sum * 0.5);
+    } else static if (isIntegral!T && isFloatingPoint!F) {
+        // Two integers narrower than 64 bits have an exact sum in long and
+        // double. Wider inputs need the split-integer interpolation path.
+        static if (T.sizeof < long.sizeof)
+            return cast(F)(cast(double)(cast(long) a + cast(long) b) * 0.5);
+        else
+            return interpolateQuantile!F(a, b, 0.5);
+    } else {
+        return cast(F)(a + b) / cast(F) 2;
+    }
+}
+
 private pure @trusted nothrow @nogc
 F smallMedianImpl(F, Iterator)(Slice!Iterator slice)
 {
@@ -437,7 +479,7 @@ F smallMedianImpl(F, Iterator)(Slice!Iterator slice)
                 medianOf!less(sliceI0, sliceI1, sliceI2, sliceI3);
                 // Ensure slice[2] < slice[3]
                 medianOf!less(sliceI2, sliceI3);
-                return cast(F) (*sliceI1 + *sliceI2) / cast(F) 2;
+                return medianMidpoint!F(*sliceI1, *sliceI2);
             } else {
                 auto sliceI4 = sliceI3;
                 ++sliceI4;
@@ -446,7 +488,7 @@ F smallMedianImpl(F, Iterator)(Slice!Iterator slice)
             }
         }
     } else {
-        return cast(F) (*sliceI0 + *sliceI1) / cast(F) 2;
+        return medianMidpoint!F(*sliceI0, *sliceI1);
     }
 }
 
@@ -481,6 +523,108 @@ unittest
 
     auto x7 = [1.0, 0, 9, 2].sliced;
     assert(x7.smallMedianImpl!double.approxEqual(1.5));
+}
+
+// Cover the short, small-sort, and partitioned median paths separately from
+// quantile interpolation: all must average the selected pair consistently.
+version(mir_stat_test)
+private @safe pure nothrow @nogc void testFloatingMedianMidpoints(T)()
+{
+    import mir.ndslice.slice: sliced;
+    import std.math: isNaN;
+
+    T[8] storage;
+    const T tiny = T.min_normal * T.epsilon;
+    foreach (n; [1, 2, 3, 4, 5, 6, 8]) {
+        auto values = storage[0 .. n];
+        foreach (value; [T.max, -T.max, tiny, -tiny, T.infinity, -T.infinity]) {
+            values[] = value;
+            assert(median(values.sliced) == value);
+            assert(median!true(values.sliced) == value);
+        }
+        foreach (i, ref value; values)
+            value = cast(T)(n - 1 - i);
+        assert(median(values.sliced) == cast(T)(n - 1) / 2);
+        // The default overload must leave the input unchanged.
+        foreach (i, value; values)
+            assert(value == cast(T)(n - 1 - i));
+        assert(median!true(values.sliced) == cast(T)(n - 1) / 2);
+    }
+    T[2] extremes = [-T.max, T.max];
+    assert(median(extremes[].sliced) == 0);
+    assert(median!true(extremes[].sliced) == 0);
+    T[2] infinities = [-T.infinity, T.infinity];
+    assert(median(infinities[].sliced).isNaN);
+    assert(median!true(infinities[].sliced).isNaN);
+}
+
+version(mir_stat_test)
+@safe pure nothrow @nogc unittest
+{
+    testFloatingMedianMidpoints!float();
+    testFloatingMedianMidpoints!double();
+    testFloatingMedianMidpoints!real();
+}
+
+// Integral addition must not wrap before conversion to the result type.
+version(mir_stat_test)
+private @safe pure nothrow @nogc void testIntegralMedianMidpoints(T)()
+{
+    import mir.ndslice.slice: sliced;
+
+    T[6] storage;
+    foreach (n; [2, 4, 6]) {
+        auto values = storage[0 .. n];
+        foreach (value; [T.min, T.max]) {
+            values[] = value;
+            assert(median(values.sliced) == cast(double) value);
+            assert(median!true(values.sliced) == cast(double) value);
+        }
+    }
+}
+
+version(mir_stat_test)
+@safe pure nothrow @nogc unittest
+{
+    import mir.ndslice.slice: sliced;
+
+    testIntegralMedianMidpoints!int();
+    testIntegralMedianMidpoints!uint();
+    testIntegralMedianMidpoints!long();
+    testIntegralMedianMidpoints!ulong();
+
+    long[6] storage;
+    foreach (n; [2, 4, 6]) {
+        auto values = storage[0 .. n];
+        values[0 .. n / 2] = long.min;
+        values[n / 2 .. $] = long.max;
+        assert(median(values.sliced) == -0.5);
+        assert(median!true(values.sliced) == -0.5);
+    }
+    int[4] equal = [int.max, int.max, int.max, int.max];
+    assert(median!float(equal[].sliced) == cast(float) int.max);
+    assert(medianAbsoluteDeviation(equal[].sliced) == 0);
+}
+
+// The short no-copy path retains qualifiers, layouts, and generic conversion.
+version(mir_stat_test)
+@safe pure nothrow @nogc unittest
+{
+    import mir.ndslice.slice: sliced;
+    import mir.ndslice.topology: universal;
+
+    const double[2] values = [double.max, double.max];
+    assert(median(values[].sliced(1, 2).universal) == double.max);
+    const double[1] single = [3];
+    assert(median(single[].sliced) == 3);
+
+    struct Wrapper {
+        double value;
+        alias value this;
+    }
+    Wrapper[4] wrapped = [Wrapper(1), Wrapper(3), Wrapper(2), Wrapper(4)];
+    assert(median(wrapped[].sliced) == 2.5);
+    assert(median(wrapped[0 .. 2].sliced) == 2);
 }
 
 /++
@@ -4250,6 +4394,11 @@ unittest
 /++
 Calculates the median absolute deviation about the median of the input.
 
+The input is not modified. Integral observations retain their differences before
+conversion to floating point, so a large common offset does not hide a small
+spread. Choosing a narrower floating-point output type does not narrow the
+center before the deviations are calculated.
+
 By default, if `F` is not floating point type, then the result will have a
 `double` type if `F` is implicitly convertible to a floating point type.
 
@@ -4272,10 +4421,56 @@ template medianAbsoluteDeviation(F)
         import mir.math.common: fabs;
         import mir.ndslice.topology: map;
         import mir.stat.transform: center;
+        import std.traits: Unqual, isIntegral, CommonType;
 
         alias G = typeof(return);
         static assert(isFloatingPoint!G, "medianAbsoluteDeviation: output type must be floating point");
-        return slice.move.center!(median!(G, false)).map!fabs.median!(G, false);
+        alias Element = Unqual!(typeof(slice).DeepElement);
+        static if (isIntegral!Element && Element.sizeof == 8)
+        {
+            import mir.ndslice.allocation: rcslice;
+            import mir.ndslice.topology: flattened;
+            auto flat = slice.lightScope.flattened;
+            assert(flat.length > 0, "medianAbsoluteDeviation: slice must have length greater than zero");
+            if (flat.length == 1) return G(0);
+            if (flat.length == 2)
+            {
+                const a = flat[0], b = flat[1];
+                const ulong gap = a < b ? cast(ulong) b - cast(ulong) a :
+                    cast(ulong) a - cast(ulong) b;
+                return cast(G) gap / 2;
+            }
+            // Bias signed integers into unsigned sort order. Distances remain
+            // unchanged, and unsigned storage can hold the full-domain gap.
+            enum ulong bias = Element.min < 0 ? 1UL << 63 : 0;
+            auto owner = flat.map!(a => cast(ulong) a ^ bias).rcslice;
+            auto workspace = owner.lightScope;
+            const middle = selectQuantile!(QuantileAlgo.type7)(workspace, 0.5);
+            const gap = middle.high - middle.low;
+            const anchor = middle.fraction == 0 ? middle.low : middle.low + gap / 2;
+            const ulong half = middle.fraction == 0 ? 0 : gap & 1;
+            // With a half-integral center every deviation has fractional part
+            // .5. Store just its integer part, then restore that common half.
+            foreach (ref value; workspace)
+                value = value <= anchor ? anchor - value : value - anchor - half;
+            const deviations = selectQuantile!(QuantileAlgo.type7)(workspace, 0.5);
+            // Twice the MAD is integral and no greater than the input range,
+            // so this sum fits in ulong even for the full signed domain.
+            // Combine before conversion, avoiding a second rounding of .5.
+            const ulong twiceMad = deviations.fraction == 0 ?
+                2 * deviations.low + half : deviations.low + deviations.high + half;
+            return cast(G) twiceMad / 2;
+        }
+        else static if (isFloatingPoint!Element || isIntegral!Element)
+        {
+            // F describes the output, not the precision of the center. In
+            // particular, do not narrow double observations to a float center.
+            static if (isIntegral!Element) alias Work = CommonType!(G, double);
+            else alias Work = CommonType!(G, Element);
+            return slice.move.center!(median!(Work, false)).map!fabs.median!(G, false);
+        }
+        else
+            return slice.move.center!(median!(G, false)).map!fabs.median!(G, false);
     }
 }
 
@@ -4393,4 +4588,102 @@ unittest
         e = a[i];
 
     assert(a.medianAbsoluteDeviation.approxEqual(1.25));
+}
+
+// Translation must not hide the spread of nearby 64-bit integers.
+version(mir_stat_test)
+@safe pure nothrow @nogc
+unittest
+{
+    import mir.ndslice.slice: sliced;
+
+    foreach (base; [long.min, 0L, 1L << 60, long.max - 8])
+    {
+        long[8] data;
+        foreach (i, ref value; data)
+            value = base + cast(long) i;
+        foreach (n; 1 .. 9)
+        {
+            // Exact deviations for the consecutive samples of lengths 1..8.
+            static immutable expected = [0.0, 0.5, 1, 1, 1, 1.5, 2, 2];
+            const exact = expected[n - 1];
+            assert(medianAbsoluteDeviation(data[0 .. n].sliced) == exact);
+            assert(medianAbsoluteDeviation!float(data[0 .. n].sliced) == exact);
+        }
+        foreach (i, value; data)
+            assert(value == base + cast(long) i); // Selection only rearranges our copy.
+    }
+
+    ulong[5] upper = [ulong.max - 4, ulong.max - 3, ulong.max - 2,
+                      ulong.max - 1, ulong.max];
+    assert(medianAbsoluteDeviation(upper[].sliced) == 1);
+    assert(medianAbsoluteDeviation(upper[3 .. 5].sliced) == 0.5);
+    assert(medianAbsoluteDeviation(upper[4 .. 5].sliced) == 0);
+
+    long[2] extremes = [long.min, long.max];
+    assert(medianAbsoluteDeviation(extremes[].sliced) == 0x1p63);
+    assert(medianAbsoluteDeviation!float(extremes[].sliced) == 0x1p63f);
+    long[4] wide = [long.min, long.min, long.max, long.max];
+    assert(medianAbsoluteDeviation(wide[].sliced) == 0x1p63);
+    // Combining the median deviation and its shared half after conversion
+    // would round twice and lose one here. The exact MAD is 2^52 + 1.
+    ulong[4] rounding = [0, 1UL << 53, (1UL << 53) + 3, (1UL << 54) + 2];
+    assert(medianAbsoluteDeviation(rounding[].sliced) == 0x1.0000000000001p52);
+
+    ulong[4] unsignedWide = [0, 0, ulong.max, ulong.max];
+    assert(medianAbsoluteDeviation(unsignedWide[].sliced) == 0x1p63);
+}
+
+// Two-element deviations must be independent of input order.
+version(mir_stat_test)
+@safe pure nothrow @nogc
+unittest
+{
+    import mir.ndslice.slice: sliced;
+
+    long[2] reversed = [long.max, long.min];
+    assert(medianAbsoluteDeviation(reversed[].sliced) == 0x1p63);
+    assert(reversed[0] == long.max && reversed[1] == long.min);
+    ulong[2] adjacent = [ulong.max, ulong.max - 1];
+    assert(medianAbsoluteDeviation(adjacent[].sliced) == 0.5);
+    long[2] equal = [long.min, long.min];
+    assert(medianAbsoluteDeviation(equal[].sliced) == 0);
+}
+
+// A narrow result must not round the center before subtraction.
+version(mir_stat_test)
+@safe pure nothrow @nogc
+unittest
+{
+    import mir.ndslice.slice: sliced;
+
+    double[5] data = [0x1p60, 0x1p60 + 256, 0x1p60 + 512,
+                      0x1p60 + 768, 0x1p60 + 1024];
+    auto result = medianAbsoluteDeviation!float(data[].sliced);
+    static assert(is(typeof(result) == float));
+    assert(result == 256);
+    int[5] integers = [int.max - 4, int.max - 3, int.max - 2,
+                      int.max - 1, int.max];
+    assert(medianAbsoluteDeviation!float(integers[].sliced) == 1);
+}
+
+// Integer centering also works through strided, const, and slice-like inputs.
+version(mir_stat_test)
+@safe pure nothrow @nogc
+unittest
+{
+    import mir.ndslice.slice: sliced;
+    import mir.ndslice.dynamic: transposed;
+    import mir.rc.array: RCArray;
+
+    enum long base = 1L << 60;
+    const long[6] data = [base, base + 1, base + 2,
+                          base + 3, base + 4, base + 5];
+    auto matrix = data[].sliced(2, 3).transposed;
+    assert(medianAbsoluteDeviation(matrix) == 1.5);
+    assert(medianAbsoluteDeviation(matrix[1]) == 1.5);
+    auto owner = RCArray!long(6);
+    foreach (i, ref value; owner)
+        value = data[i];
+    assert(medianAbsoluteDeviation(owner) == 1.5);
 }
