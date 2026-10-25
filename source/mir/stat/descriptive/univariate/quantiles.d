@@ -674,10 +674,18 @@ enum QuantileAlgo {
     $(H4 Discontinuous sample quantile)
 
     Inverse of empirical distribution function.
+
+    For a sample of length n, discontinuities use the represented value of
+    rank/n, calculated in the probability type promoted to at least double.
+    At a discontinuity, select the lower observation; immediately above it,
+    select the next observation. Comparing probabilities directly avoids
+    treating neighboring probabilities as ties when n*p rounds to an integer.
     +/
     type1,
     /++
-    Similar to type1, but averages at discontinuities.
+    Similar to type1, but averages at discontinuities, using the same
+    represented rank/n boundaries. For example, with ten sorted observations,
+    p = 0.1 averages the first two observations.
     +/
     type2,
     /++
@@ -922,73 +930,88 @@ auto selectQuantile(QuantileAlgo quantileAlgo, F = void, Iterator, G)(Slice!Iter
     static if (is(F == void)) alias Parts = QuantileParts!(T, GG);
     const GG probability = p;
 
-    GG m;
-
-    static if (quantileAlgo == QuantileAlgo.type1) {
-        m = 0;
-    } else static if (quantileAlgo == QuantileAlgo.type2) {
-        m = 0;
-    } else static if (quantileAlgo == QuantileAlgo.type3) {
-        m = -0.5;
-    } else static if (quantileAlgo == QuantileAlgo.type4) {
-        m = 0;
-    } else static if (quantileAlgo == QuantileAlgo.type5) {
-        m = 0.5;
-    } else static if (quantileAlgo == QuantileAlgo.type6) {
-        m = probability;
-    } else static if (quantileAlgo == QuantileAlgo.type7) {
-        m = 1 - probability;
-    } else static if (quantileAlgo == QuantileAlgo.type8) {
-        m = (probability + 1) / 3;
-    } else static if (quantileAlgo == QuantileAlgo.type9) {
-        m = probability / 4 + cast(GG) 3 / 8;
-    }
-
-    GG g = n * probability + m - 1; //note: 0-based, not 1-based indexing
-
-    GG pre_j = floor(g);
-    GG pre_j_1 = pre_j + 1;
-    size_t j;
-    if (pre_j >= (n - 1)) { //note: 0-based, not 1-based indexing
-        j = n - 1;
-    } else if (pre_j < 0) {
-        j = 0;
-    } else {
-        j = cast(size_t) pre_j;
-    }
-
-    size_t j_1;
-    if (pre_j_1 >= (n - 1)) { //note: 0-based, not 1-based indexing
-        j_1 = n - 1;
-    } else if (pre_j_1 < 0) {
-        j_1 = 0;
-    } else {
-        j_1 = cast(size_t) pre_j_1;
-    }
-
-    g -= j;
+    size_t j, j_1;
     GG gamma;
+    static if (quantileAlgo == QuantileAlgo.type1 || quantileAlgo == QuantileAlgo.type2)
+    {
+        // Locate the nearest discontinuity, then compare probabilities directly.
+        // Multiplying n*p can round a neighboring probability onto an integer.
+        const GG nearest = n * probability + 0.5;
+        // Clamp before converting: a rounded n can exceed size_t.max.
+        const size_t rank = nearest >= n ? n : cast(size_t)nearest;
+        if (rank == 0)
+        {
+            j = j_1 = 0;
+            gamma = 0;
+        }
+        else if (rank >= n)
+        {
+            j = j_1 = n - 1;
+            gamma = 0;
+        }
+        else
+        {
+            j = rank - 1;
+            j_1 = rank;
+            const GG boundary = cast(GG)rank / n;
+            static if (quantileAlgo == QuantileAlgo.type1)
+                gamma = probability <= boundary ? 0 : 1;
+            else
+                gamma = probability < boundary ? 0 : probability > boundary ? 1 : 0.5;
+        }
+    }
+    else
+    {
+        GG m;
 
-    static if (quantileAlgo == QuantileAlgo.type1) {
-        if (g == 0) {
-            gamma = 0;
-        } else {
-            gamma = 1;
+        static if (quantileAlgo == QuantileAlgo.type3) {
+            m = -0.5;
+        } else static if (quantileAlgo == QuantileAlgo.type4) {
+            m = 0;
+        } else static if (quantileAlgo == QuantileAlgo.type5) {
+            m = 0.5;
+        } else static if (quantileAlgo == QuantileAlgo.type6) {
+            m = probability;
+        } else static if (quantileAlgo == QuantileAlgo.type7) {
+            m = 1 - probability;
+        } else static if (quantileAlgo == QuantileAlgo.type8) {
+            m = (probability + 1) / 3;
+        } else static if (quantileAlgo == QuantileAlgo.type9) {
+            m = probability / 4 + cast(GG) 3 / 8;
         }
-    } else static if (quantileAlgo == QuantileAlgo.type2) {
-        if (g == 0) {
-            gamma = 0.5;
+
+        GG g = n * probability + m - 1; //note: 0-based, not 1-based indexing
+
+        GG pre_j = floor(g);
+        GG pre_j_1 = pre_j + 1;
+        if (pre_j >= (n - 1)) { //note: 0-based, not 1-based indexing
+            j = n - 1;
+        } else if (pre_j < 0) {
+            j = 0;
         } else {
-            gamma = 1;
+            j = cast(size_t) pre_j;
         }
-    } else static if (quantileAlgo == QuantileAlgo.type3) {
-        if (g == 0 && (j + 1) % 2 == 0) { //need to adjust because 0-based indexing
-            gamma = 0;
+
+        if (pre_j_1 >= (n - 1)) { //note: 0-based, not 1-based indexing
+            j_1 = n - 1;
+        } else if (pre_j_1 < 0) {
+            j_1 = 0;
         } else {
-            gamma = 1;
+            j_1 = cast(size_t) pre_j_1;
         }
-    } else {
-        gamma = g;
+
+        g -= j;
+
+        static if (quantileAlgo == QuantileAlgo.type3) {
+            if (g == 0 && (j + 1) % 2 == 0) { //need to adjust because 0-based indexing
+                gamma = 0;
+            } else {
+                gamma = 1;
+            }
+        } else {
+            gamma = g;
+        }
+
     }
 
     if (gamma == 0) {
@@ -1002,8 +1025,11 @@ auto selectQuantile(QuantileAlgo quantileAlgo, F = void, Iterator, G)(Slice!Iter
     } else if (j != j_1) {
         partitionAt(slice, j_1);
         partitionAt(slice[0 .. j_1], j);
-        static if (is(F == void)) return Parts(slice[j], slice[j_1], gamma);
-        else return interpolateQuantile!F(slice[j], slice[j_1], gamma);
+        // Type 2 reaches interpolation only for an exact boundary average.
+        static if (quantileAlgo == QuantileAlgo.type2) enum GG fraction = 0.5;
+        else alias fraction = gamma;
+        static if (is(F == void)) return Parts(slice[j], slice[j_1], fraction);
+        else return interpolateQuantile!F(slice[j], slice[j_1], fraction);
     } else {
         partitionAt(slice, j);
         static if (is(F == void)) return Parts(slice[j], slice[j], 0);
@@ -4785,4 +4811,49 @@ unittest
     foreach (i, ref value; owner)
         value = data[i];
     assert(medianAbsoluteDeviation(owner) == 1.5);
+}
+
+// Preserve ties and distinguish adjacent probabilities at represented rank/n
+// boundaries. A linear reference search does not rely on multiplying n*p.
+version(mir_stat_test)
+@safe pure nothrow @nogc
+private void testQuantileRankBoundaries(G)()
+{
+    import mir.ndslice.slice: sliced;
+    import std.math: nextafter;
+    import std.traits: CommonType;
+
+    alias W = CommonType!(G, double);
+    foreach (n; 2 .. 33)
+    {
+        double[32] values;
+        foreach (i; 0 .. n) values[i] = i;
+        foreach (j; 0 .. n + 1)
+        {
+            const G center = cast(G)j / n;
+            foreach (G p; [nextafter(center, cast(G)0), center,
+                          nextafter(center, cast(G)1)])
+            {
+                size_t rank = 1;
+                while (rank < n && cast(W)p > cast(W)rank / n) ++rank;
+                const double lower = rank - 1;
+                const double average = lower +
+                    (rank < n && cast(W)p == cast(W)rank / n ? 0.5 : 0);
+                auto sample = values[0 .. n].sliced;
+                assert((quantileImpl!(double, QuantileAlgo.type1)(sample, p)) == lower);
+                assert((quantileImpl!(double, QuantileAlgo.type2)(sample, p)) == average);
+                auto parts = selectQuantile!(QuantileAlgo.type2)(sample, p);
+                assert(parts.low + (parts.high - parts.low) * parts.fraction == average);
+            }
+        }
+    }
+}
+
+version(mir_stat_test)
+@safe pure nothrow @nogc
+unittest
+{
+    testQuantileRankBoundaries!float();
+    testQuantileRankBoundaries!double();
+    testQuantileRankBoundaries!real();
 }
