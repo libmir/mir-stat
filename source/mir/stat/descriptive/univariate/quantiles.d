@@ -4394,6 +4394,11 @@ unittest
 /++
 Calculates the median absolute deviation about the median of the input.
 
+The input is not modified. Integral observations retain their differences before
+conversion to floating point, so a large common offset does not hide a small
+spread. Choosing a narrower floating-point output type does not narrow the
+center before the deviations are calculated.
+
 By default, if `F` is not floating point type, then the result will have a
 `double` type if `F` is implicitly convertible to a floating point type.
 
@@ -4416,10 +4421,56 @@ template medianAbsoluteDeviation(F)
         import mir.math.common: fabs;
         import mir.ndslice.topology: map;
         import mir.stat.transform: center;
+        import std.traits: Unqual, isIntegral, CommonType;
 
         alias G = typeof(return);
         static assert(isFloatingPoint!G, "medianAbsoluteDeviation: output type must be floating point");
-        return slice.move.center!(median!(G, false)).map!fabs.median!(G, false);
+        alias Element = Unqual!(typeof(slice).DeepElement);
+        static if (isIntegral!Element && Element.sizeof == 8)
+        {
+            import mir.ndslice.allocation: rcslice;
+            import mir.ndslice.topology: flattened;
+            auto flat = slice.lightScope.flattened;
+            assert(flat.length > 0, "medianAbsoluteDeviation: slice must have length greater than zero");
+            if (flat.length == 1) return G(0);
+            if (flat.length == 2)
+            {
+                const a = flat[0], b = flat[1];
+                const ulong gap = a < b ? cast(ulong) b - cast(ulong) a :
+                    cast(ulong) a - cast(ulong) b;
+                return cast(G) gap / 2;
+            }
+            // Bias signed integers into unsigned sort order. Distances remain
+            // unchanged, and unsigned storage can hold the full-domain gap.
+            enum ulong bias = Element.min < 0 ? 1UL << 63 : 0;
+            auto owner = flat.map!(a => cast(ulong) a ^ bias).rcslice;
+            auto workspace = owner.lightScope;
+            const middle = selectQuantile!(QuantileAlgo.type7)(workspace, 0.5);
+            const gap = middle.high - middle.low;
+            const anchor = middle.fraction == 0 ? middle.low : middle.low + gap / 2;
+            const ulong half = middle.fraction == 0 ? 0 : gap & 1;
+            // With a half-integral center every deviation has fractional part
+            // .5. Store just its integer part, then restore that common half.
+            foreach (ref value; workspace)
+                value = value <= anchor ? anchor - value : value - anchor - half;
+            const deviations = selectQuantile!(QuantileAlgo.type7)(workspace, 0.5);
+            // Twice the MAD is integral and no greater than the input range,
+            // so this sum fits in ulong even for the full signed domain.
+            // Combine before conversion, avoiding a second rounding of .5.
+            const ulong twiceMad = deviations.fraction == 0 ?
+                2 * deviations.low + half : deviations.low + deviations.high + half;
+            return cast(G) twiceMad / 2;
+        }
+        else static if (isFloatingPoint!Element || isIntegral!Element)
+        {
+            // F describes the output, not the precision of the center. In
+            // particular, do not narrow double observations to a float center.
+            static if (isIntegral!Element) alias Work = CommonType!(G, double);
+            else alias Work = CommonType!(G, Element);
+            return slice.move.center!(median!(Work, false)).map!fabs.median!(G, false);
+        }
+        else
+            return slice.move.center!(median!(G, false)).map!fabs.median!(G, false);
     }
 }
 
@@ -4537,4 +4588,86 @@ unittest
         e = a[i];
 
     assert(a.medianAbsoluteDeviation.approxEqual(1.25));
+}
+
+// Translation must not hide the spread of nearby 64-bit integers.
+version(mir_stat_test)
+@safe pure nothrow @nogc
+unittest
+{
+    import mir.ndslice.slice: sliced;
+
+    foreach (base; [long.min, 0L, 1L << 60, long.max - 8])
+    {
+        long[8] data;
+        foreach (i, ref value; data)
+            value = base + cast(long) i;
+        foreach (n; 1 .. 9)
+        {
+            // Exact deviations for the consecutive samples of lengths 1..8.
+            static immutable expected = [0.0, 0.5, 1, 1, 1, 1.5, 2, 2];
+            const exact = expected[n - 1];
+            assert(medianAbsoluteDeviation(data[0 .. n].sliced) == exact);
+            assert(medianAbsoluteDeviation!float(data[0 .. n].sliced) == exact);
+        }
+        foreach (i, value; data)
+            assert(value == base + cast(long) i); // Selection only rearranges our copy.
+    }
+
+    ulong[5] upper = [ulong.max - 4, ulong.max - 3, ulong.max - 2,
+                      ulong.max - 1, ulong.max];
+    assert(medianAbsoluteDeviation(upper[].sliced) == 1);
+    assert(medianAbsoluteDeviation(upper[3 .. 5].sliced) == 0.5);
+    assert(medianAbsoluteDeviation(upper[4 .. 5].sliced) == 0);
+
+    long[2] extremes = [long.min, long.max];
+    assert(medianAbsoluteDeviation(extremes[].sliced) == 0x1p63);
+    assert(medianAbsoluteDeviation!float(extremes[].sliced) == 0x1p63f);
+    long[4] wide = [long.min, long.min, long.max, long.max];
+    assert(medianAbsoluteDeviation(wide[].sliced) == 0x1p63);
+    // Combining the median deviation and its shared half after conversion
+    // would round twice and lose one here. The exact MAD is 2^52 + 1.
+    ulong[4] rounding = [0, 1UL << 53, (1UL << 53) + 3, (1UL << 54) + 2];
+    assert(medianAbsoluteDeviation(rounding[].sliced) == 0x1.0000000000001p52);
+
+    ulong[4] unsignedWide = [0, 0, ulong.max, ulong.max];
+    assert(medianAbsoluteDeviation(unsignedWide[].sliced) == 0x1p63);
+}
+
+// A narrow result must not round the center before subtraction.
+version(mir_stat_test)
+@safe pure nothrow @nogc
+unittest
+{
+    import mir.ndslice.slice: sliced;
+
+    double[5] data = [0x1p60, 0x1p60 + 256, 0x1p60 + 512,
+                      0x1p60 + 768, 0x1p60 + 1024];
+    auto result = medianAbsoluteDeviation!float(data[].sliced);
+    static assert(is(typeof(result) == float));
+    assert(result == 256);
+    int[5] integers = [int.max - 4, int.max - 3, int.max - 2,
+                      int.max - 1, int.max];
+    assert(medianAbsoluteDeviation!float(integers[].sliced) == 1);
+}
+
+// Integer centering also works through strided, const, and slice-like inputs.
+version(mir_stat_test)
+@safe pure nothrow @nogc
+unittest
+{
+    import mir.ndslice.slice: sliced;
+    import mir.ndslice.dynamic: transposed;
+    import mir.rc.array: RCArray;
+
+    enum long base = 1L << 60;
+    const long[6] data = [base, base + 1, base + 2,
+                          base + 3, base + 4, base + 5];
+    auto matrix = data[].sliced(2, 3).transposed;
+    assert(medianAbsoluteDeviation(matrix) == 1.5);
+    assert(medianAbsoluteDeviation(matrix[1]) == 1.5);
+    auto owner = RCArray!long(6);
+    foreach (i, ref value; owner)
+        value = data[i];
+    assert(medianAbsoluteDeviation(owner) == 1.5);
 }
