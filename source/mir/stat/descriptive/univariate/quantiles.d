@@ -4634,6 +4634,22 @@ unittest
     assert(medianAbsoluteDeviation(unsignedWide[].sliced) == 0x1p63);
 }
 
+// Two-element deviations must be independent of input order.
+version(mir_stat_test)
+@safe pure nothrow @nogc
+unittest
+{
+    import mir.ndslice.slice: sliced;
+
+    long[2] reversed = [long.max, long.min];
+    assert(medianAbsoluteDeviation(reversed[].sliced) == 0x1p63);
+    assert(reversed[0] == long.max && reversed[1] == long.min);
+    ulong[2] adjacent = [ulong.max, ulong.max - 1];
+    assert(medianAbsoluteDeviation(adjacent[].sliced) == 0.5);
+    long[2] equal = [long.min, long.min];
+    assert(medianAbsoluteDeviation(equal[].sliced) == 0);
+}
+
 // A narrow result must not round the center before subtraction.
 version(mir_stat_test)
 @safe pure nothrow @nogc
