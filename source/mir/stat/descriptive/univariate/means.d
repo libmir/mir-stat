@@ -1808,8 +1808,8 @@ struct WMeanAccumulator(T, Summation summation, AssumeWeights assumeWeights,
 
     ///
     void put(SliceLike1, SliceLike2)(SliceLike1 s, SliceLike2 w)
-        if (isConvertibleToSlice!SliceLike1 && !isSlice!SliceLike1 &&
-            isConvertibleToSlice!SliceLike2 && !isSlice!SliceLike2)
+        if (isConvertibleToSlice!SliceLike1 && isConvertibleToSlice!SliceLike2 &&
+            !(isSlice!SliceLike1 && isSlice!SliceLike2))
     {
         import mir.ndslice.slice: toSlice;
         this.put(s.toSlice, w.toSlice);
@@ -2898,4 +2898,36 @@ unittest
     result.put(result);
     assert(result.count == 400 && result.sum == 400);
     assert(source.count == 2 && source.sum == 2);
+}
+
+// Mixed arrays and slices use the same weighted traversal as two slices.
+version(mir_stat_test)
+@safe pure nothrow @nogc
+unittest
+{
+    import mir.ndslice.slice : sliced;
+
+    const double[3] values = [1, 2, 4];
+    immutable double[3] weights = [2, 1, 1];
+    assert(wmean(values[], weights[].sliced) == 2);
+    assert(wmean(values[].sliced, weights[]) == 2);
+    assert(wmean!float(values[], weights[].sliced) == 2f);
+    static assert(is(typeof(wmean!float(values[].sliced, weights[])) == float));
+
+    static foreach (assumption; [AssumeWeights.primary, AssumeWeights.sumToOne])
+    {{
+        WMeanAccumulator!(double, Summation.pairwise, assumption) a, b;
+        a.put(values[], weights[].sliced);
+        b.put(values[].sliced, weights[]);
+        a.put(values[0 .. 0], weights[0 .. 0].sliced);
+        b.put(values[0 .. 0].sliced, weights[0 .. 0]);
+        assert(a.wsum == 8 && b.wsum == 8);
+        static if (assumption == AssumeWeights.primary)
+        {
+            assert(a.weight == 4 && b.weight == 4);
+            assert(a.wmean == 2 && b.wmean == 2);
+        }
+        else
+            assert(a.wmean == 8 && b.wmean == 8);
+    }}
 }

@@ -91,8 +91,8 @@ struct WSummator(T, Summation summation, U = T)
 
     ///
     void put(SliceLike1, SliceLike2)(SliceLike1 s, SliceLike2 w)
-        if (isConvertibleToSlice!SliceLike1 && !isSlice!SliceLike1 &&
-            isConvertibleToSlice!SliceLike2 && !isSlice!SliceLike2)
+        if (isConvertibleToSlice!SliceLike1 && isConvertibleToSlice!SliceLike2 &&
+            !(isSlice!SliceLike1 && isSlice!SliceLike2))
     {
         import mir.ndslice.slice: toSlice;
         this.put(s.toSlice, w.toSlice);
@@ -778,4 +778,51 @@ unittest
             assert(batch.wmean == scalar.wmean);
         }}
     }}
+}
+
+// Slice-convertible operands may independently be arrays or existing slices.
+version(mir_stat_test)
+@safe pure nothrow @nogc
+unittest
+{
+    import mir.ndslice.slice : sliced;
+
+    const double[3] values = [1, 2, 4];
+    immutable double[3] weights = [2, 1, 3];
+    assert(wsum(values[], weights[].sliced) == 16);
+    assert(wsum(values[].sliced, weights[]) == 16);
+    assert(wsum!float(values[], weights[].sliced) == 16f);
+    static assert(is(typeof(wsum!float(values[].sliced, weights[])) == float));
+
+    WSummator!(double, Summation.pairwise) a, b;
+    a.put(values[], weights[].sliced);
+    b.put(values[].sliced, weights[]);
+    assert(a.wsum == 16 && b.wsum == 16);
+    a.put(values[0 .. 0], weights[0 .. 0].sliced);
+    b.put(values[0 .. 0].sliced, weights[0 .. 0]);
+    assert(a.wsum == 16 && b.wsum == 16);
+    assert(wsum(values[0 .. 0], weights[0 .. 0].sliced) == 0);
+
+    // Conversions still precede multiplication in the mixed-input adapter.
+    int[1] large = [50_000];
+    assert(wsum!double(large[], large[].sliced) == 2_500_000_000.0);
+    assert(wsum!double(large[].sliced, large[]) == 2_500_000_000.0);
+}
+
+// Mixed input forms retain the slice length check.
+version(mir_stat_test)
+unittest
+{
+    import core.exception : AssertError;
+    import std.exception : assertThrown;
+    import mir.ndslice.slice : sliced;
+
+    double[2] values = [1, 2];
+    double[1] weights = [1];
+    // Contracts are deliberately disabled by the release test configuration.
+    debug
+    {
+        assertThrown!AssertError(wsum(values[], weights[].sliced));
+        assertThrown!AssertError(wsum(values[].sliced, weights[]));
+    }
 }
