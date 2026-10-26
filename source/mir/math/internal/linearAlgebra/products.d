@@ -32,9 +32,9 @@ package enum numericSlice(A) = isSlice!A && (A.N == 1 || A.N == 2) &&
     (isFloatingPoint!(Scalar!A) || isComplex!(Scalar!A));
 private enum compatible(A, B) = numericSlice!A && numericSlice!B &&
     is(Scalar!A == Scalar!B);
-private enum blasNumber(T) = is(realType!T == float) || is(realType!T == double);
+package enum blasNumber(T) = is(realType!T == float) || is(realType!T == double);
 // BLAS needs native pointers. Computed ndslice iterators use the scalar kernel.
-private enum nativeSlice(A) = is(typeof(A.init.lightScope._iterator) : const(Scalar!A)*);
+package enum nativeSlice(A) = is(typeof(A.init.lightScope._iterator) : const(Scalar!A)*);
 
 /++
 Multiply two matrices or vectors, allocating a GC-managed result when needed.
@@ -330,7 +330,7 @@ package bool blasMatrix(A)(scope auto ref A a)
          (a._stride!0 == 1 && a._stride!1 >= a.length!0));
 }
 
-private bool blasVector(A)(scope auto ref A a)
+package bool blasVector(A)(scope auto ref A a)
 {
     import cblas: blasint;
     return a.length <= blasint.max && a._stride!0 > 0 && a._stride!0 <= blasint.max;

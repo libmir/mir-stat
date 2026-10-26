@@ -2,7 +2,8 @@
 Internal linear algebra operations with explicit result ownership.
 
 Import this package to use the matrix and vector multiplication APIs from
-`mir.math.internal.linearAlgebra.products`.
+`mir.math.internal.linearAlgebra.products` and triangular products from
+`mir.math.internal.linearAlgebra.triangular`.
 
 Choose result ownership independently of input ownership:
 $(UL
@@ -19,9 +20,19 @@ does not conjugate either operand.
 
 BLAS is optional. The default configuration uses scalar kernels; compatible
 native layouts can use BLAS when that dependency is available. Backend and
-summation order can affect floating-point rounding. These internal APIs are
-currently limited to dense matrix/vector products, not factorizations or
-specialized triangular operations.
+summation order can affect floating-point rounding.
+
+For a square triangular operand, use the `mtimesTriangular` family on the left
+or `mtimesTriangularRight` family on the right. They follow the same ownership
+conventions, with `Triangle.upper`/`lower` and `Diagonal.nonUnit`/`unit` options.
+Unused entries and implicit unit diagonals are not read. Triangle selection
+always refers to the logical view, so a transposed upper triangle is lower.
+
+For real symmetric positive-definite matrices, the `choleskyDecompose` family
+produces upper or lower factors with the same ownership choices. `Into` uses
+separate caller storage; `InPlace` reuses writable input. The `try` in-place
+variant returns a failed pivot index without throwing. Factorization is
+available without LAPACK, with optional acceleration for native layouts.
 
 License: $(HTTP www.apache.org/licenses/LICENSE-2.0, Apache-2.0)
 Authors: John Michael Hall
@@ -33,6 +44,8 @@ version(mir_stat_test) version = mir_stat_test_linearAlgebra;
 version(mir_stat_test_blas) version = mir_stat_test_linearAlgebra;
 
 public import mir.math.internal.linearAlgebra.products;
+public import mir.math.internal.linearAlgebra.triangular;
+public import mir.math.internal.linearAlgebra.cholesky;
 
 /// Multiply borrowed matrix views and choose ownership only for the result.
 version(mir_stat_test_linearAlgebra)
