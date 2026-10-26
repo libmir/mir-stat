@@ -1119,8 +1119,8 @@ enum WeightedQuantileAlgo
 
     After ignoring zero weights, sort observations by value. For probability
     $(TT 0 < p <= 1), return the smallest observed value whose cumulative weight
-    is at least $(TT p * totalWeight). At $(TT p = 0), return the smallest
-    positive-weight observation. At $(TT p = 1), return the largest.
+    divided by the total weight is at least $(TT p). At $(TT p = 0), return the
+    smallest positive-weight observation. At $(TT p = 1), return the largest.
 
     No interpolation is performed. Equal values contribute their combined mass.
     With equal positive weights this corresponds mathematically to
@@ -1263,8 +1263,9 @@ enum WeightedQuantileAlgo
 
     Treat equal observations as one value with their combined weight. As with
     $(LREF inverseCDF), select the first value whose cumulative weight reaches
-    the target. If the target exactly equals the cumulative weight through
-    that entire group, average that value and the next distinct value.
+    the requested probability after division by total weight. If that probability
+    exactly equals the normalized cumulative weight through that entire group,
+    average that value and the next distinct value.
     Otherwise return the selected value. Zero-weight rows are ignored.
 
     For equal positive weights this agrees mathematically with
@@ -1274,8 +1275,9 @@ enum WeightedQuantileAlgo
     when probabilities or weights cross a cumulative-weight boundary.
 
     p=0 and p=1 return the positive-weight minimum and maximum. Boundary
-    equality is tested on computed cumulative masses without a tolerance;
-    roundoff can affect whether averaging occurs. Integral observations infer
+    equality is tested on cumulative weight divided by total weight in
+    $(TT real), without a tolerance; roundoff can affect whether averaging
+    occurs. Integral observations infer
     double output; floating observations retain their type. Explicit output
     types must be floating-point. No effective sample size is used.
     +/
@@ -1600,6 +1602,30 @@ private auto weightedQuantileAt(F, WeightedQuantileAlgo algorithm, Workspace, P)
             else
                 high = mid;
         }
+        // Multiplication can round p * total onto a mass boundary even when
+        // p lies above it. Verify the candidate against normalized boundaries;
+        // the usual case needs only these checks, not division at every step.
+        const total = workspace[$ - 1].cumulative;
+        if (workspace[low].cumulative / total < cast(real) probability)
+        {
+            ++low;
+            high = workspace.length - 1;
+        }
+        else if (low != 0 && workspace[low - 1].cumulative / total >= cast(real) probability)
+        {
+            high = low - 1;
+            low = 0;
+        }
+        // Search again only when rounding displaced the candidate. A binary
+        // correction handles arbitrarily long rounded cumulative plateaus.
+        while (low < high)
+        {
+            const mid = low + (high - low) / 2;
+            if (workspace[mid].cumulative / total < cast(real) probability)
+                low = mid + 1;
+            else
+                high = mid;
+        }
         static if (algorithm == WeightedQuantileAlgo.averagedInverseCDF)
         {
             // Locate the end of the equal-value group without changing scratch
@@ -1613,7 +1639,7 @@ private auto weightedQuantileAt(F, WeightedQuantileAlgo algorithm, Workspace, P)
                 else
                     end = mid;
             }
-            if (next < workspace.length && workspace[next - 1].cumulative == target)
+            if (next < workspace.length && workspace[next - 1].cumulative / total == cast(real) probability)
             {
                 // Same-sign subtraction and opposite-sign addition cannot
                 // overflow. Avoid halving each operand, which loses subnormals.
@@ -1812,8 +1838,11 @@ invariant to positive rescaling of all weights. Frequency algorithms instead
 use exact cumulative integer counts and the total frequency as sample size.
 For probability-weight algorithms, cumulative masses use compensated summation
 in $(TT real), after dividing by the
-largest weight to avoid raw-sum overflow. Boundary comparisons use the computed
-masses without a tolerance. Rounding and underflow can affect tiny masses or
+largest weight to avoid raw-sum overflow. For inverseCDF and averagedInverseCDF,
+each boundary is the cumulative mass divided by the total mass in $(TT real).
+The requested probability is compared with that represented boundary without a
+tolerance. This avoids rounding the probability onto a boundary by multiplying
+it by the total mass. Rounding and underflow can affect tiny masses or
 probabilities close to a boundary; arbitrary rescaling is not promised to give
 bitwise-identical results. Endpoints select the extrema of positive-weight data.
 Signed zeros compare equal; the sign of a selected zero is unspecified.
@@ -4957,4 +4986,90 @@ unittest
     testTinyType7Probabilities!float();
     testTinyType7Probabilities!double();
     testTinyType7Probabilities!real();
+}
+
+// Compare the binary search with a linear normalized-boundary reference,
+// including adjacent probabilities and cumulative masses that round together.
+version(mir_stat_test)
+@safe pure nothrow @nogc
+private void testWeightedInverseBoundaries(P, bool averaged)()
+{
+    import std.math: nextafter;
+    enum algorithm = averaged ? WeightedQuantileAlgo.averagedInverseCDF
+                              : WeightedQuantileAlgo.inverseCDF;
+    WeightedQuantileEntry!(double, algorithm)[32] entries;
+    foreach (n; 2 .. entries.length + 1)
+    foreach (kind; 0 .. 4)
+    foreach (duplicates; [false, true])
+    {
+        real cumulative = 0;
+        foreach (i; 0 .. n)
+        {
+            if (kind == 0)
+                cumulative += 1;
+            else if (kind == 1)
+                cumulative += (1 + (i * 3) % 8) / 8.0L;
+            else if (kind == 2)
+                cumulative = 1 + cast(real)i * real.epsilon / 16;
+            else
+                cumulative = (i + 1) * (real.min_normal * real.epsilon);
+            entries[i] = typeof(entries[0])(duplicates ? i / 3 : i, cumulative);
+        }
+        foreach (j; 0 .. n)
+        {
+            const center = cast(P)(entries[j].cumulative / cumulative);
+            foreach (P p; [nextafter(center, P(0)), center, nextafter(center, P(1))])
+            {
+                size_t selected = 0;
+                while (selected + 1 < n && entries[selected].cumulative / cumulative < cast(real)p)
+                    ++selected;
+                if (p == 0) selected = 0;
+                if (p == 1) selected = n - 1;
+                double expected = entries[selected].value;
+                static if (averaged)
+                {
+                    size_t next = selected + 1;
+                    while (next < n && entries[next].value == expected) ++next;
+                    if (p > 0 && p < 1 && next < n &&
+                        entries[next - 1].cumulative / cumulative == cast(real)p)
+                        expected = (expected + entries[next].value) / 2;
+                }
+                assert((weightedQuantileAt!(double, algorithm)(entries[0 .. n], p, 1)) == expected);
+            }
+        }
+    }
+}
+
+version(mir_stat_test)
+@safe pure nothrow @nogc
+unittest
+{
+    testWeightedInverseBoundaries!(float, false)();
+    testWeightedInverseBoundaries!(double, false)();
+    testWeightedInverseBoundaries!(real, false)();
+}
+
+version(mir_stat_test)
+@safe pure nothrow @nogc
+unittest
+{
+    testWeightedInverseBoundaries!(float, true)();
+    testWeightedInverseBoundaries!(double, true)();
+    testWeightedInverseBoundaries!(real, true)();
+}
+
+// Exercise preparation and both allocation paths at an equal-weight boundary.
+version(mir_stat_test)
+@safe unittest
+{
+    import std.math: nextafter;
+    double[6] values = [0, 1, 2, 3, 4, 5];
+    double[6] weights = [1, 1, 1, 1, 1, 1];
+    const boundary = 5.0L / 6;
+    const above = nextafter(boundary, 1.0L);
+    assert(weightedQuantile(values[], weights[], boundary) == 4);
+    assert(weightedQuantile(values[], weights[], above) == 5);
+    assert((weightedQuantile!(WeightedQuantileAlgo.averagedInverseCDF)(values[], weights[], boundary)) == 4.5);
+    assert((weightedQuantile!(WeightedQuantileAlgo.averagedInverseCDF)(values[], weights[], above)) == 5);
+    assert(rcWeightedQuantile(values[], weights[], above) == 5);
 }
