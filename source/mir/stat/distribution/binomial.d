@@ -580,21 +580,21 @@ version(mir_stat_test)
     bool contractsEnabled;
     void probe() in { contractsEnabled = true; } do {}
     probe();
-    if (!contractsEnabled)
-        return;
-
-    import core.exception: AssertError;
-    import std.exception: assertThrown;
-    import mir.bignum.fixed: UInt;
-    alias T = Fp!128;
-    UInt!128 allOnes;
-    allOnes.data[] = size_t.max;
-    foreach (p; [T(true, -2000, allOnes), T(false, -127, allOnes),
-                 T(double.infinity), T(double.nan)]) {
-        assertThrown!AssertError(binomialPMF(1, 2, p));
-        assertThrown!AssertError(fp_binomialPMF(1, 2, p));
+    if (contractsEnabled)
+    {
+        import core.exception: AssertError;
+        import std.exception: assertThrown;
+        import mir.bignum.fixed: UInt;
+        alias T = Fp!128;
+        UInt!128 allOnes;
+        allOnes.data[] = size_t.max;
+        foreach (p; [T(true, -2000, allOnes), T(false, -127, allOnes),
+                     T(double.infinity), T(double.nan)]) {
+            assertThrown!AssertError(binomialPMF(1, 2, p));
+            assertThrown!AssertError(fp_binomialPMF(1, 2, p));
+        }
+        assertThrown!AssertError(binomialPMF(3, 2, T(0.5)));
     }
-    assertThrown!AssertError(binomialPMF(3, 2, T(0.5)));
 }
 
 // Exact integer/dyadic references compare the significand, not a double cast.
