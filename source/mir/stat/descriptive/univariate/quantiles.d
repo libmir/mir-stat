@@ -1401,12 +1401,22 @@ private real weightedTrimmedHDLower(real a, real b, real width)
     return low + (high - low) / 2;
 }
 
-// Both prefixes and suffixes were accumulated independently. Subtracting a
-// rounded prefix from one would lose precisely the small upper masses we need.
+// Use the smaller independently accumulated mass as the beta argument. Even
+// an independently summed prefix or suffix can round to one: evaluating at
+// that rounded endpoint would discard the opposite, still-representable mass.
+private real weightedBetaBoundary(real mass, real complement, real a, real b)
+    @safe pure nothrow @nogc
+{
+    import mir.stat.distribution.beta: betaCDF, betaCCDF;
+    return mass > 0.5L ? betaCCDF(complement, b, a) : betaCDF(mass, a, b);
+}
+
+// Choose both the mass coordinate and the probability tail carefully. The
+// smaller coordinate avoids endpoint rounding; subtracting lower or upper
+// beta probabilities avoids cancellation when forming interval coefficients.
 private auto weightedHarrellDavisAt(F, bool trimmed, Workspace)(scope Workspace workspace,
     real probability, real effectiveSize)
 {
-    import mir.stat.distribution.beta: betaCDF;
     import std.math: fabs;
     const lowValue = cast(real) workspace[0].value;
     const highValue = cast(real) workspace[$ - 1].value;
@@ -1441,6 +1451,8 @@ private auto weightedHarrellDavisAt(F, bool trimmed, Workspace)(scope Workspace 
     else
         scale = fabs(lowValue) > fabs(highValue) ? fabs(lowValue) : fabs(highValue);
     real lowerCDF = 0;
+    real previousTail = 0;
+    bool hasPreviousTail = false;
     foreach (i; 0 .. workspace.length)
     {
         static if (trimmed)
@@ -1454,31 +1466,48 @@ private auto weightedHarrellDavisAt(F, bool trimmed, Workspace)(scope Workspace 
                 (i + 1 == workspace.length ? 0.0L : workspace[i + 1].upper / total) : 1 - upper;
             // Equal rounded prefixes may still enclose a nonzero upper mass.
             if (clippedRight <= clippedLeft && rightTail >= leftTail) continue;
-            lowerCDF = betaCDF(clippedLeft, a, b);
-            const upperCDF = betaCDF(clippedRight, a, b);
+            lowerCDF = weightedBetaBoundary(clippedLeft, leftTail, a, b);
+            const upperCDF = weightedBetaBoundary(clippedRight, rightTail, a, b);
         }
         else
             const upperCDF = i + 1 == workspace.length ? 1.0L :
-                betaCDF(workspace[i].cumulative / total, a, b);
+                weightedBetaBoundary(workspace[i].cumulative / total,
+                    workspace[i + 1].upper / total, a, b);
         real coefficient;
         if (upperCDF <= 0.5L)
+        {
             coefficient = upperCDF - lowerCDF;
+            hasPreviousTail = false;
+        }
         else
         {
             static if (trimmed)
-                const upperTail = betaCDF(rightTail, b, a);
+                const upperTail = weightedBetaBoundary(rightTail, clippedRight, b, a);
             else
                 const upperTail = i + 1 == workspace.length ? 0.0L :
-                    betaCDF(workspace[i + 1].upper / total, b, a);
+                    weightedBetaBoundary(workspace[i + 1].upper / total,
+                        workspace[i].cumulative / total, b, a);
             if (lowerCDF >= 0.5L)
             {
-                static if (trimmed)
-                    coefficient = betaCDF(leftTail, b, a) - upperTail;
+                // Adjacent retained intervals share this boundary. Reuse its
+                // upper probability instead of evaluating the beta tail twice.
+                // Skipped interior intervals have zero mass in both coordinates;
+                // intervals skipped before the trimmed window leave the flag unset.
+                if (hasPreviousTail)
+                    coefficient = previousTail - upperTail;
                 else
-                    coefficient = betaCDF(workspace[i].upper / total, b, a) - upperTail;
+                {
+                    static if (trimmed)
+                        coefficient = weightedBetaBoundary(leftTail, clippedLeft, b, a) - upperTail;
+                    else
+                        coefficient = weightedBetaBoundary(workspace[i].upper / total,
+                            i == 0 ? 0.0L : workspace[i - 1].cumulative / total, b, a) - upperTail;
+                }
             }
             else
                 coefficient = 1 - lowerCDF - upperTail;
+            previousTail = upperTail;
+            hasPreviousTail = true;
         }
         // Roundoff in nearly identical beta evaluations must not create a
         // negative averaging weight. Renormalize the resulting coefficients.
@@ -1941,10 +1970,13 @@ Weighted type 7 and type 8 also take $(TT O(n log n + k*n)) time, using
 arithmetic interval overlaps without beta evaluations or a root search.
 All algorithms use $(TT O(n + k)) storage. Scratch storage is needed even for a scalar result.
 
-Harrell-Davis evaluates coefficients using lower or upper tails to reduce
-cancellation. Computed negative coefficients are clipped to zero and the
-coefficient sum is normalized to correct roundoff. Values are scaled during
-accumulation to avoid overflow; roundoff outside the input range is clamped.
+Harrell-Davis uses independently accumulated lower and upper masses to choose
+the smaller beta-function argument, preserving tiny masses when the opposite
+boundary rounds to one. It then evaluates coefficients using lower or upper
+probability tails to reduce cancellation. Computed negative coefficients are
+clipped to zero and the coefficient sum is normalized to correct roundoff.
+Values are scaled during accumulation to avoid overflow; roundoff outside the
+input range is clamped.
 Arithmetic uses real, whose precision depends on the compiler and platform.
 These safeguards do not guarantee uniform accuracy in extreme beta tails.
 
@@ -2489,6 +2521,72 @@ unittest
     }
     assert(hd(regularValues, regularWeights, 0.5).approxEqual(1007.8484848484848, 1e-12, 1e-12));
     assert(hd(tailValues, tailWeights, 1e-8).approxEqual(2.044415538269786e-9, 1e-12, 1e-22));
+}
+
+// Tiny lower masses must survive a complementary boundary rounding to one.
+// References integrate beta coefficients with 100-digit arithmetic using the
+// represented double weights/probabilities (with tolerance for float narrowing).
+// The two estimators agree to the
+// shown precision here because effective size is extremely close to one.
+version(mir_stat_test)
+private void testWeightedHDTinyBoundaries(T)()
+    @safe pure nothrow @nogc
+{
+    import std.algorithm: max;
+    import std.math: fabs, isFinite;
+    const T[3] values = [0, 1, 2], reflected = [-2, -1, 0];
+    const T[3] weights = [cast(T) 1e-20, 1, cast(T) 1e-20];
+    const tolerance = max(64 * T.epsilon, 2e-13L);
+    static foreach (algorithm; [WeightedQuantileAlgo.harrellDavis,
+        WeightedQuantileAlgo.trimmedHarrellDavis])
+    {{
+        alias q = rcWeightedQuantile!(T, algorithm);
+        const low = q(values, weights, 1e-20);
+        const expectedLow = cast(T) 9.01034037197618224898e-19L;
+        assert(isFinite(low) && fabs((low - expectedLow) / expectedLow) <= tolerance);
+        // Reflect values so a small upper-tail contribution remains visible
+        // in the result instead of rounding away when added to two.
+        const high = q(reflected, weights, 1.0 - 0x1p-52);
+        const expectedHigh = cast(T) -2.00069746813549114474e-14L;
+        assert(isFinite(high) && fabs((high - expectedHigh) / expectedHigh) <= tolerance);
+    }}
+}
+
+version(mir_stat_test)
+@safe pure nothrow @nogc
+unittest
+{
+    testWeightedHDTinyBoundaries!float();
+    testWeightedHDTinyBoundaries!double();
+    testWeightedHDTinyBoundaries!real();
+}
+
+// Reusing a boundary must remain correct across rounded cumulative plateaus,
+// a transition between probability tails, and clipping by the trimmed window.
+// Expected values come from independent 100-digit beta-interval integration.
+version(mir_stat_test)
+@safe pure nothrow @nogc
+unittest
+{
+    import std.math: fabs, isFinite;
+    const double[8] values = [0, 1, 2, 3, 4, 5, 6, 7];
+    const double[8] weights = [0x1p-70, 1, 1, 0x1p-70, 1, 0x1p-70, 1, 0x1p-70];
+    const double[5] levels = [0.01, 0.25, 0.5, 0.75, 0.99];
+    const double[5] hd = [0.917195711805067026, 1.655781469262821026,
+        3.126584997550161315, 4.922421852841870903, 6.075559382459455500];
+    const double[5] trimmed = [0.915283008959842413, 1.364256018723882277,
+        3, 5.271894819429106481, 6.078063957609870916];
+    static foreach (algorithm; [WeightedQuantileAlgo.harrellDavis,
+        WeightedQuantileAlgo.trimmedHarrellDavis])
+    {{
+        const expected = algorithm == WeightedQuantileAlgo.harrellDavis ? hd : trimmed;
+        const result = rcWeightedQuantile!algorithm(values, weights, levels);
+        foreach (i, p; levels)
+        {
+            assert(isFinite(result[i]) && fabs(result[i] - expected[i]) <= 2e-12 * expected[i]);
+            assert(result[i] == rcWeightedQuantile!algorithm(values, weights, p));
+        }
+    }}
 }
 
 // Equal-weight HD with two values has a beta(1.5,1.5) median of their midpoint.
