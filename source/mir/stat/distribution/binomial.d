@@ -408,6 +408,12 @@ accumulated error, but does not guarantee a correctly rounded result for every
 input, especially near rounding midpoints. Greater width does not make the
 calculation exact.
 
+For probabilities so small that $(D (n*p)^^2) is below half the smallest
+$(D Fp) quantum, a separate path avoids exponent-floor widening and multiplication:
+it returns one at zero successes, rounds an exact integer product for one
+success, and returns zero for larger success counts. Midpoint rounding accounts
+for the strictly negative correction to $(D n*p).
+
 Both counts retain their full $(D size_t) range. Coefficient construction takes
 $(D O(min(k, n-k))) iterations; powers take logarithmic time. Large counts are
 practical near the endpoints, while central masses with enormous counts are
@@ -451,6 +457,40 @@ T fp_binomialPMF(T)(const size_t k, const size_t n, const T p)
     // Preserve the one-trial identity even at the exponent floor.
     if (n == 1 && k == 1)
         return p;
+    // Here n*p < 2^(long.min/2-1), even for a full-width size_t count.
+    // Thus (n*p)^2 < 2^(long.min-2), below half the smallest Fp quantum.
+    // Avoid widening or multiplying a probability near the exponent floor.
+    if (p.exponent < long.min / 2 - cast(long)bits - 64) {
+        if (k == 0)
+            return T(1);
+        if (k > 1)
+            return T(0);
+        import mir.bignum.fixed: UInt;
+        // The k=1 mass is n*p minus a positive correction smaller than that
+        // quantum. Round the exact product, choosing the lower neighbor at
+        // a midpoint because (1-p)^(n-1) is strictly less than one for n>1.
+        auto product = p.coefficient.toSize!(bits + 64);
+        product *= UInt!(bits + 64)(n);
+        const usedBits = bits + 64 - product.ctlz;
+        if (usedBits > bits) {
+            const discarded = usedBits - bits;
+            auto remainder = product;
+            remainder <<= bits + 64 - discarded;
+            auto halfway = UInt!(bits + 64)(1);
+            halfway <<= bits + 63;
+            if (remainder == halfway)
+                product -= 1;
+        }
+        T result = T(product);
+        if (result.exponent < 0 && p.exponent < long.min - result.exponent) {
+            // Normalization would cross the exponent floor. The exact product
+            // fits the output coefficient here; retain it as a subnormal.
+            product <<= cast(size_t)(p.exponent - long.min);
+            return T(false, long.min, product.toSize!bits);
+        }
+        result.exponent += p.exponent;
+        return result;
+    }
     // Keep the extra precision through the entire expression, including the
     // complement: rounding 1-p at the output width can lose count-amplified bits.
     enum workBits = bits + 128;
@@ -465,6 +505,55 @@ T fp_binomialPMF(T)(const size_t k, const size_t n, const T p)
         return cast(T)fp_powi(complement, n);
     return cast(T)(fpProbabilityCoefficient!workBits(k, n - k)
         * fp_powi(probability, k) * fp_powi(complement, n - k));
+}
+
+// Tiny probabilities must not assert during widening or lose a representable
+// k=1 mass. Compare exact integer products without Fp multiplication.
+version(mir_stat_test)
+@safe pure nothrow @nogc unittest
+{
+    import mir.bignum.fixed: UInt;
+    static foreach (bits; [64u, 128u, 256u]) {{
+        alias T = Fp!bits;
+        foreach (offset; [0L, 64L, 127L, 128L, 255L, 512L]) {
+            T p = T(1);
+            p.exponent = long.min + offset;
+            T expected = p;
+            ++expected.exponent; // 2*p, with a correction too small to round.
+            const mass = binomialPMF(1, 2, p);
+            assert(mass.coefficient == expected.coefficient);
+            assert(mass.exponent == expected.exponent);
+            assert(cast(double)binomialPMF(0, size_t.max, p) == 1);
+            assert(!binomialPMF(2, size_t.max, p).coefficient);
+        }
+        // Full-width counts, including the largest exponent entering this path.
+        foreach (exponent; [long.min, long.min / 2 - cast(long)bits - 65]) {
+            T p = T(1);
+            p.exponent = exponent;
+            T expected = T(size_t.max);
+            expected.exponent += exponent + bits - 1;
+            const mass = binomialPMF(1, size_t.max, p);
+            assert(mass.coefficient == expected.coefficient);
+            assert(mass.exponent == expected.exponent);
+            assert(!binomialPMF(2, size_t.max, p).coefficient);
+        }
+        // A subnormal whose normalization would cross long.min.
+        const T subnormal = T(false, long.min, UInt!bits(1));
+        const T doubled = binomialPMF(1, 2, subnormal);
+        assert(doubled.exponent == long.min && doubled.coefficient == UInt!bits(2));
+        // 3*m ends in binary ...11: discarding its low bit is a midpoint
+        // whose upper neighbor is even. The negative correction selects down.
+        UInt!bits m = UInt!bits(1);
+        m <<= bits - 1;
+        m += 1;
+        const T midpoint = T(false, long.min + 512, m);
+        auto exact = m.toSize!(bits + 64);
+        exact *= UInt!(bits + 64)(3);
+        exact >>= 1;
+        const T rounded = binomialPMF(1, 3, midpoint);
+        assert(rounded.coefficient == exact.toSize!bits);
+        assert(rounded.exponent == midpoint.exponent + 1);
+    }}
 }
 
 /// The probability type selects the extended-precision implementation.
