@@ -31,7 +31,7 @@ T4=$(TR $(TDNW $(LREF $1)) $(TD $2) $(TD $3) $(TD $4))
 
 module mir.stat.descriptive.histogram.api.rc;
 
-/// Automatic weighted-percentogram resolution policy.
+// Automatic weighted-percentogram resolution policy.
 public import mir.stat.descriptive.histogram.api.factory: WeightedBinCountBasis;
 
 private import mir.stat.descriptive.univariate: WeightedQuantileAlgo, QuantileAlgo;

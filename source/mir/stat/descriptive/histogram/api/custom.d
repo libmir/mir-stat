@@ -22,7 +22,7 @@ Copyright: 2026 Mir Stat Authors.
 +/
 module mir.stat.descriptive.histogram.api.custom;
 
-/// Automatic weighted-percentogram resolution policy.
+// Automatic weighted-percentogram resolution policy.
 public import mir.stat.descriptive.histogram.api.factory: WeightedBinCountBasis;
 
 private import mir.stat.descriptive.univariate: WeightedQuantileAlgo, QuantileAlgo;
