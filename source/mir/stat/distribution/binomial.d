@@ -572,9 +572,17 @@ version(mir_stat_test)
 // Check contracts against the represented probability, including values which
 // would round into [0,1] if validated through hardware floating point.
 version(mir_stat_test)
-version(assert)
 @system unittest // Catching AssertError is @system; the PMF itself remains @safe.
 {
+    // -unittest keeps test assertions enabled even with -release, while
+    // function contracts can be disabled independently. Probe the latter
+    // before supplying out-of-contract inputs to the PMF.
+    bool contractsEnabled;
+    void probe() in { contractsEnabled = true; } do {}
+    probe();
+    if (!contractsEnabled)
+        return;
+
     import core.exception: AssertError;
     import std.exception: assertThrown;
     import mir.bignum.fixed: UInt;
