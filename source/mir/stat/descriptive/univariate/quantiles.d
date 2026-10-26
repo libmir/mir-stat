@@ -1119,8 +1119,8 @@ enum WeightedQuantileAlgo
 
     After ignoring zero weights, sort observations by value. For probability
     $(TT 0 < p <= 1), return the smallest observed value whose cumulative weight
-    is at least $(TT p * totalWeight). At $(TT p = 0), return the smallest
-    positive-weight observation. At $(TT p = 1), return the largest.
+    divided by the total weight is at least $(TT p). At $(TT p = 0), return the
+    smallest positive-weight observation. At $(TT p = 1), return the largest.
 
     No interpolation is performed. Equal values contribute their combined mass.
     With equal positive weights this corresponds mathematically to
@@ -1263,8 +1263,9 @@ enum WeightedQuantileAlgo
 
     Treat equal observations as one value with their combined weight. As with
     $(LREF inverseCDF), select the first value whose cumulative weight reaches
-    the target. If the target exactly equals the cumulative weight through
-    that entire group, average that value and the next distinct value.
+    the requested probability after division by total weight. If that probability
+    exactly equals the normalized cumulative weight through that entire group,
+    average that value and the next distinct value.
     Otherwise return the selected value. Zero-weight rows are ignored.
 
     For equal positive weights this agrees mathematically with
@@ -1274,8 +1275,9 @@ enum WeightedQuantileAlgo
     when probabilities or weights cross a cumulative-weight boundary.
 
     p=0 and p=1 return the positive-weight minimum and maximum. Boundary
-    equality is tested on computed cumulative masses without a tolerance;
-    roundoff can affect whether averaging occurs. Integral observations infer
+    equality is tested on cumulative weight divided by total weight in
+    $(TT real), without a tolerance; roundoff can affect whether averaging
+    occurs. Integral observations infer
     double output; floating observations retain their type. Explicit output
     types must be floating-point. No effective sample size is used.
     +/
@@ -1308,7 +1310,12 @@ enum WeightedQuantileAlgo
     order statistics through cumulative integer counts and interpolate; no
     expanded sample is allocated. Multiplying every frequency can change the
     answer. Splitting or combining identical observations preserves the
-    conceptual sample. Floating-point rank arithmetic can round near boundaries.
+    conceptual sample. For larger totals, compensated rank arithmetic preserves
+    interpolation fractions that ordinary multiplication can lose. Smaller
+    totals use ordinary arithmetic to avoid that extra cost. The switch depends
+    on the precision of real; it does not change the quantile definition.
+    Floating-point rank arithmetic can still round near boundaries, particularly
+    when the exact interpolation fraction is very close to zero.
 
     p=0/1 return the positive-count extrema. Integral observations infer double;
     floating observations retain their type. Explicit F must be floating-point.
@@ -1542,11 +1549,20 @@ private auto weightedUniformQuantileAt(F, WeightedQuantileAlgo algorithm, Worksp
     return cast(F) (normalized * scale);
 }
 
+// Keep the estimated rank-rounding scale 4*real.epsilon*N at most 2^-30 on
+// the ordinary path. This is a conservative dispatch policy, not a promise of
+// correctly rounded output: output error also depends on the observation gap.
+// Wider real types can represent every supported frequency below this cutoff.
+private enum ulong ordinaryFrequencyRankLimit = real.mant_dig >= 97 ?
+    ulong.max : 1UL << (real.mant_dig - 33);
+
 private auto frequencyQuantileAt(F, WeightedQuantileAlgo algorithm, Workspace)(
     scope Workspace workspace, real probability)
 {
     import std.math: floor;
     const total = workspace[$ - 1].cumulative;
+    if (total > ordinaryFrequencyRankLimit)
+        return compensatedFrequencyQuantileAt!(F, algorithm)(workspace, probability);
     static if (algorithm == WeightedQuantileAlgo.frequencyType7)
         const rank = cast(real)(total - 1) * probability;
     else
@@ -1556,6 +1572,76 @@ private auto frequencyQuantileAt(F, WeightedQuantileAlgo algorithm, Workspace)(
     if (rank >= cast(real)(total - 1)) return cast(F) workspace[$ - 1].value;
     const index = cast(ulong) floor(rank);
     const fraction = rank - index;
+    return frequencyQuantileFromRank!F(workspace, index, fraction);
+}
+
+// Keep the integer part and fractional part separate. At large total counts,
+// adding a small correction to the full rank would immediately round it away.
+private auto compensatedFrequencyQuantileAt(F, WeightedQuantileAlgo algorithm, Workspace)(
+    scope Workspace workspace, real probability)
+{
+    import std.math: floor;
+    const total = workspace[$ - 1].cumulative;
+    const a = cast(real)(total - 1);
+    const rank = a * probability;
+
+    // Dekker's split recovers the low part lost by the product. Both operands
+    // are bounded here (a <= ulong.max and 0 < probability < 1), so splitting
+    // cannot overflow. Unlike a plain multiply-add, this does not require a
+    // hardware fused operation for real.
+    enum real splitter = (1UL << ((real.mant_dig + 1) / 2)) + 1.0L;
+    const ca = splitter * a, cb = splitter * probability;
+    const ah = ca - (ca - a), al = a - ah;
+    const bh = cb - (cb - probability), bl = probability - bh;
+    const residual = ((ah * bh - rank) + ah * bl + al * bh) + al * bl;
+    auto index = cast(ulong) floor(rank);
+    auto fraction = (rank - cast(real) index) + residual;
+    static if (algorithm == WeightedQuantileAlgo.frequencyType8)
+    {
+        // Type 8 adds (4*p-2)/3 to the type 7 rank. Sum three times the
+        // fractional part and that numerator with compensation. Subtract any
+        // whole-rank carry BEFORE dividing by three; dividing first can erase
+        // a small remainder when the quotient rounds to an integer.
+        real sum = 0, error = 0;
+        foreach (x; [rank - cast(real) index, 2 * (rank - cast(real) index),
+                     residual, 2 * residual, 4 * probability, -2.0L])
+        {
+            const next = sum + x;
+            const z = next - sum;
+            error += (sum - (next - z)) + (x - z);
+            sum = next;
+        }
+        const shift = cast(int) floor((sum + error) / 3);
+        if (shift < 0 && index == 0) return cast(F) workspace[0].value;
+        if (shift < 0) --index;
+        else if (shift > 0) ++index;
+        const x = -3.0L * shift;
+        const next = sum + x;
+        const z = next - sum;
+        error += (sum - (next - z)) + (x - z);
+        fraction = (next + error) / 3;
+    }
+    // Normalize rounding residuals on either side of an integer rank, then
+    // clamp the upper endpoint before looking for a following observation.
+    if (fraction < 0)
+    {
+        if (index == 0) return cast(F) workspace[0].value;
+        --index;
+        fraction += 1;
+    }
+    else if (fraction >= 1)
+    {
+        ++index;
+        fraction -= 1;
+    }
+    if (index >= total - 1) return cast(F) workspace[$ - 1].value;
+    return frequencyQuantileFromRank!F(workspace, index, fraction);
+}
+
+// Locate a conceptual order statistic without expanding occurrence counts.
+private auto frequencyQuantileFromRank(F, Workspace)(
+    scope Workspace workspace, ulong index, real fraction)
+{
     size_t first = 0, last = workspace.length - 1;
     while (first < last)
     {
@@ -1600,6 +1686,30 @@ private auto weightedQuantileAt(F, WeightedQuantileAlgo algorithm, Workspace, P)
             else
                 high = mid;
         }
+        // Multiplication can round p * total onto a mass boundary even when
+        // p lies above it. Verify the candidate against normalized boundaries;
+        // the usual case needs only these checks, not division at every step.
+        const total = workspace[$ - 1].cumulative;
+        if (workspace[low].cumulative / total < cast(real) probability)
+        {
+            ++low;
+            high = workspace.length - 1;
+        }
+        else if (low != 0 && workspace[low - 1].cumulative / total >= cast(real) probability)
+        {
+            high = low - 1;
+            low = 0;
+        }
+        // Search again only when rounding displaced the candidate. A binary
+        // correction handles arbitrarily long rounded cumulative plateaus.
+        while (low < high)
+        {
+            const mid = low + (high - low) / 2;
+            if (workspace[mid].cumulative / total < cast(real) probability)
+                low = mid + 1;
+            else
+                high = mid;
+        }
         static if (algorithm == WeightedQuantileAlgo.averagedInverseCDF)
         {
             // Locate the end of the equal-value group without changing scratch
@@ -1613,7 +1723,7 @@ private auto weightedQuantileAt(F, WeightedQuantileAlgo algorithm, Workspace, P)
                 else
                     end = mid;
             }
-            if (next < workspace.length && workspace[next - 1].cumulative == target)
+            if (next < workspace.length && workspace[next - 1].cumulative / total == cast(real) probability)
             {
                 // Same-sign subtraction and opposite-sign addition cannot
                 // overflow. Avoid halving each operand, which loses subnormals.
@@ -1812,8 +1922,11 @@ invariant to positive rescaling of all weights. Frequency algorithms instead
 use exact cumulative integer counts and the total frequency as sample size.
 For probability-weight algorithms, cumulative masses use compensated summation
 in $(TT real), after dividing by the
-largest weight to avoid raw-sum overflow. Boundary comparisons use the computed
-masses without a tolerance. Rounding and underflow can affect tiny masses or
+largest weight to avoid raw-sum overflow. For inverseCDF and averagedInverseCDF,
+each boundary is the cumulative mass divided by the total mass in $(TT real).
+The requested probability is compared with that represented boundary without a
+tolerance. This avoids rounding the probability onto a boundary by multiplying
+it by the total mass. Rounding and underflow can affect tiny masses or
 probabilities close to a boundary; arbitrary rescaling is not promised to give
 bitwise-identical results. Endpoints select the extrema of positive-weight data.
 Signed zeros compare equal; the sign of a selected zero is unspecified.
@@ -2659,6 +2772,128 @@ unittest
         static assert(is(typeof(q(data, ones, 0.5)) == double));
         static assert(!__traits(compiles, rcWeightedQuantile!(int, algorithm)(data, ones, 0.5)));
     }}
+}
+
+// Large occurrence counts must not erase the fractional part of the rank.
+// References use exact rational arithmetic on the binary probabilities below,
+// then round the resulting fraction to double (not decimal probabilities).
+version(mir_stat_test)
+@safe pure nothrow @nogc
+unittest
+{
+    import std.math: fabs;
+    struct Case { ulong total, first; double p, expected; bool eight; }
+    const Case[10] cases = [
+        Case(9007199254740992UL, 3341670923508908UL, 0x1.7be76c8b43958p-2, 0x1.420c49ba5e354p-1, false),
+        Case(9007199254740992UL, 3341670923508908UL, 0x1.7be76c8b43958p-2, 0x1.d3f7ced916873p-2, true),
+        Case(1099511627776UL, 989560464998UL, 0x1.ccccccccccccdp-1, 0x1.0003333333333p-1, false),
+        Case(1099511627776UL, 989560464999UL, 0x1.ccccccccccccdp-1, 0x1.1144444444445p-5, true),
+        Case(9223372036854775808UL, 3421871025673121792UL, 0x1.7be76c8b43958p-2, 0x1.420c49ba5e354p-1, false),
+        Case(9223372036854775808UL, 3421871025673121792UL, 0x1.7be76c8b43958p-2, 0x1.d3f7ced916873p-2, true),
+        Case(18446744073709551615UL, 16602069666338596863UL, 0x1.ccccccccccccdp-1, 0x1.9999999999998p-3, false),
+        Case(18446744073709551615UL, 16602069666338596863UL, 0x1.ccccccccccccdp-1, 0x1.7777777777777p-1, true),
+        Case(9007199254740992UL, 9007199254740991UL, 0x1.fffffffffffffp-1, 0x1p-53, false),
+        Case(9007199254740992UL, 9007199254740991UL, 0x1.fffffffffffffp-1, 0x1.5555555555555p-1, true),
+    ];
+    const double[2] values = [0, 1];
+    static foreach (algorithm; [WeightedQuantileAlgo.frequencyType7, WeightedQuantileAlgo.frequencyType8])
+    {{
+        alias q = rcWeightedQuantile!algorithm;
+        foreach (c; cases)
+        {
+            if (c.total > weightedQuantileMaxFrequency ||
+                c.eight != (algorithm == WeightedQuantileAlgo.frequencyType8)) continue;
+            const ulong[2] counts = [c.first, c.total - c.first];
+            assert(fabs(q(values, counts, c.p) - c.expected) <= 8 * double.epsilon * c.expected);
+        }
+        // At p=3/8, the rank is exactly 3*(N-1)/8 or (9*N-13)/24.
+        // Integer arithmetic supplies an independent oracle around the switch.
+        static if (ordinaryFrequencyRankLimit < ulong.max / 9)
+        foreach (n; [ordinaryFrequencyRankLimit - 1, ordinaryFrequencyRankLimit,
+                     ordinaryFrequencyRankLimit + 1])
+        {
+            enum denominator = algorithm == WeightedQuantileAlgo.frequencyType7 ? 8UL : 24UL;
+            const numerator = algorithm == WeightedQuantileAlgo.frequencyType7 ? 3 * (n - 1) : 9 * n - 13;
+            const first = numerator / denominator + 1;
+            const ulong[2] counts = [first, n - first];
+            const expected = cast(real)(numerator % denominator) / denominator;
+            // Below the cutoff, retain ordinary rounding within the dispatch
+            // budget; above it, require the compensated result's precision.
+            const tolerance = n <= ordinaryFrequencyRankLimit ? 0x1p-30 : 8 * double.epsilon;
+            assert(fabs(q(values, counts, 0.375) - expected) <= tolerance);
+        }
+        const ulong[2] counts = [1, weightedQuantileMaxFrequency - 1];
+        assert(q(values, counts, 0.0) == 0);
+        assert(q(values, counts, 1.0) == 1);
+        assert(q(values, counts, 0.5) == 1);
+    }}
+}
+
+// Interior probabilities must reach the compensated type 8 endpoint clamps;
+// p=0 and p=1 return before the rank calculation and cannot test these paths.
+version(mir_stat_test)
+@safe pure nothrow @nogc
+unittest
+{
+    static if (ordinaryFrequencyRankLimit < weightedQuantileMaxFrequency)
+    {
+        const real[2] values = [0, 1];
+        const ulong[2] counts = [ordinaryFrequencyRankLimit, 1];
+        alias q = rcWeightedQuantile!(WeightedQuantileAlgo.frequencyType8);
+        const below = real.epsilon;
+        const above = 1.0L - real.epsilon;
+        assert(below > 0 && above < 1);
+        assert(q(values, counts, below) == 0);
+        assert(q(values, counts, above) == 1);
+    }
+}
+
+// This probability is distinguishable from one half only in extended real.
+// With N=2^64-1 and p=1/2-2^-64, the type 7 rank is 2^63-2+2^-63.
+// Type 8 subtracts 2^-62/3, leaving the fractional part 2^-63/3.
+version(mir_stat_test)
+@safe pure nothrow @nogc
+unittest
+{
+    static if (real.mant_dig == 64)
+    {
+        import std.math: fabs;
+        const real[2] values = [0, 1];
+        const ulong[2] counts = [(1UL << 63) - 1, 1UL << 63];
+        const p = 0x7fffffffffffffffp-64L;
+        assert(0.5L - p == 0x1p-64L);
+        assert(rcWeightedQuantile!(WeightedQuantileAlgo.frequencyType7)(values, counts, p) == 0x1p-63L);
+        const expected = 0x1p-63L / 3;
+        const actual = rcWeightedQuantile!(WeightedQuantileAlgo.frequencyType8)(values, counts, p);
+        assert(fabs(actual - expected) <= 4 * real.epsilon * expected);
+    }
+}
+
+// Correct a rounded integer rank in either direction before locating its row.
+version(mir_stat_test)
+@safe pure nothrow @nogc
+unittest
+{
+    static if (real.mant_dig == 53 || real.mant_dig == 64)
+    {
+        const real[2] values = [0, 1];
+        // Write e=2^-mant_dig. For N=2^(mant_dig-1), p=3/4-e,
+        // the exact type 7 rank is 3*N/4-2 + (3/4+e). The product
+        // rounds upward to an integer, so its negative residual borrows a rank.
+        enum n7 = 1UL << (real.mant_dig - 1);
+        const ulong[2] counts7 = [3 * (n7 / 4) - 1, n7 / 4 + 1];
+        const e = real.epsilon / 2;
+        assert(rcWeightedQuantile!(WeightedQuantileAlgo.frequencyType7)(
+            values, counts7, 0.75L - e) == 0.75L + e);
+
+        // For N=2^(mant_dig-2), p=1/2-2*e, the exact type 8 rank
+        // is N/2-1-2*e/3. Its fraction rounds to one after the carry
+        // correction; normalize it before accessing the following row.
+        enum n8 = 1UL << (real.mant_dig - 2);
+        const ulong[2] counts8 = [n8 / 2 - 1, n8 / 2 + 1];
+        assert(rcWeightedQuantile!(WeightedQuantileAlgo.frequencyType8)(
+            values, counts8, 0.5L - 2 * e) == 1);
+    }
 }
 
 // Reject fractional counts and totals outside the exact working-count range.
@@ -4957,4 +5192,90 @@ unittest
     testTinyType7Probabilities!float();
     testTinyType7Probabilities!double();
     testTinyType7Probabilities!real();
+}
+
+// Compare the binary search with a linear normalized-boundary reference,
+// including adjacent probabilities and cumulative masses that round together.
+version(mir_stat_test)
+@safe pure nothrow @nogc
+private void testWeightedInverseBoundaries(P, bool averaged)()
+{
+    import std.math: nextafter;
+    enum algorithm = averaged ? WeightedQuantileAlgo.averagedInverseCDF
+                              : WeightedQuantileAlgo.inverseCDF;
+    WeightedQuantileEntry!(double, algorithm)[32] entries;
+    foreach (n; 2 .. entries.length + 1)
+    foreach (kind; 0 .. 4)
+    foreach (duplicates; [false, true])
+    {
+        real cumulative = 0;
+        foreach (i; 0 .. n)
+        {
+            if (kind == 0)
+                cumulative += 1;
+            else if (kind == 1)
+                cumulative += (1 + (i * 3) % 8) / 8.0L;
+            else if (kind == 2)
+                cumulative = 1 + cast(real)i * real.epsilon / 16;
+            else
+                cumulative = (i + 1) * (real.min_normal * real.epsilon);
+            entries[i] = typeof(entries[0])(duplicates ? i / 3 : i, cumulative);
+        }
+        foreach (j; 0 .. n)
+        {
+            const center = cast(P)(entries[j].cumulative / cumulative);
+            foreach (P p; [nextafter(center, P(0)), center, nextafter(center, P(1))])
+            {
+                size_t selected = 0;
+                while (selected + 1 < n && entries[selected].cumulative / cumulative < cast(real)p)
+                    ++selected;
+                if (p == 0) selected = 0;
+                if (p == 1) selected = n - 1;
+                double expected = entries[selected].value;
+                static if (averaged)
+                {
+                    size_t next = selected + 1;
+                    while (next < n && entries[next].value == expected) ++next;
+                    if (p > 0 && p < 1 && next < n &&
+                        entries[next - 1].cumulative / cumulative == cast(real)p)
+                        expected = (expected + entries[next].value) / 2;
+                }
+                assert((weightedQuantileAt!(double, algorithm)(entries[0 .. n], p, 1)) == expected);
+            }
+        }
+    }
+}
+
+version(mir_stat_test)
+@safe pure nothrow @nogc
+unittest
+{
+    testWeightedInverseBoundaries!(float, false)();
+    testWeightedInverseBoundaries!(double, false)();
+    testWeightedInverseBoundaries!(real, false)();
+}
+
+version(mir_stat_test)
+@safe pure nothrow @nogc
+unittest
+{
+    testWeightedInverseBoundaries!(float, true)();
+    testWeightedInverseBoundaries!(double, true)();
+    testWeightedInverseBoundaries!(real, true)();
+}
+
+// Exercise preparation and both allocation paths at an equal-weight boundary.
+version(mir_stat_test)
+@safe unittest
+{
+    import std.math: nextafter;
+    double[6] values = [0, 1, 2, 3, 4, 5];
+    double[6] weights = [1, 1, 1, 1, 1, 1];
+    const boundary = 5.0L / 6;
+    const above = nextafter(boundary, 1.0L);
+    assert(weightedQuantile(values[], weights[], boundary) == 4);
+    assert(weightedQuantile(values[], weights[], above) == 5);
+    assert((weightedQuantile!(WeightedQuantileAlgo.averagedInverseCDF)(values[], weights[], boundary)) == 4.5);
+    assert((weightedQuantile!(WeightedQuantileAlgo.averagedInverseCDF)(values[], weights[], above)) == 5);
+    assert(rcWeightedQuantile(values[], weights[], above) == 5);
 }
