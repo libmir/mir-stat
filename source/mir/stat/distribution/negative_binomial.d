@@ -190,7 +190,7 @@ T negativeBinomialPMF(T)(const size_t k, const size_t r, const T p)
     in (fpProbabilityValid(p), "p must be finite and between zero and one")
 {
     import mir.math.internal.fp_powi: fp_powi;
-    import mir.bignum.fixed: UInt;
+    import mir.stat.internal.fp_probability: fpProbabilityCoefficient;
     enum size = typeof(p.coefficient).sizeof * 8;
 
     if (!p.coefficient)
@@ -200,34 +200,7 @@ T negativeBinomialPMF(T)(const size_t k, const size_t r, const T p)
     const T complement = fpProbabilityComplement(p);
     if (!complement.coefficient)
         return T(0);
-    T coefficient;
-    if (k <= 64 && r - 1 <= 64 - k) {
-        // Every coefficient through row 64 fits exactly in ulong.
-        import mir.combinatorics: binomial;
-        coefficient = T(binomial(k + r - 1, r - 1));
-    } else {
-        // Exploit symmetry before forming a coefficient. A factor may need 65
-        // bits even though each input count fits size_t; never add them in size_t.
-        const size_t smaller = k < r - 1 ? k : r - 1;
-        const size_t larger = k < r - 1 ? r - 1 : k;
-        T numeratorProduct = T(1);
-        T denominatorProduct = T(1);
-        foreach (i; 0 .. smaller) {
-            UInt!128 numerator = UInt!128(larger);
-            numerator += i;
-            numerator += 1;
-            numeratorProduct *= T(numerator);
-            denominatorProduct *= T(i + 1);
-        }
-        // Fp division currently converts through hardware real. Divide the
-        // significands once, with 64 guard bits beyond the requested precision.
-        // Accumulating the products first avoids a wide division per factor.
-        UInt!(2 * size + 64) quotient = numeratorProduct.coefficient.toSize!(2 * size + 64);
-        quotient <<= size + 64;
-        quotient /= denominatorProduct.coefficient;
-        coefficient = T(quotient);
-        coefficient.exponent += numeratorProduct.exponent - denominatorProduct.exponent - cast(long)size - 64;
-    }
+    const T coefficient = fpProbabilityCoefficient!size(k, r - 1);
     return coefficient * fp_powi(complement, k) * fp_powi(p, r);
 }
 

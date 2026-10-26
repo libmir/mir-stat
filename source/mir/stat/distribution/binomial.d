@@ -6,9 +6,8 @@ success probability $(D p). Counts use $(D size_t), with $(D k <= n), and
 $(D p) must be finite and in $(D [0, 1]). Forward functions reject counts
 outside this interval rather than extending their tails beyond the support.
 
-The ordinary functions accept built-in floating-point probabilities.
-$(LREF fp_binomialPMF) is a separate extended-range PMF with limitations
-described below; it is not an $(D Fp) overload of $(D binomialPMF).
+Only PMF has an $(D Fp) overload, also available as $(LREF fp_binomialPMF).
+CDF, CCDF, inverse CDF, and LPMF accept built-in floating-point probabilities.
 LPMF has no algorithm selector. Normal and Poisson approximations trade
 accuracy for speed and do not promise the direct algorithm's interior
 probabilities, although their point masses and boundary returns are handled
@@ -30,6 +29,7 @@ Copyright: 2022-3 Mir Stat Authors.
 module mir.stat.distribution.binomial;
 
 import mir.bignum.fp: Fp;
+import mir.stat.internal.fp_probability: fpProbabilityValid;
 import mir.internal.utility: isFloatingPoint;
 import mir.stat.distribution.poisson: PoissonAlgo;
 
@@ -285,6 +285,17 @@ template binomialPMF(BinomialAlgo binomialAlgo = BinomialAlgo.direct,
         else
             return binomialPMFImpl!(T, binomialAlgo, poissonAlgo)(k, n, p);
     }
+
+    /++
+    Extended-range and extended-precision PMF; see $(LREF fp_binomialPMF)
+    for supported widths, rounding, and range limitations.
+    Only the direct algorithm accepts an $(D Fp) probability.
+    +/
+    T binomialPMF(T)(const size_t k, const size_t n, const T p)
+        if (is(T == Fp!size, size_t size) && binomialAlgo == BinomialAlgo.direct)
+    {
+        return fp_binomialPMF(k, n, p);
+    }
 }
 
 /// ditto
@@ -382,19 +393,34 @@ unittest
 }
 
 /++
-Computes the binomial PMF with extended-range $(D Fp) arithmetic.
+Computes the binomial PMF with extended-range and extended-precision $(D Fp)
+arithmetic. Equivalent to $(D binomialPMF(k, n, p)) for an $(D Fp) probability;
+this entry point is retained for compatibility.
 
-This implementation does not preserve all of the supplied probability precision:
-it forms the failure probability as $(D 1 - cast(double)p), then converts that
-complement back to $(D Fp). Probabilities near one can therefore lose a small
-failure probability. Input probability contracts also compare after conversion
-to $(D double). Callers must supply an actual probability in $(D [0, 1]),
-even if an invalid value would round into that interval.
+Probability validation, complements, coefficients, and powers avoid conversions
+through hardware floating point. Tested widths are $(D Fp!64), $(D Fp!128),
+and $(D Fp!256). Complements, coefficient products, and powers use 128 extra
+significand bits, followed by one conversion to the requested result width.
+This reserves 64 bits for error amplification by full-width counts and another
+64 guard bits. The coefficient ratio uses integer division with a further 64
+guard bits. Intermediate operations still round: this substantially reduces
+accumulated error, but does not guarantee a correctly rounded result for every
+input, especially near rounding midpoints. Greater width does not make the
+calculation exact.
 
-The coefficient calculation converts $(D k) to $(D uint); counts above
-$(D uint.max) are not supported correctly by this implementation. The
-extended exponent range can retain small products, but does not remove these
-input-precision and count limitations.
+For probabilities so small that $(D (n*p)^^2) is below half the smallest
+$(D Fp) quantum, a separate path avoids exponent-floor widening and multiplication:
+it returns one at zero successes, rounds an exact integer product for one
+success, and returns zero for larger success counts. Midpoint rounding accounts
+for the strictly negative correction to $(D n*p).
+
+Both counts retain their full $(D size_t) range. Coefficient construction takes
+$(D O(min(k, n-k))) iterations; powers take logarithmic time. Large counts are
+practical near the endpoints, while central masses with enormous counts are
+expensive. Intermediate products must fit the finite $(D Fp) exponent range.
+The underlying multiplication can underflow near its exponent floor before
+normalization, even when the final mathematical result is representable.
+Use $(LREF binomialLPMF) when only a hardware-precision log probability is needed.
 
 Special values:
 $(TABLE
@@ -403,6 +429,7 @@ $(TABLE
     $(TR $(TD $(D p == 0)) $(TD Unit mass at $(D k == 0)))
     $(TR $(TD $(D p == 1)) $(TD Unit mass at $(D k == n)))
     $(TR $(TD $(D k > n)) $(TD Contract violation))
+    $(TR $(TD Invalid or nonfinite $(D p)) $(TD Contract violation))
 )
 
 Params:
@@ -417,16 +444,303 @@ See_also:
 T fp_binomialPMF(T)(const size_t k, const size_t n, const T p)
     if (is(T == Fp!size, size_t size))
     in (k <= n, "k must be less than or equal to n")
-    in (cast(double) p >= 0, "p must be greater than or equal to 0")
-    in (cast(double) p <= 1, "p must be less than or equal to 1")
+    in (fpProbabilityValid(p), "p must be finite and between zero and one")
 {
     import mir.math.internal.fp_powi: fp_powi;
-    import mir.math.numeric: binomialCoefficient;
+    import mir.stat.internal.fp_probability: fpProbabilityComplement, fpProbabilityCoefficient;
+    enum bits = typeof(p.coefficient).sizeof * 8;
 
-    return binomialCoefficient(n, cast(const uint) k) * fp_powi(p, k) * fp_powi(T(1 - cast(double) p), n - k);
+    if (n == 0)
+        return T(1);
+    if (!p.coefficient)
+        return T(k == 0 ? 1 : 0);
+    // Preserve the one-trial identity even at the exponent floor.
+    if (n == 1 && k == 1)
+        return p;
+    // Here n*p < 2^(long.min/2-1), even for a full-width size_t count.
+    // Thus (n*p)^2 < 2^(long.min-2), below half the smallest Fp quantum.
+    // Avoid widening or multiplying a probability near the exponent floor.
+    if (p.exponent < long.min / 2 - cast(long)bits - 64) {
+        if (k == 0)
+            return T(1);
+        if (k > 1)
+            return T(0);
+        import mir.bignum.fixed: UInt;
+        // The k=1 mass is n*p minus a positive correction smaller than that
+        // quantum. Round the exact product, choosing the lower neighbor at
+        // a midpoint because (1-p)^(n-1) is strictly less than one for n>1.
+        auto product = p.coefficient.toSize!(bits + 64);
+        product *= UInt!(bits + 64)(n);
+        const usedBits = bits + 64 - product.ctlz;
+        if (usedBits > bits) {
+            const discarded = usedBits - bits;
+            auto remainder = product;
+            remainder <<= bits + 64 - discarded;
+            auto halfway = UInt!(bits + 64)(1);
+            halfway <<= bits + 63;
+            if (remainder == halfway)
+                product -= 1;
+        }
+        T result = T(product);
+        if (result.exponent < 0 && p.exponent < long.min - result.exponent) {
+            // Normalization would cross the exponent floor. The exact product
+            // fits the output coefficient here; retain it as a subnormal.
+            product <<= cast(size_t)(p.exponent - long.min);
+            return T(false, long.min, product.toSize!bits);
+        }
+        result.exponent += p.exponent;
+        return result;
+    }
+    // Keep the extra precision through the entire expression, including the
+    // complement: rounding 1-p at the output width can lose count-amplified bits.
+    enum workBits = bits + 128;
+    alias W = Fp!workBits;
+    const W probability = cast(W)p;
+    if (k == n)
+        return cast(T)fp_powi(probability, k);
+    const W complement = fpProbabilityComplement(probability);
+    if (!complement.coefficient)
+        return T(0);
+    if (k == 0)
+        return cast(T)fp_powi(complement, n);
+    return cast(T)(fpProbabilityCoefficient!workBits(k, n - k)
+        * fp_powi(probability, k) * fp_powi(complement, n - k));
 }
 
-/// fp_binomialPMF provides accurate values for large values of `n`
+// Tiny probabilities must not assert during widening or lose a representable
+// k=1 mass. Compare exact integer products without Fp multiplication.
+version(mir_stat_test)
+@safe pure nothrow @nogc unittest
+{
+    import mir.bignum.fixed: UInt;
+    static foreach (bits; [64u, 128u, 256u]) {{
+        alias T = Fp!bits;
+        foreach (offset; [0L, 64L, 127L, 128L, 255L, 512L]) {
+            T p = T(1);
+            p.exponent = long.min + offset;
+            T expected = p;
+            ++expected.exponent; // 2*p, with a correction too small to round.
+            const mass = binomialPMF(1, 2, p);
+            assert(mass.coefficient == expected.coefficient);
+            assert(mass.exponent == expected.exponent);
+            assert(cast(double)binomialPMF(0, size_t.max, p) == 1);
+            assert(!binomialPMF(2, size_t.max, p).coefficient);
+        }
+        // Full-width counts, including the largest exponent entering this path.
+        foreach (exponent; [long.min, long.min / 2 - cast(long)bits - 65]) {
+            T p = T(1);
+            p.exponent = exponent;
+            T expected = T(size_t.max);
+            expected.exponent += exponent + bits - 1;
+            const mass = binomialPMF(1, size_t.max, p);
+            assert(mass.coefficient == expected.coefficient);
+            assert(mass.exponent == expected.exponent);
+            assert(!binomialPMF(2, size_t.max, p).coefficient);
+        }
+        // A subnormal whose normalization would cross long.min.
+        const T subnormal = T(false, long.min, UInt!bits(1));
+        const T doubled = binomialPMF(1, 2, subnormal);
+        assert(doubled.exponent == long.min && doubled.coefficient == UInt!bits(2));
+        // 3*m ends in binary ...11: discarding its low bit is a midpoint
+        // whose upper neighbor is even. The negative correction selects down.
+        UInt!bits m = UInt!bits(1);
+        m <<= bits - 1;
+        m += 1;
+        const T midpoint = T(false, long.min + 512, m);
+        auto exact = m.toSize!(bits + 64);
+        exact *= UInt!(bits + 64)(3);
+        exact >>= 1;
+        const T rounded = binomialPMF(1, 3, midpoint);
+        assert(rounded.coefficient == exact.toSize!bits);
+        assert(rounded.exponent == midpoint.exponent + 1);
+    }}
+}
+
+/// The probability type selects the extended-precision implementation.
+version(mir_stat_test)
+@safe pure nothrow @nogc unittest
+{
+    import mir.bignum.fp: Fp;
+    auto mass = binomialPMF(1, 2, Fp!128(0.5));
+    static assert(is(typeof(mass) == Fp!128));
+    assert(cast(double)mass == 0.5);
+    static assert(is(typeof(binomialPMF(1, 2, 0.5)) == double));
+    static assert(is(typeof(binomialPMF!"direct"(1, 2, Fp!128(0.5))) == Fp!128));
+    static assert(!__traits(compiles, binomialPMF!"approxNormal"(1, 2, Fp!128(0.5))));
+}
+
+// Check contracts against the represented probability, including values which
+// would round into [0,1] if validated through hardware floating point.
+version(mir_stat_test)
+@system unittest // Catching AssertError is @system; the PMF itself remains @safe.
+{
+    // -unittest keeps test assertions enabled even with -release, while
+    // function contracts can be disabled independently. Probe the latter
+    // before supplying out-of-contract inputs to the PMF.
+    bool contractsEnabled;
+    void probe() in { contractsEnabled = true; } do {}
+    probe();
+    if (contractsEnabled)
+    {
+        import core.exception: AssertError;
+        import std.exception: assertThrown;
+        import mir.bignum.fixed: UInt;
+        alias T = Fp!128;
+        UInt!128 allOnes;
+        allOnes.data[] = size_t.max;
+        foreach (p; [T(true, -2000, allOnes), T(false, -127, allOnes),
+                     T(double.infinity), T(double.nan)]) {
+            assertThrown!AssertError(binomialPMF(1, 2, p));
+            assertThrown!AssertError(fp_binomialPMF(1, 2, p));
+        }
+        assertThrown!AssertError(binomialPMF(3, 2, T(0.5)));
+    }
+}
+
+// Exact integer/dyadic references compare the significand, not a double cast.
+version(mir_stat_test)
+@safe pure nothrow @nogc unittest
+{
+    import mir.bignum.fixed: UInt;
+    static foreach (bits; [64u, 128u, 256u]) {{
+        alias T = Fp!bits;
+        UInt!bits allOnes;
+        allOnes.data[] = size_t.max;
+        const T p = T(false, -cast(long)bits, allOnes); // 1 - 2^-bits
+        const T mass = binomialPMF(1, 2, p); // 2*p*(1-p)
+        assert(mass.coefficient == p.coefficient);
+        assert(mass.exponent == 1 - 2 * cast(long)bits);
+        assert(!mass.sign);
+        const T legacy = fp_binomialPMF(1, 2, p);
+        assert(legacy.coefficient == mass.coefficient && legacy.exponent == mass.exponent);
+
+        // C(14,4)*(1/4)^4*(3/4)^10 = 59108049/2^28 exactly.
+        T expected = T(59108049);
+        expected.exponent -= 28;
+        const T dyadic = binomialPMF(4, 14, T(0.25));
+        assert(dyadic.coefficient == expected.coefficient && dyadic.exponent == expected.exponent);
+
+        // C(200,100)/2^200. Integer reference obtained by exact combinatorics.
+        enum exact = UInt!256("90548514656103281165404177077484163874504589675413336841320");
+        T centralExpected = T(exact);
+        centralExpected.exponent -= 200;
+        const T central = binomialPMF(100, 200, T(0.5));
+        assert(central.exponent == centralExpected.exponent);
+        assert(central.coefficient == centralExpected.coefficient);
+
+        foreach (probability; [T(0), T(1), T(0.5)])
+            assert(cast(double)binomialPMF(0, 0, probability) == 1);
+        assert(cast(double)binomialPMF(0, size_t.max, T(0)) == 1);
+        assert(cast(double)binomialPMF(size_t.max, size_t.max, T(1)) == 1);
+        assert(!binomialPMF(1, 2, T(0)).coefficient);
+        assert(!binomialPMF(1, 2, T(1)).coefficient);
+
+        T tiny = T(1);
+        tiny.exponent = -2000;
+        const identity = binomialPMF(1, 1, tiny);
+        assert(identity.coefficient == tiny.coefficient && identity.exponent == tiny.exponent);
+        tiny.exponent = long.min;
+        const floorIdentity = binomialPMF(1, 1, tiny);
+        assert(floorIdentity.coefficient == tiny.coefficient && floorIdentity.exponent == tiny.exponent);
+        // An exact tail that underflows double, but retains its Fp significand.
+        T tailExpected = T(1);
+        tailExpected.exponent -= 2000;
+        const tail = binomialPMF(0, 2000, T(0.5));
+        assert(tail.coefficient == tailExpected.coefficient && tail.exponent == tailExpected.exponent);
+
+        static if (size_t.sizeof == 8) {
+            // k exceeds uint.max; symmetry makes the coefficient cheap.
+            enum size_t n = 4_294_967_298UL;
+            T largeExpected = T(n);
+            largeExpected.exponent -= n;
+            foreach (k; [size_t(1), n - 1]) {
+                const large = binomialPMF(k, n, T(0.5));
+                assert(large.coefficient == largeExpected.coefficient);
+                assert(large.exponent == largeExpected.exponent);
+            }
+        }
+    }}
+}
+
+// BEGIN exact binomial references (tools/generate_fp_binomial_reference.py)
+version(mir_stat_test)
+@safe pure nothrow @nogc unittest
+{
+    import mir.bignum.fixed: UInt;
+    struct Reference { size_t k, n; string input; int scale; string coefficient; long exponent; }
+    {
+        alias T = Fp!64;
+        static foreach (c; [
+            Reference(17, 70, "6148914691236517205", 64, "16733388697873911521", -69),
+            Reference(23, 200, "3602879701896397", 55, "10230625927903023421", -67),
+            Reference(500, 1000, "1", 1, "14890222546908570619", -69),
+            Reference(1, 200, "18446744073709551615", 64, "14411518807585587199", -12792),
+            Reference(199, 200, "18446744073709551615", 64, "14411518807585587045", -120),
+            Reference(0, 10000, "1", 65, "18446744073709546616", -64),
+            Reference(0, 1, "1", 65, "9223372036854775808", -63),
+            Reference(10000, 10000, "18446744073709551615", 64, "18446744073709541616", -64),
+            Reference(73, 211, "9223372036854788153", 64, "10609862016950127203", -82)
+        ]) {{
+            enum input = UInt!64(c.input);
+            enum expected = UInt!64(c.coefficient);
+            T p = T(input);
+            p.exponent -= c.scale;
+            const actual = binomialPMF(c.k, c.n, p);
+            assert(!actual.sign);
+            assert(actual.exponent == c.exponent);
+            assert(actual.coefficient == expected);
+        }}
+    }
+    {
+        alias T = Fp!128;
+        static foreach (c; [
+            Reference(17, 70, "113427455640312821154458202477256070485", 128, "308676538795583967883201033362326941131", -133),
+            Reference(23, 200, "3602879701896397", 55, "188721738205884379767494546975556810049", -131),
+            Reference(500, 1000, "1", 1, "274676124523402021009046115289447739942", -133),
+            Reference(1, 200, "340282366920938463463374607431768211455", 128, "265845599156983174580761412056068915199", -25592),
+            Reference(199, 200, "340282366920938463463374607431768211455", 128, "265845599156983174580761412056068915045", -248),
+            Reference(0, 10000, "1", 129, "340282366920938463463374607431768206456", -128),
+            Reference(0, 1, "1", 129, "170141183460469231731687303715884105728", -127),
+            Reference(10000, 10000, "340282366920938463463374607431768211455", 128, "340282366920938463463374607431768201456", -128),
+            Reference(73, 211, "170141183460469231731687303715884118073", 128, "195717409284067856491917390569949726042", -146)
+        ]) {{
+            enum input = UInt!128(c.input);
+            enum expected = UInt!128(c.coefficient);
+            T p = T(input);
+            p.exponent -= c.scale;
+            const actual = binomialPMF(c.k, c.n, p);
+            assert(!actual.sign);
+            assert(actual.exponent == c.exponent);
+            assert(actual.coefficient == expected);
+        }}
+    }
+    {
+        alias T = Fp!256;
+        static foreach (c; [
+            Reference(17, 70, "38597363079105398474523661669562635951089994888546854679819194669304376546645", 256, "105037183234324200288561499843774761503107551648074383090466587478109325941529", -261),
+            Reference(23, 200, "3602879701896397", 55, "64218679766132039475189973950717947873717832431603277521197531359611118099977", -259),
+            Reference(500, 1000, "1", 1, "93467441789493670146796325644877583094735607217692095428279460550916380027012", -261),
+            Reference(1, 200, "115792089237316195423570985008687907853269984665640564039457584007913129639935", 256, "90462569716653277674664832038037428010367175520031690655826237506182132531199", -51192),
+            Reference(199, 200, "115792089237316195423570985008687907853269984665640564039457584007913129639935", 256, "90462569716653277674664832038037428010367175520031690655826237506182132531045", -504),
+            Reference(0, 10000, "1", 257, "115792089237316195423570985008687907853269984665640564039457584007913129634936", -256),
+            Reference(0, 1, "1", 257, "57896044618658097711785492504343953926634992332820282019728792003956564819968", -255),
+            Reference(10000, 10000, "115792089237316195423570985008687907853269984665640564039457584007913129639935", 256, "115792089237316195423570985008687907853269984665640564039457584007913129629936", -256),
+            Reference(73, 211, "57896044618658097711785492504343953926634992332820282019728792003956564832313", 256, "66599183278816666490719969379627519090704857053655328512939303056219464395352", -274)
+        ]) {{
+            enum input = UInt!256(c.input);
+            enum expected = UInt!256(c.coefficient);
+            T p = T(input);
+            p.exponent -= c.scale;
+            const actual = binomialPMF(c.k, c.n, p);
+            assert(!actual.sign);
+            assert(actual.exponent == c.exponent);
+            assert(actual.coefficient == expected);
+        }}
+    }
+}
+// END exact binomial references
+
+/// fp_binomialPMF preserves the range of small probabilities for large `n`.
 version(mir_stat_test_slow_numerics)
 @safe pure nothrow @nogc
 unittest
