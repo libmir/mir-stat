@@ -3237,8 +3237,8 @@ struct WVarianceAccumulator(T,
     private static void multiply(ref Sum s, T factor)
     {
         T value = cast(T) s.sum * factor;
-        s = Sum.init;
-        s.put(value);
+        // Scalar assignment resets the summator without copying its storage.
+        s = value;
     }
 
     private void rescale(T newScale)
@@ -3388,8 +3388,7 @@ struct WVarianceAccumulator(T,
                 T total = cast(T) batch.mass.sum;
                 T corrected = cast(T) second.centered.sum - (residual / total) * residual;
                 // A tiny negative result can arise from the correction's rounding.
-                batch.moment2 = Sum.init;
-                batch.moment2.put(corrected < 0 ? T(0) : corrected);
+                batch.moment2 = corrected < 0 ? T(0) : corrected;
                 batch.momentScale = second.momentScale;
                 batch.shiftMean((residual / total) * second.momentScale);
             }
