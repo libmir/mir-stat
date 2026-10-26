@@ -6,12 +6,12 @@ Copyright: 2026 Mir Stat Authors.
 module mir.math.internal.linearAlgebra.allocation;
 
 // Result ownership policy; independent of the ownership of input slices.
-package enum Allocation { gc, rc, custom }
+package(mir) enum Allocation { gc, rc, custom }
 
 // Allocate result storage after checking element and byte counts. Callers must
 // initialize every element before reading it. Custom storage belongs to the
 // caller and is released by disposing the returned slice's field.
-package auto allocate(Allocation policy, T, size_t N, Allocator)(
+package(mir) auto allocate(Allocation policy, T, size_t N, Allocator)(
     ref Allocator allocator, size_t[N] shape)
 {
     import mir.ndslice.allocation: uninitSlice, mininitRcslice, makeUninitSlice;
