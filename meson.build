@@ -14,7 +14,9 @@ has_cpp_headers = false
 
 sources_list = [
     'mir/math/internal/benchmark',
-    'mir/math/internal/linearAlgebra',
+    'mir/math/internal/linearAlgebra/package',
+    'mir/math/internal/linearAlgebra/allocation',
+    'mir/math/internal/linearAlgebra/products',
     'mir/math/internal/log1p',
     'mir/math/internal/fp_powi',
     'mir/math/internal/powi',

@@ -23,6 +23,14 @@ buildType "unittest" {
     dflags "-lowmem" platform="dmd"
     dflags "-lowmem" platform="ldc"
 }
+// Run linear algebra examples and regressions independently.
+// Use --config=openblas to exercise the optional BLAS backend.
+buildType "unittest-linear-algebra" {
+    buildOptions "unittests" "debugMode" "debugInfo"
+    versions "mir_stat_test_linearAlgebra"
+    dflags "-lowmem" platform="dmd"
+    dflags "-lowmem" platform="ldc"
+}
 // Include the slower higher-precision probability tests.
 buildType "unittest-slow-numerics" {
     buildOptions "unittests" "debugMode" "debugInfo"
