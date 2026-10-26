@@ -31,6 +31,9 @@ T4=$(TR $(TDNW $(LREF $1)) $(TD $2) $(TD $3) $(TD $4))
 
 module mir.stat.descriptive.histogram.api.rc;
 
+// Automatic weighted-percentogram resolution policy.
+public import mir.stat.descriptive.histogram.api.factory: WeightedBinCountBasis;
+
 private import mir.stat.descriptive.univariate: WeightedQuantileAlgo, QuantileAlgo;
 private import mir.stat.descriptive.histogram.axis: isQuantileAxis;
 
@@ -1765,12 +1768,13 @@ Params:
     algorithm = weighted quantile definition, inverseCDF by default
     data = one-dimensional observations, as an array or Mir slice
     weights = probability masses, or occurrence counts for frequency algorithms
+    binCountBasis = sample-size basis for automatic bin selection (default: positiveRows)
     probabilities = positive bin count or probability array/slice
 +/
 auto rcWeightedPercentogram(Counts = double, WeightedQuantileAlgo algorithm = WeightedQuantileAlgo.inverseCDF,
     Data, Weights, P)(scope auto ref Data data, scope auto ref Weights weights,
     scope auto ref P probabilities)
-    if (!isQuantileAxis!P)
+    if (!isQuantileAxis!P && !is(P : WeightedBinCountBasis))
 {
     import mir.stat.descriptive.histogram.api.factory: buildWeightedPercentogram;
     return buildWeightedPercentogram!(allocateCells, computeWeightedAxisQuantiles!algorithm,
@@ -1779,10 +1783,11 @@ auto rcWeightedPercentogram(Counts = double, WeightedQuantileAlgo algorithm = We
 
 /// ditto
 auto rcWeightedPercentogram(Counts = double, WeightedQuantileAlgo algorithm = WeightedQuantileAlgo.inverseCDF,
-    Data, Weights)(scope auto ref Data data, scope auto ref Weights weights)
+    Data, Weights)(scope auto ref Data data, scope auto ref Weights weights,
+    WeightedBinCountBasis binCountBasis = WeightedBinCountBasis.positiveRows)
 {
     import mir.stat.descriptive.histogram.api.factory: weightedPercentogramBinCount;
-    return rcWeightedPercentogram!(Counts, algorithm)(data, weights, weightedPercentogramBinCount(weights));
+    return rcWeightedPercentogram!(Counts, algorithm)(data, weights, weightedPercentogramBinCount(weights, binCountBasis));
 }
 
 /// Reweighting outcomes changes the median boundary and the observed bin masses.

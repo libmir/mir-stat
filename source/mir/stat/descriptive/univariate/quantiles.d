@@ -1097,6 +1097,9 @@ unittest
 /++
 Algorithms for weighted quantile estimation.
 
+See $(REF descriptive, mir, stat) for guidance on choosing frequency or relative
+weights and on how scaling weights affects different statistics.
+
 By default, weights represent relative probability masses and need not sum to
 one. The probability-weight algorithms have their own definitions, documented
 below; they do not simply replicate observations and apply an unweighted type.

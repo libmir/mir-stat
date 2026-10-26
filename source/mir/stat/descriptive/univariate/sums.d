@@ -391,6 +391,9 @@ unittest
 /++
 Computes the weighted sum of the input.
 
+See $(REF descriptive, mir, stat) for guidance on choosing frequency or relative
+weights and on how scaling weights affects different statistics.
+
 Weights are algebraic multipliers: signed weights are permitted and no
 normalization or finite/nonnegative-weight validation is performed.
 Zero-weight observations are still multiplied, so a floating-point NaN or
