@@ -18,8 +18,12 @@ strided, and computed views. Floating-point and complex element types are
 supported; operands must have the same element type. Complex multiplication
 does not conjugate either operand.
 
+Use `quadraticForm(x, a)` for a general real quadratic form, or
+`quadraticForm(x, symmetricView(a))` to read only one triangle of a symmetric matrix.
+Both return scalars without allocating, regardless of input ownership.
+
 `symmetricView` and `triangularView` attach structure to a matrix without
-copying its elements. Symmetric views dispatch Cholesky
+copying its elements. Symmetric views dispatch quadratic forms and Cholesky
 decomposition; triangular views dispatch multiplication with one ordinary
 operand. Views are read-only, retain RC ownership when supplied, and have no
 implicit ndslice conversion. They do not assert positive definiteness or
@@ -55,6 +59,7 @@ version(mir_stat_test_blas) version = mir_stat_test_linearAlgebra;
 
 public import mir.math.internal.linearAlgebra.products;
 public import mir.math.internal.linearAlgebra.views;
+public import mir.math.internal.linearAlgebra.quadratic;
 public import mir.math.internal.linearAlgebra.triangular;
 public import mir.math.internal.linearAlgebra.cholesky;
 
