@@ -167,15 +167,17 @@ version(mir_stat_test_linearAlgebra)
     assert(rcMtimes(values[].sliced, a) == [10, 39]);
 }
 
-/// A symmetric view forwards its selected triangle to Cholesky decomposition.
+/// A symmetric view forwards its selected triangle to quadratic forms and Cholesky.
 version(mir_stat_test_linearAlgebra)
 @safe pure @nogc unittest
 {
     import mir.ndslice.slice: sliced;
+    import mir.math.internal.linearAlgebra.quadratic: quadraticForm;
     import mir.math.internal.linearAlgebra.cholesky: rcCholeskyDecompose;
     double[4] data = [4, 2, double.nan, 5];
     double[2] values = [1, 2];
     const a = symmetricView(data[].sliced(2, 2));
+    assert(quadraticForm(values[].sliced, a) == 32);
     auto factor = rcCholeskyDecompose(a.transposed);
     static immutable expected = [[2.0, 0], [1.0, 2]];
     assert(factor == expected);
@@ -188,6 +190,7 @@ version(mir_stat_test_linearAlgebra)
     import mir.ndslice.topology: map;
     import mir.ndslice.dynamic: strided;
     import mir.math.internal.linearAlgebra.products: rcMtimes, mtimesInto;
+    import mir.math.internal.linearAlgebra.quadratic: quadraticForm;
     import mir.complex: Complex;
     double[16] data = double.nan;
     auto raw = data[].sliced(4, 4).strided!(0,1)(2,2);
@@ -213,6 +216,7 @@ version(mir_stat_test_linearAlgebra)
     assert(rcMtimes(a, x) == [52,24]);
     auto computed = raw.map!((double value) { assert(value == value); return value; });
     assert(rcMtimes(triangularView(computed), x) == [52,24]);
+    assert(quadraticForm(x, symmetricView(computed)) == 614);
     raw[0,0] = raw[1,1] = double.nan;
     auto unit = triangularView!(Triangle.upper, Diagonal.unit)(computed);
     assert(unit[0,0] == 1 && unit[1,0] == 0);
