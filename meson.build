@@ -17,6 +17,8 @@ sources_list = [
     'mir/math/internal/linearAlgebra/package',
     'mir/math/internal/linearAlgebra/allocation',
     'mir/math/internal/linearAlgebra/products',
+    'mir/math/internal/linearAlgebra/triangular',
+    'mir/math/internal/linearAlgebra/cholesky',
     'mir/math/internal/log1p',
     'mir/math/internal/fp_powi',
     'mir/math/internal/powi',
