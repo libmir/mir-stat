@@ -33,6 +33,9 @@ produces upper or lower factors with the same ownership choices. `Into` uses
 separate caller storage; `InPlace` reuses writable input. The `try` in-place
 variant returns a failed pivot index without throwing. Factorization is
 available without LAPACK, with optional acceleration for native layouts.
+The `choleskySolve` family reuses a factor to solve vector or matrix right-hand
+sides without inversion. It follows the same ownership conventions and offers
+caller-output and in-place forms, with optional BLAS triangular solves.
 
 License: $(HTTP www.apache.org/licenses/LICENSE-2.0, Apache-2.0)
 Authors: John Michael Hall

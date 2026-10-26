@@ -1,5 +1,5 @@
 /++
-Real positive-definite Cholesky factorization with explicit result ownership.
+Real positive-definite Cholesky factorization and solves with explicit result ownership.
 
 Only the selected triangle of the logical input view is read. Upper factors
 satisfy `A = U.transpose * U`; lower factors satisfy `A = L * L.transpose`.
@@ -11,6 +11,10 @@ Float, double and real inputs, including computed and strided views, are
 supported. LAPACK is optional and accelerates compatible native float/double
 output layouts. Other layouts use an allocation-free scalar kernel. Backend
 and summation order can affect rounding and failure near singularity.
+
+The `choleskySolve` family reuses a factor for vector or matrix right-hand
+sides, without forming an inverse. Choose GC, RC, custom, caller-output, or
+in-place solution storage. Optional BLAS accelerates compatible native solves.
 
 License: $(HTTP www.apache.org/licenses/LICENSE-2.0, Apache-2.0)
 Copyright: 2026 Mir Stat Authors.
@@ -393,4 +397,391 @@ version(mir_stat_test_linearAlgebra)
     double[4] outData;
     auto output = outData[].sliced(1,4);
     assertThrown!AssertError(choleskyDecomposeInto(a, output));
+}
+
+
+private enum rightHandSide(B) = numericSlice!B && isFloatingPoint!(Scalar!B);
+private enum hasBlas = is(typeof({ import mir.blas; }));
+
+/++
+Solve `A * X = B` using an existing Cholesky factor, returning GC storage.
+Params:
+    triangle = Triangle containing the factor, interpreted in its logical view.
+    factor = Square real factor from a successful Cholesky decomposition with
+        the same triangle. Upper factors represent `A = U.transpose * U`;
+        lower factors represent `A = L * L.transpose`.
+    b = Vector or matrix with the same element type and row count as the factor.
+        Each matrix column is a separate right-hand side.
+Returns:
+    A solution with the shape and element type of `b`. Neither input is modified.
+
+The factor is reused without copying, inversion, or rechecking positive
+definiteness. Its unused triangle is never read. Invalid factors violate the
+preconditions; nonfinite right-hand sides propagate through the arithmetic.
+General strides and computed inputs are supported. Empty systems and matrices
+with zero right-hand sides return empty results. Shape checks use assertions.
++/
+auto choleskySolve(Triangle triangle = Triangle.upper, A, B)(
+    scope auto ref A factor, scope auto ref B b)
+    if (matrix!A && rightHandSide!B && is(Scalar!A == Scalar!B))
+{
+    int unused;
+    return solve!(Allocation.gc, triangle)(unused, factor, b);
+}
+
+/// Factor once and solve without forming an inverse.
+version(mir_stat_test_linearAlgebra)
+@safe pure unittest
+{
+    import mir.ndslice.slice: sliced;
+    double[4] data = [4, 2, double.nan, 5];
+    double[2] rhs = [8, 12];
+    auto factor = choleskyDecompose(data[].sliced(2, 2));
+    assert(choleskySolve(factor, rhs[].sliced) == [1, 2]);
+}
+
+/++
+Reference-counted variant of $(LINK2 #choleskySolve, choleskySolve).
+Parameters and preconditions are the same. The owning solution releases its
+storage with the last owning reference. Native inputs support
+`@safe pure nothrow @nogc` calls.
++/
+auto rcCholeskySolve(Triangle triangle = Triangle.upper, A, B)(
+    scope auto ref A factor, scope auto ref B b)
+    if (matrix!A && rightHandSide!B && is(Scalar!A == Scalar!B))
+{
+    int unused;
+    return solve!(Allocation.rc, triangle)(unused, factor, b);
+}
+
+/// Multiple right-hand sides occupy columns.
+version(mir_stat_test_linearAlgebra)
+@safe pure nothrow @nogc unittest
+{
+    import mir.ndslice.slice: sliced;
+    double[4] data = [2, 1, double.nan, 2], rhs = [8, 4, 12, 2];
+    auto result = rcCholeskySolve(data[].sliced(2, 2), rhs[].sliced(2, 2));
+    static immutable expected = [[1.0, 1], [2.0, 0]];
+    assert(result == expected);
+}
+
+/++
+Custom-allocator variant of $(LINK2 #choleskySolve, choleskySolve).
+`allocator` must support `makeUninitSlice` and `dispose`. Dispose `result.field`
+with the same allocator after all solution views are finished. Exceptions from
+input iterators release the allocated solution before propagating. No factor
+copy or separate scratch allocation is needed.
++/
+auto makeCholeskySolve(Triangle triangle = Triangle.upper, Allocator, A, B)(
+    auto ref Allocator allocator, scope auto ref A factor, scope auto ref B b)
+    if (matrix!A && rightHandSide!B && is(Scalar!A == Scalar!B))
+{
+    return solve!(Allocation.custom, triangle)(allocator, factor, b);
+}
+
+/// Choose ownership of the solution independently of the factor.
+version(mir_stat_test_linearAlgebra)
+@system nothrow @nogc unittest
+{
+    import mir.ndslice.slice: sliced;
+    import std.experimental.allocator.mallocator: Mallocator;
+    import std.experimental.allocator: dispose;
+    double[4] data = [2, 1, double.nan, 2];
+    double[2] rhs = [8, 12];
+    auto result = makeCholeskySolve(Mallocator.instance, data[].sliced(2, 2), rhs[].sliced);
+    scope(exit) Mallocator.instance.dispose(result.field);
+    assert(result == [1, 2]);
+}
+
+private void checkSolve(A, B)(scope auto ref A factor, scope auto ref B b)
+{
+    assert(factor.length!0 == factor.length!1, "Cholesky factor must be square");
+    assert(factor.length!0 == b.length!0, "Incompatible Cholesky solve dimensions");
+}
+
+private auto solve(Allocation policy, Triangle triangle, Allocator, A, B)(
+    ref Allocator allocator, scope auto ref A factor, scope auto ref B b)
+{
+    checkSolve(factor, b);
+    auto result = allocate!(policy, Scalar!A)(allocator, b.shape);
+    scope(failure)
+    {
+        static if (policy == Allocation.custom)
+        {
+            import std.experimental.allocator: dispose;
+            allocator.dispose(result.field);
+        }
+    }
+    choleskySolveInto!triangle(factor, b, result);
+    return result;
+}
+
+/++
+Write the solution of $(LINK2 #choleskySolve, choleskySolve) into caller storage.
+`output` must have the same shape and element type as `b`. Its elements must
+not overlap each other or the factor. Output may be exactly the same logical
+view as `b`; all other overlap with `b` is forbidden. Overlap is not checked.
+
+Every output element is overwritten. No allocation is performed. Arbitrary
+strides are supported. An input iterator exception may leave partial output.
++/
+void choleskySolveInto(Triangle triangle = Triangle.upper, A, B, C)(
+    scope auto ref A factor, scope auto ref B b, scope auto ref C output)
+    if (matrix!A && rightHandSide!B && rightHandSide!C && B.N == C.N &&
+        is(Scalar!A == Scalar!B) && is(Scalar!A == Scalar!C))
+{
+    checkSolve(factor, b);
+    assert(b.shape == output.shape, "Incorrect Cholesky solution shape");
+    static if (B.N == 1)
+        foreach (i; 0 .. b.length) output[i] = b[i];
+    else
+    {
+        if (output._stride!0 == 1 && output._stride!1 != 1)
+            foreach (j; 0 .. b.length!1) foreach (i; 0 .. b.length!0)
+                output[i, j] = b[i, j];
+        else
+            foreach (i; 0 .. b.length!0) foreach (j; 0 .. b.length!1)
+                output[i, j] = b[i, j];
+    }
+    choleskySolveInPlace!triangle(factor, output);
+}
+
+/// Exact aliasing of the right-hand side and output is supported.
+version(mir_stat_test_linearAlgebra)
+@safe pure nothrow @nogc unittest
+{
+    import mir.ndslice.slice: sliced;
+    double[4] data = [2, 1, double.nan, 2];
+    double[2] rhs = [8, 12];
+    auto b = rhs[].sliced;
+    choleskySolveInto(data[].sliced(2, 2), b, b);
+    assert(rhs == [1, 2]);
+}
+
+/++
+Overwrite vector or matrix `x` with the solution using a read-only Cholesky
+factor. Factor requirements follow $(LINK2 #choleskySolve, choleskySolve).
+The row count and element type must match the factor. Output elements must
+not overlap one another or the factor. No allocation is performed.
+
+Compatible native layouts use two BLAS triangular solves when available;
+other layouts and computed factors use scalar forward/back substitution.
+Native inputs support `@safe pure nothrow @nogc` calls. Computed iterators may
+throw and leave partial output. Backend and summation order affect rounding.
++/
+void choleskySolveInPlace(Triangle triangle = Triangle.upper, A, X)(
+    scope auto ref A factor, scope auto ref X x)
+    if (matrix!A && rightHandSide!X && is(Scalar!A == Scalar!X))
+{
+    static assert(triangle == Triangle.upper || triangle == Triangle.lower);
+    checkSolve(factor, x);
+    if (!x.length!0) return;
+    static if (X.N == 2)
+        if (!x.length!1) return;
+    static if (hasBlas && nativeSlice!A && nativeSlice!X &&
+        (is(Scalar!A == float) || is(Scalar!A == double)))
+    {
+        import mir.math.internal.linearAlgebra.products: blasMatrix, blasVector;
+        static if (X.N == 1) bool nativeOutput = blasVector(x);
+        else bool nativeOutput = blasMatrix(x);
+        if (blasMatrix(factor) && nativeOutput)
+        {
+            import mir.blas: trsm, trsv, Side, Uplo;
+            import cblas: Diag;
+            import mir.ndslice.topology: universal;
+            import mir.ndslice.dynamic: transposed;
+            auto a = factor.lightScope.lightConst.universal;
+            auto xt = x.lightScope;
+            static if (triangle == Triangle.upper)
+            {
+                auto lower = a.transposed;
+                auto upper = a;
+            }
+            else
+            {
+                auto lower = a;
+                auto upper = a.transposed;
+            }
+            static if (X.N == 1)
+            {
+                trsv(Uplo.Lower, Diag.NonUnit, lower, xt);
+                trsv(Uplo.Upper, Diag.NonUnit, upper, xt);
+            }
+            else
+            {
+                trsm(Side.Left, Uplo.Lower, Diag.NonUnit, Scalar!A(1), lower, xt);
+                trsm(Side.Left, Uplo.Upper, Diag.NonUnit, Scalar!A(1), upper, xt);
+            }
+            return;
+        }
+    }
+    static if (X.N == 1)
+        solveVector!triangle(factor, x);
+    else
+        foreach (j; 0 .. x.length!1)
+        {
+            auto column = x[0 .. $, j];
+            solveVector!triangle(factor, column);
+        }
+}
+
+/// Lower factors use the same solve API with an explicit triangle.
+version(mir_stat_test_linearAlgebra)
+@safe pure nothrow @nogc unittest
+{
+    import mir.ndslice.slice: sliced;
+    double[4] data = [2, double.nan, 1, 2];
+    double[2] rhs = [8, 12];
+    auto b = rhs[].sliced;
+    choleskySolveInPlace!(Triangle.lower)(data[].sliced(2, 2), b);
+    assert(rhs == [1, 2]);
+}
+
+private void solveVector(Triangle triangle, A, X)(scope auto ref A factor, scope auto ref X x)
+{
+    foreach (i; 0 .. x.length)
+    {
+        auto value = x[i];
+        foreach (k; 0 .. i)
+            static if (triangle == Triangle.upper) value -= factor[k, i] * x[k];
+            else value -= factor[i, k] * x[k];
+        x[i] = value / factor[i, i];
+    }
+    foreach_reverse (i; 0 .. x.length)
+    {
+        auto value = x[i];
+        foreach (k; i + 1 .. x.length)
+            static if (triangle == Triangle.upper) value -= factor[i, k] * x[k];
+            else value -= factor[k, i] * x[k];
+        x[i] = value / factor[i, i];
+    }
+}
+
+version(mir_stat_test_linearAlgebra)
+@safe pure nothrow @nogc unittest
+{
+    import std.meta: AliasSeq;
+    import std.math: fabs;
+    import mir.ndslice.slice: sliced;
+    import mir.ndslice.topology: universal, map;
+    import mir.ndslice.dynamic: transposed, strided, reversed;
+    import mir.ndslice.allocation: mininitRcslice;
+    static foreach (T; AliasSeq!(float, double, real))
+    static foreach (triangle; [Triangle.upper, Triangle.lower])
+    {{
+        foreach (transposedFactor; [false, true])
+        foreach (transposedOutput; [false, true])
+        {
+            T[15] factorData = T(-99);
+            auto factor = factorData[].sliced(3,5)[0..3,0..3].universal;
+            if (transposedFactor) factor = factor.transposed;
+            static immutable upper = [[2,1,1],[0,3,1],[0,0,2]];
+            foreach (i; 0 .. 3) foreach (j; 0 .. 3)
+                factor[i,j] = (triangle == Triangle.upper ? j >= i : j <= i)
+                    ? T(triangle == Triangle.upper ? upper[i][j] : upper[j][i]) : T.nan;
+            // Independent dense matrix and known solutions determine the RHS.
+            static immutable dense = [[4,2,2],[2,10,4],[2,4,6]];
+            T[6] answers = [T(0.3), T(-2), T(0.5), T(3), T(-1), T(0.7)];
+            T[6] rhsData;
+            auto rhs = rhsData[].sliced(3,2);
+            foreach (i; 0 .. 3) foreach (j; 0 .. 2)
+            {
+                T sum = 0;
+                foreach (k; 0 .. 3) sum += dense[i][k] * answers[k*2+j];
+                rhs[i,j] = sum;
+            }
+            T[15] storage = T(-99);
+            auto output = storage[].sliced(3,5)
+                [0..(transposedOutput ? 2 : 3),0..(transposedOutput ? 3 : 2)].universal;
+            if (transposedOutput) output = output.transposed;
+            choleskySolveInto!triangle(factor.lightConst, rhs, output);
+            foreach (i; 0 .. 3) foreach (j; 0 .. 2)
+                assert(fabs(output[i,j] - answers[i*2+j]) < 64 * T.epsilon);
+            // Check A*X-B separately, using the original RHS.
+            foreach (i; 0 .. 3) foreach (j; 0 .. 2)
+            {
+                T residual = -rhs[i,j];
+                foreach (k; 0 .. 3) residual += dense[i][k] * output[k,j];
+                assert(fabs(residual) < 256 * T.epsilon);
+            }
+            foreach (i; 0 .. 3) foreach (j; 0 .. 5)
+                if (i >= (transposedOutput ? 2 : 3) || j >= (transposedOutput ? 3 : 2))
+                    assert(storage[i*5+j] == T(-99));
+            auto rc = rcCholeskySolve!triangle(factor.lightConst, rhs);
+            foreach (i; 0 .. 3) foreach (j; 0 .. 2)
+                assert(fabs(rc[i,j] - output[i,j]) < 64 * T.epsilon);
+            // General output strides and reversed vectors select the scalar path.
+            T[24] generalStorage = T(-99);
+            auto general = generalStorage[].sliced(6,4).strided!(0,1)(2,2);
+            choleskySolveInto!triangle(factor, rhs, general);
+            foreach (i; 0 .. 3) foreach (j; 0 .. 2)
+                assert(fabs(general[i,j] - answers[i*2+j]) < 64 * T.epsilon);
+            auto vector = rhs[0..$,0];
+            T[6] vectorStorage;
+            auto reversedOutput = vectorStorage[].sliced.universal.strided(2).reversed;
+            choleskySolveInto!triangle(factor, vector, reversedOutput);
+            foreach (i; 0 .. 3)
+                assert(fabs(reversedOutput[i] - answers[i*2]) < 64 * T.epsilon);
+            auto vectorResult = rcCholeskySolve!triangle(factor, vector);
+            foreach (i; 0 .. 3)
+                assert(fabs(vectorResult[i] - answers[i*2]) < 64 * T.epsilon);
+            // Computed factors must never evaluate the unselected NaNs.
+            auto computed = factor.map!((T value) { assert(value == value); return value; });
+            auto mapped = rcCholeskySolve!triangle(computed, rhs);
+            foreach (i; 0 .. 3) foreach (j; 0 .. 2)
+                assert(fabs(mapped[i,j] - answers[i*2+j]) < 64 * T.epsilon);
+            auto owner = mininitRcslice!T(3,3);
+            owner[] = factor;
+            const constOwner = owner;
+            auto ownedResult = rcCholeskySolve!triangle(constOwner, rhs);
+            foreach (i; 0 .. 3) foreach (j; 0 .. 2)
+                assert(fabs(ownedResult[i,j] - answers[i*2+j]) < 64 * T.epsilon);
+            auto noColumns = mininitRcslice!T(3,0);
+            assert(rcCholeskySolve!triangle(factor, noColumns).shape == [3,0]);
+            foreach (i; 0 .. 3) foreach (j; 0 .. 3)
+                if (triangle == Triangle.upper ? j >= i : j <= i)
+                    assert(factor[i,j] == T(triangle == Triangle.upper ? upper[i][j] : upper[j][i]));
+        }
+        auto empty = mininitRcslice!T(0,0);
+        auto noRows = mininitRcslice!T(0,2);
+        auto emptyVector = mininitRcslice!T(0);
+        assert(rcCholeskySolve!triangle(empty, noRows).shape == [0,2]);
+        assert(rcCholeskySolve!triangle(empty, emptyVector).length == 0);
+    }}
+}
+
+version(mir_stat_test_linearAlgebra)
+@system unittest
+{
+    import mir.ndslice.slice: sliced;
+    import mir.ndslice.topology: map;
+    import std.experimental.allocator.mallocator: Mallocator;
+    import std.experimental.allocator: dispose;
+    import std.exception: assertThrown;
+    import core.exception: AssertError;
+    struct CountingAllocator
+    {
+        size_t allocations, releases;
+        void[] allocate(size_t bytes) { ++allocations; return Mallocator.instance.allocate(bytes); }
+        bool deallocate(void[] memory) { ++releases; return Mallocator.instance.deallocate(memory); }
+    }
+    CountingAllocator allocator;
+    double[4] factorData = [2,1,double.nan,2];
+    double[2] rhsData = [8,12];
+    auto factor = factorData[].sliced(2,2);
+    auto rhs = rhsData[].sliced;
+    auto custom = makeCholeskySolve(allocator, factor, rhs);
+    assert(custom == [1,2]);
+    allocator.dispose(custom.field);
+    auto failure = new Exception("input failed");
+    double fail(double value) { throw failure; }
+    assertThrown!Exception(makeCholeskySolve(allocator, factor.map!fail, rhs));
+    assertThrown!Exception(makeCholeskySolve(allocator, factor, rhs.map!fail));
+    assert(allocator.allocations == 3 && allocator.releases == 3);
+    auto wrongFactor = factorData[].sliced(1,4);
+    assertThrown!AssertError(makeCholeskySolve(allocator, wrongFactor, rhs));
+    auto wrongRhs = rhs[0..1];
+    assertThrown!AssertError(makeCholeskySolve(allocator, factor, wrongRhs));
+    assert(allocator.allocations == 3);
+    assertThrown!AssertError(choleskySolveInto(factor, rhs, wrongRhs));
 }
