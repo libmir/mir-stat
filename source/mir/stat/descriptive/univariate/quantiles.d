@@ -2869,6 +2869,33 @@ unittest
     }
 }
 
+// Correct a rounded integer rank in either direction before locating its row.
+version(mir_stat_test)
+@safe pure nothrow @nogc
+unittest
+{
+    static if (real.mant_dig == 53 || real.mant_dig == 64)
+    {
+        const real[2] values = [0, 1];
+        // Write e=2^-mant_dig. For N=2^(mant_dig-1), p=3/4-e,
+        // the exact type 7 rank is 3*N/4-2 + (3/4+e). The product
+        // rounds upward to an integer, so its negative residual borrows a rank.
+        enum n7 = 1UL << (real.mant_dig - 1);
+        const ulong[2] counts7 = [3 * (n7 / 4) - 1, n7 / 4 + 1];
+        const e = real.epsilon / 2;
+        assert(rcWeightedQuantile!(WeightedQuantileAlgo.frequencyType7)(
+            values, counts7, 0.75L - e) == 0.75L + e);
+
+        // For N=2^(mant_dig-2), p=1/2-2*e, the exact type 8 rank
+        // is N/2-1-2*e/3. Its fraction rounds to one after the carry
+        // correction; normalize it before accessing the following row.
+        enum n8 = 1UL << (real.mant_dig - 2);
+        const ulong[2] counts8 = [n8 / 2 - 1, n8 / 2 + 1];
+        assert(rcWeightedQuantile!(WeightedQuantileAlgo.frequencyType8)(
+            values, counts8, 0.5L - 2 * e) == 1);
+    }
+}
+
 // Reject fractional counts and totals outside the exact working-count range.
 // Catching AssertError requires @system under DIP1000.
 version(mir_stat_test)
