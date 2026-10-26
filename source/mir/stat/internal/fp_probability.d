@@ -10,6 +10,39 @@ module mir.stat.internal.fp_probability;
 
 import mir.bignum.fp: Fp;
 
+// C(a+b,a), with separate counts so their sum need not fit size_t.
+// Products round at the requested precision; the final integer division has
+// 64 guard bits. This is not a correctly-rounded coefficient guarantee.
+// Cost is O(min(a,b)); intermediate products must fit Fp's exponent range.
+package(mir.stat) @safe pure nothrow @nogc
+Fp!bits fpProbabilityCoefficient(uint bits)(size_t a, size_t b)
+{
+    import mir.bignum.fixed: UInt;
+    alias T = Fp!bits;
+    if (a <= 64 && b <= 64 - a) {
+        import mir.combinatorics: binomial;
+        return T(binomial(a + b, a));
+    }
+    const size_t smaller = a < b ? a : b;
+    const size_t larger = a < b ? b : a;
+    T numeratorProduct = T(1);
+    T denominatorProduct = T(1);
+    foreach (i; 0 .. smaller) {
+        UInt!128 numerator = UInt!128(larger);
+        numerator += i;
+        numerator += 1;
+        numeratorProduct *= T(numerator);
+        denominatorProduct *= T(i + 1);
+    }
+    // Avoid Fp division, which currently converts through hardware real.
+    UInt!(2 * bits + 64) quotient = numeratorProduct.coefficient.toSize!(2 * bits + 64);
+    quotient <<= bits + 64;
+    quotient /= denominatorProduct.coefficient;
+    T coefficient = T(quotient);
+    coefficient.exponent += numeratorProduct.exponent - denominatorProduct.exponent - cast(long)bits - 64;
+    return coefficient;
+}
+
 // Validate the represented value, including probabilities that round to 0 or
 // 1 in a hardware type. Fp's special exponent denotes infinity or NaN.
 package(mir.stat) @safe pure nothrow @nogc
