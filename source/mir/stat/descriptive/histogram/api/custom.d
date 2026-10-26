@@ -22,6 +22,9 @@ Copyright: 2026 Mir Stat Authors.
 +/
 module mir.stat.descriptive.histogram.api.custom;
 
+/// Automatic weighted-percentogram resolution policy.
+public import mir.stat.descriptive.histogram.api.factory: WeightedBinCountBasis;
+
 private import mir.stat.descriptive.univariate: WeightedQuantileAlgo, QuantileAlgo;
 private import mir.stat.descriptive.histogram.axis: isQuantileAxis;
 
@@ -2180,13 +2183,14 @@ Params:
     allocator = allocator providing allocation and nonthrowing deallocation
     data = one-dimensional observations, as an array or Mir slice
     weights = probability masses, or occurrence counts for frequency algorithms
+    binCountBasis = sample-size basis for automatic bin selection (default: positiveRows)
     probabilities = positive bin count or probability array/slice
 +/
 auto makeWeightedPercentogram(Counts = double,
     WeightedQuantileAlgo algorithm = WeightedQuantileAlgo.inverseCDF, Allocator, Data, Weights, P)(
     ref Allocator allocator, scope auto ref Data data, scope auto ref Weights weights,
     scope auto ref P probabilities)
-    if (!isQuantileAxis!P)
+    if (!isQuantileAxis!P && !is(P : WeightedBinCountBasis))
 {
     import mir.stat.descriptive.histogram.axis: preparedQuantileAxis;
     import mir.stat.descriptive.histogram.api.factory: computeQuantileAxisEdges, fillWeightedPercentogram;
@@ -2210,11 +2214,12 @@ auto makeWeightedPercentogram(Counts = double,
 /// ditto
 auto makeWeightedPercentogram(Counts = double,
     WeightedQuantileAlgo algorithm = WeightedQuantileAlgo.inverseCDF, Allocator, Data, Weights)(
-    ref Allocator allocator, scope auto ref Data data, scope auto ref Weights weights)
+    ref Allocator allocator, scope auto ref Data data, scope auto ref Weights weights,
+    WeightedBinCountBasis binCountBasis = WeightedBinCountBasis.positiveRows)
 {
     import mir.stat.descriptive.histogram.api.factory: weightedPercentogramBinCount;
     return makeWeightedPercentogram!(Counts, algorithm)(allocator, data, weights,
-        weightedPercentogramBinCount(weights));
+        weightedPercentogramBinCount(weights, binCountBasis));
 }
 
 /// Build weighted bins without the GC and release their counts and boundaries together.

@@ -1594,22 +1594,227 @@ package void validatePercentogramInputs(Observations, Levels)(scope Observations
     validatePercentogramLevels(levels);
 }
 
-// The automatic-bin heuristic counts positive-weight rows, not their total
-// weight. It is therefore unchanged by rescaling probability weights.
-package size_t weightedPercentogramBinCount(Weights)(scope auto ref Weights weights)
+/++
+Sample size used to request ceil(cuberoot(n)) bins in a weighted percentogram.
+This choice changes automatic resolution only. The quantile algorithm still
+chooses boundaries, and the original weights still determine bin totals.
+Duplicate boundaries can reduce the final number of bins.
++/
+enum WeightedBinCountBasis
+{
+    /++ Count rows with positive weight (the default). Use when each stored
+    observation should contribute equally to the requested resolution.
+    Scaling all weights leaves this count unchanged. +/
+    positiveRows,
+    /++ Sum whole-number occurrence counts. Use for a compact frequency table
+    when resolution should match the expanded sample. For weights [2, 3, 4],
+    n is 9 rather than 3. Each weight and the total must fit in size_t.
+    Choose a frequency quantile algorithm as well to match expanded boundaries.
+    Scaling counts changes the represented sample size and may change resolution. +/
+    frequencyTotal,
+    /++ Use Kish effective sample size: square of the weight sum divided by
+    the sum of squared weights. For equal positive weights this is the number
+    of rows; concentrated weights reduce it. Use as an optional coarser
+    resolution for reweighted outcomes, accepting loss of detail among lighter
+    outcomes. Scaling all weights leaves it unchanged, up to rounding.
+    This is a heuristic, not an uncertainty estimate or survey-design correction. +/
+    effectiveSampleSize,
+}
+
+package size_t weightedPercentogramBinCount(Weights)(scope auto ref Weights weights,
+    WeightedBinCountBasis basis = WeightedBinCountBasis.positiveRows)
 {
     import mir.ndslice.slice: isSlice, sliced;
-    import std.math: isFinite;
+    import mir.math.sum: Summator, Summation;
+    import std.math: isFinite, floor, frexp, ldexp, fma;
+    import std.traits: isIntegral;
+    assert(basis >= WeightedBinCountBasis.min && basis <= WeightedBinCountBasis.max,
+        "percentogram: invalid bin-count basis");
     static if (isSlice!Weights) scope auto masses = weights;
     else scope auto masses = weights[].sliced;
     static assert(typeof(masses).N == 1, "percentogram: weights must be one-dimensional");
-    size_t n;
+    size_t rows, total;
+    real maximum = 0;
     foreach (w; masses)
     {
         assert(isFinite(cast(real) w) && w >= 0, "percentogram: invalid weight");
-        if (w > 0) ++n;
+        if (w > 0) ++rows;
+        if (basis == WeightedBinCountBasis.frequencyTotal)
+        {
+            static if (isIntegral!(typeof(w)))
+                assert(w <= size_t.max - total, "percentogram: frequency total exceeds size_t");
+            else
+            {
+                // Compare against 2^bits, not a possibly rounded size_t.max.
+                assert(w == floor(cast(real) w) && w < ldexp(1.0L, cast(int) (size_t.sizeof * 8)),
+                    "percentogram: frequency weights must be whole counts fitting size_t");
+                assert(cast(size_t) w <= size_t.max - total,
+                    "percentogram: frequency total exceeds size_t");
+            }
+            total += cast(size_t) w;
+        }
+        if (w > maximum) maximum = w;
     }
-    return defaultPercentogramBinCount(n);
+    assert(rows > 0, "percentogram: at least one positive weight is required");
+    if (basis == WeightedBinCountBasis.positiveRows)
+        return defaultPercentogramBinCount(rows);
+    if (basis == WeightedBinCountBasis.frequencyTotal)
+        return defaultPercentogramBinCount(total);
+
+    // Power-of-two scaling preserves representable significands. Dividing by
+    // the largest weight can introduce error even for small integer weights.
+    int exponent;
+    frexp(maximum, exponent);
+    Summator!(real, Summation.kbn) sum, squares;
+    foreach (w; masses)
+    {
+        const scaled = ldexp(cast(real) w, -exponent);
+        const square = scaled * scaled;
+        sum.put(scaled);
+        squares.put(square);
+        squares.put(fma(scaled, scaled, -square));
+    }
+    // Keep the low parts instead of rounding the sums before comparison.
+    const weightSum = sum.sum;
+    sum.put(-weightSum);
+    const weightTail = sum.sum;
+    const squareSum = squares.sum;
+    squares.put(-squareSum);
+    const squareTail = squares.sum;
+    const sumSquared = weightSum * weightSum;
+    const sumSquaredTail = fma(weightSum, weightSum, -sumSquared);
+
+    // Find the smallest k with (sum w)^2 <= k^3 * sum(w^2). Avoid division
+    // and ceil: rounding an exact effective size of 8 upward would request 3
+    // bins instead of 2. Product and summation corrections preserve nearby
+    // values on either side of the threshold, without a tolerance dead zone.
+    size_t low = 1, high = defaultPercentogramBinCount(rows);
+    while (low < high)
+    {
+        const middle = low + (high - low) / 2;
+        const cube = cast(real) middle * middle * middle;
+        const threshold = cube * squareSum;
+        Summator!(real, Summation.kbn) difference;
+        difference.put(sumSquared - threshold);
+        difference.put(sumSquaredTail);
+        difference.put(-fma(cube, squareSum, -threshold));
+        difference.put(2 * weightSum * weightTail);
+        difference.put(weightTail * weightTail);
+        difference.put(-cube * squareTail);
+        if (difference.sum <= 0)
+            high = middle;
+        else
+            low = middle + 1;
+    }
+    return low;
+}
+
+// Sample-size choices are independent of quantile interpolation and storage.
+version(mir_stat_test)
+@safe pure nothrow @nogc
+unittest
+{
+    import core.exception: AssertError;
+    import mir.ndslice.slice: sliced;
+    import mir.ndslice.topology: stride;
+    import std.math: ldexp;
+    alias B = WeightedBinCountBasis;
+    alias bins = weightedPercentogramBinCount;
+    const uint[3] counts = [2, 3, 4];
+    assert(bins(counts) == 2);
+    assert(bins(counts, B.frequencyTotal) == 3);
+    const double[6] backing = [2, -1, 3, -1, 4, -1];
+    assert(bins(backing[].sliced.stride(2), B.frequencyTotal) == 3);
+    double[27] weights;
+    weights[] = 1;
+    assert(bins(weights, B.effectiveSampleSize) == 3);
+    weights[13] = 26;
+    assert(bins(weights) == 3);
+    assert(bins(weights, B.frequencyTotal) == 4);
+    assert(bins(weights, B.effectiveSampleSize) == 2);
+    // Rescaling relative weights must not overflow their squared sum.
+    foreach (scale; [1e-300, 1e300])
+    {
+        double[27] scaled;
+        foreach (i; 0 .. weights.length) scaled[i] = weights[i] * scale;
+        assert(bins(scaled, B.effectiveSampleSize) == 2);
+        assert(bins(scaled) == 3);
+    }
+    const real[8] equal = [real.max, real.max, real.max, real.max,
+        real.max, real.max, real.max, real.max];
+    assert(bins(equal, B.effectiveSampleSize) == 2);
+    assert(bins([0.0, 1e-300, 0.0], B.effectiveSampleSize) == 1);
+    assert(bins([size_t.max], B.frequencyTotal) == defaultPercentogramBinCount(size_t.max));
+}
+
+// Exact cube thresholds and adjacent representable weights must stay distinct.
+version(mir_stat_test)
+@safe pure nothrow @nogc
+unittest
+{
+    import std.meta: AliasSeq;
+    import std.math: ldexp, nextDown, nextUp;
+    static foreach (T; AliasSeq!(float, double, real))
+    {{
+        // 14 ones and a six: 20^2 / 50 = 8.
+        T[15] weights;
+        weights[] = 1;
+        weights[$ - 1] = 6;
+        // Increasing the largest weight reduces effective sample size.
+        foreach (shift; [-60, 0, 60])
+        {
+            T[15] scaled;
+            foreach (i; 0 .. weights.length) scaled[i] = ldexp(weights[i], shift);
+            assert(weightedPercentogramBinCount(scaled, WeightedBinCountBasis.effectiveSampleSize) == 2);
+            scaled[$ - 1] = nextDown(scaled[$ - 1]);
+            assert(weightedPercentogramBinCount(scaled, WeightedBinCountBasis.effectiveSampleSize) == 3);
+            scaled[$ - 1] = nextUp(nextUp(scaled[$ - 1]));
+            assert(weightedPercentogramBinCount(scaled, WeightedBinCountBasis.effectiveSampleSize) == 2);
+        }
+        // 27 thirteens and a 27: 378^2 / 5292 = 27.
+        T[28] other;
+        other[] = 13;
+        other[$ - 1] = 27;
+        assert(weightedPercentogramBinCount(other, WeightedBinCountBasis.effectiveSampleSize) == 3);
+        other[$ - 1] = nextDown(other[$ - 1]);
+        assert(weightedPercentogramBinCount(other, WeightedBinCountBasis.effectiveSampleSize) == 4);
+        other[$ - 1] = nextUp(nextUp(other[$ - 1]));
+        assert(weightedPercentogramBinCount(other, WeightedBinCountBasis.effectiveSampleSize) == 3);
+    }}
+}
+
+// Catching contract violations requires @system; valid calls above remain @safe.
+version(mir_stat_test)
+@system pure nothrow @nogc
+unittest
+{
+    import core.exception: AssertError;
+    import std.math: ldexp;
+    alias B = WeightedBinCountBasis;
+    alias bins = weightedPercentogramBinCount;
+
+    static void rejects(alias operation)()
+    {
+        bool rejected;
+        try { operation(); }
+        catch (AssertError) { rejected = true; }
+        assert(rejected);
+    }
+    rejects!(() { bins([1.5, 2.0], B.frequencyTotal); })();
+    rejects!(() { bins([size_t.max, size_t(1)], B.frequencyTotal); })();
+    rejects!(() { bins([ldexp(1.0L, cast(int) (size_t.sizeof * 8))], B.frequencyTotal); })();
+    rejects!(() { bins([1.0], cast(B) 99); })();
+    foreach (basis; [B.positiveRows, B.frequencyTotal, B.effectiveSampleSize])
+    {
+        bool rejected;
+        try { bins([0.0, 0.0], basis); }
+        catch (AssertError) { rejected = true; }
+        assert(rejected);
+    }
+    rejects!(() { bins([double.nan], B.effectiveSampleSize); })();
+    rejects!(() { bins([double.infinity], B.effectiveSampleSize); })();
+    rejects!(() { bins([-1.0, 2.0], B.effectiveSampleSize); })();
+    rejects!(() { double[0] empty; bins(empty); })();
 }
 
 // Quantile validation has already checked shapes, weights, and positive-weight
@@ -1672,6 +1877,27 @@ package void testWeightedPercentograms(alias factory, alias release = null)()
     auto automatic = factory(data, weights);
     scope(exit) { static if (!is(typeof(release) == typeof(null))) release(automatic); }
     assert(histogramOf(automatic).counts == p.counts);
+    // Every allocation policy forwards the named automatic-bin policy.
+    const double[3] policyData = [0, 10, 20];
+    const uint[3] policyWeights = [2, 3, 4];
+    foreach (basis; [WeightedBinCountBasis.positiveRows,
+        WeightedBinCountBasis.frequencyTotal, WeightedBinCountBasis.effectiveSampleSize])
+    {
+        const requested = basis == WeightedBinCountBasis.frequencyTotal ? 3 : 2;
+        auto selected = factory(policyData, policyWeights, basis);
+        scope(exit) { static if (!is(typeof(release) == typeof(null))) release(selected); }
+        auto explicitCount = factory(policyData, policyWeights, requested);
+        scope(exit) { static if (!is(typeof(release) == typeof(null))) release(explicitCount); }
+        auto a = histogramOf(selected);
+        auto b = histogramOf(explicitCount);
+        assert(a.counts == b.counts && a.total == b.total);
+        assert(a.axis.N_bin == b.axis.N_bin);
+        foreach (i; 0 .. a.axis.N_bin)
+        {
+            assert(a.bins()[i].bin.low == b.bins()[i].bin.low);
+            assert(a.bins()[i].bin.high == b.bins()[i].bin.high);
+        }
+    }
     // Restrict the quantile interval: both tails retain their weights.
     const int[5] x = [0, 1, 2, 3, 4], w = [1, 1, 1, 1, 1];
     const double[3] middle = [0.25, 0.5, 0.75];

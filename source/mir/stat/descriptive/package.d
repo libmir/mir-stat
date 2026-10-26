@@ -13,6 +13,62 @@ $(BOOKTABLE ,
     $(TR $(TDNW $(MREF mir,stat,descriptive,weighted)) $(TD Compatibility imports for weighted means and sums ))
 )
 
+Choosing weights:
+Frequency weights count repeated observations. Values [10, 20] with weights
+[2, 1] represent the sample [10, 10, 20]. Use them for a table of counts when
+you want the result to agree with listing every observation separately.
+Relative weights give observations different amounts of influence. Weights
+[2, 1] and [20, 10] describe the same relative influence. Use them, for example,
+to describe the distribution of simulated outcomes with different probabilities.
+They need not sum to one.
+
+Choose the calculation that matches the question:
+$(TABLE
+$(TR $(TH Statistic) $(TH Choice and example))
+$(TR $(TD Weighted mean) $(TD Both meanings use the same formula. Values [0, 10]
+with weights [1, 3] have mean 7.5. Multiplying all weights by ten leaves it unchanged.))
+$(TR $(TD Weighted sum) $(TD The same inputs give 30. Multiplying all weights by
+ten gives 300. Counts give the total of the expanded sample; relative weights
+give a weighted total. Normalize weights yourself if you want an average.))
+$(TR $(TD Weighted variance) $(TD Use population to describe the weighted
+distribution: the example gives 18.75. Use frequencySample for a sample stored
+as counts: it gives 25. Use relativeSample for fixed relative weights on
+independent observations with a common mean and variance: it gives 50.
+Population and relativeSample are unchanged by scaling all weights;
+frequencySample changes because the represented sample size changes.))
+$(TR $(TD Weighted quantiles) $(TD Select frequencyType7 or frequencyType8 to
+match the corresponding quantiles of an expanded sample. Other algorithms
+treat weights as relative masses and are unchanged by scaling all weights.
+For values [0, 10] with weights [2, 2], the first quartile is 0 under
+frequencyType7 and 2.5 under relative-mass type7.))
+$(TR $(TD Weighted histograms) $(TD Bin totals add weights, so scaling all
+weights scales the totals. Relative frequencies divide by the total and stay
+unchanged. Per-bin accumulators use their own statistical policies.))
+)
+
+For weighted percentograms, choosing the number of bins is separate from
+choosing their quantile boundaries. The default counts positive-weight rows.
+WeightedBinCountBasis.frequencyTotal uses the represented number of observations;
+combine it with a frequency quantile algorithm to match expanded data.
+WeightedBinCountBasis.effectiveSampleSize can request coarser bins when a few
+relative weights dominate. It is a resolution heuristic, not a general measure
+of uncertainty. See $(MREF mir, stat, descriptive, histogram, api) for examples.
+
+These choices do not make every kind of weight interchangeable. In particular,
+relativeSample is not a survey-design correction or the uncertainty of a mean
+formed using inverse-variance weights. See
+$(REF WeightedVarianceNormalization, mir, stat, descriptive, univariate, dispersions)
+and $(REF WeightedQuantileAlgo, mir, stat, descriptive, univariate, quantiles)
+for each estimator's assumptions.
+
+Weight validity also depends on the function. Weighted means and sums allow
+signed algebraic weights and evaluate zero-weight products: NaN times zero
+still contributes NaN. Weighted variance and quantiles require finite,
+nonnegative weights and exclude zero-weight observations, even nonfinite ones.
+Numeric histograms require finite, nonnegative weights; accumulator cells
+decide their own rules. AssumeWeights.sumToOne in the mean API is only a
+promise that skips division, not a choice of weight meaning or a validation step.
+
 License: $(HTTP www.apache.org/licenses/LICENSE-2.0, Apache-2.0)
 
 Authors: John Michael Hall, Ilya Yaroshenko

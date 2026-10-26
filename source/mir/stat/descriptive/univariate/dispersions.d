@@ -3069,7 +3069,8 @@ the larger answer is not automatically more accurate.
 
 Select the meaning explicitly. Integer weights do not automatically mean
 frequencies, and floating-point weights such as [1.0, 3.0] can be frequencies.
-See the examples on $(LREF weightedVariance) for executable calls.
+See the examples on $(LREF weightedVariance) for executable calls, and
+$(REF descriptive, mir, stat) for shared guidance on weight meanings.
 +/
 enum WeightedVarianceNormalization
 {

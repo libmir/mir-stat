@@ -73,8 +73,10 @@ explicitly to change the default inverseCDF definition. They use fixed numeric
 counters and the same GC, RC, or explicit-disposal ownership policies as percentograms.
 
 The default weighted percentogram chooses the number of bins from the number
-of rows with positive weight. Callers can also calculate and supply their
-own bin count.
+of rows with positive weight. Pass WeightedBinCountBasis.frequencyTotal or
+WeightedBinCountBasis.effectiveSampleSize as the final argument to select a
+different sample-size basis. Callers can also calculate and supply their own
+bin count. See $(REF descriptive, mir, stat) for shared guidance on weight meanings.
 
 For example, after reweighting simulated outcomes, a few outcomes may carry
 most of the probability. Kish effective sample size measures this imbalance:
@@ -89,7 +91,7 @@ in the bin-count rule gives the same requested number of bins as listing all
 those observations separately. Select a frequency quantile algorithm as well
 when you want the quantile boundaries to match that expanded sample.
 
-In both examples, the caller supplies only the number of bins. The selected
+In both examples, the policy changes only the requested number of bins. The selected
 quantile algorithm still determines their boundaries, and the original weights
 determine the amount accumulated in each bin.
 
@@ -137,9 +139,7 @@ public import mir.stat.descriptive.histogram.api.custom;
 @safe pure nothrow @nogc
 unittest
 {
-    import mir.math.sum: sum;
-    import mir.stat.descriptive.histogram.api.rc: rcWeightedPercentogram;
-    import mir.math.common: pow, ceil;
+    import mir.stat.descriptive.histogram.api.rc: rcWeightedPercentogram, WeightedBinCountBasis;
 
     double[27] outcomes, weights;
     foreach (i; 0 .. outcomes.length)
@@ -147,24 +147,10 @@ unittest
     weights[] = 1;
     weights[13] = 26; // One outcome carries half the total probability.
 
-    // Normalize before squaring to avoid overflow from large raw weights.
-    double maximum = 0;
-    foreach (w; weights)
-        if (w > maximum)
-            maximum = w;
-
-    double[27] scaled, squared;
-    foreach (i, w; weights)
-    {
-        scaled[i] = w / maximum;
-        squared[i] = scaled[i] * scaled[i];
-    }
-    const total = scaled[].sum;
-    const effectiveSize = total * total / squared[].sum;
-    const bins = cast(size_t) ceil(pow(effectiveSize, 1.0 / 3));
-
-    assert(bins == 2); // The row-count default requests three bins.
-    auto result = rcWeightedPercentogram(outcomes, weights, bins);
+    auto result = rcWeightedPercentogram(outcomes, weights,
+        WeightedBinCountBasis.effectiveSampleSize); // Requests two bins, rather than three.
+    auto explicitBins = rcWeightedPercentogram(outcomes, weights, 2);
+    assert(result.counts == explicitBins.counts);
     assert(result.total == 52);
 }
 
@@ -175,23 +161,16 @@ unittest
 unittest
 {
     import mir.stat.descriptive.histogram.api.rc:
-        rcWeightedPercentogram, rcpercentogram;
+        rcWeightedPercentogram, rcpercentogram, WeightedBinCountBasis;
     import mir.stat.descriptive.univariate: WeightedQuantileAlgo;
-    import mir.math.common: pow, ceil;
 
     double[3] outcomes = [0, 10, 20];
     uint[3] frequencies = [2, 3, 4];
     double[9] expanded = [0, 0, 10, 10, 10, 20, 20, 20, 20];
 
-    size_t totalFrequency;
-    foreach (frequency; frequencies)
-        totalFrequency += frequency;
-    const bins = cast(size_t) ceil(pow(cast(double) totalFrequency, 1.0 / 3));
-
-    assert(bins == 3); // Counting the three table rows would request two.
     auto compact = rcWeightedPercentogram!(
         double, WeightedQuantileAlgo.frequencyType7)(
-            outcomes, frequencies, bins);
+            outcomes, frequencies, WeightedBinCountBasis.frequencyTotal);
     auto repeated = rcpercentogram(expanded);
 
     assert(compact.counts == repeated.counts);

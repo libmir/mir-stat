@@ -18,6 +18,9 @@ Copyright: 2026 Mir Stat Authors.
 +/
 module mir.stat.descriptive.histogram.api.gc;
 
+/// Automatic weighted-percentogram resolution policy.
+public import mir.stat.descriptive.histogram.api.factory: WeightedBinCountBasis;
+
 private import mir.stat.descriptive.univariate: WeightedQuantileAlgo, QuantileAlgo;
 private import mir.stat.descriptive.histogram.axis: isQuantileAxis;
 
@@ -1049,15 +1052,21 @@ Counts and their total must accommodate the sums. AdaptiveCounts is unsupported.
 
 Supply a positive bin count or strictly increasing probabilities in [0,1].
 When neither is supplied, the factory requests ceil(cuberoot(n)) bins,
-where n is the number of rows with positive weight, including for frequency
-algorithms. Repeated observations count as separate rows. Duplicate quantile
+where n is selected by binCountBasis. The default positiveRows counts rows
+with positive weight, including for frequency algorithms. Repeated observations
+count as separate rows. Duplicate quantile
 boundaries are combined, so the result may contain fewer bins than requested.
 
 The default counts rows regardless of how large their weights are.
 Multiplying every weight by the same positive constant therefore leaves
 the requested bin count unchanged.
 
-You can supply a bin count when a different choice better suits your data.
+Pass WeightedBinCountBasis.frequencyTotal as the final argument to use the
+sum of whole-number counts, or effectiveSampleSize to use Kish effective sample
+size for a coarser view of concentrated relative weights. This argument replaces
+the explicit bin count or probability levels; it cannot be combined with them.
+It does not select the quantile algorithm. You can also supply a bin count when
+a different choice better suits your data.
 For reweighted simulations, you might prefer fewer bins when a small number
 of outcomes carry most of the probability. For a frequency table, you might
 instead choose the bin count using the total number of observations represented
@@ -1087,12 +1096,13 @@ Params:
     algorithm = weighted quantile definition, inverseCDF by default
     data = one-dimensional observations, as an array or Mir slice
     weights = probability masses, or occurrence counts for frequency algorithms
+    binCountBasis = sample-size basis for automatic bin selection (default: positiveRows)
     probabilities = positive bin count or probability array/slice
 +/
 auto weightedPercentogram(Counts = double, WeightedQuantileAlgo algorithm = WeightedQuantileAlgo.inverseCDF,
     Data, Weights, P)(scope auto ref Data data, scope auto ref Weights weights,
     scope auto ref P probabilities)
-    if (!isQuantileAxis!P)
+    if (!isQuantileAxis!P && !is(P : WeightedBinCountBasis))
 {
     import mir.stat.descriptive.histogram.api.factory: buildWeightedPercentogram;
     return buildWeightedPercentogram!(allocateCounts, computeWeightedAxisQuantiles!algorithm,
@@ -1101,10 +1111,11 @@ auto weightedPercentogram(Counts = double, WeightedQuantileAlgo algorithm = Weig
 
 /// ditto
 auto weightedPercentogram(Counts = double, WeightedQuantileAlgo algorithm = WeightedQuantileAlgo.inverseCDF,
-    Data, Weights)(scope auto ref Data data, scope auto ref Weights weights)
+    Data, Weights)(scope auto ref Data data, scope auto ref Weights weights,
+    WeightedBinCountBasis binCountBasis = WeightedBinCountBasis.positiveRows)
 {
     import mir.stat.descriptive.histogram.api.factory: weightedPercentogramBinCount;
-    return weightedPercentogram!(Counts, algorithm)(data, weights, weightedPercentogramBinCount(weights));
+    return weightedPercentogram!(Counts, algorithm)(data, weights, weightedPercentogramBinCount(weights, binCountBasis));
 }
 
 /// Reweighting outcomes changes the median boundary and the observed bin masses.

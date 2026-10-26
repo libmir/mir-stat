@@ -2330,6 +2330,9 @@ unittest
 /++
 Computes the weighted mean of the input.
 
+See $(REF descriptive, mir, stat) for guidance on choosing frequency or relative
+weights and on how scaling weights affects different statistics.
+
 Weights are algebraic multipliers and may be signed. By default, the weighted
 sum is divided by the total weight, which must be nonzero (checked by assertion).
 AssumeWeights.sumToOne skips that division and its nonzero-total check; it is a
