@@ -785,3 +785,53 @@ version(mir_stat_test_linearAlgebra)
     assert(allocator.allocations == 3);
     assertThrown!AssertError(choleskySolveInto(factor, rhs, wrongRhs));
 }
+
+import mir.math.internal.linearAlgebra.views: SymmetricView;
+
+/++
+Symmetric-view overload. Uses the view's selected triangle and produces the
+factor in that triangle. Positive definiteness is checked by factorization,
+not implied by the view. Other requirements follow the plain-slice overload.
++/
+auto choleskyDecompose(Triangle triangle, A)(scope auto ref const(SymmetricView!(triangle, A)) a)
+    if (matrix!A)
+{
+    return choleskyDecompose!triangle(a.storage);
+}
+
+/++
+Symmetric-view overload. Uses the view's selected triangle and produces the
+factor in that triangle. Positive definiteness is checked by factorization,
+not implied by the view. Other requirements follow the plain-slice overload.
++/
+auto rcCholeskyDecompose(Triangle triangle, A)(scope auto ref const(SymmetricView!(triangle, A)) a)
+    if (matrix!A)
+{
+    return rcCholeskyDecompose!triangle(a.storage);
+}
+
+/++
+Symmetric-view overload. Uses the view's selected triangle and produces the
+factor in that triangle. Positive definiteness is checked by factorization,
+not implied by the view. Other requirements follow the plain-slice overload.
++/
+auto makeCholeskyDecompose(Triangle triangle, A, Allocator)(
+    auto ref Allocator allocator,
+    scope auto ref const(SymmetricView!(triangle, A)) a)
+    if (matrix!A)
+{
+    return makeCholeskyDecompose!triangle(allocator, a.storage);
+}
+
+/++
+Symmetric-view overload. Uses the view's selected triangle and produces the
+factor in that triangle. Positive definiteness is checked by factorization,
+not implied by the view. Other requirements follow the plain-slice overload.
++/
+void choleskyDecomposeInto(Triangle triangle, A, C)(
+    scope auto ref const(SymmetricView!(triangle, A)) a,
+    scope auto ref C output)
+    if (matrix!A)
+{
+    choleskyDecomposeInto!triangle(a.storage, output);
+}
