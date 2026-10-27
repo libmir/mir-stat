@@ -17,6 +17,7 @@ Copyright: 2026 Mir Stat Authors.
 +/
 module mir.stat.internal.linearAlgebra.quadratic;
 
+// Include this module in both the full suite and the focused BLAS suite.
 version(mir_stat_test) version = mir_stat_test_linearAlgebra;
 version(mir_stat_test_blas) version = mir_stat_test_linearAlgebra;
 
@@ -25,6 +26,7 @@ import mir.stat.internal.linearAlgebra.views: SymmetricView, symmetricView;
 import mir.math.sum: Summation, Summator;
 import std.traits: isFloatingPoint;
 
+/// Whether a real vector and real matrix share an element type.
 private enum compatible(X, A) = numericSlice!X && X.N == 1 &&
     numericSlice!A && A.N == 2 && is(Scalar!X == Scalar!A) && isFloatingPoint!(Scalar!X);
 
@@ -103,6 +105,7 @@ version(mir_stat_test_linearAlgebra)
     assert(quadraticForm(values[].sliced, a.transposed) == 32);
 }
 
+/// Evaluate rows in ascending column order and then reduce their products with x; symmetry reflects only stored entries.
 private Scalar!X quadratic(bool symmetric, TrianglePolicy triangle, Summation summation, X, A)(
     scope auto ref X x, scope auto ref A a)
 {

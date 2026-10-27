@@ -3,7 +3,7 @@ Matrix products with explicit result ownership. `mtimes` uses GC storage,
 `rcMtimes` uses RC storage, and `makeMtimes` uses the supplied allocator.
 Vector-vector products return a scalar and do not allocate. Products do not
 conjugate complex inputs. Inputs may be borrowed or RC slices, independently
-of output ownership. General strides use an allocation-free scalar kernel.
+of output ownership. General strides use an allocation-free built-in D kernel.
 When BLAS is available, compatible single/double precision real and complex
 layouts use BLAS.
 
@@ -17,6 +17,7 @@ Copyright: 2026 Mir Stat Authors.
 +/
 module mir.stat.internal.linearAlgebra.products;
 
+// Include this module in both the full suite and the focused BLAS suite.
 version(mir_stat_test) version = mir_stat_test_linearAlgebra;
 version(mir_stat_test_blas) version = mir_stat_test_linearAlgebra;
 
@@ -26,6 +27,7 @@ import mir.stat.internal.linearAlgebra.backend: hasBlas, blasNumber, nativeSlice
 import mir.stat.internal.linearAlgebra.views: TriangularView;
 import mir.stat.internal.linearAlgebra.allocation;
 
+/// Whether operands are supported numeric slices with matching element types.
 private enum compatible(A, B) = numericSlice!A && numericSlice!B &&
     is(Scalar!A == Scalar!B);
 
@@ -289,6 +291,7 @@ version(mir_stat_test_linearAlgebra)
 }
 
 // Validate the contracted dimension before allocating or writing output.
+/// Assert that the contracted dimensions agree before allocation or output writes.
 private void checkMultiplicationDimensions(A, B)(scope auto ref A a, scope auto ref B b)
 {
     static if (A.N == 2)
@@ -299,6 +302,7 @@ private void checkMultiplicationDimensions(A, B)(scope auto ref A a, scope auto 
 
 // Shared factory: scalar products allocate nothing; other products allocate
 // according to policy and delegate computation to mtimesInto.
+/// Compute a dot product directly, or allocate one result and release custom storage if computation throws.
 private ProductResult!(policy, A, B)
 multiplyWithAllocation(Allocation policy, Allocator, A, B)(ref Allocator allocator,
     scope auto ref A a, scope auto ref B b)
@@ -624,11 +628,13 @@ version(mir_stat_test_linearAlgebra)
     struct CountingAllocator
     {
         size_t allocations, releases;
+        /// Allocate test storage while counting allocation attempts.
         void[] allocate(size_t bytes)
         {
             ++allocations;
             return Mallocator.instance.allocate(bytes);
         }
+        /// Release test storage while counting releases.
         bool deallocate(void[] memory)
         {
             ++releases;
@@ -659,6 +665,7 @@ version(mir_stat_test_linearAlgebra)
     // exactly once and propagate the original exception.
     import mir.ndslice.topology: map;
     auto failure = new Exception("computed input failed");
+    /// Throw the test exception to verify cleanup after an input iterator fails.
     double fail(double value) { throw failure; }
     auto failingInput = a.map!fail;
     bool caught;

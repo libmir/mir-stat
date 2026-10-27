@@ -48,7 +48,7 @@ operand. Views are read-only, retain RC ownership when supplied, and have no
 implicit ndslice conversion. They do not assert positive definiteness or
 represent Cholesky factors. Transpose updates the selected triangle.
 
-BLAS is optional. The default configuration uses scalar kernels; compatible
+BLAS is optional. The default configuration uses built-in D kernels; compatible
 native layouts can use BLAS when that dependency is available. Backend and
 summation order can affect floating-point rounding.
 
@@ -73,6 +73,7 @@ Copyright: 2026 Mir Stat Authors.
 +/
 module mir.stat.internal.linearAlgebra;
 
+// Include this module in both the full suite and the focused BLAS suite.
 version(mir_stat_test) version = mir_stat_test_linearAlgebra;
 version(mir_stat_test_blas) version = mir_stat_test_linearAlgebra;
 

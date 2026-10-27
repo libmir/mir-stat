@@ -13,10 +13,11 @@ package enum hasBlas = is(typeof({ import mir.blas; }));
 package enum hasLapack = is(typeof({ import mir.lapack; }));
 
 package enum blasNumber(T) = is(realType!T == float) || is(realType!T == double);
-// BLAS needs native pointers. Computed ndslice iterators use the scalar kernel.
+// BLAS needs native pointers. Computed ndslice iterators use the built-in D kernel.
 package enum nativeSlice(A) = is(typeof(A.init.lightScope._iterator) : const(Scalar!A)*);
 
 // BLAS requires representable dimensions and nonoverlapping rows or columns.
+/// Whether matrix dimensions and positive strides can be represented by BLAS without overlap.
 package bool blasMatrix(A)(scope auto ref A a)
 {
     import cblas: blasint;
@@ -27,6 +28,7 @@ package bool blasMatrix(A)(scope auto ref A a)
          (a._stride!0 == 1 && a._stride!1 >= a.length!0));
 }
 
+/// Whether a vector has a positive stride and dimensions representable by BLAS.
 package bool blasVector(A)(scope auto ref A a)
 {
     import cblas: blasint;

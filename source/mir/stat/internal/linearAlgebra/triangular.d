@@ -4,7 +4,7 @@ Products with a square triangular matrix on either side.
 The selected triangle describes the logical ndslice view, including when that
 view is transposed. Entries outside it are not read. A unit diagonal is treated
 as one without reading its stored values. Complex inputs are not conjugated.
-General strides and computed inputs use scalar kernels. Compatible native
+General strides and computed inputs use built-in D kernels. Compatible native
 float, double and complex layouts use BLAS when available.
 
 The `mtimesTriangular` family multiplies a triangular matrix on the left;
@@ -18,6 +18,7 @@ Copyright: 2026 Mir Stat Authors.
 +/
 module mir.stat.internal.linearAlgebra.triangular;
 
+// Include this module in both the full suite and the focused BLAS suite.
 version(mir_stat_test) version = mir_stat_test_linearAlgebra;
 version(mir_stat_test_blas) version = mir_stat_test_linearAlgebra;
 
@@ -25,8 +26,10 @@ import mir.stat.internal.linearAlgebra.allocation;
 import mir.stat.internal.linearAlgebra.types: Scalar, numericSlice, TrianglePolicy, DiagonalPolicy;
 import mir.stat.internal.linearAlgebra.backend: hasBlas, nativeSlice, blasNumber, blasMatrix, blasVector;
 
+/// Whether a square-matrix operand and numeric right-hand side have matching element types.
 private enum compatible(A, B) = numericSlice!A && A.N == 2 &&
     numericSlice!B && is(Scalar!A == Scalar!B);
+/// Triangle selected after transposing the logical matrix.
 private enum opposite(TrianglePolicy triangle) =
     triangle == TrianglePolicy.upper ? TrianglePolicy.lower : TrianglePolicy.upper;
 
@@ -378,6 +381,7 @@ version(mir_stat_test_linearAlgebra)
     assert(vector == [5, 6]);
 }
 
+/// Assert a square triangular operand and compatible left- or right-product dimensions.
 private void checkTriangularDimensions(bool right, A, B)(scope auto ref A a, scope auto ref B b)
 {
     assert(a.length!0 == a.length!1, "Triangular matrix must be square");
@@ -387,6 +391,7 @@ private void checkTriangularDimensions(bool right, A, B)(scope auto ref A a, sco
         assert(a.length!0 == b.length!0, "Incompatible triangular product dimensions");
 }
 
+/// Allocate the final triangular-product result and release custom storage on failure.
 private AllocatedSlice!(policy, Scalar!A, B.N)
 multiplyTriangularWithAllocation(Allocation policy, TrianglePolicy triangle,
     DiagonalPolicy diagonal, bool right, Allocator, A, B)(ref Allocator allocator,
@@ -411,6 +416,7 @@ multiplyTriangularWithAllocation(Allocation policy, TrianglePolicy triangle,
 
 // Layout and size checks are performed by the caller. mir.blas handles the
 // conversion from logical triangles to the native BLAS storage convention.
+/// Overwrite eligible native output with TRMV or TRMM after the caller has copied the other operand.
 private void multiplyTriangularBlas(TrianglePolicy triangle, DiagonalPolicy diagonal, A, C)(
     scope auto ref A a, scope auto ref C c)
 {
@@ -583,7 +589,9 @@ version(mir_stat_test_linearAlgebra)
     struct CountingAllocator
     {
         size_t allocations, releases;
+        /// Allocate test storage while counting allocation attempts.
         void[] allocate(size_t bytes) { ++allocations; return Mallocator.instance.allocate(bytes); }
+        /// Release test storage while counting releases.
         bool deallocate(void[] memory) { ++releases; return Mallocator.instance.deallocate(memory); }
     }
     CountingAllocator allocator;
@@ -606,6 +614,7 @@ version(mir_stat_test_linearAlgebra)
     assert(allocator.allocations == 2);
 
     auto failure = new Exception("input failed");
+    /// Throw the test exception to verify cleanup after an input iterator fails.
     double fail(double value) { throw failure; }
     auto failing = a.map!fail;
     foreach (rightSide; [false, true])
@@ -627,6 +636,7 @@ version(mir_stat_test_linearAlgebra)
     assertThrown!Exception(makeMtimesTriangularRight(allocator, failingOther, a));
     assert(allocator.allocations == 6 && allocator.releases == 6);
     // A computed iterator must never be invoked on unused entries.
+    /// Fail the test if an operation reads an ignored triangular entry.
     double rejectNaN(double value)
     {
         assert(value == value, "Read an ignored triangular entry");
@@ -642,6 +652,7 @@ version(mir_stat_test_linearAlgebra)
 
 // Callers establish square shape, matching vector length, writable disjoint
 // vector elements, and a nonoverlapping read-only triangular matrix.
+/// Solve or multiply a triangular system in dependency-safe order, using BLAS when eligible; callers validate shapes and aliasing.
 package(mir.stat) void triangularVectorInPlace(bool solve, TrianglePolicy triangle, A, X)(
     scope auto ref A a, scope auto ref X x)
 {
