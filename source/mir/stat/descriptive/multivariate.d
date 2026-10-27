@@ -1,6 +1,20 @@
 /++
 This module contains algorithms for multivariate descriptive statistics.
 
+Accumulator merges preserve stored correction terms when the element type and
+summation algorithm match and use KBN, KB2, or precise summation. Derived moments
+without corresponding stored summation state, mixed-type/mixed-summation merges,
+and other summation algorithms retain scalar merging.
+
+Numerical limits:
+Accumulators store unscaled sums and moments in their element type. A finite
+mathematical covariance or correlation does not guarantee that these intermediate
+values fit. Naive algorithms also subtract raw moments and can lose precision
+when observations have a large common offset; prefer `online`, `twoPass`, or
+`hybrid` for such data. Requesting a wider result type cannot recover information
+already lost during accumulation. Rescale inputs when the stored sums or moments
+would exceed the element type's range.
+
 License: $(HTTP www.apache.org/licenses/LICENSE-2.0, Apache-2.0)
 
 Authors: John Michael Hall
@@ -23,6 +37,541 @@ module mir.stat.descriptive.multivariate;
 import mir.internal.utility: isFloatingPoint;
 import mir.math.sum: Summation, Summator;
 import std.traits: isMutable;
+
+
+/*
+Merge stored summation state when both accumulators use the same compensated
+summator. Reading a single rounded sum first can discard its correction.
+Centered moments also have a between-group correction; add that separately
+only on the state-preserving path so it is not rounded into the source sum.
+
+Other combinations retain the original getter, conversion, and addition.
+Some source algorithms expose a derived moment rather than a stored summator,
+so field availability is checked at compile time. Merge parameters are copied
+by value by the public overloads, keeping self-merges independent.
+*/
+private void mergeMultivariateSum(string member, string getter, F,
+    T, Summation mode, Source, Correction...)(
+    ref Summator!(T, mode) target, ref Source source, Correction correction)
+    if (Correction.length <= 1)
+{
+    import std.traits: Unqual;
+    static if ((mode == Summation.kbn || mode == Summation.kb2 ||
+        mode == Summation.precise) &&
+        is(Unqual!(typeof(__traits(getMember, source, member))) == Summator!(T, mode)))
+    {
+        import mir.stat.internal.summation: mergeSummator;
+        mergeSummator(target, __traits(getMember, source, member));
+        static if (Correction.length)
+            target.put(correction[0]);
+    }
+    else
+    {
+        static if (Correction.length)
+            target.put(mixin("source." ~ getter ~ "!F") + correction[0]);
+        else
+            target.put(mixin("source." ~ getter ~ "!F"));
+    }
+}
+
+// Exercise every stored sum independently: a rounded getter would lose the
+// low-order one. Synthetic state isolates merging from update-rounding errors.
+version(mir_stat_test)
+pure nothrow @nogc
+unittest
+{
+    import std.meta: AliasSeq;
+
+    void check(A)()
+    {
+        enum large = 0x1p54;
+        A source;
+        source.put(0.0, 0.0);
+        static foreach (field; AliasSeq!("summatorLeft", "summatorRight",
+            "summatorOfProducts", "summatorOfSquaresLeft", "summatorOfSquaresRight",
+            "centeredSummatorOfProducts", "centeredSummatorOfSquaresLeft",
+            "centeredSummatorOfSquaresRight"))
+        {
+            static if (__traits(hasMember, A, field))
+            {
+                __traits(getMember, source, field).put(large);
+                __traits(getMember, source, field).put(1.0);
+            }
+        }
+        A target;
+        target.put(source);
+        assert(target.count == 1 && source.count == 1);
+        A self = source;
+        self.put(self);
+        assert(self.count == 2);
+        static foreach (field; AliasSeq!("summatorLeft", "summatorRight",
+            "summatorOfProducts", "summatorOfSquaresLeft", "summatorOfSquaresRight",
+            "centeredSummatorOfProducts", "centeredSummatorOfSquaresLeft",
+            "centeredSummatorOfSquaresRight"))
+        {
+            static if (__traits(hasMember, A, field))
+            {
+                __traits(getMember, target, field).put(-large);
+                assert(__traits(getMember, target, field).sum == 1);
+                __traits(getMember, source, field).put(-large);
+                assert(__traits(getMember, source, field).sum == 1);
+                __traits(getMember, self, field).put(-2 * large);
+                assert(__traits(getMember, self, field).sum == 2);
+            }
+        }
+    }
+
+    static foreach (mode; AliasSeq!(Summation.kbn, Summation.kb2, Summation.precise))
+    {
+        static foreach (algo; AliasSeq!(CovarianceAlgo.naive, CovarianceAlgo.online,
+            CovarianceAlgo.hybrid, CovarianceAlgo.assumeZeroMean))
+            check!(CovarianceAccumulator!(double, algo, mode))();
+        static foreach (algo; AliasSeq!(CorrelationAlgo.naive, CorrelationAlgo.online,
+            CorrelationAlgo.hybrid, CorrelationAlgo.assumeZeroMean,
+            CorrelationAlgo.assumeStandardized))
+            check!(CorrelationAccumulator!(double, algo, mode))();
+    }
+}
+
+// Preserve small product contributions through public observation/merge calls.
+version(mir_stat_test)
+pure nothrow @nogc
+unittest
+{
+    import std.meta: AliasSeq;
+    static foreach (mode; AliasSeq!(Summation.kbn, Summation.kb2, Summation.precise))
+    static foreach (A; AliasSeq!(
+        CovarianceAccumulator!(double, CovarianceAlgo.naive, mode),
+        CovarianceAccumulator!(double, CovarianceAlgo.assumeZeroMean, mode),
+        CorrelationAccumulator!(double, CorrelationAlgo.naive, mode),
+        CorrelationAccumulator!(double, CorrelationAlgo.assumeZeroMean, mode),
+        CorrelationAccumulator!(double, CorrelationAlgo.assumeStandardized, mode)))
+    {{
+        A source, target;
+        source.put(0x1p54, 1);
+        source.put(1, 1);
+        target.put(source);
+        target.put(-0x1p54, 1);
+        static if (__traits(hasMember, A, "sumOfProducts"))
+            assert(target.sumOfProducts == 1);
+        else
+            assert(target.centeredSumOfProducts == 1);
+    }}
+}
+
+// Different algorithms and summation/type combinations keep their merge API.
+version(mir_stat_test)
+@safe pure nothrow @nogc
+unittest
+{
+    import std.meta: AliasSeq;
+    void check(Source, Target)()
+    {
+        float[3] x = [1, 2, 3];
+        float[3] y = [2, 4, 6];
+        auto source = Source(x[], y[]);
+        Target target;
+        target.put(source);
+        assert(target.count == 3 && target.centeredSumOfProducts == 4);
+        assert(target.meanLeft == 2 && target.meanRight == 4);
+        target.put(source);
+        assert(target.count == 6 && target.centeredSumOfProducts == 8);
+        static if (__traits(hasMember, Target, "centeredSumOfSquaresLeft"))
+        {
+            assert(target.centeredSumOfSquaresLeft == 4);
+            assert(target.centeredSumOfSquaresRight == 16);
+        }
+    }
+    static foreach (sourceAlgo; AliasSeq!(CovarianceAlgo.naive,
+        CovarianceAlgo.online, CovarianceAlgo.twoPass, CovarianceAlgo.hybrid))
+    static foreach (targetAlgo; AliasSeq!(CovarianceAlgo.online, CovarianceAlgo.hybrid))
+    {
+        check!(CovarianceAccumulator!(double, sourceAlgo, Summation.kbn),
+            CovarianceAccumulator!(double, targetAlgo, Summation.kbn))();
+        check!(CovarianceAccumulator!(float, sourceAlgo, Summation.pairwise),
+            CovarianceAccumulator!(double, targetAlgo, Summation.kbn))();
+    }
+    static foreach (sourceAlgo; AliasSeq!(CorrelationAlgo.naive,
+        CorrelationAlgo.online, CorrelationAlgo.twoPass, CorrelationAlgo.hybrid))
+    static foreach (targetAlgo; AliasSeq!(CorrelationAlgo.online, CorrelationAlgo.hybrid))
+    {
+        check!(CorrelationAccumulator!(double, sourceAlgo, Summation.kbn),
+            CorrelationAccumulator!(double, targetAlgo, Summation.kbn))();
+        check!(CorrelationAccumulator!(float, sourceAlgo, Summation.kbn),
+            CorrelationAccumulator!(double, targetAlgo, Summation.naive))();
+    }
+}
+
+/*
+Form the between-group cross product without discarding a tiny difference
+before the other difference can bring the result back into the normal range.
+The usual order avoids multiplying two large differences first. When its inner
+product is subnormal, scale the larger difference down for weights below one.
+For larger weights, multiply the differences first only if that product is
+normal; otherwise retain the usual order to avoid rounding a subnormal twice.
+This is not a general correctly rounded three-factor product.
+*/
+private T multivariateMergeProduct(T)(T left, T right, T weight)
+{
+    version (DigitalMars) pragma(inline, true);
+    const T scaledRight = right * weight;
+    static if (isFloatingPoint!T)
+    {
+        import mir.math.common: fabs;
+        if (fabs(scaledRight) < T.min_normal && fabs(left) > 1)
+        {
+            if (weight < 1)
+                return (left * weight) * right;
+            const T product = left * right;
+            if (fabs(product) >= T.min_normal)
+                return product * weight;
+        }
+    }
+    return left * scaledRight;
+}
+
+version(mir_stat_test)
+@safe pure nothrow @nogc
+unittest
+{
+    import std.meta: AliasSeq;
+    static foreach (T; AliasSeq!(float, double, real))
+    {{
+        T tiny = T.min_normal;
+        tiny *= T.epsilon;
+        // Powers of two give exact references without a special-function call.
+        enum T large = T(2) ^^ (T.mant_dig + 2);
+        const T expected = tiny * (large / 2);
+        foreach (sign; [T(-1), T(1)])
+        {
+            assert(multivariateMergeProduct(sign * large, tiny, T(0.5)) == sign * expected);
+            assert(multivariateMergeProduct(sign * large, 3 * tiny, T(0.5)) == sign * 3 * expected);
+            assert(multivariateMergeProduct(sign * large, 3 * tiny, T(1.5)) == sign * 9 * expected);
+        }
+        // If the unweighted product is also subnormal, keep the usual order.
+        assert(multivariateMergeProduct(T(1.5), tiny, T(2.5)) == 3 * tiny);
+        assert(multivariateMergeProduct(T(0), tiny, T(0.5)) == 0);
+        assert(multivariateMergeProduct(T(2), T(3), T(0.5)) == 3);
+    }}
+}
+
+version(mir_stat_test)
+private void testMultivariateTinyMerge(A)() pure nothrow @nogc
+{
+    alias T = typeof(A.init.meanLeft);
+    T tiny = T.min_normal;
+    tiny *= T.epsilon;
+    enum T large = T(2) ^^ (T.mant_dig + 2);
+    const T expected = tiny * (large / 2);
+    foreach (reverse; [false, true])
+    foreach (sign; [T(-1), T(1)])
+    {
+        A target, source;
+        target.put(T(0), T(0));
+        if (reverse)
+            source.put(tiny, sign * large);
+        else
+            source.put(sign * large, tiny);
+        target.put(source);
+        assert(target.centeredSumOfProducts == sign * expected);
+        assert(source.centeredSumOfProducts == 0);
+    }
+}
+
+version(mir_stat_test)
+pure nothrow @nogc
+unittest
+{
+    import std.meta: AliasSeq;
+    static foreach (mode; AliasSeq!(Summation.naive, Summation.kbn,
+        Summation.kb2, Summation.precise))
+    {
+        testMultivariateTinyMerge!(CovarianceAccumulator!(double, CovarianceAlgo.online, mode))();
+        testMultivariateTinyMerge!(CovarianceAccumulator!(double, CovarianceAlgo.hybrid, mode))();
+        testMultivariateTinyMerge!(CorrelationAccumulator!(double, CorrelationAlgo.online, mode))();
+        testMultivariateTinyMerge!(CorrelationAccumulator!(double, CorrelationAlgo.hybrid, mode))();
+    }
+    static foreach (T; AliasSeq!(float, real))
+    {
+        testMultivariateTinyMerge!(CovarianceAccumulator!(T, CovarianceAlgo.hybrid, Summation.naive))();
+        testMultivariateTinyMerge!(CorrelationAccumulator!(T, CorrelationAlgo.hybrid, Summation.naive))();
+    }
+}
+
+// Convert before multiplying, matching scalar insertion without mapper context.
+private template multivariateProduct(T, size_t left = 0, size_t right = 1)
+{
+    T multivariateProduct(Args...)(Args args)
+        if (left < Args.length && right < Args.length)
+    {
+        return cast(T) args[left] * cast(T) args[right];
+    }
+}
+
+/*
+Cancel the common count factor when naive correlation's scaled moments overflow.
+Keep this uncommon path out of line so it does not inhibit ordinary getter
+inlining. Raw moments still need to fit, and naive centering still loses precision
+for observations tightly clustered around a large mean.
+*/
+pragma(inline, false)
+private F naiveCorrelationFallback(F)(size_t count, F left, F right,
+    F product, F squareLeft, F squareRight)
+{
+    import mir.math.common: sqrt;
+    const F inverseCount = F(1) / count;
+    const F meanLeft = left * inverseCount;
+    const F meanRight = right * inverseCount;
+    return (product - meanLeft * right) /
+        (sqrt(squareLeft - meanLeft * left) * sqrt(squareRight - meanRight * right));
+}
+
+// Repeated self-merges reach the count-product boundary without a huge input.
+version(mir_stat_test)
+@safe pure nothrow @nogc
+unittest
+{
+    import std.meta: AliasSeq;
+    static foreach (A; AliasSeq!(
+        CovarianceAccumulator!(double, CovarianceAlgo.naive, Summation.naive),
+        CorrelationAccumulator!(double, CorrelationAlgo.naive, Summation.naive)))
+    {{
+        A a;
+        a.put(1, 1);
+        foreach (i; 0 .. size_t.sizeof * 4)
+            a.put(a);
+        assert(a.count == (size_t(1) << (size_t.sizeof * 4)));
+        assert(a.covariance(true) == 0);
+        assert(a.covariance(false) == 0);
+    }}
+}
+
+// Slice products use the accumulator precision, just like scalar insertion.
+version(mir_stat_test)
+@safe pure nothrow @nogc
+unittest
+{
+    import mir.ndslice.slice: sliced;
+    import std.meta: AliasSeq;
+    void check(A, V)(V value)
+    {
+        V[2] values = [value, -value];
+        A batch;
+        batch.put(values[].sliced, values[].sliced);
+        A scalar;
+        foreach (v; values)
+            scalar.put(v, v);
+        assert(batch.centeredSumOfProducts == scalar.centeredSumOfProducts);
+        static if (__traits(hasMember, A, "sumOfSquaresLeft"))
+        {
+            assert(batch.sumOfSquaresLeft == scalar.sumOfSquaresLeft);
+            assert(batch.sumOfSquaresRight == scalar.sumOfSquaresRight);
+        }
+        static if (__traits(hasMember, A, "centeredSumOfSquaresLeft"))
+        {
+            assert(batch.centeredSumOfSquaresLeft == scalar.centeredSumOfSquaresLeft);
+            assert(batch.centeredSumOfSquaresRight == scalar.centeredSumOfSquaresRight);
+        }
+    }
+    static foreach (mode; AliasSeq!(Summation.naive, Summation.pairwise))
+    static foreach (A; AliasSeq!(
+        CovarianceAccumulator!(double, CovarianceAlgo.naive, mode),
+        CovarianceAccumulator!(double, CovarianceAlgo.assumeZeroMean, mode),
+        CorrelationAccumulator!(double, CorrelationAlgo.naive, mode),
+        CorrelationAccumulator!(double, CorrelationAlgo.assumeZeroMean, mode),
+        CorrelationAccumulator!(double, CorrelationAlgo.assumeStandardized, mode)))
+    {
+        check!A(50000);
+        check!A(0x1p70f);
+    }
+}
+
+// Cancel the common count factor before normalizing finite naive moments.
+version(mir_stat_test)
+@safe pure nothrow @nogc
+unittest
+{
+    import mir.ndslice.slice: sliced;
+    import std.math: fabs;
+    import std.meta: AliasSeq;
+    static foreach (T; AliasSeq!(float, double, real))
+    {{
+        // Four times the stored square sum overflows, while the sum itself fits.
+        static if (T.max_exp == 128) enum T large = 0x1p62f;
+        else static if (T.max_exp == 1024) enum T large = 0x1p510;
+        else enum T large = 0x1p8190L;
+        T[4] x = [large, -large, large, -large];
+        T[4] y = [-large, large, -large, large];
+        T[4] small = [1, -1, 1, -1];
+        alias A = CorrelationAccumulator!(T, CorrelationAlgo.naive, Summation.naive);
+        A a = A(x[].sliced, x[].sliced);
+        A b = A(x[].sliced, y[].sliced);
+        A c = A(x[].sliced, small[].sliced);
+        assert(fabs(a.correlation - 1) <= 4 * T.epsilon);
+        assert(fabs(b.correlation + 1) <= 4 * T.epsilon);
+        // A finite numerator divided by the overflowing denominator used to give zero.
+        assert(fabs(c.correlation - 1) <= 4 * T.epsilon);
+    }}
+}
+
+// Compute the count weight before scaling the between-group product.
+version(mir_stat_test)
+@safe pure nothrow @nogc
+unittest
+{
+    import std.meta: AliasSeq;
+    void check(A)()
+    {
+        A left, right;
+        foreach (i; 0 .. 16)
+        {
+            left.put(0, 0);
+            right.put(0x1p508, 0x1p508);
+        }
+        left.put(right);
+        assert(left.count == 32 && left.centeredSumOfProducts == 0x1p1019);
+        A first, second;
+        first.put(0, 0);
+        second.put(0x1.4p512, 0x1.4p512);
+        first.put(second);
+        assert(first.centeredSumOfProducts == 0x1.9p1023);
+    }
+    static foreach (A; AliasSeq!(
+        CovarianceAccumulator!(double, CovarianceAlgo.online, Summation.naive),
+        CovarianceAccumulator!(double, CovarianceAlgo.hybrid, Summation.naive),
+        CorrelationAccumulator!(double, CorrelationAlgo.online, Summation.naive),
+        CorrelationAccumulator!(double, CorrelationAlgo.hybrid, Summation.naive)))
+        check!A();
+
+    // Unequal covariance factors must not overflow when weighted individually.
+    alias C = CovarianceAccumulator!(double, CovarianceAlgo.online, Summation.naive);
+    C small, large;
+    foreach (i; 0 .. 4) { small.put(0, 0); large.put(0x1p-1022, 0x1p1020); }
+    small.put(large);
+    assert(small.centeredSumOfProducts == 0.5);
+}
+
+// Zero-mean sources have implicit zero sums, but stored centered moments.
+version(mir_stat_test)
+pure nothrow @nogc
+unittest
+{
+    import std.meta: AliasSeq;
+    void check(Source, Target)()
+    {
+        Source source;
+        source.put(1, 2);
+        source.put(-1, -2);
+        Target empty;
+        empty.put(source);
+        assert(empty.count == 2 && empty.meanLeft == 0 && empty.meanRight == 0);
+        assert(empty.centeredSumOfProducts == 4);
+
+        Target populated;
+        populated.put(2, 4);
+        populated.put(4, 8);
+        populated.put(source);
+        // Combined observations: (2,4), (4,8), (1,2), (-1,-2).
+        assert(populated.count == 4);
+        assert(populated.meanLeft == 1.5 && populated.meanRight == 3);
+        assert(populated.centeredSumOfProducts == 26);
+        assert(source.count == 2 && source.centeredSumOfProducts == 4);
+        static if (__traits(hasMember, Target, "centeredSumOfSquaresLeft"))
+        {
+            assert(empty.centeredSumOfSquaresLeft == 2);
+            assert(empty.centeredSumOfSquaresRight == 8);
+            assert(populated.centeredSumOfSquaresLeft == 13);
+            assert(populated.centeredSumOfSquaresRight == 52);
+            assert(source.centeredSumOfSquaresLeft == 2);
+            assert(source.centeredSumOfSquaresRight == 8);
+        }
+    }
+    static foreach (mode; AliasSeq!(Summation.kbn, Summation.kb2, Summation.precise))
+    {
+        check!(CovarianceAccumulator!(double, CovarianceAlgo.assumeZeroMean, mode),
+            CovarianceAccumulator!(double, CovarianceAlgo.hybrid, mode))();
+        check!(CorrelationAccumulator!(double, CorrelationAlgo.assumeZeroMean, mode),
+            CorrelationAccumulator!(double, CorrelationAlgo.hybrid, mode))();
+    }
+}
+
+// Add the between-group correction without first rounding it into a source sum.
+version(mir_stat_test)
+pure nothrow @nogc
+unittest
+{
+    import std.meta: AliasSeq;
+    static foreach (mode; AliasSeq!(Summation.kbn, Summation.kb2, Summation.precise))
+    static foreach (A; AliasSeq!(
+        CovarianceAccumulator!(double, CovarianceAlgo.online, mode),
+        CovarianceAccumulator!(double, CovarianceAlgo.hybrid, mode),
+        CorrelationAccumulator!(double, CorrelationAlgo.online, mode),
+        CorrelationAccumulator!(double, CorrelationAlgo.hybrid, mode)))
+    {{
+        A source, target;
+        source.put(0, 0);
+        source.put(2, 2);
+        target.put(-2, -2);
+        target.put(0, 0);
+        // Keep the counts and means; isolate cancellation of centered products.
+        source.centeredSummatorOfProducts.put(-2);
+        source.centeredSummatorOfProducts.put(0x1p54);
+        source.centeredSummatorOfProducts.put(1);
+        target.centeredSummatorOfProducts.put(-2);
+        target.centeredSummatorOfProducts.put(-0x1p54);
+        static if (__traits(hasMember, A, "centeredSummatorOfSquaresLeft"))
+        {
+            source.centeredSummatorOfSquaresLeft.put(-2);
+            source.centeredSummatorOfSquaresLeft.put(0x1p54);
+            source.centeredSummatorOfSquaresLeft.put(1);
+            source.centeredSummatorOfSquaresRight.put(-2);
+            source.centeredSummatorOfSquaresRight.put(0x1p54);
+            source.centeredSummatorOfSquaresRight.put(1);
+        }
+        target.put(source);
+        // One retained low-order product plus a between-group correction of four.
+        assert(target.count == 4 && target.centeredSumOfProducts == 5);
+        static if (__traits(hasMember, A, "centeredSummatorOfSquaresLeft"))
+        {
+            target.centeredSummatorOfSquaresLeft.put(-0x1p54);
+            target.centeredSummatorOfSquaresRight.put(-0x1p54);
+            // Two from the destination, one from the source, and four between groups.
+            assert(target.centeredSumOfSquaresLeft == 7);
+            assert(target.centeredSumOfSquaresRight == 7);
+        }
+    }}
+}
+
+// Convert stored sums to the requested result type before dividing by count.
+version(mir_stat_test)
+@safe pure nothrow @nogc
+unittest
+{
+    import std.meta: AliasSeq;
+    static foreach (mode; AliasSeq!(Summation.naive, Summation.pairwise, Summation.kbn))
+    static foreach (A; AliasSeq!(
+        CovarianceAccumulator!(float, CovarianceAlgo.naive, mode),
+        CovarianceAccumulator!(float, CovarianceAlgo.online, mode),
+        CovarianceAccumulator!(float, CovarianceAlgo.twoPass, mode),
+        CovarianceAccumulator!(float, CovarianceAlgo.hybrid, mode),
+        CorrelationAccumulator!(float, CorrelationAlgo.naive, mode),
+        CorrelationAccumulator!(float, CorrelationAlgo.online, mode),
+        CorrelationAccumulator!(float, CorrelationAlgo.twoPass, mode),
+        CorrelationAccumulator!(float, CorrelationAlgo.hybrid, mode)))
+    {{
+        float[3] values = [1, 0, 0];
+        auto a = A(values[], values[]);
+        assert(a.meanLeft!double == 1.0 / 3);
+        assert(a.meanRight!double == 1.0 / 3);
+        assert(a.meanLeft!real == 1.0L / 3);
+        assert(a.meanRight!real == 1.0L / 3);
+        // Default access still returns a float rounded at float precision.
+        static assert(is(typeof(a.meanRight) == float));
+        assert(a.meanLeft == float(1.0 / 3));
+        assert(a.meanRight == float(1.0 / 3));
+        assert(a.meanRight!double != cast(double) a.meanRight);
+    }}
+}
 
 // Merging empty partitions must preserve state, including when both sides
 // are empty and observations are added afterward.
@@ -56,6 +605,37 @@ unittest
         A copy;
         copy.put(a);
         assert(copy.count == 3 && copy.centeredSumOfProducts == 4);
+    }}
+}
+
+// Large means must not overflow an empty destination's zero correction.
+version(mir_stat_test)
+@safe pure nothrow @nogc
+unittest
+{
+    import std.meta: AliasSeq;
+    static foreach (summation; AliasSeq!(Summation.naive, Summation.pairwise))
+    static foreach (A; AliasSeq!(
+        CovarianceAccumulator!(double, CovarianceAlgo.online, summation),
+        CovarianceAccumulator!(double, CovarianceAlgo.hybrid, summation),
+        CorrelationAccumulator!(double, CorrelationAlgo.online, summation),
+        CorrelationAccumulator!(double, CorrelationAlgo.hybrid, summation)))
+    {{
+        A source, target;
+        source.put(1e200, -1e200);
+        target.put(source);
+        assert(target.count == 1);
+        assert(target.meanLeft == 1e200 && target.meanRight == -1e200);
+        assert(target.centeredSumOfProducts == 0);
+        // Continue after the merge and exercise a nonempty destination too.
+        target.put(1e200, -1e200);
+        target.put(source);
+        assert(target.count == 3 && target.centeredSumOfProducts == 0);
+        static if (__traits(hasMember, A, "correlation"))
+        {
+            assert(target.centeredSumOfSquaresLeft == 0);
+            assert(target.centeredSumOfSquaresRight == 0);
+        }
     }}
 }
 
@@ -340,7 +920,7 @@ struct CovarianceAccumulator(T, CovarianceAlgo covarianceAlgo, Summation summati
         _count += x.length;
         summatorLeft.put(x);
         summatorRight.put(y);
-        summatorOfProducts.put(x.zip(y).map!"a * b");
+        summatorOfProducts.put(x.zip(y).map!(multivariateProduct!T));
     }
 
     ///
@@ -380,9 +960,20 @@ struct CovarianceAccumulator(T, CovarianceAlgo covarianceAlgo, Summation summati
     void put(U, Summation sumAlgo)(CovarianceAccumulator!(U, covarianceAlgo, sumAlgo) v)
     {
         _count += v.count;
-        summatorLeft.put(v.sumLeft!U);
-        summatorRight.put(v.sumRight!U);
-        summatorOfProducts.put(v.sumOfProducts!U);
+        static if (is(T == U) && summation == sumAlgo &&
+            (summation == Summation.kbn || summation == Summation.kb2 ||
+             summation == Summation.precise))
+        {
+            mergeMultivariateSum!("summatorLeft", "sumLeft", U)(summatorLeft, v);
+            mergeMultivariateSum!("summatorRight", "sumRight", U)(summatorRight, v);
+            mergeMultivariateSum!("summatorOfProducts", "sumOfProducts", U)(summatorOfProducts, v);
+        }
+        else
+        {
+            summatorLeft.put(v.sumLeft!U);
+            summatorRight.put(v.sumRight!U);
+            summatorOfProducts.put(v.sumOfProducts!U);
+        }
     }
 
 const:
@@ -427,7 +1018,7 @@ const:
         in (count + isPopulation > 1, "More data points required")
     {
         return sumOfProducts!F / (count + isPopulation - 1) -
-            (sumLeft!F * sumRight!F) * (F(1) / (count * (count + isPopulation - 1)));
+            (sumLeft!F * sumRight!F) * (F(1) / (cast(F) count * (count + isPopulation - 1)));
     }
 }
 
@@ -643,16 +1234,33 @@ struct CovarianceAccumulator(T, CovarianceAlgo covarianceAlgo, Summation summati
         if (v.count == 0)
             return;
         size_t oldCount = count;
-        T deltaLeft = v.meanLeft;
-        T deltaRight = v.meanRight;
+        // An empty destination has no between-group correction. Avoid Inf * 0.
+        T deltaLeft = 0;
+        T deltaRight = 0;
         if (count > 0) {
+            deltaLeft = v.meanLeft;
+            deltaRight = v.meanRight;
             deltaLeft -= meanLeft!T;
             deltaRight -= meanRight!T;
         }
         _count += v.count;
-        summatorLeft.put(v.sumLeft!T);
-        summatorRight.put(v.sumRight!T);
-        centeredSummatorOfProducts.put(v.centeredSumOfProducts!T + deltaLeft * deltaRight * v.count * oldCount / count);
+        // Form the count weight first, as in variance merging, so count factors
+        // cannot overflow an otherwise representable between-group correction.
+        const T mergeWeight = cast(T) v.count * (cast(T) oldCount / count);
+        static if (is(T == U) && summation == sumAlgo &&
+            (summation == Summation.kbn || summation == Summation.kb2 ||
+             summation == Summation.precise))
+        {
+            mergeMultivariateSum!("summatorLeft", "sumLeft", T)(summatorLeft, v);
+            mergeMultivariateSum!("summatorRight", "sumRight", T)(summatorRight, v);
+            mergeMultivariateSum!("centeredSummatorOfProducts", "centeredSumOfProducts", T)(centeredSummatorOfProducts, v, multivariateMergeProduct(deltaLeft, deltaRight, mergeWeight));
+        }
+        else
+        {
+            summatorLeft.put(v.sumLeft!T);
+            summatorRight.put(v.sumRight!T);
+            centeredSummatorOfProducts.put(v.centeredSumOfProducts!T + multivariateMergeProduct(deltaLeft, deltaRight, mergeWeight));
+        }
     }
 
 const:
@@ -680,7 +1288,7 @@ const:
     ///
     F meanRight(F = T)() @property
     {
-        return sumRight!T / count;
+        return sumRight!F / count;
     }
     ///
     F centeredSumOfProducts(F = T)() @property
@@ -1199,7 +1807,7 @@ struct CovarianceAccumulator(T, CovarianceAlgo covarianceAlgo, Summation summati
         import mir.ndslice.topology: zip, map;
 
         _count += x.length;
-        centeredSummatorOfProducts.put(x.zip(y).map!"a * b");
+        centeredSummatorOfProducts.put(x.zip(y).map!(multivariateProduct!T));
     }
 
     ///
@@ -1237,7 +1845,16 @@ struct CovarianceAccumulator(T, CovarianceAlgo covarianceAlgo, Summation summati
     void put(U, Summation sumAlgo)(CovarianceAccumulator!(U, covarianceAlgo, sumAlgo) v)
     {
         _count += v.count;
-        centeredSummatorOfProducts.put(v.centeredSumOfProducts!T);
+        static if (is(T == U) && summation == sumAlgo &&
+            (summation == Summation.kbn || summation == Summation.kb2 ||
+             summation == Summation.precise))
+        {
+            mergeMultivariateSum!("centeredSummatorOfProducts", "centeredSumOfProducts", T)(centeredSummatorOfProducts, v);
+        }
+        else
+        {
+            centeredSummatorOfProducts.put(v.centeredSumOfProducts!T);
+        }
     }
 
 const:
@@ -1572,16 +2189,33 @@ struct CovarianceAccumulator(T, CovarianceAlgo covarianceAlgo, Summation summati
         if (v.count == 0)
             return;
         size_t oldCount = count;
-        T deltaLeft = v.meanLeft!T;
-        T deltaRight = v.meanRight!T;
+        // An empty destination has no between-group correction. Avoid Inf * 0.
+        T deltaLeft = 0;
+        T deltaRight = 0;
         if (oldCount > 0) {
+            deltaLeft = v.meanLeft!T;
+            deltaRight = v.meanRight!T;
             deltaLeft -= meanLeft;
             deltaRight -= meanRight;
         }
         _count += v.count;
-        summatorLeft.put(v.sumLeft!T);
-        summatorRight.put(v.sumRight!T);
-        centeredSummatorOfProducts.put(v.centeredSumOfProducts!T + deltaLeft * deltaRight * v.count * oldCount / count);
+        // Form the count weight first, as in variance merging, so count factors
+        // cannot overflow an otherwise representable between-group correction.
+        const T mergeWeight = cast(T) v.count * (cast(T) oldCount / count);
+        static if (is(T == U) && summation == sumAlgo &&
+            (summation == Summation.kbn || summation == Summation.kb2 ||
+             summation == Summation.precise))
+        {
+            mergeMultivariateSum!("summatorLeft", "sumLeft", T)(summatorLeft, v);
+            mergeMultivariateSum!("summatorRight", "sumRight", T)(summatorRight, v);
+            mergeMultivariateSum!("centeredSummatorOfProducts", "centeredSumOfProducts", T)(centeredSummatorOfProducts, v, multivariateMergeProduct(deltaLeft, deltaRight, mergeWeight));
+        }
+        else
+        {
+            summatorLeft.put(v.sumLeft!T);
+            summatorRight.put(v.sumRight!T);
+            centeredSummatorOfProducts.put(v.centeredSumOfProducts!T + multivariateMergeProduct(deltaLeft, deltaRight, mergeWeight));
+        }
     }
 
 const:
@@ -2253,7 +2887,7 @@ struct CorrelationAccumulator(T, CorrelationAlgo correlationAlgo, Summation summ
         import mir.ndslice.topology: zip, map;
         assert(x.length == y.length, "CorrelationAccumulator.put: lengths must match");
         _count += x.length;
-        centeredSummatorOfProducts.put(x.zip(y).map!"a * b");
+        centeredSummatorOfProducts.put(x.zip(y).map!(multivariateProduct!T));
     }
 
     /// Add built-in arrays or other slice-convertible inputs.
@@ -2290,7 +2924,16 @@ struct CorrelationAccumulator(T, CorrelationAlgo correlationAlgo, Summation summ
         const CorrelationAccumulator!(U, correlationAlgo, otherSummation, inputStandardization) other)
     {
         _count += other.count;
-        centeredSummatorOfProducts.put(other.centeredSumOfProducts!T);
+        static if (is(T == U) && summation == otherSummation &&
+            (summation == Summation.kbn || summation == Summation.kb2 ||
+             summation == Summation.precise))
+        {
+            mergeMultivariateSum!("centeredSummatorOfProducts", "centeredSumOfProducts", T)(centeredSummatorOfProducts, other);
+        }
+        else
+        {
+            centeredSummatorOfProducts.put(other.centeredSumOfProducts!T);
+        }
     }
 
 const:
@@ -2534,9 +3177,9 @@ struct CorrelationAccumulator(T, CorrelationAlgo correlationAlgo, Summation summ
         _count += x.length;
         summatorLeft.put(x);
         summatorRight.put(y);
-        summatorOfProducts.put(x.zip(y).map!"a * b");
-        summatorOfSquaresLeft.put(x * x);
-        summatorOfSquaresRight.put(y * y);
+        summatorOfProducts.put(x.zip(y).map!(multivariateProduct!T));
+        summatorOfSquaresLeft.put(x.map!(multivariateProduct!(T, 0, 0)));
+        summatorOfSquaresRight.put(y.map!(multivariateProduct!(T, 0, 0)));
     }
 
     ///
@@ -2578,11 +3221,24 @@ struct CorrelationAccumulator(T, CorrelationAlgo correlationAlgo, Summation summ
     void put(U, Summation sumAlgo)(CorrelationAccumulator!(U, correlationAlgo, sumAlgo) v)
     {
         _count += v.count;
-        summatorLeft.put(v.sumLeft!U);
-        summatorRight.put(v.sumRight!U);
-        summatorOfProducts.put(v.sumOfProducts!U);
-        summatorOfSquaresLeft.put(v.sumOfSquaresLeft!U);
-        summatorOfSquaresRight.put(v.sumOfSquaresRight!U);
+        static if (is(T == U) && summation == sumAlgo &&
+            (summation == Summation.kbn || summation == Summation.kb2 ||
+             summation == Summation.precise))
+        {
+            mergeMultivariateSum!("summatorLeft", "sumLeft", U)(summatorLeft, v);
+            mergeMultivariateSum!("summatorRight", "sumRight", U)(summatorRight, v);
+            mergeMultivariateSum!("summatorOfProducts", "sumOfProducts", U)(summatorOfProducts, v);
+            mergeMultivariateSum!("summatorOfSquaresLeft", "sumOfSquaresLeft", U)(summatorOfSquaresLeft, v);
+            mergeMultivariateSum!("summatorOfSquaresRight", "sumOfSquaresRight", U)(summatorOfSquaresRight, v);
+        }
+        else
+        {
+            summatorLeft.put(v.sumLeft!U);
+            summatorRight.put(v.sumRight!U);
+            summatorOfProducts.put(v.sumOfProducts!U);
+            summatorOfSquaresLeft.put(v.sumOfSquaresLeft!U);
+            summatorOfSquaresRight.put(v.sumOfSquaresRight!U);
+        }
     }
 
 const:
@@ -2646,7 +3302,7 @@ const:
     F covariance(F = T)(bool isPopulation) @property
     {
         return sumOfProducts!F / (count + isPopulation - 1) -
-            (sumLeft!F * sumRight!F) * (F(1) / (count * (count + isPopulation - 1)));
+            (sumLeft!F * sumRight!F) * (F(1) / (cast(F) count * (count + isPopulation - 1)));
     }
     ///
     F correlation(F = T)() @property
@@ -2654,9 +3310,20 @@ const:
         in (centeredSumOfSquaresRight > 0, "`y` must have centered sum of squares larger than zero")
     {
         import mir.math.common: sqrt;
-        return (count * sumOfProducts!F - sumLeft!F * sumRight!F) /
-            (sqrt(count * sumOfSquaresLeft!F - sumLeft!F * sumLeft!F) *
-             sqrt(count * sumOfSquaresRight!F - sumRight!F * sumRight!F));
+        // DMD otherwise stops inlining the ordinary path after adding the fallback.
+        version (DigitalMars)
+            pragma(inline, true);
+        const F numerator = count * sumOfProducts!F - sumLeft!F * sumRight!F;
+        const F denominator = sqrt(count * sumOfSquaresLeft!F - sumLeft!F * sumLeft!F) *
+            sqrt(count * sumOfSquaresRight!F - sumRight!F * sumRight!F);
+        const F result = numerator / denominator;
+        static if (isFloatingPoint!F)
+        {
+            if (!(denominator <= F.max && result == result))
+                return naiveCorrelationFallback(count, sumLeft!F, sumRight!F,
+                    sumOfProducts!F, sumOfSquaresLeft!F, sumOfSquaresRight!F);
+        }
+        return result;
     }
 }
 
@@ -2892,18 +3559,37 @@ struct CorrelationAccumulator(T, CorrelationAlgo correlationAlgo, Summation summ
         if (v.count == 0)
             return;
         size_t oldCount = count;
-        T deltaLeft = v.meanLeft;
-        T deltaRight = v.meanRight;
+        // An empty destination has no between-group correction. Avoid Inf * 0.
+        T deltaLeft = 0;
+        T deltaRight = 0;
         if (count > 0) {
+            deltaLeft = v.meanLeft;
+            deltaRight = v.meanRight;
             deltaLeft -= meanLeft!T;
             deltaRight -= meanRight!T;
         }
         _count += v.count;
-        summatorLeft.put(v.sumLeft!T);
-        summatorRight.put(v.sumRight!T);
-        centeredSummatorOfProducts.put(v.centeredSumOfProducts!T + deltaLeft * deltaRight * v.count * oldCount / count);
-        centeredSummatorOfSquaresLeft.put(v.centeredSumOfSquaresLeft!T + deltaLeft * deltaLeft * v.count * oldCount / count);
-        centeredSummatorOfSquaresRight.put(v.centeredSumOfSquaresRight!T + deltaRight * deltaRight * v.count * oldCount / count);
+        // Form the count weight first, as in variance merging, so count factors
+        // cannot overflow an otherwise representable between-group correction.
+        const T mergeWeight = cast(T) v.count * (cast(T) oldCount / count);
+        static if (is(T == U) && summation == sumAlgo &&
+            (summation == Summation.kbn || summation == Summation.kb2 ||
+             summation == Summation.precise))
+        {
+            mergeMultivariateSum!("summatorLeft", "sumLeft", T)(summatorLeft, v);
+            mergeMultivariateSum!("summatorRight", "sumRight", T)(summatorRight, v);
+            mergeMultivariateSum!("centeredSummatorOfProducts", "centeredSumOfProducts", T)(centeredSummatorOfProducts, v, multivariateMergeProduct(deltaLeft, deltaRight, mergeWeight));
+            mergeMultivariateSum!("centeredSummatorOfSquaresLeft", "centeredSumOfSquaresLeft", T)(centeredSummatorOfSquaresLeft, v, deltaLeft * (deltaLeft * mergeWeight));
+            mergeMultivariateSum!("centeredSummatorOfSquaresRight", "centeredSumOfSquaresRight", T)(centeredSummatorOfSquaresRight, v, deltaRight * (deltaRight * mergeWeight));
+        }
+        else
+        {
+            summatorLeft.put(v.sumLeft!T);
+            summatorRight.put(v.sumRight!T);
+            centeredSummatorOfProducts.put(v.centeredSumOfProducts!T + multivariateMergeProduct(deltaLeft, deltaRight, mergeWeight));
+            centeredSummatorOfSquaresLeft.put(v.centeredSumOfSquaresLeft!T + deltaLeft * (deltaLeft * mergeWeight));
+            centeredSummatorOfSquaresRight.put(v.centeredSumOfSquaresRight!T + deltaRight * (deltaRight * mergeWeight));
+        }
     }
 
 const:
@@ -2931,7 +3617,7 @@ const:
     ///
     F meanRight(F = T)() @property
     {
-        return sumRight!T / count;
+        return sumRight!F / count;
     }
     ///
     F centeredSumOfProducts(F = T)() @property
@@ -3566,7 +4252,8 @@ struct CorrelationAccumulator(T, CorrelationAlgo correlationAlgo, Summation summ
         import mir.ndslice.topology: zip, map;
 
         _count += x.length;
-        auto z = x.zip(y).map!("a * b", "a * a", "b * b");
+        auto z = x.zip(y).map!(multivariateProduct!T,
+            multivariateProduct!(T, 0, 0), multivariateProduct!(T, 1, 1));
         z.putter3(centeredSummatorOfProducts,
                   centeredSummatorOfSquaresLeft,
                   centeredSummatorOfSquaresRight);
@@ -3609,9 +4296,20 @@ struct CorrelationAccumulator(T, CorrelationAlgo correlationAlgo, Summation summ
     void put(U, Summation sumAlgo)(CorrelationAccumulator!(U, correlationAlgo, sumAlgo) v)
     {
         _count += v.count;
-        centeredSummatorOfProducts.put(v.centeredSumOfProducts!T);
-        centeredSummatorOfSquaresLeft.put(v.centeredSumOfSquaresLeft!T);
-        centeredSummatorOfSquaresRight.put(v.centeredSumOfSquaresRight!T);
+        static if (is(T == U) && summation == sumAlgo &&
+            (summation == Summation.kbn || summation == Summation.kb2 ||
+             summation == Summation.precise))
+        {
+            mergeMultivariateSum!("centeredSummatorOfProducts", "centeredSumOfProducts", T)(centeredSummatorOfProducts, v);
+            mergeMultivariateSum!("centeredSummatorOfSquaresLeft", "centeredSumOfSquaresLeft", T)(centeredSummatorOfSquaresLeft, v);
+            mergeMultivariateSum!("centeredSummatorOfSquaresRight", "centeredSumOfSquaresRight", T)(centeredSummatorOfSquaresRight, v);
+        }
+        else
+        {
+            centeredSummatorOfProducts.put(v.centeredSumOfProducts!T);
+            centeredSummatorOfSquaresLeft.put(v.centeredSumOfSquaresLeft!T);
+            centeredSummatorOfSquaresRight.put(v.centeredSumOfSquaresRight!T);
+        }
     }
 
 const:
@@ -3992,18 +4690,37 @@ struct CorrelationAccumulator(T, CorrelationAlgo correlationAlgo, Summation summ
         if (v.count == 0)
             return;
         size_t oldCount = count;
-        T deltaLeft = v.meanLeft;
-        T deltaRight = v.meanRight;
+        // An empty destination has no between-group correction. Avoid Inf * 0.
+        T deltaLeft = 0;
+        T deltaRight = 0;
         if (count > 0) {
+            deltaLeft = v.meanLeft;
+            deltaRight = v.meanRight;
             deltaLeft -= meanLeft!T;
             deltaRight -= meanRight!T;
         }
         _count += v.count;
-        summatorLeft.put(v.sumLeft!T);
-        summatorRight.put(v.sumRight!T);
-        centeredSummatorOfProducts.put(v.centeredSumOfProducts!T + deltaLeft * deltaRight * v.count * oldCount / count);
-        centeredSummatorOfSquaresLeft.put(v.centeredSumOfSquaresLeft!T + deltaLeft * deltaLeft * v.count * oldCount / count);
-        centeredSummatorOfSquaresRight.put(v.centeredSumOfSquaresRight!T + deltaRight * deltaRight * v.count * oldCount / count);
+        // Form the count weight first, as in variance merging, so count factors
+        // cannot overflow an otherwise representable between-group correction.
+        const T mergeWeight = cast(T) v.count * (cast(T) oldCount / count);
+        static if (is(T == U) && summation == sumAlgo &&
+            (summation == Summation.kbn || summation == Summation.kb2 ||
+             summation == Summation.precise))
+        {
+            mergeMultivariateSum!("summatorLeft", "sumLeft", T)(summatorLeft, v);
+            mergeMultivariateSum!("summatorRight", "sumRight", T)(summatorRight, v);
+            mergeMultivariateSum!("centeredSummatorOfProducts", "centeredSumOfProducts", T)(centeredSummatorOfProducts, v, multivariateMergeProduct(deltaLeft, deltaRight, mergeWeight));
+            mergeMultivariateSum!("centeredSummatorOfSquaresLeft", "centeredSumOfSquaresLeft", T)(centeredSummatorOfSquaresLeft, v, deltaLeft * (deltaLeft * mergeWeight));
+            mergeMultivariateSum!("centeredSummatorOfSquaresRight", "centeredSumOfSquaresRight", T)(centeredSummatorOfSquaresRight, v, deltaRight * (deltaRight * mergeWeight));
+        }
+        else
+        {
+            summatorLeft.put(v.sumLeft!T);
+            summatorRight.put(v.sumRight!T);
+            centeredSummatorOfProducts.put(v.centeredSumOfProducts!T + multivariateMergeProduct(deltaLeft, deltaRight, mergeWeight));
+            centeredSummatorOfSquaresLeft.put(v.centeredSumOfSquaresLeft!T + deltaLeft * (deltaLeft * mergeWeight));
+            centeredSummatorOfSquaresRight.put(v.centeredSumOfSquaresRight!T + deltaRight * (deltaRight * mergeWeight));
+        }
     }
 
 const:
