@@ -14,6 +14,12 @@ Import this package to use the matrix and vector multiplication APIs from
 `mir.stat.internal.linearAlgebra.products` and triangular products from
 `mir.stat.internal.linearAlgebra.triangular`.
 
+For allocation-specific imports, use `mir.stat.internal.linearAlgebra.gc`,
+`mir.stat.internal.linearAlgebra.rc`, or `mir.stat.internal.linearAlgebra.custom`.
+These convenience modules selectively re-export existing operation names;
+they do not introduce wrappers or change allocation behavior. Import views,
+policies, and allocation-free operations separately as needed.
+
 Choose result ownership independently of input ownership:
 $(UL
     $(LI `mtimes` returns GC-managed storage.)
