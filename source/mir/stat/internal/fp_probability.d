@@ -108,3 +108,29 @@ bool fpProbabilityLess(uint bits)(Fp!bits a, Fp!bits b)
     aligned <<= cast(size_t)gap;
     return UInt!(2 * bits)(a.coefficient) < aligned;
 }
+
+// p*(1-p)^k with guard precision and a separate intermediate exponent.
+package(mir.stat) @safe pure nothrow @nogc
+Fp!bits fpGeometric(uint bits)(size_t k, Fp!bits p)
+{
+    if (!p.coefficient)
+        return Fp!bits(0);
+    if (!k)
+        return p;
+    // p < 2^(-bits-66), hence k*p < 2^(-bits-2) for size_t <= 64 bits.
+    // Bernoulli's inequality bounds the relative correction by k*p: less
+    // than half an output ulp, also for subnormal p. Avoid widening at the floor.
+    if (p.exponent < -2 * cast(long)bits - 66)
+        return p;
+    import mir.stat.internal.fp_scaled_probability: ProbabilityScaled;
+    // 64 bits absorb count amplification; 128 more retain small corrections
+    // near output midpoints and guard intermediate rounding.
+    alias W = Fp!(bits + 192);
+    alias S = ProbabilityScaled!(bits + 192);
+    const complement = fpProbabilityComplement(cast(W)p);
+    if (!complement.coefficient)
+        return Fp!bits(0);
+    // A represented p < 1 has 1-p >= 2^-bits. Even size_t.max powers
+    // therefore have exponent magnitude below bits*2^64, well within UInt!128.
+    return S.from(complement).power(k).multiply(S.from(p)).finish!bits;
+}
