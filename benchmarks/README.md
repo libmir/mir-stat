@@ -137,7 +137,7 @@ checks; CI does not compare timings or enforce performance thresholds.
 Run the separate group with smaller defaults (matrix order 32 and 20 iterations):
 
 ```sh
-dub run mir-stat:benchmarks --config=scalar --build=release --compiler=ldc2 -- --function=linearAlgebra --size=64 --iterations=20 --rounds=8 --warmup=3 --format=csv
+dub run mir-stat:benchmarks --config=native-d --build=release --compiler=ldc2 -- --function=linearAlgebra --size=64 --iterations=20 --rounds=8 --warmup=3 --format=csv
 ```
 
 `--function=all` retains the existing statistics cases. Linear algebra accepts
@@ -160,7 +160,7 @@ and per-round CSV output follow the existing scheduler.
 Triangular comparisons multiply square matrices into preallocated output,
 using explicit zeros in the dense baseline and NaNs in ignored triangular
 entries. Every output element is checked outside timing against an independent
-scalar calculation with `real` accumulation. Only the first output element
+calculation with `real` accumulation. Only the first output element
 is returned to the timing helper; it is not the sole correctness check.
 
 Quadratic comparisons use a dense SPD matrix. `composed` computes a matrix-vector
@@ -183,23 +183,23 @@ allocation timings can include collection and carryover effects.
 
 The fixed metric is `S = I + u*u'`, with independently constructed precision
 `P = I - u*u'/(1 + u'u)`. Seeded normal vector/right-hand-side inputs change
-once per iteration. Scalar references use these identities with `real`
+once per iteration. Reference calculations use these identities with `real`
 accumulation; checks reject nonfinite results and errors above
 `1e-10 * (1 + abs(reference))`. These are well-conditioned benchmark inputs,
 not a substitute for the library's adversarial numerical tests. Setup,
 precomputed factors, input generation, and correctness checks are untimed.
 
-The `scalar` configuration selects the built-in D implementation and requires no BLAS library. To measure the optional
+The `native-d` configuration selects the native D implementation and requires no BLAS library. To measure the optional
 native backend, use `--config=openblas` with OpenBLAS installed. The parent
 package selects mir-lapack/mir-blas through that configuration. Transposed
 triangular matrix products and matrix solves need the fixes in
 [mir-blas PR #12](https://github.com/libmir/mir-blas/pull/12); until available in
 the resolved dependency, use a local fixed dependency for those measurements.
-Do not interpret failures against an unfixed dependency as scalar fallback
-failures. Unsupported native layouts/types use the library's scalar kernels.
+Do not interpret failures against an unfixed dependency as native D fallback
+failures. Unsupported native layouts/types use the library's native D kernels.
 Record backend/dependency versions, compiler flags, and BLAS thread count
 alongside CSV files; the CSV schema does not identify the linked backend.
 
 The benchmark unit tests cover both layouts, selections, invalid requests,
-and the single-triangle numerical counterexample. CI smoke runs verify scalar
+and the single-triangle numerical counterexample. CI smoke runs verify native D
 CLI integration without asserting timing thresholds.
