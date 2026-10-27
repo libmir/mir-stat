@@ -28,6 +28,16 @@ import mir.stat.internal.linearAlgebra.allocation;
 
 private enum compatible(A, B) = numericSlice!A && numericSlice!B &&
     is(Scalar!A == Scalar!B);
+
+// A vector-vector product is scalar; other products have the contracted rank.
+private template ProductResult(Allocation policy, A, B)
+{
+    static if (A.N == 1 && B.N == 1)
+        alias ProductResult = Scalar!A;
+    else
+        alias ProductResult = AllocatedSlice!(policy, Scalar!A, A.N + B.N - 2);
+}
+
 /++
 Multiply two matrices or vectors, allocating a GC-managed result when needed.
 
@@ -47,7 +57,8 @@ Preconditions:
     The inner dimensions must match. Empty inner dimensions yield zeros.
 See_Also: $(LINK2 #rcMtimes, rcMtimes), $(LINK2 #makeMtimes, makeMtimes), $(LINK2 #mtimesInto, mtimesInto)
 +/
-package(mir.stat) auto mtimes(A, B)(scope auto ref A a, scope auto ref B b)
+package(mir.stat) ProductResult!(Allocation.gc, A, B)
+mtimes(A, B)(scope auto ref A a, scope auto ref B b)
     if (compatible!(A, B))
 {
     int unused;
@@ -59,7 +70,8 @@ Triangular-view overload. Uses the view's triangle and diagonal policy without
 materializing implicit entries. The other operand must be an ordinary ndslice.
 Ownership and aliasing requirements follow the corresponding plain-slice API.
 +/
-package(mir.stat) auto mtimes(TrianglePolicy triangle, DiagonalPolicy diagonal, A, B)(
+package(mir.stat) AllocatedSlice!(Allocation.gc, Scalar!A, B.N)
+mtimes(TrianglePolicy triangle, DiagonalPolicy diagonal, A, B)(
     scope auto ref const(TriangularView!(triangle, diagonal, A)) a,
     scope auto ref B b)
     if (numericSlice!B)
@@ -73,7 +85,8 @@ Triangular-view overload. Uses the view's triangle and diagonal policy without
 materializing implicit entries. The other operand must be an ordinary ndslice.
 Ownership and aliasing requirements follow the corresponding plain-slice API.
 +/
-package(mir.stat) auto mtimes(TrianglePolicy triangle, DiagonalPolicy diagonal, A, B)(
+package(mir.stat) AllocatedSlice!(Allocation.gc, Scalar!A, B.N)
+mtimes(TrianglePolicy triangle, DiagonalPolicy diagonal, A, B)(
     scope auto ref B b,
     scope auto ref const(TriangularView!(triangle, diagonal, A)) a)
     if (numericSlice!B)
@@ -117,7 +130,8 @@ Preconditions:
     The inner dimensions must match.
 See_Also: $(LINK2 #mtimes, mtimes), $(LINK2 #makeMtimes, makeMtimes), $(LINK2 #mtimesInto, mtimesInto)
 +/
-package(mir.stat) auto rcMtimes(A, B)(scope auto ref A a, scope auto ref B b)
+package(mir.stat) ProductResult!(Allocation.rc, A, B)
+rcMtimes(A, B)(scope auto ref A a, scope auto ref B b)
     if (compatible!(A, B))
 {
     int unused;
@@ -142,7 +156,8 @@ Triangular-view overload. Uses the view's triangle and diagonal policy without
 materializing implicit entries. The other operand must be an ordinary ndslice.
 Ownership and aliasing requirements follow the corresponding plain-slice API.
 +/
-package(mir.stat) auto rcMtimes(TrianglePolicy triangle, DiagonalPolicy diagonal, A, B)(
+package(mir.stat) AllocatedSlice!(Allocation.rc, Scalar!A, B.N)
+rcMtimes(TrianglePolicy triangle, DiagonalPolicy diagonal, A, B)(
     scope auto ref const(TriangularView!(triangle, diagonal, A)) a,
     scope auto ref B b)
     if (numericSlice!B)
@@ -156,7 +171,8 @@ Triangular-view overload. Uses the view's triangle and diagonal policy without
 materializing implicit entries. The other operand must be an ordinary ndslice.
 Ownership and aliasing requirements follow the corresponding plain-slice API.
 +/
-package(mir.stat) auto rcMtimes(TrianglePolicy triangle, DiagonalPolicy diagonal, A, B)(
+package(mir.stat) AllocatedSlice!(Allocation.rc, Scalar!A, B.N)
+rcMtimes(TrianglePolicy triangle, DiagonalPolicy diagonal, A, B)(
     scope auto ref B b,
     scope auto ref const(TriangularView!(triangle, diagonal, A)) a)
     if (numericSlice!B)
@@ -217,7 +233,8 @@ Throws:
     `OutOfMemoryError` if the result element or byte count overflows `size_t`.
 See_Also: $(LINK2 #mtimes, mtimes), $(LINK2 #rcMtimes, rcMtimes), $(LINK2 #mtimesInto, mtimesInto)
 +/
-package(mir.stat) auto makeMtimes(Allocator, A, B)(auto ref Allocator allocator,
+package(mir.stat) ProductResult!(Allocation.custom, A, B)
+makeMtimes(Allocator, A, B)(auto ref Allocator allocator,
     scope auto ref A a, scope auto ref B b)
     if (compatible!(A, B))
 {
@@ -229,7 +246,8 @@ Triangular-view overload. Uses the view's triangle and diagonal policy without
 materializing implicit entries. The other operand must be an ordinary ndslice.
 Ownership and aliasing requirements follow the corresponding plain-slice API.
 +/
-package(mir.stat) auto makeMtimes(TrianglePolicy triangle, DiagonalPolicy diagonal, A, B, Allocator)(
+package(mir.stat) AllocatedSlice!(Allocation.custom, Scalar!A, B.N)
+makeMtimes(TrianglePolicy triangle, DiagonalPolicy diagonal, A, B, Allocator)(
     auto ref Allocator allocator,
     scope auto ref const(TriangularView!(triangle, diagonal, A)) a,
     scope auto ref B b)
@@ -244,7 +262,8 @@ Triangular-view overload. Uses the view's triangle and diagonal policy without
 materializing implicit entries. The other operand must be an ordinary ndslice.
 Ownership and aliasing requirements follow the corresponding plain-slice API.
 +/
-package(mir.stat) auto makeMtimes(TrianglePolicy triangle, DiagonalPolicy diagonal, A, B, Allocator)(
+package(mir.stat) AllocatedSlice!(Allocation.custom, Scalar!A, B.N)
+makeMtimes(TrianglePolicy triangle, DiagonalPolicy diagonal, A, B, Allocator)(
     auto ref Allocator allocator,
     scope auto ref B b,
     scope auto ref const(TriangularView!(triangle, diagonal, A)) a)
@@ -280,7 +299,8 @@ private void checkMultiplicationDimensions(A, B)(scope auto ref A a, scope auto 
 
 // Shared factory: scalar products allocate nothing; other products allocate
 // according to policy and delegate computation to mtimesInto.
-private auto multiplyWithAllocation(Allocation policy, Allocator, A, B)(ref Allocator allocator,
+private ProductResult!(policy, A, B)
+multiplyWithAllocation(Allocation policy, Allocator, A, B)(ref Allocator allocator,
     scope auto ref A a, scope auto ref B b)
 {
     checkMultiplicationDimensions(a, b);

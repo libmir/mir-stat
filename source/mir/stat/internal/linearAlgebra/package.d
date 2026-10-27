@@ -27,6 +27,10 @@ $(UL
     $(LI `makeMtimes` uses a supplied allocator; the caller disposes the result.)
     $(LI `mtimesInto` overwrites caller-provided storage without allocating.)
 )
+Allocated results are contiguous `Slice!(T*, N)` values for GC/custom storage
+and `Slice!(RCI!T, N)` values for RC storage, where `T` is the unqualified input
+element type and `N` is the output rank. GC and custom results share a type,
+but custom results still require disposal with their allocator.
 Two vector operands produce a scalar without allocation in the first three
 functions. Inputs can be borrowed or owning ndslices, including transposed,
 strided, and computed views. Floating-point and complex element types are
@@ -194,4 +198,77 @@ version(mir_stat_test_linearAlgebra)
     assertThrown!AssertError(triangularView(invalid));
     assertThrown!AssertError(a[2,0]);
     assertThrown!AssertError(s[0,2]);
+}
+
+// Result types depend on operation rank and chosen ownership, not input storage.
+version(mir_stat_test_linearAlgebra)
+@safe pure nothrow @nogc unittest
+{
+    import std.meta: AliasSeq;
+    import std.traits: isFloatingPoint;
+    import mir.ndslice.slice: Slice;
+    import mir.ndslice.topology: map, universal;
+    import mir.ndslice.dynamic: transposed;
+    import mir.rc.array: RCI;
+    import mir.complex: Complex;
+    import std.experimental.allocator.mallocator: Mallocator;
+    static foreach (T; AliasSeq!(float, double, real, Complex!double))
+    {{
+        alias Vector = Slice!(T*, 1);
+        alias Matrix = Slice!(T*, 2);
+        alias RcVector = Slice!(RCI!T, 1);
+        alias RcMatrix = Slice!(RCI!T, 2);
+        Vector x;
+        Matrix a;
+        const RcMatrix owned;
+        auto computed = a.map!((T value) => value);
+        static assert(is(typeof(mtimes(x, x)) == T));
+        static assert(is(typeof(rcMtimes(x, x)) == T));
+        static assert(is(typeof(makeMtimes(Mallocator.instance, x, x)) == T));
+        static assert(is(typeof(mtimes(a, a)) == Matrix));
+        static assert(is(typeof(rcMtimes(a, a)) == RcMatrix));
+        static assert(is(typeof(makeMtimes(Mallocator.instance, a, a)) == Matrix));
+        static assert(is(typeof(mtimes(a, x)) == Vector));
+        static assert(is(typeof(mtimes(x, a)) == Vector));
+        static assert(is(typeof(rcMtimes(a, x)) == RcVector));
+        static assert(is(typeof(rcMtimes(x, a)) == RcVector));
+        static assert(is(typeof(makeMtimes(Mallocator.instance, a, x)) == Vector));
+        static assert(is(typeof(makeMtimes(Mallocator.instance, x, a)) == Vector));
+        static assert(is(typeof(mtimes(owned, a)) == Matrix));
+        static assert(is(typeof(rcMtimes(computed, a.universal.transposed)) == RcMatrix));
+        static assert(is(typeof(symmetricView(a)) == SymmetricView!(TrianglePolicy.upper, Matrix)));
+        static assert(is(typeof(triangularView(a)) == TriangularView!(TrianglePolicy.upper, DiagonalPolicy.nonUnit, Matrix)));
+        auto triangular = triangularView(owned);
+        static assert(is(typeof(mtimes(triangular, x)) == Vector));
+        static assert(is(typeof(rcMtimes(x, triangular)) == RcVector));
+        static assert(is(typeof(makeMtimes(Mallocator.instance, triangular, a)) == Matrix));
+        static assert(is(typeof(mtimesTriangular(a, x)) == Vector));
+        static assert(is(typeof(rcMtimesTriangular(a, a)) == RcMatrix));
+        static assert(is(typeof(makeMtimesTriangular(Mallocator.instance, a, x)) == Vector));
+        static assert(is(typeof(mtimesTriangularRight(x, a)) == Vector));
+        static assert(is(typeof(rcMtimesTriangularRight(a, a)) == RcMatrix));
+        static assert(is(typeof(makeMtimesTriangularRight(Mallocator.instance, x, a)) == Vector));
+        static if (isFloatingPoint!T)
+        {
+            auto symmetric = symmetricView(owned);
+            static assert(is(typeof(quadraticForm(x, computed)) == T));
+            static assert(is(typeof(quadraticForm(x, symmetric)) == T));
+            static assert(is(typeof(choleskyDecompose(owned)) == Matrix));
+            static assert(is(typeof(rcCholeskyDecompose(computed)) == RcMatrix));
+            static assert(is(typeof(makeCholeskyDecompose(Mallocator.instance, a)) == Matrix));
+            static assert(is(typeof(choleskyDecompose(symmetric)) == Matrix));
+            static assert(is(typeof(rcCholeskyDecompose(symmetric)) == RcMatrix));
+            static assert(is(typeof(makeCholeskyDecompose(Mallocator.instance, symmetric)) == Matrix));
+            static assert(is(typeof(choleskySolve(owned, x)) == Vector));
+            static assert(is(typeof(rcCholeskySolve(owned, x)) == RcVector));
+            static assert(is(typeof(makeCholeskySolve(Mallocator.instance, owned, x)) == Vector));
+            static assert(is(typeof(choleskySolve(owned, a)) == Matrix));
+            static assert(is(typeof(rcCholeskySolve(owned, a)) == RcMatrix));
+            static assert(is(typeof(makeCholeskySolve(Mallocator.instance, owned, a)) == Matrix));
+        }
+    }}
+    // Explicit result aliases must not break rejection of unrelated arguments.
+    static assert(!__traits(compiles, mtimes(1, 2)));
+    static assert(!__traits(compiles, choleskyDecompose(1)));
+    static assert(!__traits(compiles, quadraticForm(1, 2)));
 }

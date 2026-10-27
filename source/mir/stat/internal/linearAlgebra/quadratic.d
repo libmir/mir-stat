@@ -41,7 +41,7 @@ All matrix entries are read. Symmetry and positive definiteness are not assumed.
 Shapes are checked with assertions. Native inputs support
 `@safe pure nothrow @nogc`; computed iterators can affect these attributes.
 +/
-package(mir.stat) auto quadraticForm(Summation summation = Summation.kbn, X, A)(
+package(mir.stat) Scalar!X quadraticForm(Summation summation = Summation.kbn, X, A)(
     scope auto ref X x, scope auto ref A a)
     if (compatible!(X, A))
 {
@@ -72,7 +72,7 @@ The unselected triangle is never read. No symmetry or positive-definiteness
 check is performed. There is no allocation, and inputs are unchanged.
 Shapes are checked with assertions. Strided and computed inputs are supported.
 +/
-package(mir.stat) auto quadraticForm(Summation summation = Summation.kbn, X,
+package(mir.stat) Scalar!X quadraticForm(Summation summation = Summation.kbn, X,
     TrianglePolicy triangle, A)(scope auto ref X x,
     scope auto ref const(SymmetricView!(triangle, A)) a)
     if (compatible!(X, A))
@@ -103,7 +103,7 @@ version(mir_stat_test_linearAlgebra)
     assert(quadraticForm(values[].sliced, a.transposed) == 32);
 }
 
-private auto quadratic(bool symmetric, TrianglePolicy triangle, Summation summation, X, A)(
+private Scalar!X quadratic(bool symmetric, TrianglePolicy triangle, Summation summation, X, A)(
     scope auto ref X x, scope auto ref A a)
 {
     assert(a.length!0 == x.length && a.length!1 == x.length,
