@@ -152,9 +152,9 @@ and per-round CSV output follow the existing scheduler.
 
 | Function | Algorithms |
 | --- | --- |
-| `triangularLeft` | `dense`, `triangular` |
-| `triangularRight` | `dense`, `triangular` |
-| `quadratic` | `composed`, `general`, `symmetric`, `singleTriangle`, `generalFast`, `symmetricFast` |
+| `triangularLeft` | `dense`, `triangular`, `packed` |
+| `triangularRight` | `dense`, `triangular`, `packed` |
+| `quadratic` | `composed`, `general`, `symmetric`, `singleTriangle`, `generalFast`, `symmetricFast`, `packedSymmetric`, `packedFast` |
 | `mahalanobis` | `covarianceGC`, `factorGC`, `precisionGC`, `precisionFactorGC`, and corresponding `Workspace` variants |
 
 Triangular comparisons multiply square matrices into preallocated output,
@@ -205,5 +205,10 @@ and the single-triangle numerical counterexample. CI smoke runs verify native D
 CLI integration without asserting timing thresholds.
 
 The `generalFast` and `symmetricFast` quadratic cases use caller workspace and
-explicit `Summation.fast`. Both use the same seeded inputs and independent
-reference checks as the compensated quadratic cases.
+explicit `Summation.fast`. `packedSymmetric` uses compensated packed rows;
+`packedFast` permits SPMV and DOT. The triangular `packed` case passes stairs
+directly to `mtimesInto`. Packing happens before timing. All use the same seeded
+inputs and independent reference checks as the corresponding dense cases.
+The layout option changes dense matrix storage; packed rows remain in their
+canonical upper-row order. Packed storage reduces memory use but does not
+necessarily improve speed, especially versus dense TRMM with multiple columns.

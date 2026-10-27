@@ -43,7 +43,7 @@ Use `quadraticForm(x, a)` for a general real quadratic form, or
 Both return scalars without allocating, regardless of input ownership.
 `quadraticFormWithWorkspace(x, a, work)` accepts a separate vector buffer.
 Its default remains compensated; explicit `Summation.fast` enables GEMV/SYMV
-and DOT where eligible.
+(or SPMV for packed symmetric storage) and DOT where eligible.
 
 `symmetricView` and `triangularView` attach structure to a matrix without
 copying its elements. Symmetric views dispatch quadratic forms and Cholesky
@@ -51,6 +51,13 @@ decomposition; triangular views dispatch multiplication with one ordinary
 operand. Views are read-only, retain RC ownership when supplied, and have no
 implicit ndslice conversion. They do not assert positive definiteness or
 represent Cholesky factors. Transpose updates the selected triangle.
+
+Packed `stairs` storage may be passed directly to `mtimes` and the explicit
+triangular product families, or wrapped in `triangularView` or `symmetricView`.
+Bare stairs mean triangular with a stored diagonal. The direction supplies the
+triangle; `triangularView!(DiagonalPolicy.unit)(packed)` selects unit diagonal.
+Packed views retain storage ownership and do not allocate a dense input copy.
+Symmetric packed views also support quadratic forms and Cholesky decomposition.
 
 BLAS is optional. The default configuration uses native D kernels; compatible
 native layouts can use BLAS when that dependency is available. Backend and

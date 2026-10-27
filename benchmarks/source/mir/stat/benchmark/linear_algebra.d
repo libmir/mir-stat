@@ -23,8 +23,8 @@ string[] algebraAlgorithms(string name)
 {
     switch (name)
     {
-    case "triangularLeft", "triangularRight": return ["dense", "triangular"];
-    case "quadratic": return ["composed", "general", "symmetric", "singleTriangle", "generalFast", "symmetricFast"];
+    case "triangularLeft", "triangularRight": return ["dense", "triangular", "packed"];
+    case "quadratic": return ["composed", "general", "symmetric", "singleTriangle", "generalFast", "symmetricFast", "packedSymmetric", "packedFast"];
     case "mahalanobis": return ["covarianceGC", "factorGC", "precisionGC", "precisionFactorGC",
         "covarianceWorkspace", "factorWorkspace", "precisionWorkspace", "precisionFactorWorkspace"];
     default: throw new Exception("Unknown linear algebra benchmark: " ~ name);
@@ -93,7 +93,10 @@ private Result[] measure(int family)(string name, size_t iterations, size_t n, u
     const needFactor = family == 3 && (needs("factorGC") || needs("factorWorkspace"));
     const needPrecisionFactor = family == 3 && (needs("precisionFactorGC") || needs("precisionFactorWorkspace"));
     const needPrecision = family == 3 && (needPrecisionFactor || needs("precisionGC") || needs("precisionWorkspace"));
-    const needA = family != 3 || needFactor || needs("covarianceGC") || needs("covarianceWorkspace");
+    const needA = family < 2 ? needs("triangular") : family == 2 ?
+        (needs("composed") || needs("general") || needs("symmetric") || needs("singleTriangle") ||
+         needs("generalFast") || needs("symmetricFast")) :
+        (needFactor || needs("covarianceGC") || needs("covarianceWorkspace"));
     /// Allocate only matrices required by the selected family and algorithms.
     auto matrix(bool needed)
     {
@@ -111,9 +114,13 @@ private Result[] measure(int family)(string name, size_t iterations, size_t n, u
     auto referenceOutput = matrix(family < 2);
     auto x = uninitSlice!double(family >= 2 ? n : 0);
     auto center = uninitSlice!double(family == 3 ? n : 0);
-    auto work = uninitSlice!double((family == 2 && (needs("composed") || needs("generalFast") || needs("symmetricFast"))) || (family == 3 &&
+    auto work = uninitSlice!double((family == 2 && (needs("composed") || needs("generalFast") || needs("symmetricFast") || needs("packedFast"))) || (family == 3 &&
         (needs("covarianceWorkspace") || needs("factorWorkspace") ||
          needs("precisionWorkspace") || needs("precisionFactorWorkspace"))) ? n : 0);
+    import mir.ndslice.topology: stairs;
+    auto packedData = uninitSlice!double((family < 2 && needs("packed")) ||
+        (family == 2 && (needs("packedSymmetric") || needs("packedFast"))) ? n*(n+1)/2 : 0);
+    auto packed = packedData.stairs!"-"(packedData.length ? n : 0);
     auto u = uninitSlice!double(n);
     // Fixed well-conditioned SPD metric S=I+u*u', with analytic inverse
     // P=I-u*u'/(1+u'u). This avoids using the measured routines as references.
@@ -130,9 +137,10 @@ private Result[] measure(int family)(string name, size_t iterations, size_t n, u
         static if (family < 2)
         {
             dense[i,j] = j >= i ? value : 0;
-            a[i,j] = j >= i ? value : double.nan;
+            if (needA) a[i,j] = j >= i ? value : double.nan;
         }
         else if (needA) a[i,j] = value;
+        if (packedData.length && j >= i) packed[i][j-i] = value;
         if (needPrecision) precision[i,j] = (i == j ? 1.0 : 0.0) - u[i]*u[j]/(1+norm);
         // Preserve the existing seeded input stream without keeping an unused B.
         auto sample = normal(rng);
@@ -158,6 +166,17 @@ private Result[] measure(int family)(string name, size_t iterations, size_t n, u
         else mtimesTriangularRightInto(b,a,output);
         return output[0,0];
     }
+    /// Multiply directly from packed stairs without expanding the triangle.
+    double packedProduct()
+    {
+        static if (family == 0) mtimesInto(packed,b,output);
+        else mtimesInto(b,packed,output);
+        return output[0,0];
+    }
+    /// Evaluate compensated rows from packed symmetric storage.
+    double packedSymmetric() { return quadraticForm(x,symmetricView(packed)); }
+    /// Evaluate packed symmetric BLAS or its native D fallback.
+    double packedFast() { import mir.math.sum: Summation; return quadraticFormWithWorkspace!(Summation.fast)(x,symmetricView(packed),work); }
     /// Evaluate a quadratic form through a matrix-vector product and dot product.
     double composed() { mtimesInto(a,x,work); return mtimes(x,work); }
     /// Evaluate the general compensated quadratic form.
@@ -187,8 +206,8 @@ private Result[] measure(int family)(string name, size_t iterations, size_t n, u
     /// Measure squared distance using a precision factor and reusable workspace.
     double precisionFactorWorkspace() { return mahalanobisSquaredWithWorkspace!(MahalanobisMatrix.inverseCovarianceCholesky)(x,center,precisionFactor,work); }
     import std.meta: AliasSeq;
-    static if (family < 2) alias functions = AliasSeq!(denseProduct, triangularProduct);
-    else static if (family == 2) alias functions = AliasSeq!(composed, general, symmetric, single, generalFast, symmetricFast);
+    static if (family < 2) alias functions = AliasSeq!(denseProduct, triangularProduct, packedProduct);
+    else static if (family == 2) alias functions = AliasSeq!(composed, general, symmetric, single, generalFast, symmetricFast, packedSymmetric, packedFast);
     else alias functions = AliasSeq!(covarianceGC, factorGC, precisionGC, precisionFactorGC,
         covarianceWorkspace, factorWorkspace, precisionWorkspace, precisionFactorWorkspace);
     bool[functions.length] enabled;
@@ -296,4 +315,17 @@ unittest
     // Allow ample vector, scheduler, and runtime overhead without accepting
     // the former nine-matrix setup. This is an allocation budget, not a timer.
     assert(bytes < 3 * order * order * double.sizeof);
+}
+
+// Packed-only quadratic runs must not retain a dense copy of their metric.
+unittest
+{
+    import core.memory: GC;
+    enum order = 128;
+    auto before = GC.stats().allocatedInCurrentThread;
+    auto rows = runAlgebra("quadratic",1,order,5489,["packedFast"],1,0);
+    auto bytes = GC.stats().allocatedInCurrentThread - before;
+    assert(rows.length == 1);
+    // Half a matrix plus vectors/scheduler fits comfortably below a full matrix.
+    assert(bytes < order * order * double.sizeof);
 }

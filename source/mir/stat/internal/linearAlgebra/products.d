@@ -29,7 +29,8 @@ version(mir_stat_test_blas) version = mir_stat_test_linearAlgebra;
 
 import mir.stat.internal.linearAlgebra.types: Scalar, numericSlice, TrianglePolicy, DiagonalPolicy;
 import mir.stat.internal.linearAlgebra.backend: hasBlas, blasNumber, nativeSlice, blasMatrix, blasVector;
-import mir.stat.internal.linearAlgebra.views: TriangularView;
+import mir.stat.internal.linearAlgebra.views: TriangularView, triangularView;
+import mir.stat.internal.linearAlgebra.packed: isPacked, PackedInfo;
 import mir.stat.internal.linearAlgebra.allocation;
 
 /// Whether operands are supported numeric slices with matching element types.
@@ -791,3 +792,288 @@ version(mir_stat_test_linearAlgebra)
 }
 
 // Structural triangular operands dispatch to the existing specialized kernels.
+
+
+/++
+Packed-stairs overload. Bare stairs represent a triangular matrix with stored
+diagonal values. The direction selects the triangle; the other operand is an
+ordinary ndslice. Use `triangularView` to select a unit diagonal or
+`symmetricView` to give the same storage symmetric meaning.
++/
+package(mir.stat) AllocatedSlice!(Allocation.gc, PackedInfo!S.Element, B.N)
+mtimes(S, B)(scope auto ref S a, scope auto ref B b)
+    if (isPacked!S && numericSlice!B)
+{
+    return mtimes(triangularView(a), b);
+}
+
+/++
+Packed-stairs overload. Bare stairs represent a triangular matrix with stored
+diagonal values. The direction selects the triangle; the other operand is an
+ordinary ndslice. Use `triangularView` to select a unit diagonal or
+`symmetricView` to give the same storage symmetric meaning.
++/
+package(mir.stat) AllocatedSlice!(Allocation.gc, PackedInfo!S.Element, B.N)
+mtimes(S, B)(scope auto ref B b, scope auto ref S a)
+    if (isPacked!S && numericSlice!B)
+{
+    return mtimes(b, triangularView(a));
+}
+
+/++
+Packed-stairs overload. Bare stairs represent a triangular matrix with stored
+diagonal values. The direction selects the triangle; the other operand is an
+ordinary ndslice. Use `triangularView` to select a unit diagonal or
+`symmetricView` to give the same storage symmetric meaning.
++/
+package(mir.stat) AllocatedSlice!(Allocation.rc, PackedInfo!S.Element, B.N)
+rcMtimes(S, B)(scope auto ref S a, scope auto ref B b)
+    if (isPacked!S && numericSlice!B)
+{
+    return rcMtimes(triangularView(a), b);
+}
+
+/++
+Packed-stairs overload. Bare stairs represent a triangular matrix with stored
+diagonal values. The direction selects the triangle; the other operand is an
+ordinary ndslice. Use `triangularView` to select a unit diagonal or
+`symmetricView` to give the same storage symmetric meaning.
++/
+package(mir.stat) AllocatedSlice!(Allocation.rc, PackedInfo!S.Element, B.N)
+rcMtimes(S, B)(scope auto ref B b, scope auto ref S a)
+    if (isPacked!S && numericSlice!B)
+{
+    return rcMtimes(b, triangularView(a));
+}
+
+/++
+Packed-stairs overload. Bare stairs represent a triangular matrix with stored
+diagonal values. The direction selects the triangle; the other operand is an
+ordinary ndslice. Use `triangularView` to select a unit diagonal or
+`symmetricView` to give the same storage symmetric meaning.
++/
+package(mir.stat) AllocatedSlice!(Allocation.custom, PackedInfo!S.Element, B.N)
+makeMtimes(S, B, Allocator)(auto ref Allocator allocator, scope auto ref S a, scope auto ref B b)
+    if (isPacked!S && numericSlice!B)
+{
+    return makeMtimes(allocator, triangularView(a), b);
+}
+
+/++
+Packed-stairs overload. Bare stairs represent a triangular matrix with stored
+diagonal values. The direction selects the triangle; the other operand is an
+ordinary ndslice. Use `triangularView` to select a unit diagonal or
+`symmetricView` to give the same storage symmetric meaning.
++/
+package(mir.stat) AllocatedSlice!(Allocation.custom, PackedInfo!S.Element, B.N)
+makeMtimes(S, B, Allocator)(auto ref Allocator allocator, scope auto ref B b, scope auto ref S a)
+    if (isPacked!S && numericSlice!B)
+{
+    return makeMtimes(allocator, b, triangularView(a));
+}
+
+/++
+Packed-stairs overload. Bare stairs represent a triangular matrix with stored
+diagonal values. The direction selects the triangle; the other operand is an
+ordinary ndslice. Use `triangularView` to select a unit diagonal or
+`symmetricView` to give the same storage symmetric meaning.
++/
+package(mir.stat) void
+mtimesInto(S, B, C)(scope auto ref S a, scope auto ref B b, scope auto ref C c)
+    if (isPacked!S && numericSlice!B)
+{
+    mtimesInto(triangularView(a), b, c);
+}
+
+/++
+Packed-stairs overload. Bare stairs represent a triangular matrix with stored
+diagonal values. The direction selects the triangle; the other operand is an
+ordinary ndslice. Use `triangularView` to select a unit diagonal or
+`symmetricView` to give the same storage symmetric meaning.
++/
+package(mir.stat) void
+mtimesInto(S, B, C)(scope auto ref B b, scope auto ref S a, scope auto ref C c)
+    if (isPacked!S && numericSlice!B)
+{
+    mtimesInto(b, triangularView(a), c);
+}
+
+/// Packed stairs can be passed directly or wrapped to select structural policies.
+version(mir_stat_test_linearAlgebra)
+@system pure nothrow unittest
+{
+    import mir.ndslice.slice: sliced;
+    import mir.ndslice.topology: stairs;
+    import mir.stat.internal.linearAlgebra.triangular: mtimesTriangular, mtimesTriangularRight;
+    import mir.stat.internal.linearAlgebra.quadratic: quadraticForm, quadraticFormWithWorkspace;
+    import mir.stat.internal.linearAlgebra.views: symmetricView;
+    import mir.math.sum: Summation;
+    double[3] data = [2, 3, 4];
+    double[2] values = [5, 6], buffer;
+    auto upper = data[].stairs!"-"(2);
+    auto lower = data[].stairs!"+"(2);
+    auto x = values[].sliced;
+    assert(mtimes(upper, x) == [28, 24]);
+    assert(mtimes(x, upper) == [10, 39]);
+    assert(mtimes(lower, x) == [10, 39]);
+    assert(mtimes(x, lower) == [28, 24]);
+    assert(mtimes(triangularView(upper).transposed, x) == [10, 39]);
+    assert(mtimes(triangularView!(DiagonalPolicy.unit)(upper), x) == [23, 6]);
+    assert(mtimesTriangular(upper, x) == [28, 24]);
+    assert(mtimesTriangularRight(x, upper) == [10, 39]);
+    assert(quadraticForm(x, symmetricView(upper)) == 374);
+    assert(quadraticFormWithWorkspace!(Summation.fast)(x, symmetricView(lower), buffer[].sliced) == 374);
+}
+
+version(mir_stat_test_linearAlgebra)
+@system unittest
+{
+    import std.meta: AliasSeq;
+    import mir.ndslice.slice: sliced;
+    import mir.ndslice.topology: stairs, universal, map;
+    import mir.ndslice.dynamic: transposed, reversed;
+    import mir.ndslice.allocation: rcslice;
+    import mir.stat.internal.linearAlgebra.triangular;
+    import mir.stat.internal.linearAlgebra.quadratic: quadraticForm, quadraticFormWithWorkspace;
+    import mir.stat.internal.linearAlgebra.views: symmetricView;
+    import mir.stat.internal.linearAlgebra.cholesky: rcCholeskyDecompose;
+    import mir.stat.internal.linearAlgebra.packed: packedMatrix, tryPackedTriangular, tryPackedSymmetric;
+    import mir.stat.internal.linearAlgebra.backend: hasBlas;
+    import mir.math.sum: Summation;
+    import std.experimental.allocator.mallocator: Mallocator;
+    import std.experimental.allocator: dispose;
+    import std.exception: assertThrown;
+    import core.exception: AssertError;
+    static foreach (T; AliasSeq!(float, double, real))
+    static foreach (direction; ["+", "-"])
+    static foreach (diagonal; [DiagonalPolicy.nonUnit, DiagonalPolicy.unit])
+    {{
+        enum triangle = direction == "+" ? TrianglePolicy.lower : TrianglePolicy.upper;
+        T[6] data = [2,3,4,5,6,7];
+        auto rows = data[].stairs!direction(3);
+        T[9] denseData;
+        auto dense = denseData[].sliced(3,3);
+        foreach (i; 0..3) foreach (j; 0..3)
+        {
+            if (i == j && diagonal == DiagonalPolicy.unit)
+            {
+                rows[i][direction == "+" ? j : 0] = T.nan;
+                dense[i,j] = 1;
+            }
+            else if (direction == "+" ? j <= i : j >= i)
+                dense[i,j] = rows[i][direction == "+" ? j : j-i];
+            else dense[i,j] = 0;
+        }
+        T[6] other = [1,2,3,4,5,6], buffer;
+        auto rhs = other[].sliced(3,2);
+        auto lhs = other[].sliced(2,3);
+        auto expectedLeft = rcMtimes(dense,rhs);
+        auto expectedRight = rcMtimes(lhs,dense);
+        auto view = triangularView!diagonal(rows);
+        assert(rcMtimes(view,rhs) == expectedLeft);
+        assert(rcMtimes(lhs,view) == expectedRight);
+        assert(rcMtimes(view.transposed,rhs) == rcMtimes(dense.universal.transposed,rhs));
+        assert(rcMtimesTriangular!diagonal(rows,rhs) == expectedLeft);
+        assert(rcMtimesTriangularRight!diagonal(lhs,rows) == expectedRight);
+        auto custom = makeMtimes(Mallocator.instance,view,rhs);
+        scope(exit) Mallocator.instance.dispose(custom.field);
+        assert(custom == expectedLeft);
+        auto customRight = makeMtimesTriangularRight!diagonal(Mallocator.instance,lhs,rows);
+        scope(exit) Mallocator.instance.dispose(customRight.field);
+        assert(customRight == expectedRight);
+        auto outLeft = buffer[].sliced(2,3).universal.transposed;
+        mtimesInto(view,rhs,outLeft);
+        assert(outLeft == expectedLeft);
+        mtimesTriangularInto!diagonal(rows,rhs,outLeft);
+        assert(outLeft == expectedLeft);
+        mtimesTriangularRightInto!diagonal(lhs,rows,buffer[].sliced(2,3));
+        assert(buffer[].sliced(2,3) == expectedRight);
+        const owner = data[].sliced.rcslice;
+        auto ownedRows = owner.lightConst.stairs!direction(3);
+        const frozenRows = ownedRows;
+        auto ownedView = triangularView!diagonal(frozenRows);
+        assert(rcMtimes(ownedView,rhs) == expectedLeft);
+        static if (diagonal == DiagonalPolicy.nonUnit)
+        {
+            assert(rcMtimes(rows,rhs) == expectedLeft);
+            assert(rcMtimes(lhs,rows) == expectedRight);
+            auto allocated = makeMtimes(Mallocator.instance,rows,rhs);
+            scope(exit) Mallocator.instance.dispose(allocated.field);
+            assert(allocated == expectedLeft);
+            auto allocatedRight = makeMtimes(Mallocator.instance,lhs,rows);
+            scope(exit) Mallocator.instance.dispose(allocatedRight.field);
+            assert(allocatedRight == expectedRight);
+            auto explicitCustom = makeMtimesTriangular(Mallocator.instance,rows,rhs);
+            scope(exit) Mallocator.instance.dispose(explicitCustom.field);
+            assert(explicitCustom == expectedLeft);
+            mtimesInto(rows,rhs,outLeft);
+            assert(outLeft == expectedLeft);
+            mtimesInto(lhs,rows,buffer[].sliced(2,3));
+            assert(buffer[].sliced(2,3) == expectedRight);
+        }
+        static if (hasBlas && !is(T == real))
+        {
+            auto a = packedMatrix(rows);
+            assert((tryPackedTriangular!(triangle,diagonal)(a,rhs,outLeft)));
+            assert(outLeft == expectedLeft);
+        }
+    }}
+    // Packed symmetric views retain owners across factory returns and transpose.
+    /// Return an owning packed symmetric view after the local owner is destroyed.
+    auto retained()
+    {
+        double[6] data = [4,2,0,5,0,9];
+        auto owner = data[].sliced.rcslice;
+        return symmetricView(owner.stairs!"-"(3)).transposed;
+    }
+    auto sym = retained();
+    double[3] values = [1,2,3], work;
+    assert(quadraticForm(values[].sliced,sym) == 113);
+    assert(quadraticFormWithWorkspace!(Summation.fast)(values[].sliced,sym,work[].sliced) == 113);
+    auto factor = rcCholeskyDecompose(sym);
+    assert(factor[0,0] == 2 && factor[1,0] == 1 && factor[1,1] == 2 && factor[2,2] == 3);
+    double[0] empty;
+    auto zero = empty[].stairs!"-"(0);
+    assert(rcMtimes(zero,empty[].sliced).length == 0);
+    double[3] raw = [2,3,4];
+    auto packed = raw[].stairs!"-"(2);
+    assertThrown!AssertError(triangularView(packed[0..1]));
+    auto computed = raw[].sliced.map!(v => v).stairs!"-"(2);
+    double[2] v = [5,6];
+    assert(rcMtimes(computed,v[].sliced.reversed) == [27,20]);
+    mtimesInto(packed,v[].sliced,work[0..2].sliced.reversed);
+    assert(work[0..2] == [24,28]);
+    double m = double.max/3;
+    double[3] cancellation = [m,-m,m];
+    double[2] twos = [2,2];
+    auto cancellationView = symmetricView(cancellation[].stairs!"-"(2));
+    assert(quadraticForm(twos[].sliced,cancellationView) == 0);
+    assert(quadraticFormWithWorkspace(twos[].sliced,cancellationView,work[0..2].sliced) == 0);
+    static if (hasBlas)
+    {
+        auto a = packedMatrix(raw[].stairs!"-"(2));
+        assert(tryPackedSymmetric!(TrianglePolicy.upper)(a,v[].sliced,work[0..2].sliced));
+        assert(work[0..2] == [28,39]);
+    }
+}
+
+version(mir_stat_test_linearAlgebra)
+@system nothrow @nogc unittest
+{
+    import mir.complex: Complex;
+    import mir.ndslice.slice: sliced;
+    import mir.ndslice.topology: stairs;
+    import mir.stat.internal.linearAlgebra.triangular: rcMtimesTriangular;
+    // Packed complex multiplication is nonconjugating, including transpose.
+    Complex!double[3] data = [Complex!double(1,1), Complex!double(2,-1), Complex!double(3,2)];
+    Complex!double[2] values = [Complex!double(2,1), Complex!double(1,-1)];
+    auto packed = data[].stairs!"-"(2);
+    auto x = values[].sliced;
+    auto result = rcMtimes(packed,x);
+    assert(result[0] == data[0]*values[0] + data[1]*values[1]);
+    assert(result[1] == data[2]*values[1]);
+    auto transposed = rcMtimes(triangularView(packed).transposed,x);
+    assert(transposed[0] == data[0]*values[0]);
+    assert(transposed[1] == data[1]*values[0] + data[2]*values[1]);
+    assert(rcMtimesTriangular(packed,x) == result);
+}
