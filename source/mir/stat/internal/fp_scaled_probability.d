@@ -54,6 +54,28 @@ package(mir.stat) struct ProbabilityScaled(uint bits)
         return result;
     }
 
+    // Addition of positive values; align significands as integers. Terms
+    // below the alignment grid are negligible at this working precision.
+    ProbabilityScaled add(ProbabilityScaled rhs) const
+    {
+        if (exponent < rhs.exponent)
+            return rhs.add(this);
+        const gap = exponent - rhs.exponent;
+        if (gap > UInt!128(bits + 64))
+            return this;
+        auto sum = fraction.coefficient.toSize!(2 * bits + 128);
+        sum <<= bits + 64;
+        auto term = rhs.fraction.coefficient.toSize!(2 * bits + 128);
+        term <<= bits + 64 - cast(size_t)gap;
+        sum += term;
+        ProbabilityScaled result;
+        result.fraction = Fp!bits(sum);
+        result.fraction.exponent -= 2 * bits + 64;
+        result.exponent = exponent;
+        result.normalize();
+        return result;
+    }
+
     ProbabilityScaled divide(ProbabilityScaled rhs) const
     {
         auto quotient = fraction.coefficient.toSize!(2 * bits + 64);

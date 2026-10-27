@@ -153,10 +153,11 @@ Computes the negative binomial probability mass function (PMF) directly with ext
 floating point types (e.g. `Fp!128`), which provides additional accuracy for
 extreme values of `k`, `r`, or `p`. Complements and coefficient ratios retain
 the supplied `Fp` precision rather than converting through hardware floating
-point. Intermediate arithmetic is rounded to that precision; it is not exact
-arbitrary-precision probability arithmetic. For $(D r == 1), evaluation shares
-the geometric PMF implementation: it uses 192 guard bits and separate
-intermediate exponents, including final subnormal rounding.
+point. Complements, powers, and coefficient products retain 192 extra working
+bits. Separate intermediate exponents preserve representable final masses across
+intermediate overflow and underflow, with subnormal rounding at the final
+exponent. This is guarded arithmetic, not a universal correct-rounding guarantee.
+The $(D r == 1) case shares the geometric PMF implementation.
 
 The coefficient requires `O(min(k, r - 1))` iterations. Powers use logarithmic
 time in their exponents, so a large count is practical when the other count is
@@ -191,24 +192,8 @@ T negativeBinomialPMF(T)(const size_t k, const size_t r, const T p)
     in (r > 0, "number of successes must be larger than zero")
     in (fpProbabilityValid(p), "p must be finite and between zero and one")
 {
-    import mir.math.internal.fp_powi: fp_powi;
-    import mir.stat.internal.fp_probability: fpProbabilityCoefficient;
-    if (r == 1) {
-        import mir.stat.internal.fp_probability: fpGeometric;
-        return fpGeometric(k, p);
-    }
-
-    enum size = typeof(p.coefficient).sizeof * 8;
-
-    if (!p.coefficient)
-        return T(0);
-    if (k == 0)
-        return fp_powi(p, r);
-    const T complement = fpProbabilityComplement(p);
-    if (!complement.coefficient)
-        return T(0);
-    const T coefficient = fpProbabilityCoefficient!size(k, r - 1);
-    return coefficient * fp_powi(complement, k) * fp_powi(p, r);
+    import mir.stat.internal.fp_probability: fpNegativeBinomial;
+    return fpNegativeBinomial(k, r, p);
 }
 
 /// The probability type selects the extended-precision implementation.
@@ -963,4 +948,89 @@ unittest
     (val - 2).negativeBinomialLPMF(val + 5, 0.75).shouldApprox == fp_negativeBinomialPMF(val - 2, val + 5, Fp!128(0.75)).fp_log!double;
     (val - 1).negativeBinomialLPMF(val + 5, 0.75).shouldApprox == fp_negativeBinomialPMF(val - 1, val + 5, Fp!128(0.75)).fp_log!double;
     (val - 0).negativeBinomialLPMF(val + 5, 0.75).shouldApprox == fp_negativeBinomialPMF(val, val + 5, Fp!128(0.75)).fp_log!double;
+}
+
+// BEGIN negative-binomial references
+version(mir_stat_test)
+@safe pure nothrow @nogc unittest
+{
+    import mir.bignum.fixed: UInt;
+    {
+        alias T = Fp!64;
+        struct Reference { ulong k, r; T p, mass; }
+        enum references = [
+            Reference(0UL, 2UL, T(false, -64, UInt!64.fromHexString("8000000000000000")), T(false, -65L, UInt!64.fromHexString("8000000000000000"))),
+            Reference(1UL, 2UL, T(false, -64, UInt!64.fromHexString("8000000000000000")), T(false, -65L, UInt!64.fromHexString("8000000000000000"))),
+            Reference(10UL, 5UL, T(false, -65, UInt!64.fromHexString("8000000000000000")), T(false, -68L, UInt!64.fromHexString("e17ab44000000000"))),
+            Reference(100UL, 101UL, T(false, -64, UInt!64.fromHexString("8000000000000000")), T(false, -69L, UInt!64.fromHexString("e6cda9a862b57059"))),
+            Reference(1000UL, 3UL, T(false, -67, UInt!64.fromHexString("8000000000000000")), T(false, -150L, UInt!64.fromHexString("e2fd971892ff2d9e"))),
+            Reference(1UL, 2UL, T(false, -64, UInt!64.fromHexString("ffffffffffffffff")), T(false, -127L, UInt!64.fromHexString("fffffffffffffffe"))),
+            Reference(2UL, 3UL, T(false, -1163, UInt!64.fromHexString("8000000000000000")), T(false, -3361L, UInt!64.fromHexString("c000000000000000"))),
+            Reference(18446744073709551615UL, 2UL, T(false, -128, UInt!64.fromHexString("8000000000000000")), T(false, -130L, UInt!64.fromHexString("9b4597e37cb04ff4"))),
+            Reference(18446744073709551615UL, 3UL, T(false, -127, UInt!64.fromHexString("8000000000000000")), T(false, -130L, UInt!64.fromHexString("bc5ab1b16779be37"))),
+            Reference(1UL, 18446744073709551615UL, T(false, -64, UInt!64.fromHexString("ffffffffffffffff")), T(false, -65L, UInt!64.fromHexString("bc5ab1b16779be35"))),
+        ];
+        foreach (c; references) {
+            if (c.k > size_t.max || c.r > size_t.max) continue;
+            assert(negativeBinomialPMF(cast(size_t)c.k, cast(size_t)c.r, c.p) == c.mass);
+        }
+    }
+    {
+        alias T = Fp!128;
+        struct Reference { ulong k, r; T p, mass; }
+        enum references = [
+            Reference(0UL, 2UL, T(false, -128, UInt!128.fromHexString("80000000000000000000000000000000")), T(false, -129L, UInt!128.fromHexString("80000000000000000000000000000000"))),
+            Reference(1UL, 2UL, T(false, -128, UInt!128.fromHexString("80000000000000000000000000000000")), T(false, -129L, UInt!128.fromHexString("80000000000000000000000000000000"))),
+            Reference(10UL, 5UL, T(false, -129, UInt!128.fromHexString("80000000000000000000000000000000")), T(false, -132L, UInt!128.fromHexString("e17ab440000000000000000000000000"))),
+            Reference(100UL, 101UL, T(false, -128, UInt!128.fromHexString("80000000000000000000000000000000")), T(false, -133L, UInt!128.fromHexString("e6cda9a862b570591145badcc1f49f12"))),
+            Reference(1000UL, 3UL, T(false, -131, UInt!128.fromHexString("80000000000000000000000000000000")), T(false, -214L, UInt!128.fromHexString("e2fd971892ff2d9e4f0f3393d5b17c52"))),
+            Reference(1UL, 2UL, T(false, -128, UInt!128.fromHexString("ffffffffffffffffffffffffffffffff")), T(false, -255L, UInt!128.fromHexString("fffffffffffffffffffffffffffffffe"))),
+            Reference(2UL, 3UL, T(false, -1227, UInt!128.fromHexString("80000000000000000000000000000000")), T(false, -3425L, UInt!128.fromHexString("c0000000000000000000000000000000"))),
+            Reference(18446744073709551615UL, 2UL, T(false, -256, UInt!128.fromHexString("80000000000000000000000000000000")), T(false, -322L, UInt!128.fromHexString("ffffffffffffffff8000000000000001"))),
+            Reference(18446744073709551615UL, 3UL, T(false, -191, UInt!128.fromHexString("80000000000000000000000000000000")), T(false, -194L, UInt!128.fromHexString("bc5ab1b16779be369045998f3be08f6c"))),
+            Reference(1UL, 18446744073709551615UL, T(false, -128, UInt!128.fromHexString("ffffffffffffffffffffffffffffffff")), T(false, -192L, UInt!128.fromHexString("fffffffffffffffe0000000000000002"))),
+        ];
+        foreach (c; references) {
+            if (c.k > size_t.max || c.r > size_t.max) continue;
+            assert(negativeBinomialPMF(cast(size_t)c.k, cast(size_t)c.r, c.p) == c.mass);
+        }
+    }
+    {
+        alias T = Fp!256;
+        struct Reference { ulong k, r; T p, mass; }
+        enum references = [
+            Reference(0UL, 2UL, T(false, -256, UInt!256.fromHexString("8000000000000000000000000000000000000000000000000000000000000000")), T(false, -257L, UInt!256.fromHexString("8000000000000000000000000000000000000000000000000000000000000000"))),
+            Reference(1UL, 2UL, T(false, -256, UInt!256.fromHexString("8000000000000000000000000000000000000000000000000000000000000000")), T(false, -257L, UInt!256.fromHexString("8000000000000000000000000000000000000000000000000000000000000000"))),
+            Reference(10UL, 5UL, T(false, -257, UInt!256.fromHexString("8000000000000000000000000000000000000000000000000000000000000000")), T(false, -260L, UInt!256.fromHexString("e17ab44000000000000000000000000000000000000000000000000000000000"))),
+            Reference(100UL, 101UL, T(false, -256, UInt!256.fromHexString("8000000000000000000000000000000000000000000000000000000000000000")), T(false, -261L, UInt!256.fromHexString("e6cda9a862b570591145badcc1f49f11a32fdc37906d95c68000000000000000"))),
+            Reference(1000UL, 3UL, T(false, -259, UInt!256.fromHexString("8000000000000000000000000000000000000000000000000000000000000000")), T(false, -342L, UInt!256.fromHexString("e2fd971892ff2d9e4f0f3393d5b17c51b3d31749987e3ce0a3480461d2e89df6"))),
+            Reference(1UL, 2UL, T(false, -256, UInt!256.fromHexString("ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff")), T(false, -511L, UInt!256.fromHexString("fffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffe"))),
+            Reference(2UL, 3UL, T(false, -1355, UInt!256.fromHexString("8000000000000000000000000000000000000000000000000000000000000000")), T(false, -3553L, UInt!256.fromHexString("c000000000000000000000000000000000000000000000000000000000000000"))),
+            Reference(18446744073709551615UL, 2UL, T(false, -512, UInt!256.fromHexString("8000000000000000000000000000000000000000000000000000000000000000")), T(false, -706L, UInt!256.fromHexString("ffffffffffffffffffffffffffffffffffffffffffffffff8000000000000001"))),
+            Reference(18446744073709551615UL, 3UL, T(false, -319, UInt!256.fromHexString("8000000000000000000000000000000000000000000000000000000000000000")), T(false, -322L, UInt!256.fromHexString("bc5ab1b16779be369045998f3be08f6c7ae983dee3183acff2330affd070a645"))),
+            Reference(1UL, 18446744073709551615UL, T(false, -256, UInt!256.fromHexString("ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff")), T(false, -448L, UInt!256.fromHexString("fffffffffffffffeffffffffffffffffffffffffffffffff0000000000000002"))),
+        ];
+        foreach (c; references) {
+            if (c.k > size_t.max || c.r > size_t.max) continue;
+            assert(negativeBinomialPMF(cast(size_t)c.k, cast(size_t)c.r, c.p) == c.mass);
+        }
+    }
+}
+// END negative-binomial references
+
+version(mir_stat_test)
+@safe pure nothrow @nogc unittest
+{
+    import mir.bignum.fixed: UInt;
+    static foreach (bits; [64u,128u,256u]) {{
+        alias T = Fp!bits;
+        const p = T(false,long.min/2,UInt!bits(1));
+        assert(negativeBinomialPMF(0,2,p) == T(false,long.min,UInt!bits(1)));
+        assert(negativeBinomialPMF(2,2,p) == T(false,long.min,UInt!bits(3)));
+        const smaller = T(false,long.min/2-1,UInt!bits(1));
+        assert(negativeBinomialPMF(1,2,smaller) == T(0));
+        assert(negativeBinomialPMF(2,2,smaller) == T(false,long.min,UInt!bits(1)));
+        assert(negativeBinomialPMF(5,2,smaller) == T(false,long.min,UInt!bits(1)));
+        assert(negativeBinomialPMF(size_t.max,2,T(false,long.min,UInt!bits(1))) == T(0));
+    }}
 }

@@ -134,3 +134,102 @@ Fp!bits fpGeometric(uint bits)(size_t k, Fp!bits p)
     // therefore have exponent magnitude below bits*2^64, well within UInt!128.
     return S.from(complement).power(k).multiply(S.from(p)).finish!bits;
 }
+
+// Widen only probabilities away from the exponent floor. Smaller probabilities
+// have a complement indistinguishable from one at the working precision.
+private @safe pure nothrow @nogc
+Fp!workBits probabilityComplementWide(uint workBits, uint bits)(Fp!bits p)
+{
+    alias W = Fp!workBits;
+    if (p.exponent < -2 * cast(long)workBits)
+        return W(1);
+    return fpProbabilityComplement(cast(W)p);
+}
+
+package(mir.stat) @safe pure nothrow @nogc
+Fp!bits fpGeometricTail(bool upper, uint bits)(size_t k, Fp!bits p)
+{
+    import mir.bignum.fixed: UInt;
+    import mir.stat.internal.fp_scaled_probability: ProbabilityScaled;
+    alias T = Fp!bits;
+    alias W = Fp!(bits + 192);
+    alias S = ProbabilityScaled!(bits + 192);
+    if (!p.coefficient)
+        return T(upper ? 1 : 0);
+    if (!k && !upper)
+        return p;
+    const q = probabilityComplementWide!(bits + 192)(p);
+    if (!q.coefficient)
+        return T(upper ? 0 : 1);
+    const one = S.from(W(1));
+    auto power = S.from(q);
+    static if (upper)
+        return power.power(k).multiply(power).finish!bits;
+    else {
+        // Start with one trial and append k trials in binary blocks. A block
+        // stores q^m and sum(q^i, i=0..m-1). Doubling uses only positive terms.
+        S sum = one;
+        auto accumulatedPower = power;
+        S blockSum = one;
+        size_t count = k;
+        while (count) {
+            if (count & 1) {
+                sum = sum.add(accumulatedPower.multiply(blockSum));
+                accumulatedPower = accumulatedPower.multiply(power);
+            }
+            count >>= 1;
+            if (count) {
+                blockSum = blockSum.multiply(one.add(power));
+                power = power.multiply(power);
+            }
+        }
+        auto result = S.from(p).multiply(sum);
+        // If the complement rounds to one, n*p is exact at working precision.
+        // The true CDF is slightly smaller for n>1. Preserve that direction
+        // at final midpoints instead of rounding the polynomial upward.
+        if (k && q == W(1))
+            result.fraction.coefficient -= 1;
+        return result.finish!bits;
+    }
+}
+
+package(mir.stat) @safe pure nothrow @nogc
+Fp!bits fpNegativeBinomial(uint bits)(size_t k, size_t r, Fp!bits p)
+{
+    import mir.bignum.fixed: UInt;
+    import mir.stat.internal.fp_scaled_probability: ProbabilityScaled;
+    alias T = Fp!bits;
+    alias W = Fp!(bits + 192);
+    alias S = ProbabilityScaled!(bits + 192);
+    if (r == 1)
+        return fpGeometric(k, p);
+    if (!p.coefficient)
+        return T(0);
+    // For p this small and r>=2, C(k+r-1,r-1) <= (k+r)^(r-1).
+    // k+r < 2^65, so the mass is below p^r * 2^(65*(r-1)),
+    // hence below half the smallest quantum. Avoid huge exponent products.
+    if (p.exponent < long.min / 2 - cast(long)bits - 66)
+        return T(0);
+    const probability = S.from(p);
+    if (!k)
+        return probability.power(r).finish!bits;
+    const q = probabilityComplementWide!(bits + 192)(p);
+    if (!q.coefficient)
+        return T(0);
+    const smaller = k < r - 1 ? k : r - 1;
+    const larger = k < r - 1 ? r - 1 : k;
+    auto numerator = S.from(W(1));
+    auto denominator = numerator;
+    foreach (i; 0 .. smaller) {
+        auto factor = UInt!128(larger);
+        factor += i;
+        factor += 1;
+        numerator = numerator.multiply(S.from(W(factor)));
+        denominator = denominator.multiply(S.from(W(i + 1)));
+    }
+    auto result = numerator.divide(denominator)
+        .multiply(probability.power(r)).multiply(S.from(q).power(k));
+    if (q == W(1))
+        result.fraction.coefficient -= 1;
+    return result.finish!bits;
+}
