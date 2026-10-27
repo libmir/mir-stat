@@ -113,15 +113,26 @@ private Scalar!X quadratic(bool symmetric, TrianglePolicy triangle, Summation su
     foreach (i; 0 .. x.length)
     {
         Summator!(T, summation) row;
-        foreach (j; 0 .. x.length)
+        static if (symmetric)
         {
-            static if (symmetric)
-                auto value = (triangle == TrianglePolicy.upper ? j >= i : j <= i)
-                    ? a[i, j] : a[j, i];
-            else
-                auto value = a[i, j];
-            row.put(value * x[j]);
+            // Keep ascending column order and row-wise compensation, but
+            // choose the stored triangle once per loop rather than per entry.
+            foreach (j; 0 .. i)
+            {
+                static if (triangle == TrianglePolicy.upper) auto value = a[j, i];
+                else auto value = a[i, j];
+                row.put(value * x[j]);
+            }
+            foreach (j; i .. x.length)
+            {
+                static if (triangle == TrianglePolicy.upper) auto value = a[i, j];
+                else auto value = a[j, i];
+                row.put(value * x[j]);
+            }
         }
+        else
+            foreach (j; 0 .. x.length)
+                row.put(a[i, j] * x[j]);
         total.put(x[i] * row.sum);
     }
     return total.sum;
@@ -208,4 +219,23 @@ version(mir_stat_test_linearAlgebra)
     static assert(!__traits(compiles, quadraticForm(complexValues[].sliced, a)));
     static assert(!__traits(compiles, quadraticForm(a, a)));
     static assert(!__traits(compiles, quadraticForm(x, x)));
+}
+
+// Preserve cancellation within each row before multiplying by the outer x.
+version(mir_stat_test_linearAlgebra)
+@safe pure nothrow @nogc unittest
+{
+    import mir.ndslice.slice: sliced;
+    import std.meta: AliasSeq;
+    static foreach (T; AliasSeq!(float, double, real))
+    {{
+        T[2] values = [2, 2];
+        T large = T.max / 3;
+        T[4] data = [large, -large, -large, large];
+        auto x = values[].sliced;
+        auto a = data[].sliced(2, 2);
+        assert(quadraticForm(x, a) == 0);
+        assert(quadraticForm(x, symmetricView(a)) == 0);
+        assert(quadraticForm(x, symmetricView!(TrianglePolicy.lower)(a)) == 0);
+    }}
 }
