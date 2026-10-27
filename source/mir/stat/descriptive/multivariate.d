@@ -263,6 +263,43 @@ unittest
     }
 }
 
+// Compute the count weight before scaling the between-group product.
+version(mir_stat_test)
+@safe pure nothrow @nogc
+unittest
+{
+    import std.meta: AliasSeq;
+    void check(A)()
+    {
+        A left, right;
+        foreach (i; 0 .. 16)
+        {
+            left.put(0, 0);
+            right.put(0x1p508, 0x1p508);
+        }
+        left.put(right);
+        assert(left.count == 32 && left.centeredSumOfProducts == 0x1p1019);
+        A first, second;
+        first.put(0, 0);
+        second.put(0x1.4p512, 0x1.4p512);
+        first.put(second);
+        assert(first.centeredSumOfProducts == 0x1.9p1023);
+    }
+    static foreach (A; AliasSeq!(
+        CovarianceAccumulator!(double, CovarianceAlgo.online, Summation.naive),
+        CovarianceAccumulator!(double, CovarianceAlgo.hybrid, Summation.naive),
+        CorrelationAccumulator!(double, CorrelationAlgo.online, Summation.naive),
+        CorrelationAccumulator!(double, CorrelationAlgo.hybrid, Summation.naive)))
+        check!A();
+
+    // Unequal covariance factors must not overflow when weighted individually.
+    alias C = CovarianceAccumulator!(double, CovarianceAlgo.online, Summation.naive);
+    C small, large;
+    foreach (i; 0 .. 4) { small.put(0, 0); large.put(0x1p-1022, 0x1p1020); }
+    small.put(large);
+    assert(small.centeredSumOfProducts == 0.5);
+}
+
 // Zero-mean sources have implicit zero sums, but stored centered moments.
 version(mir_stat_test)
 pure nothrow @nogc
@@ -1056,19 +1093,22 @@ struct CovarianceAccumulator(T, CovarianceAlgo covarianceAlgo, Summation summati
             deltaRight -= meanRight!T;
         }
         _count += v.count;
+        // Form the count weight first, as in variance merging, so count factors
+        // cannot overflow an otherwise representable between-group correction.
+        const T mergeWeight = cast(T) v.count * (cast(T) oldCount / count);
         static if (is(T == U) && summation == sumAlgo &&
             (summation == Summation.kbn || summation == Summation.kb2 ||
              summation == Summation.precise))
         {
             mergeMultivariateSum!("summatorLeft", "sumLeft", T)(summatorLeft, v);
             mergeMultivariateSum!("summatorRight", "sumRight", T)(summatorRight, v);
-            mergeMultivariateSum!("centeredSummatorOfProducts", "centeredSumOfProducts", T)(centeredSummatorOfProducts, v, deltaLeft * deltaRight * v.count * oldCount / count);
+            mergeMultivariateSum!("centeredSummatorOfProducts", "centeredSumOfProducts", T)(centeredSummatorOfProducts, v, deltaLeft * (deltaRight * mergeWeight));
         }
         else
         {
             summatorLeft.put(v.sumLeft!T);
             summatorRight.put(v.sumRight!T);
-            centeredSummatorOfProducts.put(v.centeredSumOfProducts!T + deltaLeft * deltaRight * v.count * oldCount / count);
+            centeredSummatorOfProducts.put(v.centeredSumOfProducts!T + deltaLeft * (deltaRight * mergeWeight));
         }
     }
 
@@ -2008,19 +2048,22 @@ struct CovarianceAccumulator(T, CovarianceAlgo covarianceAlgo, Summation summati
             deltaRight -= meanRight;
         }
         _count += v.count;
+        // Form the count weight first, as in variance merging, so count factors
+        // cannot overflow an otherwise representable between-group correction.
+        const T mergeWeight = cast(T) v.count * (cast(T) oldCount / count);
         static if (is(T == U) && summation == sumAlgo &&
             (summation == Summation.kbn || summation == Summation.kb2 ||
              summation == Summation.precise))
         {
             mergeMultivariateSum!("summatorLeft", "sumLeft", T)(summatorLeft, v);
             mergeMultivariateSum!("summatorRight", "sumRight", T)(summatorRight, v);
-            mergeMultivariateSum!("centeredSummatorOfProducts", "centeredSumOfProducts", T)(centeredSummatorOfProducts, v, deltaLeft * deltaRight * v.count * oldCount / count);
+            mergeMultivariateSum!("centeredSummatorOfProducts", "centeredSumOfProducts", T)(centeredSummatorOfProducts, v, deltaLeft * (deltaRight * mergeWeight));
         }
         else
         {
             summatorLeft.put(v.sumLeft!T);
             summatorRight.put(v.sumRight!T);
-            centeredSummatorOfProducts.put(v.centeredSumOfProducts!T + deltaLeft * deltaRight * v.count * oldCount / count);
+            centeredSummatorOfProducts.put(v.centeredSumOfProducts!T + deltaLeft * (deltaRight * mergeWeight));
         }
     }
 
@@ -3364,23 +3407,26 @@ struct CorrelationAccumulator(T, CorrelationAlgo correlationAlgo, Summation summ
             deltaRight -= meanRight!T;
         }
         _count += v.count;
+        // Form the count weight first, as in variance merging, so count factors
+        // cannot overflow an otherwise representable between-group correction.
+        const T mergeWeight = cast(T) v.count * (cast(T) oldCount / count);
         static if (is(T == U) && summation == sumAlgo &&
             (summation == Summation.kbn || summation == Summation.kb2 ||
              summation == Summation.precise))
         {
             mergeMultivariateSum!("summatorLeft", "sumLeft", T)(summatorLeft, v);
             mergeMultivariateSum!("summatorRight", "sumRight", T)(summatorRight, v);
-            mergeMultivariateSum!("centeredSummatorOfProducts", "centeredSumOfProducts", T)(centeredSummatorOfProducts, v, deltaLeft * deltaRight * v.count * oldCount / count);
-            mergeMultivariateSum!("centeredSummatorOfSquaresLeft", "centeredSumOfSquaresLeft", T)(centeredSummatorOfSquaresLeft, v, deltaLeft * deltaLeft * v.count * oldCount / count);
-            mergeMultivariateSum!("centeredSummatorOfSquaresRight", "centeredSumOfSquaresRight", T)(centeredSummatorOfSquaresRight, v, deltaRight * deltaRight * v.count * oldCount / count);
+            mergeMultivariateSum!("centeredSummatorOfProducts", "centeredSumOfProducts", T)(centeredSummatorOfProducts, v, deltaLeft * (deltaRight * mergeWeight));
+            mergeMultivariateSum!("centeredSummatorOfSquaresLeft", "centeredSumOfSquaresLeft", T)(centeredSummatorOfSquaresLeft, v, deltaLeft * (deltaLeft * mergeWeight));
+            mergeMultivariateSum!("centeredSummatorOfSquaresRight", "centeredSumOfSquaresRight", T)(centeredSummatorOfSquaresRight, v, deltaRight * (deltaRight * mergeWeight));
         }
         else
         {
             summatorLeft.put(v.sumLeft!T);
             summatorRight.put(v.sumRight!T);
-            centeredSummatorOfProducts.put(v.centeredSumOfProducts!T + deltaLeft * deltaRight * v.count * oldCount / count);
-            centeredSummatorOfSquaresLeft.put(v.centeredSumOfSquaresLeft!T + deltaLeft * deltaLeft * v.count * oldCount / count);
-            centeredSummatorOfSquaresRight.put(v.centeredSumOfSquaresRight!T + deltaRight * deltaRight * v.count * oldCount / count);
+            centeredSummatorOfProducts.put(v.centeredSumOfProducts!T + deltaLeft * (deltaRight * mergeWeight));
+            centeredSummatorOfSquaresLeft.put(v.centeredSumOfSquaresLeft!T + deltaLeft * (deltaLeft * mergeWeight));
+            centeredSummatorOfSquaresRight.put(v.centeredSumOfSquaresRight!T + deltaRight * (deltaRight * mergeWeight));
         }
     }
 
@@ -4492,23 +4538,26 @@ struct CorrelationAccumulator(T, CorrelationAlgo correlationAlgo, Summation summ
             deltaRight -= meanRight!T;
         }
         _count += v.count;
+        // Form the count weight first, as in variance merging, so count factors
+        // cannot overflow an otherwise representable between-group correction.
+        const T mergeWeight = cast(T) v.count * (cast(T) oldCount / count);
         static if (is(T == U) && summation == sumAlgo &&
             (summation == Summation.kbn || summation == Summation.kb2 ||
              summation == Summation.precise))
         {
             mergeMultivariateSum!("summatorLeft", "sumLeft", T)(summatorLeft, v);
             mergeMultivariateSum!("summatorRight", "sumRight", T)(summatorRight, v);
-            mergeMultivariateSum!("centeredSummatorOfProducts", "centeredSumOfProducts", T)(centeredSummatorOfProducts, v, deltaLeft * deltaRight * v.count * oldCount / count);
-            mergeMultivariateSum!("centeredSummatorOfSquaresLeft", "centeredSumOfSquaresLeft", T)(centeredSummatorOfSquaresLeft, v, deltaLeft * deltaLeft * v.count * oldCount / count);
-            mergeMultivariateSum!("centeredSummatorOfSquaresRight", "centeredSumOfSquaresRight", T)(centeredSummatorOfSquaresRight, v, deltaRight * deltaRight * v.count * oldCount / count);
+            mergeMultivariateSum!("centeredSummatorOfProducts", "centeredSumOfProducts", T)(centeredSummatorOfProducts, v, deltaLeft * (deltaRight * mergeWeight));
+            mergeMultivariateSum!("centeredSummatorOfSquaresLeft", "centeredSumOfSquaresLeft", T)(centeredSummatorOfSquaresLeft, v, deltaLeft * (deltaLeft * mergeWeight));
+            mergeMultivariateSum!("centeredSummatorOfSquaresRight", "centeredSumOfSquaresRight", T)(centeredSummatorOfSquaresRight, v, deltaRight * (deltaRight * mergeWeight));
         }
         else
         {
             summatorLeft.put(v.sumLeft!T);
             summatorRight.put(v.sumRight!T);
-            centeredSummatorOfProducts.put(v.centeredSumOfProducts!T + deltaLeft * deltaRight * v.count * oldCount / count);
-            centeredSummatorOfSquaresLeft.put(v.centeredSumOfSquaresLeft!T + deltaLeft * deltaLeft * v.count * oldCount / count);
-            centeredSummatorOfSquaresRight.put(v.centeredSumOfSquaresRight!T + deltaRight * deltaRight * v.count * oldCount / count);
+            centeredSummatorOfProducts.put(v.centeredSumOfProducts!T + deltaLeft * (deltaRight * mergeWeight));
+            centeredSummatorOfSquaresLeft.put(v.centeredSumOfSquaresLeft!T + deltaLeft * (deltaLeft * mergeWeight));
+            centeredSummatorOfSquaresRight.put(v.centeredSumOfSquaresRight!T + deltaRight * (deltaRight * mergeWeight));
         }
     }
 
