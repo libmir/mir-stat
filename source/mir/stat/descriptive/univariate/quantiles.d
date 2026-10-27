@@ -1557,6 +1557,16 @@ private real weightedUniformShiftedOverlap(Workspace)(scope Workspace workspace,
     return min(right - origin, upper) - max(left - origin, lower);
 }
 
+// TODO: Preserve small weight contributions when preparing cumulative weights
+// and effective size. Rounded boundaries can lose an overlap that matters to
+// a near-zero result: type7 on values [0,1,2], weights [1,1e-20,1], p=1e-20
+// can return about 2e-20 instead of 5e-21. Type8 has analogous boundary cases.
+// More precise query arithmetic alone cannot recover lost preparation terms.
+// A compensated rebuild was investigated but deferred: detecting uncertainty
+// near zero also triggered costly repairs for ordinary centered samples with
+// equal or nearly equal weights. A future fix should avoid that overhead.
+// Extreme underflow of squared normalized weights is a separate limitation.
+//
 // Uniform-window counterpart of the beta-weighted estimators. Use suffixes
 // for upper windows so small upper masses survive rounded cumulative prefixes.
 private auto weightedUniformQuantileAt(F, WeightedQuantileAlgo algorithm, Workspace,
