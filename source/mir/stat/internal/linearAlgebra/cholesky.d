@@ -44,7 +44,8 @@ Throws:
     Exception if factorization fails. Shape and finite-input preconditions
     are checked with assertions. Input is never modified.
 +/
-package(mir.stat) auto choleskyDecompose(TrianglePolicy triangle = TrianglePolicy.upper, A)(scope auto ref A a)
+package(mir.stat) AllocatedSlice!(Allocation.gc, Scalar!A, 2)
+choleskyDecompose(TrianglePolicy triangle = TrianglePolicy.upper, A)(scope auto ref A a)
     if (matrix!A)
 {
     int unused;
@@ -56,7 +57,8 @@ Symmetric-view overload. Uses the view's selected triangle and produces the
 factor in that triangle. Positive definiteness is checked by factorization,
 not implied by the view. Other requirements follow the plain-slice overload.
 +/
-package(mir.stat) auto choleskyDecompose(TrianglePolicy triangle, A)(scope auto ref const(SymmetricView!(triangle, A)) a)
+package(mir.stat) AllocatedSlice!(Allocation.gc, Scalar!A, 2)
+choleskyDecompose(TrianglePolicy triangle, A)(scope auto ref const(SymmetricView!(triangle, A)) a)
     if (matrix!A)
 {
     return choleskyDecompose!triangle(a.storage);
@@ -76,7 +78,8 @@ Reference-counted variant of $(LINK2 #choleskyDecompose, choleskyDecompose).
 The parameters and failure behavior are the same. Storage is released with
 its last owning reference. Native numeric inputs support `@safe pure @nogc`.
 +/
-package(mir.stat) auto rcCholeskyDecompose(TrianglePolicy triangle = TrianglePolicy.upper, A)(scope auto ref A a)
+package(mir.stat) AllocatedSlice!(Allocation.rc, Scalar!A, 2)
+rcCholeskyDecompose(TrianglePolicy triangle = TrianglePolicy.upper, A)(scope auto ref A a)
     if (matrix!A)
 {
     int unused;
@@ -88,7 +91,8 @@ Symmetric-view overload. Uses the view's selected triangle and produces the
 factor in that triangle. Positive definiteness is checked by factorization,
 not implied by the view. Other requirements follow the plain-slice overload.
 +/
-package(mir.stat) auto rcCholeskyDecompose(TrianglePolicy triangle, A)(scope auto ref const(SymmetricView!(triangle, A)) a)
+package(mir.stat) AllocatedSlice!(Allocation.rc, Scalar!A, 2)
+rcCholeskyDecompose(TrianglePolicy triangle, A)(scope auto ref const(SymmetricView!(triangle, A)) a)
     if (matrix!A)
 {
     return rcCholeskyDecompose!triangle(a.storage);
@@ -110,7 +114,8 @@ Custom-allocator variant of $(LINK2 #choleskyDecompose, choleskyDecompose).
 with the same allocator after all views are finished. Failure releases result
 storage before propagating the exception. No separate scratch buffer is used.
 +/
-package(mir.stat) auto makeCholeskyDecompose(TrianglePolicy triangle = TrianglePolicy.upper, Allocator, A)(
+package(mir.stat) AllocatedSlice!(Allocation.custom, Scalar!A, 2)
+makeCholeskyDecompose(TrianglePolicy triangle = TrianglePolicy.upper, Allocator, A)(
     auto ref Allocator allocator, scope auto ref A a)
     if (matrix!A)
 {
@@ -122,7 +127,8 @@ Symmetric-view overload. Uses the view's selected triangle and produces the
 factor in that triangle. Positive definiteness is checked by factorization,
 not implied by the view. Other requirements follow the plain-slice overload.
 +/
-package(mir.stat) auto makeCholeskyDecompose(TrianglePolicy triangle, A, Allocator)(
+package(mir.stat) AllocatedSlice!(Allocation.custom, Scalar!A, 2)
+makeCholeskyDecompose(TrianglePolicy triangle, A, Allocator)(
     auto ref Allocator allocator,
     scope auto ref const(SymmetricView!(triangle, A)) a)
     if (matrix!A)
@@ -144,7 +150,8 @@ version(mir_stat_test_linearAlgebra)
     assert(result == expected);
 }
 
-private auto factor(Allocation policy, TrianglePolicy triangle, Allocator, A)(
+private AllocatedSlice!(policy, Scalar!A, 2)
+factor(Allocation policy, TrianglePolicy triangle, Allocator, A)(
     ref Allocator allocator, scope auto ref A a)
 {
     assert(a.length!0 == a.length!1, "Cholesky requires a square matrix");
@@ -468,7 +475,8 @@ preconditions; nonfinite right-hand sides propagate through the arithmetic.
 General strides and computed inputs are supported. Empty systems and matrices
 with zero right-hand sides return empty results. Shape checks use assertions.
 +/
-package(mir.stat) auto choleskySolve(TrianglePolicy triangle = TrianglePolicy.upper, A, B)(
+package(mir.stat) AllocatedSlice!(Allocation.gc, Scalar!A, B.N)
+choleskySolve(TrianglePolicy triangle = TrianglePolicy.upper, A, B)(
     scope auto ref A factor, scope auto ref B b)
     if (matrix!A && rightHandSide!B && is(Scalar!A == Scalar!B))
 {
@@ -493,7 +501,8 @@ Parameters and preconditions are the same. The owning solution releases its
 storage with the last owning reference. Native inputs support
 `@safe pure nothrow @nogc` calls.
 +/
-package(mir.stat) auto rcCholeskySolve(TrianglePolicy triangle = TrianglePolicy.upper, A, B)(
+package(mir.stat) AllocatedSlice!(Allocation.rc, Scalar!A, B.N)
+rcCholeskySolve(TrianglePolicy triangle = TrianglePolicy.upper, A, B)(
     scope auto ref A factor, scope auto ref B b)
     if (matrix!A && rightHandSide!B && is(Scalar!A == Scalar!B))
 {
@@ -519,7 +528,8 @@ with the same allocator after all solution views are finished. Exceptions from
 input iterators release the allocated solution before propagating. No factor
 copy or separate scratch allocation is needed.
 +/
-package(mir.stat) auto makeCholeskySolve(TrianglePolicy triangle = TrianglePolicy.upper, Allocator, A, B)(
+package(mir.stat) AllocatedSlice!(Allocation.custom, Scalar!A, B.N)
+makeCholeskySolve(TrianglePolicy triangle = TrianglePolicy.upper, Allocator, A, B)(
     auto ref Allocator allocator, scope auto ref A factor, scope auto ref B b)
     if (matrix!A && rightHandSide!B && is(Scalar!A == Scalar!B))
 {
@@ -546,7 +556,8 @@ private void checkSolve(A, B)(scope auto ref A factor, scope auto ref B b)
     assert(factor.length!0 == b.length!0, "Incompatible Cholesky solve dimensions");
 }
 
-private auto solve(Allocation policy, TrianglePolicy triangle, Allocator, A, B)(
+private AllocatedSlice!(policy, Scalar!A, B.N)
+solve(Allocation policy, TrianglePolicy triangle, Allocator, A, B)(
     ref Allocator allocator, scope auto ref A factor, scope auto ref B b)
 {
     checkSolve(factor, b);

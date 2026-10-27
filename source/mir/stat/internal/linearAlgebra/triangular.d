@@ -47,7 +47,8 @@ See_Also: $(LINK2 #rcMtimesTriangular, rcMtimesTriangular),
     $(LINK2 #makeMtimesTriangular, makeMtimesTriangular),
     $(LINK2 #mtimesTriangularInto, mtimesTriangularInto)
 +/
-package(mir.stat) auto mtimesTriangular(TrianglePolicy triangle = TrianglePolicy.upper,
+package(mir.stat) AllocatedSlice!(Allocation.gc, Scalar!A, B.N)
+mtimesTriangular(TrianglePolicy triangle = TrianglePolicy.upper,
     DiagonalPolicy diagonal = DiagonalPolicy.nonUnit, A, B)(scope auto ref A a, scope auto ref B b)
     if (compatible!(A, B))
 {
@@ -71,7 +72,8 @@ Parameters and shape requirements are the same. The returned owning slice
 has the shape of `b`; storage is released with its last owning reference.
 Native inputs support `@safe pure nothrow @nogc` calls.
 +/
-package(mir.stat) auto rcMtimesTriangular(TrianglePolicy triangle = TrianglePolicy.upper,
+package(mir.stat) AllocatedSlice!(Allocation.rc, Scalar!A, B.N)
+rcMtimesTriangular(TrianglePolicy triangle = TrianglePolicy.upper,
     DiagonalPolicy diagonal = DiagonalPolicy.nonUnit, A, B)(scope auto ref A a, scope auto ref B b)
     if (compatible!(A, B))
 {
@@ -99,7 +101,8 @@ shape requirements are the same. The result has the shape of `b`; dispose
 If computation throws, allocated result storage is disposed before propagating
 the exception. Attributes depend on the allocator and input iterators.
 +/
-package(mir.stat) auto makeMtimesTriangular(TrianglePolicy triangle = TrianglePolicy.upper,
+package(mir.stat) AllocatedSlice!(Allocation.custom, Scalar!A, B.N)
+makeMtimesTriangular(TrianglePolicy triangle = TrianglePolicy.upper,
     DiagonalPolicy diagonal = DiagonalPolicy.nonUnit, Allocator, A, B)(auto ref Allocator allocator,
     scope auto ref A a, scope auto ref B b)
     if (compatible!(A, B))
@@ -256,7 +259,8 @@ Preconditions:
 The unused triangle and implicit unit diagonal are never read. Transposed
 views are supported without conjugation or materialization.
 +/
-package(mir.stat) auto mtimesTriangularRight(TrianglePolicy triangle = TrianglePolicy.upper,
+package(mir.stat) AllocatedSlice!(Allocation.gc, Scalar!A, A.N)
+mtimesTriangularRight(TrianglePolicy triangle = TrianglePolicy.upper,
     DiagonalPolicy diagonal = DiagonalPolicy.nonUnit, A, B)(scope auto ref A a, scope auto ref B b)
     if (compatible!(B, A))
 {
@@ -279,7 +283,8 @@ RC variant of $(LINK2 #mtimesTriangularRight, mtimesTriangularRight).
 Parameters and preconditions are the same; the result is an owning RC slice
 with the shape of `a`, requiring no manual disposal.
 +/
-package(mir.stat) auto rcMtimesTriangularRight(TrianglePolicy triangle = TrianglePolicy.upper,
+package(mir.stat) AllocatedSlice!(Allocation.rc, Scalar!A, A.N)
+rcMtimesTriangularRight(TrianglePolicy triangle = TrianglePolicy.upper,
     DiagonalPolicy diagonal = DiagonalPolicy.nonUnit, A, B)(scope auto ref A a, scope auto ref B b)
     if (compatible!(B, A))
 {
@@ -307,7 +312,8 @@ Custom-allocator variant of $(LINK2 #mtimesTriangularRight, mtimesTriangularRigh
 same. Dispose `result.field` with that allocator once all views are finished.
 The result has the shape of `a`. Computation failure releases result storage.
 +/
-package(mir.stat) auto makeMtimesTriangularRight(TrianglePolicy triangle = TrianglePolicy.upper,
+package(mir.stat) AllocatedSlice!(Allocation.custom, Scalar!A, A.N)
+makeMtimesTriangularRight(TrianglePolicy triangle = TrianglePolicy.upper,
     DiagonalPolicy diagonal = DiagonalPolicy.nonUnit, Allocator, A, B)(auto ref Allocator allocator,
     scope auto ref A a, scope auto ref B b)
     if (compatible!(B, A))
@@ -381,7 +387,8 @@ private void checkTriangularDimensions(bool right, A, B)(scope auto ref A a, sco
         assert(a.length!0 == b.length!0, "Incompatible triangular product dimensions");
 }
 
-private auto multiplyTriangularWithAllocation(Allocation policy, TrianglePolicy triangle,
+private AllocatedSlice!(policy, Scalar!A, B.N)
+multiplyTriangularWithAllocation(Allocation policy, TrianglePolicy triangle,
     DiagonalPolicy diagonal, bool right, Allocator, A, B)(ref Allocator allocator,
     scope auto ref A a, scope auto ref B b)
 {

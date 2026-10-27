@@ -8,10 +8,25 @@ module mir.stat.internal.linearAlgebra.allocation;
 // Result ownership policy; independent of the ownership of input slices.
 package(mir.stat) enum Allocation { gc, rc, custom }
 
+import mir.ndslice.slice: Slice;
+import mir.rc.array: RCI;
+
+// Allocated results are contiguous slices of the requested rank. GC and
+// custom allocation share a pointer-backed type but retain distinct lifetimes.
+package(mir.stat) template AllocatedSlice(Allocation policy, T, size_t rank)
+    if (rank > 0)
+{
+    static if (policy == Allocation.rc)
+        alias AllocatedSlice = Slice!(RCI!T, rank);
+    else
+        alias AllocatedSlice = Slice!(T*, rank);
+}
+
 // Allocate result storage after checking element and byte counts. Callers must
 // initialize every element before reading it. Custom storage belongs to the
 // caller and is released by disposing the returned slice's field.
-package(mir.stat) auto allocate(Allocation policy, T, size_t N, Allocator)(
+package(mir.stat) AllocatedSlice!(policy, T, N)
+allocate(Allocation policy, T, size_t N, Allocator)(
     ref Allocator allocator, size_t[N] shape)
 {
     import mir.ndslice.allocation: uninitSlice, mininitRcslice, makeUninitSlice;

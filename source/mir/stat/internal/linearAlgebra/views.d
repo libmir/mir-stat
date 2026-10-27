@@ -37,7 +37,8 @@ Unused entries are not read. The descriptor is copied, retaining RC ownership
 when present. The original storage is not modified. This expresses symmetry,
 not positive definiteness; no element-wise validation is performed.
 +/
-package(mir.stat) auto symmetricView(TrianglePolicy triangle = TrianglePolicy.upper, A)(A a)
+package(mir.stat) SymmetricView!(triangle, A)
+symmetricView(TrianglePolicy triangle = TrianglePolicy.upper, A)(A a)
     if (matrix!A)
 {
     static assert(triangle == TrianglePolicy.upper || triangle == TrianglePolicy.lower);
@@ -67,11 +68,12 @@ package(mir.stat) struct SymmetricView(TrianglePolicy selectedTriangle, A)
     /// Matrix rank.
     enum N = 2;
     /// Logical matrix shape.
-    @property auto shape() const { return _storage.shape; }
+    @property size_t[2] shape() const { return _storage.shape; }
     /// Length of a logical matrix dimension.
     size_t length(size_t dimension = 0)() const { return _storage.length!dimension; }
+    private alias Element = typeof(const(A).init[0,0]);
     /// Read an element, reflecting indices into the selected triangle.
-    auto opIndex(size_t i, size_t j) const
+    Element opIndex(size_t i, size_t j) const
     {
         assert(i < length!0 && j < length!1, "Symmetric view index out of bounds");
         return (triangle == TrianglePolicy.upper ? j >= i : j <= i)
@@ -94,7 +96,8 @@ read as zero. `DiagonalPolicy.unit` reads diagonal entries as one without access
 stored diagonal values. The descriptor retains the input's ownership policy.
 This is a structural view, not a claim of invertibility or a Cholesky factor.
 +/
-package(mir.stat) auto triangularView(TrianglePolicy triangle = TrianglePolicy.upper, DiagonalPolicy diagonal = DiagonalPolicy.nonUnit, A)(A a)
+package(mir.stat) TriangularView!(triangle, diagonal, A)
+triangularView(TrianglePolicy triangle = TrianglePolicy.upper, DiagonalPolicy diagonal = DiagonalPolicy.nonUnit, A)(A a)
     if (matrix!A)
 {
     static assert(triangle == TrianglePolicy.upper || triangle == TrianglePolicy.lower);
@@ -128,13 +131,14 @@ package(mir.stat) struct TriangularView(TrianglePolicy selectedTriangle, Diagona
     /// Matrix rank.
     enum N = 2;
     /// Logical matrix shape.
-    @property auto shape() const { return _storage.shape; }
+    @property size_t[2] shape() const { return _storage.shape; }
     /// Length of a logical dimension.
     size_t length(size_t dimension = 0)() const { return _storage.length!dimension; }
+    private alias Element = Unqual!(typeof(const(A).init[0,0]));
     /// Read a logical value without touching implicit entries.
-    auto opIndex(size_t i, size_t j) const
+    Element opIndex(size_t i, size_t j) const
     {
-        alias T = Unqual!(typeof(_storage[i,j]));
+        alias T = Element;
         assert(i < length!0 && j < length!1, "Triangular view index out of bounds");
         static if (diagonal == DiagonalPolicy.unit)
             if (i == j) return T(1);
@@ -181,4 +185,29 @@ version(mir_stat_test_linearAlgebra)
     const constOwner = owner;
     auto constView = triangularView(constOwner);
     assert(constView[0,0] == 2 && constView[0,1] == 3 && constView[1,1] == 4);
+}
+
+// Symmetric indexing preserves stored qualifiers; triangular values also
+// represent implicit zero/one entries and remain unqualified values.
+version(mir_stat_test_linearAlgebra)
+@safe pure nothrow @nogc unittest
+{
+    import mir.ndslice.slice: Slice;
+    import mir.ndslice.topology: map;
+    import mir.rc.array: RCI;
+    import mir.complex: Complex;
+    import std.meta: AliasSeq;
+    static foreach (T; AliasSeq!(float, double, real, Complex!double))
+    {{
+        static foreach (Matrix; AliasSeq!(Slice!(T*, 2), Slice!(const(T)*, 2), Slice!(RCI!T, 2)))
+        {{
+            Matrix matrix;
+            static assert(is(typeof(symmetricView(matrix)[0,0]) == const(T)));
+            static assert(is(typeof(triangularView(matrix)[0,0]) == T));
+        }}
+        Slice!(T*, 2) matrix;
+        auto computed = matrix.map!((T value) => value);
+        static assert(is(typeof(symmetricView(computed)[0,0]) == T));
+        static assert(is(typeof(triangularView(computed)[0,0]) == T));
+    }}
 }
