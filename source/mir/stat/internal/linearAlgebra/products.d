@@ -12,6 +12,11 @@ dimensions. One-dimensional inputs represent a row vector on the left and a
 column vector on the right. Invalid shapes violate the function preconditions.
 Only result storage is allocated; input views are never materialized.
 
+Pass `triangularView(a)` on either side of `mtimes` to select triangular
+multiplication automatically. The same dispatch is available through `rcMtimes`,
+`makeMtimes`, and `mtimesInto`. The view carries the triangle and diagonal policy;
+the other operand must be an ordinary ndslice.
+
 License: $(HTTP www.apache.org/licenses/LICENSE-2.0, Apache-2.0)
 Copyright: 2026 Mir Stat Authors.
 +/
@@ -48,6 +53,10 @@ This is matrix multiplication, not element-wise multiplication. For shapes
 produce a vector of length `m`; a vector and a matrix produce a vector of
 length `n`. Two vectors of length `k` produce a scalar, without allocation.
 Complex inputs are multiplied without conjugation.
+
+Use `mtimes(triangularView(a), b)` or `mtimes(b, triangularView(a))` for a
+triangular operand. These overloads select the left or right triangular product
+without requiring a different function name. Unused entries are not read.
 
 Params:
     a = Left operand, a rank-one or rank-two ndslice.
@@ -114,6 +123,25 @@ version(mir_stat_test_linearAlgebra)
     assert(mtimes(v, v) == 14);
 }
 
+/// Declare matrix structure once and use ordinary multiplication syntax on either side.
+version(mir_stat_test_linearAlgebra)
+@safe pure nothrow unittest
+{
+    import mir.ndslice.slice: sliced;
+    import mir.stat.internal.linearAlgebra.views: triangularView;
+
+    double[4] data = [2, 3, double.nan, 4];
+    double[4] values = [1, 2, 3, 4];
+    auto upper = triangularView!(TrianglePolicy.upper)(data[].sliced(2, 2));
+    auto b = values[].sliced(2, 2);
+    // The NaN below the selected triangle is ignored.
+    assert(mtimes(upper, b) == [[11, 16], [12, 16]]);
+    assert(mtimes(b, upper) == [[2, 11], [6, 25]]);
+
+    // Transposing the view also changes its triangle policy to lower.
+    assert(mtimes(upper.transposed, b) == [[2, 4], [15, 22]]);
+}
+
 /++
 Multiply two matrices or vectors with reference-counted result storage.
 
@@ -151,6 +179,11 @@ version(mir_stat_test_linearAlgebra)
     const a = triangularView(data[].sliced(2, 2));
     assert(rcMtimes(a, values[].sliced) == [28, 24]);
     assert(rcMtimes(values[].sliced, a) == [10, 39]);
+
+    // Unit-diagonal metadata replaces stored diagonal entries with ones.
+    auto unit = triangularView!(TrianglePolicy.upper, DiagonalPolicy.unit)(data[].sliced(2, 2));
+    assert(rcMtimes(unit, values[].sliced) == [23, 6]);
+    assert(rcMtimes(values[].sliced, unit) == [5, 21]);
 }
 
 /++
@@ -288,6 +321,27 @@ version(mir_stat_test_linearAlgebra)
     scope(exit) Mallocator.instance.dispose(result.field);
     static immutable expected = [[7.0, 10], [15.0, 22]];
     assert(result == expected);
+}
+
+/// Triangular dispatch also preserves custom allocation and disposal conventions.
+version(mir_stat_test_linearAlgebra)
+@system nothrow @nogc unittest
+{
+    import mir.ndslice.slice: sliced;
+    import mir.stat.internal.linearAlgebra.views: triangularView;
+    import std.experimental.allocator.mallocator: Mallocator;
+    import std.experimental.allocator: dispose;
+
+    double[4] data = [2, 3, double.nan, 4];
+    double[2] values = [5, 6];
+    auto upper = triangularView(data[].sliced(2, 2));
+    auto v = values[].sliced;
+    auto left = makeMtimes(Mallocator.instance, upper, v);
+    scope(exit) Mallocator.instance.dispose(left.field);
+    auto right = makeMtimes(Mallocator.instance, v, upper);
+    scope(exit) Mallocator.instance.dispose(right.field);
+    assert(left == [28, 24]);
+    assert(right == [10, 39]);
 }
 
 // Validate the contracted dimension before allocating or writing output.
@@ -460,6 +514,25 @@ package(mir.stat) void mtimesInto(TrianglePolicy triangle, DiagonalPolicy diagon
 {
     import mir.stat.internal.linearAlgebra.triangular: mtimesTriangularRightInto;
     mtimesTriangularRightInto!(triangle, diagonal)(b, a.storage, c);
+}
+
+/// Reuse caller storage while selecting triangular multiplication from a view.
+version(mir_stat_test_linearAlgebra)
+@safe pure nothrow @nogc unittest
+{
+    import mir.ndslice.slice: sliced;
+    import mir.stat.internal.linearAlgebra.views: triangularView;
+
+    double[4] data = [2, 3, double.nan, 4];
+    double[2] values = [5, 6];
+    double[2] buffer;
+    auto upper = triangularView(data[].sliced(2, 2));
+    auto v = values[].sliced;
+    auto output = buffer[].sliced;
+    mtimesInto(upper, v, output);
+    assert(output == [28, 24]);
+    mtimesInto(v, upper, output);
+    assert(output == [10, 39]);
 }
 
 /// Reuse an output buffer, including a transposed view of its storage.
