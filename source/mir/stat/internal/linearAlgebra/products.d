@@ -20,22 +20,14 @@ module mir.stat.internal.linearAlgebra.products;
 version(mir_stat_test) version = mir_stat_test_linearAlgebra;
 version(mir_stat_test_blas) version = mir_stat_test_linearAlgebra;
 
-private enum hasBlas = is(typeof({ import mir.blas; }));
 
-import mir.ndslice.slice: isSlice;
-import mir.internal.utility: isComplex, realType;
-import std.traits: Unqual, isFloatingPoint;
+import mir.stat.internal.linearAlgebra.types: Scalar, numericSlice, TrianglePolicy, DiagonalPolicy;
+import mir.stat.internal.linearAlgebra.backend: hasBlas, blasNumber, nativeSlice, blasMatrix, blasVector;
+import mir.stat.internal.linearAlgebra.views: TriangularView;
 import mir.stat.internal.linearAlgebra.allocation;
 
-package alias Scalar(A) = Unqual!(typeof(A.init._iterator[0]));
-package enum numericSlice(A) = isSlice!A && (A.N == 1 || A.N == 2) &&
-    (isFloatingPoint!(Scalar!A) || isComplex!(Scalar!A));
 private enum compatible(A, B) = numericSlice!A && numericSlice!B &&
     is(Scalar!A == Scalar!B);
-package enum blasNumber(T) = is(realType!T == float) || is(realType!T == double);
-// BLAS needs native pointers. Computed ndslice iterators use the scalar kernel.
-package enum nativeSlice(A) = is(typeof(A.init.lightScope._iterator) : const(Scalar!A)*);
-
 /++
 Multiply two matrices or vectors, allocating a GC-managed result when needed.
 
@@ -60,6 +52,34 @@ package(mir.stat) auto mtimes(A, B)(scope auto ref A a, scope auto ref B b)
 {
     int unused;
     return multiplyWithAllocation!(Allocation.gc)(unused, a, b);
+}
+
+/++
+Triangular-view overload. Uses the view's triangle and diagonal policy without
+materializing implicit entries. The other operand must be an ordinary ndslice.
+Ownership and aliasing requirements follow the corresponding plain-slice API.
++/
+package(mir.stat) auto mtimes(TrianglePolicy triangle, DiagonalPolicy diagonal, A, B)(
+    scope auto ref const(TriangularView!(triangle, diagonal, A)) a,
+    scope auto ref B b)
+    if (numericSlice!B)
+{
+    import mir.stat.internal.linearAlgebra.triangular: mtimesTriangular;
+    return mtimesTriangular!(triangle, diagonal)(a.storage, b);
+}
+
+/++
+Triangular-view overload. Uses the view's triangle and diagonal policy without
+materializing implicit entries. The other operand must be an ordinary ndslice.
+Ownership and aliasing requirements follow the corresponding plain-slice API.
++/
+package(mir.stat) auto mtimes(TrianglePolicy triangle, DiagonalPolicy diagonal, A, B)(
+    scope auto ref B b,
+    scope auto ref const(TriangularView!(triangle, diagonal, A)) a)
+    if (numericSlice!B)
+{
+    import mir.stat.internal.linearAlgebra.triangular: mtimesTriangularRight;
+    return mtimesTriangularRight!(triangle, diagonal)(b, a.storage);
 }
 
 /// Matrix multiplication and matrix-vector multiplication with GC results.
@@ -104,6 +124,47 @@ package(mir.stat) auto rcMtimes(A, B)(scope auto ref A a, scope auto ref B b)
     return multiplyWithAllocation!(Allocation.rc)(unused, a, b);
 }
 
+/// Multiplication dispatches from triangular metadata without extra options.
+version(mir_stat_test_linearAlgebra)
+@safe pure nothrow @nogc unittest
+{
+    import mir.ndslice.slice: sliced;
+    import mir.stat.internal.linearAlgebra.views: triangularView;
+    double[4] data = [2, 3, double.nan, 4];
+    double[2] values = [5, 6];
+    const a = triangularView(data[].sliced(2, 2));
+    assert(rcMtimes(a, values[].sliced) == [28, 24]);
+    assert(rcMtimes(values[].sliced, a) == [10, 39]);
+}
+
+/++
+Triangular-view overload. Uses the view's triangle and diagonal policy without
+materializing implicit entries. The other operand must be an ordinary ndslice.
+Ownership and aliasing requirements follow the corresponding plain-slice API.
++/
+package(mir.stat) auto rcMtimes(TrianglePolicy triangle, DiagonalPolicy diagonal, A, B)(
+    scope auto ref const(TriangularView!(triangle, diagonal, A)) a,
+    scope auto ref B b)
+    if (numericSlice!B)
+{
+    import mir.stat.internal.linearAlgebra.triangular: rcMtimesTriangular;
+    return rcMtimesTriangular!(triangle, diagonal)(a.storage, b);
+}
+
+/++
+Triangular-view overload. Uses the view's triangle and diagonal policy without
+materializing implicit entries. The other operand must be an ordinary ndslice.
+Ownership and aliasing requirements follow the corresponding plain-slice API.
++/
+package(mir.stat) auto rcMtimes(TrianglePolicy triangle, DiagonalPolicy diagonal, A, B)(
+    scope auto ref B b,
+    scope auto ref const(TriangularView!(triangle, diagonal, A)) a)
+    if (numericSlice!B)
+{
+    import mir.stat.internal.linearAlgebra.triangular: rcMtimesTriangularRight;
+    return rcMtimesTriangularRight!(triangle, diagonal)(b, a.storage);
+}
+
 /// Borrowed inputs can produce an owning result without using the GC.
 version(mir_stat_test_linearAlgebra)
 @safe pure nothrow @nogc unittest
@@ -117,6 +178,21 @@ version(mir_stat_test_linearAlgebra)
     static assert(is(typeof(result) == Slice!(RCI!double, 2)));
     static immutable expected = [[7.0, 10], [15.0, 22]];
     assert(result == expected);
+}
+
+version(mir_stat_test_linearAlgebra)
+@safe pure nothrow @nogc unittest
+{
+    import mir.ndslice.allocation: mininitRcslice;
+    import mir.ndslice.slice: sliced;
+    import mir.stat.internal.linearAlgebra.views: triangularView;
+    auto owner = mininitRcslice!double(2,2);
+    owner[0,0] = 2; owner[0,1] = 3;
+    owner[1,0] = double.nan; owner[1,1] = 4;
+    const constOwner = owner;
+    auto view = triangularView(constOwner);
+    double[2] values = [5,6];
+    assert(rcMtimes(view, values[].sliced) == [28,24]);
 }
 
 /++
@@ -146,6 +222,36 @@ package(mir.stat) auto makeMtimes(Allocator, A, B)(auto ref Allocator allocator,
     if (compatible!(A, B))
 {
     return multiplyWithAllocation!(Allocation.custom)(allocator, a, b);
+}
+
+/++
+Triangular-view overload. Uses the view's triangle and diagonal policy without
+materializing implicit entries. The other operand must be an ordinary ndslice.
+Ownership and aliasing requirements follow the corresponding plain-slice API.
++/
+package(mir.stat) auto makeMtimes(TrianglePolicy triangle, DiagonalPolicy diagonal, A, B, Allocator)(
+    auto ref Allocator allocator,
+    scope auto ref const(TriangularView!(triangle, diagonal, A)) a,
+    scope auto ref B b)
+    if (numericSlice!B)
+{
+    import mir.stat.internal.linearAlgebra.triangular: makeMtimesTriangular;
+    return makeMtimesTriangular!(triangle, diagonal)(allocator, a.storage, b);
+}
+
+/++
+Triangular-view overload. Uses the view's triangle and diagonal policy without
+materializing implicit entries. The other operand must be an ordinary ndslice.
+Ownership and aliasing requirements follow the corresponding plain-slice API.
++/
+package(mir.stat) auto makeMtimes(TrianglePolicy triangle, DiagonalPolicy diagonal, A, B, Allocator)(
+    auto ref Allocator allocator,
+    scope auto ref B b,
+    scope auto ref const(TriangularView!(triangle, diagonal, A)) a)
+    if (numericSlice!B)
+{
+    import mir.stat.internal.linearAlgebra.triangular: makeMtimesTriangularRight;
+    return makeMtimesTriangularRight!(triangle, diagonal)(allocator, b, a.storage);
 }
 
 /// Custom storage is explicitly released with the allocator that created it.
@@ -302,6 +408,36 @@ package(mir.stat) void mtimesInto(A, B, C)(scope auto ref A a, scope auto ref B 
     }
 }
 
+/++
+Triangular-view overload. Uses the view's triangle and diagonal policy without
+materializing implicit entries. The other operand must be an ordinary ndslice.
+Ownership and aliasing requirements follow the corresponding plain-slice API.
++/
+package(mir.stat) void mtimesInto(TrianglePolicy triangle, DiagonalPolicy diagonal, A, B, C)(
+    scope auto ref const(TriangularView!(triangle, diagonal, A)) a,
+    scope auto ref B b,
+    scope auto ref C c)
+    if (numericSlice!B)
+{
+    import mir.stat.internal.linearAlgebra.triangular: mtimesTriangularInto;
+    mtimesTriangularInto!(triangle, diagonal)(a.storage, b, c);
+}
+
+/++
+Triangular-view overload. Uses the view's triangle and diagonal policy without
+materializing implicit entries. The other operand must be an ordinary ndslice.
+Ownership and aliasing requirements follow the corresponding plain-slice API.
++/
+package(mir.stat) void mtimesInto(TrianglePolicy triangle, DiagonalPolicy diagonal, A, B, C)(
+    scope auto ref B b,
+    scope auto ref const(TriangularView!(triangle, diagonal, A)) a,
+    scope auto ref C c)
+    if (numericSlice!B)
+{
+    import mir.stat.internal.linearAlgebra.triangular: mtimesTriangularRightInto;
+    mtimesTriangularRightInto!(triangle, diagonal)(b, a.storage, c);
+}
+
 /// Reuse an output buffer, including a transposed view of its storage.
 version(mir_stat_test_linearAlgebra)
 @safe pure nothrow @nogc unittest
@@ -317,23 +453,6 @@ version(mir_stat_test_linearAlgebra)
     static immutable expected = [[7.0, 10], [15.0, 22]];
     assert(output == expected);
     assert(storage == [7, 15, 10, 22]);
-}
-
-// BLAS requires representable dimensions and nonoverlapping rows or columns.
-package bool blasMatrix(A)(scope auto ref A a)
-{
-    import cblas: blasint;
-    return a.length!0 <= blasint.max && a.length!1 <= blasint.max &&
-        a._stride!0 > 0 && a._stride!1 > 0 &&
-        a._stride!0 <= blasint.max && a._stride!1 <= blasint.max &&
-        ((a._stride!1 == 1 && a._stride!0 >= a.length!1) ||
-         (a._stride!0 == 1 && a._stride!1 >= a.length!0));
-}
-
-package bool blasVector(A)(scope auto ref A a)
-{
-    import cblas: blasint;
-    return a.length <= blasint.max && a._stride!0 > 0 && a._stride!0 <= blasint.max;
 }
 
 version(mir_stat_test_linearAlgebra)
@@ -572,121 +691,3 @@ version(mir_stat_test_linearAlgebra)
 }
 
 // Structural triangular operands dispatch to the existing specialized kernels.
-import mir.stat.internal.linearAlgebra.views: TriangularView;
-import mir.stat.internal.linearAlgebra.triangular: Triangle, Diagonal;
-
-/++
-Triangular-view overload. Uses the view's triangle and diagonal policy without
-materializing implicit entries. The other operand must be an ordinary ndslice.
-Ownership and aliasing requirements follow the corresponding plain-slice API.
-+/
-package(mir.stat) auto mtimes(Triangle triangle, Diagonal diagonal, A, B)(
-    scope auto ref const(TriangularView!(triangle, diagonal, A)) a,
-    scope auto ref B b)
-    if (numericSlice!B)
-{
-    import mir.stat.internal.linearAlgebra.triangular: mtimesTriangular;
-    return mtimesTriangular!(triangle, diagonal)(a.storage, b);
-}
-
-/++
-Triangular-view overload. Uses the view's triangle and diagonal policy without
-materializing implicit entries. The other operand must be an ordinary ndslice.
-Ownership and aliasing requirements follow the corresponding plain-slice API.
-+/
-package(mir.stat) auto mtimes(Triangle triangle, Diagonal diagonal, A, B)(
-    scope auto ref B b,
-    scope auto ref const(TriangularView!(triangle, diagonal, A)) a)
-    if (numericSlice!B)
-{
-    import mir.stat.internal.linearAlgebra.triangular: mtimesTriangularRight;
-    return mtimesTriangularRight!(triangle, diagonal)(b, a.storage);
-}
-
-/++
-Triangular-view overload. Uses the view's triangle and diagonal policy without
-materializing implicit entries. The other operand must be an ordinary ndslice.
-Ownership and aliasing requirements follow the corresponding plain-slice API.
-+/
-package(mir.stat) auto rcMtimes(Triangle triangle, Diagonal diagonal, A, B)(
-    scope auto ref const(TriangularView!(triangle, diagonal, A)) a,
-    scope auto ref B b)
-    if (numericSlice!B)
-{
-    import mir.stat.internal.linearAlgebra.triangular: rcMtimesTriangular;
-    return rcMtimesTriangular!(triangle, diagonal)(a.storage, b);
-}
-
-/++
-Triangular-view overload. Uses the view's triangle and diagonal policy without
-materializing implicit entries. The other operand must be an ordinary ndslice.
-Ownership and aliasing requirements follow the corresponding plain-slice API.
-+/
-package(mir.stat) auto rcMtimes(Triangle triangle, Diagonal diagonal, A, B)(
-    scope auto ref B b,
-    scope auto ref const(TriangularView!(triangle, diagonal, A)) a)
-    if (numericSlice!B)
-{
-    import mir.stat.internal.linearAlgebra.triangular: rcMtimesTriangularRight;
-    return rcMtimesTriangularRight!(triangle, diagonal)(b, a.storage);
-}
-
-/++
-Triangular-view overload. Uses the view's triangle and diagonal policy without
-materializing implicit entries. The other operand must be an ordinary ndslice.
-Ownership and aliasing requirements follow the corresponding plain-slice API.
-+/
-package(mir.stat) auto makeMtimes(Triangle triangle, Diagonal diagonal, A, B, Allocator)(
-    auto ref Allocator allocator,
-    scope auto ref const(TriangularView!(triangle, diagonal, A)) a,
-    scope auto ref B b)
-    if (numericSlice!B)
-{
-    import mir.stat.internal.linearAlgebra.triangular: makeMtimesTriangular;
-    return makeMtimesTriangular!(triangle, diagonal)(allocator, a.storage, b);
-}
-
-/++
-Triangular-view overload. Uses the view's triangle and diagonal policy without
-materializing implicit entries. The other operand must be an ordinary ndslice.
-Ownership and aliasing requirements follow the corresponding plain-slice API.
-+/
-package(mir.stat) auto makeMtimes(Triangle triangle, Diagonal diagonal, A, B, Allocator)(
-    auto ref Allocator allocator,
-    scope auto ref B b,
-    scope auto ref const(TriangularView!(triangle, diagonal, A)) a)
-    if (numericSlice!B)
-{
-    import mir.stat.internal.linearAlgebra.triangular: makeMtimesTriangularRight;
-    return makeMtimesTriangularRight!(triangle, diagonal)(allocator, b, a.storage);
-}
-
-/++
-Triangular-view overload. Uses the view's triangle and diagonal policy without
-materializing implicit entries. The other operand must be an ordinary ndslice.
-Ownership and aliasing requirements follow the corresponding plain-slice API.
-+/
-package(mir.stat) void mtimesInto(Triangle triangle, Diagonal diagonal, A, B, C)(
-    scope auto ref const(TriangularView!(triangle, diagonal, A)) a,
-    scope auto ref B b,
-    scope auto ref C c)
-    if (numericSlice!B)
-{
-    import mir.stat.internal.linearAlgebra.triangular: mtimesTriangularInto;
-    mtimesTriangularInto!(triangle, diagonal)(a.storage, b, c);
-}
-
-/++
-Triangular-view overload. Uses the view's triangle and diagonal policy without
-materializing implicit entries. The other operand must be an ordinary ndslice.
-Ownership and aliasing requirements follow the corresponding plain-slice API.
-+/
-package(mir.stat) void mtimesInto(Triangle triangle, Diagonal diagonal, A, B, C)(
-    scope auto ref B b,
-    scope auto ref const(TriangularView!(triangle, diagonal, A)) a,
-    scope auto ref C c)
-    if (numericSlice!B)
-{
-    import mir.stat.internal.linearAlgebra.triangular: mtimesTriangularRightInto;
-    mtimesTriangularRightInto!(triangle, diagonal)(b, a.storage, c);
-}

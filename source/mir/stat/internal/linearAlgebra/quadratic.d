@@ -20,8 +20,7 @@ module mir.stat.internal.linearAlgebra.quadratic;
 version(mir_stat_test) version = mir_stat_test_linearAlgebra;
 version(mir_stat_test_blas) version = mir_stat_test_linearAlgebra;
 
-import mir.stat.internal.linearAlgebra.products: Scalar, numericSlice;
-import mir.stat.internal.linearAlgebra.triangular: Triangle;
+import mir.stat.internal.linearAlgebra.types: Scalar, numericSlice, TrianglePolicy;
 import mir.stat.internal.linearAlgebra.views: SymmetricView, symmetricView;
 import mir.math.sum: Summation, Summator;
 import std.traits: isFloatingPoint;
@@ -46,7 +45,7 @@ package(mir.stat) auto quadraticForm(Summation summation = Summation.kbn, X, A)(
     scope auto ref X x, scope auto ref A a)
     if (compatible!(X, A))
 {
-    return quadratic!(false, Triangle.upper, summation)(x, a);
+    return quadratic!(false, TrianglePolicy.upper, summation)(x, a);
 }
 
 /// A nonsymmetric matrix is used exactly as supplied.
@@ -74,7 +73,7 @@ check is performed. There is no allocation, and inputs are unchanged.
 Shapes are checked with assertions. Strided and computed inputs are supported.
 +/
 package(mir.stat) auto quadraticForm(Summation summation = Summation.kbn, X,
-    Triangle triangle, A)(scope auto ref X x,
+    TrianglePolicy triangle, A)(scope auto ref X x,
     scope auto ref const(SymmetricView!(triangle, A)) a)
     if (compatible!(X, A))
 {
@@ -99,12 +98,12 @@ version(mir_stat_test_linearAlgebra)
     import mir.stat.internal.linearAlgebra.views: symmetricView;
     double[2] values = [1, 2];
     double[4] data = [4, double.nan, 2, 5];
-    const a = symmetricView!(Triangle.lower)(data[].sliced(2, 2));
+    const a = symmetricView!(TrianglePolicy.lower)(data[].sliced(2, 2));
     assert(quadraticForm(values[].sliced, a) == 32);
     assert(quadraticForm(values[].sliced, a.transposed) == 32);
 }
 
-private auto quadratic(bool symmetric, Triangle triangle, Summation summation, X, A)(
+private auto quadratic(bool symmetric, TrianglePolicy triangle, Summation summation, X, A)(
     scope auto ref X x, scope auto ref A a)
 {
     assert(a.length!0 == x.length && a.length!1 == x.length,
@@ -117,7 +116,7 @@ private auto quadratic(bool symmetric, Triangle triangle, Summation summation, X
         foreach (j; 0 .. x.length)
         {
             static if (symmetric)
-                auto value = (triangle == Triangle.upper ? j >= i : j <= i)
+                auto value = (triangle == TrianglePolicy.upper ? j >= i : j <= i)
                     ? a[i, j] : a[j, i];
             else
                 auto value = a[i, j];
@@ -155,7 +154,7 @@ version(mir_stat_test_linearAlgebra)
         assert(quadraticForm(empty, symmetricView(emptyMatrix)) == 0);
         a[1,0] = T.nan;
         assert(quadraticForm(x, symmetricView(a)) == 42);
-        assert(quadraticForm(x, symmetricView!(Triangle.lower)(a.transposed)) == 42);
+        assert(quadraticForm(x, symmetricView!(TrianglePolicy.lower)(a.transposed)) == 42);
         auto computed = a.map!((T value) { assert(value == value); return value; });
         assert(quadraticForm(x, symmetricView(computed)) == 42);
         a[0,0] = -2; a[0,1] = 0; a[1,1] = -7;
@@ -199,7 +198,7 @@ version(mir_stat_test_linearAlgebra)
     assert(quadraticForm(x, symmetricView(a)) == 1);
     assert(quadraticForm(x.map!((double v) => v), symmetricView(a)) == 1);
     assert(quadraticForm!(Summation.naive)(x, a) == 0);
-    assert(quadraticForm!(Summation.naive)(x, symmetricView!(Triangle.lower)(a)) == 0);
+    assert(quadraticForm!(Summation.naive)(x, symmetricView!(TrianglePolicy.lower)(a)) == 0);
     assert(quadraticForm!(Summation.naive)(x, symmetricView(a)) == 0);
     float[3] otherType;
     int[3] integers;
