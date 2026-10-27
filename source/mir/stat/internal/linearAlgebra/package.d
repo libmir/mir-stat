@@ -4,6 +4,12 @@ Internal linear algebra operations with explicit result ownership.
 Declarations are restricted to `mir.stat` and its subpackages; this package
 is not a public application API.
 
+`types` defines triangle/diagonal policies and shared numeric constraints;
+`views` describes matrix structure without depending on arithmetic operations.
+`backend` centralizes optional BLAS/LAPACK availability and storage checks,
+while `allocation` handles result storage. Operation modules build on these
+helpers: `products`, `triangular`, `quadratic`, and `cholesky`.
+
 Import this package to use the matrix and vector multiplication APIs from
 `mir.stat.internal.linearAlgebra.products` and triangular products from
 `mir.stat.internal.linearAlgebra.triangular`.
@@ -38,7 +44,7 @@ summation order can affect floating-point rounding.
 
 For a square triangular operand, use the `mtimesTriangular` family on the left
 or `mtimesTriangularRight` family on the right. They follow the same ownership
-conventions, with `Triangle.upper`/`lower` and `Diagonal.nonUnit`/`unit` options.
+conventions, with `TrianglePolicy.upper`/`lower` and `DiagonalPolicy.nonUnit`/`unit` options.
 Unused entries and implicit unit diagonals are not read. Triangle selection
 always refers to the logical view, so a transposed upper triangle is lower.
 
@@ -60,6 +66,7 @@ module mir.stat.internal.linearAlgebra;
 version(mir_stat_test) version = mir_stat_test_linearAlgebra;
 version(mir_stat_test_blas) version = mir_stat_test_linearAlgebra;
 
+package(mir.stat) import mir.stat.internal.linearAlgebra.types: TrianglePolicy, DiagonalPolicy;
 package(mir.stat) import mir.stat.internal.linearAlgebra.products;
 package(mir.stat) import mir.stat.internal.linearAlgebra.views;
 package(mir.stat) import mir.stat.internal.linearAlgebra.quadratic;
@@ -82,4 +89,103 @@ version(mir_stat_test_linearAlgebra)
     mtimesInto(a, a, output);
     assert(gcResult == [[7, 10], [15, 22]]);
     assert(rcResult == gcResult && output == gcResult);
+}
+
+// Symmetric-view integration with quadratic forms and Cholesky.
+version(mir_stat_test_linearAlgebra)
+@safe pure @nogc unittest
+{
+    import mir.ndslice.slice: sliced;
+    import mir.stat.internal.linearAlgebra.quadratic: quadraticForm;
+    import mir.stat.internal.linearAlgebra.cholesky: rcCholeskyDecompose;
+    double[4] data = [4, 2, double.nan, 5];
+    double[2] values = [1, 2];
+    const a = symmetricView(data[].sliced(2, 2));
+    assert(quadraticForm(values[].sliced, a) == 32);
+    auto factor = rcCholeskyDecompose(a.transposed);
+    static immutable expected = [[2.0, 0], [1.0, 2]];
+    assert(factor == expected);
+}
+
+version(mir_stat_test_linearAlgebra)
+@safe pure nothrow @nogc unittest
+{
+    import mir.ndslice.slice: sliced, isSlice;
+    import mir.ndslice.topology: map;
+    import mir.ndslice.dynamic: strided;
+    import mir.stat.internal.linearAlgebra.products: rcMtimes, mtimesInto;
+    import mir.stat.internal.linearAlgebra.quadratic: quadraticForm;
+    import mir.complex: Complex;
+    double[16] data = double.nan;
+    auto raw = data[].sliced(4, 4).strided!(0,1)(2,2);
+    raw[0,0] = 2; raw[0,1] = 3; raw[1,1] = 4;
+    auto a = triangularView(raw);
+    auto s = symmetricView(raw);
+    static assert(!isSlice!(typeof(a)) && !isSlice!(typeof(s)));
+    static assert(!__traits(compiles, a[0,0] = 0));
+    static assert(!__traits(compiles, s[0,0] = 0));
+    static assert(!__traits(compiles, a.storage[0,0] = 0));
+    assert(a.shape == [2,2] && a.length!0 == 2 && a.length!1 == 2);
+    double[2] xs = [5,6], output;
+    auto x = xs[].sliced;
+    auto y = output[].sliced;
+    mtimesInto(a, x, y);
+    assert(output == [28,24]);
+    mtimesInto(x, a, y);
+    assert(output == [10,39]);
+    auto twice = a.transposed.transposed;
+    assert(rcMtimes(twice, x) == [28,24]);
+    raw[0,1] = 7;
+    assert(a[0,1] == 7 && s[1,0] == 7);
+    assert(rcMtimes(a, x) == [52,24]);
+    auto computed = raw.map!((double value) { assert(value == value); return value; });
+    assert(rcMtimes(triangularView(computed), x) == [52,24]);
+    assert(quadraticForm(x, symmetricView(computed)) == 614);
+    raw[0,0] = raw[1,1] = double.nan;
+    auto unit = triangularView!(TrianglePolicy.upper, DiagonalPolicy.unit)(computed);
+    assert(unit[0,0] == 1 && unit[1,0] == 0);
+    assert(rcMtimes(unit, x) == [47,6]);
+    assert(rcMtimes(x, unit.transposed) == [47,6]);
+    alias T = Complex!double;
+    T[4] complexData = [T(2,1),T(3,-2),T.init,T(4,1)];
+    auto complexView = triangularView(complexData[].sliced(2,2));
+    assert(complexView.transposed[1,0] == T(3,-2));
+    assert(complexView[1,0] == T(0));
+}
+
+version(mir_stat_test_linearAlgebra)
+@system unittest
+{
+    import mir.ndslice.slice: sliced;
+    import mir.stat.internal.linearAlgebra.products: mtimes, makeMtimes;
+    import mir.stat.internal.linearAlgebra.cholesky: choleskyDecompose, makeCholeskyDecompose, choleskyDecomposeInto;
+    import std.experimental.allocator.mallocator: Mallocator;
+    import std.experimental.allocator: dispose;
+    import std.exception: assertThrown;
+    import core.exception: AssertError;
+    double[4] data = [4,2,double.nan,5];
+    auto raw = data[].sliced(2,2);
+    auto a = triangularView(raw);
+    auto s = symmetricView(raw);
+    double[2] xs = [1,2];
+    auto x = xs[].sliced;
+    assert(mtimes(a,x) == [8,10]);
+    assert(mtimes(x,a) == [4,12]);
+    auto left = makeMtimes(Mallocator.instance,a,x);
+    auto right = makeMtimes(Mallocator.instance,x,a);
+    assert(left == [8,10] && right == [4,12]);
+    Mallocator.instance.dispose(left.field);
+    Mallocator.instance.dispose(right.field);
+    auto factor = makeCholeskyDecompose(Mallocator.instance,s);
+    assert(factor == choleskyDecompose(s));
+    double[4] buffer;
+    auto output = buffer[].sliced(2,2);
+    choleskyDecomposeInto(s,output);
+    assert(output == factor);
+    Mallocator.instance.dispose(factor.field);
+    auto invalid = data[].sliced(1,4);
+    assertThrown!AssertError(symmetricView(invalid));
+    assertThrown!AssertError(triangularView(invalid));
+    assertThrown!AssertError(a[2,0]);
+    assertThrown!AssertError(s[0,2]);
 }

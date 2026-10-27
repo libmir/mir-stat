@@ -22,32 +22,13 @@ version(mir_stat_test) version = mir_stat_test_linearAlgebra;
 version(mir_stat_test_blas) version = mir_stat_test_linearAlgebra;
 
 import mir.stat.internal.linearAlgebra.allocation;
-import mir.stat.internal.linearAlgebra.products:
-    Scalar, numericSlice, nativeSlice, blasNumber, blasMatrix, blasVector;
+import mir.stat.internal.linearAlgebra.types: Scalar, numericSlice, TrianglePolicy, DiagonalPolicy;
+import mir.stat.internal.linearAlgebra.backend: hasBlas, nativeSlice, blasNumber, blasMatrix, blasVector;
 
-/// Triangle of the logical matrix view to read.
-package(mir.stat) enum Triangle
-{
-    /// Read entries on or above the diagonal.
-    upper,
-    /// Read entries on or below the diagonal.
-    lower,
-}
-
-/// Whether diagonal entries come from storage or are implicitly one.
-package(mir.stat) enum Diagonal
-{
-    /// Read the stored diagonal values.
-    nonUnit,
-    /// Use one without reading stored diagonal values.
-    unit,
-}
-
-private enum hasBlas = is(typeof({ import mir.blas; }));
 private enum compatible(A, B) = numericSlice!A && A.N == 2 &&
     numericSlice!B && is(Scalar!A == Scalar!B);
-private enum opposite(Triangle triangle) =
-    triangle == Triangle.upper ? Triangle.lower : Triangle.upper;
+private enum opposite(TrianglePolicy triangle) =
+    triangle == TrianglePolicy.upper ? TrianglePolicy.lower : TrianglePolicy.upper;
 
 /++
 Multiply a triangular matrix `a` by a matrix or column vector `b`.
@@ -66,8 +47,8 @@ See_Also: $(LINK2 #rcMtimesTriangular, rcMtimesTriangular),
     $(LINK2 #makeMtimesTriangular, makeMtimesTriangular),
     $(LINK2 #mtimesTriangularInto, mtimesTriangularInto)
 +/
-package(mir.stat) auto mtimesTriangular(Triangle triangle = Triangle.upper,
-    Diagonal diagonal = Diagonal.nonUnit, A, B)(scope auto ref A a, scope auto ref B b)
+package(mir.stat) auto mtimesTriangular(TrianglePolicy triangle = TrianglePolicy.upper,
+    DiagonalPolicy diagonal = DiagonalPolicy.nonUnit, A, B)(scope auto ref A a, scope auto ref B b)
     if (compatible!(A, B))
 {
     int unused;
@@ -90,8 +71,8 @@ Parameters and shape requirements are the same. The returned owning slice
 has the shape of `b`; storage is released with its last owning reference.
 Native inputs support `@safe pure nothrow @nogc` calls.
 +/
-package(mir.stat) auto rcMtimesTriangular(Triangle triangle = Triangle.upper,
-    Diagonal diagonal = Diagonal.nonUnit, A, B)(scope auto ref A a, scope auto ref B b)
+package(mir.stat) auto rcMtimesTriangular(TrianglePolicy triangle = TrianglePolicy.upper,
+    DiagonalPolicy diagonal = DiagonalPolicy.nonUnit, A, B)(scope auto ref A a, scope auto ref B b)
     if (compatible!(A, B))
 {
     int unused;
@@ -105,7 +86,7 @@ version(mir_stat_test_linearAlgebra)
     import mir.ndslice.slice: sliced;
     double[4] values = [double.nan, double.nan, 3, double.nan];
     double[2] vector = [5, 6];
-    auto result = rcMtimesTriangular!(Triangle.lower, Diagonal.unit)(
+    auto result = rcMtimesTriangular!(TrianglePolicy.lower, DiagonalPolicy.unit)(
         values[].sliced(2, 2), vector[].sliced);
     assert(result == [5, 21]);
 }
@@ -118,8 +99,8 @@ shape requirements are the same. The result has the shape of `b`; dispose
 If computation throws, allocated result storage is disposed before propagating
 the exception. Attributes depend on the allocator and input iterators.
 +/
-package(mir.stat) auto makeMtimesTriangular(Triangle triangle = Triangle.upper,
-    Diagonal diagonal = Diagonal.nonUnit, Allocator, A, B)(auto ref Allocator allocator,
+package(mir.stat) auto makeMtimesTriangular(TrianglePolicy triangle = TrianglePolicy.upper,
+    DiagonalPolicy diagonal = DiagonalPolicy.nonUnit, Allocator, A, B)(auto ref Allocator allocator,
     scope auto ref A a, scope auto ref B b)
     if (compatible!(A, B))
 {
@@ -158,8 +139,8 @@ Preconditions:
 Every output element is overwritten, regardless of its previous value. General
 strides are supported. Computed input iterators can affect inferred attributes.
 +/
-package(mir.stat) void mtimesTriangularInto(Triangle triangle = Triangle.upper,
-    Diagonal diagonal = Diagonal.nonUnit, A, B, C)(scope auto ref A a,
+package(mir.stat) void mtimesTriangularInto(TrianglePolicy triangle = TrianglePolicy.upper,
+    DiagonalPolicy diagonal = DiagonalPolicy.nonUnit, A, B, C)(scope auto ref A a,
     scope auto ref B b, scope auto ref C c)
     if (compatible!(A, B) && numericSlice!C && C.N == B.N && is(Scalar!A == Scalar!C))
 {
@@ -209,7 +190,7 @@ package(mir.stat) void mtimesTriangularInto(Triangle triangle = Triangle.upper,
 
     foreach (i; 0 .. a.length!0)
     {
-        static if (triangle == Triangle.upper)
+        static if (triangle == TrianglePolicy.upper)
         {
             auto begin = i;
             auto end = a.length!0;
@@ -226,7 +207,7 @@ package(mir.stat) void mtimesTriangularInto(Triangle triangle = Triangle.upper,
                 T sum = T(0);
                 foreach (k; begin .. end)
                 {
-                    static if (diagonal == Diagonal.unit)
+                    static if (diagonal == DiagonalPolicy.unit)
                         if (k == i) { sum += b[k, j]; continue; }
                     sum += a[i, k] * b[k, j];
                 }
@@ -238,7 +219,7 @@ package(mir.stat) void mtimesTriangularInto(Triangle triangle = Triangle.upper,
             T sum = T(0);
             foreach (k; begin .. end)
             {
-                static if (diagonal == Diagonal.unit)
+                static if (diagonal == DiagonalPolicy.unit)
                     if (k == i) { sum += b[k]; continue; }
                 sum += a[i, k] * b[k];
             }
@@ -275,8 +256,8 @@ Preconditions:
 The unused triangle and implicit unit diagonal are never read. Transposed
 views are supported without conjugation or materialization.
 +/
-package(mir.stat) auto mtimesTriangularRight(Triangle triangle = Triangle.upper,
-    Diagonal diagonal = Diagonal.nonUnit, A, B)(scope auto ref A a, scope auto ref B b)
+package(mir.stat) auto mtimesTriangularRight(TrianglePolicy triangle = TrianglePolicy.upper,
+    DiagonalPolicy diagonal = DiagonalPolicy.nonUnit, A, B)(scope auto ref A a, scope auto ref B b)
     if (compatible!(B, A))
 {
     int unused;
@@ -298,8 +279,8 @@ RC variant of $(LINK2 #mtimesTriangularRight, mtimesTriangularRight).
 Parameters and preconditions are the same; the result is an owning RC slice
 with the shape of `a`, requiring no manual disposal.
 +/
-package(mir.stat) auto rcMtimesTriangularRight(Triangle triangle = Triangle.upper,
-    Diagonal diagonal = Diagonal.nonUnit, A, B)(scope auto ref A a, scope auto ref B b)
+package(mir.stat) auto rcMtimesTriangularRight(TrianglePolicy triangle = TrianglePolicy.upper,
+    DiagonalPolicy diagonal = DiagonalPolicy.nonUnit, A, B)(scope auto ref A a, scope auto ref B b)
     if (compatible!(B, A))
 {
     int unused;
@@ -316,7 +297,7 @@ version(mir_stat_test_linearAlgebra)
     double[4] values = [double.nan, 3, double.nan, double.nan];
     double[2] vector = [5, 6];
     auto lower = values[].sliced(2, 2).universal.transposed;
-    auto result = rcMtimesTriangularRight!(Triangle.lower, Diagonal.unit)(vector[].sliced, lower);
+    auto result = rcMtimesTriangularRight!(TrianglePolicy.lower, DiagonalPolicy.unit)(vector[].sliced, lower);
     assert(result == [23, 6]);
 }
 
@@ -326,8 +307,8 @@ Custom-allocator variant of $(LINK2 #mtimesTriangularRight, mtimesTriangularRigh
 same. Dispose `result.field` with that allocator once all views are finished.
 The result has the shape of `a`. Computation failure releases result storage.
 +/
-package(mir.stat) auto makeMtimesTriangularRight(Triangle triangle = Triangle.upper,
-    Diagonal diagonal = Diagonal.nonUnit, Allocator, A, B)(auto ref Allocator allocator,
+package(mir.stat) auto makeMtimesTriangularRight(TrianglePolicy triangle = TrianglePolicy.upper,
+    DiagonalPolicy diagonal = DiagonalPolicy.nonUnit, Allocator, A, B)(auto ref Allocator allocator,
     scope auto ref A a, scope auto ref B b)
     if (compatible!(B, A))
 {
@@ -358,8 +339,8 @@ the shape and element type of `a`, be writable, and overlap neither input.
 Its elements must not overlap each other. No allocation is performed; all
 output elements are overwritten. Shape assertions do not check overlap.
 +/
-package(mir.stat) void mtimesTriangularRightInto(Triangle triangle = Triangle.upper,
-    Diagonal diagonal = Diagonal.nonUnit, A, B, C)(scope auto ref A a,
+package(mir.stat) void mtimesTriangularRightInto(TrianglePolicy triangle = TrianglePolicy.upper,
+    DiagonalPolicy diagonal = DiagonalPolicy.nonUnit, A, B, C)(scope auto ref A a,
     scope auto ref B b, scope auto ref C c)
     if (compatible!(B, A) && numericSlice!C && C.N == A.N && is(Scalar!B == Scalar!C))
 {
@@ -400,8 +381,8 @@ private void checkTriangularDimensions(bool right, A, B)(scope auto ref A a, sco
         assert(a.length!0 == b.length!0, "Incompatible triangular product dimensions");
 }
 
-private auto multiplyTriangularWithAllocation(Allocation policy, Triangle triangle,
-    Diagonal diagonal, bool right, Allocator, A, B)(ref Allocator allocator,
+private auto multiplyTriangularWithAllocation(Allocation policy, TrianglePolicy triangle,
+    DiagonalPolicy diagonal, bool right, Allocator, A, B)(ref Allocator allocator,
     scope auto ref A a, scope auto ref B b)
 {
     checkTriangularDimensions!right(a, b);
@@ -423,7 +404,7 @@ private auto multiplyTriangularWithAllocation(Allocation policy, Triangle triang
 
 // Layout and size checks are performed by the caller. mir.blas handles the
 // conversion from logical triangles to the native BLAS storage convention.
-private void multiplyTriangularBlas(Triangle triangle, Diagonal diagonal, A, C)(
+private void multiplyTriangularBlas(TrianglePolicy triangle, DiagonalPolicy diagonal, A, C)(
     scope auto ref A a, scope auto ref C c)
 {
     import mir.blas: trmm, trmv;
@@ -431,8 +412,8 @@ private void multiplyTriangularBlas(Triangle triangle, Diagonal diagonal, A, C)(
     alias T = Scalar!A;
     auto ap = a.lightScope.lightConst;
     auto cp = c.lightScope;
-    enum uplo = triangle == Triangle.upper ? Uplo.Upper : Uplo.Lower;
-    enum diag = diagonal == Diagonal.unit ? Diag.Unit : Diag.NonUnit;
+    enum uplo = triangle == TrianglePolicy.upper ? Uplo.Upper : Uplo.Lower;
+    enum diag = diagonal == DiagonalPolicy.unit ? Diag.Unit : Diag.NonUnit;
     static if (C.N == 1)
         trmv(uplo, diag, ap, cp);
     else
@@ -449,8 +430,8 @@ version(mir_stat_test_linearAlgebra)
     import mir.ndslice.allocation: rcslice;
     // Compare all policies with explicit dense matrices. Every ignored value
     // is NaN, including the stored diagonal for the unit-diagonal policy.
-    static foreach (triangle; [Triangle.upper, Triangle.lower])
-    static foreach (diagonal; [Diagonal.nonUnit, Diagonal.unit])
+    static foreach (triangle; [TrianglePolicy.upper, TrianglePolicy.lower])
+    static foreach (diagonal; [DiagonalPolicy.nonUnit, DiagonalPolicy.unit])
     {{
         double[9] packed, denseStorage;
         denseStorage[] = 0;
@@ -459,9 +440,9 @@ version(mir_stat_test_linearAlgebra)
         foreach (i; 0 .. 3)
             foreach (j; 0 .. 3)
             {
-                if (i == j && diagonal == Diagonal.unit)
+                if (i == j && diagonal == DiagonalPolicy.unit)
                     dense[i, j] = 1;
-                else if (triangle == Triangle.upper ? j >= i : j <= i)
+                else if (triangle == TrianglePolicy.upper ? j >= i : j <= i)
                     a[i, j] = dense[i, j] = 1.0 + 3 * i + j;
             }
         double[6] bData = [1, 2, 3, 4, 5, 6];
@@ -566,7 +547,7 @@ version(mir_stat_test_linearAlgebra)
         auto b = otherValues[].sliced(2, 2);
         assert(rcMtimesTriangular(a, b) == rcMtimes(dense, b));
         assert(rcMtimesTriangularRight(b, a) == rcMtimes(b, dense));
-        assert(rcMtimesTriangular!(Triangle.lower)(a.universal.transposed, b) == rcMtimes(dense.universal.transposed, b));
+        assert(rcMtimesTriangular!(TrianglePolicy.lower)(a.universal.transposed, b) == rcMtimes(dense.universal.transposed, b));
         auto v = otherValues[0 .. 2].sliced;
         assert(rcMtimesTriangular(a, v) == rcMtimes(dense, v));
         assert(rcMtimesTriangularRight(v, a) == rcMtimes(v, dense));
@@ -646,8 +627,47 @@ version(mir_stat_test_linearAlgebra)
     }
     values[0] = values[3] = double.nan;
     auto checked = a.map!rejectNaN;
-    auto unitResult = mtimesTriangular!(Triangle.upper, Diagonal.unit)(checked, b);
+    auto unitResult = mtimesTriangular!(TrianglePolicy.upper, DiagonalPolicy.unit)(checked, b);
     assert(unitResult == [[10, 14], [3, 4]]);
-    auto rightUnit = mtimesTriangularRight!(Triangle.upper, Diagonal.unit)(b, checked);
+    auto rightUnit = mtimesTriangularRight!(TrianglePolicy.upper, DiagonalPolicy.unit)(b, checked);
     assert(rightUnit == [[1, 5], [3, 13]]);
+}
+
+// Callers establish square shape, matching vector length, writable disjoint
+// vector elements, and a nonoverlapping read-only triangular matrix.
+package(mir.stat) void triangularVectorInPlace(bool solve, TrianglePolicy triangle, A, X)(
+    scope auto ref A a, scope auto ref X x)
+{
+    static assert(triangle == TrianglePolicy.upper || triangle == TrianglePolicy.lower);
+    if (!x.length) return;
+    static if (hasBlas && nativeSlice!A && nativeSlice!X &&
+        (is(Scalar!A == float) || is(Scalar!A == double)))
+    {
+        if (blasMatrix(a) && blasVector(x))
+        {
+            import mir.blas: trsv, trmv, Uplo;
+            import cblas: Diag;
+            auto ap = a.lightScope.lightConst;
+            auto xp = x.lightScope;
+            enum uplo = triangle == TrianglePolicy.upper ? Uplo.Upper : Uplo.Lower;
+            static if (solve) trsv(uplo, Diag.NonUnit, ap, xp);
+            else trmv(uplo, Diag.NonUnit, ap, xp);
+            return;
+        }
+    }
+    // Solve in dependency order; multiply in the opposite order to preserve
+    // every source element until its last use. No temporary vector is needed.
+    enum reverse = solve ? triangle == TrianglePolicy.upper : triangle == TrianglePolicy.lower;
+    foreach (step; 0 .. x.length)
+    {
+        auto i = reverse ? x.length - 1 - step : step;
+        auto value = solve ? x[i] : Scalar!A(0);
+        auto first = triangle == TrianglePolicy.upper ? i + (solve ? 1 : 0) : 0;
+        auto last = triangle == TrianglePolicy.upper ? x.length : i + (solve ? 0 : 1);
+        foreach (k; first .. last)
+            static if (solve) value -= a[i,k] * x[k];
+            else value += a[i,k] * x[k];
+        static if (solve) x[i] = value / a[i,i];
+        else x[i] = value;
+    }
 }

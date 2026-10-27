@@ -25,11 +25,11 @@ version(mir_stat_test) version = mir_stat_test_linearAlgebra;
 version(mir_stat_test_blas) version = mir_stat_test_linearAlgebra;
 
 import mir.ndslice.slice: isSlice;
-import mir.stat.internal.linearAlgebra.triangular: Triangle, Diagonal;
+import mir.stat.internal.linearAlgebra.types: TrianglePolicy, DiagonalPolicy;
 import std.traits: Unqual;
 
 private enum matrix(A) = isSlice!A && A.N == 2;
-private enum opposite(Triangle triangle) = triangle == Triangle.upper ? Triangle.lower : Triangle.upper;
+private enum opposite(TrianglePolicy triangle) = triangle == TrianglePolicy.upper ? TrianglePolicy.lower : TrianglePolicy.upper;
 
 /++
 Create a symmetric view using one logical triangle of a square ndslice.
@@ -37,10 +37,10 @@ Unused entries are not read. The descriptor is copied, retaining RC ownership
 when present. The original storage is not modified. This expresses symmetry,
 not positive definiteness; no element-wise validation is performed.
 +/
-package(mir.stat) auto symmetricView(Triangle triangle = Triangle.upper, A)(A a)
+package(mir.stat) auto symmetricView(TrianglePolicy triangle = TrianglePolicy.upper, A)(A a)
     if (matrix!A)
 {
-    static assert(triangle == Triangle.upper || triangle == Triangle.lower);
+    static assert(triangle == TrianglePolicy.upper || triangle == TrianglePolicy.lower);
     assert(a.length!0 == a.length!1, "Symmetric view requires a square matrix");
     return SymmetricView!(triangle, A)(a);
 }
@@ -54,15 +54,15 @@ version(mir_stat_test_linearAlgebra)
     auto a = symmetricView(data[].sliced(2, 2));
     assert(a[0,1] == 2 && a[1,0] == 2);
     assert(a.transposed[1,0] == 2);
-    static assert(typeof(a.transposed).triangle == Triangle.lower);
+    static assert(typeof(a.transposed).triangle == TrianglePolicy.lower);
 }
 
 /// Structural symmetric matrix descriptor. Construct with `symmetricView`.
-package(mir.stat) struct SymmetricView(Triangle selectedTriangle, A)
+package(mir.stat) struct SymmetricView(TrianglePolicy selectedTriangle, A)
     if (matrix!A)
 {
     private A _storage;
-    /// Triangle supplying the logical matrix entries.
+    /// TrianglePolicy supplying the logical matrix entries.
     enum triangle = selectedTriangle;
     /// Matrix rank.
     enum N = 2;
@@ -74,7 +74,7 @@ package(mir.stat) struct SymmetricView(Triangle selectedTriangle, A)
     auto opIndex(size_t i, size_t j) const
     {
         assert(i < length!0 && j < length!1, "Symmetric view index out of bounds");
-        return (triangle == Triangle.upper ? j >= i : j <= i)
+        return (triangle == TrianglePolicy.upper ? j >= i : j <= i)
             ? _storage[i,j] : _storage[j,i];
     }
     /// Raw read-only storage; unused entries retain their original values.
@@ -90,15 +90,15 @@ package(mir.stat) struct SymmetricView(Triangle selectedTriangle, A)
 
 /++
 Create a triangular view of a square ndslice. Entries outside `triangle`
-read as zero. `Diagonal.unit` reads diagonal entries as one without accessing
+read as zero. `DiagonalPolicy.unit` reads diagonal entries as one without accessing
 stored diagonal values. The descriptor retains the input's ownership policy.
 This is a structural view, not a claim of invertibility or a Cholesky factor.
 +/
-package(mir.stat) auto triangularView(Triangle triangle = Triangle.upper, Diagonal diagonal = Diagonal.nonUnit, A)(A a)
+package(mir.stat) auto triangularView(TrianglePolicy triangle = TrianglePolicy.upper, DiagonalPolicy diagonal = DiagonalPolicy.nonUnit, A)(A a)
     if (matrix!A)
 {
-    static assert(triangle == Triangle.upper || triangle == Triangle.lower);
-    static assert(diagonal == Diagonal.nonUnit || diagonal == Diagonal.unit);
+    static assert(triangle == TrianglePolicy.upper || triangle == TrianglePolicy.lower);
+    static assert(diagonal == DiagonalPolicy.nonUnit || diagonal == DiagonalPolicy.unit);
     assert(a.length!0 == a.length!1, "Triangular view requires a square matrix");
     return TriangularView!(triangle, diagonal, A)(a);
 }
@@ -109,15 +109,15 @@ version(mir_stat_test_linearAlgebra)
 {
     import mir.ndslice.slice: sliced;
     double[4] data = [double.nan, 3, double.nan, double.nan];
-    auto a = triangularView!(Triangle.upper, Diagonal.unit)(data[].sliced(2, 2));
+    auto a = triangularView!(TrianglePolicy.upper, DiagonalPolicy.unit)(data[].sliced(2, 2));
     assert(a[0,0] == 1 && a[0,1] == 3 && a[1,0] == 0 && a[1,1] == 1);
     assert(a.transposed[1,0] == 3);
-    static assert(typeof(a.transposed).triangle == Triangle.lower);
-    static assert(typeof(a.transposed).diagonal == Diagonal.unit);
+    static assert(typeof(a.transposed).triangle == TrianglePolicy.lower);
+    static assert(typeof(a.transposed).diagonal == DiagonalPolicy.unit);
 }
 
 /// Structural triangular descriptor. Construct with `triangularView`.
-package(mir.stat) struct TriangularView(Triangle selectedTriangle, Diagonal selectedDiagonal, A)
+package(mir.stat) struct TriangularView(TrianglePolicy selectedTriangle, DiagonalPolicy selectedDiagonal, A)
     if (matrix!A)
 {
     private A _storage;
@@ -136,9 +136,9 @@ package(mir.stat) struct TriangularView(Triangle selectedTriangle, Diagonal sele
     {
         alias T = Unqual!(typeof(_storage[i,j]));
         assert(i < length!0 && j < length!1, "Triangular view index out of bounds");
-        static if (diagonal == Diagonal.unit)
+        static if (diagonal == DiagonalPolicy.unit)
             if (i == j) return T(1);
-        if (triangle == Triangle.upper ? j < i : j > i) return T(0);
+        if (triangle == TrianglePolicy.upper ? j < i : j > i) return T(0);
         T value = _storage[i,j];
         return value;
     }
@@ -154,86 +154,10 @@ package(mir.stat) struct TriangularView(Triangle selectedTriangle, Diagonal sele
 }
 
 
-/// Multiplication dispatches from triangular metadata without extra options.
-version(mir_stat_test_linearAlgebra)
-@safe pure nothrow @nogc unittest
-{
-    import mir.ndslice.slice: sliced;
-    import mir.stat.internal.linearAlgebra.products: rcMtimes;
-    double[4] data = [2, 3, double.nan, 4];
-    double[2] values = [5, 6];
-    const a = triangularView(data[].sliced(2, 2));
-    assert(rcMtimes(a, values[].sliced) == [28, 24]);
-    assert(rcMtimes(values[].sliced, a) == [10, 39]);
-}
-
-/// A symmetric view forwards its selected triangle to quadratic forms and Cholesky.
-version(mir_stat_test_linearAlgebra)
-@safe pure @nogc unittest
-{
-    import mir.ndslice.slice: sliced;
-    import mir.stat.internal.linearAlgebra.quadratic: quadraticForm;
-    import mir.stat.internal.linearAlgebra.cholesky: rcCholeskyDecompose;
-    double[4] data = [4, 2, double.nan, 5];
-    double[2] values = [1, 2];
-    const a = symmetricView(data[].sliced(2, 2));
-    assert(quadraticForm(values[].sliced, a) == 32);
-    auto factor = rcCholeskyDecompose(a.transposed);
-    static immutable expected = [[2.0, 0], [1.0, 2]];
-    assert(factor == expected);
-}
-
-version(mir_stat_test_linearAlgebra)
-@safe pure nothrow @nogc unittest
-{
-    import mir.ndslice.slice: sliced;
-    import mir.ndslice.topology: map;
-    import mir.ndslice.dynamic: strided;
-    import mir.stat.internal.linearAlgebra.products: rcMtimes, mtimesInto;
-    import mir.stat.internal.linearAlgebra.quadratic: quadraticForm;
-    import mir.complex: Complex;
-    double[16] data = double.nan;
-    auto raw = data[].sliced(4, 4).strided!(0,1)(2,2);
-    raw[0,0] = 2; raw[0,1] = 3; raw[1,1] = 4;
-    auto a = triangularView(raw);
-    auto s = symmetricView(raw);
-    static assert(!isSlice!(typeof(a)) && !isSlice!(typeof(s)));
-    static assert(!__traits(compiles, a[0,0] = 0));
-    static assert(!__traits(compiles, s[0,0] = 0));
-    static assert(!__traits(compiles, a.storage[0,0] = 0));
-    assert(a.shape == [2,2] && a.length!0 == 2 && a.length!1 == 2);
-    double[2] xs = [5,6], output;
-    auto x = xs[].sliced;
-    auto y = output[].sliced;
-    mtimesInto(a, x, y);
-    assert(output == [28,24]);
-    mtimesInto(x, a, y);
-    assert(output == [10,39]);
-    auto twice = a.transposed.transposed;
-    assert(rcMtimes(twice, x) == [28,24]);
-    raw[0,1] = 7;
-    assert(a[0,1] == 7 && s[1,0] == 7);
-    assert(rcMtimes(a, x) == [52,24]);
-    auto computed = raw.map!((double value) { assert(value == value); return value; });
-    assert(rcMtimes(triangularView(computed), x) == [52,24]);
-    assert(quadraticForm(x, symmetricView(computed)) == 614);
-    raw[0,0] = raw[1,1] = double.nan;
-    auto unit = triangularView!(Triangle.upper, Diagonal.unit)(computed);
-    assert(unit[0,0] == 1 && unit[1,0] == 0);
-    assert(rcMtimes(unit, x) == [47,6]);
-    assert(rcMtimes(x, unit.transposed) == [47,6]);
-    alias T = Complex!double;
-    T[4] complexData = [T(2,1),T(3,-2),T.init,T(4,1)];
-    auto complexView = triangularView(complexData[].sliced(2,2));
-    assert(complexView.transposed[1,0] == T(3,-2));
-    assert(complexView[1,0] == T(0));
-}
-
 version(mir_stat_test_linearAlgebra)
 @system @nogc unittest
 {
     import mir.ndslice.allocation: mininitRcslice;
-    import mir.stat.internal.linearAlgebra.products: rcMtimes;
     import mir.ndslice.slice: sliced;
     auto owner = mininitRcslice!double(2,2);
     owner[0,0] = 2; owner[0,1] = 3; owner[1,0] = double.nan; owner[1,1] = 4;
@@ -256,43 +180,5 @@ version(mir_stat_test_linearAlgebra)
     assert(alive[0,1] == 2 && alive[1,1] == 5);
     const constOwner = owner;
     auto constView = triangularView(constOwner);
-    double[2] xs = [5,6];
-    assert(rcMtimes(constView, xs[].sliced) == [28,24]);
-}
-
-version(mir_stat_test_linearAlgebra)
-@system unittest
-{
-    import mir.ndslice.slice: sliced;
-    import mir.stat.internal.linearAlgebra.products: mtimes, makeMtimes;
-    import mir.stat.internal.linearAlgebra.cholesky: choleskyDecompose, makeCholeskyDecompose, choleskyDecomposeInto;
-    import std.experimental.allocator.mallocator: Mallocator;
-    import std.experimental.allocator: dispose;
-    import std.exception: assertThrown;
-    import core.exception: AssertError;
-    double[4] data = [4,2,double.nan,5];
-    auto raw = data[].sliced(2,2);
-    auto a = triangularView(raw);
-    auto s = symmetricView(raw);
-    double[2] xs = [1,2];
-    auto x = xs[].sliced;
-    assert(mtimes(a,x) == [8,10]);
-    assert(mtimes(x,a) == [4,12]);
-    auto left = makeMtimes(Mallocator.instance,a,x);
-    auto right = makeMtimes(Mallocator.instance,x,a);
-    assert(left == [8,10] && right == [4,12]);
-    Mallocator.instance.dispose(left.field);
-    Mallocator.instance.dispose(right.field);
-    auto factor = makeCholeskyDecompose(Mallocator.instance,s);
-    assert(factor == choleskyDecompose(s));
-    double[4] buffer;
-    auto output = buffer[].sliced(2,2);
-    choleskyDecomposeInto(s,output);
-    assert(output == factor);
-    Mallocator.instance.dispose(factor.field);
-    auto invalid = data[].sliced(1,4);
-    assertThrown!AssertError(symmetricView(invalid));
-    assertThrown!AssertError(triangularView(invalid));
-    assertThrown!AssertError(a[2,0]);
-    assertThrown!AssertError(s[0,2]);
+    assert(constView[0,0] == 2 && constView[0,1] == 3 && constView[1,1] == 4);
 }

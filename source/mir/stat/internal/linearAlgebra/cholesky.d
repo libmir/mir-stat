@@ -25,12 +25,12 @@ version(mir_stat_test) version = mir_stat_test_linearAlgebra;
 version(mir_stat_test_blas) version = mir_stat_test_linearAlgebra;
 
 import mir.stat.internal.linearAlgebra.allocation;
-import mir.stat.internal.linearAlgebra.products: Scalar, numericSlice, nativeSlice;
-import mir.stat.internal.linearAlgebra.triangular: Triangle;
+import mir.stat.internal.linearAlgebra.types: Scalar, numericSlice, TrianglePolicy;
+import mir.stat.internal.linearAlgebra.backend: hasBlas, hasLapack, nativeSlice, blasMatrix, blasVector;
+import mir.stat.internal.linearAlgebra.views: SymmetricView;
 import std.traits: isFloatingPoint;
 
 private enum matrix(A) = numericSlice!A && A.N == 2 && isFloatingPoint!(Scalar!A);
-private enum hasLapack = is(typeof({ import mir.lapack; }));
 
 /++
 Factor a real symmetric positive-definite matrix into GC-managed storage.
@@ -44,11 +44,22 @@ Throws:
     Exception if factorization fails. Shape and finite-input preconditions
     are checked with assertions. Input is never modified.
 +/
-package(mir.stat) auto choleskyDecompose(Triangle triangle = Triangle.upper, A)(scope auto ref A a)
+package(mir.stat) auto choleskyDecompose(TrianglePolicy triangle = TrianglePolicy.upper, A)(scope auto ref A a)
     if (matrix!A)
 {
     int unused;
     return factor!(Allocation.gc, triangle)(unused, a);
+}
+
+/++
+Symmetric-view overload. Uses the view's selected triangle and produces the
+factor in that triangle. Positive definiteness is checked by factorization,
+not implied by the view. Other requirements follow the plain-slice overload.
++/
+package(mir.stat) auto choleskyDecompose(TrianglePolicy triangle, A)(scope auto ref const(SymmetricView!(triangle, A)) a)
+    if (matrix!A)
+{
+    return choleskyDecompose!triangle(a.storage);
 }
 
 /// The unselected input triangle may contain NaNs.
@@ -65,11 +76,22 @@ Reference-counted variant of $(LINK2 #choleskyDecompose, choleskyDecompose).
 The parameters and failure behavior are the same. Storage is released with
 its last owning reference. Native numeric inputs support `@safe pure @nogc`.
 +/
-package(mir.stat) auto rcCholeskyDecompose(Triangle triangle = Triangle.upper, A)(scope auto ref A a)
+package(mir.stat) auto rcCholeskyDecompose(TrianglePolicy triangle = TrianglePolicy.upper, A)(scope auto ref A a)
     if (matrix!A)
 {
     int unused;
     return factor!(Allocation.rc, triangle)(unused, a);
+}
+
+/++
+Symmetric-view overload. Uses the view's selected triangle and produces the
+factor in that triangle. Positive definiteness is checked by factorization,
+not implied by the view. Other requirements follow the plain-slice overload.
++/
+package(mir.stat) auto rcCholeskyDecompose(TrianglePolicy triangle, A)(scope auto ref const(SymmetricView!(triangle, A)) a)
+    if (matrix!A)
+{
+    return rcCholeskyDecompose!triangle(a.storage);
 }
 
 /// A lower factor reads only the lower triangle.
@@ -79,7 +101,7 @@ version(mir_stat_test_linearAlgebra)
     import mir.ndslice.slice: sliced;
     double[4] data = [4, double.nan, 2, 5];
     static immutable expected = [[2.0, 0], [1.0, 2]];
-    assert(rcCholeskyDecompose!(Triangle.lower)(data[].sliced(2, 2)) == expected);
+    assert(rcCholeskyDecompose!(TrianglePolicy.lower)(data[].sliced(2, 2)) == expected);
 }
 
 /++
@@ -88,11 +110,24 @@ Custom-allocator variant of $(LINK2 #choleskyDecompose, choleskyDecompose).
 with the same allocator after all views are finished. Failure releases result
 storage before propagating the exception. No separate scratch buffer is used.
 +/
-package(mir.stat) auto makeCholeskyDecompose(Triangle triangle = Triangle.upper, Allocator, A)(
+package(mir.stat) auto makeCholeskyDecompose(TrianglePolicy triangle = TrianglePolicy.upper, Allocator, A)(
     auto ref Allocator allocator, scope auto ref A a)
     if (matrix!A)
 {
     return factor!(Allocation.custom, triangle)(allocator, a);
+}
+
+/++
+Symmetric-view overload. Uses the view's selected triangle and produces the
+factor in that triangle. Positive definiteness is checked by factorization,
+not implied by the view. Other requirements follow the plain-slice overload.
++/
+package(mir.stat) auto makeCholeskyDecompose(TrianglePolicy triangle, A, Allocator)(
+    auto ref Allocator allocator,
+    scope auto ref const(SymmetricView!(triangle, A)) a)
+    if (matrix!A)
+{
+    return makeCholeskyDecompose!triangle(allocator, a.storage);
 }
 
 /// Dispose the custom factor with its allocator.
@@ -109,7 +144,7 @@ version(mir_stat_test_linearAlgebra)
     assert(result == expected);
 }
 
-private auto factor(Allocation policy, Triangle triangle, Allocator, A)(
+private auto factor(Allocation policy, TrianglePolicy triangle, Allocator, A)(
     ref Allocator allocator, scope auto ref A a)
 {
     assert(a.length!0 == a.length!1, "Cholesky requires a square matrix");
@@ -134,7 +169,7 @@ Arbitrary strides are supported. No allocation is performed on success.
 On numerical failure, throws an Exception and leaves a partial factorization
 in output. Input iterator exceptions propagate. Overlap is not checked.
 +/
-package(mir.stat) void choleskyDecomposeInto(Triangle triangle = Triangle.upper, A, C)(
+package(mir.stat) void choleskyDecomposeInto(TrianglePolicy triangle = TrianglePolicy.upper, A, C)(
     scope auto ref A a, scope auto ref C output)
     if (matrix!A && matrix!C && is(Scalar!A == Scalar!C))
 {
@@ -142,9 +177,22 @@ package(mir.stat) void choleskyDecomposeInto(Triangle triangle = Triangle.upper,
     assert(a.shape == output.shape, "Incorrect Cholesky output shape");
     foreach (i; 0 .. a.length!0)
         foreach (j; 0 .. a.length!1)
-            if (triangle == Triangle.upper ? j >= i : j <= i)
+            if (triangle == TrianglePolicy.upper ? j >= i : j <= i)
                 output[i, j] = a[i, j];
     choleskyDecomposeInPlace!triangle(output);
+}
+
+/++
+Symmetric-view overload. Uses the view's selected triangle and produces the
+factor in that triangle. Positive definiteness is checked by factorization,
+not implied by the view. Other requirements follow the plain-slice overload.
++/
+package(mir.stat) void choleskyDecomposeInto(TrianglePolicy triangle, A, C)(
+    scope auto ref const(SymmetricView!(triangle, A)) a,
+    scope auto ref C output)
+    if (matrix!A)
+{
+    choleskyDecomposeInto!triangle(a.storage, output);
 }
 
 /// Preserve the input and overwrite a separate output buffer.
@@ -170,17 +218,17 @@ Success zeros the unused triangle. Failure leaves a partial factorization;
 its precise contents depend on the backend and must not be used as a factor.
 Only the selected triangle is read; no symmetry check is performed.
 +/
-package(mir.stat) size_t tryCholeskyDecomposeInPlace(Triangle triangle = Triangle.upper, A)(scope auto ref A a)
+package(mir.stat) size_t tryCholeskyDecomposeInPlace(TrianglePolicy triangle = TrianglePolicy.upper, A)(scope auto ref A a)
     if (matrix!A)
 {
     import std.math: isFinite, sqrt;
-    static assert(triangle == Triangle.upper || triangle == Triangle.lower);
+    static assert(triangle == TrianglePolicy.upper || triangle == TrianglePolicy.lower);
     assert(a.length!0 == a.length!1, "Cholesky requires a square matrix");
     const n = a.length!0;
     if (!n) return 0;
     foreach (i; 0 .. n)
         foreach (j; 0 .. n)
-            if (triangle == Triangle.upper ? j >= i : j <= i)
+            if (triangle == TrianglePolicy.upper ? j >= i : j <= i)
                 assert(isFinite(a[i, j]), "Cholesky input must be finite");
     bool nativeDone;
     static if (hasLapack && nativeSlice!A &&
@@ -199,7 +247,7 @@ package(mir.stat) size_t tryCholeskyDecomposeInPlace(Triangle triangle = Triangl
             if (!rowMajor) storage = storage.transposed;
             // mir.lapack exposes Fortran column-major storage, so a row-major
             // logical view requires the opposite triangle.
-            char uplo = (triangle == Triangle.upper) != rowMajor ? 'U' : 'L';
+            char uplo = (triangle == TrianglePolicy.upper) != rowMajor ? 'U' : 'L';
             auto info = potrf(uplo, storage.assumeCanonical);
             if (info) return info;
             nativeDone = true;
@@ -212,20 +260,20 @@ package(mir.stat) size_t tryCholeskyDecomposeInPlace(Triangle triangle = Triangl
             auto pivot = a[j, j];
             foreach (k; 0 .. j)
             {
-                auto value = triangle == Triangle.upper ? a[k, j] : a[j, k];
+                auto value = triangle == TrianglePolicy.upper ? a[k, j] : a[j, k];
                 pivot -= value * value;
             }
             if (!(pivot > 0) || !isFinite(pivot)) return j + 1;
             a[j, j] = sqrt(pivot);
             foreach (i; j + 1 .. n)
             {
-                auto value = triangle == Triangle.upper ? a[j, i] : a[i, j];
+                auto value = triangle == TrianglePolicy.upper ? a[j, i] : a[i, j];
                 foreach (k; 0 .. j)
-                    static if (triangle == Triangle.upper)
+                    static if (triangle == TrianglePolicy.upper)
                         value -= a[k, j] * a[k, i];
                     else
                         value -= a[j, k] * a[i, k];
-                static if (triangle == Triangle.upper) a[j, i] = value / a[j, j];
+                static if (triangle == TrianglePolicy.upper) a[j, i] = value / a[j, j];
                 else a[i, j] = value / a[j, j];
             }
         }
@@ -234,13 +282,13 @@ package(mir.stat) size_t tryCholeskyDecomposeInPlace(Triangle triangle = Triangl
     // backend returned success after intermediate overflow.
     foreach (i; 0 .. n)
         foreach (j; 0 .. n)
-            if (triangle == Triangle.upper ? j >= i : j <= i)
+            if (triangle == TrianglePolicy.upper ? j >= i : j <= i)
             {
                 if (!isFinite(a[i, j])) return (i > j ? i : j) + 1;
             }
     foreach (i; 0 .. n)
         foreach (j; 0 .. n)
-            if (triangle == Triangle.upper ? j < i : j > i)
+            if (triangle == TrianglePolicy.upper ? j < i : j > i)
                 a[i, j] = 0;
     return 0;
 }
@@ -260,7 +308,7 @@ Throwing variant of $(LINK2 #tryCholeskyDecomposeInPlace, tryCholeskyDecomposeIn
 The same preconditions and partial-output rules apply. No allocation is
 performed on success; an Exception reports numerical failure.
 +/
-package(mir.stat) void choleskyDecomposeInPlace(Triangle triangle = Triangle.upper, A)(scope auto ref A a)
+package(mir.stat) void choleskyDecomposeInPlace(TrianglePolicy triangle = TrianglePolicy.upper, A)(scope auto ref A a)
     if (matrix!A)
 {
     import mir.exception: enforce;
@@ -290,15 +338,15 @@ version(mir_stat_test_linearAlgebra)
     import mir.ndslice.allocation: mininitRcslice;
     import mir.stat.internal.linearAlgebra.products: rcMtimes;
     static foreach (T; AliasSeq!(float, double, real))
-    static foreach (triangle; [Triangle.upper, Triangle.lower])
+    static foreach (triangle; [TrianglePolicy.upper, TrianglePolicy.lower])
     {{
         T[9] data = [4, 2, 2, 2, 10, 4, 2, 4, 6];
         auto a = data[].sliced(3, 3);
         foreach (i; 0 .. 3) foreach (j; 0 .. 3)
-            if (triangle == Triangle.upper ? j < i : j > i) a[i,j] = T.nan;
+            if (triangle == TrianglePolicy.upper ? j < i : j > i) a[i,j] = T.nan;
         auto factor = rcCholeskyDecompose!triangle(a);
         auto ft = factor.universal.transposed;
-        static if (triangle == Triangle.upper) auto reconstructed = rcMtimes(ft, factor);
+        static if (triangle == TrianglePolicy.upper) auto reconstructed = rcMtimes(ft, factor);
         else auto reconstructed = rcMtimes(factor, ft);
         static immutable expected = [[4,2,2],[2,10,4],[2,4,6]];
         foreach (i; 0 .. 3) foreach (j; 0 .. 3)
@@ -342,7 +390,7 @@ version(mir_stat_test_linearAlgebra)
         T[4] fractional = [T(2), T(0.3), T(0.3), T(1.7)];
         auto fractionalInput = fractional[].sliced(2, 2);
         auto f = rcCholeskyDecompose!triangle(fractionalInput);
-        static if (triangle == Triangle.upper)
+        static if (triangle == TrianglePolicy.upper)
             auto reconstruction = rcMtimes(f.universal.transposed, f);
         else
             auto reconstruction = rcMtimes(f, f.universal.transposed);
@@ -401,12 +449,11 @@ version(mir_stat_test_linearAlgebra)
 
 
 private enum rightHandSide(B) = numericSlice!B && isFloatingPoint!(Scalar!B);
-private enum hasBlas = is(typeof({ import mir.blas; }));
 
 /++
 Solve `A * X = B` using an existing Cholesky factor, returning GC storage.
 Params:
-    triangle = Triangle containing the factor, interpreted in its logical view.
+    triangle = TrianglePolicy containing the factor, interpreted in its logical view.
     factor = Square real factor from a successful Cholesky decomposition with
         the same triangle. Upper factors represent `A = U.transpose * U`;
         lower factors represent `A = L * L.transpose`.
@@ -421,7 +468,7 @@ preconditions; nonfinite right-hand sides propagate through the arithmetic.
 General strides and computed inputs are supported. Empty systems and matrices
 with zero right-hand sides return empty results. Shape checks use assertions.
 +/
-package(mir.stat) auto choleskySolve(Triangle triangle = Triangle.upper, A, B)(
+package(mir.stat) auto choleskySolve(TrianglePolicy triangle = TrianglePolicy.upper, A, B)(
     scope auto ref A factor, scope auto ref B b)
     if (matrix!A && rightHandSide!B && is(Scalar!A == Scalar!B))
 {
@@ -446,7 +493,7 @@ Parameters and preconditions are the same. The owning solution releases its
 storage with the last owning reference. Native inputs support
 `@safe pure nothrow @nogc` calls.
 +/
-package(mir.stat) auto rcCholeskySolve(Triangle triangle = Triangle.upper, A, B)(
+package(mir.stat) auto rcCholeskySolve(TrianglePolicy triangle = TrianglePolicy.upper, A, B)(
     scope auto ref A factor, scope auto ref B b)
     if (matrix!A && rightHandSide!B && is(Scalar!A == Scalar!B))
 {
@@ -472,7 +519,7 @@ with the same allocator after all solution views are finished. Exceptions from
 input iterators release the allocated solution before propagating. No factor
 copy or separate scratch allocation is needed.
 +/
-package(mir.stat) auto makeCholeskySolve(Triangle triangle = Triangle.upper, Allocator, A, B)(
+package(mir.stat) auto makeCholeskySolve(TrianglePolicy triangle = TrianglePolicy.upper, Allocator, A, B)(
     auto ref Allocator allocator, scope auto ref A factor, scope auto ref B b)
     if (matrix!A && rightHandSide!B && is(Scalar!A == Scalar!B))
 {
@@ -499,7 +546,7 @@ private void checkSolve(A, B)(scope auto ref A factor, scope auto ref B b)
     assert(factor.length!0 == b.length!0, "Incompatible Cholesky solve dimensions");
 }
 
-private auto solve(Allocation policy, Triangle triangle, Allocator, A, B)(
+private auto solve(Allocation policy, TrianglePolicy triangle, Allocator, A, B)(
     ref Allocator allocator, scope auto ref A factor, scope auto ref B b)
 {
     checkSolve(factor, b);
@@ -525,7 +572,7 @@ view as `b`; all other overlap with `b` is forbidden. Overlap is not checked.
 Every output element is overwritten. No allocation is performed. Arbitrary
 strides are supported. An input iterator exception may leave partial output.
 +/
-package(mir.stat) void choleskySolveInto(Triangle triangle = Triangle.upper, A, B, C)(
+package(mir.stat) void choleskySolveInto(TrianglePolicy triangle = TrianglePolicy.upper, A, B, C)(
     scope auto ref A factor, scope auto ref B b, scope auto ref C output)
     if (matrix!A && rightHandSide!B && rightHandSide!C && B.N == C.N &&
         is(Scalar!A == Scalar!B) && is(Scalar!A == Scalar!C))
@@ -569,11 +616,11 @@ other layouts and computed factors use scalar forward/back substitution.
 Native inputs support `@safe pure nothrow @nogc` calls. Computed iterators may
 throw and leave partial output. Backend and summation order affect rounding.
 +/
-package(mir.stat) void choleskySolveInPlace(Triangle triangle = Triangle.upper, A, X)(
+package(mir.stat) void choleskySolveInPlace(TrianglePolicy triangle = TrianglePolicy.upper, A, X)(
     scope auto ref A factor, scope auto ref X x)
     if (matrix!A && rightHandSide!X && is(Scalar!A == Scalar!X))
 {
-    static assert(triangle == Triangle.upper || triangle == Triangle.lower);
+    static assert(triangle == TrianglePolicy.upper || triangle == TrianglePolicy.lower);
     checkSolve(factor, x);
     if (!x.length!0) return;
     static if (X.N == 2)
@@ -581,7 +628,6 @@ package(mir.stat) void choleskySolveInPlace(Triangle triangle = Triangle.upper, 
     static if (hasBlas && nativeSlice!A && nativeSlice!X &&
         (is(Scalar!A == float) || is(Scalar!A == double)))
     {
-        import mir.stat.internal.linearAlgebra.products: blasMatrix, blasVector;
         static if (X.N == 1) bool nativeOutput = blasVector(x);
         else bool nativeOutput = blasMatrix(x);
         if (blasMatrix(factor) && nativeOutput)
@@ -592,7 +638,7 @@ package(mir.stat) void choleskySolveInPlace(Triangle triangle = Triangle.upper, 
             import mir.ndslice.dynamic: transposed;
             auto a = factor.lightScope.lightConst.universal;
             auto xt = x.lightScope;
-            static if (triangle == Triangle.upper)
+            static if (triangle == TrianglePolicy.upper)
             {
                 auto lower = a.transposed;
                 auto upper = a;
@@ -633,17 +679,17 @@ version(mir_stat_test_linearAlgebra)
     double[4] data = [2, double.nan, 1, 2];
     double[2] rhs = [8, 12];
     auto b = rhs[].sliced;
-    choleskySolveInPlace!(Triangle.lower)(data[].sliced(2, 2), b);
+    choleskySolveInPlace!(TrianglePolicy.lower)(data[].sliced(2, 2), b);
     assert(rhs == [1, 2]);
 }
 
-private void solveVector(Triangle triangle, A, X)(scope auto ref A factor, scope auto ref X x)
+private void solveVector(TrianglePolicy triangle, A, X)(scope auto ref A factor, scope auto ref X x)
 {
     foreach (i; 0 .. x.length)
     {
         auto value = x[i];
         foreach (k; 0 .. i)
-            static if (triangle == Triangle.upper) value -= factor[k, i] * x[k];
+            static if (triangle == TrianglePolicy.upper) value -= factor[k, i] * x[k];
             else value -= factor[i, k] * x[k];
         x[i] = value / factor[i, i];
     }
@@ -651,7 +697,7 @@ private void solveVector(Triangle triangle, A, X)(scope auto ref A factor, scope
     {
         auto value = x[i];
         foreach (k; i + 1 .. x.length)
-            static if (triangle == Triangle.upper) value -= factor[i, k] * x[k];
+            static if (triangle == TrianglePolicy.upper) value -= factor[i, k] * x[k];
             else value -= factor[k, i] * x[k];
         x[i] = value / factor[i, i];
     }
@@ -667,7 +713,7 @@ version(mir_stat_test_linearAlgebra)
     import mir.ndslice.dynamic: transposed, strided, reversed;
     import mir.ndslice.allocation: mininitRcslice;
     static foreach (T; AliasSeq!(float, double, real))
-    static foreach (triangle; [Triangle.upper, Triangle.lower])
+    static foreach (triangle; [TrianglePolicy.upper, TrianglePolicy.lower])
     {{
         foreach (transposedFactor; [false, true])
         foreach (transposedOutput; [false, true])
@@ -677,8 +723,8 @@ version(mir_stat_test_linearAlgebra)
             if (transposedFactor) factor = factor.transposed;
             static immutable upper = [[2,1,1],[0,3,1],[0,0,2]];
             foreach (i; 0 .. 3) foreach (j; 0 .. 3)
-                factor[i,j] = (triangle == Triangle.upper ? j >= i : j <= i)
-                    ? T(triangle == Triangle.upper ? upper[i][j] : upper[j][i]) : T.nan;
+                factor[i,j] = (triangle == TrianglePolicy.upper ? j >= i : j <= i)
+                    ? T(triangle == TrianglePolicy.upper ? upper[i][j] : upper[j][i]) : T.nan;
             // Independent dense matrix and known solutions determine the RHS.
             static immutable dense = [[4,2,2],[2,10,4],[2,4,6]];
             T[6] answers = [T(0.3), T(-2), T(0.5), T(3), T(-1), T(0.7)];
@@ -739,8 +785,8 @@ version(mir_stat_test_linearAlgebra)
             auto noColumns = mininitRcslice!T(3,0);
             assert(rcCholeskySolve!triangle(factor, noColumns).shape == [3,0]);
             foreach (i; 0 .. 3) foreach (j; 0 .. 3)
-                if (triangle == Triangle.upper ? j >= i : j <= i)
-                    assert(factor[i,j] == T(triangle == Triangle.upper ? upper[i][j] : upper[j][i]));
+                if (triangle == TrianglePolicy.upper ? j >= i : j <= i)
+                    assert(factor[i,j] == T(triangle == TrianglePolicy.upper ? upper[i][j] : upper[j][i]));
         }
         auto empty = mininitRcslice!T(0,0);
         auto noRows = mininitRcslice!T(0,2);
@@ -784,54 +830,4 @@ version(mir_stat_test_linearAlgebra)
     assertThrown!AssertError(makeCholeskySolve(allocator, factor, wrongRhs));
     assert(allocator.allocations == 3);
     assertThrown!AssertError(choleskySolveInto(factor, rhs, wrongRhs));
-}
-
-import mir.stat.internal.linearAlgebra.views: SymmetricView;
-
-/++
-Symmetric-view overload. Uses the view's selected triangle and produces the
-factor in that triangle. Positive definiteness is checked by factorization,
-not implied by the view. Other requirements follow the plain-slice overload.
-+/
-package(mir.stat) auto choleskyDecompose(Triangle triangle, A)(scope auto ref const(SymmetricView!(triangle, A)) a)
-    if (matrix!A)
-{
-    return choleskyDecompose!triangle(a.storage);
-}
-
-/++
-Symmetric-view overload. Uses the view's selected triangle and produces the
-factor in that triangle. Positive definiteness is checked by factorization,
-not implied by the view. Other requirements follow the plain-slice overload.
-+/
-package(mir.stat) auto rcCholeskyDecompose(Triangle triangle, A)(scope auto ref const(SymmetricView!(triangle, A)) a)
-    if (matrix!A)
-{
-    return rcCholeskyDecompose!triangle(a.storage);
-}
-
-/++
-Symmetric-view overload. Uses the view's selected triangle and produces the
-factor in that triangle. Positive definiteness is checked by factorization,
-not implied by the view. Other requirements follow the plain-slice overload.
-+/
-package(mir.stat) auto makeCholeskyDecompose(Triangle triangle, A, Allocator)(
-    auto ref Allocator allocator,
-    scope auto ref const(SymmetricView!(triangle, A)) a)
-    if (matrix!A)
-{
-    return makeCholeskyDecompose!triangle(allocator, a.storage);
-}
-
-/++
-Symmetric-view overload. Uses the view's selected triangle and produces the
-factor in that triangle. Positive definiteness is checked by factorization,
-not implied by the view. Other requirements follow the plain-slice overload.
-+/
-package(mir.stat) void choleskyDecomposeInto(Triangle triangle, A, C)(
-    scope auto ref const(SymmetricView!(triangle, A)) a,
-    scope auto ref C output)
-    if (matrix!A)
-{
-    choleskyDecomposeInto!triangle(a.storage, output);
 }

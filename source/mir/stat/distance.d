@@ -51,7 +51,7 @@ version(mir_stat_test) version = mir_stat_test_distance;
 version(mir_stat_test_linearAlgebra) version = mir_stat_test_distance;
 version(mir_stat_test_blas) version = mir_stat_test_distance;
 
-import mir.stat.internal.linearAlgebra.triangular: Triangle;
+import mir.stat.internal.linearAlgebra.types: TrianglePolicy;
 import mir.stat.internal.linearAlgebra.quadratic: quadraticForm;
 import mir.stat.internal.linearAlgebra.views: symmetricView;
 import mir.stat.internal.linearAlgebra.allocation;
@@ -126,7 +126,7 @@ Precomputed forms avoid factorization. See the module documentation for factor
 orientation, input preconditions, and numerical behavior.
 +/
 package(mir.stat) auto mahalanobis(MahalanobisMatrix form = MahalanobisMatrix.covariance,
-    Triangle triangle = Triangle.upper, X, C, M)(
+    TrianglePolicy triangle = TrianglePolicy.upper, X, C, M)(
     scope auto ref X x, scope auto ref C center, scope auto ref M metric)
     if (compatible!(X,C,M))
 {
@@ -161,7 +161,7 @@ Precomputed forms avoid factorization. See the module documentation for factor
 orientation, input preconditions, and numerical behavior.
 +/
 package(mir.stat) auto rcMahalanobis(MahalanobisMatrix form = MahalanobisMatrix.covariance,
-    Triangle triangle = Triangle.upper, X, C, M)(
+    TrianglePolicy triangle = TrianglePolicy.upper, X, C, M)(
     scope auto ref X x, scope auto ref C center, scope auto ref M metric)
     if (compatible!(X,C,M))
 {
@@ -197,7 +197,7 @@ Precomputed forms avoid factorization. See the module documentation for factor
 orientation, input preconditions, and numerical behavior.
 +/
 package(mir.stat) auto makeMahalanobis(MahalanobisMatrix form = MahalanobisMatrix.covariance,
-    Triangle triangle = Triangle.upper, Allocator, X, C, M)(
+    TrianglePolicy triangle = TrianglePolicy.upper, Allocator, X, C, M)(
     auto ref Allocator allocator, scope auto ref X x, scope auto ref C center, scope auto ref M metric)
     if (compatible!(X,C,M))
 {
@@ -232,7 +232,7 @@ Precomputed forms avoid factorization. See the module documentation for factor
 orientation, input preconditions, and numerical behavior.
 +/
 package(mir.stat) auto mahalanobisSquared(MahalanobisMatrix form = MahalanobisMatrix.covariance,
-    Triangle triangle = Triangle.upper, X, C, M)(
+    TrianglePolicy triangle = TrianglePolicy.upper, X, C, M)(
     scope auto ref X x, scope auto ref C center, scope auto ref M metric)
     if (compatible!(X,C,M))
 {
@@ -266,7 +266,7 @@ Precomputed forms avoid factorization. See the module documentation for factor
 orientation, input preconditions, and numerical behavior.
 +/
 package(mir.stat) auto rcMahalanobisSquared(MahalanobisMatrix form = MahalanobisMatrix.covariance,
-    Triangle triangle = Triangle.upper, X, C, M)(
+    TrianglePolicy triangle = TrianglePolicy.upper, X, C, M)(
     scope auto ref X x, scope auto ref C center, scope auto ref M metric)
     if (compatible!(X,C,M))
 {
@@ -301,7 +301,7 @@ Precomputed forms avoid factorization. See the module documentation for factor
 orientation, input preconditions, and numerical behavior.
 +/
 package(mir.stat) auto makeMahalanobisSquared(MahalanobisMatrix form = MahalanobisMatrix.covariance,
-    Triangle triangle = Triangle.upper, Allocator, X, C, M)(
+    TrianglePolicy triangle = TrianglePolicy.upper, Allocator, X, C, M)(
     auto ref Allocator allocator, scope auto ref X x, scope auto ref C center, scope auto ref M metric)
     if (compatible!(X,C,M))
 {
@@ -328,7 +328,7 @@ allocation is performed. Its contents are overwritten and unspecified afterward.
 Input iterator exceptions may leave partial workspace contents.
 +/
 package(mir.stat) auto mahalanobisWithWorkspace(MahalanobisMatrix form = MahalanobisMatrix.covariance,
-    Triangle triangle = Triangle.upper, X, C, M, W)(scope auto ref X x,
+    TrianglePolicy triangle = TrianglePolicy.upper, X, C, M, W)(scope auto ref X x,
     scope auto ref C center, scope auto ref M metric, scope auto ref W work)
     if (form != MahalanobisMatrix.covariance && compatible!(X,C,M) &&
         vector!W && is(Element!X == Element!W))
@@ -343,7 +343,7 @@ elements and be disjoint from each other and all inputs. No allocation occurs
 on success. Factorization failure throws and leaves partial workspace contents.
 +/
 package(mir.stat) auto mahalanobisWithWorkspace(MahalanobisMatrix form = MahalanobisMatrix.covariance,
-    Triangle triangle = Triangle.upper, X, C, M, W, F)(scope auto ref X x,
+    TrianglePolicy triangle = TrianglePolicy.upper, X, C, M, W, F)(scope auto ref X x,
     scope auto ref C center, scope auto ref M metric, scope auto ref W work, scope auto ref F factorWork)
     if (form == MahalanobisMatrix.covariance && compatible!(X,C,M) && vector!W && matrix!F &&
         is(Element!X == Element!W) && is(Element!X == Element!F))
@@ -378,7 +378,7 @@ allocation is performed. Its contents are overwritten and unspecified afterward.
 Input iterator exceptions may leave partial workspace contents.
 +/
 package(mir.stat) auto mahalanobisSquaredWithWorkspace(MahalanobisMatrix form = MahalanobisMatrix.covariance,
-    Triangle triangle = Triangle.upper, X, C, M, W)(scope auto ref X x,
+    TrianglePolicy triangle = TrianglePolicy.upper, X, C, M, W)(scope auto ref X x,
     scope auto ref C center, scope auto ref M metric, scope auto ref W work)
     if (form != MahalanobisMatrix.covariance && compatible!(X,C,M) &&
         vector!W && is(Element!X == Element!W))
@@ -393,7 +393,7 @@ elements and be disjoint from each other and all inputs. No allocation occurs
 on success. Factorization failure throws and leaves partial workspace contents.
 +/
 package(mir.stat) auto mahalanobisSquaredWithWorkspace(MahalanobisMatrix form = MahalanobisMatrix.covariance,
-    Triangle triangle = Triangle.upper, X, C, M, W, F)(scope auto ref X x,
+    TrianglePolicy triangle = TrianglePolicy.upper, X, C, M, W, F)(scope auto ref X x,
     scope auto ref C center, scope auto ref M metric, scope auto ref W work, scope auto ref F factorWork)
     if (form == MahalanobisMatrix.covariance && compatible!(X,C,M) && vector!W && matrix!F &&
         is(Element!X == Element!W) && is(Element!X == Element!F))
@@ -440,7 +440,7 @@ private void check(X,C,M,W)(X x, C center, M metric, W work)
 }
 
 private auto evaluate(Allocation policy, bool squared, MahalanobisMatrix form,
-    Triangle triangle, Allocator, X,C,M)(ref Allocator allocator,
+    TrianglePolicy triangle, Allocator, X,C,M)(ref Allocator allocator,
     scope auto ref X x, scope auto ref C center, scope auto ref M metric)
 {
     auto xv = x.asView;
@@ -475,11 +475,11 @@ private auto evaluate(Allocation policy, bool squared, MahalanobisMatrix form,
         return prepared!(squared,form,triangle)(xv,cv,mv,work);
 }
 
-private auto prepared(bool squared, MahalanobisMatrix form, Triangle triangle, X,C,M,W)(
+private auto prepared(bool squared, MahalanobisMatrix form, TrianglePolicy triangle, X,C,M,W)(
     X x, C center, M metric, W work)
 {
     import std.math: isFinite, sqrt;
-    static assert(triangle == Triangle.upper || triangle == Triangle.lower);
+    static assert(triangle == TrianglePolicy.upper || triangle == TrianglePolicy.lower);
     static assert(form != MahalanobisMatrix.covariance);
     check(x,center,metric,work);
     alias T = Element!X;
@@ -493,7 +493,7 @@ private auto prepared(bool squared, MahalanobisMatrix form, Triangle triangle, X
     static if (form == MahalanobisMatrix.inverseCovariance)
     {
         foreach (i; 0 .. metric.length!0) foreach (j; 0 .. metric.length!1)
-            if (triangle == Triangle.upper ? j >= i : j <= i)
+            if (triangle == TrianglePolicy.upper ? j >= i : j <= i)
                 assert(isFinite(metric[i,j]), "Mahalanobis metric must be finite");
         auto result = quadraticForm(work, symmetricView!triangle(metric));
         static if (squared) return result;
@@ -503,23 +503,23 @@ private auto prepared(bool squared, MahalanobisMatrix form, Triangle triangle, X
     {
         import mir.ndslice.topology: universal;
         import mir.ndslice.dynamic: transposed;
-        import mir.stat.internal.linearAlgebra.triangularVector: triangularVectorInPlace;
+        import mir.stat.internal.linearAlgebra.triangular: triangularVectorInPlace;
         foreach (i; 0 .. metric.length!0) foreach (j; 0 .. metric.length!1)
-            if (triangle == Triangle.upper ? j >= i : j <= i)
+            if (triangle == TrianglePolicy.upper ? j >= i : j <= i)
                 assert(isFinite(metric[i,j]), "Mahalanobis factor must be finite");
         static if (form == MahalanobisMatrix.cholesky)
         {
             // S=U' U => solve U' z=d. S=L L' => solve L z=d.
-            static if (triangle == Triangle.upper) auto a = metric.universal.transposed;
+            static if (triangle == TrianglePolicy.upper) auto a = metric.universal.transposed;
             else auto a = metric.universal;
-            triangularVectorInPlace!(true,Triangle.lower)(a,work);
+            triangularVectorInPlace!(true,TrianglePolicy.lower)(a,work);
         }
         else static if (form == MahalanobisMatrix.inverseCovarianceCholesky)
         {
             // P=R' R => z=R d. P=Q Q' => z=Q' d.
-            static if (triangle == Triangle.lower) auto a = metric.universal.transposed;
+            static if (triangle == TrianglePolicy.lower) auto a = metric.universal.transposed;
             else auto a = metric.universal;
-            triangularVectorInPlace!(false,Triangle.upper)(a,work);
+            triangularVectorInPlace!(false,TrianglePolicy.upper)(a,work);
         }
         else static assert(0, "Unknown Mahalanobis matrix representation");
         return scaledNorm!squared(work);
@@ -565,7 +565,7 @@ version(mir_stat_test_distance)
     import mir.ndslice.dynamic: transposed, strided, reversed;
     import mir.ndslice.allocation: mininitRcslice;
     static foreach (T; AliasSeq!(float,double,real))
-    static foreach (triangle; [Triangle.upper,Triangle.lower])
+    static foreach (triangle; [TrianglePolicy.upper,TrianglePolicy.lower])
     static foreach (form; [MahalanobisMatrix.covariance,MahalanobisMatrix.cholesky,
         MahalanobisMatrix.inverseCovariance,MahalanobisMatrix.inverseCovarianceCholesky])
     {{
@@ -595,7 +595,7 @@ version(mir_stat_test_distance)
                 metric[0,0] = sqrt(T(5))/4; metric[1,1] = 1/sqrt(T(5));
                 metric[0,1] = metric[1,0] = -1/(2*sqrt(T(5)));
             }
-            metric[triangle == Triangle.upper ? 1 : 0, triangle == Triangle.upper ? 0 : 1] = T.nan;
+            metric[triangle == TrianglePolicy.upper ? 1 : 0, triangle == TrianglePolicy.upper ? 0 : 1] = T.nan;
             // d=[1,2], S=[[4,2],[2,5]], exact quadratic form is 13/16.
             T[4] xs = [T(4),T(-99),T(6),T(-99)];
             T[2] cs = [3,4];
@@ -713,12 +713,12 @@ version(mir_stat_test_distance)
         1, 3, double.nan, -1, 2, 4];
     double[9] inverse = [185.0/576, double.nan, double.nan,
         -13.0/144, 5.0/36, double.nan, 5.0/96, -1.0/24, 1.0/16];
-    static foreach (triangle; [Triangle.lower, Triangle.upper])
+    static foreach (triangle; [TrianglePolicy.lower, TrianglePolicy.upper])
     {{
         auto covarianceView = covariance[].sliced(3,3).universal;
         auto factorView = lower[].sliced(3,3).universal;
         auto precisionView = inverse[].sliced(3,3).universal;
-        static if (triangle == Triangle.upper)
+        static if (triangle == TrianglePolicy.upper)
         {
             covarianceView = covarianceView.transposed;
             factorView = factorView.transposed;
