@@ -3,9 +3,12 @@
 This package provides the matrix operations used by mir-stat, including the
 building blocks for Mahalanobis distance. It is currently **internal**: its
 operations are available to `mir.stat` and its subpackages, not to application
-code as a general-purpose BLAS API.
+code as a general-purpose BLAS API. The shared `TrianglePolicy` and
+`DiagonalPolicy` enums are public exceptions: they can be imported through
+this package, `mir.stat.distance`, or `mir.stat`. Mahalanobis functions use the
+same `TrianglePolicy`; there is no separate distance-specific triangle enum.
 
-Mahalanobis calculations currently live in the internal `mir.stat.distance` module.
+For application-level distance calculations, use `mir.stat.distance`.
 This README explains the internal package's capabilities and design choices.
 [package.d](package.d) and the individual modules contain the detailed function
 contracts and executable examples.

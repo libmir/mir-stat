@@ -1,8 +1,9 @@
 /++
 Internal linear algebra operations with explicit result ownership.
 
-Declarations are restricted to `mir.stat` and its subpackages; this package
-is not a public application API.
+Operations and structural views are restricted to `mir.stat` and its subpackages.
+The shared `TrianglePolicy` and `DiagonalPolicy` enums are public; this package
+is not otherwise a public application API.
 
 `types` defines triangle/diagonal policies and shared numeric constraints;
 `views` describes matrix structure without depending on arithmetic operations.
@@ -77,7 +78,8 @@ module mir.stat.internal.linearAlgebra;
 version(mir_stat_test) version = mir_stat_test_linearAlgebra;
 version(mir_stat_test_blas) version = mir_stat_test_linearAlgebra;
 
-package(mir.stat) import mir.stat.internal.linearAlgebra.types: TrianglePolicy, DiagonalPolicy;
+/// Public structural policies shared with the distance API.
+public import mir.stat.internal.linearAlgebra.types: TrianglePolicy, DiagonalPolicy;
 package(mir.stat) import mir.stat.internal.linearAlgebra.products;
 package(mir.stat) import mir.stat.internal.linearAlgebra.views;
 package(mir.stat) import mir.stat.internal.linearAlgebra.quadratic;
