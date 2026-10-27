@@ -16,17 +16,17 @@ is independent of output ownership. No scratch allocation is required.
 License: $(HTTP www.apache.org/licenses/LICENSE-2.0, Apache-2.0)
 Copyright: 2026 Mir Stat Authors.
 +/
-module mir.math.internal.linearAlgebra.triangular;
+module mir.stat.internal.linearAlgebra.triangular;
 
 version(mir_stat_test) version = mir_stat_test_linearAlgebra;
 version(mir_stat_test_blas) version = mir_stat_test_linearAlgebra;
 
-import mir.math.internal.linearAlgebra.allocation;
-import mir.math.internal.linearAlgebra.products:
+import mir.stat.internal.linearAlgebra.allocation;
+import mir.stat.internal.linearAlgebra.products:
     Scalar, numericSlice, nativeSlice, blasNumber, blasMatrix, blasVector;
 
 /// Triangle of the logical matrix view to read.
-enum Triangle
+package(mir.stat) enum Triangle
 {
     /// Read entries on or above the diagonal.
     upper,
@@ -35,7 +35,7 @@ enum Triangle
 }
 
 /// Whether diagonal entries come from storage or are implicitly one.
-enum Diagonal
+package(mir.stat) enum Diagonal
 {
     /// Read the stored diagonal values.
     nonUnit,
@@ -66,7 +66,7 @@ See_Also: $(LINK2 #rcMtimesTriangular, rcMtimesTriangular),
     $(LINK2 #makeMtimesTriangular, makeMtimesTriangular),
     $(LINK2 #mtimesTriangularInto, mtimesTriangularInto)
 +/
-auto mtimesTriangular(Triangle triangle = Triangle.upper,
+package(mir.stat) auto mtimesTriangular(Triangle triangle = Triangle.upper,
     Diagonal diagonal = Diagonal.nonUnit, A, B)(scope auto ref A a, scope auto ref B b)
     if (compatible!(A, B))
 {
@@ -90,7 +90,7 @@ Parameters and shape requirements are the same. The returned owning slice
 has the shape of `b`; storage is released with its last owning reference.
 Native inputs support `@safe pure nothrow @nogc` calls.
 +/
-auto rcMtimesTriangular(Triangle triangle = Triangle.upper,
+package(mir.stat) auto rcMtimesTriangular(Triangle triangle = Triangle.upper,
     Diagonal diagonal = Diagonal.nonUnit, A, B)(scope auto ref A a, scope auto ref B b)
     if (compatible!(A, B))
 {
@@ -118,7 +118,7 @@ shape requirements are the same. The result has the shape of `b`; dispose
 If computation throws, allocated result storage is disposed before propagating
 the exception. Attributes depend on the allocator and input iterators.
 +/
-auto makeMtimesTriangular(Triangle triangle = Triangle.upper,
+package(mir.stat) auto makeMtimesTriangular(Triangle triangle = Triangle.upper,
     Diagonal diagonal = Diagonal.nonUnit, Allocator, A, B)(auto ref Allocator allocator,
     scope auto ref A a, scope auto ref B b)
     if (compatible!(A, B))
@@ -158,7 +158,7 @@ Preconditions:
 Every output element is overwritten, regardless of its previous value. General
 strides are supported. Computed input iterators can affect inferred attributes.
 +/
-void mtimesTriangularInto(Triangle triangle = Triangle.upper,
+package(mir.stat) void mtimesTriangularInto(Triangle triangle = Triangle.upper,
     Diagonal diagonal = Diagonal.nonUnit, A, B, C)(scope auto ref A a,
     scope auto ref B b, scope auto ref C c)
     if (compatible!(A, B) && numericSlice!C && C.N == B.N && is(Scalar!A == Scalar!C))
@@ -275,7 +275,7 @@ Preconditions:
 The unused triangle and implicit unit diagonal are never read. Transposed
 views are supported without conjugation or materialization.
 +/
-auto mtimesTriangularRight(Triangle triangle = Triangle.upper,
+package(mir.stat) auto mtimesTriangularRight(Triangle triangle = Triangle.upper,
     Diagonal diagonal = Diagonal.nonUnit, A, B)(scope auto ref A a, scope auto ref B b)
     if (compatible!(B, A))
 {
@@ -298,7 +298,7 @@ RC variant of $(LINK2 #mtimesTriangularRight, mtimesTriangularRight).
 Parameters and preconditions are the same; the result is an owning RC slice
 with the shape of `a`, requiring no manual disposal.
 +/
-auto rcMtimesTriangularRight(Triangle triangle = Triangle.upper,
+package(mir.stat) auto rcMtimesTriangularRight(Triangle triangle = Triangle.upper,
     Diagonal diagonal = Diagonal.nonUnit, A, B)(scope auto ref A a, scope auto ref B b)
     if (compatible!(B, A))
 {
@@ -326,7 +326,7 @@ Custom-allocator variant of $(LINK2 #mtimesTriangularRight, mtimesTriangularRigh
 same. Dispose `result.field` with that allocator once all views are finished.
 The result has the shape of `a`. Computation failure releases result storage.
 +/
-auto makeMtimesTriangularRight(Triangle triangle = Triangle.upper,
+package(mir.stat) auto makeMtimesTriangularRight(Triangle triangle = Triangle.upper,
     Diagonal diagonal = Diagonal.nonUnit, Allocator, A, B)(auto ref Allocator allocator,
     scope auto ref A a, scope auto ref B b)
     if (compatible!(B, A))
@@ -358,7 +358,7 @@ the shape and element type of `a`, be writable, and overlap neither input.
 Its elements must not overlap each other. No allocation is performed; all
 output elements are overwritten. Shape assertions do not check overlap.
 +/
-void mtimesTriangularRightInto(Triangle triangle = Triangle.upper,
+package(mir.stat) void mtimesTriangularRightInto(Triangle triangle = Triangle.upper,
     Diagonal diagonal = Diagonal.nonUnit, A, B, C)(scope auto ref A a,
     scope auto ref B b, scope auto ref C c)
     if (compatible!(B, A) && numericSlice!C && C.N == A.N && is(Scalar!B == Scalar!C))
@@ -442,7 +442,7 @@ private void multiplyTriangularBlas(Triangle triangle, Diagonal diagonal, A, C)(
 version(mir_stat_test_linearAlgebra)
 @safe pure nothrow @nogc unittest
 {
-    import mir.math.internal.linearAlgebra.products: rcMtimes;
+    import mir.stat.internal.linearAlgebra.products: rcMtimes;
     import mir.ndslice.slice: sliced;
     import mir.ndslice.topology: universal, map;
     import mir.ndslice.dynamic: transposed, strided, reversed;
@@ -543,7 +543,7 @@ version(mir_stat_test_linearAlgebra)
 version(mir_stat_test_linearAlgebra)
 @safe pure nothrow @nogc unittest
 {
-    import mir.math.internal.linearAlgebra.products: rcMtimes;
+    import mir.stat.internal.linearAlgebra.products: rcMtimes;
     import mir.ndslice.slice: sliced;
     import mir.ndslice.topology: universal;
     import mir.ndslice.dynamic: transposed;

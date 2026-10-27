@@ -3,14 +3,14 @@ Internal allocation-free triangular matrix/vector operations.
 License: $(HTTP www.apache.org/licenses/LICENSE-2.0, Apache-2.0)
 Copyright: 2026 Mir Stat Authors.
 +/
-module mir.math.internal.linearAlgebra.triangularVector;
+module mir.stat.internal.linearAlgebra.triangularVector;
 
-import mir.math.internal.linearAlgebra.triangular: Triangle;
-import mir.math.internal.linearAlgebra.products: Scalar, nativeSlice, blasMatrix, blasVector;
+import mir.stat.internal.linearAlgebra.triangular: Triangle;
+import mir.stat.internal.linearAlgebra.products: Scalar, nativeSlice, blasMatrix, blasVector;
 
 // Callers establish square shape, matching vector length, writable disjoint
 // vector elements, and a nonoverlapping read-only triangular matrix.
-package(mir) void triangularVectorInPlace(bool solve, Triangle triangle, A, X)(
+package(mir.stat) void triangularVectorInPlace(bool solve, Triangle triangle, A, X)(
     scope auto ref A a, scope auto ref X x)
 {
     static assert(triangle == Triangle.upper || triangle == Triangle.lower);

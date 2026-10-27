@@ -15,14 +15,14 @@ No scratch allocation or BLAS dependency is required.
 License: $(HTTP www.apache.org/licenses/LICENSE-2.0, Apache-2.0)
 Copyright: 2026 Mir Stat Authors.
 +/
-module mir.math.internal.linearAlgebra.quadratic;
+module mir.stat.internal.linearAlgebra.quadratic;
 
 version(mir_stat_test) version = mir_stat_test_linearAlgebra;
 version(mir_stat_test_blas) version = mir_stat_test_linearAlgebra;
 
-import mir.math.internal.linearAlgebra.products: Scalar, numericSlice;
-import mir.math.internal.linearAlgebra.triangular: Triangle;
-import mir.math.internal.linearAlgebra.views: SymmetricView, symmetricView;
+import mir.stat.internal.linearAlgebra.products: Scalar, numericSlice;
+import mir.stat.internal.linearAlgebra.triangular: Triangle;
+import mir.stat.internal.linearAlgebra.views: SymmetricView, symmetricView;
 import mir.math.sum: Summation, Summator;
 import std.traits: isFloatingPoint;
 
@@ -42,7 +42,7 @@ All matrix entries are read. Symmetry and positive definiteness are not assumed.
 Shapes are checked with assertions. Native inputs support
 `@safe pure nothrow @nogc`; computed iterators can affect these attributes.
 +/
-auto quadraticForm(Summation summation = Summation.kbn, X, A)(
+package(mir.stat) auto quadraticForm(Summation summation = Summation.kbn, X, A)(
     scope auto ref X x, scope auto ref A a)
     if (compatible!(X, A))
 {
@@ -73,7 +73,7 @@ The unselected triangle is never read. No symmetry or positive-definiteness
 check is performed. There is no allocation, and inputs are unchanged.
 Shapes are checked with assertions. Strided and computed inputs are supported.
 +/
-auto quadraticForm(Summation summation = Summation.kbn, X,
+package(mir.stat) auto quadraticForm(Summation summation = Summation.kbn, X,
     Triangle triangle, A)(scope auto ref X x,
     scope auto ref const(SymmetricView!(triangle, A)) a)
     if (compatible!(X, A))
@@ -96,7 +96,7 @@ version(mir_stat_test_linearAlgebra)
 @safe pure nothrow @nogc unittest
 {
     import mir.ndslice.slice: sliced;
-    import mir.math.internal.linearAlgebra.views: symmetricView;
+    import mir.stat.internal.linearAlgebra.views: symmetricView;
     double[2] values = [1, 2];
     double[4] data = [4, double.nan, 2, 5];
     const a = symmetricView!(Triangle.lower)(data[].sliced(2, 2));
@@ -187,7 +187,7 @@ version(mir_stat_test_linearAlgebra)
 {
     import mir.ndslice.slice: sliced;
     import mir.ndslice.topology: map;
-    import mir.math.internal.linearAlgebra.views: symmetricView;
+    import mir.stat.internal.linearAlgebra.views: symmetricView;
     import mir.complex: Complex;
     double[3] values = [1, 1, 1];
     double large = 4 / double.epsilon;
