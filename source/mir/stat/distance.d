@@ -27,7 +27,11 @@ Choose `mahalanobis` or `mahalanobisSquared` for GC scratch storage, their `rc`
 variants for temporary reference-counted storage, `make` variants for a custom
 allocator, or `WithWorkspace` variants for reusable caller storage. All return
 scalars; ownership choices apply only to temporary workspaces. Covariance input
-needs a matrix and vector workspace; precomputed forms need only a vector.
+needs a matrix and vector workspace; precomputed forms normally need one vector.
+Precision-matrix calls can opt into `Summation.fast` as a third template argument
+(after the representation and triangle). This uses two vectors and permits BLAS
+SYMV plus DOT. GC, RC, custom allocation, and a two-vector `WithWorkspace`
+overload are available. Existing calls keep their compensated behavior.
 
 Inputs are same-type real float, double or real vectors and matrices. Vectors
 may also be dynamic arrays. Only the selected matrix triangle is read; full
@@ -55,7 +59,8 @@ version(mir_stat_test_blas) version = mir_stat_test_distance;
 
 /// Shared matrix policies; the algebra operations themselves remain internal.
 public import mir.stat.internal.linearAlgebra.types: TrianglePolicy, DiagonalPolicy;
-import mir.stat.internal.linearAlgebra.quadratic: quadraticForm;
+import mir.stat.internal.linearAlgebra.quadratic: quadraticForm, quadraticFormWithWorkspace;
+import mir.math.sum: Summation;
 import mir.stat.internal.linearAlgebra.views: symmetricView;
 import mir.stat.internal.linearAlgebra.allocation;
 import mir.ndslice.slice: toSlice, isSlice;
@@ -721,6 +726,12 @@ version(mir_stat_test_distance)
     assert(allocator.allocations == 8 && allocator.releases == 8);
     assertThrown!AssertError(makeMahalanobisSquared(allocator,x[0..1],center[],metric));
     assert(allocator.allocations == 8);
+    data[] = [0.3125,-0.125,double.nan,0.25];
+    enum inverse = MahalanobisMatrix.inverseCovariance;
+    assert(makeMahalanobisSquared!(inverse,TrianglePolicy.upper,Summation.fast)(allocator,x[],center[],metric) >= 0);
+    assert(allocator.allocations == 10 && allocator.releases == 10);
+    assertThrown!Exception(makeMahalanobisSquared!(inverse,TrianglePolicy.upper,Summation.fast)(allocator,x[],center[],metric.map!fail));
+    assert(allocator.allocations == 12 && allocator.releases == 12);
     double[1] wrongWork;
     assertThrown!AssertError(mahalanobisSquaredWithWorkspace!(MahalanobisMatrix.cholesky)(x[],center[],metric,wrongWork[]));
 }
@@ -802,4 +813,250 @@ version(mir_stat_test_distance)
         }
     }}
     static assert(!__traits(compiles, mahalanobis(1, 2, 3)));
+}
+
+/++
+Precision-matrix overload with an explicit summation policy. Supply
+`MahalanobisMatrix.inverseCovariance`, a triangle, and `Summation.fast` to permit
+BLAS acceleration. Two temporary vectors hold the centered input and its
+matrix-vector product; their ownership follows this function's allocation
+strategy. Other policies retain their selected reductions. Inputs and numerical
+preconditions follow `mahalanobis`; fast mode does not promise compensated
+accuracy or backend-independent rounding. Negative squared values are not clamped.
++/
+Element!X mahalanobis(MahalanobisMatrix form, TrianglePolicy triangle, Summation summation, X, C, M)(scope auto ref X x, scope auto ref C center, scope auto ref M metric)
+    if (form == MahalanobisMatrix.inverseCovariance && compatible!(X,C,M))
+{
+    int unused;
+    return precisionAllocated!(Allocation.gc, false, triangle, summation)(
+        unused, x, center, metric);
+}
+
+/++
+Precision-matrix overload with an explicit summation policy. Supply
+`MahalanobisMatrix.inverseCovariance`, a triangle, and `Summation.fast` to permit
+BLAS acceleration. Two temporary vectors hold the centered input and its
+matrix-vector product; their ownership follows this function's allocation
+strategy. Other policies retain their selected reductions. Inputs and numerical
+preconditions follow `mahalanobis`; fast mode does not promise compensated
+accuracy or backend-independent rounding. Negative squared values are not clamped.
++/
+Element!X rcMahalanobis(MahalanobisMatrix form, TrianglePolicy triangle, Summation summation, X, C, M)(scope auto ref X x, scope auto ref C center, scope auto ref M metric)
+    if (form == MahalanobisMatrix.inverseCovariance && compatible!(X,C,M))
+{
+    int unused;
+    return precisionAllocated!(Allocation.rc, false, triangle, summation)(
+        unused, x, center, metric);
+}
+
+/++
+Precision-matrix overload with an explicit summation policy. Supply
+`MahalanobisMatrix.inverseCovariance`, a triangle, and `Summation.fast` to permit
+BLAS acceleration. Two temporary vectors hold the centered input and its
+matrix-vector product; their ownership follows this function's allocation
+strategy. Other policies retain their selected reductions. Inputs and numerical
+preconditions follow `mahalanobis`; fast mode does not promise compensated
+accuracy or backend-independent rounding. Negative squared values are not clamped.
++/
+Element!X makeMahalanobis(MahalanobisMatrix form, TrianglePolicy triangle, Summation summation, Allocator, X, C, M)(auto ref Allocator allocator, scope auto ref X x, scope auto ref C center, scope auto ref M metric)
+    if (form == MahalanobisMatrix.inverseCovariance && compatible!(X,C,M))
+{
+    return precisionAllocated!(Allocation.custom, false, triangle, summation)(
+        allocator, x, center, metric);
+}
+
+/++
+Precision-matrix overload with separate centered-input and product workspaces.
+`form` must be `MahalanobisMatrix.inverseCovariance`. Both writable vectors must
+have the input element type and length, contain nonoverlapping elements, and
+be disjoint from each other and every input. Shapes are asserted; overlap is
+not checked. No allocation occurs. On success `work` contains `x - center` and
+`productWork` contains `metric * work`; iterator exceptions may leave either
+partially written. The default is compensated; explicit `Summation.fast` permits
+SYMV and DOT with backend-dependent rounding. Other input contracts match
+`mahalanobis`. Negative squared results are not clamped.
++/
+Element!X mahalanobisWithWorkspace(MahalanobisMatrix form,
+    TrianglePolicy triangle = TrianglePolicy.upper, Summation summation = Summation.kbn,
+    X, C, M, W, P)(scope auto ref X x, scope auto ref C center, scope auto ref M metric,
+    scope auto ref W work, scope auto ref P productWork)
+    if (form == MahalanobisMatrix.inverseCovariance && compatible!(X,C,M) &&
+        vector!W && vector!P && is(Element!X == Element!W) && is(Element!X == Element!P))
+{
+    return precisionWorkspace!(false, triangle, summation)(
+        x.asView, center.asView, metric.asView, work.asView, productWork.asView);
+}
+
+/++
+Precision-matrix overload with an explicit summation policy. Supply
+`MahalanobisMatrix.inverseCovariance`, a triangle, and `Summation.fast` to permit
+BLAS acceleration. Two temporary vectors hold the centered input and its
+matrix-vector product; their ownership follows this function's allocation
+strategy. Other policies retain their selected reductions. Inputs and numerical
+preconditions follow `mahalanobis`; fast mode does not promise compensated
+accuracy or backend-independent rounding. Negative squared values are not clamped.
++/
+Element!X mahalanobisSquared(MahalanobisMatrix form, TrianglePolicy triangle, Summation summation, X, C, M)(scope auto ref X x, scope auto ref C center, scope auto ref M metric)
+    if (form == MahalanobisMatrix.inverseCovariance && compatible!(X,C,M))
+{
+    int unused;
+    return precisionAllocated!(Allocation.gc, true, triangle, summation)(
+        unused, x, center, metric);
+}
+
+/++
+Precision-matrix overload with an explicit summation policy. Supply
+`MahalanobisMatrix.inverseCovariance`, a triangle, and `Summation.fast` to permit
+BLAS acceleration. Two temporary vectors hold the centered input and its
+matrix-vector product; their ownership follows this function's allocation
+strategy. Other policies retain their selected reductions. Inputs and numerical
+preconditions follow `mahalanobis`; fast mode does not promise compensated
+accuracy or backend-independent rounding. Negative squared values are not clamped.
++/
+Element!X rcMahalanobisSquared(MahalanobisMatrix form, TrianglePolicy triangle, Summation summation, X, C, M)(scope auto ref X x, scope auto ref C center, scope auto ref M metric)
+    if (form == MahalanobisMatrix.inverseCovariance && compatible!(X,C,M))
+{
+    int unused;
+    return precisionAllocated!(Allocation.rc, true, triangle, summation)(
+        unused, x, center, metric);
+}
+
+/++
+Precision-matrix overload with an explicit summation policy. Supply
+`MahalanobisMatrix.inverseCovariance`, a triangle, and `Summation.fast` to permit
+BLAS acceleration. Two temporary vectors hold the centered input and its
+matrix-vector product; their ownership follows this function's allocation
+strategy. Other policies retain their selected reductions. Inputs and numerical
+preconditions follow `mahalanobis`; fast mode does not promise compensated
+accuracy or backend-independent rounding. Negative squared values are not clamped.
++/
+Element!X makeMahalanobisSquared(MahalanobisMatrix form, TrianglePolicy triangle, Summation summation, Allocator, X, C, M)(auto ref Allocator allocator, scope auto ref X x, scope auto ref C center, scope auto ref M metric)
+    if (form == MahalanobisMatrix.inverseCovariance && compatible!(X,C,M))
+{
+    return precisionAllocated!(Allocation.custom, true, triangle, summation)(
+        allocator, x, center, metric);
+}
+
+/++
+Precision-matrix overload with separate centered-input and product workspaces.
+`form` must be `MahalanobisMatrix.inverseCovariance`. Both writable vectors must
+have the input element type and length, contain nonoverlapping elements, and
+be disjoint from each other and every input. Shapes are asserted; overlap is
+not checked. No allocation occurs. On success `work` contains `x - center` and
+`productWork` contains `metric * work`; iterator exceptions may leave either
+partially written. The default is compensated; explicit `Summation.fast` permits
+SYMV and DOT with backend-dependent rounding. Other input contracts match
+`mahalanobis`. Negative squared results are not clamped.
++/
+Element!X mahalanobisSquaredWithWorkspace(MahalanobisMatrix form,
+    TrianglePolicy triangle = TrianglePolicy.upper, Summation summation = Summation.kbn,
+    X, C, M, W, P)(scope auto ref X x, scope auto ref C center, scope auto ref M metric,
+    scope auto ref W work, scope auto ref P productWork)
+    if (form == MahalanobisMatrix.inverseCovariance && compatible!(X,C,M) &&
+        vector!W && vector!P && is(Element!X == Element!W) && is(Element!X == Element!P))
+{
+    return precisionWorkspace!(true, triangle, summation)(
+        x.asView, center.asView, metric.asView, work.asView, productWork.asView);
+}
+
+/// Allocate disjoint precision work vectors and release custom storage on every exit.
+private Element!X precisionAllocated(Allocation policy, bool squared, TrianglePolicy triangle,
+    Summation summation, Allocator, X, C, M)(ref Allocator allocator,
+    scope auto ref X x, scope auto ref C center, scope auto ref M metric)
+{
+    auto xv = x.asView;
+    auto cv = center.asView;
+    auto mv = metric.asView;
+    check(xv, cv, mv, xv);
+    auto work = allocate!(policy, Element!X)(allocator, xv.shape);
+    scope(exit)
+    {
+        static if (policy == Allocation.custom)
+        {
+            import std.experimental.allocator: dispose;
+            allocator.dispose(work.field);
+        }
+    }
+    auto productWork = allocate!(policy, Element!X)(allocator, xv.shape);
+    scope(exit)
+    {
+        static if (policy == Allocation.custom)
+        {
+            import std.experimental.allocator: dispose;
+            allocator.dispose(productWork.field);
+        }
+    }
+    return precisionWorkspace!(squared, triangle, summation)(xv, cv, mv, work, productWork);
+}
+
+/// Center observations and evaluate a precision quadratic form through caller workspace.
+private Element!X precisionWorkspace(bool squared, TrianglePolicy triangle, Summation summation, X,C,M,W,P)(
+    X x, C center, M metric, W work, P productWork)
+{
+    import std.math: isFinite, sqrt;
+    static assert(triangle == TrianglePolicy.upper || triangle == TrianglePolicy.lower);
+    check(x, center, metric, work);
+    assert(productWork.length == x.length, "Incorrect Mahalanobis product workspace length");
+    foreach (i; 0 .. x.length)
+    {
+        auto a = x[i];
+        auto b = center[i];
+        assert(isFinite(a) && isFinite(b), "Mahalanobis vectors must be finite");
+        work[i] = a - b;
+    }
+    foreach (i; 0 .. metric.length!0) foreach (j; 0 .. metric.length!1)
+        if (triangle == TrianglePolicy.upper ? j >= i : j <= i)
+            assert(isFinite(metric[i,j]), "Mahalanobis metric must be finite");
+    auto result = quadraticFormWithWorkspace!summation(work, symmetricView!triangle(metric), productWork);
+    static if (squared) return result;
+    else return sqrt(result);
+}
+
+/// Reuse two vectors to opt into BLAS-compatible precision arithmetic.
+version(mir_stat_test_distance)
+@safe pure nothrow @nogc unittest
+{
+    import mir.ndslice.slice: sliced;
+    import mir.math.sum: Summation;
+    double[2] x = [2, 3], center = [1, 1], difference, product;
+    double[4] data = [0.3125, -0.125, double.nan, 0.25];
+    auto precision = data[].sliced(2, 2);
+    auto result = mahalanobisSquaredWithWorkspace!(MahalanobisMatrix.inverseCovariance,
+        TrianglePolicy.upper, Summation.fast)(x[], center[], precision, difference[], product[]);
+    assert(result == 0.8125);
+    assert(difference == [1, 2] && product == [0.0625, 0.375]);
+}
+
+version(mir_stat_test_distance)
+@system unittest
+{
+    import std.meta: AliasSeq;
+    import std.math: fabs, sqrt;
+    import mir.ndslice.slice: sliced;
+    import mir.ndslice.topology: universal;
+    import mir.ndslice.dynamic: transposed, reversed;
+    import std.experimental.allocator.mallocator: Mallocator;
+    static foreach (T; AliasSeq!(float, double, real))
+    static foreach (triangle; [TrianglePolicy.upper, TrianglePolicy.lower])
+    {{
+        T[2] x = [2,3], center = [1,1], work, product;
+        T[4] data = [0.3125, -0.125, T.nan, 0.25];
+        auto p = data[].sliced(2,2).universal;
+        static if (triangle == TrianglePolicy.lower) p = p.transposed;
+        enum form = MahalanobisMatrix.inverseCovariance;
+        enum fast = Summation.fast;
+        assert(mahalanobisSquared!(form,triangle,fast)(x[],center[],p) == T(0.8125));
+        assert(rcMahalanobisSquared!(form,triangle,fast)(x[],center[],p) == T(0.8125));
+        assert(makeMahalanobisSquared!(form,triangle,fast)(Mallocator.instance,x[],center[],p) == T(0.8125));
+        assert(fabs(mahalanobis!(form,triangle,fast)(x[],center[],p) - sqrt(T(0.8125))) < 8*T.epsilon);
+        assert(fabs(rcMahalanobis!(form,triangle,fast)(x[],center[],p) - sqrt(T(0.8125))) < 8*T.epsilon);
+        assert(fabs(makeMahalanobis!(form,triangle,fast)(Mallocator.instance,x[],center[],p) - sqrt(T(0.8125))) < 8*T.epsilon);
+        assert(mahalanobisSquaredWithWorkspace!(form,triangle)(x[],center[],p,work[],product[]) == T(0.8125));
+        assert(fabs(mahalanobisWithWorkspace!(form,triangle,fast)(x[],center[],p,work[],product[]) - sqrt(T(0.8125))) < 8*T.epsilon);
+        auto xv = x[].sliced.reversed;
+        auto cv = center[].sliced.reversed;
+        auto expected = mahalanobisSquared!(form,triangle)(xv,cv,p);
+        assert(mahalanobisSquaredWithWorkspace!(form,triangle,fast)(xv,cv,p,work[],product[]) == expected);
+        assert(mahalanobisSquaredWithWorkspace!(form,triangle,fast)(x[0..0],center[0..0],data[0..0].sliced(0,0),work[0..0],product[0..0]) == 0);
+    }}
 }
