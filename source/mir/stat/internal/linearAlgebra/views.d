@@ -21,6 +21,7 @@ Copyright: 2026 Mir Stat Authors.
 +/
 module mir.stat.internal.linearAlgebra.views;
 
+// Include this module in both the full suite and the focused BLAS suite.
 version(mir_stat_test) version = mir_stat_test_linearAlgebra;
 version(mir_stat_test_blas) version = mir_stat_test_linearAlgebra;
 
@@ -28,7 +29,9 @@ import mir.ndslice.slice: isSlice;
 import mir.stat.internal.linearAlgebra.types: TrianglePolicy, DiagonalPolicy;
 import std.traits: Unqual;
 
+/// Whether a descriptor is a rank-two ndslice.
 private enum matrix(A) = isSlice!A && A.N == 2;
+/// Triangle selected by a transposed structural view.
 private enum opposite(TrianglePolicy triangle) = triangle == TrianglePolicy.upper ? TrianglePolicy.lower : TrianglePolicy.upper;
 
 /++
@@ -174,6 +177,7 @@ version(mir_stat_test_linearAlgebra)
         assert(transpose[1,0] == 3);
     }
     assert(owner._iterator._array._counter == initialCount);
+    /// Return a view whose RC storage must survive the local owner.
     auto retained()
     {
         auto local = mininitRcslice!double(2,2);

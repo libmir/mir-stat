@@ -22,6 +22,7 @@ package(mir.stat) import mir.stat.internal.linearAlgebra.products: rcMtimes;
 package(mir.stat) import mir.stat.internal.linearAlgebra.triangular: rcMtimesTriangular, rcMtimesTriangularRight;
 package(mir.stat) import mir.stat.internal.linearAlgebra.cholesky: rcCholeskyDecompose, rcCholeskySolve;
 
+// Include this module in both the full suite and the focused BLAS suite.
 version(mir_stat_test) version = mir_stat_test_linearAlgebra;
 version(mir_stat_test_blas) version = mir_stat_test_linearAlgebra;
 

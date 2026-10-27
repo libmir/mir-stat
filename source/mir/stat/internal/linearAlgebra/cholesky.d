@@ -9,7 +9,7 @@ indefinite matrices fail, without regularization or a pseudoinverse.
 
 Float, double and real inputs, including computed and strided views, are
 supported. LAPACK is optional and accelerates compatible native float/double
-output layouts. Other layouts use an allocation-free scalar kernel. Backend
+output layouts. Other layouts use an allocation-free built-in D kernel. Backend
 and summation order can affect rounding and failure near singularity.
 
 The `choleskySolve` family reuses a factor for vector or matrix right-hand
@@ -21,6 +21,7 @@ Copyright: 2026 Mir Stat Authors.
 +/
 module mir.stat.internal.linearAlgebra.cholesky;
 
+// Include this module in both the full suite and the focused BLAS suite.
 version(mir_stat_test) version = mir_stat_test_linearAlgebra;
 version(mir_stat_test_blas) version = mir_stat_test_linearAlgebra;
 
@@ -30,6 +31,7 @@ import mir.stat.internal.linearAlgebra.backend: hasBlas, hasLapack, nativeSlice,
 import mir.stat.internal.linearAlgebra.views: SymmetricView;
 import std.traits: isFloatingPoint;
 
+/// Whether an input is a real floating-point matrix.
 private enum matrix(A) = numericSlice!A && A.N == 2 && isFloatingPoint!(Scalar!A);
 
 /++
@@ -150,6 +152,7 @@ version(mir_stat_test_linearAlgebra)
     assert(result == expected);
 }
 
+/// Allocate a factor, copy and decompose the selected triangle, and release custom storage on failure.
 private AllocatedSlice!(policy, Scalar!A, 2)
 factor(Allocation policy, TrianglePolicy triangle, Allocator, A)(
     ref Allocator allocator, scope auto ref A a)
@@ -358,7 +361,7 @@ version(mir_stat_test_linearAlgebra)
         static immutable expected = [[4,2,2],[2,10,4],[2,4,6]];
         foreach (i; 0 .. 3) foreach (j; 0 .. 3)
             assert(fabs(reconstructed[i,j] - expected[i][j]) <= 32 * T.epsilon);
-        // General-stride output forces the scalar kernel; transposed/padded
+        // General-stride output forces the built-in D kernel; transposed/padded
         // output exercises the optional native storage conversion separately.
         T[36] buffer;
         auto general = buffer[].sliced(6, 6).strided!(0,1)(2,2);
@@ -425,7 +428,9 @@ version(mir_stat_test_linearAlgebra)
     struct CountingAllocator
     {
         size_t allocations, releases;
+        /// Allocate test storage while counting allocation attempts.
         void[] allocate(size_t bytes) { ++allocations; return Mallocator.instance.allocate(bytes); }
+        /// Release test storage while counting releases.
         bool deallocate(void[] memory) { ++releases; return Mallocator.instance.deallocate(memory); }
     }
     CountingAllocator allocator;
@@ -438,6 +443,7 @@ version(mir_stat_test_linearAlgebra)
     assertThrown!Exception(makeCholeskyDecompose(allocator, a));
     assert(allocator.allocations == 2 && allocator.releases == 2);
     auto failure = new Exception("input failed");
+    /// Throw the test exception to verify cleanup after an input iterator fails.
     double fail(double value) { throw failure; }
     assertThrown!Exception(makeCholeskyDecompose(allocator, a.map!fail));
     assert(allocator.allocations == 3 && allocator.releases == 3);
@@ -455,6 +461,7 @@ version(mir_stat_test_linearAlgebra)
 }
 
 
+/// Whether an input is a real floating-point vector or matrix.
 private enum rightHandSide(B) = numericSlice!B && isFloatingPoint!(Scalar!B);
 
 /++
@@ -550,12 +557,14 @@ version(mir_stat_test_linearAlgebra)
     assert(result == [1, 2]);
 }
 
+/// Assert a square factor and a matching right-hand-side row count.
 private void checkSolve(A, B)(scope auto ref A factor, scope auto ref B b)
 {
     assert(factor.length!0 == factor.length!1, "Cholesky factor must be square");
     assert(factor.length!0 == b.length!0, "Incompatible Cholesky solve dimensions");
 }
 
+/// Allocate the solution and release custom storage if copying or substitution throws.
 private AllocatedSlice!(policy, Scalar!A, B.N)
 solve(Allocation policy, TrianglePolicy triangle, Allocator, A, B)(
     ref Allocator allocator, scope auto ref A factor, scope auto ref B b)
@@ -623,7 +632,7 @@ The row count and element type must match the factor. Output elements must
 not overlap one another or the factor. No allocation is performed.
 
 Compatible native layouts use two BLAS triangular solves when available;
-other layouts and computed factors use scalar forward/back substitution.
+other layouts and computed factors use built-in forward/back substitution.
 Native inputs support `@safe pure nothrow @nogc` calls. Computed iterators may
 throw and leave partial output. Backend and summation order affect rounding.
 +/
@@ -694,6 +703,7 @@ version(mir_stat_test_linearAlgebra)
     assert(rhs == [1, 2]);
 }
 
+/// Solve one right-hand side by forward and backward substitution using the selected factor triangle.
 private void solveVector(TrianglePolicy triangle, A, X)(scope auto ref A factor, scope auto ref X x)
 {
     foreach (i; 0 .. x.length)
@@ -767,7 +777,7 @@ version(mir_stat_test_linearAlgebra)
             auto rc = rcCholeskySolve!triangle(factor.lightConst, rhs);
             foreach (i; 0 .. 3) foreach (j; 0 .. 2)
                 assert(fabs(rc[i,j] - output[i,j]) < 64 * T.epsilon);
-            // General output strides and reversed vectors select the scalar path.
+            // General output strides and reversed vectors select the built-in D path.
             T[24] generalStorage = T(-99);
             auto general = generalStorage[].sliced(6,4).strided!(0,1)(2,2);
             choleskySolveInto!triangle(factor, rhs, general);
@@ -819,7 +829,9 @@ version(mir_stat_test_linearAlgebra)
     struct CountingAllocator
     {
         size_t allocations, releases;
+        /// Allocate test storage while counting allocation attempts.
         void[] allocate(size_t bytes) { ++allocations; return Mallocator.instance.allocate(bytes); }
+        /// Release test storage while counting releases.
         bool deallocate(void[] memory) { ++releases; return Mallocator.instance.deallocate(memory); }
     }
     CountingAllocator allocator;
@@ -831,6 +843,7 @@ version(mir_stat_test_linearAlgebra)
     assert(custom == [1,2]);
     allocator.dispose(custom.field);
     auto failure = new Exception("input failed");
+    /// Throw the test exception to verify cleanup after an input iterator fails.
     double fail(double value) { throw failure; }
     assertThrown!Exception(makeCholeskySolve(allocator, factor.map!fail, rhs));
     assertThrown!Exception(makeCholeskySolve(allocator, factor, rhs.map!fail));

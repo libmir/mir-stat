@@ -24,6 +24,7 @@ package(mir.stat) import mir.stat.internal.linearAlgebra.products: makeMtimes;
 package(mir.stat) import mir.stat.internal.linearAlgebra.triangular: makeMtimesTriangular, makeMtimesTriangularRight;
 package(mir.stat) import mir.stat.internal.linearAlgebra.cholesky: makeCholeskyDecompose, makeCholeskySolve;
 
+// Include this module in both the full suite and the focused BLAS suite.
 version(mir_stat_test) version = mir_stat_test_linearAlgebra;
 version(mir_stat_test_blas) version = mir_stat_test_linearAlgebra;
 

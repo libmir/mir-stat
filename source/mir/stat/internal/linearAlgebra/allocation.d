@@ -25,6 +25,7 @@ package(mir.stat) template AllocatedSlice(Allocation policy, T, size_t rank)
 // Allocate result storage after checking element and byte counts. Callers must
 // initialize every element before reading it. Custom storage belongs to the
 // caller and is released by disposing the returned slice's field.
+/// Allocate checked contiguous storage; custom allocations transfer ownership to the caller.
 package(mir.stat) AllocatedSlice!(policy, T, N)
 allocate(Allocation policy, T, size_t N, Allocator)(
     ref Allocator allocator, size_t[N] shape)
