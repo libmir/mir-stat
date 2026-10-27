@@ -19,13 +19,13 @@ storage ownership and updates triangle metadata without copying elements.
 License: $(HTTP www.apache.org/licenses/LICENSE-2.0, Apache-2.0)
 Copyright: 2026 Mir Stat Authors.
 +/
-module mir.math.internal.linearAlgebra.views;
+module mir.stat.internal.linearAlgebra.views;
 
 version(mir_stat_test) version = mir_stat_test_linearAlgebra;
 version(mir_stat_test_blas) version = mir_stat_test_linearAlgebra;
 
 import mir.ndslice.slice: isSlice;
-import mir.math.internal.linearAlgebra.triangular: Triangle, Diagonal;
+import mir.stat.internal.linearAlgebra.triangular: Triangle, Diagonal;
 import std.traits: Unqual;
 
 private enum matrix(A) = isSlice!A && A.N == 2;
@@ -37,7 +37,7 @@ Unused entries are not read. The descriptor is copied, retaining RC ownership
 when present. The original storage is not modified. This expresses symmetry,
 not positive definiteness; no element-wise validation is performed.
 +/
-auto symmetricView(Triangle triangle = Triangle.upper, A)(A a)
+package(mir.stat) auto symmetricView(Triangle triangle = Triangle.upper, A)(A a)
     if (matrix!A)
 {
     static assert(triangle == Triangle.upper || triangle == Triangle.lower);
@@ -58,7 +58,7 @@ version(mir_stat_test_linearAlgebra)
 }
 
 /// Structural symmetric matrix descriptor. Construct with `symmetricView`.
-struct SymmetricView(Triangle selectedTriangle, A)
+package(mir.stat) struct SymmetricView(Triangle selectedTriangle, A)
     if (matrix!A)
 {
     private A _storage;
@@ -94,7 +94,7 @@ read as zero. `Diagonal.unit` reads diagonal entries as one without accessing
 stored diagonal values. The descriptor retains the input's ownership policy.
 This is a structural view, not a claim of invertibility or a Cholesky factor.
 +/
-auto triangularView(Triangle triangle = Triangle.upper, Diagonal diagonal = Diagonal.nonUnit, A)(A a)
+package(mir.stat) auto triangularView(Triangle triangle = Triangle.upper, Diagonal diagonal = Diagonal.nonUnit, A)(A a)
     if (matrix!A)
 {
     static assert(triangle == Triangle.upper || triangle == Triangle.lower);
@@ -117,7 +117,7 @@ version(mir_stat_test_linearAlgebra)
 }
 
 /// Structural triangular descriptor. Construct with `triangularView`.
-struct TriangularView(Triangle selectedTriangle, Diagonal selectedDiagonal, A)
+package(mir.stat) struct TriangularView(Triangle selectedTriangle, Diagonal selectedDiagonal, A)
     if (matrix!A)
 {
     private A _storage;
@@ -159,7 +159,7 @@ version(mir_stat_test_linearAlgebra)
 @safe pure nothrow @nogc unittest
 {
     import mir.ndslice.slice: sliced;
-    import mir.math.internal.linearAlgebra.products: rcMtimes;
+    import mir.stat.internal.linearAlgebra.products: rcMtimes;
     double[4] data = [2, 3, double.nan, 4];
     double[2] values = [5, 6];
     const a = triangularView(data[].sliced(2, 2));
@@ -172,8 +172,8 @@ version(mir_stat_test_linearAlgebra)
 @safe pure @nogc unittest
 {
     import mir.ndslice.slice: sliced;
-    import mir.math.internal.linearAlgebra.quadratic: quadraticForm;
-    import mir.math.internal.linearAlgebra.cholesky: rcCholeskyDecompose;
+    import mir.stat.internal.linearAlgebra.quadratic: quadraticForm;
+    import mir.stat.internal.linearAlgebra.cholesky: rcCholeskyDecompose;
     double[4] data = [4, 2, double.nan, 5];
     double[2] values = [1, 2];
     const a = symmetricView(data[].sliced(2, 2));
@@ -189,8 +189,8 @@ version(mir_stat_test_linearAlgebra)
     import mir.ndslice.slice: sliced;
     import mir.ndslice.topology: map;
     import mir.ndslice.dynamic: strided;
-    import mir.math.internal.linearAlgebra.products: rcMtimes, mtimesInto;
-    import mir.math.internal.linearAlgebra.quadratic: quadraticForm;
+    import mir.stat.internal.linearAlgebra.products: rcMtimes, mtimesInto;
+    import mir.stat.internal.linearAlgebra.quadratic: quadraticForm;
     import mir.complex: Complex;
     double[16] data = double.nan;
     auto raw = data[].sliced(4, 4).strided!(0,1)(2,2);
@@ -233,7 +233,7 @@ version(mir_stat_test_linearAlgebra)
 @system @nogc unittest
 {
     import mir.ndslice.allocation: mininitRcslice;
-    import mir.math.internal.linearAlgebra.products: rcMtimes;
+    import mir.stat.internal.linearAlgebra.products: rcMtimes;
     import mir.ndslice.slice: sliced;
     auto owner = mininitRcslice!double(2,2);
     owner[0,0] = 2; owner[0,1] = 3; owner[1,0] = double.nan; owner[1,1] = 4;
@@ -264,8 +264,8 @@ version(mir_stat_test_linearAlgebra)
 @system unittest
 {
     import mir.ndslice.slice: sliced;
-    import mir.math.internal.linearAlgebra.products: mtimes, makeMtimes;
-    import mir.math.internal.linearAlgebra.cholesky: choleskyDecompose, makeCholeskyDecompose, choleskyDecomposeInto;
+    import mir.stat.internal.linearAlgebra.products: mtimes, makeMtimes;
+    import mir.stat.internal.linearAlgebra.cholesky: choleskyDecompose, makeCholeskyDecompose, choleskyDecomposeInto;
     import std.experimental.allocator.mallocator: Mallocator;
     import std.experimental.allocator: dispose;
     import std.exception: assertThrown;

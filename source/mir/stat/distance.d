@@ -1,5 +1,8 @@
 /++
-Mahalanobis distance between an observation and a center with a supplied metric.
+Internal Mahalanobis distance calculations with a supplied metric.
+
+Declarations are restricted to `mir.stat` and its subpackages while the API
+is being developed. This module is not re-exported by `mir.stat`.
 
 For difference `d = x - center` and positive-definite covariance `S`, squared
 distance is `d.transpose * inverse(S) * d`. Supply `S`, its Cholesky factor,
@@ -13,8 +16,9 @@ For an upper precision factor `P = R.transpose * R`, multiply `z = R * d`;
 for a lower factor `P = Q * Q.transpose`, multiply `z = Q.transpose * d`.
 The distance is the Euclidean norm of `z`; no matrix inverse is formed.
 
-For an already centered vector, `quadraticForm` is available directly and
-allocates no workspace. Pass a `symmetricView` to select one matrix triangle.
+For an already centered vector, internal callers can import `quadraticForm`
+from `mir.stat.internal.linearAlgebra.quadratic`; it allocates no workspace.
+Pass a `symmetricView` to select one matrix triangle.
 Quadratic forms also accept indefinite matrices and may return negative values.
 
 Choose `mahalanobis` or `mahalanobisSquared` for GC scratch storage, their `rc`
@@ -47,15 +51,15 @@ version(mir_stat_test) version = mir_stat_test_distance;
 version(mir_stat_test_linearAlgebra) version = mir_stat_test_distance;
 version(mir_stat_test_blas) version = mir_stat_test_distance;
 
-public import mir.math.internal.linearAlgebra.triangular: Triangle;
-public import mir.math.internal.linearAlgebra.quadratic: quadraticForm;
-import mir.math.internal.linearAlgebra.views: symmetricView;
-import mir.math.internal.linearAlgebra.allocation;
+import mir.stat.internal.linearAlgebra.triangular: Triangle;
+import mir.stat.internal.linearAlgebra.quadratic: quadraticForm;
+import mir.stat.internal.linearAlgebra.views: symmetricView;
+import mir.stat.internal.linearAlgebra.allocation;
 import mir.ndslice.slice: toSlice, isSlice;
 import std.traits: Unqual, isFloatingPoint;
 
 /// Representation of the supplied covariance or precision matrix.
-enum MahalanobisMatrix
+package(mir.stat) enum MahalanobisMatrix
 {
     /// Symmetric positive-definite covariance S. Factorized on each call.
     covariance,
@@ -72,7 +76,7 @@ version(mir_stat_test_distance)
 @safe pure @nogc unittest
 {
     import mir.ndslice.slice: sliced;
-    import mir.math.internal.linearAlgebra.cholesky: rcCholeskyDecompose;
+    import mir.stat.internal.linearAlgebra.cholesky: rcCholeskyDecompose;
     import std.math: fabs;
     double[2] x = [1, 2], center = [0, 0];
     double[4] covarianceData = [4, 2, double.nan, 5];
@@ -121,7 +125,7 @@ Covariance input is factorized on each call and throws on numerical failure.
 Precomputed forms avoid factorization. See the module documentation for factor
 orientation, input preconditions, and numerical behavior.
 +/
-auto mahalanobis(MahalanobisMatrix form = MahalanobisMatrix.covariance,
+package(mir.stat) auto mahalanobis(MahalanobisMatrix form = MahalanobisMatrix.covariance,
     Triangle triangle = Triangle.upper, X, C, M)(
     scope auto ref X x, scope auto ref C center, scope auto ref M metric)
     if (compatible!(X,C,M))
@@ -156,7 +160,7 @@ Covariance input is factorized on each call and throws on numerical failure.
 Precomputed forms avoid factorization. See the module documentation for factor
 orientation, input preconditions, and numerical behavior.
 +/
-auto rcMahalanobis(MahalanobisMatrix form = MahalanobisMatrix.covariance,
+package(mir.stat) auto rcMahalanobis(MahalanobisMatrix form = MahalanobisMatrix.covariance,
     Triangle triangle = Triangle.upper, X, C, M)(
     scope auto ref X x, scope auto ref C center, scope auto ref M metric)
     if (compatible!(X,C,M))
@@ -192,7 +196,7 @@ Covariance input is factorized on each call and throws on numerical failure.
 Precomputed forms avoid factorization. See the module documentation for factor
 orientation, input preconditions, and numerical behavior.
 +/
-auto makeMahalanobis(MahalanobisMatrix form = MahalanobisMatrix.covariance,
+package(mir.stat) auto makeMahalanobis(MahalanobisMatrix form = MahalanobisMatrix.covariance,
     Triangle triangle = Triangle.upper, Allocator, X, C, M)(
     auto ref Allocator allocator, scope auto ref X x, scope auto ref C center, scope auto ref M metric)
     if (compatible!(X,C,M))
@@ -227,7 +231,7 @@ Covariance input is factorized on each call and throws on numerical failure.
 Precomputed forms avoid factorization. See the module documentation for factor
 orientation, input preconditions, and numerical behavior.
 +/
-auto mahalanobisSquared(MahalanobisMatrix form = MahalanobisMatrix.covariance,
+package(mir.stat) auto mahalanobisSquared(MahalanobisMatrix form = MahalanobisMatrix.covariance,
     Triangle triangle = Triangle.upper, X, C, M)(
     scope auto ref X x, scope auto ref C center, scope auto ref M metric)
     if (compatible!(X,C,M))
@@ -261,7 +265,7 @@ Covariance input is factorized on each call and throws on numerical failure.
 Precomputed forms avoid factorization. See the module documentation for factor
 orientation, input preconditions, and numerical behavior.
 +/
-auto rcMahalanobisSquared(MahalanobisMatrix form = MahalanobisMatrix.covariance,
+package(mir.stat) auto rcMahalanobisSquared(MahalanobisMatrix form = MahalanobisMatrix.covariance,
     Triangle triangle = Triangle.upper, X, C, M)(
     scope auto ref X x, scope auto ref C center, scope auto ref M metric)
     if (compatible!(X,C,M))
@@ -296,7 +300,7 @@ Covariance input is factorized on each call and throws on numerical failure.
 Precomputed forms avoid factorization. See the module documentation for factor
 orientation, input preconditions, and numerical behavior.
 +/
-auto makeMahalanobisSquared(MahalanobisMatrix form = MahalanobisMatrix.covariance,
+package(mir.stat) auto makeMahalanobisSquared(MahalanobisMatrix form = MahalanobisMatrix.covariance,
     Triangle triangle = Triangle.upper, Allocator, X, C, M)(
     auto ref Allocator allocator, scope auto ref X x, scope auto ref C center, scope auto ref M metric)
     if (compatible!(X,C,M))
@@ -323,7 +327,7 @@ element type. Its elements must not overlap each other or any input. No
 allocation is performed. Its contents are overwritten and unspecified afterward.
 Input iterator exceptions may leave partial workspace contents.
 +/
-auto mahalanobisWithWorkspace(MahalanobisMatrix form = MahalanobisMatrix.covariance,
+package(mir.stat) auto mahalanobisWithWorkspace(MahalanobisMatrix form = MahalanobisMatrix.covariance,
     Triangle triangle = Triangle.upper, X, C, M, W)(scope auto ref X x,
     scope auto ref C center, scope auto ref M metric, scope auto ref W work)
     if (form != MahalanobisMatrix.covariance && compatible!(X,C,M) &&
@@ -338,7 +342,7 @@ of the same shape and type as `metric`. Both workspaces must have nonoverlapping
 elements and be disjoint from each other and all inputs. No allocation occurs
 on success. Factorization failure throws and leaves partial workspace contents.
 +/
-auto mahalanobisWithWorkspace(MahalanobisMatrix form = MahalanobisMatrix.covariance,
+package(mir.stat) auto mahalanobisWithWorkspace(MahalanobisMatrix form = MahalanobisMatrix.covariance,
     Triangle triangle = Triangle.upper, X, C, M, W, F)(scope auto ref X x,
     scope auto ref C center, scope auto ref M metric, scope auto ref W work, scope auto ref F factorWork)
     if (form == MahalanobisMatrix.covariance && compatible!(X,C,M) && vector!W && matrix!F &&
@@ -348,7 +352,7 @@ auto mahalanobisWithWorkspace(MahalanobisMatrix form = MahalanobisMatrix.covaria
     auto f = factorWork.asView;
     check(x.asView, center.asView, a, work.asView);
     assert(f.shape == a.shape, "Incorrect Mahalanobis factor workspace shape");
-    import mir.math.internal.linearAlgebra.cholesky: choleskyDecomposeInto;
+    import mir.stat.internal.linearAlgebra.cholesky: choleskyDecomposeInto;
     choleskyDecomposeInto!triangle(a, f);
     return prepared!(false, MahalanobisMatrix.cholesky, triangle)(x.asView, center.asView, f, work.asView);
 }
@@ -373,7 +377,7 @@ element type. Its elements must not overlap each other or any input. No
 allocation is performed. Its contents are overwritten and unspecified afterward.
 Input iterator exceptions may leave partial workspace contents.
 +/
-auto mahalanobisSquaredWithWorkspace(MahalanobisMatrix form = MahalanobisMatrix.covariance,
+package(mir.stat) auto mahalanobisSquaredWithWorkspace(MahalanobisMatrix form = MahalanobisMatrix.covariance,
     Triangle triangle = Triangle.upper, X, C, M, W)(scope auto ref X x,
     scope auto ref C center, scope auto ref M metric, scope auto ref W work)
     if (form != MahalanobisMatrix.covariance && compatible!(X,C,M) &&
@@ -388,7 +392,7 @@ of the same shape and type as `metric`. Both workspaces must have nonoverlapping
 elements and be disjoint from each other and all inputs. No allocation occurs
 on success. Factorization failure throws and leaves partial workspace contents.
 +/
-auto mahalanobisSquaredWithWorkspace(MahalanobisMatrix form = MahalanobisMatrix.covariance,
+package(mir.stat) auto mahalanobisSquaredWithWorkspace(MahalanobisMatrix form = MahalanobisMatrix.covariance,
     Triangle triangle = Triangle.upper, X, C, M, W, F)(scope auto ref X x,
     scope auto ref C center, scope auto ref M metric, scope auto ref W work, scope auto ref F factorWork)
     if (form == MahalanobisMatrix.covariance && compatible!(X,C,M) && vector!W && matrix!F &&
@@ -398,7 +402,7 @@ auto mahalanobisSquaredWithWorkspace(MahalanobisMatrix form = MahalanobisMatrix.
     auto f = factorWork.asView;
     check(x.asView, center.asView, a, work.asView);
     assert(f.shape == a.shape, "Incorrect Mahalanobis factor workspace shape");
-    import mir.math.internal.linearAlgebra.cholesky: choleskyDecomposeInto;
+    import mir.stat.internal.linearAlgebra.cholesky: choleskyDecomposeInto;
     choleskyDecomposeInto!triangle(a, f);
     return prepared!(true, MahalanobisMatrix.cholesky, triangle)(x.asView, center.asView, f, work.asView);
 }
@@ -499,7 +503,7 @@ private auto prepared(bool squared, MahalanobisMatrix form, Triangle triangle, X
     {
         import mir.ndslice.topology: universal;
         import mir.ndslice.dynamic: transposed;
-        import mir.math.internal.linearAlgebra.triangularVector: triangularVectorInPlace;
+        import mir.stat.internal.linearAlgebra.triangularVector: triangularVectorInPlace;
         foreach (i; 0 .. metric.length!0) foreach (j; 0 .. metric.length!1)
             if (triangle == Triangle.upper ? j >= i : j <= i)
                 assert(isFinite(metric[i,j]), "Mahalanobis factor must be finite");
@@ -698,7 +702,7 @@ version(mir_stat_test_distance)
     import mir.ndslice.slice: sliced;
     import mir.ndslice.topology: universal;
     import mir.ndslice.dynamic: transposed;
-    import mir.math.internal.linearAlgebra.cholesky: rcCholeskyDecompose;
+    import mir.stat.internal.linearAlgebra.cholesky: rcCholeskyDecompose;
     // L = [[2,0,0],[1,3,0],[-1,2,4]], d = L * [1,-2,3].
     // S = L*L' and the independently calculated inverse are supplied below.
     // Therefore d' * inverse(S) * d = 1 + 4 + 9 = 14.

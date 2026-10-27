@@ -1,9 +1,12 @@
 /++
 Internal linear algebra operations with explicit result ownership.
 
+Declarations are restricted to `mir.stat` and its subpackages; this package
+is not a public application API.
+
 Import this package to use the matrix and vector multiplication APIs from
-`mir.math.internal.linearAlgebra.products` and triangular products from
-`mir.math.internal.linearAlgebra.triangular`.
+`mir.stat.internal.linearAlgebra.products` and triangular products from
+`mir.stat.internal.linearAlgebra.triangular`.
 
 Choose result ownership independently of input ownership:
 $(UL
@@ -52,22 +55,22 @@ License: $(HTTP www.apache.org/licenses/LICENSE-2.0, Apache-2.0)
 Authors: John Michael Hall
 Copyright: 2026 Mir Stat Authors.
 +/
-module mir.math.internal.linearAlgebra;
+module mir.stat.internal.linearAlgebra;
 
 version(mir_stat_test) version = mir_stat_test_linearAlgebra;
 version(mir_stat_test_blas) version = mir_stat_test_linearAlgebra;
 
-public import mir.math.internal.linearAlgebra.products;
-public import mir.math.internal.linearAlgebra.views;
-public import mir.math.internal.linearAlgebra.quadratic;
-public import mir.math.internal.linearAlgebra.triangular;
-public import mir.math.internal.linearAlgebra.cholesky;
+package(mir.stat) import mir.stat.internal.linearAlgebra.products;
+package(mir.stat) import mir.stat.internal.linearAlgebra.views;
+package(mir.stat) import mir.stat.internal.linearAlgebra.quadratic;
+package(mir.stat) import mir.stat.internal.linearAlgebra.triangular;
+package(mir.stat) import mir.stat.internal.linearAlgebra.cholesky;
 
 /// Multiply borrowed matrix views and choose ownership only for the result.
 version(mir_stat_test_linearAlgebra)
 @safe pure nothrow unittest
 {
-    import mir.math.internal.linearAlgebra: mtimes, rcMtimes, mtimesInto;
+    import mir.stat.internal.linearAlgebra: mtimes, rcMtimes, mtimesInto;
     import mir.ndslice.slice: sliced;
 
     double[4] data = [1, 2, 3, 4];

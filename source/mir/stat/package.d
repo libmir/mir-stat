@@ -6,7 +6,6 @@ $(BOOKTABLE ,
         $(TH Modules)
         $(TH Description)
     )
-    $(TR $(TDNW $(MREF mir,stat,distance)) $(TD Mahalanobis distances with covariance or precomputed metrics ))
     $(TR $(TDNW $(MREF mir,stat,constant)) $(TD Constants used in other statistical modules ))
     $(TR $(TDNW $(MREF mir,stat,descriptive)) $(TD Descriptive Statistics ))
     $(TR $(TDNW $(MREF mir,stat,distribution)) $(TD Statistical Distributions ))
@@ -58,8 +57,6 @@ module mir.stat;
 
 ///
 public import mir.stat.constant;
-///
-public import mir.stat.distance;
 ///
 public import mir.stat.descriptive;
 ///
