@@ -26,7 +26,7 @@ string[] algebraAlgorithms(string name)
     case "triangularLeft", "triangularRight": return ["dense", "triangular", "packed"];
     case "quadratic": return ["composed", "general", "symmetric", "singleTriangle", "generalFast", "symmetricFast", "packedSymmetric", "packedFast"];
     case "mahalanobis": return ["covarianceGC", "factorGC", "precisionGC", "precisionFactorGC",
-        "covarianceWorkspace", "factorWorkspace", "precisionWorkspace", "precisionFactorWorkspace"];
+        "covarianceWorkspace", "factorWorkspace", "precisionWorkspace", "precisionFactorWorkspace", "precisionFastGC", "precisionFastWorkspace"];
     default: throw new Exception("Unknown linear algebra benchmark: " ~ name);
     }
 }
@@ -92,7 +92,7 @@ private Result[] measure(int family)(string name, size_t iterations, size_t n, u
     bool needs(string label) { return !selected.length || selected.canFind(label); }
     const needFactor = family == 3 && (needs("factorGC") || needs("factorWorkspace"));
     const needPrecisionFactor = family == 3 && (needs("precisionFactorGC") || needs("precisionFactorWorkspace"));
-    const needPrecision = family == 3 && (needPrecisionFactor || needs("precisionGC") || needs("precisionWorkspace"));
+    const needPrecision = family == 3 && (needPrecisionFactor || needs("precisionGC") || needs("precisionWorkspace") || needs("precisionFastGC") || needs("precisionFastWorkspace"));
     const needA = family < 2 ? needs("triangular") : family == 2 ?
         (needs("composed") || needs("general") || needs("symmetric") || needs("singleTriangle") ||
          needs("generalFast") || needs("symmetricFast")) :
@@ -116,11 +116,12 @@ private Result[] measure(int family)(string name, size_t iterations, size_t n, u
     auto center = uninitSlice!double(family == 3 ? n : 0);
     auto work = uninitSlice!double((family == 2 && (needs("composed") || needs("generalFast") || needs("symmetricFast") || needs("packedFast"))) || (family == 3 &&
         (needs("covarianceWorkspace") || needs("factorWorkspace") ||
-         needs("precisionWorkspace") || needs("precisionFactorWorkspace"))) ? n : 0);
+         needs("precisionWorkspace") || needs("precisionFactorWorkspace") || needs("precisionFastWorkspace"))) ? n : 0);
     import mir.ndslice.topology: stairs;
     auto packedData = uninitSlice!double((family < 2 && needs("packed")) ||
         (family == 2 && (needs("packedSymmetric") || needs("packedFast"))) ? n*(n+1)/2 : 0);
     auto packed = packedData.stairs!"-"(packedData.length ? n : 0);
+    auto productWork = uninitSlice!double(family == 3 && needs("precisionFastWorkspace") ? n : 0);
     auto u = uninitSlice!double(n);
     // Fixed well-conditioned SPD metric S=I+u*u', with analytic inverse
     // P=I-u*u'/(1+u'u). This avoids using the measured routines as references.
@@ -205,11 +206,23 @@ private Result[] measure(int family)(string name, size_t iterations, size_t n, u
     double precisionWorkspace() { return mahalanobisSquaredWithWorkspace!(MahalanobisMatrix.inverseCovariance)(x,center,precision,work); }
     /// Measure squared distance using a precision factor and reusable workspace.
     double precisionFactorWorkspace() { return mahalanobisSquaredWithWorkspace!(MahalanobisMatrix.inverseCovarianceCholesky)(x,center,precisionFactor,work); }
+    /// Include two GC vector allocations in the fast precision calculation.
+    double precisionFastGC()
+    {
+        import mir.math.sum: Summation;
+        return mahalanobisSquared!(MahalanobisMatrix.inverseCovariance, TrianglePolicy.upper, Summation.fast)(x,center,precision);
+    }
+    /// Reuse both centered-input and matrix-vector buffers for fast precision arithmetic.
+    double precisionFastWorkspace()
+    {
+        import mir.math.sum: Summation;
+        return mahalanobisSquaredWithWorkspace!(MahalanobisMatrix.inverseCovariance, TrianglePolicy.upper, Summation.fast)(x,center,precision,work,productWork);
+    }
     import std.meta: AliasSeq;
     static if (family < 2) alias functions = AliasSeq!(denseProduct, triangularProduct, packedProduct);
     else static if (family == 2) alias functions = AliasSeq!(composed, general, symmetric, single, generalFast, symmetricFast, packedSymmetric, packedFast);
     else alias functions = AliasSeq!(covarianceGC, factorGC, precisionGC, precisionFactorGC,
-        covarianceWorkspace, factorWorkspace, precisionWorkspace, precisionFactorWorkspace);
+        covarianceWorkspace, factorWorkspace, precisionWorkspace, precisionFactorWorkspace, precisionFastGC, precisionFastWorkspace);
     bool[functions.length] enabled;
     foreach (i, label; labels) enabled[i] = !selected.length || selected.canFind(label);
     auto active = enabled[].count(true);

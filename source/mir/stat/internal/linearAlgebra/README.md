@@ -182,6 +182,27 @@ Fast mode does not promise compensated accuracy or identical rounding across
 backends. It is a choice for callers willing to trade that accuracy for speed,
 not a change to the default numerical contract. Results are not clamped.
 
+## Fast precision-matrix Mahalanobis distance
+
+Public distance functions keep their existing compensated defaults. For a known
+inverse covariance matrix, select fast arithmetic explicitly:
+
+```d
+import mir.stat.distance;
+import mir.math.sum: Summation;
+auto squared = mahalanobisSquared!(MahalanobisMatrix.inverseCovariance,
+    TrianglePolicy.upper, Summation.fast)(x, center, precision);
+auto reused = mahalanobisSquaredWithWorkspace!(MahalanobisMatrix.inverseCovariance,
+    TrianglePolicy.upper, Summation.fast)(x, center, precision, difference, product);
+```
+
+The allocating call needs two temporary vectors; RC and custom-allocator variants
+provide the same option. The workspace call allocates nothing and requires two
+separate vectors, disjoint from all inputs. The first holds `x - center`; the
+second holds the precision-matrix product. Existing covariance and factor-based
+paths are unchanged. Fast mode trades compensated accuracy for backend-dependent
+arithmetic; it does not change the positive-definite metric precondition.
+
 ## Factorization and reuse
 
 Upper factors satisfy `A = Uᵀ U`; lower factors satisfy `A = L Lᵀ`.

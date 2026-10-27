@@ -155,7 +155,7 @@ and per-round CSV output follow the existing scheduler.
 | `triangularLeft` | `dense`, `triangular`, `packed` |
 | `triangularRight` | `dense`, `triangular`, `packed` |
 | `quadratic` | `composed`, `general`, `symmetric`, `singleTriangle`, `generalFast`, `symmetricFast`, `packedSymmetric`, `packedFast` |
-| `mahalanobis` | `covarianceGC`, `factorGC`, `precisionGC`, `precisionFactorGC`, and corresponding `Workspace` variants |
+| `mahalanobis` | `covarianceGC`, `factorGC`, `precisionGC`, `precisionFactorGC`, corresponding `Workspace` variants, `precisionFastGC`, `precisionFastWorkspace` |
 
 Triangular comparisons multiply square matrices into preallocated output,
 using explicit zeros in the dense baseline and NaNs in ignored triangular
@@ -212,3 +212,8 @@ inputs and independent reference checks as the corresponding dense cases.
 The layout option changes dense matrix storage; packed rows remain in their
 canonical upper-row order. Packed storage reduces memory use but does not
 necessarily improve speed, especially versus dense TRMM with multiple columns.
+
+`precisionFastGC` includes both temporary vector allocations in its timing;
+`precisionFastWorkspace` reuses both vectors. Both explicitly select
+`Summation.fast` and compare against the same independent precision identity
+as the existing Mahalanobis cases.
