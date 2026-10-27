@@ -193,6 +193,26 @@ unittest
     }
 }
 
+// Repeated self-merges reach the count-product boundary without a huge input.
+version(mir_stat_test)
+@safe pure nothrow @nogc
+unittest
+{
+    import std.meta: AliasSeq;
+    static foreach (A; AliasSeq!(
+        CovarianceAccumulator!(double, CovarianceAlgo.naive, Summation.naive),
+        CorrelationAccumulator!(double, CorrelationAlgo.naive, Summation.naive)))
+    {{
+        A a;
+        a.put(1, 1);
+        foreach (i; 0 .. size_t.sizeof * 4)
+            a.put(a);
+        assert(a.count == (size_t(1) << (size_t.sizeof * 4)));
+        assert(a.covariance(true) == 0);
+        assert(a.covariance(false) == 0);
+    }}
+}
+
 // Zero-mean sources have implicit zero sums, but stored centered moments.
 version(mir_stat_test)
 pure nothrow @nogc
@@ -760,7 +780,7 @@ const:
         in (count + isPopulation > 1, "More data points required")
     {
         return sumOfProducts!F / (count + isPopulation - 1) -
-            (sumLeft!F * sumRight!F) * (F(1) / (count * (count + isPopulation - 1)));
+            (sumLeft!F * sumRight!F) * (F(1) / (cast(F) count * (count + isPopulation - 1)));
     }
 }
 
@@ -3038,7 +3058,7 @@ const:
     F covariance(F = T)(bool isPopulation) @property
     {
         return sumOfProducts!F / (count + isPopulation - 1) -
-            (sumLeft!F * sumRight!F) * (F(1) / (count * (count + isPopulation - 1)));
+            (sumLeft!F * sumRight!F) * (F(1) / (cast(F) count * (count + isPopulation - 1)));
     }
     ///
     F correlation(F = T)() @property
