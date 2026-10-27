@@ -145,6 +145,7 @@ dub run mir-stat:benchmarks --config=scalar --build=release --compiler=ldc2 -- -
 the latter stores the same logical matrices through transposed descriptors,
 including output and factor workspaces. CSV function names include the layout.
 `--size` is the square matrix order (1 through 4096), not the element count.
+Buffers and precomputed factors are allocated only for the selected algorithms.
 Large matrix cases require substantial memory and untimed reference work;
 start with the small defaults. `--seed`, rotation, warm-up, algorithm selection,
 and per-round CSV output follow the existing scheduler.
@@ -188,7 +189,7 @@ accumulation; checks reject nonfinite results and errors above
 not a substitute for the library's adversarial numerical tests. Setup,
 precomputed factors, input generation, and correctness checks are untimed.
 
-The `scalar` configuration requires no BLAS library. To measure the optional
+The `scalar` configuration selects the built-in D implementation and requires no BLAS library. To measure the optional
 native backend, use `--config=openblas` with OpenBLAS installed. The parent
 package selects mir-lapack/mir-blas through that configuration. Transposed
 triangular matrix products and matrix solves need the fixes in
