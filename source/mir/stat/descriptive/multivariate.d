@@ -193,6 +193,16 @@ unittest
     }
 }
 
+// Convert before multiplying, matching scalar insertion without mapper context.
+private template multivariateProduct(T, size_t left = 0, size_t right = 1)
+{
+    T multivariateProduct(Args...)(Args args)
+        if (left < Args.length && right < Args.length)
+    {
+        return cast(T) args[left] * cast(T) args[right];
+    }
+}
+
 // Repeated self-merges reach the count-product boundary without a huge input.
 version(mir_stat_test)
 @safe pure nothrow @nogc
@@ -211,6 +221,46 @@ unittest
         assert(a.covariance(true) == 0);
         assert(a.covariance(false) == 0);
     }}
+}
+
+// Slice products use the accumulator precision, just like scalar insertion.
+version(mir_stat_test)
+@safe pure nothrow @nogc
+unittest
+{
+    import mir.ndslice.slice: sliced;
+    import std.meta: AliasSeq;
+    void check(A, V)(V value)
+    {
+        V[2] values = [value, -value];
+        A batch;
+        batch.put(values[].sliced, values[].sliced);
+        A scalar;
+        foreach (v; values)
+            scalar.put(v, v);
+        assert(batch.centeredSumOfProducts == scalar.centeredSumOfProducts);
+        static if (__traits(hasMember, A, "sumOfSquaresLeft"))
+        {
+            assert(batch.sumOfSquaresLeft == scalar.sumOfSquaresLeft);
+            assert(batch.sumOfSquaresRight == scalar.sumOfSquaresRight);
+        }
+        static if (__traits(hasMember, A, "centeredSumOfSquaresLeft"))
+        {
+            assert(batch.centeredSumOfSquaresLeft == scalar.centeredSumOfSquaresLeft);
+            assert(batch.centeredSumOfSquaresRight == scalar.centeredSumOfSquaresRight);
+        }
+    }
+    static foreach (mode; AliasSeq!(Summation.naive, Summation.pairwise))
+    static foreach (A; AliasSeq!(
+        CovarianceAccumulator!(double, CovarianceAlgo.naive, mode),
+        CovarianceAccumulator!(double, CovarianceAlgo.assumeZeroMean, mode),
+        CorrelationAccumulator!(double, CorrelationAlgo.naive, mode),
+        CorrelationAccumulator!(double, CorrelationAlgo.assumeZeroMean, mode),
+        CorrelationAccumulator!(double, CorrelationAlgo.assumeStandardized, mode)))
+    {
+        check!A(50000);
+        check!A(0x1p70f);
+    }
 }
 
 // Zero-mean sources have implicit zero sums, but stored centered moments.
@@ -682,7 +732,7 @@ struct CovarianceAccumulator(T, CovarianceAlgo covarianceAlgo, Summation summati
         _count += x.length;
         summatorLeft.put(x);
         summatorRight.put(y);
-        summatorOfProducts.put(x.zip(y).map!"a * b");
+        summatorOfProducts.put(x.zip(y).map!(multivariateProduct!T));
     }
 
     ///
@@ -1566,7 +1616,7 @@ struct CovarianceAccumulator(T, CovarianceAlgo covarianceAlgo, Summation summati
         import mir.ndslice.topology: zip, map;
 
         _count += x.length;
-        centeredSummatorOfProducts.put(x.zip(y).map!"a * b");
+        centeredSummatorOfProducts.put(x.zip(y).map!(multivariateProduct!T));
     }
 
     ///
@@ -2643,7 +2693,7 @@ struct CorrelationAccumulator(T, CorrelationAlgo correlationAlgo, Summation summ
         import mir.ndslice.topology: zip, map;
         assert(x.length == y.length, "CorrelationAccumulator.put: lengths must match");
         _count += x.length;
-        centeredSummatorOfProducts.put(x.zip(y).map!"a * b");
+        centeredSummatorOfProducts.put(x.zip(y).map!(multivariateProduct!T));
     }
 
     /// Add built-in arrays or other slice-convertible inputs.
@@ -2933,9 +2983,9 @@ struct CorrelationAccumulator(T, CorrelationAlgo correlationAlgo, Summation summ
         _count += x.length;
         summatorLeft.put(x);
         summatorRight.put(y);
-        summatorOfProducts.put(x.zip(y).map!"a * b");
-        summatorOfSquaresLeft.put(x * x);
-        summatorOfSquaresRight.put(y * y);
+        summatorOfProducts.put(x.zip(y).map!(multivariateProduct!T));
+        summatorOfSquaresLeft.put(x.map!(multivariateProduct!(T, 0, 0)));
+        summatorOfSquaresRight.put(y.map!(multivariateProduct!(T, 0, 0)));
     }
 
     ///
@@ -3994,7 +4044,8 @@ struct CorrelationAccumulator(T, CorrelationAlgo correlationAlgo, Summation summ
         import mir.ndslice.topology: zip, map;
 
         _count += x.length;
-        auto z = x.zip(y).map!("a * b", "a * a", "b * b");
+        auto z = x.zip(y).map!(multivariateProduct!T,
+            multivariateProduct!(T, 0, 0), multivariateProduct!(T, 1, 1));
         z.putter3(centeredSummatorOfProducts,
                   centeredSummatorOfSquaresLeft,
                   centeredSummatorOfSquaresRight);
