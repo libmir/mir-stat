@@ -7,11 +7,19 @@ succeeds; it does not mean that no trials were performed. The usual
 distribution has $(D 0 < p <= 1). The API also accepts $(D p == 0) as a
 limiting case with no success and zero mass at every finite count.
 
-PMF accepts built-in floating-point and $(D Fp) probabilities. The other
-functions use built-in floating-point probabilities. PMF and LPMF take a $(D size_t) count. CDF and CCDF additionally
+PMF and integer-threshold CDF/CCDF accept built-in floating-point and $(D Fp)
+probabilities. Log-PMF, inverse CDF, and floating-threshold overloads use
+built-in floating-point probabilities. PMF and LPMF take a $(D size_t) count. CDF and CCDF additionally
 accept a floating-point threshold $(D x >= -1), using the integer part of
 nonnegative finite thresholds. Inverse CDF returns a floating-point count
 and has explicit endpoint conventions described below.
+
+The $(D Fp) tails use 192 extra working bits and separate intermediate exponents.
+CDF sums positive geometric-series terms in binary blocks; CCDF evaluates its
+power directly. Neither tail is obtained by subtracting the other from one.
+Counts retain their full $(D size_t) width, including when $(D k + 1) would
+not fit. Work is logarithmic in the number of trials. These guarded algorithms
+improve accuracy without guaranteeing correct rounding for every input.
 
 The tables assume valid parameters except where an invalid input is listed.
 Finite expressions are subject to floating-point rounding and range limits.
@@ -184,6 +192,16 @@ T geometricCDF(T)(const size_t k, const T p)
 }
 
 /// ditto
+@safe pure nothrow @nogc
+T geometricCDF(T)(const size_t k, const T p)
+    if (is(T == Fp!bits, uint bits))
+    in (fpProbabilityValid(p), "p must be finite and between zero and one")
+{
+    import mir.stat.internal.fp_probability: fpGeometricTail;
+    return fpGeometricTail!false(k, p);
+}
+
+/// ditto
 @safe pure @nogc nothrow
 T geometricCDF(T)(const T x, const T p)
     if (isFloatingPoint!T)
@@ -260,6 +278,16 @@ T geometricCCDF(T)(const size_t k, const T p)
     if (k == 0 || p == 0 || p == 1)
         return 1 - p;
     return exp(-(cast(T)k + 1) * negLog1m(p));
+}
+
+/// ditto
+@safe pure nothrow @nogc
+T geometricCCDF(T)(const size_t k, const T p)
+    if (is(T == Fp!bits, uint bits))
+    in (fpProbabilityValid(p), "p must be finite and between zero and one")
+{
+    import mir.stat.internal.fp_probability: fpGeometricTail;
+    return fpGeometricTail!true(k, p);
 }
 
 /// ditto
@@ -693,4 +721,142 @@ version(mir_stat_test)
             assert(!fpProbabilityLess(actual, raw) && !fpProbabilityLess(raw, actual));
         }
     }}
+}
+
+// BEGIN geometric-tail references
+version(mir_stat_test)
+@safe pure nothrow @nogc unittest
+{
+    import mir.bignum.fixed: UInt;
+    {
+        alias T = Fp!64;
+        struct Reference { ulong k; T p, cdf, ccdf; }
+        enum references = [
+            Reference(0UL, T(false, -64, UInt!64.fromHexString("8000000000000000")), T(false, -64L, UInt!64.fromHexString("8000000000000000")), T(false, -64L, UInt!64.fromHexString("8000000000000000"))),
+            Reference(1UL, T(false, -65, UInt!64.fromHexString("8000000000000000")), T(false, -65L, UInt!64.fromHexString("e000000000000000")), T(false, -64L, UInt!64.fromHexString("9000000000000000"))),
+            Reference(17UL, T(false, -64, UInt!64.fromHexString("c000000000000000")), T(false, -64L, UInt!64.fromHexString("fffffffff0000000")), T(false, -99L, UInt!64.fromHexString("8000000000000000"))),
+            Reference(1000UL, T(false, -66, UInt!64.fromHexString("8000000000000000")), T(false, -63L, UInt!64.fromHexString("8000000000000000")), T(false, -256L, UInt!64.fromHexString("8f3d17ed50185bbe"))),
+            Reference(3UL, T(false, -64, UInt!64.fromHexString("ffffffffffffffff")), T(false, -63L, UInt!64.fromHexString("8000000000000000")), T(false, -319L, UInt!64.fromHexString("8000000000000000"))),
+            Reference(1UL, T(false, -1163, UInt!64.fromHexString("8000000000000000")), T(false, -1162L, UInt!64.fromHexString("8000000000000000")), T(false, -63L, UInt!64.fromHexString("8000000000000000"))),
+            Reference(2UL, T(false, -1100, UInt!64.fromHexString("8000000000000001")), T(false, -1099L, UInt!64.fromHexString("c000000000000001")), T(false, -63L, UInt!64.fromHexString("8000000000000000"))),
+            Reference(18446744073709551615UL, T(false, -127, UInt!64.fromHexString("8000000000000000")), T(false, -64L, UInt!64.fromHexString("a1d2a7274c4320e5")), T(false, -65L, UInt!64.fromHexString("bc5ab1b16779be35"))),
+            Reference(18446744073709551615UL, T(false, -128, UInt!64.fromHexString("8000000000000000")), T(false, -65L, UInt!64.fromHexString("c974d039069f6018")), T(false, -64L, UInt!64.fromHexString("9b4597e37cb04ff4"))),
+            Reference(1152921504606846976UL, T(false, -123, UInt!64.fromHexString("8000000000000000")), T(false, -64L, UInt!64.fromHexString("a1d2a7274c4320ee")), T(false, -65L, UInt!64.fromHexString("bc5ab1b16779be24"))),
+            Reference(65UL, T(false, -127, UInt!64.fromHexString("8000000000000000")), T(false, -121L, UInt!64.fromHexString("83ffffffffffffef")), T(false, -64L, UInt!64.fromHexString("ffffffffffffffbe"))),
+        ];
+        foreach (c; references) {
+            if (c.k > size_t.max) continue;
+            assert(geometricCDF(cast(size_t)c.k, c.p) == c.cdf);
+            assert(geometricCCDF(cast(size_t)c.k, c.p) == c.ccdf);
+        }
+    }
+    {
+        alias T = Fp!128;
+        struct Reference { ulong k; T p, cdf, ccdf; }
+        enum references = [
+            Reference(0UL, T(false, -128, UInt!128.fromHexString("80000000000000000000000000000000")), T(false, -128L, UInt!128.fromHexString("80000000000000000000000000000000")), T(false, -128L, UInt!128.fromHexString("80000000000000000000000000000000"))),
+            Reference(1UL, T(false, -129, UInt!128.fromHexString("80000000000000000000000000000000")), T(false, -129L, UInt!128.fromHexString("e0000000000000000000000000000000")), T(false, -128L, UInt!128.fromHexString("90000000000000000000000000000000"))),
+            Reference(17UL, T(false, -128, UInt!128.fromHexString("c0000000000000000000000000000000")), T(false, -128L, UInt!128.fromHexString("fffffffff00000000000000000000000")), T(false, -163L, UInt!128.fromHexString("80000000000000000000000000000000"))),
+            Reference(1000UL, T(false, -130, UInt!128.fromHexString("80000000000000000000000000000000")), T(false, -127L, UInt!128.fromHexString("80000000000000000000000000000000")), T(false, -320L, UInt!128.fromHexString("8f3d17ed50185bbde6b26e3d1f035b07"))),
+            Reference(3UL, T(false, -128, UInt!128.fromHexString("ffffffffffffffffffffffffffffffff")), T(false, -127L, UInt!128.fromHexString("80000000000000000000000000000000")), T(false, -639L, UInt!128.fromHexString("80000000000000000000000000000000"))),
+            Reference(1UL, T(false, -1227, UInt!128.fromHexString("80000000000000000000000000000000")), T(false, -1226L, UInt!128.fromHexString("80000000000000000000000000000000")), T(false, -127L, UInt!128.fromHexString("80000000000000000000000000000000"))),
+            Reference(2UL, T(false, -1100, UInt!128.fromHexString("80000000000000000000000000000001")), T(false, -1099L, UInt!128.fromHexString("c0000000000000000000000000000001")), T(false, -127L, UInt!128.fromHexString("80000000000000000000000000000000"))),
+            Reference(18446744073709551615UL, T(false, -191, UInt!128.fromHexString("80000000000000000000000000000000")), T(false, -128L, UInt!128.fromHexString("a1d2a7274c4320e57437e4e9c9897680")), T(false, -129L, UInt!128.fromHexString("bc5ab1b16779be351790362c6ced1301"))),
+            Reference(18446744073709551615UL, T(false, -256, UInt!128.fromHexString("80000000000000000000000000000000")), T(false, -193L, UInt!128.fromHexString("ffffffffffffffffc000000000000000")), T(false, -128L, UInt!128.fromHexString("ffffffffffffffff8000000000000000"))),
+            Reference(1152921504606846976UL, T(false, -187, UInt!128.fromHexString("80000000000000000000000000000000")), T(false, -128L, UInt!128.fromHexString("a1d2a7274c4320ee19618cce495ff158")), T(false, -129L, UInt!128.fromHexString("bc5ab1b16779be23cd3ce6636d401d50"))),
+            Reference(65UL, T(false, -255, UInt!128.fromHexString("80000000000000000000000000000000")), T(false, -249L, UInt!128.fromHexString("83ffffffffffffffffffffffffffffef")), T(false, -128L, UInt!128.fromHexString("ffffffffffffffffffffffffffffffbe"))),
+        ];
+        foreach (c; references) {
+            if (c.k > size_t.max) continue;
+            assert(geometricCDF(cast(size_t)c.k, c.p) == c.cdf);
+            assert(geometricCCDF(cast(size_t)c.k, c.p) == c.ccdf);
+        }
+    }
+    {
+        alias T = Fp!256;
+        struct Reference { ulong k; T p, cdf, ccdf; }
+        enum references = [
+            Reference(0UL, T(false, -256, UInt!256.fromHexString("8000000000000000000000000000000000000000000000000000000000000000")), T(false, -256L, UInt!256.fromHexString("8000000000000000000000000000000000000000000000000000000000000000")), T(false, -256L, UInt!256.fromHexString("8000000000000000000000000000000000000000000000000000000000000000"))),
+            Reference(1UL, T(false, -257, UInt!256.fromHexString("8000000000000000000000000000000000000000000000000000000000000000")), T(false, -257L, UInt!256.fromHexString("e000000000000000000000000000000000000000000000000000000000000000")), T(false, -256L, UInt!256.fromHexString("9000000000000000000000000000000000000000000000000000000000000000"))),
+            Reference(17UL, T(false, -256, UInt!256.fromHexString("c000000000000000000000000000000000000000000000000000000000000000")), T(false, -256L, UInt!256.fromHexString("fffffffff0000000000000000000000000000000000000000000000000000000")), T(false, -291L, UInt!256.fromHexString("8000000000000000000000000000000000000000000000000000000000000000"))),
+            Reference(1000UL, T(false, -258, UInt!256.fromHexString("8000000000000000000000000000000000000000000000000000000000000000")), T(false, -256L, UInt!256.fromHexString("ffffffffffffffffffffffffffffffffffffffffffffffff70c2e812afe7a442")), T(false, -448L, UInt!256.fromHexString("8f3d17ed50185bbde6b26e3d1f035b06d4b7dd883a5cc1bb456c0db9b8950468"))),
+            Reference(3UL, T(false, -256, UInt!256.fromHexString("ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff")), T(false, -255L, UInt!256.fromHexString("8000000000000000000000000000000000000000000000000000000000000000")), T(false, -1279L, UInt!256.fromHexString("8000000000000000000000000000000000000000000000000000000000000000"))),
+            Reference(1UL, T(false, -1355, UInt!256.fromHexString("8000000000000000000000000000000000000000000000000000000000000000")), T(false, -1354L, UInt!256.fromHexString("8000000000000000000000000000000000000000000000000000000000000000")), T(false, -255L, UInt!256.fromHexString("8000000000000000000000000000000000000000000000000000000000000000"))),
+            Reference(2UL, T(false, -1100, UInt!256.fromHexString("8000000000000000000000000000000000000000000000000000000000000001")), T(false, -1099L, UInt!256.fromHexString("c000000000000000000000000000000000000000000000000000000000000001")), T(false, -255L, UInt!256.fromHexString("8000000000000000000000000000000000000000000000000000000000000000"))),
+            Reference(18446744073709551615UL, T(false, -319, UInt!256.fromHexString("8000000000000000000000000000000000000000000000000000000000000000")), T(false, -256L, UInt!256.fromHexString("a1d2a7274c4320e57437e4e9c989767f967625ee62dab3ceade5168126791677")), T(false, -257L, UInt!256.fromHexString("bc5ab1b16779be351790362c6ced1300d313b4233a4a9862a435d2fdb30dd312"))),
+            Reference(18446744073709551615UL, T(false, -512, UInt!256.fromHexString("8000000000000000000000000000000000000000000000000000000000000000")), T(false, -449L, UInt!256.fromHexString("ffffffffffffffffffffffffffffffffffffffffffffffffc000000000000000")), T(false, -256L, UInt!256.fromHexString("ffffffffffffffffffffffffffffffffffffffffffffffff8000000000000000"))),
+            Reference(1152921504606846976UL, T(false, -315, UInt!256.fromHexString("8000000000000000000000000000000000000000000000000000000000000000")), T(false, -256L, UInt!256.fromHexString("a1d2a7274c4320ee19618cce495ff15832661a0910c9cf05d6e2def009917cfb")), T(false, -257L, UInt!256.fromHexString("bc5ab1b16779be23cd3ce6636d401d4f9b33cbedde6c61f4523a421fecdd060a"))),
+            Reference(65UL, T(false, -511, UInt!256.fromHexString("8000000000000000000000000000000000000000000000000000000000000000")), T(false, -505L, UInt!256.fromHexString("83ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffef")), T(false, -256L, UInt!256.fromHexString("ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffbe"))),
+        ];
+        foreach (c; references) {
+            if (c.k > size_t.max) continue;
+            assert(geometricCDF(cast(size_t)c.k, c.p) == c.cdf);
+            assert(geometricCCDF(cast(size_t)c.k, c.p) == c.ccdf);
+        }
+    }
+}
+// END geometric-tail references
+
+version(mir_stat_test)
+@safe pure nothrow @nogc unittest
+{
+    import mir.bignum.fixed: UInt;
+    static foreach (bits; [64u,128u,256u]) {{
+        alias T = Fp!bits;
+        foreach (k; [size_t(0),size_t(1),size_t.max]) {
+            assert(geometricCDF(k,T(0)) == T(0));
+            assert(geometricCCDF(k,T(0)) == T(1));
+            assert(geometricCDF(k,T(1)) == T(1));
+            assert(geometricCCDF(k,T(1)) == T(0));
+        }
+        auto tiny = T(false,long.min,UInt!bits(1));
+        assert(geometricCDF(1,tiny) == T(false,long.min,UInt!bits(2)));
+        assert(geometricCCDF(size_t.max,tiny) == T(1));
+        assert(geometricCDF(size_t.max,T(0.5)) == T(1));
+        assert(geometricCCDF(size_t.max,T(0.5)) == T(0));
+        auto count = UInt!128(size_t.max); count += 1;
+        T expected;
+        static if (bits == size_t.sizeof * 8)
+            expected = T(false,long.min+1,UInt!bits(1) << (bits-1));
+        else
+            expected = T(false,long.min,count.toSize!bits);
+        assert(geometricCDF(size_t.max,tiny) == expected);
+        auto m = UInt!bits(1); m <<= bits-1; m += 1;
+        const p = T(false,long.min,m);
+        auto product = m.toSize!(bits+64); product *= UInt!64(3); product >>= 1;
+        assert(geometricCDF(2,p) == T(false,long.min+1,product.toSize!bits));
+        static if (size_t.sizeof == 8) {
+            assert(geometricCCDF(cast(size_t)long.max,T(0.5)) == tiny);
+            assert(geometricCCDF(cast(size_t)long.max+1,T(0.5)) == T(0));
+        }
+    }}
+}
+
+/// Extended-precision tails accept integer thresholds.
+version(mir_stat_test)
+@safe pure nothrow @nogc unittest
+{
+    import mir.bignum.fp: Fp;
+    const p = Fp!128(0.25);
+    assert(geometricCDF(1,p) == Fp!128(0.4375));
+    assert(geometricCCDF(1,p) == Fp!128(0.5625));
+    static assert(is(typeof(geometricCDF(1,p)) == Fp!128));
+    static assert(is(typeof(geometricCCDF(1,p)) == Fp!128));
+    static assert(!__traits(compiles, geometricCDF(Fp!128(1),p)));
+}
+
+version(mir_stat_test)
+@system unittest
+{
+    bool contractsEnabled;
+    void probe() in { contractsEnabled = true; } do {}
+    probe();
+    if (contractsEnabled) {
+        import core.exception: AssertError;
+        import std.exception: assertThrown;
+        foreach (p; [-1.0,2.0,double.infinity,double.nan]) {
+            assertThrown!AssertError(geometricCDF(0,Fp!128(p)));
+            assertThrown!AssertError(geometricCCDF(0,Fp!128(p)));
+        }
+    }
 }

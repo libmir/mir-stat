@@ -7,13 +7,21 @@ outcomes are not represented by this API. Forward functions require an
 observation inside the interval rather than extending the tails outside it.
 
 PMF, CDF, and CCDF accept $(D lower == upper). LPMF and inverse CDF instead
-require $(D lower < upper). Forward functions return $(D double); the inverse
-CDF accepts a built-in floating-point probability and returns $(D size_t).
+require $(D lower < upper). Forward functions return $(D double) by default.
+PMF, CDF, and CCDF additionally accept an explicit $(D Fp) result type, such as
+$(D uniformDiscreteCDF!(Fp!128)(x, lower, upper)). The inverse CDF accepts a
+built-in floating-point or $(D Fp) probability and returns $(D size_t).
+For $(D Fp), its integer rank is exact for the represented probability.
 
 In the tables, $(D n = upper - lower + 1) denotes the mathematical number
-of outcomes. The implementation adds one after conversion to floating point
+of outcomes. The built-in implementation adds one after conversion to floating point
 to avoid integer overflow for the full $(D size_t) domain. Large interval
 sizes and interior quantile ranks can still round in the floating-point type.
+The $(D Fp) overloads retain exact integer counts, including the full
+$(D size_t) domain, and round the exact ratio once to nearest, ties to even.
+Tested result widths are $(D Fp!64), $(D Fp!128), and $(D Fp!256). Each tail
+is evaluated directly, so a small CCDF is not lost by subtracting a rounded CDF
+from one. Work depends on the result width rather than the interval length.
 
 Finite expressions are subject to floating-point rounding. Contract violations
 are not prescribed return values: disabling contracts does not make an invalid
@@ -30,6 +38,9 @@ Copyright: 2022-3 Mir Stat Authors.
 module mir.stat.distribution.uniform_discrete;
 
 import mir.internal.utility: isFloatingPoint;
+import mir.bignum.fp: Fp;
+import mir.bignum.fixed: UInt;
+import mir.stat.internal.fp_probability: fpProbabilityValid;
 
 /++
 Computes the discrete uniform probability mass function (PMF).
@@ -59,6 +70,20 @@ double uniformDiscretePMF(const size_t x, const size_t lower = 0, const size_t u
     in (lower <= upper, "lower must be less than or equal to upper")
 {
     return 1.0 / (cast(double)(upper - lower) + 1);
+}
+
+/// ditto
+@safe pure nothrow @nogc
+T uniformDiscretePMF(T)(const size_t x, const size_t lower = 0, const size_t upper = 1)
+    if (is(T == Fp!bits, uint bits))
+    in (x >= lower, "x must be greater than or equal to lower bound")
+    in (x <= upper, "x must be less than or equal to upper bound")
+    in (lower <= upper, "lower must be less than or equal to upper")
+{
+    auto denominator = UInt!128(upper - lower);
+    denominator += 1;
+    auto numerator = UInt!128(1);
+    return uniformDiscreteRatio!T(numerator, denominator);
 }
 
 ///
@@ -100,6 +125,21 @@ double uniformDiscreteCDF(const size_t x, const size_t lower = 0, const size_t u
     in (lower <= upper, "lower must be less than or equal to upper")
 {
     return (cast(double)(x - lower) + 1) / (cast(double)(upper - lower) + 1);
+}
+
+/// ditto
+@safe pure nothrow @nogc
+T uniformDiscreteCDF(T)(const size_t x, const size_t lower = 0, const size_t upper = 1)
+    if (is(T == Fp!bits, uint bits))
+    in (x >= lower, "x must be greater than or equal to lower bound")
+    in (x <= upper, "x must be less than or equal to upper bound")
+    in (lower <= upper, "lower must be less than or equal to upper")
+{
+    auto denominator = UInt!128(upper - lower);
+    denominator += 1;
+    auto numerator = UInt!128(x - lower);
+    numerator += 1;
+    return uniformDiscreteRatio!T(numerator, denominator);
 }
 
 ///
@@ -145,6 +185,20 @@ double uniformDiscreteCCDF(const size_t x, const size_t lower = 0, const size_t 
     in (lower <= upper, "lower must be less than or equal to upper")
 {
     return cast(double)(upper - x) / (cast(double)(upper - lower) + 1);
+}
+
+/// ditto
+@safe pure nothrow @nogc
+T uniformDiscreteCCDF(T)(const size_t x, const size_t lower = 0, const size_t upper = 1)
+    if (is(T == Fp!bits, uint bits))
+    in (x >= lower, "x must be greater than or equal to lower bound")
+    in (x <= upper, "x must be less than or equal to upper bound")
+    in (lower <= upper, "lower must be less than or equal to upper")
+{
+    auto denominator = UInt!128(upper - lower);
+    denominator += 1;
+    auto numerator = UInt!128(upper - x);
+    return uniformDiscreteRatio!T(numerator, denominator);
 }
 
 ///
@@ -209,6 +263,35 @@ size_t uniformDiscreteInvCDF(T)(const T p, const size_t lower = 0, const size_t 
     if (rank >= n)
         return upper;
     return lower + (cast(size_t) rank - 1);
+}
+
+/++
+Selects the first outcome whose exact CDF reaches the represented $(D Fp)
+probability. Multiply the significand by the exact interval size and determine
+the integer rank without rounding through a floating-point type. Endpoint and
+bound contracts match the built-in overload.
++/
+@safe pure nothrow @nogc
+size_t uniformDiscreteInvCDF(T)(const T p, const size_t lower = 0, const size_t upper = 1)
+    if (is(T == Fp!bits, uint bits))
+    in (fpProbabilityValid(p), "p must be finite and between zero and one")
+    in (lower < upper, "lower must be less than upper")
+{
+    if (!p.coefficient)
+        return lower;
+    enum bits = typeof(T.init.coefficient).sizeof * 8;
+    auto n = UInt!128(upper - lower);
+    n += 1;
+    auto product = p.coefficient.toSize!(bits + 128);
+    product *= n;
+    // For positive product, ceil(product / 2^shift)-1 equals
+    // floor((product-1) / 2^shift), including exact CDF jumps.
+    product -= 1;
+    const shift = 0UL - cast(ulong)p.exponent;
+    if (shift >= bits + 128)
+        return lower;
+    product >>= cast(size_t)shift;
+    return lower + cast(size_t)product;
 }
 
 ///.
@@ -334,4 +417,268 @@ unittest
 
     1.uniformDiscreteLPMF.shouldApprox == -log(2.0);
     2.uniformDiscreteLPMF(1, 3).shouldApprox == -log(3.0);
+}
+
+// Exact ratios with 0 <= numerator <= denominator <= 2^64. Normalize before
+// division so the quotient has exactly the requested significand width. The
+// remainder decides rounding without a guard-bit approximation or double rounding.
+private @safe pure nothrow @nogc
+T uniformDiscreteRatio(T)(UInt!128 numerator, UInt!128 denominator)
+    if (is(T == Fp!bits, uint bits))
+{
+    if (!numerator)
+        return T(0);
+    if (numerator == denominator)
+        return T(1);
+    int exponent = cast(int)denominator.ctlz - cast(int)numerator.ctlz;
+    if ((numerator << -exponent) < denominator)
+        --exponent;
+    enum bits = typeof(T.init.coefficient).sizeof * 8;
+    const shift = bits - 1 - exponent;
+    auto quotient = numerator.toSize!(bits + 128);
+    quotient <<= shift;
+    auto remainder = denominator;
+    quotient.divMod(remainder);
+    remainder <<= 1;
+    if (remainder > denominator || (remainder == denominator && quotient.bt(0)))
+        quotient += 1;
+    auto result = T(quotient);
+    result.exponent -= shift;
+    return result;
+}
+
+/// Select Fp precision explicitly; ordinary calls continue to return double.
+version(mir_stat_test)
+@safe pure nothrow @nogc unittest
+{
+    import mir.bignum.fp: Fp;
+    assert(uniformDiscretePMF!(Fp!128)(11, 10, 13) == Fp!128(0.25));
+    assert(uniformDiscreteCDF!(Fp!128)(11, 10, 13) == Fp!128(0.5));
+    assert(uniformDiscreteCCDF!(Fp!128)(11, 10, 13) == Fp!128(0.5));
+    static assert(is(typeof(uniformDiscretePMF(0)) == double));
+    static assert(is(typeof(uniformDiscreteCDF(0)) == double));
+    static assert(is(typeof(uniformDiscreteCCDF(0)) == double));
+    static assert(!__traits(compiles, uniformDiscretePMF!int(0)));
+}
+
+version(mir_stat_test)
+@safe pure nothrow @nogc unittest
+{
+    static foreach (bits; [64u, 128u, 256u]) {{
+        alias T = Fp!bits;
+        static assert(is(typeof(uniformDiscretePMF!T(0)) == T));
+        static assert(is(typeof(uniformDiscreteCDF!T(0)) == T));
+        static assert(is(typeof(uniformDiscreteCCDF!T(0)) == T));
+        assert(uniformDiscretePMF!T(0) == T(0.5));
+        assert(uniformDiscreteCDF!T(0) == T(0.5));
+        assert(uniformDiscreteCCDF!T(0) == T(0.5));
+        foreach (x; [size_t(0), size_t.max]) {
+            assert(uniformDiscretePMF!T(x, x, x) == T(1));
+            assert(uniformDiscreteCDF!T(x, x, x) == T(1));
+            assert(uniformDiscreteCCDF!T(x, x, x) == T(0));
+        }
+        auto mass = T(1);
+        mass.exponent -= size_t.sizeof * 8;
+        assert(uniformDiscretePMF!T(0, 0, size_t.max) == mass);
+        assert(uniformDiscreteCDF!T(0, 0, size_t.max) == mass);
+        assert(uniformDiscreteCCDF!T(size_t.max - 1, 0, size_t.max) == mass);
+        foreach (i; 0 .. 3) {
+            assert(uniformDiscreteCDF!T(size_t.max - 2 + i, size_t.max - 2, size_t.max)
+                == uniformDiscreteCDF!T(i, 0, 2));
+            assert(uniformDiscreteCCDF!T(size_t.max - 2 + i, size_t.max - 2, size_t.max)
+                == uniformDiscreteCCDF!T(i, 0, 2));
+        }
+    }}
+}
+
+version(mir_stat_test)
+@system unittest
+{
+    bool contractsEnabled;
+    void probe() in { contractsEnabled = true; } do {}
+    probe();
+    if (contractsEnabled) {
+        import core.exception: AssertError;
+        import std.exception: assertThrown;
+        import std.meta: AliasSeq;
+        static foreach (fn; AliasSeq!(uniformDiscretePMF!(Fp!128),
+            uniformDiscreteCDF!(Fp!128), uniformDiscreteCCDF!(Fp!128))) {
+            assertThrown!AssertError(fn(0, 1, 2));
+            assertThrown!AssertError(fn(3, 1, 2));
+            assertThrown!AssertError(fn(1, 2, 0));
+        }
+    }
+}
+
+// BEGIN discrete-uniform references
+version(mir_stat_test)
+@safe pure nothrow @nogc unittest
+{
+    {
+        alias T = Fp!64;
+        struct Reference { ulong x, lower, upper; T pmf, cdf, ccdf; }
+        enum references = [
+            Reference(0UL, 0UL, 0UL, T(false, -63, UInt!64.fromHexString("8000000000000000")), T(false, -63, UInt!64.fromHexString("8000000000000000")), T(0)),
+            Reference(0UL, 0UL, 1UL, T(false, -64, UInt!64.fromHexString("8000000000000000")), T(false, -64, UInt!64.fromHexString("8000000000000000")), T(false, -64, UInt!64.fromHexString("8000000000000000"))),
+            Reference(1UL, 0UL, 2UL, T(false, -65, UInt!64.fromHexString("aaaaaaaaaaaaaaab")), T(false, -64, UInt!64.fromHexString("aaaaaaaaaaaaaaab")), T(false, -65, UInt!64.fromHexString("aaaaaaaaaaaaaaab"))),
+            Reference(0UL, 0UL, 2UL, T(false, -65, UInt!64.fromHexString("aaaaaaaaaaaaaaab")), T(false, -65, UInt!64.fromHexString("aaaaaaaaaaaaaaab")), T(false, -64, UInt!64.fromHexString("aaaaaaaaaaaaaaab"))),
+            Reference(2UL, 0UL, 2UL, T(false, -65, UInt!64.fromHexString("aaaaaaaaaaaaaaab")), T(false, -63, UInt!64.fromHexString("8000000000000000")), T(0)),
+            Reference(4UL, 0UL, 6UL, T(false, -66, UInt!64.fromHexString("9249249249249249")), T(false, -64, UInt!64.fromHexString("b6db6db6db6db6db")), T(false, -65, UInt!64.fromHexString("9249249249249249"))),
+            Reference(7UL, 0UL, 9UL, T(false, -67, UInt!64.fromHexString("cccccccccccccccd")), T(false, -64, UInt!64.fromHexString("cccccccccccccccd")), T(false, -66, UInt!64.fromHexString("cccccccccccccccd"))),
+            Reference(13UL, 10UL, 26UL, T(false, -68, UInt!64.fromHexString("f0f0f0f0f0f0f0f1")), T(false, -66, UInt!64.fromHexString("f0f0f0f0f0f0f0f1")), T(false, -64, UInt!64.fromHexString("c3c3c3c3c3c3c3c4"))),
+            Reference(0UL, 0UL, 9007199254740991UL, T(false, -116, UInt!64.fromHexString("8000000000000000")), T(false, -116, UInt!64.fromHexString("8000000000000000")), T(false, -64, UInt!64.fromHexString("fffffffffffff800"))),
+            Reference(0UL, 0UL, 9007199254740992UL, T(false, -117, UInt!64.fromHexString("fffffffffffff800")), T(false, -117, UInt!64.fromHexString("fffffffffffff800")), T(false, -64, UInt!64.fromHexString("fffffffffffff800"))),
+            Reference(9007199254740991UL, 0UL, 9007199254740992UL, T(false, -117, UInt!64.fromHexString("fffffffffffff800")), T(false, -64, UInt!64.fromHexString("fffffffffffff800")), T(false, -117, UInt!64.fromHexString("fffffffffffff800"))),
+            Reference(0UL, 0UL, 18446744073709551615UL, T(false, -127, UInt!64.fromHexString("8000000000000000")), T(false, -127, UInt!64.fromHexString("8000000000000000")), T(false, -64, UInt!64.fromHexString("ffffffffffffffff"))),
+            Reference(18446744073709551614UL, 0UL, 18446744073709551615UL, T(false, -127, UInt!64.fromHexString("8000000000000000")), T(false, -64, UInt!64.fromHexString("ffffffffffffffff")), T(false, -127, UInt!64.fromHexString("8000000000000000"))),
+            Reference(18446744073709551615UL, 0UL, 18446744073709551615UL, T(false, -127, UInt!64.fromHexString("8000000000000000")), T(false, -63, UInt!64.fromHexString("8000000000000000")), T(0)),
+            Reference(18446744073709551614UL, 18446744073709551613UL, 18446744073709551615UL, T(false, -65, UInt!64.fromHexString("aaaaaaaaaaaaaaab")), T(false, -64, UInt!64.fromHexString("aaaaaaaaaaaaaaab")), T(false, -65, UInt!64.fromHexString("aaaaaaaaaaaaaaab"))),
+            Reference(9223372036854775808UL, 0UL, 18446744073709551614UL, T(false, -127, UInt!64.fromHexString("8000000000000001")), T(false, -64, UInt!64.fromHexString("8000000000000002")), T(false, -65, UInt!64.fromHexString("fffffffffffffffd"))),
+        ];
+        foreach (c; references) {
+            if (c.upper > size_t.max) continue;
+            const x = cast(size_t)c.x;
+            const lower = cast(size_t)c.lower;
+            const upper = cast(size_t)c.upper;
+            assert(uniformDiscretePMF!T(x, lower, upper) == c.pmf);
+            assert(uniformDiscreteCDF!T(x, lower, upper) == c.cdf);
+            assert(uniformDiscreteCCDF!T(x, lower, upper) == c.ccdf);
+        }
+    }
+    {
+        alias T = Fp!128;
+        struct Reference { ulong x, lower, upper; T pmf, cdf, ccdf; }
+        enum references = [
+            Reference(0UL, 0UL, 0UL, T(false, -127, UInt!128.fromHexString("80000000000000000000000000000000")), T(false, -127, UInt!128.fromHexString("80000000000000000000000000000000")), T(0)),
+            Reference(0UL, 0UL, 1UL, T(false, -128, UInt!128.fromHexString("80000000000000000000000000000000")), T(false, -128, UInt!128.fromHexString("80000000000000000000000000000000")), T(false, -128, UInt!128.fromHexString("80000000000000000000000000000000"))),
+            Reference(1UL, 0UL, 2UL, T(false, -129, UInt!128.fromHexString("aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaab")), T(false, -128, UInt!128.fromHexString("aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaab")), T(false, -129, UInt!128.fromHexString("aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaab"))),
+            Reference(0UL, 0UL, 2UL, T(false, -129, UInt!128.fromHexString("aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaab")), T(false, -129, UInt!128.fromHexString("aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaab")), T(false, -128, UInt!128.fromHexString("aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaab"))),
+            Reference(2UL, 0UL, 2UL, T(false, -129, UInt!128.fromHexString("aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaab")), T(false, -127, UInt!128.fromHexString("80000000000000000000000000000000")), T(0)),
+            Reference(4UL, 0UL, 6UL, T(false, -130, UInt!128.fromHexString("92492492492492492492492492492492")), T(false, -128, UInt!128.fromHexString("b6db6db6db6db6db6db6db6db6db6db7")), T(false, -129, UInt!128.fromHexString("92492492492492492492492492492492"))),
+            Reference(7UL, 0UL, 9UL, T(false, -131, UInt!128.fromHexString("cccccccccccccccccccccccccccccccd")), T(false, -128, UInt!128.fromHexString("cccccccccccccccccccccccccccccccd")), T(false, -130, UInt!128.fromHexString("cccccccccccccccccccccccccccccccd"))),
+            Reference(13UL, 10UL, 26UL, T(false, -132, UInt!128.fromHexString("f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f1")), T(false, -130, UInt!128.fromHexString("f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f1")), T(false, -128, UInt!128.fromHexString("c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c4"))),
+            Reference(0UL, 0UL, 9007199254740991UL, T(false, -180, UInt!128.fromHexString("80000000000000000000000000000000")), T(false, -180, UInt!128.fromHexString("80000000000000000000000000000000")), T(false, -128, UInt!128.fromHexString("fffffffffffff8000000000000000000"))),
+            Reference(0UL, 0UL, 9007199254740992UL, T(false, -181, UInt!128.fromHexString("fffffffffffff8000000000000400000")), T(false, -181, UInt!128.fromHexString("fffffffffffff8000000000000400000")), T(false, -128, UInt!128.fromHexString("fffffffffffff8000000000000400000"))),
+            Reference(9007199254740991UL, 0UL, 9007199254740992UL, T(false, -181, UInt!128.fromHexString("fffffffffffff8000000000000400000")), T(false, -128, UInt!128.fromHexString("fffffffffffff8000000000000400000")), T(false, -181, UInt!128.fromHexString("fffffffffffff8000000000000400000"))),
+            Reference(0UL, 0UL, 18446744073709551615UL, T(false, -191, UInt!128.fromHexString("80000000000000000000000000000000")), T(false, -191, UInt!128.fromHexString("80000000000000000000000000000000")), T(false, -128, UInt!128.fromHexString("ffffffffffffffff0000000000000000"))),
+            Reference(18446744073709551614UL, 0UL, 18446744073709551615UL, T(false, -191, UInt!128.fromHexString("80000000000000000000000000000000")), T(false, -128, UInt!128.fromHexString("ffffffffffffffff0000000000000000")), T(false, -191, UInt!128.fromHexString("80000000000000000000000000000000"))),
+            Reference(18446744073709551615UL, 0UL, 18446744073709551615UL, T(false, -191, UInt!128.fromHexString("80000000000000000000000000000000")), T(false, -127, UInt!128.fromHexString("80000000000000000000000000000000")), T(0)),
+            Reference(18446744073709551614UL, 18446744073709551613UL, 18446744073709551615UL, T(false, -129, UInt!128.fromHexString("aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaab")), T(false, -128, UInt!128.fromHexString("aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaab")), T(false, -129, UInt!128.fromHexString("aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaab"))),
+            Reference(9223372036854775808UL, 0UL, 18446744073709551614UL, T(false, -191, UInt!128.fromHexString("80000000000000008000000000000001")), T(false, -128, UInt!128.fromHexString("80000000000000018000000000000002")), T(false, -129, UInt!128.fromHexString("fffffffffffffffcfffffffffffffffd"))),
+        ];
+        foreach (c; references) {
+            if (c.upper > size_t.max) continue;
+            const x = cast(size_t)c.x;
+            const lower = cast(size_t)c.lower;
+            const upper = cast(size_t)c.upper;
+            assert(uniformDiscretePMF!T(x, lower, upper) == c.pmf);
+            assert(uniformDiscreteCDF!T(x, lower, upper) == c.cdf);
+            assert(uniformDiscreteCCDF!T(x, lower, upper) == c.ccdf);
+        }
+    }
+    {
+        alias T = Fp!256;
+        struct Reference { ulong x, lower, upper; T pmf, cdf, ccdf; }
+        enum references = [
+            Reference(0UL, 0UL, 0UL, T(false, -255, UInt!256.fromHexString("8000000000000000000000000000000000000000000000000000000000000000")), T(false, -255, UInt!256.fromHexString("8000000000000000000000000000000000000000000000000000000000000000")), T(0)),
+            Reference(0UL, 0UL, 1UL, T(false, -256, UInt!256.fromHexString("8000000000000000000000000000000000000000000000000000000000000000")), T(false, -256, UInt!256.fromHexString("8000000000000000000000000000000000000000000000000000000000000000")), T(false, -256, UInt!256.fromHexString("8000000000000000000000000000000000000000000000000000000000000000"))),
+            Reference(1UL, 0UL, 2UL, T(false, -257, UInt!256.fromHexString("aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaab")), T(false, -256, UInt!256.fromHexString("aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaab")), T(false, -257, UInt!256.fromHexString("aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaab"))),
+            Reference(0UL, 0UL, 2UL, T(false, -257, UInt!256.fromHexString("aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaab")), T(false, -257, UInt!256.fromHexString("aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaab")), T(false, -256, UInt!256.fromHexString("aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaab"))),
+            Reference(2UL, 0UL, 2UL, T(false, -257, UInt!256.fromHexString("aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaab")), T(false, -255, UInt!256.fromHexString("8000000000000000000000000000000000000000000000000000000000000000")), T(0)),
+            Reference(4UL, 0UL, 6UL, T(false, -258, UInt!256.fromHexString("9249249249249249249249249249249249249249249249249249249249249249")), T(false, -256, UInt!256.fromHexString("b6db6db6db6db6db6db6db6db6db6db6db6db6db6db6db6db6db6db6db6db6db")), T(false, -257, UInt!256.fromHexString("9249249249249249249249249249249249249249249249249249249249249249"))),
+            Reference(7UL, 0UL, 9UL, T(false, -259, UInt!256.fromHexString("cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccd")), T(false, -256, UInt!256.fromHexString("cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccd")), T(false, -258, UInt!256.fromHexString("cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccd"))),
+            Reference(13UL, 10UL, 26UL, T(false, -260, UInt!256.fromHexString("f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f1")), T(false, -258, UInt!256.fromHexString("f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f1")), T(false, -256, UInt!256.fromHexString("c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c4"))),
+            Reference(0UL, 0UL, 9007199254740991UL, T(false, -308, UInt!256.fromHexString("8000000000000000000000000000000000000000000000000000000000000000")), T(false, -308, UInt!256.fromHexString("8000000000000000000000000000000000000000000000000000000000000000")), T(false, -256, UInt!256.fromHexString("fffffffffffff800000000000000000000000000000000000000000000000000"))),
+            Reference(0UL, 0UL, 9007199254740992UL, T(false, -309, UInt!256.fromHexString("fffffffffffff80000000000003ffffffffffffe000000000000100000000000")), T(false, -309, UInt!256.fromHexString("fffffffffffff80000000000003ffffffffffffe000000000000100000000000")), T(false, -256, UInt!256.fromHexString("fffffffffffff80000000000003ffffffffffffe000000000000100000000000"))),
+            Reference(9007199254740991UL, 0UL, 9007199254740992UL, T(false, -309, UInt!256.fromHexString("fffffffffffff80000000000003ffffffffffffe000000000000100000000000")), T(false, -256, UInt!256.fromHexString("fffffffffffff80000000000003ffffffffffffe000000000000100000000000")), T(false, -309, UInt!256.fromHexString("fffffffffffff80000000000003ffffffffffffe000000000000100000000000"))),
+            Reference(0UL, 0UL, 18446744073709551615UL, T(false, -319, UInt!256.fromHexString("8000000000000000000000000000000000000000000000000000000000000000")), T(false, -319, UInt!256.fromHexString("8000000000000000000000000000000000000000000000000000000000000000")), T(false, -256, UInt!256.fromHexString("ffffffffffffffff000000000000000000000000000000000000000000000000"))),
+            Reference(18446744073709551614UL, 0UL, 18446744073709551615UL, T(false, -319, UInt!256.fromHexString("8000000000000000000000000000000000000000000000000000000000000000")), T(false, -256, UInt!256.fromHexString("ffffffffffffffff000000000000000000000000000000000000000000000000")), T(false, -319, UInt!256.fromHexString("8000000000000000000000000000000000000000000000000000000000000000"))),
+            Reference(18446744073709551615UL, 0UL, 18446744073709551615UL, T(false, -319, UInt!256.fromHexString("8000000000000000000000000000000000000000000000000000000000000000")), T(false, -255, UInt!256.fromHexString("8000000000000000000000000000000000000000000000000000000000000000")), T(0)),
+            Reference(18446744073709551614UL, 18446744073709551613UL, 18446744073709551615UL, T(false, -257, UInt!256.fromHexString("aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaab")), T(false, -256, UInt!256.fromHexString("aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaab")), T(false, -257, UInt!256.fromHexString("aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaab"))),
+            Reference(9223372036854775808UL, 0UL, 18446744073709551614UL, T(false, -319, UInt!256.fromHexString("8000000000000000800000000000000080000000000000008000000000000001")), T(false, -256, UInt!256.fromHexString("8000000000000001800000000000000180000000000000018000000000000002")), T(false, -257, UInt!256.fromHexString("fffffffffffffffcfffffffffffffffcfffffffffffffffcfffffffffffffffd"))),
+        ];
+        foreach (c; references) {
+            if (c.upper > size_t.max) continue;
+            const x = cast(size_t)c.x;
+            const lower = cast(size_t)c.lower;
+            const upper = cast(size_t)c.upper;
+            assert(uniformDiscretePMF!T(x, lower, upper) == c.pmf);
+            assert(uniformDiscreteCDF!T(x, lower, upper) == c.cdf);
+            assert(uniformDiscreteCCDF!T(x, lower, upper) == c.ccdf);
+        }
+    }
+}
+// END discrete-uniform references
+
+version(mir_stat_test)
+@safe pure nothrow @nogc unittest
+{
+    static foreach (bits; [64u, 128u, 256u]) {{
+        alias T = Fp!bits;
+        static assert(is(typeof(uniformDiscreteInvCDF(T(0.5))) == size_t));
+        foreach (lower; [size_t(0), size_t.max - 3]) {
+            const upper = lower + 3;
+            foreach (i; 1 .. 4) {
+                auto p = T(i); p.exponent -= 2;
+                assert(uniformDiscreteInvCDF(p, lower, upper) == lower + i - 1);
+                auto below = p; below.coefficient -= 1;
+                auto above = p; above.coefficient += 1;
+                assert(uniformDiscreteInvCDF(below, lower, upper) == lower + i - 1);
+                assert(uniformDiscreteInvCDF(above, lower, upper) == lower + i);
+            }
+            assert(uniformDiscreteInvCDF(T(0), lower, upper) == lower);
+            assert(uniformDiscreteInvCDF(T(1), lower, upper) == upper);
+            assert(uniformDiscreteInvCDF(T(false, long.min, UInt!bits(1)), lower, upper) == lower);
+        }
+        assert(uniformDiscreteInvCDF(T(0.5), 0, size_t.max) == size_t.max / 2);
+        auto aboveHalf = T(0.5); aboveHalf.coefficient += 1;
+        assert(uniformDiscreteInvCDF(aboveHalf, 0, size_t.max) == size_t.max / 2 + 1);
+        const raw = T(false, 0, UInt!bits(1));
+        assert(uniformDiscreteInvCDF(raw, 0, size_t.max) == size_t.max);
+    }}
+}
+
+/// An exact CDF jump selects its lower outcome; the next Fp value advances it.
+version(mir_stat_test)
+@safe pure nothrow @nogc unittest
+{
+    import mir.bignum.fp: Fp;
+    auto p = Fp!128(0.5);
+    assert(uniformDiscreteInvCDF(p,10,13) == 11);
+    p.coefficient += 1;
+    assert(uniformDiscreteInvCDF(p,10,13) == 12);
+}
+
+version(mir_stat_test)
+@system unittest
+{
+    bool contractsEnabled;
+    void probe() in { contractsEnabled = true; } do {}
+    probe();
+    if (contractsEnabled) {
+        import core.exception: AssertError;
+        import std.exception: assertThrown;
+        foreach (p; [-1.0,2.0,double.infinity,double.nan])
+            assertThrown!AssertError(uniformDiscreteInvCDF(Fp!128(p)));
+        assertThrown!AssertError(uniformDiscreteInvCDF(Fp!128(0.5),1,1));
+        assertThrown!AssertError(uniformDiscreteInvCDF(Fp!128(0.5),2,1));
+    }
+}
+
+// Exact integer inequalities verify ranks for non-dyadic CDF steps. All p in
+// this grid are dyadic, so (rank+1)/n >= p iff (rank+1)*256 >= j*n.
+version(mir_stat_test)
+@safe pure nothrow @nogc unittest
+{
+    static foreach (bits; [64u,128u,256u]) {{
+        alias T = Fp!bits;
+        foreach (n; 2 .. 33)
+        foreach (j; 1 .. 256) {
+            auto p = T(j); p.exponent -= 8;
+            const x = uniformDiscreteInvCDF(p,10,10+n-1);
+            const rank = x-10;
+            assert((rank+1)*256 >= j*n);
+            if (rank) assert(rank*256 < j*n);
+        }
+    }}
 }
