@@ -59,6 +59,37 @@ unittest
     }}
 }
 
+// Large means must not overflow an empty destination's zero correction.
+version(mir_stat_test)
+@safe pure nothrow @nogc
+unittest
+{
+    import std.meta: AliasSeq;
+    static foreach (summation; AliasSeq!(Summation.naive, Summation.pairwise))
+    static foreach (A; AliasSeq!(
+        CovarianceAccumulator!(double, CovarianceAlgo.online, summation),
+        CovarianceAccumulator!(double, CovarianceAlgo.hybrid, summation),
+        CorrelationAccumulator!(double, CorrelationAlgo.online, summation),
+        CorrelationAccumulator!(double, CorrelationAlgo.hybrid, summation)))
+    {{
+        A source, target;
+        source.put(1e200, -1e200);
+        target.put(source);
+        assert(target.count == 1);
+        assert(target.meanLeft == 1e200 && target.meanRight == -1e200);
+        assert(target.centeredSumOfProducts == 0);
+        // Continue after the merge and exercise a nonempty destination too.
+        target.put(1e200, -1e200);
+        target.put(source);
+        assert(target.count == 3 && target.centeredSumOfProducts == 0);
+        static if (__traits(hasMember, A, "correlation"))
+        {
+            assert(target.centeredSumOfSquaresLeft == 0);
+            assert(target.centeredSumOfSquaresRight == 0);
+        }
+    }}
+}
+
 // Empty arrays, slices, and ranges are valid for every algorithm.
 version(mir_stat_test)
 @safe pure nothrow
@@ -643,9 +674,12 @@ struct CovarianceAccumulator(T, CovarianceAlgo covarianceAlgo, Summation summati
         if (v.count == 0)
             return;
         size_t oldCount = count;
-        T deltaLeft = v.meanLeft;
-        T deltaRight = v.meanRight;
+        // An empty destination has no between-group correction. Avoid Inf * 0.
+        T deltaLeft = 0;
+        T deltaRight = 0;
         if (count > 0) {
+            deltaLeft = v.meanLeft;
+            deltaRight = v.meanRight;
             deltaLeft -= meanLeft!T;
             deltaRight -= meanRight!T;
         }
@@ -1572,9 +1606,12 @@ struct CovarianceAccumulator(T, CovarianceAlgo covarianceAlgo, Summation summati
         if (v.count == 0)
             return;
         size_t oldCount = count;
-        T deltaLeft = v.meanLeft!T;
-        T deltaRight = v.meanRight!T;
+        // An empty destination has no between-group correction. Avoid Inf * 0.
+        T deltaLeft = 0;
+        T deltaRight = 0;
         if (oldCount > 0) {
+            deltaLeft = v.meanLeft!T;
+            deltaRight = v.meanRight!T;
             deltaLeft -= meanLeft;
             deltaRight -= meanRight;
         }
@@ -2892,9 +2929,12 @@ struct CorrelationAccumulator(T, CorrelationAlgo correlationAlgo, Summation summ
         if (v.count == 0)
             return;
         size_t oldCount = count;
-        T deltaLeft = v.meanLeft;
-        T deltaRight = v.meanRight;
+        // An empty destination has no between-group correction. Avoid Inf * 0.
+        T deltaLeft = 0;
+        T deltaRight = 0;
         if (count > 0) {
+            deltaLeft = v.meanLeft;
+            deltaRight = v.meanRight;
             deltaLeft -= meanLeft!T;
             deltaRight -= meanRight!T;
         }
@@ -3992,9 +4032,12 @@ struct CorrelationAccumulator(T, CorrelationAlgo correlationAlgo, Summation summ
         if (v.count == 0)
             return;
         size_t oldCount = count;
-        T deltaLeft = v.meanLeft;
-        T deltaRight = v.meanRight;
+        // An empty destination has no between-group correction. Avoid Inf * 0.
+        T deltaLeft = 0;
+        T deltaRight = 0;
         if (count > 0) {
+            deltaLeft = v.meanLeft;
+            deltaRight = v.meanRight;
             deltaLeft -= meanLeft!T;
             deltaRight -= meanRight!T;
         }
