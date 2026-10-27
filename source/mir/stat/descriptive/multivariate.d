@@ -6,6 +6,15 @@ summation algorithm match and use KBN, KB2, or precise summation. Derived moment
 without corresponding stored summation state, mixed-type/mixed-summation merges,
 and other summation algorithms retain scalar merging.
 
+Numerical limits:
+Accumulators store unscaled sums and moments in their element type. A finite
+mathematical covariance or correlation does not guarantee that these intermediate
+values fit. Naive algorithms also subtract raw moments and can lose precision
+when observations have a large common offset; prefer `online`, `twoPass`, or
+`hybrid` for such data. Requesting a wider result type cannot recover information
+already lost during accumulation. Rescale inputs when the stored sums or moments
+would exceed the element type's range.
+
 License: $(HTTP www.apache.org/licenses/LICENSE-2.0, Apache-2.0)
 
 Authors: John Michael Hall
@@ -203,6 +212,24 @@ private template multivariateProduct(T, size_t left = 0, size_t right = 1)
     }
 }
 
+/*
+Cancel the common count factor when naive correlation's scaled moments overflow.
+Keep this uncommon path out of line so it does not inhibit ordinary getter
+inlining. Raw moments still need to fit, and naive centering still loses precision
+for observations tightly clustered around a large mean.
+*/
+pragma(inline, false)
+private F naiveCorrelationFallback(F)(size_t count, F left, F right,
+    F product, F squareLeft, F squareRight)
+{
+    import mir.math.common: sqrt;
+    const F inverseCount = F(1) / count;
+    const F meanLeft = left * inverseCount;
+    const F meanRight = right * inverseCount;
+    return (product - meanLeft * right) /
+        (sqrt(squareLeft - meanLeft * left) * sqrt(squareRight - meanRight * right));
+}
+
 // Repeated self-merges reach the count-product boundary without a huge input.
 version(mir_stat_test)
 @safe pure nothrow @nogc
@@ -261,6 +288,34 @@ unittest
         check!A(50000);
         check!A(0x1p70f);
     }
+}
+
+// Cancel the common count factor before normalizing finite naive moments.
+version(mir_stat_test)
+@safe pure nothrow @nogc
+unittest
+{
+    import mir.ndslice.slice: sliced;
+    import std.math: fabs;
+    import std.meta: AliasSeq;
+    static foreach (T; AliasSeq!(float, double, real))
+    {{
+        // Four times the stored square sum overflows, while the sum itself fits.
+        static if (T.max_exp == 128) enum T large = 0x1p62f;
+        else static if (T.max_exp == 1024) enum T large = 0x1p510;
+        else enum T large = 0x1p8190L;
+        T[4] x = [large, -large, large, -large];
+        T[4] y = [-large, large, -large, large];
+        T[4] small = [1, -1, 1, -1];
+        alias A = CorrelationAccumulator!(T, CorrelationAlgo.naive, Summation.naive);
+        A a = A(x[].sliced, x[].sliced);
+        A b = A(x[].sliced, y[].sliced);
+        A c = A(x[].sliced, small[].sliced);
+        assert(fabs(a.correlation - 1) <= 4 * T.epsilon);
+        assert(fabs(b.correlation + 1) <= 4 * T.epsilon);
+        // A finite numerator divided by the overflowing denominator used to give zero.
+        assert(fabs(c.correlation - 1) <= 4 * T.epsilon);
+    }}
 }
 
 // Compute the count weight before scaling the between-group product.
@@ -3159,9 +3214,20 @@ const:
         in (centeredSumOfSquaresRight > 0, "`y` must have centered sum of squares larger than zero")
     {
         import mir.math.common: sqrt;
-        return (count * sumOfProducts!F - sumLeft!F * sumRight!F) /
-            (sqrt(count * sumOfSquaresLeft!F - sumLeft!F * sumLeft!F) *
-             sqrt(count * sumOfSquaresRight!F - sumRight!F * sumRight!F));
+        // DMD otherwise stops inlining the ordinary path after adding the fallback.
+        version (DigitalMars)
+            pragma(inline, true);
+        const F numerator = count * sumOfProducts!F - sumLeft!F * sumRight!F;
+        const F denominator = sqrt(count * sumOfSquaresLeft!F - sumLeft!F * sumLeft!F) *
+            sqrt(count * sumOfSquaresRight!F - sumRight!F * sumRight!F);
+        const F result = numerator / denominator;
+        static if (isFloatingPoint!F)
+        {
+            if (!(denominator <= F.max && result == result))
+                return naiveCorrelationFallback(count, sumLeft!F, sumRight!F,
+                    sumOfProducts!F, sumOfSquaresLeft!F, sumOfSquaresRight!F);
+        }
+        return result;
     }
 }
 
