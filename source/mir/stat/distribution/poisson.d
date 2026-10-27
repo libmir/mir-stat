@@ -7,10 +7,10 @@ $(D size_t). Forward functions and count-returning inverse CDFs require
 $(D lambda > 0): a zero rate is rejected even though it is a mathematical
 limiting case. Tables use a finite positive rate unless stated otherwise.
 
-Ordinary functions use built-in floating-point values. $(LREF fp_poissonPMF)
-is a separate $(D Fp) implementation with extended exponent range, not a
-full-precision replacement for every calculation. Normal approximations
-need not match the direct or gamma algorithms at finite counts.
+Only the direct PMF has an $(D Fp) overload, also available as
+$(LREF fp_poissonPMF). CDF, CCDF, log-PMF, and inverse functions use built-in
+floating-point values. Normal approximations need not match the direct or
+gamma algorithms at finite counts.
 
 $(D poissonInvCDF!(PoissonAlgo.gamma)) has a different purpose from the other
 inverse algorithms: given a count and a cumulative probability, it solves
@@ -227,6 +227,13 @@ template poissonPMF(PoissonAlgo poissonAlgo = PoissonAlgo.direct)
     {
         return poissonPMFImpl!(T, poissonAlgo)(k, lambda);
     }
+
+    /++ Extended-range and extended-precision PMF; see $(LREF fp_poissonPMF). +/
+    T poissonPMF(T)(const size_t k, const T lambda)
+        if (is(T == Fp!size, size_t size) && poissonAlgo == PoissonAlgo.direct)
+    {
+        return fp_poissonPMF(k, lambda);
+    }
 }
 
 /// ditto
@@ -364,25 +371,34 @@ unittest
 }
 
 /++
-Computes the poisson probability mass function (PMF) directly with extended 
-floating point types (e.g. `Fp!128`), which provides additional accuracy for
-large values of `lambda` or `k`. 
+Computes the Poisson PMF with extended range and precision. Prefer the
+$(D poissonPMF(k, lambda)) overload for an $(D Fp) rate; this name is retained
+for compatibility. Only the direct algorithm accepts $(D Fp).
 
-The exponential is seeded in `double` precision, then squared in the extended
-type when necessary to preserve its exponent range. This avoids premature
-underflow; it does not provide full coefficient-width transcendental accuracy.
+Validation and evaluation use the represented rate without conversion through
+hardware floating point. Tested widths are $(D Fp!64), $(D Fp!128), and
+$(D Fp!256). The exponential uses an integer fixed-point series and repeated
+squaring, with 192 extra working bits. Powers, factorial products, and integer
+division retain that working precision. A separate wide exponent keeps
+intermediate overflow or underflow from discarding a representable final mass.
 
-The rate is converted to $(D double) for validation and the exponential seed.
-A positive rate too small to remain positive after that conversion is rejected.
-If the conversion produces positive infinity, the function returns zero.
-Thus an $(D Fp) result does not imply that all rate precision or range is retained.
+The guard bits reduce accumulated rounding error; they do not guarantee correct
+rounding for every input. Final subnormal results have fewer significant bits,
+and masses below the representable range round to zero. Counts retain their
+full $(D size_t) width. Factorial construction costs $(D O(k)) except for
+proven underflow shortcuts, so very large counts remain impractical even when
+their probabilities are representable. This implementation favors accuracy
+over the speed of hardware-floating-point PMFs.
+
+Finite positive rates below the hardware exponent range are accepted. A zero
+rate remains a contract violation, consistently with the existing Poisson API.
 
 Special values:
 $(TABLE
     $(TR $(TH Input) $(TH Result))
-    $(TR $(TD $(D k == 0)) $(TD Extended-range approximation to $(D exp(-lambda))))
-    $(TR $(TD $(D cast(double)lambda == double.infinity)) $(TD $(D 0)))
-    $(TR $(TD $(D cast(double)lambda <= 0) or NaN) $(TD Contract violation))
+    $(TR $(TD $(D k == 0)) $(TD Extended-precision approximation to $(D exp(-lambda))))
+    $(TR $(TD $(D lambda == +infinity)) $(TD $(D 0)))
+    $(TR $(TD $(D lambda <= 0) or NaN) $(TD Contract violation))
 )
 
 Params:
@@ -395,31 +411,206 @@ See_also:
 @safe pure nothrow @nogc
 T fp_poissonPMF(T)(const size_t k, const T lambda)
     if (is(T == Fp!size, size_t size))
-    in (cast(double) lambda > 0, "lambda must be greater than or equal to 0")
+    in (!lambda.sign && (lambda.exponent == long.max ? !lambda.coefficient : !!lambda.coefficient), "lambda must be positive and not NaN")
 {
-    import mir.math.common: exp;
-    import mir.math.internal.fp_powi: fp_powi;
-    import mir.math.numeric: factorial;
-
-    double rate = cast(double) lambda;
-    if (rate == double.infinity)
-        return T(0);
-    // exp(-rate) can underflow in double even when the final mass is ordinary.
-    // Halving is exact; start with a normal exponential and perform the remaining
-    // squarings in Fp, whose exponent range can retain the very small factor.
-    uint squarings;
-    while (rate > 512)
-    {
-        rate *= 0.5;
-        ++squarings;
-    }
-    T decay = T(exp(-rate));
-    foreach (i; 0 .. squarings)
-        decay *= decay;
-    if (k == 0)
-        return decay;
-    return decay * fp_powi(lambda, k) / factorial(k);
+    import mir.stat.internal.fp_poisson: fpPoisson;
+    return fpPoisson(k, lambda);
 }
+
+/// Evaluate the PMF at the rate's precision, or retain the compatibility name.
+version(mir_stat_test)
+@safe pure nothrow @nogc unittest
+{
+    import mir.bignum.fp: Fp;
+    const rate = Fp!128(5);
+    const mass = poissonPMF(3, rate);
+    static assert(is(typeof(mass) == const(Fp!128)));
+    assert(mass == fp_poissonPMF(3, rate));
+    assert(mass == poissonPMF!"direct"(3, rate));
+    static assert(is(typeof(poissonPMF(3, 5.0)) == double));
+    static assert(!__traits(compiles, poissonPMF!"gamma"(3, rate)));
+    static assert(!__traits(compiles, poissonPMF!"approxNormal"(3, rate)));
+    static assert(!__traits(compiles, poissonPMF!"approxNormalContinuityCorrection"(3, rate)));
+}
+
+// Extreme represented rates must not be narrowed or widened through hardware
+// floating point or through an Fp conversion at its exponent floor.
+version(mir_stat_test)
+@safe pure nothrow @nogc unittest
+{
+    import mir.bignum.fixed: UInt;
+    static foreach (bits; [64u, 128u, 256u]) {{
+        alias T = Fp!bits;
+        foreach (offset; [0L, 1L, 64L, 128L, 256L])
+        {
+            auto rate = T(1);
+            rate.exponent = long.min + offset;
+            assert(poissonPMF(0, rate) == T(1));
+            assert(poissonPMF(1, rate) == rate);
+            assert(!poissonPMF(2, rate).coefficient);
+            assert(!poissonPMF(size_t.max, rate).coefficient);
+        }
+        auto rate = T(false, long.min, UInt!bits(1));
+        assert(poissonPMF(1, rate) == rate);
+        assert(!poissonPMF(2, rate).coefficient);
+        assert(!poissonPMF(size_t.max, T(0x1p66)).coefficient);
+        assert(!poissonPMF(1, T(double.infinity)).coefficient);
+        auto huge = T(1);
+        huge.exponent = long.max - 1;
+        assert(!poissonPMF(0, huge).coefficient);
+        static if (size_t.sizeof == 8)
+            assert(!poissonPMF(size_t.max, T(0.25)).coefficient);
+    }}
+}
+
+version(mir_stat_test)
+@system unittest // Catching AssertError is @system; PMF retains its attributes.
+{
+    bool contractsEnabled;
+    void probe() in { contractsEnabled = true; } do {}
+    probe();
+    if (contractsEnabled)
+    {
+        import core.exception: AssertError;
+        import std.exception: assertThrown;
+        foreach (rate; [0.0, -0.0, -1.0, -double.infinity, double.nan])
+        {
+            assertThrown!AssertError(poissonPMF(1, Fp!128(rate)));
+            assertThrown!AssertError(fp_poissonPMF(1, Fp!128(rate)));
+        }
+    }
+}
+
+// BEGIN Poisson references (tools/generate_fp_poisson_reference.py)
+version(mir_stat_test)
+@safe pure nothrow @nogc unittest
+{
+    import mir.bignum.fixed: UInt;
+    {
+        alias T = Fp!64;
+        struct Reference { size_t k; T rate, expected; }
+        enum references = [
+            Reference(0, T(false, -63, UInt!64.fromHexString("8000000000000000")), T(false, -65L, UInt!64.fromHexString("bc5ab1b16779be35"))),
+            Reference(1, T(false, -63, UInt!64.fromHexString("8000000000000000")), T(false, -65L, UInt!64.fromHexString("bc5ab1b16779be35"))),
+            Reference(100, T(false, -63, UInt!64.fromHexString("8000000000000000")), T(false, -590L, UInt!64.fromHexString("ddad2b7e93d473c4"))),
+            Reference(1000, T(false, -54, UInt!64.fromHexString("fa00000000000000")), T(false, -70L, UInt!64.fromHexString("cead83cc72d71abb"))),
+            Reference(3000, T(false, -52, UInt!64.fromHexString("bb80000000000000")), T(false, -71L, UInt!64.fromHexString("eeaa0a1d59b22a13"))),
+            Reference(0, T(false, -63, UInt!64.fromHexString("8000000000000008")), T(false, -65L, UInt!64.fromHexString("bc5ab1b16779be2a"))),
+            Reference(0, T(false, -163, UInt!64.fromHexString("8000000000000000")), T(false, -63L, UInt!64.fromHexString("8000000000000000"))),
+            Reference(1, T(false, -163, UInt!64.fromHexString("8000000000000000")), T(false, -163L, UInt!64.fromHexString("8000000000000000"))),
+            Reference(1, T(false, -1163, UInt!64.fromHexString("8000000000000000")), T(false, -1163L, UInt!64.fromHexString("8000000000000000"))),
+            Reference(2, T(false, -1163, UInt!64.fromHexString("8000000000000000")), T(false, -2264L, UInt!64.fromHexString("8000000000000000"))),
+            Reference(3, T(false, -1242, UInt!64.fromHexString("ee09a40000000000")), T(false, -3600L, UInt!64.fromHexString("8934259e9d39c2a9"))),
+            Reference(0, T(false, -64, UInt!64.fromHexString("8000000000000000")), T(false, -64L, UInt!64.fromHexString("9b4597e37cb04ff4"))),
+            Reference(0, T(false, -65, UInt!64.fromHexString("ffffffffffffffe0")), T(false, -64L, UInt!64.fromHexString("9b4597e37cb04ffe"))),
+            Reference(0, T(false, -64, UInt!64.fromHexString("8000000000000010")), T(false, -64L, UInt!64.fromHexString("9b4597e37cb04fea"))),
+            Reference(0, T(false, -33, UInt!64.fromHexString("8000000000000000")), T(false, -1549082068L, UInt!64.fromHexString("9fccfa2e1a711b26"))),
+            Reference(0, T(false, -3, UInt!64.fromHexString("8000000000000000")), T(false, -1663314137230540375L, UInt!64.fromHexString("b9133b37813f1c4e"))),
+            Reference(1, T(false, -3, UInt!64.fromHexString("8000000000000000")), T(false, -1663314137230540315L, UInt!64.fromHexString("b9133b37813f1c4e"))),
+            Reference(0, T(false, -1, UInt!64.fromHexString("8000000000000000")), T(false, -6653256548922161309L, UInt!64.fromHexString("8bdce1c394ea050d"))),
+            Reference(10, T(false, -1, UInt!64.fromHexString("8000000000000000")), T(false, -6653256548922160711L, UInt!64.fromHexString("a1a8a24453317d32"))),
+            Reference(0, T(false, 3, UInt!64.fromHexString("8000000000000000")), T(false, long.min, UInt!64.fromHexString("0000000000000000"))),
+            Reference(0, T(false, -1, UInt!64.fromHexString("b17217f7d1cf7950")), T(false, -9223372036854775805L, UInt!64.fromHexString("9435d139b89382d3"))),
+            Reference(0, T(false, -1, UInt!64.fromHexString("b17217f7d1cf7953")), T(false, -9223372036854775807L, UInt!64.fromHexString("8447dae5e2df8b34"))),
+            Reference(0, T(false, -1, UInt!64.fromHexString("b17217f7d1cf797f")), T(false, long.min, UInt!64.fromHexString("000000013cf65cf9"))),
+            Reference(0, T(false, -1, UInt!64.fromHexString("b17217f7d1cf79aa")), T(false, long.min, UInt!64.fromHexString("0000000000000002"))),
+            Reference(0, T(false, -1, UInt!64.fromHexString("b17217f7d1cf79ac")), T(false, long.min, UInt!64.fromHexString("0000000000000001"))),
+            Reference(0, T(false, -1, UInt!64.fromHexString("b17217f7d1cf79ad")), T(false, long.min, UInt!64.fromHexString("0000000000000001"))),
+            Reference(0, T(false, -1, UInt!64.fromHexString("b17217f7d1cf79af")), T(false, long.min, UInt!64.fromHexString("0000000000000000"))),
+            Reference(12, T(false, -1, UInt!64.fromHexString("b17217f7d1cf7ac1")), T(false, -9223372036854775351L, UInt!64.fromHexString("e74c82bc9bd5e553"))),
+        ];
+        foreach (c; references)
+        {
+            const actual = poissonPMF(c.k, c.rate);
+            assert(actual.exponent == c.expected.exponent || !actual.coefficient && !c.expected.coefficient);
+            assert(actual.coefficient == c.expected.coefficient);
+            assert(!actual.sign);
+        }
+    }
+    {
+        alias T = Fp!128;
+        struct Reference { size_t k; T rate, expected; }
+        enum references = [
+            Reference(0, T(false, -127, UInt!128.fromHexString("80000000000000000000000000000000")), T(false, -129L, UInt!128.fromHexString("bc5ab1b16779be3575bd8f0520a9f21c"))),
+            Reference(1, T(false, -127, UInt!128.fromHexString("80000000000000000000000000000000")), T(false, -129L, UInt!128.fromHexString("bc5ab1b16779be3575bd8f0520a9f21c"))),
+            Reference(100, T(false, -127, UInt!128.fromHexString("80000000000000000000000000000000")), T(false, -654L, UInt!128.fromHexString("ddad2b7e93d473c451e40df7ae2509c6"))),
+            Reference(1000, T(false, -118, UInt!128.fromHexString("fa000000000000000000000000000000")), T(false, -134L, UInt!128.fromHexString("cead83cc72d71abad1fb7ec0740a7a0c"))),
+            Reference(3000, T(false, -116, UInt!128.fromHexString("bb800000000000000000000000000000")), T(false, -135L, UInt!128.fromHexString("eeaa0a1d59b22a128ff1e16851de9436"))),
+            Reference(0, T(false, -127, UInt!128.fromHexString("80000000000000080000000000000000")), T(false, -129L, UInt!128.fromHexString("bc5ab1b16779be29b01273eea90e0f23"))),
+            Reference(0, T(false, -227, UInt!128.fromHexString("80000000000000000000000000000000")), T(false, -128L, UInt!128.fromHexString("fffffffffffffffffffffffff0000000"))),
+            Reference(1, T(false, -227, UInt!128.fromHexString("80000000000000000000000000000000")), T(false, -228L, UInt!128.fromHexString("fffffffffffffffffffffffff0000000"))),
+            Reference(1, T(false, -1227, UInt!128.fromHexString("80000000000000000000000000000000")), T(false, -1227L, UInt!128.fromHexString("80000000000000000000000000000000"))),
+            Reference(2, T(false, -1227, UInt!128.fromHexString("80000000000000000000000000000000")), T(false, -2328L, UInt!128.fromHexString("80000000000000000000000000000000"))),
+            Reference(3, T(false, -1306, UInt!128.fromHexString("ee09a400000000000000000000000000")), T(false, -3664L, UInt!128.fromHexString("8934259e9d39c2a98000000000000000"))),
+            Reference(0, T(false, -128, UInt!128.fromHexString("80000000000000000000000000000000")), T(false, -128L, UInt!128.fromHexString("9b4597e37cb04ff3d675a35530cdd768"))),
+            Reference(0, T(false, -129, UInt!128.fromHexString("ffffffffffffffe00000000000000000")), T(false, -128L, UInt!128.fromHexString("9b4597e37cb04ffd8acf218cfbd2d6f3"))),
+            Reference(0, T(false, -128, UInt!128.fromHexString("80000000000000100000000000000000")), T(false, -128L, UInt!128.fromHexString("9b4597e37cb04fea221c251d65c8d878"))),
+            Reference(0, T(false, -97, UInt!128.fromHexString("80000000000000000000000000000000")), T(false, -1549082132L, UInt!128.fromHexString("9fccfa2e1a711b266363f1eb17b09354"))),
+            Reference(0, T(false, -67, UInt!128.fromHexString("80000000000000000000000000000000")), T(false, -1663314137230540439L, UInt!128.fromHexString("b9133b37813f1c4e2581835c7c261ea0"))),
+            Reference(1, T(false, -67, UInt!128.fromHexString("80000000000000000000000000000000")), T(false, -1663314137230540379L, UInt!128.fromHexString("b9133b37813f1c4e2581835c7c261ea0"))),
+            Reference(0, T(false, -65, UInt!128.fromHexString("80000000000000000000000000000000")), T(false, -6653256548922161373L, UInt!128.fromHexString("8bdce1c394ea050c85bf445c7c28d4ec"))),
+            Reference(10, T(false, -65, UInt!128.fromHexString("80000000000000000000000000000000")), T(false, -6653256548922160775L, UInt!128.fromHexString("a1a8a24453317d31ac3c0d0f3e4ae61b"))),
+            Reference(0, T(false, -61, UInt!128.fromHexString("80000000000000000000000000000000")), T(false, long.min, UInt!128.fromHexString("00000000000000000000000000000000"))),
+            Reference(0, T(false, -65, UInt!128.fromHexString("b17217f7d1cf78f792035be6ed3b6436")), T(false, -9223372036854775805L, UInt!128.fromHexString("80000000000000000d6c37309bf58b0c"))),
+            Reference(0, T(false, -65, UInt!128.fromHexString("b17217f7d1cf78fa57cbbbc634794ae5")), T(false, -9223372036854775807L, UInt!128.fromHexString("8000000000000000174feac89fe881bb"))),
+            Reference(0, T(false, -65, UInt!128.fromHexString("b17217f7d1cf795310d7b7af1c3620ca")), T(false, long.min, UInt!128.fromHexString("00000000000000010000000000000000"))),
+            Reference(0, T(false, -65, UInt!128.fromHexString("b17217f7d1cf79aa66ff83a860540358")), T(false, long.min, UInt!128.fromHexString("00000000000000000000000000000002"))),
+            Reference(0, T(false, -65, UInt!128.fromHexString("b17217f7d1cf79abc9e3b39803f2f6af")), T(false, long.min, UInt!128.fromHexString("00000000000000000000000000000001"))),
+            Reference(0, T(false, -65, UInt!128.fromHexString("b17217f7d1cf79ad2cc7e387a791ea07")), T(false, long.min, UInt!128.fromHexString("00000000000000000000000000000000"))),
+            Reference(0, T(false, -65, UInt!128.fromHexString("b17217f7d1cf79ae8fac13774b30dd5e")), T(false, long.min, UInt!128.fromHexString("00000000000000000000000000000000"))),
+            Reference(12, T(false, -65, UInt!128.fromHexString("b17217f7d1cf7ac10c2926cfd821131b")), T(false, -9223372036854775415L, UInt!128.fromHexString("e1deb287e14c3fa099a337f10a5c54ec"))),
+        ];
+        foreach (c; references)
+        {
+            const actual = poissonPMF(c.k, c.rate);
+            assert(actual.exponent == c.expected.exponent || !actual.coefficient && !c.expected.coefficient);
+            assert(actual.coefficient == c.expected.coefficient);
+            assert(!actual.sign);
+        }
+    }
+    {
+        alias T = Fp!256;
+        struct Reference { size_t k; T rate, expected; }
+        enum references = [
+            Reference(0, T(false, -255, UInt!256.fromHexString("8000000000000000000000000000000000000000000000000000000000000000")), T(false, -257L, UInt!256.fromHexString("bc5ab1b16779be3575bd8f0520a9f21bb5300b556ad8ee66604973a14a0fb5db"))),
+            Reference(1, T(false, -255, UInt!256.fromHexString("8000000000000000000000000000000000000000000000000000000000000000")), T(false, -257L, UInt!256.fromHexString("bc5ab1b16779be3575bd8f0520a9f21bb5300b556ad8ee66604973a14a0fb5db"))),
+            Reference(100, T(false, -255, UInt!256.fromHexString("8000000000000000000000000000000000000000000000000000000000000000")), T(false, -782L, UInt!256.fromHexString("ddad2b7e93d473c451e40df7ae2509c67d8f62b878fd9f3b21933f0b04d43603"))),
+            Reference(1000, T(false, -246, UInt!256.fromHexString("fa00000000000000000000000000000000000000000000000000000000000000")), T(false, -262L, UInt!256.fromHexString("cead83cc72d71abad1fb7ec0740a7a0c02ebf7ad6e9e5adb0c84cd0a5ac33e23"))),
+            Reference(3000, T(false, -244, UInt!256.fromHexString("bb80000000000000000000000000000000000000000000000000000000000000")), T(false, -263L, UInt!256.fromHexString("eeaa0a1d59b22a128ff1e16851de94362cd015e4175e3463ff668440090fd8da"))),
+            Reference(0, T(false, -255, UInt!256.fromHexString("8000000000000008000000000000000000000000000000000000000000000000")), T(false, -257L, UInt!256.fromHexString("bc5ab1b16779be29b01273eea90e0f2286aff3b71d18e56fa4e11271acd40144"))),
+            Reference(0, T(false, -355, UInt!256.fromHexString("8000000000000000000000000000000000000000000000000000000000000000")), T(false, -256L, UInt!256.fromHexString("fffffffffffffffffffffffff000000000000000000000000080000000000000"))),
+            Reference(1, T(false, -355, UInt!256.fromHexString("8000000000000000000000000000000000000000000000000000000000000000")), T(false, -356L, UInt!256.fromHexString("fffffffffffffffffffffffff000000000000000000000000080000000000000"))),
+            Reference(1, T(false, -1355, UInt!256.fromHexString("8000000000000000000000000000000000000000000000000000000000000000")), T(false, -1355L, UInt!256.fromHexString("8000000000000000000000000000000000000000000000000000000000000000"))),
+            Reference(2, T(false, -1355, UInt!256.fromHexString("8000000000000000000000000000000000000000000000000000000000000000")), T(false, -2456L, UInt!256.fromHexString("8000000000000000000000000000000000000000000000000000000000000000"))),
+            Reference(3, T(false, -1434, UInt!256.fromHexString("ee09a40000000000000000000000000000000000000000000000000000000000")), T(false, -3792L, UInt!256.fromHexString("8934259e9d39c2a9800000000000000000000000000000000000000000000000"))),
+            Reference(0, T(false, -256, UInt!256.fromHexString("8000000000000000000000000000000000000000000000000000000000000000")), T(false, -256L, UInt!256.fromHexString("9b4597e37cb04ff3d675a35530cdd767e347bf8ad0e80abbce4ae95861014318"))),
+            Reference(0, T(false, -257, UInt!256.fromHexString("ffffffffffffffe0000000000000000000000000000000000000000000000000")), T(false, -256L, UInt!256.fromHexString("9b4597e37cb04ffd8acf218cfbd2d6f2ed6de69c35ed7cc34c82eb3fac98337b"))),
+            Reference(0, T(false, -256, UInt!256.fromHexString("8000000000000010000000000000000000000000000000000000000000000000")), T(false, -256L, UInt!256.fromHexString("9b4597e37cb04fea221c251d65c8d8781eb97bf61c328c8ac5b63ca1e341c78a"))),
+            Reference(0, T(false, -225, UInt!256.fromHexString("8000000000000000000000000000000000000000000000000000000000000000")), T(false, -1549082260L, UInt!256.fromHexString("9fccfa2e1a711b266363f1eb17b09354103b7d520c8aeca78d3495bddcbc068c"))),
+            Reference(0, T(false, -195, UInt!256.fromHexString("8000000000000000000000000000000000000000000000000000000000000000")), T(false, -1663314137230540567L, UInt!256.fromHexString("b9133b37813f1c4e2581835c7c261ea04294a8ee48c49a3696d47b083bdc8b41"))),
+            Reference(1, T(false, -195, UInt!256.fromHexString("8000000000000000000000000000000000000000000000000000000000000000")), T(false, -1663314137230540507L, UInt!256.fromHexString("b9133b37813f1c4e2581835c7c261ea04294a8ee48c49a3696d47b083bdc8b41"))),
+            Reference(0, T(false, -193, UInt!256.fromHexString("8000000000000000000000000000000000000000000000000000000000000000")), T(false, -6653256548922161501L, UInt!256.fromHexString("8bdce1c394ea050c85bf445c7c28d4ec5e44467dfd326c29a9677547eefabad7"))),
+            Reference(10, T(false, -193, UInt!256.fromHexString("8000000000000000000000000000000000000000000000000000000000000000")), T(false, -6653256548922160903L, UInt!256.fromHexString("a1a8a24453317d31ac3c0d0f3e4ae61a8a529037c1aafe1338de4e4ec5e096a6"))),
+            Reference(0, T(false, -189, UInt!256.fromHexString("8000000000000000000000000000000000000000000000000000000000000000")), T(false, long.min, UInt!256.fromHexString("0000000000000000000000000000000000000000000000000000000000000000"))),
+            Reference(0, T(false, -193, UInt!256.fromHexString("b17217f7d1cf78461feb64151dc1b86c51fd44be7cdf7cee9fb9bddc8fdbc662")), T(false, -9223372036854775806L, UInt!256.fromHexString("ffffffffffffffffffffffffffffffffffffffffffffffffd2aab0cd74a5b60d"))),
+            Reference(0, T(false, -193, UInt!256.fromHexString("b17217f7d1cf7848e5b3c3f464ff9f1b798c131e8cab57aba386ca765a3e9f18")), T(false, long.min, UInt!256.fromHexString("ffffffffffffffffffffffffffffffffffffffffffffffffe6c4df848bfbaa64"))),
+            Reference(0, T(false, -193, UInt!256.fromHexString("b17217f7d1cf78fa57cbbbc634794ae55d3fab227fa206ec96c9f0e8f2f4cca2")), T(false, long.min, UInt!256.fromHexString("0000000000000000000000000000000100000000000000000000000000000000"))),
+            Reference(0, T(false, -193, UInt!256.fromHexString("b17217f7d1cf79aa66ff83a860540357ad2bdbf66ab2c8cf0826910ea6798dd1")), T(false, long.min, UInt!256.fromHexString("0000000000000000000000000000000000000000000000000000000000000002"))),
+            Reference(0, T(false, -193, UInt!256.fromHexString("b17217f7d1cf79abc9e3b39803f2f6af40f343267298b62d8a0d175b8baafa2c")), T(false, long.min, UInt!256.fromHexString("0000000000000000000000000000000000000000000000000000000000000001"))),
+            Reference(0, T(false, -193, UInt!256.fromHexString("b17217f7d1cf79ad2cc7e387a791ea06d4baaa567a7ea38c0bf39da870dc6687")), T(false, long.min, UInt!256.fromHexString("0000000000000000000000000000000000000000000000000000000000000000"))),
+            Reference(0, T(false, -193, UInt!256.fromHexString("b17217f7d1cf79ae8fac13774b30dd5e68821186826490ea8dda23f5560dd2e2")), T(false, long.min, UInt!256.fromHexString("0000000000000000000000000000000000000000000000000000000000000000"))),
+            Reference(12, T(false, -193, UInt!256.fromHexString("b17217f7d1cf7ac10c2926cfd821131ab4bbe0ac9e3a28030626036e9a47a154")), T(false, -9223372036854775543L, UInt!256.fromHexString("e1deb287e14c3fa0bad7647d6c740fcfbffa87b55e9dc3df3eac8a65dfe6eacc"))),
+        ];
+        foreach (c; references)
+        {
+            const actual = poissonPMF(c.k, c.rate);
+            assert(actual.exponent == c.expected.exponent || !actual.coefficient && !c.expected.coefficient);
+            assert(actual.coefficient == c.expected.coefficient);
+            assert(!actual.sign);
+        }
+    }
+}
+// END Poisson references
 
 ///
 version(mir_stat_test)
@@ -447,7 +638,7 @@ version(mir_stat_test)
     const tiny = fp_poissonPMF(0, Fp!128(1000));
     assert(tiny.coefficient != 0);
     assert(approxEqual(fp_log!double(tiny), -1000.0, 1e-14, 0.0));
-    // A finite extended rate can exceed the double exponential seed's range.
+    // A finite extended rate can exceed the hardware exponent range.
     const hugeRate = Fp!128(double.max) * Fp!128(2);
     assert(fp_poissonPMF(0, hugeRate).coefficient == 0);
     foreach (rate; [511.0, 512.0, 513.0, 1024.0, 2000.0])
