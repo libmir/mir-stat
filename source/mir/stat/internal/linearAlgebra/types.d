@@ -10,7 +10,7 @@ import mir.internal.utility: isComplex;
 import std.traits: Unqual, isFloatingPoint;
 
 /// Selected triangle of the logical matrix view.
-package(mir.stat) enum TrianglePolicy
+enum TrianglePolicy
 {
     /// Read entries on or above the diagonal.
     upper,
@@ -19,7 +19,7 @@ package(mir.stat) enum TrianglePolicy
 }
 
 /// Whether diagonal entries come from storage or are implicitly one.
-package(mir.stat) enum DiagonalPolicy
+enum DiagonalPolicy
 {
     /// Read the stored diagonal values.
     nonUnit,

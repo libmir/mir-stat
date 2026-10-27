@@ -8,6 +8,7 @@ $(BOOKTABLE ,
     )
     $(TR $(TDNW $(MREF mir,stat,constant)) $(TD Constants used in other statistical modules ))
     $(TR $(TDNW $(MREF mir,stat,descriptive)) $(TD Descriptive Statistics ))
+    $(TR $(TDNW $(MREF mir,stat,distance)) $(TD Mahalanobis distance and squared distance ))
     $(TR $(TDNW $(MREF mir,stat,distribution)) $(TD Statistical Distributions ))
     $(TR $(TDNW $(MREF mir,stat,inference)) $(TD Algorithms for statistical inference ))
     $(TR $(TDNW $(MREF mir,stat,transform)) $(TD Data transformations ))
@@ -62,6 +63,8 @@ public import mir.stat.descriptive;
 ///
 public import mir.stat.distribution;
 ///
+public import mir.stat.distance;
+///
 public import mir.stat.inference;
 ///
 public import mir.stat.transform;
@@ -106,4 +109,15 @@ unittest
                           "categoricalCCDF", "categoricalInvCDF"])
         static assert(__traits(isSame, __traits(getMember, aggregate, name),
                                       __traits(getMember, categorical, name)));
+}
+
+/// Public distances are available from the main statistics import.
+version(mir_stat_test)
+@safe pure unittest
+{
+    import mir.ndslice.slice: sliced;
+    double[2] x = [3, 4], center = [0, 0];
+    double[4] identity = [1, 0, double.nan, 1];
+    assert(mahalanobisSquared(x[], center[], identity[].sliced(2,2)) == 25);
+    assert(mahalanobis(x[], center[], identity[].sliced(2,2)) == 5);
 }
