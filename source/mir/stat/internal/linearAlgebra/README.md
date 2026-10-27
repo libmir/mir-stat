@@ -123,9 +123,42 @@ as a valid Cholesky factor.
 
 Views are read-only through this interface. They retain an RC owner when the
 input has one; views over borrowed storage remain borrowed. Their `storage`
-property exposes the underlying matrix read-only, including unused entries.
+property exposes read-only square indexing. For dense inputs this includes
+unused stored entries; for packed inputs absent entries read as zero.
 Their `transposed` property retains ownership and reverses the triangle policy.
 The caller must keep borrowed storage and computed-iterator dependencies alive.
+
+## Packed triangular and symmetric storage
+
+Packed stairs store `n * (n + 1) / 2` entries rather than a full square matrix.
+Use `stairs!"-"(n)` for upper rows of lengths `n, n-1, ..., 1`, or
+`stairs!"+"(n)` for lower rows of lengths `1, 2, ..., n`.
+
+```d
+import mir.ndslice.topology: stairs;
+auto packed = data.stairs!"-"(n);
+auto result = mtimes(packed, x); // Bare stairs mean triangular, stored diagonal.
+auto same = mtimesTriangular(packed, x);
+auto right = mtimes(x, packed);
+auto unit = triangularView!(DiagonalPolicy.unit)(packed);
+auto withUnitDiagonal = mtimes(unit, x);
+auto symmetric = symmetricView(packed); // Same storage, different meaning.
+auto q = quadraticForm(x, symmetric);
+```
+
+Direct calls and views share implementations across GC, RC, custom-allocator,
+and caller-output variants. No dense input temporary is created. The view
+retains the packed iterator and its ownership; transpose remains a view.
+The packed direction determines the triangle, so it is not repeated as an
+option. Symmetric packed views also work with Cholesky decomposition, producing
+a dense factor. Packed output/in-place factorization is not provided.
+
+This support accepts the contiguous outer slice returned by the packed-data
+`stairs` overload. A sequence of row views produced by `stairs` on a dense
+matrix is a different representation; use the original matrix with a structural
+view instead. Arbitrarily reordered or incomplete stairs rows are not a square
+packed matrix. Construction of pointer-backed stairs in mir-algorithm currently
+requires `@system`; arithmetic attributes depend on the underlying iterator.
 
 ## Quadratic-form workspace and fast arithmetic
 
@@ -143,7 +176,7 @@ auto symmetricQ = quadraticFormWithWorkspace!(Summation.fast)(
 ```
 
 Explicit fast mode permits GEMV plus DOT for general matrices, SYMV plus DOT
-for symmetric views. Native
+for dense symmetric views, and SPMV plus DOT for packed symmetric views. Native
 D implementations handle unsupported types/layouts and builds without BLAS.
 Fast mode does not promise compensated accuracy or identical rounding across
 backends. It is a choice for callers willing to trade that accuracy for speed,
@@ -185,6 +218,11 @@ only the selected stored triangle but evaluates every logical row. Its split
 loops preserve summation order. The faster experimental single-triangle
 reduction in the benchmark suite is not a library API: flattening the sum can
 lose useful row-wise cancellation and introduce overflow.
+
+Packed triangular products use TPMV per output column when eligible, including
+transpose for right-side products. Packed storage saves input memory but is not
+guaranteed to beat dense TRMM for multiple right-hand sides; benchmark the
+expected sizes and backend.
 
 The transposed triangular matrix paths depend on the corrections in
 [mir-blas PR #12](https://github.com/libmir/mir-blas/pull/12). Resolving that

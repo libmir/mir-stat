@@ -13,7 +13,8 @@ The caller must preserve borrowed storage and computed-iterator dependencies.
 
 Views deliberately have no implicit ndslice conversion. Structure-aware
 algorithms dispatch explicitly; `storage` exposes the raw underlying matrix
-read-only, including entries outside the selected triangle. Transpose keeps
+read-only. Dense storage includes unused entries; packed storage provides
+square indexing with zeros outside the stored triangle. Transpose keeps
 storage ownership and updates triangle metadata without copying elements.
 
 License: $(HTTP www.apache.org/licenses/LICENSE-2.0, Apache-2.0)
@@ -28,6 +29,7 @@ version(mir_stat_test_blas) version = mir_stat_test_linearAlgebra;
 import mir.ndslice.slice: isSlice;
 import mir.stat.internal.linearAlgebra.types: TrianglePolicy, DiagonalPolicy;
 import std.traits: Unqual;
+import mir.stat.internal.linearAlgebra.packed: isPacked, PackedInfo, PackedMatrix, packedMatrix;
 
 /// Whether a descriptor is a rank-two ndslice.
 private enum matrix(A) = isSlice!A && A.N == 2;
@@ -47,6 +49,16 @@ symmetricView(TrianglePolicy triangle = TrianglePolicy.upper, A)(A a)
     static assert(triangle == TrianglePolicy.upper || triangle == TrianglePolicy.lower);
     assert(a.length!0 == a.length!1, "Symmetric view requires a square matrix");
     return SymmetricView!(triangle, A)(a);
+}
+
+/++
+Interpret packed stairs as symmetric storage. The stairs direction selects the
+stored triangle; no matrix elements are copied. RC ownership is retained.
++/
+package(mir.stat) SymmetricView!(PackedInfo!S.triangle, PackedMatrix!S)
+symmetricView(S)(S rows) if (isPacked!S)
+{
+    return symmetricView!(PackedInfo!S.triangle)(packedMatrix(rows));
 }
 
 /// Read either half without accessing the unused stored triangle.
@@ -82,7 +94,7 @@ package(mir.stat) struct SymmetricView(TrianglePolicy selectedTriangle, A)
         return (triangle == TrianglePolicy.upper ? j >= i : j <= i)
             ? _storage[i,j] : _storage[j,i];
     }
-    /// Raw read-only storage; unused entries retain their original values.
+    /// Read-only square storage; unused dense entries retain their values, while absent packed entries read as zero.
     @property auto storage() const { return _storage.lightConst; }
     /// Transpose both the descriptor and selected triangle, preserving ownership.
     @property auto transposed() const
@@ -107,6 +119,17 @@ triangularView(TrianglePolicy triangle = TrianglePolicy.upper, DiagonalPolicy di
     static assert(diagonal == DiagonalPolicy.nonUnit || diagonal == DiagonalPolicy.unit);
     assert(a.length!0 == a.length!1, "Triangular view requires a square matrix");
     return TriangularView!(triangle, diagonal, A)(a);
+}
+
+/++
+Interpret packed stairs as triangular storage, inferring the triangle from the
+stairs direction. `DiagonalPolicy.unit` ignores stored diagonal entries.
+No elements are copied; borrowed storage stays borrowed and RC owners are retained.
++/
+package(mir.stat) TriangularView!(PackedInfo!S.triangle, diagonal, PackedMatrix!S)
+triangularView(DiagonalPolicy diagonal = DiagonalPolicy.nonUnit, S)(S rows) if (isPacked!S)
+{
+    return triangularView!(PackedInfo!S.triangle, diagonal)(packedMatrix(rows));
 }
 
 /// Implicit zeros and unit diagonals ignore poisoned storage.
@@ -149,7 +172,7 @@ package(mir.stat) struct TriangularView(TrianglePolicy selectedTriangle, Diagona
         T value = _storage[i,j];
         return value;
     }
-    /// Raw read-only storage; it does not materialize implicit entries.
+    /// Read-only square storage without materialization; packed storage supplies zeros for absent entries.
     @property auto storage() const { return _storage.lightConst; }
     /// Transpose storage and triangle metadata, preserving the diagonal policy.
     @property auto transposed() const

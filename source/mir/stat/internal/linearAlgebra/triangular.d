@@ -23,6 +23,7 @@ version(mir_stat_test) version = mir_stat_test_linearAlgebra;
 version(mir_stat_test_blas) version = mir_stat_test_linearAlgebra;
 
 import mir.stat.internal.linearAlgebra.allocation;
+import mir.stat.internal.linearAlgebra.packed: isPacked, PackedInfo, packedMatrix;
 import mir.stat.internal.linearAlgebra.types: Scalar, numericSlice, TrianglePolicy, DiagonalPolicy;
 import mir.stat.internal.linearAlgebra.backend: hasBlas, nativeSlice, blasNumber, blasMatrix, blasVector;
 
@@ -159,6 +160,9 @@ package(mir.stat) void mtimesTriangularInto(TrianglePolicy triangle = TrianglePo
         if (!b.length!1)
             return;
 
+    import mir.stat.internal.linearAlgebra.packed: tryPackedTriangular;
+    if (tryPackedTriangular!(triangle, diagonal)(a, b, c)) return;
+
     static if (hasBlas && blasNumber!T && nativeSlice!A && nativeSlice!C)
     {
         static if (C.N == 2)
@@ -193,6 +197,9 @@ package(mir.stat) void mtimesTriangularInto(TrianglePolicy triangle = TrianglePo
             return;
         }
     }
+
+    import mir.stat.internal.linearAlgebra.packed: tryPackedTriangularNative;
+    if (tryPackedTriangularNative!(triangle,diagonal)(a,b,c)) return;
 
     foreach (i; 0 .. a.length!0)
     {
@@ -688,4 +695,101 @@ package(mir.stat) void triangularVectorInPlace(bool solve, TrianglePolicy triang
         static if (solve) x[i] = value / a[i,i];
         else x[i] = value;
     }
+}
+
+
+/++
+Packed-stairs overload. Infer the triangle from the stairs direction and select
+the diagonal policy independently. Ownership and output requirements match
+the dense overload; packed storage is never expanded into a dense temporary.
++/
+package(mir.stat) AllocatedSlice!(Allocation.gc, PackedInfo!S.Element, B.N)
+mtimesTriangular(DiagonalPolicy diagonal = DiagonalPolicy.nonUnit, S, B)(scope auto ref S a, scope auto ref B b)
+    if (isPacked!S && numericSlice!B)
+{
+    return mtimesTriangular!(PackedInfo!S.triangle, diagonal)(packedMatrix(a), b);
+}
+
+/++
+Packed-stairs overload. Infer the triangle from the stairs direction and select
+the diagonal policy independently. Ownership and output requirements match
+the dense overload; packed storage is never expanded into a dense temporary.
++/
+package(mir.stat) AllocatedSlice!(Allocation.rc, PackedInfo!S.Element, B.N)
+rcMtimesTriangular(DiagonalPolicy diagonal = DiagonalPolicy.nonUnit, S, B)(scope auto ref S a, scope auto ref B b)
+    if (isPacked!S && numericSlice!B)
+{
+    return rcMtimesTriangular!(PackedInfo!S.triangle, diagonal)(packedMatrix(a), b);
+}
+
+/++
+Packed-stairs overload. Infer the triangle from the stairs direction and select
+the diagonal policy independently. Ownership and output requirements match
+the dense overload; packed storage is never expanded into a dense temporary.
++/
+package(mir.stat) AllocatedSlice!(Allocation.custom, PackedInfo!S.Element, B.N)
+makeMtimesTriangular(DiagonalPolicy diagonal = DiagonalPolicy.nonUnit, S, B, Allocator)(auto ref Allocator allocator, scope auto ref S a, scope auto ref B b)
+    if (isPacked!S && numericSlice!B)
+{
+    return makeMtimesTriangular!(PackedInfo!S.triangle, diagonal)(allocator, packedMatrix(a), b);
+}
+
+/++
+Packed-stairs overload. Infer the triangle from the stairs direction and select
+the diagonal policy independently. Ownership and output requirements match
+the dense overload; packed storage is never expanded into a dense temporary.
++/
+package(mir.stat) void
+mtimesTriangularInto(DiagonalPolicy diagonal = DiagonalPolicy.nonUnit, S, B, C)(scope auto ref S a, scope auto ref B b, scope auto ref C c)
+    if (isPacked!S && numericSlice!B)
+{
+    mtimesTriangularInto!(PackedInfo!S.triangle, diagonal)(packedMatrix(a), b, c);
+}
+
+/++
+Packed-stairs overload. Infer the triangle from the stairs direction and select
+the diagonal policy independently. Ownership and output requirements match
+the dense overload; packed storage is never expanded into a dense temporary.
++/
+package(mir.stat) AllocatedSlice!(Allocation.gc, PackedInfo!S.Element, B.N)
+mtimesTriangularRight(DiagonalPolicy diagonal = DiagonalPolicy.nonUnit, S, B)(scope auto ref B b, scope auto ref S a)
+    if (isPacked!S && numericSlice!B)
+{
+    return mtimesTriangularRight!(PackedInfo!S.triangle, diagonal)(b, packedMatrix(a));
+}
+
+/++
+Packed-stairs overload. Infer the triangle from the stairs direction and select
+the diagonal policy independently. Ownership and output requirements match
+the dense overload; packed storage is never expanded into a dense temporary.
++/
+package(mir.stat) AllocatedSlice!(Allocation.rc, PackedInfo!S.Element, B.N)
+rcMtimesTriangularRight(DiagonalPolicy diagonal = DiagonalPolicy.nonUnit, S, B)(scope auto ref B b, scope auto ref S a)
+    if (isPacked!S && numericSlice!B)
+{
+    return rcMtimesTriangularRight!(PackedInfo!S.triangle, diagonal)(b, packedMatrix(a));
+}
+
+/++
+Packed-stairs overload. Infer the triangle from the stairs direction and select
+the diagonal policy independently. Ownership and output requirements match
+the dense overload; packed storage is never expanded into a dense temporary.
++/
+package(mir.stat) AllocatedSlice!(Allocation.custom, PackedInfo!S.Element, B.N)
+makeMtimesTriangularRight(DiagonalPolicy diagonal = DiagonalPolicy.nonUnit, S, B, Allocator)(auto ref Allocator allocator, scope auto ref B b, scope auto ref S a)
+    if (isPacked!S && numericSlice!B)
+{
+    return makeMtimesTriangularRight!(PackedInfo!S.triangle, diagonal)(allocator, b, packedMatrix(a));
+}
+
+/++
+Packed-stairs overload. Infer the triangle from the stairs direction and select
+the diagonal policy independently. Ownership and output requirements match
+the dense overload; packed storage is never expanded into a dense temporary.
++/
+package(mir.stat) void
+mtimesTriangularRightInto(DiagonalPolicy diagonal = DiagonalPolicy.nonUnit, S, B, C)(scope auto ref B b, scope auto ref S a, scope auto ref C c)
+    if (isPacked!S && numericSlice!B)
+{
+    mtimesTriangularRightInto!(PackedInfo!S.triangle, diagonal)(b, packedMatrix(a), c);
 }

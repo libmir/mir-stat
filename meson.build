@@ -23,6 +23,7 @@ sources_list = [
     'mir/stat/internal/linearAlgebra/allocation',
     'mir/stat/internal/linearAlgebra/products',
     'mir/stat/internal/linearAlgebra/views',
+    'mir/stat/internal/linearAlgebra/packed',
     'mir/stat/internal/linearAlgebra/quadratic',
     'mir/stat/internal/linearAlgebra/triangular',
     'mir/stat/internal/linearAlgebra/cholesky',

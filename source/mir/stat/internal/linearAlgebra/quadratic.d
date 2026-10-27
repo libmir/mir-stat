@@ -13,7 +13,7 @@ overflow, and cancellation can still lose accuracy; results are not clamped.
 No scratch allocation or BLAS dependency is required.
 
 `quadraticFormWithWorkspace` uses a caller-provided vector. Its default is also
-compensated; explicit `Summation.fast` permits GEMV/SYMV and DOT where
+compensated; explicit `Summation.fast` permits GEMV/SYMV/SPMV and DOT where
 eligible, with native D fallback and backend-dependent rounding.
 
 License: $(HTTP www.apache.org/licenses/LICENSE-2.0, Apache-2.0)
@@ -180,6 +180,8 @@ private Scalar!X quadraticWorkspace(bool symmetric, TrianglePolicy triangle, Sum
         }
         else
         {
+            import mir.stat.internal.linearAlgebra.packed: tryPackedSymmetric;
+            if (tryPackedSymmetric!triangle(a, x, work)) return mtimes(x, work);
             import mir.stat.internal.linearAlgebra.backend: hasBlas, blasNumber, nativeSlice, blasMatrix, blasVector;
             static if (hasBlas && blasNumber!T && nativeSlice!A && nativeSlice!X && nativeSlice!W)
             {
@@ -193,6 +195,12 @@ private Scalar!X quadraticWorkspace(bool symmetric, TrianglePolicy triangle, Sum
                 }
             }
         }
+    }
+    static if (symmetric)
+    {
+        import mir.stat.internal.linearAlgebra.packed: tryPackedQuadratic;
+        T result;
+        if (tryPackedQuadratic!(true,triangle,summation)(a,x,work,result)) return result;
     }
     foreach (i; 0 .. x.length)
     {
@@ -250,6 +258,12 @@ private Scalar!X quadratic(bool symmetric, TrianglePolicy triangle, Summation su
     assert(a.length!0 == x.length && a.length!1 == x.length,
         "Incompatible quadratic form dimensions");
     alias T = Scalar!X;
+    static if (symmetric)
+    {
+        import mir.stat.internal.linearAlgebra.packed: tryPackedQuadratic;
+        T result;
+        if (tryPackedQuadratic!(false,triangle,summation)(a,x,x,result)) return result;
+    }
     Summator!(T, summation) total;
     foreach (i; 0 .. x.length)
     {
