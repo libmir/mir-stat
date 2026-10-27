@@ -83,6 +83,37 @@ quadratic forms, and caller-output/in-place operations separately as needed.
 `DiagonalPolicy` is not a diagonal-matrix representation. A standalone
 `DiagonalView` is outside the current scope.
 
+Declare triangular structure once, then use the usual multiplication function:
+
+```d
+auto upper = triangularView!(TrianglePolicy.upper)(a);
+auto left = mtimes(upper, b);  // Uses the left triangular product.
+auto right = mtimes(b, upper); // Uses the right triangular product.
+auto lowerProduct = mtimes(upper.transposed, b);
+```
+
+`a` must be square; `b` is an ordinary matrix or vector ndslice of matching
+element type and conforming dimensions. The view does not copy the matrix or
+inspect its entries to discover structure. Entries outside the selected
+triangle are ignored, even if they contain NaNs. A transposed view reverses
+its triangle policy automatically.
+
+The same dispatch is available for every result-storage choice:
+
+```d
+auto owned = rcMtimes(upper, b);
+auto allocated = makeMtimes(allocator, b, upper);
+scope(exit) allocator.dispose(allocated.field);
+mtimesInto(upper, b, output); // Reuses separate caller-provided storage.
+```
+
+Custom allocation requires the usual allocator and `dispose` imports. Select
+an implicit unit diagonal with
+`triangularView!(TrianglePolicy.upper, DiagonalPolicy.unit)(a)`; stored diagonal
+entries are then ignored as well. The explicitly named `mtimesTriangular` and
+`mtimesTriangularRight` families remain available for callers supplying the
+raw matrix and structural options directly.
+
 Symmetric views are accepted by quadratic forms and Cholesky decomposition.
 Triangular views are accepted by multiplication when the other operand is an
 ordinary ndslice. Combining two structural views is not currently an overload.

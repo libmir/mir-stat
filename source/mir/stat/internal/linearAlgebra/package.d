@@ -53,8 +53,15 @@ BLAS is optional. The default configuration uses native D kernels; compatible
 native layouts can use BLAS when that dependency is available. Backend and
 summation order can affect floating-point rounding.
 
-For a square triangular operand, use the `mtimesTriangular` family on the left
-or `mtimesTriangularRight` family on the right. They follow the same ownership
+For a square triangular operand, declare its structure with `triangularView`:
+`mtimes(triangularView(a), b)` selects a left triangular product, and
+`mtimes(b, triangularView(a))` selects a right triangular product. The same
+view dispatch works with `rcMtimes`, `makeMtimes`, and `mtimesInto`; the other
+operand must be an ordinary ndslice. Triangle and diagonal options belong to
+the view, so subsequent calls need not repeat them.
+
+The `mtimesTriangular` and `mtimesTriangularRight` families also accept the raw
+matrix and explicit structural options directly. They follow the same ownership
 conventions, with `TrianglePolicy.upper`/`lower` and `DiagonalPolicy.nonUnit`/`unit` options.
 Unused entries and implicit unit diagonals are not read. Triangle selection
 always refers to the logical view, so a transposed upper triangle is lower.
