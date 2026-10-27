@@ -1,6 +1,11 @@
 /++
 This module contains algorithms for multivariate descriptive statistics.
 
+Accumulator merges preserve stored correction terms when the element type and
+summation algorithm match and use KBN, KB2, or precise summation. Derived moments
+without corresponding stored summation state, mixed-type/mixed-summation merges,
+and other summation algorithms retain scalar merging.
+
 License: $(HTTP www.apache.org/licenses/LICENSE-2.0, Apache-2.0)
 
 Authors: John Michael Hall
@@ -23,6 +28,217 @@ module mir.stat.descriptive.multivariate;
 import mir.internal.utility: isFloatingPoint;
 import mir.math.sum: Summation, Summator;
 import std.traits: isMutable;
+
+
+/*
+Merge stored summation state when both accumulators use the same compensated
+summator. Reading a single rounded sum first can discard its correction.
+Centered moments also have a between-group correction; add that separately
+only on the state-preserving path so it is not rounded into the source sum.
+
+Other combinations retain the original getter, conversion, and addition.
+Some source algorithms expose a derived moment rather than a stored summator,
+so field availability is checked at compile time. Merge parameters are copied
+by value by the public overloads, keeping self-merges independent.
+*/
+private void mergeMultivariateSum(string member, string getter, F,
+    T, Summation mode, Source, Correction...)(
+    ref Summator!(T, mode) target, ref Source source, Correction correction)
+    if (Correction.length <= 1)
+{
+    import std.traits: Unqual;
+    static if ((mode == Summation.kbn || mode == Summation.kb2 ||
+        mode == Summation.precise) &&
+        is(Unqual!(typeof(__traits(getMember, source, member))) == Summator!(T, mode)))
+    {
+        import mir.stat.internal.summation: mergeSummator;
+        mergeSummator(target, __traits(getMember, source, member));
+        static if (Correction.length)
+            target.put(correction[0]);
+    }
+    else
+    {
+        static if (Correction.length)
+            target.put(mixin("source." ~ getter ~ "!F") + correction[0]);
+        else
+            target.put(mixin("source." ~ getter ~ "!F"));
+    }
+}
+
+// Exercise every stored sum independently: a rounded getter would lose the
+// low-order one. Synthetic state isolates merging from update-rounding errors.
+version(mir_stat_test)
+pure nothrow @nogc
+unittest
+{
+    import std.meta: AliasSeq;
+
+    void check(A)()
+    {
+        enum large = 0x1p54;
+        A source;
+        source.put(0.0, 0.0);
+        static foreach (field; AliasSeq!("summatorLeft", "summatorRight",
+            "summatorOfProducts", "summatorOfSquaresLeft", "summatorOfSquaresRight",
+            "centeredSummatorOfProducts", "centeredSummatorOfSquaresLeft",
+            "centeredSummatorOfSquaresRight"))
+        {
+            static if (__traits(hasMember, A, field))
+            {
+                __traits(getMember, source, field).put(large);
+                __traits(getMember, source, field).put(1.0);
+            }
+        }
+        A target;
+        target.put(source);
+        assert(target.count == 1 && source.count == 1);
+        A self = source;
+        self.put(self);
+        assert(self.count == 2);
+        static foreach (field; AliasSeq!("summatorLeft", "summatorRight",
+            "summatorOfProducts", "summatorOfSquaresLeft", "summatorOfSquaresRight",
+            "centeredSummatorOfProducts", "centeredSummatorOfSquaresLeft",
+            "centeredSummatorOfSquaresRight"))
+        {
+            static if (__traits(hasMember, A, field))
+            {
+                __traits(getMember, target, field).put(-large);
+                assert(__traits(getMember, target, field).sum == 1);
+                __traits(getMember, source, field).put(-large);
+                assert(__traits(getMember, source, field).sum == 1);
+                __traits(getMember, self, field).put(-2 * large);
+                assert(__traits(getMember, self, field).sum == 2);
+            }
+        }
+    }
+
+    static foreach (mode; AliasSeq!(Summation.kbn, Summation.kb2, Summation.precise))
+    {
+        static foreach (algo; AliasSeq!(CovarianceAlgo.naive, CovarianceAlgo.online,
+            CovarianceAlgo.hybrid, CovarianceAlgo.assumeZeroMean))
+            check!(CovarianceAccumulator!(double, algo, mode))();
+        static foreach (algo; AliasSeq!(CorrelationAlgo.naive, CorrelationAlgo.online,
+            CorrelationAlgo.hybrid, CorrelationAlgo.assumeZeroMean,
+            CorrelationAlgo.assumeStandardized))
+            check!(CorrelationAccumulator!(double, algo, mode))();
+    }
+}
+
+// Preserve small product contributions through public observation/merge calls.
+version(mir_stat_test)
+pure nothrow @nogc
+unittest
+{
+    import std.meta: AliasSeq;
+    static foreach (mode; AliasSeq!(Summation.kbn, Summation.kb2, Summation.precise))
+    static foreach (A; AliasSeq!(
+        CovarianceAccumulator!(double, CovarianceAlgo.naive, mode),
+        CovarianceAccumulator!(double, CovarianceAlgo.assumeZeroMean, mode),
+        CorrelationAccumulator!(double, CorrelationAlgo.naive, mode),
+        CorrelationAccumulator!(double, CorrelationAlgo.assumeZeroMean, mode),
+        CorrelationAccumulator!(double, CorrelationAlgo.assumeStandardized, mode)))
+    {{
+        A source, target;
+        source.put(0x1p54, 1);
+        source.put(1, 1);
+        target.put(source);
+        target.put(-0x1p54, 1);
+        static if (__traits(hasMember, A, "sumOfProducts"))
+            assert(target.sumOfProducts == 1);
+        else
+            assert(target.centeredSumOfProducts == 1);
+    }}
+}
+
+// Different algorithms and summation/type combinations keep their merge API.
+version(mir_stat_test)
+@safe pure nothrow @nogc
+unittest
+{
+    import std.meta: AliasSeq;
+    void check(Source, Target)()
+    {
+        float[3] x = [1, 2, 3];
+        float[3] y = [2, 4, 6];
+        auto source = Source(x[], y[]);
+        Target target;
+        target.put(source);
+        assert(target.count == 3 && target.centeredSumOfProducts == 4);
+        assert(target.meanLeft == 2 && target.meanRight == 4);
+        target.put(source);
+        assert(target.count == 6 && target.centeredSumOfProducts == 8);
+        static if (__traits(hasMember, Target, "centeredSumOfSquaresLeft"))
+        {
+            assert(target.centeredSumOfSquaresLeft == 4);
+            assert(target.centeredSumOfSquaresRight == 16);
+        }
+    }
+    static foreach (sourceAlgo; AliasSeq!(CovarianceAlgo.naive,
+        CovarianceAlgo.online, CovarianceAlgo.twoPass, CovarianceAlgo.hybrid))
+    static foreach (targetAlgo; AliasSeq!(CovarianceAlgo.online, CovarianceAlgo.hybrid))
+    {
+        check!(CovarianceAccumulator!(double, sourceAlgo, Summation.kbn),
+            CovarianceAccumulator!(double, targetAlgo, Summation.kbn))();
+        check!(CovarianceAccumulator!(float, sourceAlgo, Summation.pairwise),
+            CovarianceAccumulator!(double, targetAlgo, Summation.kbn))();
+    }
+    static foreach (sourceAlgo; AliasSeq!(CorrelationAlgo.naive,
+        CorrelationAlgo.online, CorrelationAlgo.twoPass, CorrelationAlgo.hybrid))
+    static foreach (targetAlgo; AliasSeq!(CorrelationAlgo.online, CorrelationAlgo.hybrid))
+    {
+        check!(CorrelationAccumulator!(double, sourceAlgo, Summation.kbn),
+            CorrelationAccumulator!(double, targetAlgo, Summation.kbn))();
+        check!(CorrelationAccumulator!(float, sourceAlgo, Summation.kbn),
+            CorrelationAccumulator!(double, targetAlgo, Summation.naive))();
+    }
+}
+
+// Add the between-group correction without first rounding it into a source sum.
+version(mir_stat_test)
+pure nothrow @nogc
+unittest
+{
+    import std.meta: AliasSeq;
+    static foreach (mode; AliasSeq!(Summation.kbn, Summation.kb2, Summation.precise))
+    static foreach (A; AliasSeq!(
+        CovarianceAccumulator!(double, CovarianceAlgo.online, mode),
+        CovarianceAccumulator!(double, CovarianceAlgo.hybrid, mode),
+        CorrelationAccumulator!(double, CorrelationAlgo.online, mode),
+        CorrelationAccumulator!(double, CorrelationAlgo.hybrid, mode)))
+    {{
+        A source, target;
+        source.put(0, 0);
+        source.put(2, 2);
+        target.put(-2, -2);
+        target.put(0, 0);
+        // Keep the counts and means; isolate cancellation of centered products.
+        source.centeredSummatorOfProducts.put(-2);
+        source.centeredSummatorOfProducts.put(0x1p54);
+        source.centeredSummatorOfProducts.put(1);
+        target.centeredSummatorOfProducts.put(-2);
+        target.centeredSummatorOfProducts.put(-0x1p54);
+        static if (__traits(hasMember, A, "centeredSummatorOfSquaresLeft"))
+        {
+            source.centeredSummatorOfSquaresLeft.put(-2);
+            source.centeredSummatorOfSquaresLeft.put(0x1p54);
+            source.centeredSummatorOfSquaresLeft.put(1);
+            source.centeredSummatorOfSquaresRight.put(-2);
+            source.centeredSummatorOfSquaresRight.put(0x1p54);
+            source.centeredSummatorOfSquaresRight.put(1);
+        }
+        target.put(source);
+        // One retained low-order product plus a between-group correction of four.
+        assert(target.count == 4 && target.centeredSumOfProducts == 5);
+        static if (__traits(hasMember, A, "centeredSummatorOfSquaresLeft"))
+        {
+            target.centeredSummatorOfSquaresLeft.put(-0x1p54);
+            target.centeredSummatorOfSquaresRight.put(-0x1p54);
+            // Two from the destination, one from the source, and four between groups.
+            assert(target.centeredSumOfSquaresLeft == 7);
+            assert(target.centeredSumOfSquaresRight == 7);
+        }
+    }}
+}
 
 // Merging empty partitions must preserve state, including when both sides
 // are empty and observations are added afterward.
@@ -411,9 +627,20 @@ struct CovarianceAccumulator(T, CovarianceAlgo covarianceAlgo, Summation summati
     void put(U, Summation sumAlgo)(CovarianceAccumulator!(U, covarianceAlgo, sumAlgo) v)
     {
         _count += v.count;
-        summatorLeft.put(v.sumLeft!U);
-        summatorRight.put(v.sumRight!U);
-        summatorOfProducts.put(v.sumOfProducts!U);
+        static if (is(T == U) && summation == sumAlgo &&
+            (summation == Summation.kbn || summation == Summation.kb2 ||
+             summation == Summation.precise))
+        {
+            mergeMultivariateSum!("summatorLeft", "sumLeft", U)(summatorLeft, v);
+            mergeMultivariateSum!("summatorRight", "sumRight", U)(summatorRight, v);
+            mergeMultivariateSum!("summatorOfProducts", "sumOfProducts", U)(summatorOfProducts, v);
+        }
+        else
+        {
+            summatorLeft.put(v.sumLeft!U);
+            summatorRight.put(v.sumRight!U);
+            summatorOfProducts.put(v.sumOfProducts!U);
+        }
     }
 
 const:
@@ -684,9 +911,20 @@ struct CovarianceAccumulator(T, CovarianceAlgo covarianceAlgo, Summation summati
             deltaRight -= meanRight!T;
         }
         _count += v.count;
-        summatorLeft.put(v.sumLeft!T);
-        summatorRight.put(v.sumRight!T);
-        centeredSummatorOfProducts.put(v.centeredSumOfProducts!T + deltaLeft * deltaRight * v.count * oldCount / count);
+        static if (is(T == U) && summation == sumAlgo &&
+            (summation == Summation.kbn || summation == Summation.kb2 ||
+             summation == Summation.precise))
+        {
+            mergeMultivariateSum!("summatorLeft", "sumLeft", T)(summatorLeft, v);
+            mergeMultivariateSum!("summatorRight", "sumRight", T)(summatorRight, v);
+            mergeMultivariateSum!("centeredSummatorOfProducts", "centeredSumOfProducts", T)(centeredSummatorOfProducts, v, deltaLeft * deltaRight * v.count * oldCount / count);
+        }
+        else
+        {
+            summatorLeft.put(v.sumLeft!T);
+            summatorRight.put(v.sumRight!T);
+            centeredSummatorOfProducts.put(v.centeredSumOfProducts!T + deltaLeft * deltaRight * v.count * oldCount / count);
+        }
     }
 
 const:
@@ -1271,7 +1509,16 @@ struct CovarianceAccumulator(T, CovarianceAlgo covarianceAlgo, Summation summati
     void put(U, Summation sumAlgo)(CovarianceAccumulator!(U, covarianceAlgo, sumAlgo) v)
     {
         _count += v.count;
-        centeredSummatorOfProducts.put(v.centeredSumOfProducts!T);
+        static if (is(T == U) && summation == sumAlgo &&
+            (summation == Summation.kbn || summation == Summation.kb2 ||
+             summation == Summation.precise))
+        {
+            mergeMultivariateSum!("centeredSummatorOfProducts", "centeredSumOfProducts", T)(centeredSummatorOfProducts, v);
+        }
+        else
+        {
+            centeredSummatorOfProducts.put(v.centeredSumOfProducts!T);
+        }
     }
 
 const:
@@ -1616,9 +1863,20 @@ struct CovarianceAccumulator(T, CovarianceAlgo covarianceAlgo, Summation summati
             deltaRight -= meanRight;
         }
         _count += v.count;
-        summatorLeft.put(v.sumLeft!T);
-        summatorRight.put(v.sumRight!T);
-        centeredSummatorOfProducts.put(v.centeredSumOfProducts!T + deltaLeft * deltaRight * v.count * oldCount / count);
+        static if (is(T == U) && summation == sumAlgo &&
+            (summation == Summation.kbn || summation == Summation.kb2 ||
+             summation == Summation.precise))
+        {
+            mergeMultivariateSum!("summatorLeft", "sumLeft", T)(summatorLeft, v);
+            mergeMultivariateSum!("summatorRight", "sumRight", T)(summatorRight, v);
+            mergeMultivariateSum!("centeredSummatorOfProducts", "centeredSumOfProducts", T)(centeredSummatorOfProducts, v, deltaLeft * deltaRight * v.count * oldCount / count);
+        }
+        else
+        {
+            summatorLeft.put(v.sumLeft!T);
+            summatorRight.put(v.sumRight!T);
+            centeredSummatorOfProducts.put(v.centeredSumOfProducts!T + deltaLeft * deltaRight * v.count * oldCount / count);
+        }
     }
 
 const:
@@ -2327,7 +2585,16 @@ struct CorrelationAccumulator(T, CorrelationAlgo correlationAlgo, Summation summ
         const CorrelationAccumulator!(U, correlationAlgo, otherSummation, inputStandardization) other)
     {
         _count += other.count;
-        centeredSummatorOfProducts.put(other.centeredSumOfProducts!T);
+        static if (is(T == U) && summation == otherSummation &&
+            (summation == Summation.kbn || summation == Summation.kb2 ||
+             summation == Summation.precise))
+        {
+            mergeMultivariateSum!("centeredSummatorOfProducts", "centeredSumOfProducts", T)(centeredSummatorOfProducts, other);
+        }
+        else
+        {
+            centeredSummatorOfProducts.put(other.centeredSumOfProducts!T);
+        }
     }
 
 const:
@@ -2615,11 +2882,24 @@ struct CorrelationAccumulator(T, CorrelationAlgo correlationAlgo, Summation summ
     void put(U, Summation sumAlgo)(CorrelationAccumulator!(U, correlationAlgo, sumAlgo) v)
     {
         _count += v.count;
-        summatorLeft.put(v.sumLeft!U);
-        summatorRight.put(v.sumRight!U);
-        summatorOfProducts.put(v.sumOfProducts!U);
-        summatorOfSquaresLeft.put(v.sumOfSquaresLeft!U);
-        summatorOfSquaresRight.put(v.sumOfSquaresRight!U);
+        static if (is(T == U) && summation == sumAlgo &&
+            (summation == Summation.kbn || summation == Summation.kb2 ||
+             summation == Summation.precise))
+        {
+            mergeMultivariateSum!("summatorLeft", "sumLeft", U)(summatorLeft, v);
+            mergeMultivariateSum!("summatorRight", "sumRight", U)(summatorRight, v);
+            mergeMultivariateSum!("summatorOfProducts", "sumOfProducts", U)(summatorOfProducts, v);
+            mergeMultivariateSum!("summatorOfSquaresLeft", "sumOfSquaresLeft", U)(summatorOfSquaresLeft, v);
+            mergeMultivariateSum!("summatorOfSquaresRight", "sumOfSquaresRight", U)(summatorOfSquaresRight, v);
+        }
+        else
+        {
+            summatorLeft.put(v.sumLeft!U);
+            summatorRight.put(v.sumRight!U);
+            summatorOfProducts.put(v.sumOfProducts!U);
+            summatorOfSquaresLeft.put(v.sumOfSquaresLeft!U);
+            summatorOfSquaresRight.put(v.sumOfSquaresRight!U);
+        }
     }
 
 const:
@@ -2939,11 +3219,24 @@ struct CorrelationAccumulator(T, CorrelationAlgo correlationAlgo, Summation summ
             deltaRight -= meanRight!T;
         }
         _count += v.count;
-        summatorLeft.put(v.sumLeft!T);
-        summatorRight.put(v.sumRight!T);
-        centeredSummatorOfProducts.put(v.centeredSumOfProducts!T + deltaLeft * deltaRight * v.count * oldCount / count);
-        centeredSummatorOfSquaresLeft.put(v.centeredSumOfSquaresLeft!T + deltaLeft * deltaLeft * v.count * oldCount / count);
-        centeredSummatorOfSquaresRight.put(v.centeredSumOfSquaresRight!T + deltaRight * deltaRight * v.count * oldCount / count);
+        static if (is(T == U) && summation == sumAlgo &&
+            (summation == Summation.kbn || summation == Summation.kb2 ||
+             summation == Summation.precise))
+        {
+            mergeMultivariateSum!("summatorLeft", "sumLeft", T)(summatorLeft, v);
+            mergeMultivariateSum!("summatorRight", "sumRight", T)(summatorRight, v);
+            mergeMultivariateSum!("centeredSummatorOfProducts", "centeredSumOfProducts", T)(centeredSummatorOfProducts, v, deltaLeft * deltaRight * v.count * oldCount / count);
+            mergeMultivariateSum!("centeredSummatorOfSquaresLeft", "centeredSumOfSquaresLeft", T)(centeredSummatorOfSquaresLeft, v, deltaLeft * deltaLeft * v.count * oldCount / count);
+            mergeMultivariateSum!("centeredSummatorOfSquaresRight", "centeredSumOfSquaresRight", T)(centeredSummatorOfSquaresRight, v, deltaRight * deltaRight * v.count * oldCount / count);
+        }
+        else
+        {
+            summatorLeft.put(v.sumLeft!T);
+            summatorRight.put(v.sumRight!T);
+            centeredSummatorOfProducts.put(v.centeredSumOfProducts!T + deltaLeft * deltaRight * v.count * oldCount / count);
+            centeredSummatorOfSquaresLeft.put(v.centeredSumOfSquaresLeft!T + deltaLeft * deltaLeft * v.count * oldCount / count);
+            centeredSummatorOfSquaresRight.put(v.centeredSumOfSquaresRight!T + deltaRight * deltaRight * v.count * oldCount / count);
+        }
     }
 
 const:
@@ -3649,9 +3942,20 @@ struct CorrelationAccumulator(T, CorrelationAlgo correlationAlgo, Summation summ
     void put(U, Summation sumAlgo)(CorrelationAccumulator!(U, correlationAlgo, sumAlgo) v)
     {
         _count += v.count;
-        centeredSummatorOfProducts.put(v.centeredSumOfProducts!T);
-        centeredSummatorOfSquaresLeft.put(v.centeredSumOfSquaresLeft!T);
-        centeredSummatorOfSquaresRight.put(v.centeredSumOfSquaresRight!T);
+        static if (is(T == U) && summation == sumAlgo &&
+            (summation == Summation.kbn || summation == Summation.kb2 ||
+             summation == Summation.precise))
+        {
+            mergeMultivariateSum!("centeredSummatorOfProducts", "centeredSumOfProducts", T)(centeredSummatorOfProducts, v);
+            mergeMultivariateSum!("centeredSummatorOfSquaresLeft", "centeredSumOfSquaresLeft", T)(centeredSummatorOfSquaresLeft, v);
+            mergeMultivariateSum!("centeredSummatorOfSquaresRight", "centeredSumOfSquaresRight", T)(centeredSummatorOfSquaresRight, v);
+        }
+        else
+        {
+            centeredSummatorOfProducts.put(v.centeredSumOfProducts!T);
+            centeredSummatorOfSquaresLeft.put(v.centeredSumOfSquaresLeft!T);
+            centeredSummatorOfSquaresRight.put(v.centeredSumOfSquaresRight!T);
+        }
     }
 
 const:
@@ -4042,11 +4346,24 @@ struct CorrelationAccumulator(T, CorrelationAlgo correlationAlgo, Summation summ
             deltaRight -= meanRight!T;
         }
         _count += v.count;
-        summatorLeft.put(v.sumLeft!T);
-        summatorRight.put(v.sumRight!T);
-        centeredSummatorOfProducts.put(v.centeredSumOfProducts!T + deltaLeft * deltaRight * v.count * oldCount / count);
-        centeredSummatorOfSquaresLeft.put(v.centeredSumOfSquaresLeft!T + deltaLeft * deltaLeft * v.count * oldCount / count);
-        centeredSummatorOfSquaresRight.put(v.centeredSumOfSquaresRight!T + deltaRight * deltaRight * v.count * oldCount / count);
+        static if (is(T == U) && summation == sumAlgo &&
+            (summation == Summation.kbn || summation == Summation.kb2 ||
+             summation == Summation.precise))
+        {
+            mergeMultivariateSum!("summatorLeft", "sumLeft", T)(summatorLeft, v);
+            mergeMultivariateSum!("summatorRight", "sumRight", T)(summatorRight, v);
+            mergeMultivariateSum!("centeredSummatorOfProducts", "centeredSumOfProducts", T)(centeredSummatorOfProducts, v, deltaLeft * deltaRight * v.count * oldCount / count);
+            mergeMultivariateSum!("centeredSummatorOfSquaresLeft", "centeredSumOfSquaresLeft", T)(centeredSummatorOfSquaresLeft, v, deltaLeft * deltaLeft * v.count * oldCount / count);
+            mergeMultivariateSum!("centeredSummatorOfSquaresRight", "centeredSumOfSquaresRight", T)(centeredSummatorOfSquaresRight, v, deltaRight * deltaRight * v.count * oldCount / count);
+        }
+        else
+        {
+            summatorLeft.put(v.sumLeft!T);
+            summatorRight.put(v.sumRight!T);
+            centeredSummatorOfProducts.put(v.centeredSumOfProducts!T + deltaLeft * deltaRight * v.count * oldCount / count);
+            centeredSummatorOfSquaresLeft.put(v.centeredSumOfSquaresLeft!T + deltaLeft * deltaLeft * v.count * oldCount / count);
+            centeredSummatorOfSquaresRight.put(v.centeredSumOfSquaresRight!T + deltaRight * deltaRight * v.count * oldCount / count);
+        }
     }
 
 const:
