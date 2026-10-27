@@ -154,7 +154,7 @@ and per-round CSV output follow the existing scheduler.
 | --- | --- |
 | `triangularLeft` | `dense`, `triangular` |
 | `triangularRight` | `dense`, `triangular` |
-| `quadratic` | `composed`, `general`, `symmetric`, `singleTriangle` |
+| `quadratic` | `composed`, `general`, `symmetric`, `singleTriangle`, `generalFast`, `symmetricFast` |
 | `mahalanobis` | `covarianceGC`, `factorGC`, `precisionGC`, `precisionFactorGC`, and corresponding `Workspace` variants |
 
 Triangular comparisons multiply square matrices into preallocated output,
@@ -203,3 +203,7 @@ alongside CSV files; the CSV schema does not identify the linked backend.
 The benchmark unit tests cover both layouts, selections, invalid requests,
 and the single-triangle numerical counterexample. CI smoke runs verify native D
 CLI integration without asserting timing thresholds.
+
+The `generalFast` and `symmetricFast` quadratic cases use caller workspace and
+explicit `Summation.fast`. Both use the same seeded inputs and independent
+reference checks as the compensated quadratic cases.

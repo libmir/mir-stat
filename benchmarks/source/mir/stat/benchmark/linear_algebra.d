@@ -24,7 +24,7 @@ string[] algebraAlgorithms(string name)
     switch (name)
     {
     case "triangularLeft", "triangularRight": return ["dense", "triangular"];
-    case "quadratic": return ["composed", "general", "symmetric", "singleTriangle"];
+    case "quadratic": return ["composed", "general", "symmetric", "singleTriangle", "generalFast", "symmetricFast"];
     case "mahalanobis": return ["covarianceGC", "factorGC", "precisionGC", "precisionFactorGC",
         "covarianceWorkspace", "factorWorkspace", "precisionWorkspace", "precisionFactorWorkspace"];
     default: throw new Exception("Unknown linear algebra benchmark: " ~ name);
@@ -111,7 +111,7 @@ private Result[] measure(int family)(string name, size_t iterations, size_t n, u
     auto referenceOutput = matrix(family < 2);
     auto x = uninitSlice!double(family >= 2 ? n : 0);
     auto center = uninitSlice!double(family == 3 ? n : 0);
-    auto work = uninitSlice!double((family == 2 && needs("composed")) || (family == 3 &&
+    auto work = uninitSlice!double((family == 2 && (needs("composed") || needs("generalFast") || needs("symmetricFast"))) || (family == 3 &&
         (needs("covarianceWorkspace") || needs("factorWorkspace") ||
          needs("precisionWorkspace") || needs("precisionFactorWorkspace"))) ? n : 0);
     auto u = uninitSlice!double(n);
@@ -164,6 +164,10 @@ private Result[] measure(int family)(string name, size_t iterations, size_t n, u
     double general() { return quadraticForm(x,a); }
     /// Evaluate the compensated quadratic form through a symmetric view.
     double symmetric() { return quadraticForm(x,symmetricView(a)); }
+    /// Evaluate a workspace quadratic form with explicit fast arithmetic.
+    double generalFast() { import mir.math.sum: Summation; return quadraticFormWithWorkspace!(Summation.fast)(x,a,work); }
+    /// Evaluate a symmetric workspace quadratic form with explicit fast arithmetic.
+    double symmetricFast() { import mir.math.sum: Summation; return quadraticFormWithWorkspace!(Summation.fast)(x,symmetricView(a),work); }
     /// Measure the experimental flattened reduction on the shared inputs.
     double single() { return singleTriangle(x,a); }
     /// Measure squared distance including GC scratch allocation and covariance factorization.
@@ -184,7 +188,7 @@ private Result[] measure(int family)(string name, size_t iterations, size_t n, u
     double precisionFactorWorkspace() { return mahalanobisSquaredWithWorkspace!(MahalanobisMatrix.inverseCovarianceCholesky)(x,center,precisionFactor,work); }
     import std.meta: AliasSeq;
     static if (family < 2) alias functions = AliasSeq!(denseProduct, triangularProduct);
-    else static if (family == 2) alias functions = AliasSeq!(composed, general, symmetric, single);
+    else static if (family == 2) alias functions = AliasSeq!(composed, general, symmetric, single, generalFast, symmetricFast);
     else alias functions = AliasSeq!(covarianceGC, factorGC, precisionGC, precisionFactorGC,
         covarianceWorkspace, factorWorkspace, precisionWorkspace, precisionFactorWorkspace);
     bool[functions.length] enabled;

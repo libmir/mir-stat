@@ -22,6 +22,7 @@ contracts and executable examples.
 | `mtimesTriangular` | Triangular matrix on the left | Matrix or vector |
 | `mtimesTriangularRight` | Triangular matrix on the right | Matrix or vector |
 | `quadraticForm` | Vector and general or symmetric matrix | `xᵀ A x` |
+| `quadraticFormWithWorkspace` | Same inputs and a separate vector workspace | Compensated or explicitly fast `xᵀ A x` |
 | `choleskyDecompose` | Real symmetric positive-definite matrix | Upper or lower Cholesky factor |
 | `choleskySolve` | Existing Cholesky factor and vector or matrix right-hand side | Solution of `A X = B` |
 
@@ -126,6 +127,28 @@ property exposes the underlying matrix read-only, including unused entries.
 Their `transposed` property retains ownership and reverses the triangle policy.
 The caller must keep borrowed storage and computed-iterator dependencies alive.
 
+## Quadratic-form workspace and fast arithmetic
+
+The existing `quadraticForm(x, a)` remains allocation-free and compensated by
+default. `quadraticFormWithWorkspace(x, a, work)` additionally stores `a * x`
+in a separate writable vector and retains compensated reductions by default.
+Workspace must be disjoint from the inputs and have the same length and element
+type as `x`.
+
+```d
+import mir.math.sum: Summation;
+auto q = quadraticFormWithWorkspace!(Summation.fast)(x, a, work);
+auto symmetricQ = quadraticFormWithWorkspace!(Summation.fast)(
+    x, symmetricView(a), work);
+```
+
+Explicit fast mode permits GEMV plus DOT for general matrices, SYMV plus DOT
+for symmetric views. Native
+D implementations handle unsupported types/layouts and builds without BLAS.
+Fast mode does not promise compensated accuracy or identical rounding across
+backends. It is a choice for callers willing to trade that accuracy for speed,
+not a change to the default numerical contract. Results are not clamped.
+
 ## Factorization and reuse
 
 Upper factors satisfy `A = Uᵀ U`; lower factors satisfy `A = L Lᵀ`.
@@ -156,7 +179,7 @@ layouts or types continue through the native D fallback. The choice is
 made by the compiled configuration and storage checks, not by a runtime DLL
 loader. A binary linked to BLAS still needs its native library at runtime.
 
-**`quadraticForm` currently does not call BLAS.** It uses compensated summation
+**The no-workspace `quadraticForm` does not call BLAS.** It uses compensated summation
 for each row and the outer reduction by default. The symmetric overload reads
 only the selected stored triangle but evaluates every logical row. Its split
 loops preserve summation order. The faster experimental single-triangle
