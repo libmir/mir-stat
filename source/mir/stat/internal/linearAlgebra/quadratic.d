@@ -12,6 +12,10 @@ the final reduction use compensated summation by default. Multiplication can
 overflow, and cancellation can still lose accuracy; results are not clamped.
 No scratch allocation or BLAS dependency is required.
 
+`quadraticFormWithWorkspace` uses a caller-provided vector. Its default is also
+compensated; explicit `Summation.fast` permits GEMV/SYMV and DOT where
+eligible, with native D fallback and backend-dependent rounding.
+
 License: $(HTTP www.apache.org/licenses/LICENSE-2.0, Apache-2.0)
 Copyright: 2026 Mir Stat Authors.
 +/
@@ -103,6 +107,140 @@ version(mir_stat_test_linearAlgebra)
     const a = symmetricView!(TrianglePolicy.lower)(data[].sliced(2, 2));
     assert(quadraticForm(values[].sliced, a) == 32);
     assert(quadraticForm(values[].sliced, a.transposed) == 32);
+}
+
+/++
+Compute a quadratic form using caller-provided matrix-vector workspace.
+Params:
+    summation = Row and final reduction policy; `Summation.fast` permits BLAS.
+    x = Real vector.
+    a = Square real matrix of the same element type and order as `x`.
+    work = Writable vector of length `x.length`, overwritten with `a * x`.
+Returns:
+    `x.transpose * a * x`, or zero for empty inputs.
+Preconditions:
+    Workspace must not overlap either input or contain overlapping elements.
+    Shapes are asserted; overlap is not checked.
+
+The default preserves compensated row and final reductions. Explicit fast mode
+uses GEMV and DOT where eligible, or native D arithmetic otherwise; it does not
+promise compensated accuracy or identical results across backends. No storage
+is allocated. Negative results are valid and are not clamped.
++/
+package(mir.stat) Scalar!X quadraticFormWithWorkspace(Summation summation = Summation.kbn, X, A, W)(
+    scope auto ref X x, scope auto ref A a, scope auto ref W work)
+    if (compatible!(X, A) && numericSlice!W && W.N == 1 && is(Scalar!X == Scalar!W))
+{
+    return quadraticWorkspace!(false, TrianglePolicy.upper, summation)(x, a, work);
+}
+
+/++
+Compute a symmetric quadratic form with caller workspace, reading only the
+triangle selected by the view. Contracts and allocation behavior match the
+plain-matrix overload. Explicit `Summation.fast` uses SYMV and DOT when eligible;
+other policies retain native D row reductions. The workspace contains `a * x`.
++/
+package(mir.stat) Scalar!X quadraticFormWithWorkspace(Summation summation = Summation.kbn,
+    X, TrianglePolicy triangle, A, W)(scope auto ref X x,
+    scope auto ref const(SymmetricView!(triangle, A)) a, scope auto ref W work)
+    if (compatible!(X, A) && numericSlice!W && W.N == 1 && is(Scalar!X == Scalar!W))
+{
+    return quadraticWorkspace!(true, triangle, summation)(x, a.storage, work);
+}
+
+/// Opt into fast arithmetic while reusing a separate matrix-vector buffer.
+version(mir_stat_test_linearAlgebra)
+@safe pure nothrow @nogc unittest
+{
+    import mir.ndslice.slice: sliced;
+    double[2] values = [1, 2], buffer;
+    double[4] data = [4, 2, double.nan, 5];
+    auto x = values[].sliced;
+    auto a = symmetricView(data[].sliced(2, 2));
+    auto work = buffer[].sliced;
+    assert(quadraticFormWithWorkspace(x, a, work) == 32);
+    assert(quadraticFormWithWorkspace!(Summation.fast)(x, a, work) == 32);
+    assert(work == [8, 12]);
+}
+
+/// Fill workspace through the selected backend, then reduce its dot product with x.
+private Scalar!X quadraticWorkspace(bool symmetric, TrianglePolicy triangle, Summation summation, X, A, W)(
+    scope auto ref X x, scope auto ref A a, scope auto ref W work)
+{
+    assert(a.length!0 == x.length && a.length!1 == x.length && work.length == x.length,
+        "Incompatible quadratic form workspace dimensions");
+    alias T = Scalar!X;
+    static if (summation == Summation.fast)
+    {
+        import mir.stat.internal.linearAlgebra.products: mtimes, mtimesInto;
+        static if (!symmetric)
+        {
+            mtimesInto(a, x, work);
+            return mtimes(x, work);
+        }
+        else
+        {
+            import mir.stat.internal.linearAlgebra.backend: hasBlas, blasNumber, nativeSlice, blasMatrix, blasVector;
+            static if (hasBlas && blasNumber!T && nativeSlice!A && nativeSlice!X && nativeSlice!W)
+            {
+                if (x.length && blasMatrix(a) && blasVector(x) && blasVector(work))
+                {
+                    import mir.blas: symv;
+                    import cblas: Uplo;
+                    enum uplo = triangle == TrianglePolicy.upper ? Uplo.Upper : Uplo.Lower;
+                    symv(uplo, T(1), a.lightScope.lightConst, x.lightScope.lightConst, T(0), work.lightScope);
+                    return mtimes(x, work);
+                }
+            }
+        }
+    }
+    foreach (i; 0 .. x.length)
+    {
+        Summator!(T, summation) row;
+        foreach (j; 0 .. x.length)
+        {
+            static if (symmetric)
+                auto value = (triangle == TrianglePolicy.upper ? j >= i : j <= i) ? a[i,j] : a[j,i];
+            else auto value = a[i,j];
+            row.put(value * x[j]);
+        }
+        work[i] = row.sum;
+    }
+    Summator!(T, summation) total;
+    foreach (i; 0 .. x.length) total.put(x[i] * work[i]);
+    return total.sum;
+}
+
+version(mir_stat_test_linearAlgebra)
+@safe pure nothrow @nogc unittest
+{
+    import std.meta: AliasSeq;
+    import mir.ndslice.slice: sliced;
+    import mir.ndslice.topology: universal, map;
+    import mir.ndslice.dynamic: transposed, strided, reversed;
+    static foreach (T; AliasSeq!(float, double, real))
+    {{
+        T[2] values = [1, 2];
+        T[4] data = [2, 3, 5, 7], buffer;
+        auto x = values[].sliced;
+        auto a = data[].sliced(2, 2).universal;
+        auto work = buffer[].sliced.universal.strided(2);
+        assert(quadraticFormWithWorkspace!(Summation.fast)(x, a, work) == 46);
+        assert(quadraticFormWithWorkspace!(Summation.fast)(x.reversed, a.transposed, work.reversed) == 31);
+        data[2] = T.nan;
+        static foreach (policy; [Summation.kbn, Summation.fast])
+        {{
+            assert(quadraticFormWithWorkspace!policy(x, symmetricView(a), work) == 42);
+            assert(quadraticFormWithWorkspace!policy(x, symmetricView!(TrianglePolicy.lower)(a.transposed), work) == 42);
+            auto computed = a.map!((T v) { assert(v == v); return v; });
+            assert(quadraticFormWithWorkspace!policy(x, symmetricView(computed), work) == 42);
+            assert(quadraticFormWithWorkspace!policy(x[0..0], data[0..0].sliced(0,0), work[0..0]) == 0);
+        }}
+        T[3] ones = [1,1,1], tmp;
+        T large = 4 / T.epsilon;
+        T[9] cancellation = [large, 1, -large, 0,0,0, 0,0,0];
+        assert(quadraticFormWithWorkspace(ones[].sliced, cancellation[].sliced(3,3), tmp[].sliced) == 1);
+    }}
 }
 
 /// Evaluate rows in ascending column order and then reduce their products with x; symmetry reflects only stored entries.

@@ -41,6 +41,9 @@ does not conjugate either operand.
 Use `quadraticForm(x, a)` for a general real quadratic form, or
 `quadraticForm(x, symmetricView(a))` to read only one triangle of a symmetric matrix.
 Both return scalars without allocating, regardless of input ownership.
+`quadraticFormWithWorkspace(x, a, work)` accepts a separate vector buffer.
+Its default remains compensated; explicit `Summation.fast` enables GEMV/SYMV
+and DOT where eligible.
 
 `symmetricView` and `triangularView` attach structure to a matrix without
 copying its elements. Symmetric views dispatch quadratic forms and Cholesky
