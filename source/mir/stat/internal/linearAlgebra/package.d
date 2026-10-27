@@ -49,7 +49,7 @@ operand. Views are read-only, retain RC ownership when supplied, and have no
 implicit ndslice conversion. They do not assert positive definiteness or
 represent Cholesky factors. Transpose updates the selected triangle.
 
-BLAS is optional. The default configuration uses built-in D kernels; compatible
+BLAS is optional. The default configuration uses native D kernels; compatible
 native layouts can use BLAS when that dependency is available. Backend and
 summation order can affect floating-point rounding.
 

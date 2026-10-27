@@ -9,7 +9,7 @@ indefinite matrices fail, without regularization or a pseudoinverse.
 
 Float, double and real inputs, including computed and strided views, are
 supported. LAPACK is optional and accelerates compatible native float/double
-output layouts. Other layouts use an allocation-free built-in D kernel. Backend
+output layouts. Other layouts use an allocation-free native D kernel. Backend
 and summation order can affect rounding and failure near singularity.
 
 The `choleskySolve` family reuses a factor for vector or matrix right-hand
@@ -361,7 +361,7 @@ version(mir_stat_test_linearAlgebra)
         static immutable expected = [[4,2,2],[2,10,4],[2,4,6]];
         foreach (i; 0 .. 3) foreach (j; 0 .. 3)
             assert(fabs(reconstructed[i,j] - expected[i][j]) <= 32 * T.epsilon);
-        // General-stride output forces the built-in D kernel; transposed/padded
+        // General-stride output forces the native D kernel; transposed/padded
         // output exercises the optional native storage conversion separately.
         T[36] buffer;
         auto general = buffer[].sliced(6, 6).strided!(0,1)(2,2);
@@ -777,7 +777,7 @@ version(mir_stat_test_linearAlgebra)
             auto rc = rcCholeskySolve!triangle(factor.lightConst, rhs);
             foreach (i; 0 .. 3) foreach (j; 0 .. 2)
                 assert(fabs(rc[i,j] - output[i,j]) < 64 * T.epsilon);
-            // General output strides and reversed vectors select the built-in D path.
+            // General output strides and reversed vectors select the native D path.
             T[24] generalStorage = T(-99);
             auto general = generalStorage[].sliced(6,4).strided!(0,1)(2,2);
             choleskySolveInto!triangle(factor, rhs, general);

@@ -4,7 +4,7 @@ Products with a square triangular matrix on either side.
 The selected triangle describes the logical ndslice view, including when that
 view is transposed. Entries outside it are not read. A unit diagonal is treated
 as one without reading its stored values. Complex inputs are not conjugated.
-General strides and computed inputs use built-in D kernels. Compatible native
+General strides and computed inputs use native D kernels. Compatible native
 float, double and complex layouts use BLAS when available.
 
 The `mtimesTriangular` family multiplies a triangular matrix on the left;

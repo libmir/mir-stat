@@ -112,17 +112,16 @@ without forming an inverse. Each column of a matrix right-hand side is one
 system. The caller is responsible for supplying a valid factor; solves do not
 repeat the decomposition's positive-definiteness checks.
 
-## Built-in D and BLAS-accelerated implementations
+## Native D and BLAS-accelerated implementations
 
 **No BLAS installation is required for the default build.** Multiplication,
-triangular operations, factorization, and solves have built-in D implementations.
+triangular operations, factorization, and solves have native D implementations.
 They use ordinary arithmetic loops; the compiler may vectorize those loops.
-The word "scalar" in the benchmark configuration name refers to this build,
-not to functions that only accept single numbers.
+The benchmark configuration for this build is named `native-d`.
 
 With the optional BLAS/LAPACK configuration, eligible layouts and types use
 native routines such as GEMM, TRMM, triangular solves, and POTRF. Unsupported
-layouts or types continue through the built-in implementation. The choice is
+layouts or types continue through the native D fallback. The choice is
 made by the compiled configuration and storage checks, not by a runtime DLL
 loader. A binary linked to BLAS still needs its native library at runtime.
 

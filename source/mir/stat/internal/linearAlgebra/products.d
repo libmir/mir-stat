@@ -3,7 +3,7 @@ Matrix products with explicit result ownership. `mtimes` uses GC storage,
 `rcMtimes` uses RC storage, and `makeMtimes` uses the supplied allocator.
 Vector-vector products return a scalar and do not allocate. Products do not
 conjugate complex inputs. Inputs may be borrowed or RC slices, independently
-of output ownership. General strides use an allocation-free built-in D kernel.
+of output ownership. General strides use an allocation-free native D kernel.
 When BLAS is available, compatible single/double precision real and complex
 layouts use BLAS.
 
