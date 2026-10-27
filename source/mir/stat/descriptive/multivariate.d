@@ -202,6 +202,102 @@ unittest
     }
 }
 
+/*
+Form the between-group cross product without discarding a tiny difference
+before the other difference can bring the result back into the normal range.
+The usual order avoids multiplying two large differences first. When its inner
+product is subnormal, scale the larger difference down for weights below one.
+For larger weights, multiply the differences first only if that product is
+normal; otherwise retain the usual order to avoid rounding a subnormal twice.
+This is not a general correctly rounded three-factor product.
+*/
+private T multivariateMergeProduct(T)(T left, T right, T weight)
+{
+    version (DigitalMars) pragma(inline, true);
+    const T scaledRight = right * weight;
+    static if (isFloatingPoint!T)
+    {
+        import mir.math.common: fabs;
+        if (fabs(scaledRight) < T.min_normal && fabs(left) > 1)
+        {
+            if (weight < 1)
+                return (left * weight) * right;
+            const T product = left * right;
+            if (fabs(product) >= T.min_normal)
+                return product * weight;
+        }
+    }
+    return left * scaledRight;
+}
+
+version(mir_stat_test)
+@safe pure nothrow @nogc
+unittest
+{
+    import std.meta: AliasSeq;
+    static foreach (T; AliasSeq!(float, double, real))
+    {{
+        T tiny = T.min_normal;
+        tiny *= T.epsilon;
+        // Powers of two give exact references without a special-function call.
+        enum T large = T(2) ^^ (T.mant_dig + 2);
+        const T expected = tiny * (large / 2);
+        foreach (sign; [T(-1), T(1)])
+        {
+            assert(multivariateMergeProduct(sign * large, tiny, T(0.5)) == sign * expected);
+            assert(multivariateMergeProduct(sign * large, 3 * tiny, T(0.5)) == sign * 3 * expected);
+            assert(multivariateMergeProduct(sign * large, 3 * tiny, T(1.5)) == sign * 9 * expected);
+        }
+        // If the unweighted product is also subnormal, keep the usual order.
+        assert(multivariateMergeProduct(T(1.5), tiny, T(2.5)) == 3 * tiny);
+        assert(multivariateMergeProduct(T(0), tiny, T(0.5)) == 0);
+        assert(multivariateMergeProduct(T(2), T(3), T(0.5)) == 3);
+    }}
+}
+
+version(mir_stat_test)
+private void testMultivariateTinyMerge(A)() pure nothrow @nogc
+{
+    alias T = typeof(A.init.meanLeft);
+    T tiny = T.min_normal;
+    tiny *= T.epsilon;
+    enum T large = T(2) ^^ (T.mant_dig + 2);
+    const T expected = tiny * (large / 2);
+    foreach (reverse; [false, true])
+    foreach (sign; [T(-1), T(1)])
+    {
+        A target, source;
+        target.put(T(0), T(0));
+        if (reverse)
+            source.put(tiny, sign * large);
+        else
+            source.put(sign * large, tiny);
+        target.put(source);
+        assert(target.centeredSumOfProducts == sign * expected);
+        assert(source.centeredSumOfProducts == 0);
+    }
+}
+
+version(mir_stat_test)
+pure nothrow @nogc
+unittest
+{
+    import std.meta: AliasSeq;
+    static foreach (mode; AliasSeq!(Summation.naive, Summation.kbn,
+        Summation.kb2, Summation.precise))
+    {
+        testMultivariateTinyMerge!(CovarianceAccumulator!(double, CovarianceAlgo.online, mode))();
+        testMultivariateTinyMerge!(CovarianceAccumulator!(double, CovarianceAlgo.hybrid, mode))();
+        testMultivariateTinyMerge!(CorrelationAccumulator!(double, CorrelationAlgo.online, mode))();
+        testMultivariateTinyMerge!(CorrelationAccumulator!(double, CorrelationAlgo.hybrid, mode))();
+    }
+    static foreach (T; AliasSeq!(float, real))
+    {
+        testMultivariateTinyMerge!(CovarianceAccumulator!(T, CovarianceAlgo.hybrid, Summation.naive))();
+        testMultivariateTinyMerge!(CorrelationAccumulator!(T, CorrelationAlgo.hybrid, Summation.naive))();
+    }
+}
+
 // Convert before multiplying, matching scalar insertion without mapper context.
 private template multivariateProduct(T, size_t left = 0, size_t right = 1)
 {
@@ -1157,13 +1253,13 @@ struct CovarianceAccumulator(T, CovarianceAlgo covarianceAlgo, Summation summati
         {
             mergeMultivariateSum!("summatorLeft", "sumLeft", T)(summatorLeft, v);
             mergeMultivariateSum!("summatorRight", "sumRight", T)(summatorRight, v);
-            mergeMultivariateSum!("centeredSummatorOfProducts", "centeredSumOfProducts", T)(centeredSummatorOfProducts, v, deltaLeft * (deltaRight * mergeWeight));
+            mergeMultivariateSum!("centeredSummatorOfProducts", "centeredSumOfProducts", T)(centeredSummatorOfProducts, v, multivariateMergeProduct(deltaLeft, deltaRight, mergeWeight));
         }
         else
         {
             summatorLeft.put(v.sumLeft!T);
             summatorRight.put(v.sumRight!T);
-            centeredSummatorOfProducts.put(v.centeredSumOfProducts!T + deltaLeft * (deltaRight * mergeWeight));
+            centeredSummatorOfProducts.put(v.centeredSumOfProducts!T + multivariateMergeProduct(deltaLeft, deltaRight, mergeWeight));
         }
     }
 
@@ -2112,13 +2208,13 @@ struct CovarianceAccumulator(T, CovarianceAlgo covarianceAlgo, Summation summati
         {
             mergeMultivariateSum!("summatorLeft", "sumLeft", T)(summatorLeft, v);
             mergeMultivariateSum!("summatorRight", "sumRight", T)(summatorRight, v);
-            mergeMultivariateSum!("centeredSummatorOfProducts", "centeredSumOfProducts", T)(centeredSummatorOfProducts, v, deltaLeft * (deltaRight * mergeWeight));
+            mergeMultivariateSum!("centeredSummatorOfProducts", "centeredSumOfProducts", T)(centeredSummatorOfProducts, v, multivariateMergeProduct(deltaLeft, deltaRight, mergeWeight));
         }
         else
         {
             summatorLeft.put(v.sumLeft!T);
             summatorRight.put(v.sumRight!T);
-            centeredSummatorOfProducts.put(v.centeredSumOfProducts!T + deltaLeft * (deltaRight * mergeWeight));
+            centeredSummatorOfProducts.put(v.centeredSumOfProducts!T + multivariateMergeProduct(deltaLeft, deltaRight, mergeWeight));
         }
     }
 
@@ -3482,7 +3578,7 @@ struct CorrelationAccumulator(T, CorrelationAlgo correlationAlgo, Summation summ
         {
             mergeMultivariateSum!("summatorLeft", "sumLeft", T)(summatorLeft, v);
             mergeMultivariateSum!("summatorRight", "sumRight", T)(summatorRight, v);
-            mergeMultivariateSum!("centeredSummatorOfProducts", "centeredSumOfProducts", T)(centeredSummatorOfProducts, v, deltaLeft * (deltaRight * mergeWeight));
+            mergeMultivariateSum!("centeredSummatorOfProducts", "centeredSumOfProducts", T)(centeredSummatorOfProducts, v, multivariateMergeProduct(deltaLeft, deltaRight, mergeWeight));
             mergeMultivariateSum!("centeredSummatorOfSquaresLeft", "centeredSumOfSquaresLeft", T)(centeredSummatorOfSquaresLeft, v, deltaLeft * (deltaLeft * mergeWeight));
             mergeMultivariateSum!("centeredSummatorOfSquaresRight", "centeredSumOfSquaresRight", T)(centeredSummatorOfSquaresRight, v, deltaRight * (deltaRight * mergeWeight));
         }
@@ -3490,7 +3586,7 @@ struct CorrelationAccumulator(T, CorrelationAlgo correlationAlgo, Summation summ
         {
             summatorLeft.put(v.sumLeft!T);
             summatorRight.put(v.sumRight!T);
-            centeredSummatorOfProducts.put(v.centeredSumOfProducts!T + deltaLeft * (deltaRight * mergeWeight));
+            centeredSummatorOfProducts.put(v.centeredSumOfProducts!T + multivariateMergeProduct(deltaLeft, deltaRight, mergeWeight));
             centeredSummatorOfSquaresLeft.put(v.centeredSumOfSquaresLeft!T + deltaLeft * (deltaLeft * mergeWeight));
             centeredSummatorOfSquaresRight.put(v.centeredSumOfSquaresRight!T + deltaRight * (deltaRight * mergeWeight));
         }
@@ -4613,7 +4709,7 @@ struct CorrelationAccumulator(T, CorrelationAlgo correlationAlgo, Summation summ
         {
             mergeMultivariateSum!("summatorLeft", "sumLeft", T)(summatorLeft, v);
             mergeMultivariateSum!("summatorRight", "sumRight", T)(summatorRight, v);
-            mergeMultivariateSum!("centeredSummatorOfProducts", "centeredSumOfProducts", T)(centeredSummatorOfProducts, v, deltaLeft * (deltaRight * mergeWeight));
+            mergeMultivariateSum!("centeredSummatorOfProducts", "centeredSumOfProducts", T)(centeredSummatorOfProducts, v, multivariateMergeProduct(deltaLeft, deltaRight, mergeWeight));
             mergeMultivariateSum!("centeredSummatorOfSquaresLeft", "centeredSumOfSquaresLeft", T)(centeredSummatorOfSquaresLeft, v, deltaLeft * (deltaLeft * mergeWeight));
             mergeMultivariateSum!("centeredSummatorOfSquaresRight", "centeredSumOfSquaresRight", T)(centeredSummatorOfSquaresRight, v, deltaRight * (deltaRight * mergeWeight));
         }
@@ -4621,7 +4717,7 @@ struct CorrelationAccumulator(T, CorrelationAlgo correlationAlgo, Summation summ
         {
             summatorLeft.put(v.sumLeft!T);
             summatorRight.put(v.sumRight!T);
-            centeredSummatorOfProducts.put(v.centeredSumOfProducts!T + deltaLeft * (deltaRight * mergeWeight));
+            centeredSummatorOfProducts.put(v.centeredSumOfProducts!T + multivariateMergeProduct(deltaLeft, deltaRight, mergeWeight));
             centeredSummatorOfSquaresLeft.put(v.centeredSumOfSquaresLeft!T + deltaLeft * (deltaLeft * mergeWeight));
             centeredSummatorOfSquaresRight.put(v.centeredSumOfSquaresRight!T + deltaRight * (deltaRight * mergeWeight));
         }
