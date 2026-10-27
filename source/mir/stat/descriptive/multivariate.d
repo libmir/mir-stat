@@ -193,6 +193,50 @@ unittest
     }
 }
 
+// Zero-mean sources have implicit zero sums, but stored centered moments.
+version(mir_stat_test)
+pure nothrow @nogc
+unittest
+{
+    import std.meta: AliasSeq;
+    void check(Source, Target)()
+    {
+        Source source;
+        source.put(1, 2);
+        source.put(-1, -2);
+        Target empty;
+        empty.put(source);
+        assert(empty.count == 2 && empty.meanLeft == 0 && empty.meanRight == 0);
+        assert(empty.centeredSumOfProducts == 4);
+
+        Target populated;
+        populated.put(2, 4);
+        populated.put(4, 8);
+        populated.put(source);
+        // Combined observations: (2,4), (4,8), (1,2), (-1,-2).
+        assert(populated.count == 4);
+        assert(populated.meanLeft == 1.5 && populated.meanRight == 3);
+        assert(populated.centeredSumOfProducts == 26);
+        assert(source.count == 2 && source.centeredSumOfProducts == 4);
+        static if (__traits(hasMember, Target, "centeredSumOfSquaresLeft"))
+        {
+            assert(empty.centeredSumOfSquaresLeft == 2);
+            assert(empty.centeredSumOfSquaresRight == 8);
+            assert(populated.centeredSumOfSquaresLeft == 13);
+            assert(populated.centeredSumOfSquaresRight == 52);
+            assert(source.centeredSumOfSquaresLeft == 2);
+            assert(source.centeredSumOfSquaresRight == 8);
+        }
+    }
+    static foreach (mode; AliasSeq!(Summation.kbn, Summation.kb2, Summation.precise))
+    {
+        check!(CovarianceAccumulator!(double, CovarianceAlgo.assumeZeroMean, mode),
+            CovarianceAccumulator!(double, CovarianceAlgo.hybrid, mode))();
+        check!(CorrelationAccumulator!(double, CorrelationAlgo.assumeZeroMean, mode),
+            CorrelationAccumulator!(double, CorrelationAlgo.hybrid, mode))();
+    }
+}
+
 // Add the between-group correction without first rounding it into a source sum.
 version(mir_stat_test)
 pure nothrow @nogc
