@@ -18,6 +18,7 @@ import std.math: abs, isFinite;
 package(mir.stat):
 enum algebraNames = ["triangularLeft", "triangularRight", "quadratic", "mahalanobis"];
 
+/// List the algorithms available for a validated benchmark family.
 string[] algebraAlgorithms(string name)
 {
     switch (name)
@@ -30,6 +31,7 @@ string[] algebraAlgorithms(string name)
     }
 }
 
+/// Reject unsupported sizes, transformations, or algorithms before allocating benchmark inputs.
 void validateAlgebra(string name, size_t iterations, size_t size, Transform transform,
     string[] selected, size_t rounds)
 {
@@ -43,6 +45,7 @@ void validateAlgebra(string name, size_t iterations, size_t size, Transform tran
 
 // Experimental flattened reduction: deliberately kept out of the library until
 // its cancellation/overflow tradeoffs have been evaluated against row reductions.
+/// Experimental single-triangle reduction; may overflow where row-wise cancellation remains finite.
 private double singleTriangle(V, M)(V x, M a)
 {
     import mir.math.sum: Summator, Summation;
@@ -60,6 +63,7 @@ private double singleTriangle(V, M)(V x, M a)
     return total.sum;
 }
 
+/// Run a benchmark family with shared seeded inputs and return checked per-round results.
 Result[] runAlgebra(string name, size_t iterations, size_t size, ulong seed,
     string[] selected, size_t rounds, size_t warmup, bool transpose = false)
 {
@@ -74,6 +78,7 @@ Result[] runAlgebra(string name, size_t iterations, size_t size, ulong seed,
     }
 }
 
+/// Prepare only required buffers, rotate enabled algorithms, and validate results outside timing.
 private Result[] measure(int family)(string name, size_t iterations, size_t n, ulong seed,
     string[] selected, size_t rounds, size_t warmup, bool transpose)
 {
@@ -82,30 +87,43 @@ private Result[] measure(int family)(string name, size_t iterations, size_t n, u
     import mir.random.variable: NormalVariable;
     auto rng = Mt19937_64(seed);
     auto normal = NormalVariable!double(0, 1);
-    auto a = uninitSlice!double(n,n).universal;
-    auto dense = uninitSlice!double(n,n).universal;
-    auto b = uninitSlice!double(n,n).universal;
-    auto output = uninitSlice!double(n,n).universal;
-    auto precision = uninitSlice!double(n,n).universal;
-    auto factor = uninitSlice!double(n,n).universal;
-    auto precisionFactor = uninitSlice!double(n,n).universal;
-    auto factorWork = uninitSlice!double(n,n).universal;
-    if (transpose)
+    auto labels = algebraAlgorithms(name);
+    /// Whether the request includes a named algorithm.
+    bool needs(string label) { return !selected.length || selected.canFind(label); }
+    const needFactor = family == 3 && (needs("factorGC") || needs("factorWorkspace"));
+    const needPrecisionFactor = family == 3 && (needs("precisionFactorGC") || needs("precisionFactorWorkspace"));
+    const needPrecision = family == 3 && (needPrecisionFactor || needs("precisionGC") || needs("precisionWorkspace"));
+    const needA = family != 3 || needFactor || needs("covarianceGC") || needs("covarianceWorkspace");
+    /// Allocate only matrices required by the selected family and algorithms.
+    auto matrix(bool needed)
     {
-        a = a.transposed; dense = dense.transposed; b = b.transposed;
-        output = output.transposed; precision = precision.transposed;
-        factor = factor.transposed; precisionFactor = precisionFactor.transposed;
-        factorWork = factorWork.transposed;
+        auto result = uninitSlice!double(needed ? n : 0, needed ? n : 0).universal;
+        return transpose ? result.transposed : result;
     }
-    auto x = uninitSlice!double(n);
-    auto center = uninitSlice!double(n);
-    auto work = uninitSlice!double(n);
+    auto a = matrix(needA);
+    auto dense = matrix(family < 2);
+    auto b = matrix(family < 2);
+    auto output = matrix(family < 2);
+    auto precision = matrix(needPrecision);
+    auto factor = matrix(needFactor);
+    auto precisionFactor = matrix(needPrecisionFactor);
+    auto factorWork = matrix(family == 3 && needs("covarianceWorkspace"));
+    auto referenceOutput = matrix(family < 2);
+    auto x = uninitSlice!double(family >= 2 ? n : 0);
+    auto center = uninitSlice!double(family == 3 ? n : 0);
+    auto work = uninitSlice!double((family == 2 && needs("composed")) || (family == 3 &&
+        (needs("covarianceWorkspace") || needs("factorWorkspace") ||
+         needs("precisionWorkspace") || needs("precisionFactorWorkspace"))) ? n : 0);
     auto u = uninitSlice!double(n);
-    auto referenceOutput = uninitSlice!double(n,n);
     // Fixed well-conditioned SPD metric S=I+u*u', with analytic inverse
     // P=I-u*u'/(1+u'u). This avoids using the measured routines as references.
     double norm = 0;
-    foreach (i; 0 .. n) { u[i] = normal(rng) / n; norm += u[i]*u[i]; center[i] = 0; }
+    foreach (i; 0 .. n)
+    {
+        u[i] = normal(rng) / n;
+        norm += u[i]*u[i];
+        static if (family == 3) center[i] = 0;
+    }
     foreach (i; 0 .. n) foreach (j; 0 .. n)
     {
         auto value = (i == j ? 1.0 : 0.0) + u[i]*u[j];
@@ -114,50 +132,66 @@ private Result[] measure(int family)(string name, size_t iterations, size_t n, u
             dense[i,j] = j >= i ? value : 0;
             a[i,j] = j >= i ? value : double.nan;
         }
-        else a[i,j] = dense[i,j] = value;
-        precision[i,j] = (i == j ? 1.0 : 0.0) - u[i]*u[j]/(1+norm);
-        b[i,j] = normal(rng);
+        else if (needA) a[i,j] = value;
+        if (needPrecision) precision[i,j] = (i == j ? 1.0 : 0.0) - u[i]*u[j]/(1+norm);
+        // Preserve the existing seeded input stream without keeping an unused B.
+        auto sample = normal(rng);
+        static if (family < 2) b[i,j] = sample;
     }
     static if (family == 3)
     {
-        choleskyDecomposeInto(a, factor);
-        choleskyDecomposeInto(precision, precisionFactor);
+        if (needFactor) choleskyDecomposeInto(a, factor);
+        if (needPrecisionFactor) choleskyDecomposeInto(precision, precisionFactor);
     }
     // All callbacks read identical inputs and overwrite independent scratch.
+    /// Time a dense product into reusable output; all entries are checked after timing.
     double denseProduct()
     {
         static if (family == 0) mtimesInto(dense,b,output);
         else mtimesInto(b,dense,output);
         return output[0,0];
     }
+    /// Time the structured product into reusable output without reading ignored entries.
     double triangularProduct()
     {
         static if (family == 0) mtimesTriangularInto(a,b,output);
         else mtimesTriangularRightInto(b,a,output);
         return output[0,0];
     }
+    /// Evaluate a quadratic form through a matrix-vector product and dot product.
     double composed() { mtimesInto(a,x,work); return mtimes(x,work); }
+    /// Evaluate the general compensated quadratic form.
     double general() { return quadraticForm(x,a); }
+    /// Evaluate the compensated quadratic form through a symmetric view.
     double symmetric() { return quadraticForm(x,symmetricView(a)); }
+    /// Measure the experimental flattened reduction on the shared inputs.
     double single() { return singleTriangle(x,a); }
+    /// Measure squared distance including GC scratch allocation and covariance factorization.
     double covarianceGC() { return mahalanobisSquared(x,center,a); }
+    /// Measure squared distance from a covariance factor with GC scratch.
     double factorGC() { return mahalanobisSquared!(MahalanobisMatrix.cholesky)(x,center,factor); }
+    /// Measure squared distance from a precision matrix with GC scratch.
     double precisionGC() { return mahalanobisSquared!(MahalanobisMatrix.inverseCovariance)(x,center,precision); }
+    /// Measure squared distance from a precision factor with GC scratch.
     double precisionFactorGC() { return mahalanobisSquared!(MahalanobisMatrix.inverseCovarianceCholesky)(x,center,precisionFactor); }
+    /// Measure covariance factorization and squared distance with reusable buffers.
     double covarianceWorkspace() { return mahalanobisSquaredWithWorkspace(x,center,a,work,factorWork); }
+    /// Measure squared distance using a covariance factor and reusable workspace.
     double factorWorkspace() { return mahalanobisSquaredWithWorkspace!(MahalanobisMatrix.cholesky)(x,center,factor,work); }
+    /// Measure squared distance using a precision matrix and reusable workspace.
     double precisionWorkspace() { return mahalanobisSquaredWithWorkspace!(MahalanobisMatrix.inverseCovariance)(x,center,precision,work); }
+    /// Measure squared distance using a precision factor and reusable workspace.
     double precisionFactorWorkspace() { return mahalanobisSquaredWithWorkspace!(MahalanobisMatrix.inverseCovarianceCholesky)(x,center,precisionFactor,work); }
     import std.meta: AliasSeq;
     static if (family < 2) alias functions = AliasSeq!(denseProduct, triangularProduct);
     else static if (family == 2) alias functions = AliasSeq!(composed, general, symmetric, single);
     else alias functions = AliasSeq!(covarianceGC, factorGC, precisionGC, precisionFactorGC,
         covarianceWorkspace, factorWorkspace, precisionWorkspace, precisionFactorWorkspace);
-    auto labels = algebraAlgorithms(name);
     bool[functions.length] enabled;
     foreach (i, label; labels) enabled[i] = !selected.length || selected.canFind(label);
     auto active = enabled[].count(true);
     double reference;
+    /// Generate shared inputs and independent reference results outside the timed operation.
     void prepare()
     {
         static if (family < 2)
@@ -181,12 +215,14 @@ private Result[] measure(int family)(string name, size_t iterations, size_t n, u
             else reference = cast(double)(xx - ux*ux/(1+norm));
         }
     }
+    /// Reject nonfinite results and discrepancies beyond the benchmark tolerance.
     void verify(double value, double expected)
     {
         import std.format: format;
         enforce(isFinite(value) && abs(value-expected) <= 1e-10*(1+abs(expected)),
             format("%s: result %.17g differs from reference %.17g", name, value, expected));
     }
+    /// Check the scalar result and every matrix output entry outside timing.
     void check(size_t index, double value)
     {
         verify(value,reference);
@@ -220,6 +256,9 @@ unittest
         assert(rows.length == 2*algebraAlgorithms(name).length);
         foreach (row; rows) assert(isFinite(row.value));
     }
+    foreach (name; algebraNames)
+        foreach (algorithm; algebraAlgorithms(name))
+            assert(runAlgebra(name,1,3,5489,[algorithm],1,0).length == 1);
     assertThrown!Exception(validateAlgebra("quadratic",1,0,Transform.none,null,1));
     assertThrown!Exception(validateAlgebra("quadratic",1,2,Transform.center,null,1));
     assertThrown!Exception(validateAlgebra("quadratic",1,2,Transform.none,["unknown"],1));
@@ -239,4 +278,18 @@ unittest
     auto a = matrix[].sliced(2,2);
     assert(quadraticForm(x,symmetricView(a)) == 0);
     assert(!isFinite(singleTriangle(x,a)));
+}
+
+// A selected quadratic algorithm needs one matrix, not every family's buffers.
+unittest
+{
+    import core.memory: GC;
+    enum order = 128;
+    auto before = GC.stats().allocatedInCurrentThread;
+    auto rows = runAlgebra("quadratic",1,order,5489,["general"],1,0);
+    auto bytes = GC.stats().allocatedInCurrentThread - before;
+    assert(rows.length == 1);
+    // Allow ample vector, scheduler, and runtime overhead without accepting
+    // the former nine-matrix setup. This is an allocation budget, not a timer.
+    assert(bytes < 3 * order * order * double.sizeof);
 }
