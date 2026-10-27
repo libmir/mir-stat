@@ -10,7 +10,8 @@ PMF, CDF, and CCDF accept $(D lower == upper). LPMF and inverse CDF instead
 require $(D lower < upper). Forward functions return $(D double) by default.
 PMF, CDF, and CCDF additionally accept an explicit $(D Fp) result type, such as
 $(D uniformDiscreteCDF!(Fp!128)(x, lower, upper)). The inverse CDF accepts a
-built-in floating-point probability and returns $(D size_t).
+built-in floating-point or $(D Fp) probability and returns $(D size_t).
+For $(D Fp), its integer rank is exact for the represented probability.
 
 In the tables, $(D n = upper - lower + 1) denotes the mathematical number
 of outcomes. The built-in implementation adds one after conversion to floating point
@@ -39,6 +40,7 @@ module mir.stat.distribution.uniform_discrete;
 import mir.internal.utility: isFloatingPoint;
 import mir.bignum.fp: Fp;
 import mir.bignum.fixed: UInt;
+import mir.stat.internal.fp_probability: fpProbabilityValid;
 
 /++
 Computes the discrete uniform probability mass function (PMF).
@@ -261,6 +263,35 @@ size_t uniformDiscreteInvCDF(T)(const T p, const size_t lower = 0, const size_t 
     if (rank >= n)
         return upper;
     return lower + (cast(size_t) rank - 1);
+}
+
+/++
+Selects the first outcome whose exact CDF reaches the represented $(D Fp)
+probability. Multiply the significand by the exact interval size and determine
+the integer rank without rounding through a floating-point type. Endpoint and
+bound contracts match the built-in overload.
++/
+@safe pure nothrow @nogc
+size_t uniformDiscreteInvCDF(T)(const T p, const size_t lower = 0, const size_t upper = 1)
+    if (is(T == Fp!bits, uint bits))
+    in (fpProbabilityValid(p), "p must be finite and between zero and one")
+    in (lower < upper, "lower must be less than upper")
+{
+    if (!p.coefficient)
+        return lower;
+    enum bits = typeof(T.init.coefficient).sizeof * 8;
+    auto n = UInt!128(upper - lower);
+    n += 1;
+    auto product = p.coefficient.toSize!(bits + 128);
+    product *= n;
+    // For positive product, ceil(product / 2^shift)-1 equals
+    // floor((product-1) / 2^shift), including exact CDF jumps.
+    product -= 1;
+    const shift = 0UL - cast(ulong)p.exponent;
+    if (shift >= bits + 128)
+        return lower;
+    product >>= cast(size_t)shift;
+    return lower + cast(size_t)product;
 }
 
 ///.
@@ -578,3 +609,76 @@ version(mir_stat_test)
     }
 }
 // END discrete-uniform references
+
+version(mir_stat_test)
+@safe pure nothrow @nogc unittest
+{
+    static foreach (bits; [64u, 128u, 256u]) {{
+        alias T = Fp!bits;
+        static assert(is(typeof(uniformDiscreteInvCDF(T(0.5))) == size_t));
+        foreach (lower; [size_t(0), size_t.max - 3]) {
+            const upper = lower + 3;
+            foreach (i; 1 .. 4) {
+                auto p = T(i); p.exponent -= 2;
+                assert(uniformDiscreteInvCDF(p, lower, upper) == lower + i - 1);
+                auto below = p; below.coefficient -= 1;
+                auto above = p; above.coefficient += 1;
+                assert(uniformDiscreteInvCDF(below, lower, upper) == lower + i - 1);
+                assert(uniformDiscreteInvCDF(above, lower, upper) == lower + i);
+            }
+            assert(uniformDiscreteInvCDF(T(0), lower, upper) == lower);
+            assert(uniformDiscreteInvCDF(T(1), lower, upper) == upper);
+            assert(uniformDiscreteInvCDF(T(false, long.min, UInt!bits(1)), lower, upper) == lower);
+        }
+        assert(uniformDiscreteInvCDF(T(0.5), 0, size_t.max) == size_t.max / 2);
+        auto aboveHalf = T(0.5); aboveHalf.coefficient += 1;
+        assert(uniformDiscreteInvCDF(aboveHalf, 0, size_t.max) == size_t.max / 2 + 1);
+        const raw = T(false, 0, UInt!bits(1));
+        assert(uniformDiscreteInvCDF(raw, 0, size_t.max) == size_t.max);
+    }}
+}
+
+/// An exact CDF jump selects its lower outcome; the next Fp value advances it.
+version(mir_stat_test)
+@safe pure nothrow @nogc unittest
+{
+    import mir.bignum.fp: Fp;
+    auto p = Fp!128(0.5);
+    assert(uniformDiscreteInvCDF(p,10,13) == 11);
+    p.coefficient += 1;
+    assert(uniformDiscreteInvCDF(p,10,13) == 12);
+}
+
+version(mir_stat_test)
+@system unittest
+{
+    bool contractsEnabled;
+    void probe() in { contractsEnabled = true; } do {}
+    probe();
+    if (contractsEnabled) {
+        import core.exception: AssertError;
+        import std.exception: assertThrown;
+        foreach (p; [-1.0,2.0,double.infinity,double.nan])
+            assertThrown!AssertError(uniformDiscreteInvCDF(Fp!128(p)));
+        assertThrown!AssertError(uniformDiscreteInvCDF(Fp!128(0.5),1,1));
+        assertThrown!AssertError(uniformDiscreteInvCDF(Fp!128(0.5),2,1));
+    }
+}
+
+// Exact integer inequalities verify ranks for non-dyadic CDF steps. All p in
+// this grid are dyadic, so (rank+1)/n >= p iff (rank+1)*256 >= j*n.
+version(mir_stat_test)
+@safe pure nothrow @nogc unittest
+{
+    static foreach (bits; [64u,128u,256u]) {{
+        alias T = Fp!bits;
+        foreach (n; 2 .. 33)
+        foreach (j; 1 .. 256) {
+            auto p = T(j); p.exponent -= 8;
+            const x = uniformDiscreteInvCDF(p,10,10+n-1);
+            const rank = x-10;
+            assert((rank+1)*256 >= j*n);
+            if (rank) assert(rank*256 < j*n);
+        }
+    }}
+}
