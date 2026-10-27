@@ -10,7 +10,7 @@ Use `--function=all` (the default) to run skewness, kurtosis, covariance, and
 correlation. Use `--help` to list options. DMD is also supported with
 `--compiler=dmd`. Use a release build for performance measurements.
 
-Each comparison uses `double` and
+Each statistics comparison uses `double` and
 `Summation.fast`. Iterations and size default to 10000 and 1000, respectively.
 `--rounds` defaults to 10 measured rounds; `--warmup` defaults to 10 untimed
 iterations once per function before its first measured round. `--iterations`
@@ -131,3 +131,74 @@ CI runs these tests with stable DMD and LDC on Linux and Windows. Short release
 runs exercise all functions and applicable algorithms with untransformed,
 centered, and standardized inputs, including CSV output. These are correctness
 checks; CI does not compare timings or enforce performance thresholds.
+
+## Linear algebra
+
+Run the separate group with smaller defaults (matrix order 32 and 20 iterations):
+
+```sh
+dub run mir-stat:benchmarks --config=scalar --build=release --compiler=ldc2 -- --function=linearAlgebra --size=64 --iterations=20 --rounds=8 --warmup=3 --format=csv
+```
+
+`--function=all` retains the existing statistics cases. Linear algebra accepts
+`--transform=none` only. Choose `--layout=rowMajor` or `--layout=transposed`;
+the latter stores the same logical matrices through transposed descriptors,
+including output and factor workspaces. CSV function names include the layout.
+`--size` is the square matrix order (1 through 4096), not the element count.
+Large matrix cases require substantial memory and untimed reference work;
+start with the small defaults. `--seed`, rotation, warm-up, algorithm selection,
+and per-round CSV output follow the existing scheduler.
+
+| Function | Algorithms |
+| --- | --- |
+| `triangularLeft` | `dense`, `triangular` |
+| `triangularRight` | `dense`, `triangular` |
+| `quadratic` | `composed`, `general`, `symmetric`, `singleTriangle` |
+| `mahalanobis` | `covarianceGC`, `factorGC`, `precisionGC`, `precisionFactorGC`, and corresponding `Workspace` variants |
+
+Triangular comparisons multiply square matrices into preallocated output,
+using explicit zeros in the dense baseline and NaNs in ignored triangular
+entries. Every output element is checked outside timing against an independent
+scalar calculation with `real` accumulation. Only the first output element
+is returned to the timing helper; it is not the sole correctness check.
+
+Quadratic comparisons use a dense SPD matrix. `composed` computes a matrix-vector
+product into reusable storage followed by a dot product. `general` and
+`symmetric` use the library's default compensated row and outer reductions.
+`singleTriangle` is an experimental benchmark-only flattened compensated
+reduction, reading each upper-triangle entry once. It is **not** an alternative
+library API: it can overflow individual terms where row-wise cancellation
+keeps the existing implementation finite. A regression example records that
+tradeoff. Comparisons therefore include differences in summation algorithms,
+not just loop overhead; these are not general accuracy or speed guarantees.
+
+Mahalanobis comparisons return squared distance. GC variants include their
+per-call scratch allocations; workspace variants reuse buffers. `covariance`
+includes factorization each call; `factor`, `precision`, and `precisionFactor`
+start from precomputed matrices, whose preparation is excluded. No inversion
+is timed. RC/custom allocator overhead and distance's final square root are
+not measured by these cases. GC collection is neither disabled nor forced;
+allocation timings can include collection and carryover effects.
+
+The fixed metric is `S = I + u*u'`, with independently constructed precision
+`P = I - u*u'/(1 + u'u)`. Seeded normal vector/right-hand-side inputs change
+once per iteration. Scalar references use these identities with `real`
+accumulation; checks reject nonfinite results and errors above
+`1e-10 * (1 + abs(reference))`. These are well-conditioned benchmark inputs,
+not a substitute for the library's adversarial numerical tests. Setup,
+precomputed factors, input generation, and correctness checks are untimed.
+
+The `scalar` configuration requires no BLAS library. To measure the optional
+native backend, use `--config=openblas` with OpenBLAS installed. The parent
+package selects mir-lapack/mir-blas through that configuration. Transposed
+triangular matrix products and matrix solves need the fixes in
+[mir-blas PR #12](https://github.com/libmir/mir-blas/pull/12); until available in
+the resolved dependency, use a local fixed dependency for those measurements.
+Do not interpret failures against an unfixed dependency as scalar fallback
+failures. Unsupported native layouts/types use the library's scalar kernels.
+Record backend/dependency versions, compiler flags, and BLAS thread count
+alongside CSV files; the CSV schema does not identify the linked backend.
+
+The benchmark unit tests cover both layouts, selections, invalid requests,
+and the single-triangle numerical counterexample. CI smoke runs verify scalar
+CLI integration without asserting timing thresholds.
