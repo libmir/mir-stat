@@ -7,8 +7,8 @@ succeeds; it does not mean that no trials were performed. The usual
 distribution has $(D 0 < p <= 1). The API also accepts $(D p == 0) as a
 limiting case with no success and zero mass at every finite count.
 
-All functions use built-in floating-point probabilities; there are no $(D Fp)
-overloads. PMF and LPMF take a $(D size_t) count. CDF and CCDF additionally
+PMF accepts built-in floating-point and $(D Fp) probabilities. The other
+functions use built-in floating-point probabilities. PMF and LPMF take a $(D size_t) count. CDF and CCDF additionally
 accept a floating-point threshold $(D x >= -1), using the integer part of
 nonnegative finite thresholds. Inverse CDF returns a floating-point count
 and has explicit endpoint conventions described below.
@@ -29,6 +29,8 @@ Copyright: 2022-3 Mir Stat Authors.
 module mir.stat.distribution.geometric;
 
 import mir.internal.utility: isFloatingPoint;
+import mir.bignum.fp: Fp;
+import mir.stat.internal.fp_probability: fpProbabilityValid;
 
 // Tiny probabilities and counts whose successor is not an integer size_t.
 version(mir_stat_test)
@@ -108,6 +110,25 @@ T geometricPMF(T)(const size_t k, const T p)
     if (k <= 64)
         return pow(1 - p, k) * p;
     return exp(-cast(T)k * negLog1m(p)) * p;
+}
+
+/++
+Extended-range and extended-precision PMF for an $(D Fp) probability.
+
+Evaluates the represented probability without hardware-floating-point conversions.
+Tested widths are $(D Fp!64), $(D Fp!128), and $(D Fp!256). The complement and
+power retain 192 extra working bits, with a separate intermediate exponent and
+final subnormal rounding. This reduces rounding error but does not promise
+universally correct rounding. Counts retain their full $(D size_t) width and
+power evaluation costs $(D O(log(k + 1))) multiplications.
++/
+@safe pure nothrow @nogc
+T geometricPMF(T)(const size_t k, const T p)
+    if (is(T == Fp!size, size_t size))
+    in (fpProbabilityValid(p), "p must be finite and between zero and one")
+{
+    import mir.stat.internal.fp_probability: fpGeometric;
+    return fpGeometric(k, p);
 }
 
 ///
@@ -523,4 +544,153 @@ unittest
     0.geometricLPMF(0.5).exp.shouldApprox == 0.geometricPMF(0.5);
     1.geometricLPMF(0.5).exp.shouldApprox == 1.geometricPMF(0.5);
     2.geometricLPMF(0.25).exp.shouldApprox == 2.geometricPMF(0.25);
+}
+
+// BEGIN geometric references
+version(mir_stat_test)
+@safe pure nothrow @nogc unittest
+{
+    import mir.bignum.fixed: UInt;
+    import mir.stat.distribution.negative_binomial: negativeBinomialPMF;
+    {
+        alias T = Fp!64;
+        struct Reference { ulong k; T p, expected; }
+        enum references = [
+            Reference(1UL, T(false, -64, UInt!64.fromHexString("8000000000000000")), T(false, -65, UInt!64.fromHexString("8000000000000000"))),
+            Reference(17UL, T(false, -64, UInt!64.fromHexString("c000000000000000")), T(false, -98, UInt!64.fromHexString("c000000000000000"))),
+            Reference(1000UL, T(false, -66, UInt!64.fromHexString("8000000000000000")), T(false, -259, UInt!64.fromHexString("a3b3890f36f74447"))),
+            Reference(18446744073709551615UL, T(false, -128, UInt!64.fromHexString("8000000000000000")), T(false, -129, UInt!64.fromHexString("9b4597e37cb04ff4"))),
+            Reference(18446744073709551615UL, T(false, -127, UInt!64.fromHexString("8000000000000000")), T(false, -129, UInt!64.fromHexString("bc5ab1b16779be36"))),
+            Reference(1152921504606846976UL, T(false, -123, UInt!64.fromHexString("8000000000000000")), T(false, -125, UInt!64.fromHexString("bc5ab1b16779be30"))),
+            Reference(7UL, T(false, -64, UInt!64.fromHexString("ffffffffffffffff")), T(false, -512, UInt!64.fromHexString("ffffffffffffffff"))),
+            Reference(0UL, T(false, -1163, UInt!64.fromHexString("8000000000000000")), T(false, -1163, UInt!64.fromHexString("8000000000000000"))),
+            Reference(1UL, T(false, -1163, UInt!64.fromHexString("8000000000000000")), T(false, -1163, UInt!64.fromHexString("8000000000000000"))),
+            Reference(1000UL, T(false, -1163, UInt!64.fromHexString("8000000000000000")), T(false, -1163, UInt!64.fromHexString("8000000000000000"))),
+            Reference(65UL, T(false, -127, UInt!64.fromHexString("8000000000000000")), T(false, -128, UInt!64.fromHexString("ffffffffffffffbf"))),
+            Reference(100UL, T(false, -73, UInt!64.fromHexString("8000000000000000")), T(false, -74, UInt!64.fromHexString("e82bbc2a781ed0fb"))),
+        ];
+        foreach (c; references) {
+            if (c.k > size_t.max) continue;
+            const actual = geometricPMF(cast(size_t)c.k, c.p);
+            assert(actual == c.expected);
+            assert(negativeBinomialPMF(cast(size_t)c.k, 1, c.p) == actual);
+        }
+    }
+    {
+        alias T = Fp!128;
+        struct Reference { ulong k; T p, expected; }
+        enum references = [
+            Reference(1UL, T(false, -128, UInt!128.fromHexString("80000000000000000000000000000000")), T(false, -129, UInt!128.fromHexString("80000000000000000000000000000000"))),
+            Reference(17UL, T(false, -128, UInt!128.fromHexString("c0000000000000000000000000000000")), T(false, -162, UInt!128.fromHexString("c0000000000000000000000000000000"))),
+            Reference(1000UL, T(false, -130, UInt!128.fromHexString("80000000000000000000000000000000")), T(false, -323, UInt!128.fromHexString("a3b3890f36f74446be82c7214803d5bf"))),
+            Reference(18446744073709551615UL, T(false, -256, UInt!128.fromHexString("80000000000000000000000000000000")), T(false, -257, UInt!128.fromHexString("ffffffffffffffff8000000000000001"))),
+            Reference(18446744073709551615UL, T(false, -191, UInt!128.fromHexString("80000000000000000000000000000000")), T(false, -193, UInt!128.fromHexString("bc5ab1b16779be35d3eae7ddd466d137"))),
+            Reference(1152921504606846976UL, T(false, -187, UInt!128.fromHexString("80000000000000000000000000000000")), T(false, -189, UInt!128.fromHexString("bc5ab1b16779be2f92e80179e4dc0049"))),
+            Reference(7UL, T(false, -128, UInt!128.fromHexString("ffffffffffffffffffffffffffffffff")), T(false, -1024, UInt!128.fromHexString("ffffffffffffffffffffffffffffffff"))),
+            Reference(0UL, T(false, -1227, UInt!128.fromHexString("80000000000000000000000000000000")), T(false, -1227, UInt!128.fromHexString("80000000000000000000000000000000"))),
+            Reference(1UL, T(false, -1227, UInt!128.fromHexString("80000000000000000000000000000000")), T(false, -1227, UInt!128.fromHexString("80000000000000000000000000000000"))),
+            Reference(1000UL, T(false, -1227, UInt!128.fromHexString("80000000000000000000000000000000")), T(false, -1227, UInt!128.fromHexString("80000000000000000000000000000000"))),
+            Reference(65UL, T(false, -255, UInt!128.fromHexString("80000000000000000000000000000000")), T(false, -256, UInt!128.fromHexString("ffffffffffffffffffffffffffffffbf"))),
+            Reference(100UL, T(false, -137, UInt!128.fromHexString("80000000000000000000000000000000")), T(false, -138, UInt!128.fromHexString("e82bbc2a781ed0fadd053012bc81d36d"))),
+        ];
+        foreach (c; references) {
+            if (c.k > size_t.max) continue;
+            const actual = geometricPMF(cast(size_t)c.k, c.p);
+            assert(actual == c.expected);
+            assert(negativeBinomialPMF(cast(size_t)c.k, 1, c.p) == actual);
+        }
+    }
+    {
+        alias T = Fp!256;
+        struct Reference { ulong k; T p, expected; }
+        enum references = [
+            Reference(1UL, T(false, -256, UInt!256.fromHexString("8000000000000000000000000000000000000000000000000000000000000000")), T(false, -257, UInt!256.fromHexString("8000000000000000000000000000000000000000000000000000000000000000"))),
+            Reference(17UL, T(false, -256, UInt!256.fromHexString("c000000000000000000000000000000000000000000000000000000000000000")), T(false, -290, UInt!256.fromHexString("c000000000000000000000000000000000000000000000000000000000000000"))),
+            Reference(1000UL, T(false, -258, UInt!256.fromHexString("8000000000000000000000000000000000000000000000000000000000000000")), T(false, -451, UInt!256.fromHexString("a3b3890f36f74446be82c7214803d5bea9f6b40967456fb173e93441f785bbe5"))),
+            Reference(18446744073709551615UL, T(false, -512, UInt!256.fromHexString("8000000000000000000000000000000000000000000000000000000000000000")), T(false, -513, UInt!256.fromHexString("ffffffffffffffffffffffffffffffffffffffffffffffff8000000000000001"))),
+            Reference(18446744073709551615UL, T(false, -319, UInt!256.fromHexString("8000000000000000000000000000000000000000000000000000000000000000")), T(false, -321, UInt!256.fromHexString("bc5ab1b16779be35d3eae7ddd466d136a6fe9c010eb169994b346efec1bf3cab"))),
+            Reference(1152921504606846976UL, T(false, -315, UInt!256.fromHexString("8000000000000000000000000000000000000000000000000000000000000000")), T(false, -317, UInt!256.fromHexString("bc5ab1b16779be2f92e80179e4dc0048c9b3e38c2c2c6680ed787ae2afa36e19"))),
+            Reference(7UL, T(false, -256, UInt!256.fromHexString("ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff")), T(false, -2048, UInt!256.fromHexString("ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff"))),
+            Reference(0UL, T(false, -1355, UInt!256.fromHexString("8000000000000000000000000000000000000000000000000000000000000000")), T(false, -1355, UInt!256.fromHexString("8000000000000000000000000000000000000000000000000000000000000000"))),
+            Reference(1UL, T(false, -1355, UInt!256.fromHexString("8000000000000000000000000000000000000000000000000000000000000000")), T(false, -1355, UInt!256.fromHexString("8000000000000000000000000000000000000000000000000000000000000000"))),
+            Reference(1000UL, T(false, -1355, UInt!256.fromHexString("8000000000000000000000000000000000000000000000000000000000000000")), T(false, -1355, UInt!256.fromHexString("8000000000000000000000000000000000000000000000000000000000000000"))),
+            Reference(65UL, T(false, -511, UInt!256.fromHexString("8000000000000000000000000000000000000000000000000000000000000000")), T(false, -512, UInt!256.fromHexString("ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffbf"))),
+            Reference(100UL, T(false, -265, UInt!256.fromHexString("8000000000000000000000000000000000000000000000000000000000000000")), T(false, -266, UInt!256.fromHexString("e82bbc2a781ed0fadd053012bc81d36d283f7cae01c8ed11916fddc996a18599"))),
+        ];
+        foreach (c; references) {
+            if (c.k > size_t.max) continue;
+            const actual = geometricPMF(cast(size_t)c.k, c.p);
+            assert(actual == c.expected);
+            assert(negativeBinomialPMF(cast(size_t)c.k, 1, c.p) == actual);
+        }
+    }
+}
+// END geometric references
+
+version(mir_stat_test)
+@safe pure nothrow @nogc unittest
+{
+    import mir.bignum.fixed: UInt;
+    import mir.stat.distribution.negative_binomial: negativeBinomialPMF;
+    static foreach (bits; [64u, 128u, 256u]) {{
+        alias T = Fp!bits;
+        foreach (k; [size_t(0), size_t(1), size_t.max]) {
+            assert(geometricPMF(k, T(0)) == T(0));
+            assert(geometricPMF(k, T(1)) == T(k == 0 ? 1 : 0));
+            auto p = T(false, long.min, UInt!bits(1));
+            assert(geometricPMF(k, p) == p);
+            assert(negativeBinomialPMF(k, 1, p) == p);
+        }
+        static if (size_t.sizeof == 8) {
+            const p = T(0.5);
+            assert(geometricPMF(cast(size_t)long.max, p) == T(false, long.min, UInt!bits(1)));
+            assert(geometricPMF(cast(size_t)long.max + 1, p) == T(0));
+            assert(geometricPMF(size_t.max, p) == T(0));
+        }
+        static assert(is(typeof(geometricPMF(1, T(0.5))) == T));
+    }}
+}
+
+version(mir_stat_test)
+@system unittest
+{
+    bool contractsEnabled;
+    void probe() in { contractsEnabled = true; } do {}
+    probe();
+    if (contractsEnabled) {
+        import core.exception: AssertError;
+        import std.exception: assertThrown;
+        foreach (p; [-1.0, 2.0, double.infinity, -double.infinity, double.nan])
+            assertThrown!AssertError(geometricPMF(1, Fp!128(p)));
+    }
+}
+
+/// The probability type selects the extended-precision PMF.
+version(mir_stat_test)
+@safe pure nothrow @nogc unittest
+{
+    import mir.bignum.fp: Fp;
+    const probability = Fp!128(0.25);
+    const mass = geometricPMF(2, probability);
+    assert(mass == Fp!128(0.140625));
+}
+
+// The tiny-probability shortcut must agree with guarded evaluation on either
+// side of its exponent threshold, including nonnormalized coefficients.
+version(mir_stat_test)
+@safe pure nothrow @nogc unittest
+{
+    import mir.bignum.fixed: UInt;
+    import mir.stat.internal.fp_probability: fpProbabilityLess;
+    static foreach (bits; [64u, 128u, 256u]) {{
+        alias T = Fp!bits;
+        foreach (e; [-2L * bits - 67, -2L * bits - 66, -2L * bits - 65]) {
+            auto p = T(1);
+            p.exponent = e;
+            assert(geometricPMF(size_t.max, p) == p);
+            const raw = T(false, e, UInt!bits(1));
+            const actual = geometricPMF(size_t.max, raw);
+            assert(!fpProbabilityLess(actual, raw) && !fpProbabilityLess(raw, actual));
+        }
+    }}
 }

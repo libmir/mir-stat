@@ -154,7 +154,9 @@ floating point types (e.g. `Fp!128`), which provides additional accuracy for
 extreme values of `k`, `r`, or `p`. Complements and coefficient ratios retain
 the supplied `Fp` precision rather than converting through hardware floating
 point. Intermediate arithmetic is rounded to that precision; it is not exact
-arbitrary-precision probability arithmetic.
+arbitrary-precision probability arithmetic. For $(D r == 1), evaluation shares
+the geometric PMF implementation: it uses 192 guard bits and separate
+intermediate exponents, including final subnormal rounding.
 
 The coefficient requires `O(min(k, r - 1))` iterations. Powers use logarithmic
 time in their exponents, so a large count is practical when the other count is
@@ -191,6 +193,11 @@ T negativeBinomialPMF(T)(const size_t k, const size_t r, const T p)
 {
     import mir.math.internal.fp_powi: fp_powi;
     import mir.stat.internal.fp_probability: fpProbabilityCoefficient;
+    if (r == 1) {
+        import mir.stat.internal.fp_probability: fpGeometric;
+        return fpGeometric(k, p);
+    }
+
     enum size = typeof(p.coefficient).sizeof * 8;
 
     if (!p.coefficient)
