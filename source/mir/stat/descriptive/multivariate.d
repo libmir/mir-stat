@@ -240,6 +240,37 @@ unittest
     }}
 }
 
+// Convert stored sums to the requested result type before dividing by count.
+version(mir_stat_test)
+@safe pure nothrow @nogc
+unittest
+{
+    import std.meta: AliasSeq;
+    static foreach (mode; AliasSeq!(Summation.naive, Summation.pairwise, Summation.kbn))
+    static foreach (A; AliasSeq!(
+        CovarianceAccumulator!(float, CovarianceAlgo.naive, mode),
+        CovarianceAccumulator!(float, CovarianceAlgo.online, mode),
+        CovarianceAccumulator!(float, CovarianceAlgo.twoPass, mode),
+        CovarianceAccumulator!(float, CovarianceAlgo.hybrid, mode),
+        CorrelationAccumulator!(float, CorrelationAlgo.naive, mode),
+        CorrelationAccumulator!(float, CorrelationAlgo.online, mode),
+        CorrelationAccumulator!(float, CorrelationAlgo.twoPass, mode),
+        CorrelationAccumulator!(float, CorrelationAlgo.hybrid, mode)))
+    {{
+        float[3] values = [1, 0, 0];
+        auto a = A(values[], values[]);
+        assert(a.meanLeft!double == 1.0 / 3);
+        assert(a.meanRight!double == 1.0 / 3);
+        assert(a.meanLeft!real == 1.0L / 3);
+        assert(a.meanRight!real == 1.0L / 3);
+        // Default access still returns a float rounded at float precision.
+        static assert(is(typeof(a.meanRight) == float));
+        assert(a.meanLeft == float(1.0 / 3));
+        assert(a.meanRight == float(1.0 / 3));
+        assert(a.meanRight!double != cast(double) a.meanRight);
+    }}
+}
+
 // Merging empty partitions must preserve state, including when both sides
 // are empty and observations are added afterward.
 version(mir_stat_test)
@@ -952,7 +983,7 @@ const:
     ///
     F meanRight(F = T)() @property
     {
-        return sumRight!T / count;
+        return sumRight!F / count;
     }
     ///
     F centeredSumOfProducts(F = T)() @property
@@ -3264,7 +3295,7 @@ const:
     ///
     F meanRight(F = T)() @property
     {
-        return sumRight!T / count;
+        return sumRight!F / count;
     }
     ///
     F centeredSumOfProducts(F = T)() @property
