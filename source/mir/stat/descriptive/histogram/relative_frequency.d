@@ -354,6 +354,13 @@ struct RelativeFrequencyAccumulator(Storage, Axis...)
     Intermediate geometry uses real precision and a scaled volume; the result
     is rounded to DensityType and may underflow or overflow in that type.
 
+    Each bin width must fit in real before widths are combined into a volume.
+    The range of real depends on the compiler and platform. For example, the
+    interval from -double.max to double.max is too wide when real has the same
+    range as double, even though its probability density could fit in double.
+    Selecting a different output type does not remove this intermediate-width
+    limit.
+
     Params:
         normalization = all recorded counts by default, or ordinary bins only
         DensityType = floating-point output type; defaults to double
