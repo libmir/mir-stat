@@ -36,6 +36,11 @@ as counts: it gives 25. Use relativeSample for fixed relative weights on
 independent observations with a common mean and variance: it gives 50.
 Population and relativeSample are unchanged by scaling all weights;
 frequencySample changes because the represented sample size changes.))
+$(TR $(TD Weighted raw and central moments) $(TD Counts, probabilities, and
+relative emphasis use the same descriptive formula. For values [0, 10] with
+weights [1, 3], the second raw moment is 75 and the second central moment is
+18.75. Scaling all weights leaves both unchanged. Use weightedVariance for
+sample corrections; weightedCentralMoment always describes the distribution.))
 $(TR $(TD Weighted covariance) $(TD Use WeightedMomentNormalization with the same
 three choices as variance. For x=[0,10], y=[0,20], weights=[1,3], covariance is
 37.5 for population, 50 for frequencySample, and 100 for relativeSample.))
@@ -69,7 +74,7 @@ for each estimator's assumptions.
 
 Weight validity also depends on the function. Weighted means and sums allow
 signed algebraic weights and evaluate zero-weight products: NaN times zero
-still contributes NaN. Weighted variance, covariance, correlation, and quantiles require finite,
+still contributes NaN. Weighted raw and central moments, variance, covariance, correlation, and quantiles require finite,
 nonnegative weights and exclude zero-weight observations, even nonfinite ones.
 Numeric histograms require finite, nonnegative weights; accumulator cells
 decide their own rules. AssumeWeights.sumToOne in the mean API is only a
