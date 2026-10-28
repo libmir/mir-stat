@@ -9,47 +9,7 @@ import mir.bignum.fp: Fp;
 import mir.bignum.fixed: UInt;
 import mir.stat.internal.fp_probability: fpProbabilityValid, fpProbabilityLess;
 
-/++
-Outcome of the package-scoped geometric inverse prototype.
-
-These names and the checked-result interface are candidates for a future public
-API. They are not exported by mir.stat.distribution.geometric.
-+/
-package(mir.stat) enum GeometricInverseStatus
-{
-    /// The count is proven to be the least nonnegative k with CDF(k) >= q.
-    found,
-    /// q == 0 and p < 1: the existing inverse convention returns -1.
-    belowSupport,
-    /// q == 1, or p == 0 and q > 0: the existing convention returns infinity.
-    infinite,
-    /// The finite mathematical count is proven to exceed maxCount.
-    countLimit,
-    /// The working precision could not prove a required comparison.
-    precisionLimit
-}
-
-/++
-Checked inverse result. Read count only when status is found, or use
-tryGetCount to extract it conditionally. Other statuses do not carry an
-approximate count. A default-initialized result is unresolved.
-+/
-package(mir.stat) struct GeometricInverseResult
-{
-    /// Outcome of the search or endpoint convention.
-    GeometricInverseStatus status = GeometricInverseStatus.precisionLimit;
-    /// Exact integer count for found; otherwise unused and zero.
-    size_t count;
-
-    /// Assign the proven count and return true, or leave destination unchanged.
-    bool tryGetCount(ref size_t destination) const @safe pure nothrow @nogc
-    {
-        if (status != GeometricInverseStatus.found)
-            return false;
-        destination = count;
-        return true;
-    }
-}
+import mir.stat.distribution.geometric: GeometricInverseStatus, GeometricInverseResult;
 
 private enum Comparison { below, reached, unresolved }
 
@@ -157,43 +117,7 @@ Comparison compare(uint bits)(size_t k, Fp!bits p, Fp!bits q)
     return result;
 }
 
-/++
-Candidate checked inverse CDF for represented Fp probabilities.
-
-For 0 < p < 1 and 0 < q < 1, found proves that count is the least integer
-k >= 0 satisfying 1 - (1-p)^(k+1) >= q in exact arithmetic. Comparisons
-use outward-rounded fixed-point intervals, not the rounded public CDF.
-
-Endpoint precedence matches geometricInvCDF: q == 1 returns infinite first;
-then p == 1 returns found with count zero; then q == 0 returns belowSupport;
-then p == 0 returns infinite. Endpoints are independent of maxCount.
-
-The inclusive maxCount limits the returned integer, not the number of
-iterations. A countLimit result proves the finite quantile exceeds that limit;
-it is not infinity. The default limit depends on the platform's size_t width.
-Increasing maxCount may resolve countLimit, but cannot increase precision.
-
-Comparisons first use bits+128 fractional bits, then bits+512. If neither
-proves a comparison, precisionLimit is returned even if the count fits the
-limit. In particular, tiny p and q near small-count jumps can require more
-fractional bits than this budget. A precisionLimit result supplies neither
-an approximate answer nor proof that the count exceeds maxCount. Retrying
-identical inputs has the same outcome. Callers must propagate the unresolved
-result or use a separately justified method, rather than fall back to a
-rounded CDF or hardware logarithms.
-
-The search allocates no memory. At fixed probability precision, it uses
-O(log(maxCount+1)^2) wide-integer products in the worst case.
-
-Params:
-    q = finite represented cumulative probability in [0,1]
-    p = finite represented success probability in [0,1]
-    maxCount = inclusive largest count permitted in a found result
-Returns:
-    A proven count, an endpoint convention, or an explicit resource limit.
-Preconditions:
-    Both probabilities must be valid even when contracts are disabled.
-+/
+// Implementation of the public checked inverse; see its documented contract.
 package(mir.stat) @safe pure nothrow @nogc
 GeometricInverseResult geometricInvCDFChecked(uint bits)(Fp!bits q, Fp!bits p,
     size_t maxCount = size_t.max)
@@ -240,7 +164,7 @@ GeometricInverseResult geometricInvCDFChecked(uint bits)(Fp!bits q, Fp!bits p,
     return GeometricInverseResult(Status.found,upper);
 }
 
-// Caller examples exercise the candidate interface within its package scope.
+// Internal result handling and precision-boundary regressions.
 version(mir_stat_test)
 @safe pure nothrow @nogc unittest
 {

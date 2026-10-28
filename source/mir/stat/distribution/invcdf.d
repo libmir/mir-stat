@@ -10,6 +10,7 @@ $(BOOKTABLE ,
     $(TR $(TDNW $(SUBREF bernoulli, bernoulliInvCDF)) $(TD Bernoulli Inverse CDF ))
     $(TR $(TDNW $(SUBREF binomial, binomialInvCDF)) $(TD Binomial Inverse CDF ))
     $(TR $(TDNW $(SUBREF geometric, geometricInvCDF)) $(TD Geometric Inverse CDF ))
+    $(TR $(TDNW $(SUBREF geometric, geometricInvCDFChecked)) $(TD Checked Fp Geometric Inverse CDF ))
     $(TR $(TDNW $(SUBREF hypergeometric, hypergeometricInvCDF)) $(TD Hypergeometric Inverse CDF ))
     $(TR $(TDNW $(SUBREF negative_binomial, negativeBinomialInvCDF)) $(TD Negative Binomial Inverse CDF ))
     $(TR $(TDNW $(SUBREF poisson, poissonInvCDF)) $(TD Poisson Inverse CDF ))
@@ -75,7 +76,8 @@ public import mir.stat.distribution.gamma: gammaInvCDF;
 ///
 public import mir.stat.distribution.generalized_pareto: generalizedParetoInvCDF;
 ///
-public import mir.stat.distribution.geometric: geometricInvCDF;
+public import mir.stat.distribution.geometric: geometricInvCDF, geometricInvCDFChecked,
+    GeometricInverseResult, GeometricInverseStatus;
 ///
 public import mir.stat.distribution.gev: gevInvCDF;
 ///
