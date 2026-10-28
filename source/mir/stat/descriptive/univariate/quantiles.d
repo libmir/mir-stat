@@ -5693,6 +5693,24 @@ unittest
     }
 }
 
+// Tiny weights still preserve constant samples exactly, including at extreme
+// magnitudes and interior probabilities on either side of the median.
+version(mir_stat_test)
+@safe pure nothrow @nogc
+unittest
+{
+    real[3] weights = [1, 0x1p-70L, 1];
+    foreach (value; [0.0L, -7.0L, real.max])
+    {
+        real[3] values = [value, value, value];
+        static foreach (algorithm; [WeightedQuantileAlgo.type7, WeightedQuantileAlgo.type8])
+        {
+            foreach (probability; [0.25L, 0.5L, 0.75L])
+                assert(rcWeightedQuantile!algorithm(values, weights, probability) == value);
+        }
+    }
+}
+
 // The fallback preserves GC/custom output ownership and scratch cleanup.
 version(mir_stat_test)
 @system pure nothrow
