@@ -8,7 +8,7 @@ observation inside the interval rather than extending the tails outside it.
 
 PMF, CDF, and CCDF accept $(D lower == upper). LPMF and inverse CDF instead
 require $(D lower < upper). Forward functions return $(D double) by default.
-PMF, CDF, and CCDF additionally accept an explicit $(D Fp) result type, such as
+PMF, CDF, CCDF, and LPMF additionally accept an explicit $(D Fp) result type, such as
 $(D uniformDiscreteCDF!(Fp!128)(x, lower, upper)). The inverse CDF accepts a
 built-in floating-point or $(D Fp) probability and returns $(D size_t).
 For $(D Fp), its integer rank is exact for the represented probability.
@@ -17,7 +17,7 @@ In the tables, $(D n = upper - lower + 1) denotes the mathematical number
 of outcomes. The built-in implementation adds one after conversion to floating point
 to avoid integer overflow for the full $(D size_t) domain. Large interval
 sizes and interior quantile ranks can still round in the floating-point type.
-The $(D Fp) overloads retain exact integer counts, including the full
+The $(D Fp) PMF, CDF, and CCDF overloads retain exact integer counts, including the full
 $(D size_t) domain, and round the exact ratio once to nearest, ties to even.
 Tested result widths are $(D Fp!64), $(D Fp!128), and $(D Fp!256). Each tail
 is evaluated directly, so a small CCDF is not lost by subtracting a rounded CDF
@@ -350,6 +350,16 @@ Computes the discrete uniform log probability mass function (LPMF).
 
 Returns the natural logarithm of the point probability $(D P(X == x)).
 
+The explicit $(D Fp) result-type overload computes $(D -log(n)) directly
+from the exact integer interval size, including the full $(D size_t) domain.
+It uses a range-reduced logarithm series with 192 extra fractional bits and
+wide-integer products and division; no intermediate uses hardware floating
+point or the rounded PMF. This provides extended significand precision,
+not an additional range benefit: valid results lie between $(D -log(2^64))
+and $(D -log(2)). The guarded algorithm does not promise correct rounding
+for every interval size. Tested widths are $(D Fp!64), $(D Fp!128), and
+$(D Fp!256). Work depends on precision rather than the number of outcomes.
+
 Special values:
 $(TABLE
     $(TR $(TH Input) $(TH Result))
@@ -375,6 +385,93 @@ double uniformDiscreteLPMF(const size_t x, const size_t lower = 0, const size_t 
     import mir.math.common: log;
 
     return -log(cast(double)(upper - lower) + 1);
+}
+
+/// ditto
+@safe pure nothrow @nogc
+T uniformDiscreteLPMF(T)(const size_t x, const size_t lower = 0, const size_t upper = 1)
+    if (is(T == Fp!bits, uint bits))
+    in (x >= lower, "x must be greater than or equal to lower bound")
+    in (x <= upper, "x must be less than or equal to upper bound")
+    in (lower < upper, "lower must be less than upper")
+{
+    auto n = UInt!128(upper - lower);
+    n += 1;
+    auto result = uniformDiscreteLogCount!T(n);
+    result.sign = true;
+    return result;
+}
+
+// log(n) = e*log(2) + 2*atanh((n-2^e)/(n+2^e)), for 2 <= n <= 2^64.
+// Both atanh arguments are at most 1/3. Fixed-point truncation at each
+// product/division loses only guard bits; no Fp division or subtraction is used.
+private @safe pure nothrow @nogc
+T uniformDiscreteLogCount(T)(UInt!128 n)
+    if (is(T == Fp!bits, uint bits))
+{
+    enum fractionBits = typeof(T.init.coefficient).sizeof * 8 + 192;
+    alias I = UInt!(fractionBits + 64);
+    I multiply(I a, I b) {
+        auto product = a.toSize!(2 * fractionBits + 128);
+        product *= b;
+        return (product >> fractionBits).toSize!(fractionBits + 64);
+    }
+    I logRatio(UInt!128 numerator, UInt!128 denominator) {
+        auto z = numerator.toSize!(fractionBits + 64);
+        z <<= fractionBits;
+        z /= denominator;
+        const square = multiply(z,z);
+        auto power = z;
+        auto sum = z;
+        for (uint odd = 3; ; odd += 2) {
+            power = multiply(power,square);
+            auto term = power;
+            term /= UInt!64(odd);
+            if (!term)
+                break;
+            sum += term;
+        }
+        return sum << 1;
+    }
+    const exponent = 127 - n.ctlz;
+    const base = UInt!128(1) << exponent;
+    const logTwo = logRatio(UInt!128(1),UInt!128(3));
+    I logarithm = logTwo;
+    logarithm *= exponent;
+    logarithm += logRatio(n-base,n+base);
+    auto result = T(logarithm);
+    result.exponent -= fractionBits;
+    return result;
+}
+
+/// The Fp log mass is independent of the interval's position and the outcome.
+version(mir_stat_test)
+@safe pure nothrow @nogc unittest
+{
+    import mir.bignum.fp: Fp;
+    const origin = uniformDiscreteLPMF!(Fp!128)(0,0,2);
+    const shifted = uniformDiscreteLPMF!(Fp!128)(size_t.max,size_t.max-2,size_t.max);
+    assert(origin == shifted);
+    assert(origin.sign);
+    static assert(is(typeof(uniformDiscreteLPMF(0)) == double));
+    static assert(is(typeof(origin) == const(Fp!128)));
+    static assert(!__traits(compiles, uniformDiscreteLPMF!int(0)));
+}
+
+version(mir_stat_test)
+@system unittest
+{
+    bool contractsEnabled;
+    void probe() in { contractsEnabled = true; } do {}
+    probe();
+    if (contractsEnabled) {
+        import core.exception: AssertError;
+        import std.exception: assertThrown;
+        assertThrown!AssertError(uniformDiscreteLPMF!(Fp!128)(0,1,2));
+        assertThrown!AssertError(uniformDiscreteLPMF!(Fp!128)(3,1,2));
+        assertThrown!AssertError(uniformDiscreteLPMF!(Fp!128)(1,1,1));
+        assertThrown!AssertError(uniformDiscreteLPMF!(Fp!128)(1,2,1));
+    }
 }
 
 // Translation must not lose adjacent integers, and the full integer domain
@@ -682,3 +779,136 @@ version(mir_stat_test)
         }
     }}
 }
+
+// BEGIN discrete-uniform log references
+version(mir_stat_test)
+@safe pure nothrow @nogc unittest
+{
+    {
+        alias T = Fp!64;
+        struct Reference { ulong upper; T logMass; }
+        enum references = [
+            Reference(1UL,T(true,-64,UInt!64.fromHexString("b17217f7d1cf79ac"))),
+            Reference(2UL,T(true,-63,UInt!64.fromHexString("8c9f53d5681854bb"))),
+            Reference(3UL,T(true,-63,UInt!64.fromHexString("b17217f7d1cf79ac"))),
+            Reference(4UL,T(true,-63,UInt!64.fromHexString("ce020fbf6c699b58"))),
+            Reference(5UL,T(true,-63,UInt!64.fromHexString("e5585fd151001191"))),
+            Reference(6UL,T(true,-63,UInt!64.fromHexString("f913957192d2baa3"))),
+            Reference(7UL,T(true,-62,UInt!64.fromHexString("851591f9dd5b9b41"))),
+            Reference(8UL,T(true,-62,UInt!64.fromHexString("8c9f53d5681854bb"))),
+            Reference(9UL,T(true,-62,UInt!64.fromHexString("935d8dddaaa8ac17"))),
+            Reference(10UL,T(true,-62,UInt!64.fromHexString("99771dbbf9ba5dbe"))),
+            Reference(11UL,T(true,-62,UInt!64.fromHexString("9f08b5e69cf3e734"))),
+            Reference(12UL,T(true,-62,UInt!64.fromHexString("a42821598c6287f4"))),
+            Reference(13UL,T(true,-62,UInt!64.fromHexString("a8e650b6bddd3bbd"))),
+            Reference(14UL,T(true,-62,UInt!64.fromHexString("ad50b1ca6a40f80a"))),
+            Reference(15UL,T(true,-62,UInt!64.fromHexString("b17217f7d1cf79ac"))),
+            Reference(16UL,T(true,-62,UInt!64.fromHexString("b5535e0fd3fbce78"))),
+            Reference(65534UL,T(true,-60,UInt!64.fromHexString("b17207f7c9cf7456"))),
+            Reference(65535UL,T(true,-60,UInt!64.fromHexString("b17217f7d1cf79ac"))),
+            Reference(65536UL,T(true,-60,UInt!64.fromHexString("b17227f7c9cf7f01"))),
+            Reference(4294967294UL,T(true,-59,UInt!64.fromHexString("b17217f7c9cf79ac"))),
+            Reference(4294967295UL,T(true,-59,UInt!64.fromHexString("b17217f7d1cf79ac"))),
+            Reference(4294967296UL,T(true,-59,UInt!64.fromHexString("b17217f7d9cf79ac"))),
+            Reference(9007199254740990UL,T(true,-58,UInt!64.fromHexString("92f27bd939bfd0a2"))),
+            Reference(9007199254740991UL,T(true,-58,UInt!64.fromHexString("92f27bd939bfd0c2"))),
+            Reference(9007199254740992UL,T(true,-58,UInt!64.fromHexString("92f27bd939bfd0e2"))),
+            Reference(9223372036854775806UL,T(true,-58,UInt!64.fromHexString("aeac4f97f2883bc5"))),
+            Reference(9223372036854775807UL,T(true,-58,UInt!64.fromHexString("aeac4f97f2883bc5"))),
+            Reference(9223372036854775808UL,T(true,-58,UInt!64.fromHexString("aeac4f97f2883bc5"))),
+            Reference(18446744073709551614UL,T(true,-58,UInt!64.fromHexString("b17217f7d1cf79ac"))),
+            Reference(18446744073709551615UL,T(true,-58,UInt!64.fromHexString("b17217f7d1cf79ac"))),
+        ];
+        foreach (c; references) {
+            if (c.upper > size_t.max) continue;
+            const upper = cast(size_t)c.upper;
+            assert(uniformDiscreteLPMF!T(0,0,upper) == c.logMass);
+            assert(uniformDiscreteLPMF!T(upper,0,upper) == c.logMass);
+        }
+    }
+    {
+        alias T = Fp!128;
+        struct Reference { ulong upper; T logMass; }
+        enum references = [
+            Reference(1UL,T(true,-128,UInt!128.fromHexString("b17217f7d1cf79abc9e3b39803f2f6af"))),
+            Reference(2UL,T(true,-127,UInt!128.fromHexString("8c9f53d5681854bb520cc6aa829dbe5b"))),
+            Reference(3UL,T(true,-127,UInt!128.fromHexString("b17217f7d1cf79abc9e3b39803f2f6af"))),
+            Reference(4UL,T(true,-127,UInt!128.fromHexString("ce020fbf6c699b57efbbd28b03ac98fa"))),
+            Reference(5UL,T(true,-127,UInt!128.fromHexString("e5585fd15100119136fea076849739b2"))),
+            Reference(6UL,T(true,-127,UInt!128.fromHexString("f913957192d2baa37b4a4b67930df023"))),
+            Reference(7UL,T(true,-126,UInt!128.fromHexString("851591f9dd5b9b40d76ac6b202f63903"))),
+            Reference(8UL,T(true,-126,UInt!128.fromHexString("8c9f53d5681854bb520cc6aa829dbe5b"))),
+            Reference(9UL,T(true,-126,UInt!128.fromHexString("935d8dddaaa8ac16ea56d62b82d30a29"))),
+            Reference(10UL,T(true,-126,UInt!128.fromHexString("99771dbbf9ba5dbde2e5fe653f697d19"))),
+            Reference(11UL,T(true,-126,UInt!128.fromHexString("9f08b5e69cf3e7338df83d2143485a85"))),
+            Reference(12UL,T(true,-126,UInt!128.fromHexString("a42821598c6287f433ee77c51fec1041"))),
+            Reference(13UL,T(true,-126,UInt!128.fromHexString("a8e650b6bddd3bbcb01e1299ca83b5bd"))),
+            Reference(14UL,T(true,-126,UInt!128.fromHexString("ad50b1ca6a40f809a0e44c9ac3252bab"))),
+            Reference(15UL,T(true,-126,UInt!128.fromHexString("b17217f7d1cf79abc9e3b39803f2f6af"))),
+            Reference(16UL,T(true,-126,UInt!128.fromHexString("b5535e0fd3fbce77f97ce1c5e15954d5"))),
+            Reference(65534UL,T(true,-124,UInt!128.fromHexString("b17207f7c9cf7456708e5b0f78bfc133"))),
+            Reference(65535UL,T(true,-124,UInt!128.fromHexString("b17217f7d1cf79abc9e3b39803f2f6af"))),
+            Reference(65536UL,T(true,-124,UInt!128.fromHexString("b17227f7c9cf7f011b390c2089d0d6d6"))),
+            Reference(4294967294UL,T(true,-123,UInt!128.fromHexString("b17217f7c9cf79abc5e3b39801484c05"))),
+            Reference(4294967295UL,T(true,-123,UInt!128.fromHexString("b17217f7d1cf79abc9e3b39803f2f6af"))),
+            Reference(4294967296UL,T(true,-123,UInt!128.fromHexString("b17217f7d9cf79abc5e3b398069da15a"))),
+            Reference(9007199254740990UL,T(true,-122,UInt!128.fromHexString("92f27bd939bfd0a2433090b9e344b449"))),
+            Reference(9007199254740991UL,T(true,-122,UInt!128.fromHexString("92f27bd939bfd0c2433090b9e3453449"))),
+            Reference(9007199254740992UL,T(true,-122,UInt!128.fromHexString("92f27bd939bfd0e2433090b9e344b449"))),
+            Reference(9223372036854775806UL,T(true,-122,UInt!128.fromHexString("aeac4f97f2883bc512bc24c9a3e32ad4"))),
+            Reference(9223372036854775807UL,T(true,-122,UInt!128.fromHexString("aeac4f97f2883bc51abc24c9a3e32ad5"))),
+            Reference(9223372036854775808UL,T(true,-122,UInt!128.fromHexString("aeac4f97f2883bc522bc24c9a3e32ad4"))),
+            Reference(18446744073709551614UL,T(true,-122,UInt!128.fromHexString("b17217f7d1cf79abc5e3b39803f2f6af"))),
+            Reference(18446744073709551615UL,T(true,-122,UInt!128.fromHexString("b17217f7d1cf79abc9e3b39803f2f6af"))),
+        ];
+        foreach (c; references) {
+            if (c.upper > size_t.max) continue;
+            const upper = cast(size_t)c.upper;
+            assert(uniformDiscreteLPMF!T(0,0,upper) == c.logMass);
+            assert(uniformDiscreteLPMF!T(upper,0,upper) == c.logMass);
+        }
+    }
+    {
+        alias T = Fp!256;
+        struct Reference { ulong upper; T logMass; }
+        enum references = [
+            Reference(1UL,T(true,-256,UInt!256.fromHexString("b17217f7d1cf79abc9e3b39803f2f6af40f343267298b62d8a0d175b8baafa2c"))),
+            Reference(2UL,T(true,-255,UInt!256.fromHexString("8c9f53d5681854bb520cc6aa829dbe5adf0a216cdbf046f81ecbf77528a49ac6"))),
+            Reference(3UL,T(true,-255,UInt!256.fromHexString("b17217f7d1cf79abc9e3b39803f2f6af40f343267298b62d8a0d175b8baafa2c"))),
+            Reference(4UL,T(true,-255,UInt!256.fromHexString("ce020fbf6c699b57efbbd28b03ac98fa24a638607b6f97064285b1563e0addcf"))),
+            Reference(5UL,T(true,-255,UInt!256.fromHexString("e5585fd15100119136fea076849739b27f83c300153ca20ee3d28322ee7a17dc"))),
+            Reference(6UL,T(true,-255,UInt!256.fromHexString("f913957192d2baa37b4a4b67930df023261ae732274e1ffd5732a55eb97b611d"))),
+            Reference(7UL,T(true,-254,UInt!256.fromHexString("851591f9dd5b9b40d76ac6b202f6390370b6725cd5f288a22789d184a8c03ba1"))),
+            Reference(8UL,T(true,-254,UInt!256.fromHexString("8c9f53d5681854bb520cc6aa829dbe5adf0a216cdbf046f81ecbf77528a49ac6"))),
+            Reference(9UL,T(true,-254,UInt!256.fromHexString("935d8dddaaa8ac16ea56d62b82d30a28e28fecf9da5df90e83c61e8201f02d73"))),
+            Reference(10UL,T(true,-254,UInt!256.fromHexString("99771dbbf9ba5dbde2e5fe653f697d194d69bb8cd8c396f155057edbd31d3ac7"))),
+            Reference(11UL,T(true,-254,UInt!256.fromHexString("9f08b5e69cf3e7338df83d2143485a850ffeb249a7447e92d46c87685a27ca79"))),
+            Reference(12UL,T(true,-254,UInt!256.fromHexString("a42821598c6287f433ee77c51fec1040c9dab82d7da45a8ea22109df903f943b"))),
+            Reference(13UL,T(true,-254,UInt!256.fromHexString("a8e650b6bddd3bbcb01e1299ca83b5bd634a4462b04d3d8a0e1c98863fa86f1a"))),
+            Reference(14UL,T(true,-254,UInt!256.fromHexString("ad50b1ca6a40f809a0e44c9ac3252baa81d82ce6abafeeff30a8d465b357bc4b"))),
+            Reference(15UL,T(true,-254,UInt!256.fromHexString("b17217f7d1cf79abc9e3b39803f2f6af40f343267298b62d8a0d175b8baafa2c"))),
+            Reference(16UL,T(true,-254,UInt!256.fromHexString("b5535e0fd3fbce77f97ce1c5e15954d575c516735005ff93266e5f1e3168a03e"))),
+            Reference(65534UL,T(true,-252,UInt!256.fromHexString("b17207f7c9cf7456708e5b0f78bfc132e72dc5078f10fc3da3e7ff71f4a7376a"))),
+            Reference(65535UL,T(true,-252,UInt!256.fromHexString("b17217f7d1cf79abc9e3b39803f2f6af40f343267298b62d8a0d175b8baafa2c"))),
+            Reference(65536UL,T(true,-252,UInt!256.fromHexString("b17227f7c9cf7f011b390c2089d0d6d641636beffd97e794e4fefc11ed326528"))),
+            Reference(4294967294UL,T(true,-251,UInt!256.fromHexString("b17217f7c9cf79abc5e3b39801484c049448987bc65471e944737dc1f0ecce49"))),
+            Reference(4294967295UL,T(true,-251,UInt!256.fromHexString("b17217f7d1cf79abc9e3b39803f2f6af40f343267298b62d8a0d175b8baafa2c"))),
+            Reference(4294967296UL,T(true,-251,UInt!256.fromHexString("b17217f7d9cf79abc5e3b398069da159e99dedd11edcfa71ccfc064a7bbe7b64"))),
+            Reference(9007199254740990UL,T(true,-250,UInt!256.fromHexString("92f27bd939bfd0a2433090b9e344b44921c9739bd43bcc330ba82c9d24feec82"))),
+            Reference(9007199254740991UL,T(true,-250,UInt!256.fromHexString("92f27bd939bfd0c2433090b9e345344921c9739bd6e676ddb652d757cfa9972c"))),
+            Reference(9007199254740992UL,T(true,-250,UInt!256.fromHexString("92f27bd939bfd0e2433090b9e344b44921c9739bd991218860fd81f27a5441d7"))),
+            Reference(9223372036854775806UL,T(true,-250,UInt!256.fromHexString("aeac4f97f2883bc512bc24c9a3e32ad47bef7619d8ce5354c93a385372d1a398"))),
+            Reference(9223372036854775807UL,T(true,-250,UInt!256.fromHexString("aeac4f97f2883bc51abc24c9a3e32ad483ef7619d8ce5354d3e4e2fe1d7c4e43"))),
+            Reference(9223372036854775808UL,T(true,-250,UInt!256.fromHexString("aeac4f97f2883bc522bc24c9a3e32ad47bef7619d8ce5354de8f8da8c826f8ee"))),
+            Reference(18446744073709551614UL,T(true,-250,UInt!256.fromHexString("b17217f7d1cf79abc5e3b39803f2f6af3ef343267298b62d88b7c2063655a4d7"))),
+            Reference(18446744073709551615UL,T(true,-250,UInt!256.fromHexString("b17217f7d1cf79abc9e3b39803f2f6af40f343267298b62d8a0d175b8baafa2c"))),
+        ];
+        foreach (c; references) {
+            if (c.upper > size_t.max) continue;
+            const upper = cast(size_t)c.upper;
+            assert(uniformDiscreteLPMF!T(0,0,upper) == c.logMass);
+            assert(uniformDiscreteLPMF!T(upper,0,upper) == c.logMass);
+        }
+    }
+}
+// END discrete-uniform log references
