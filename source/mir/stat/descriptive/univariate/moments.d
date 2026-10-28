@@ -1991,7 +1991,7 @@ package(mir.stat.descriptive.univariate) mixin template WeightedMomentCheckArgum
 // temporaries, which auto ref would pass by value.
 // https://github.com/dlang/dmd/issues/24118
 // Traverse by logical index, preserving independent strides.
-private void weightedMomentEach(Sink, X, W)(ref Sink sink, scope auto ref X x, scope auto ref W w)
+package(mir.stat.descriptive.univariate) void weightedMomentEach(Sink, X, W)(ref Sink sink, scope auto ref X x, scope auto ref W w)
 {
     mixin WeightedMomentCheckArguments!(x, w);
     import mir.ndslice.slice: toSlice;
@@ -2074,7 +2074,7 @@ private template weightedMomentReplayable(R)
 
 // Return zero before converting an excluded observation. Positive weights must
 // survive conversion, just as in weighted variance.
-private T weightedMomentWeight(T, W)(W w)
+package(mir.stat.descriptive.univariate) T weightedMomentWeight(T, W)(W w)
 {
     import std.math: isFinite;
     const raw = cast(real) w;
@@ -2089,7 +2089,7 @@ private T weightedMomentWeight(T, W)(W w)
 // without forming an underflowing quotient or an overflowing power.
 // Saturating exponents are far beyond any supported floating-point range;
 // powers of a fixed positive scale all move in the same direction.
-private T restoreWeightedMoment(T)(T value, T scale, size_t order, int shift = 0, T residualScale = 1, T valueDivisor = 1)
+package(mir.stat.descriptive.univariate) T restoreWeightedMoment(T)(T value, T scale, size_t order, int shift = 0, T residualScale = 1, T valueDivisor = 1)
 {
     import std.math: frexp, ldexp;
     import std.algorithm: clamp;
@@ -2424,7 +2424,8 @@ template weightedCentralMoment(size_t N, Summation summation = Summation.appropr
 unittest
 {
     import mir.math.common: approxEqual;
-    import mir.stat.descriptive.univariate.dispersions: weightedVariance, WeightedMomentNormalization;
+    import mir.stat.descriptive.univariate.dispersions: weightedVariance;
+    import mir.stat.descriptive.weighting: WeightedMomentNormalization;
     alias Policy = WeightedMomentNormalization;
     double[2] values = [0, 10];
     int[2] counts = [1, 3]; // Represents [0, 10, 10, 10].

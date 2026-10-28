@@ -5303,8 +5303,8 @@ unittest
     x.correlation(y).shouldApprox == -0.0623684;
 }
 
-// Shared with weighted variance; this is an alias, not another policy type.
-public import mir.stat.descriptive.univariate.dispersions: WeightedMomentNormalization;
+// Re-export the common policy used by all weighted moment statistics.
+public import mir.stat.descriptive.weighting: WeightedMomentNormalization;
 private import mir.primitives: DeepElementType;
 
 private template weightedPairReplayable(R)
