@@ -11,10 +11,10 @@ import mir.test: shouldApprox;
 
 Each individual distribution module contains - where feasible - functions for:
 - Probability density/mass functions (e.g. `mir.stat.distribution.*PDF`/`mir.stat.distribution.*PMF`)
-- Cumulative distriution functions (e.g. `mir.stat.distribution.*CDF`)
+- Cumulative distribution functions (e.g. `mir.stat.distribution.*CDF`)
 - Complementary cumulative distribution functions (e.g. `mir.stat.distribution.*CCDF`)
 - Inverse cumulative distribution functions (e.g. `mir.stat.distribution.*InvCDF`)
-- Log probaiity density/mass functions (e.g. `mir.stat.distribution.*LPDF`/`mir.stat.distribution.*LPMF`)
+- Log probability density/mass functions (e.g. `mir.stat.distribution.*LPDF`/`mir.stat.distribution.*LPMF`)
 
 In addition, convenience modules are provided ($(MREF mir,stat,distribution,pdf), 
 $(MREF mir,stat,distribution,cdf), $(MREF mir,stat,distribution,invcdf)) that publicly
@@ -88,6 +88,8 @@ public import mir.stat.distribution.beta_proportion;
 ///
 public import mir.stat.distribution.binomial;
 ///
+public import mir.stat.distribution.categorical;
+///
 public import mir.stat.distribution.cauchy;
 ///
 public import mir.stat.distribution.chi2;
@@ -142,4 +144,18 @@ unittest
     import mir.test: shouldApprox;
 
     4.binomialPMF(6, 2.0 / 3).shouldApprox == (15.0 * pow(2.0 / 3, 4) * pow(1.0 / 3, 2));
+}
+
+// The aggregate package must expose the categorical overload sets.
+version(mir_stat_test)
+@safe pure nothrow @nogc
+unittest
+{
+    import aggregate = mir.stat.distribution;
+    import categorical = mir.stat.distribution.categorical;
+
+    static foreach (name; ["categoricalPMF", "categoricalCDF",
+                          "categoricalCCDF", "categoricalInvCDF"])
+        static assert(__traits(isSame, __traits(getMember, aggregate, name),
+                                      __traits(getMember, categorical, name)));
 }
