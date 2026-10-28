@@ -14,7 +14,8 @@ Batch quadratic forms and their selected-observation adapters are included
 with the same ownership policy.
 Caller-output and in-place operations remain in their operation modules. This module is package-restricted, not a public
 application API.
-Callers must dispose each returned slice's field with the allocator that
+One-input cross-products return symmetric views; release them with
+`disposeSymmetric(allocator, result)`. For ordinary slices, callers dispose the field with the allocator that
 created it, as described by the underlying operation.
 
 License: $(HTTP www.apache.org/licenses/LICENSE-2.0, Apache-2.0)
@@ -69,3 +70,6 @@ package(mir.stat) import mir.stat.internal.linearAlgebra.quadratic: makeQuadrati
 
 /// Matrix-only cross-products with the selected result ownership.
 package(mir.stat) import mir.stat.internal.linearAlgebra.crossproducts: makeCrossprod, makeTcrossprod;
+
+/// Release an original custom-allocated symmetric cross-product result.
+package(mir.stat) import mir.stat.internal.linearAlgebra.views: disposeSymmetric;

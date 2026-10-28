@@ -263,3 +263,11 @@ measure caller-output operations, not result allocation costs.
 ```sh
 dub run mir-stat:benchmarks --config=openblas --build=release --compiler=ldc2 -- --function=crossprod --size=256 --iterations=20 --rounds=8 --warmup=3 --format=csv
 ```
+
+The cross-product benchmarks also include `triangleOnly`, which calls the
+explicit-upper-triangle `Into` overload. `specialized` includes mirroring and
+fully initializes caller storage; `triangleOnly` exposes the same logical
+symmetric matrix without mirroring. All cases reuse square output storage,
+exclude allocation, and validate every logical entry against an independent
+extended-precision reference outside timing. This isolates the cost of
+mirroring rather than a reduction in allocated storage.

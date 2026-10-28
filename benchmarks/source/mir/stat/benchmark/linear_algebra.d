@@ -23,7 +23,7 @@ string[] algebraAlgorithms(string name)
 {
     switch (name)
     {
-    case "crossprod", "tcrossprod": return ["general", "specialized"];
+    case "crossprod", "tcrossprod": return ["general", "specialized", "triangleOnly"];
     case "symmetricVector": return ["general", "symmetric", "packed"];
     case "symmetricLeft", "symmetricRight", "symmetricColumn", "symmetricRow": return ["general", "symmetric", "packed", "generalMixed", "symmetricMixed", "packedMixed", "workspaceInput", "workspaceOutput"];
     case "quadraticBatch": return ["repeated", "batch", "repeatedFast", "batchFast"];
@@ -610,7 +610,7 @@ private Result[] measureCrossProduct(bool cross)(string name, size_t iterations,
     import mir.random.engine.mersenne_twister: Mt19937_64;
     import mir.random.variable: NormalVariable;
     enum contraction = 32;
-    enum labels = ["general", "specialized"];
+    enum labels = ["general", "specialized", "triangleOnly"];
     const inputRows = cross ? contraction : n;
     const inputColumns = cross ? n : contraction;
     auto a = uninitSlice!double(transpose ? inputColumns : inputRows,
@@ -640,20 +640,28 @@ private Result[] measureCrossProduct(bool cross)(string name, size_t iterations,
         else tcrossprodInto(a,output);
         return output[0,0];
     }
-    /// Validate every output entry outside the timed region.
-    void check(size_t index, double value) {
-        foreach(i;0..n) foreach(j;0..n)
-            enforce(isFinite(output[i,j]) && abs(output[i,j]-reference[i,j])<=1e-10*(1+abs(reference[i,j])),
-                "Incorrect cross-product benchmark result");
+    /// Omit mirroring while preserving logical symmetric output.
+    double triangleOnly() {
+        static if(cross) crossprodInto!(TrianglePolicy.upper)(a,output);
+        else tcrossprodInto!(TrianglePolicy.upper)(a,output);
+        return output[0,0];
     }
-    bool[2] enabled;
+    /// Validate every logical output entry outside the timed region.
+    void check(size_t index, double value) {
+        foreach(i;0..n) foreach(j;0..n) {
+            const actual = index == 2 && j < i ? output[j,i] : output[i,j];
+            enforce(isFinite(actual) && abs(actual-reference[i,j])<=1e-10*(1+abs(reference[i,j])),
+                "Incorrect cross-product benchmark result");
+        }
+    }
+    bool[3] enabled;
     foreach(i,label;labels) enabled[i]=!selected.length || selected.canFind(label);
     auto active=enabled[].count(true);
     Result[] results;
     foreach(round;0..rounds) {
-        double[2] values;
+        double[3] values;
         auto first=round%active;
-        auto elapsed=benchmarkPrepared!(general,specialized)(iterations,values,enabled,
+        auto elapsed=benchmarkPrepared!(general,specialized,triangleOnly)(iterations,values,enabled,
             BenchmarkSchedule(round==0 ? warmup : 0,first),&prepare,&check);
         size_t ordinal;
         foreach(i,label;labels) if(enabled[i]) {
@@ -670,5 +678,5 @@ unittest
 {
     foreach(name; ["crossprod", "tcrossprod"])
     foreach(transpose; [false,true])
-        assert(runAlgebra(name,1,3,5489,[],2,1,transpose).length==4);
+        assert(runAlgebra(name,1,3,5489,[],2,1,transpose).length==6);
 }

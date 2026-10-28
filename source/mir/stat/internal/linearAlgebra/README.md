@@ -84,10 +84,10 @@ These functions require **matrix shapes**, including for vector-like data:
 double[2] values = [2, 3];
 auto column = values[].sliced(2, 1);
 auto row = values[].sliced(1, 2);
-assert(crossprod(column) == [[13]]);
-assert(tcrossprod(column) == [[4, 6], [6, 9]]);
-assert(crossprod(row) == [[4, 6], [6, 9]]);
-assert(tcrossprod(row) == [[13]]);
+assert(crossprod(column).asSlice == [[13]]);
+assert(tcrossprod(column).asSlice == [[4, 6], [6, 9]]);
+assert(crossprod(row).asSlice == [[4, 6], [6, 9]]);
+assert(tcrossprod(row).asSlice == [[13]]);
 ```
 
 Results remain matrices, even when the shape is `1 × 1`. A bare rank-one slice
@@ -98,12 +98,44 @@ not Hermitian products. No symmetry is assumed for two-input calls.
 Choose `crossprod` / `tcrossprod` for GC storage, `rcCrossprod` / `rcTcrossprod`
 for RC storage, `makeCrossprod` / `makeTcrossprod` for custom allocation, or
 `crossprodInto` / `tcrossprodInto` for caller output. All four styles accept
-one or two matrix inputs. Custom callers dispose the result's field using the
-same allocator. `Into` output must be disjoint from both inputs and have
+one or two matrix inputs. For one-input custom results, use
+`disposeSymmetric(allocator, result)` once all derived views are finished.
+For two-input custom results, dispose `result.field` with the same allocator. `Into` output must be disjoint from both inputs and have
 nonoverlapping elements; the two read-only inputs may overlap each other.
 
-Self-products compute one triangle using SYRK where eligible, then mirror it
-to fill the whole output. Other layouts/types use a native D triangle kernel.
+One-input allocating calls return a `SymmetricView`, defaulting to the upper
+triangle. They initialize only that triangle using SYRK where eligible or a
+native D triangle kernel otherwise. The square allocation still reserves both
+triangles. Logical indexing reflects the stored values. Quadratic forms,
+Cholesky decomposition, multiplication, and Mahalanobis covariance/precision
+calls consume that structure directly.
+
+~~~d
+auto gram = rcCrossprod(a);
+auto value = quadraticForm(x, gram);
+auto dense = gram.asSlice.slice; // Independent writable GC copy.
+auto owned = gram.asSlice.rcslice; // Independent writable RC copy.
+~~~
+
+`asSlice` is a read-only logical adapter with no element copy. It retains RC
+ownership and supports ordinary ndslice indexing and slicing. Raw `.storage`
+is not a dense conversion: the unused triangle may be uninitialized.
+`makeSlice(allocator, gram.asSlice)` makes a custom dense copy; dispose its
+`field` with that allocator.
+
+Caller-output calls preserve full initialization by default:
+
+~~~d
+auto full = crossprodInto(a, output); // Both triangles are written.
+auto upper = crossprodInto!(TrianglePolicy.upper)(a, output); // Only upper is written.
+auto lower = rcCrossprod!(TrianglePolicy.lower)(a); // Allocate and select lower.
+~~~
+
+Both `Into` forms return a symmetric descriptor over caller storage. The
+explicit-triangle form leaves the other half untouched. Borrowed output must
+outlive its views; an RC output retains its owner in the returned descriptor.
+Symmetry does not establish positive definiteness: a rank-deficient Gram
+matrix can still fail Cholesky decomposition.
 Two-input calls reuse `mtimes`; use the one-input form to explicitly request
 the self-product optimization. The functions allocate no hidden input copies
 or scratch buffers. Empty contraction dimensions produce zeros. Reduction
