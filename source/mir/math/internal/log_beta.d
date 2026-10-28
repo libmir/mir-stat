@@ -134,6 +134,24 @@ unittest
     }}
 }
 
+// Inputs outside the positive finite domain retain the gamma-log fallback.
+version(mir_stat_test)
+@safe pure nothrow @nogc
+unittest
+{
+    import std.meta: AliasSeq;
+    import std.math: isNaN;
+    static foreach (T; AliasSeq!(float, double, real))
+    {
+        assert(logBeta(T(0), T(1)) == T.infinity);
+        assert(logBeta(T(1), T(0)) == T.infinity);
+        assert(isNaN(logBeta(T.nan, T(1))));
+        assert(isNaN(logBeta(T(1), T.nan)));
+        assert(isNaN(logBeta(T.infinity, T(1))));
+        assert(isNaN(logBeta(T(1), T.infinity)));
+    }
+}
+
 version(mir_stat_test)
 @safe pure nothrow @nogc
 unittest
