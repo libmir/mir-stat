@@ -432,6 +432,7 @@ GeometricInverseResult geometricInvCDFChecked(uint bits)(Fp!bits q, Fp!bits p,
 version(mir_stat_test)
 @safe pure nothrow @nogc unittest
 {
+    import mir.bignum.fp: Fp;
     alias T = Fp!128;
     alias Status = GeometricInverseStatus;
     auto result = geometricInvCDFChecked(T(0.875),T(0.5),1);
@@ -447,6 +448,7 @@ version(mir_stat_test)
 version(mir_stat_test)
 @safe pure nothrow @nogc unittest
 {
+    import mir.bignum.fp: Fp;
     alias T = Fp!128;
     alias Status = GeometricInverseStatus;
     assert(geometricInvCDFChecked(T(0),T(0.5)).status == Status.belowSupport);
