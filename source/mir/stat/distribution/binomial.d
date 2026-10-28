@@ -6,8 +6,9 @@ success probability $(D p). Counts use $(D size_t), with $(D k <= n), and
 $(D p) must be finite and in $(D [0, 1]). Forward functions reject counts
 outside this interval rather than extending their tails beyond the support.
 
-Only PMF has an $(D Fp) overload, also available as $(LREF fp_binomialPMF).
-CDF, CCDF, inverse CDF, and LPMF accept built-in floating-point probabilities.
+PMF and LPMF accept $(D Fp) probabilities. The Fp PMF is also available
+as $(LREF fp_binomialPMF). CDF, CCDF, and inverse CDF accept built-in
+floating-point probabilities.
 LPMF has no algorithm selector. Normal and Poisson approximations trade
 accuracy for speed and do not promise the direct algorithm's interior
 probabilities, although their point masses and boundary returns are handled
@@ -420,7 +421,8 @@ practical near the endpoints, while central masses with enormous counts are
 expensive. Intermediate products must fit the finite $(D Fp) exponent range.
 The underlying multiplication can underflow near its exponent floor before
 normalization, even when the final mathematical result is representable.
-Use $(LREF binomialLPMF) when only a hardware-precision log probability is needed.
+Use $(LREF binomialLPMF) to compute a log probability directly, including
+at Fp precision and when the PMF would underflow.
 
 Special values:
 $(TABLE
@@ -1916,14 +1918,20 @@ Computes the binomial log probability mass function (LPMF).
 Large counts use a centered calculation to avoid cancellation near the mode.
 Counts retain their full `size_t` width, including near either endpoint.
 
+The $(D Fp) overload returns the same Fp type. It combines guarded logarithms,
+Stirling corrections, and a centered deviance series without converting through
+hardware floating point. Endpoint logs retain a separate exponent until final
+rounding, preserving tiny values of $(D n * log(1-p)). This is guarded evaluation,
+not a universal correctly-rounded guarantee.
+
 Returns the natural logarithm of $(D P(X == k)).
 
 Special values:
 $(TABLE
     $(TR $(TH Input) $(TH Result))
     $(TR $(TD $(D n == 0) (so $(D k == 0))) $(TD $(D 0)))
-    $(TR $(TD $(D p == 0)) $(TD $(D 0) at $(D k == 0); otherwise $(D -T.infinity)))
-    $(TR $(TD $(D p == 1)) $(TD $(D 0) at $(D k == n); otherwise $(D -T.infinity)))
+    $(TR $(TD $(D p == 0)) $(TD $(D 0) at $(D k == 0); otherwise negative infinity))
+    $(TR $(TD $(D p == 1)) $(TD $(D 0) at $(D k == n); otherwise negative infinity))
     $(TR $(TD $(D k > n)) $(TD Contract violation))
     $(TR $(TD $(D p < 0), $(D p > 1), or NaN) $(TD Contract violation))
 )
@@ -1950,6 +1958,59 @@ T binomialLPMF(T)(const size_t k, const size_t n, const T p)
         return logBinomialCoefficient(n, cast(const uint) k)
             + xlogy(k, p) + xlog1py((n - k), -p);
     return cast(T) binomialLogMass(k, n, cast(real) p);
+}
+
+/// ditto
+@safe pure nothrow @nogc
+T binomialLPMF(T)(const size_t k, const size_t n, const T p)
+    if (is(T == Fp!bits, uint bits))
+    in (k <= n, "k must be less than or equal to n")
+    in (fpProbabilityValid(p), "p must be a finite probability in [0, 1]")
+{
+    import mir.stat.internal.fp_probability: fpProbabilityLess;
+    if (!n) return T(0);
+    if (!p.coefficient) return T(k ? -double.infinity : 0);
+    if (!fpProbabilityLess(p,T(1))) return T(k == n ? 0 : -double.infinity);
+    enum bits = typeof(T.init.coefficient).sizeof * 8;
+    if (!k || k == n)
+    {
+        import mir.stat.internal.fp_probability_log: ProbabilityLog;
+        alias L = ProbabilityLog!bits;
+        // Keep the exponent separate so tiny log(1-p) survives multiplication
+        // by the full count, including when p is an Fp subnormal.
+        auto logarithm = k ? L.probability(p) : L.complement(p);
+        logarithm = logarithm.multiply(L.S.from(Fp!(bits + 192)(n)));
+        const top = bits - p.coefficient.ctlz;
+        if (!k && p.exponent <= -cast(long)bits - 256 - top)
+        {
+            // Here the log helper returns p, but -log(1-p) is strictly
+            // greater. The exact n*p product needs at most bits+64 bits,
+            // leaving at least 128 zero low bits in the working fraction.
+            // One sticky bit breaks output midpoints upward without moving
+            // a non-midpoint across a rounding boundary, even at long.min.
+            logarithm.fraction.coefficient += 1;
+        }
+        auto result = logarithm.finish!bits;
+        result.sign = true;
+        return result;
+    }
+    import mir.stat.internal.fp_binomial_log: BinomialLog;
+    return BinomialLog!bits.mass(k,n,p);
+}
+
+/// Preserve tiny endpoint logs without rounding the complement to one.
+version(mir_stat_test)
+@safe pure nothrow @nogc unittest
+{
+    auto p = Fp!128(1);
+    p.exponent -= 2000;
+    const value = binomialLPMF(1,2,p);
+    assert(value.sign && value.exponent != long.max);
+    // At this scale log((1-p)^2) rounds to -2*p.
+    auto expected = p;
+    ++expected.exponent;
+    expected.sign = true;
+    assert(binomialLPMF(0,2,p) == expected);
 }
 
 ///
@@ -2089,4 +2150,212 @@ unittest
     const double p = 1 - double.epsilon / 2;
     const double expected = binomialPMF(size_t.max, size_t.max, p);
     assert(binomialCCDF(size_t.max - 1, size_t.max, p) == expected);
+}
+// BEGIN public binomial log references
+version(mir_stat_test)
+@safe pure nothrow @nogc unittest
+{
+    import mir.bignum.fixed: UInt;
+    {
+        alias T = Fp!64;
+        struct Reference { ulong k; ulong n; T p; T value; }
+        enum references = [
+            Reference(0UL,1UL,T(false,long.min,UInt!64.fromHexString("1")),T(true,long.min,UInt!64.fromHexString("1"))),
+            Reference(0UL,1UL,T(false,-2000,UInt!64.fromHexString("1")),T(true,-2063,UInt!64.fromHexString("8000000000000000"))),
+            Reference(0UL,1UL,T(false,-1,UInt!64.fromHexString("1")),T(true,-64,UInt!64.fromHexString("b17217f7d1cf79ac"))),
+            Reference(0UL,1UL,T(false,-64,UInt!64.fromHexString("ffffffffffffffff")),T(true,-58,UInt!64.fromHexString("b17217f7d1cf79ac"))),
+            Reference(0UL,3UL,T(false,long.min,UInt!64.fromHexString("1")),T(true,long.min,UInt!64.fromHexString("3"))),
+            Reference(0UL,3UL,T(false,-2000,UInt!64.fromHexString("1")),T(true,-2062,UInt!64.fromHexString("c000000000000000"))),
+            Reference(0UL,3UL,T(false,-1,UInt!64.fromHexString("1")),T(true,-62,UInt!64.fromHexString("851591f9dd5b9b41"))),
+            Reference(0UL,3UL,T(false,-528,UInt!64.fromHexString("8000000000000003")),T(true,-527,UInt!64.fromHexString("c000000000000005"))),
+            Reference(0UL,3UL,T(false,-64,UInt!64.fromHexString("ffffffffffffffff")),T(true,-56,UInt!64.fromHexString("851591f9dd5b9b41"))),
+            Reference(0UL,18446744073709551615UL,T(false,long.min,UInt!64.fromHexString("1")),T(true,long.min,UInt!64.fromHexString("ffffffffffffffff"))),
+            Reference(0UL,18446744073709551615UL,T(false,-2000,UInt!64.fromHexString("1")),T(true,-2000,UInt!64.fromHexString("ffffffffffffffff"))),
+            Reference(0UL,18446744073709551615UL,T(false,-1,UInt!64.fromHexString("1")),T(true,0,UInt!64.fromHexString("b17217f7d1cf79ab"))),
+            Reference(0UL,18446744073709551615UL,T(false,-64,UInt!64.fromHexString("ffffffffffffffff")),T(true,6,UInt!64.fromHexString("b17217f7d1cf79ab"))),
+            Reference(1UL,1UL,T(false,long.min,UInt!64.fromHexString("1")),T(true,-1,UInt!64.fromHexString("b17217f7d1cf79ac"))),
+            Reference(1UL,1UL,T(false,-2000,UInt!64.fromHexString("1")),T(true,-53,UInt!64.fromHexString("ad496b6802e49cd2"))),
+            Reference(1UL,1UL,T(false,-1,UInt!64.fromHexString("1")),T(true,-64,UInt!64.fromHexString("b17217f7d1cf79ac"))),
+            Reference(1UL,1UL,T(false,-64,UInt!64.fromHexString("ffffffffffffffff")),T(true,-127,UInt!64.fromHexString("8000000000000000"))),
+            Reference(1UL,2UL,T(false,-1,UInt!64.fromHexString("1")),T(true,-64,UInt!64.fromHexString("b17217f7d1cf79ac"))),
+            Reference(1UL,18446744073709551615UL,T(false,-64,UInt!64.fromHexString("1")),T(true,-64,UInt!64.fromHexString("ffffffffffffffff"))),
+            Reference(2UL,7UL,T(false,-3,UInt!64.fromHexString("3")),T(true,-63,UInt!64.fromHexString("a2321bfb31d6bbff"))),
+            Reference(3UL,3UL,T(false,long.min,UInt!64.fromHexString("1")),T(true,1,UInt!64.fromHexString("851591f9dd5b9b41"))),
+            Reference(3UL,3UL,T(false,-2000,UInt!64.fromHexString("1")),T(true,-51,UInt!64.fromHexString("81f7108e022b759d"))),
+            Reference(3UL,3UL,T(false,-1,UInt!64.fromHexString("1")),T(true,-62,UInt!64.fromHexString("851591f9dd5b9b41"))),
+            Reference(3UL,3UL,T(false,-64,UInt!64.fromHexString("ffffffffffffffff")),T(true,-126,UInt!64.fromHexString("c000000000000000"))),
+            Reference(9223372036854775807UL,18446744073709551614UL,T(false,-1,UInt!64.fromHexString("1")),T(true,-59,UInt!64.fromHexString("b34083aa2c70ab08"))),
+            Reference(18446744073709551615UL,18446744073709551615UL,T(false,long.min,UInt!64.fromHexString("1")),T(true,63,UInt!64.fromHexString("b17217f7d1cf79ab"))),
+            Reference(18446744073709551615UL,18446744073709551615UL,T(false,-2000,UInt!64.fromHexString("1")),T(true,11,UInt!64.fromHexString("ad496b6802e49cd1"))),
+            Reference(18446744073709551615UL,18446744073709551615UL,T(false,-1,UInt!64.fromHexString("1")),T(true,0,UInt!64.fromHexString("b17217f7d1cf79ab"))),
+            Reference(18446744073709551615UL,18446744073709551615UL,T(false,-64,UInt!64.fromHexString("ffffffffffffffff")),T(true,-64,UInt!64.fromHexString("ffffffffffffffff"))),
+        ];
+        foreach (r; references) {
+            if (r.n > size_t.max) continue;
+            assert(binomialLPMF(cast(size_t)r.k,cast(size_t)r.n,r.p) == r.value);
+        }
+    }
+    {
+        alias T = Fp!128;
+        struct Reference { ulong k; ulong n; T p; T value; }
+        enum references = [
+            Reference(0UL,1UL,T(false,long.min,UInt!128.fromHexString("1")),T(true,long.min,UInt!128.fromHexString("1"))),
+            Reference(0UL,1UL,T(false,-2000,UInt!128.fromHexString("1")),T(true,-2127,UInt!128.fromHexString("80000000000000000000000000000000"))),
+            Reference(0UL,1UL,T(false,-1,UInt!128.fromHexString("1")),T(true,-128,UInt!128.fromHexString("b17217f7d1cf79abc9e3b39803f2f6af"))),
+            Reference(0UL,1UL,T(false,-128,UInt!128.fromHexString("ffffffffffffffffffffffffffffffff")),T(true,-121,UInt!128.fromHexString("b17217f7d1cf79abc9e3b39803f2f6af"))),
+            Reference(0UL,3UL,T(false,long.min,UInt!128.fromHexString("1")),T(true,long.min,UInt!128.fromHexString("3"))),
+            Reference(0UL,3UL,T(false,-2000,UInt!128.fromHexString("1")),T(true,-2126,UInt!128.fromHexString("c0000000000000000000000000000000"))),
+            Reference(0UL,3UL,T(false,-1,UInt!128.fromHexString("1")),T(true,-126,UInt!128.fromHexString("851591f9dd5b9b40d76ac6b202f63903"))),
+            Reference(0UL,3UL,T(false,-656,UInt!128.fromHexString("80000000000000000000000000000003")),T(true,-655,UInt!128.fromHexString("c0000000000000000000000000000005"))),
+            Reference(0UL,3UL,T(false,-128,UInt!128.fromHexString("ffffffffffffffffffffffffffffffff")),T(true,-119,UInt!128.fromHexString("851591f9dd5b9b40d76ac6b202f63903"))),
+            Reference(0UL,18446744073709551615UL,T(false,long.min,UInt!128.fromHexString("1")),T(true,long.min,UInt!128.fromHexString("ffffffffffffffff"))),
+            Reference(0UL,18446744073709551615UL,T(false,-2000,UInt!128.fromHexString("1")),T(true,-2064,UInt!128.fromHexString("ffffffffffffffff0000000000000000"))),
+            Reference(0UL,18446744073709551615UL,T(false,-1,UInt!128.fromHexString("1")),T(true,-64,UInt!128.fromHexString("b17217f7d1cf79ab18719ba032237d03"))),
+            Reference(0UL,18446744073709551615UL,T(false,-128,UInt!128.fromHexString("ffffffffffffffffffffffffffffffff")),T(true,-57,UInt!128.fromHexString("b17217f7d1cf79ab18719ba032237d03"))),
+            Reference(1UL,1UL,T(false,long.min,UInt!128.fromHexString("1")),T(true,-65,UInt!128.fromHexString("b17217f7d1cf79abc9e3b39803f2f6af"))),
+            Reference(1UL,1UL,T(false,-2000,UInt!128.fromHexString("1")),T(true,-117,UInt!128.fromHexString("ad496b6802e49cd1c3285d6273db44e7"))),
+            Reference(1UL,1UL,T(false,-1,UInt!128.fromHexString("1")),T(true,-128,UInt!128.fromHexString("b17217f7d1cf79abc9e3b39803f2f6af"))),
+            Reference(1UL,1UL,T(false,-128,UInt!128.fromHexString("ffffffffffffffffffffffffffffffff")),T(true,-255,UInt!128.fromHexString("80000000000000000000000000000000"))),
+            Reference(1UL,2UL,T(false,-1,UInt!128.fromHexString("1")),T(true,-128,UInt!128.fromHexString("b17217f7d1cf79abc9e3b39803f2f6af"))),
+            Reference(1UL,18446744073709551615UL,T(false,-64,UInt!128.fromHexString("1")),T(true,-128,UInt!128.fromHexString("ffffffffffffffff8000000000000000"))),
+            Reference(2UL,7UL,T(false,-3,UInt!128.fromHexString("3")),T(true,-127,UInt!128.fromHexString("a2321bfb31d6bbfea7bb219dfc30f61a"))),
+            Reference(3UL,3UL,T(false,long.min,UInt!128.fromHexString("1")),T(true,-63,UInt!128.fromHexString("851591f9dd5b9b40d76ac6b202f63903"))),
+            Reference(3UL,3UL,T(false,-2000,UInt!128.fromHexString("1")),T(true,-115,UInt!128.fromHexString("81f7108e022b759d525e4609d6e473ad"))),
+            Reference(3UL,3UL,T(false,-1,UInt!128.fromHexString("1")),T(true,-126,UInt!128.fromHexString("851591f9dd5b9b40d76ac6b202f63903"))),
+            Reference(3UL,3UL,T(false,-128,UInt!128.fromHexString("ffffffffffffffffffffffffffffffff")),T(true,-254,UInt!128.fromHexString("c0000000000000000000000000000000"))),
+            Reference(9223372036854775807UL,18446744073709551614UL,T(false,-1,UInt!128.fromHexString("1")),T(true,-123,UInt!128.fromHexString("b34083aa2c70ab080a3a7a7b4df427fb"))),
+            Reference(18446744073709551615UL,18446744073709551615UL,T(false,long.min,UInt!128.fromHexString("1")),T(true,-1,UInt!128.fromHexString("b17217f7d1cf79ab18719ba032237d03"))),
+            Reference(18446744073709551615UL,18446744073709551615UL,T(false,-2000,UInt!128.fromHexString("1")),T(true,-53,UInt!128.fromHexString("ad496b6802e49cd115def1fa70f6a815"))),
+            Reference(18446744073709551615UL,18446744073709551615UL,T(false,-1,UInt!128.fromHexString("1")),T(true,-64,UInt!128.fromHexString("b17217f7d1cf79ab18719ba032237d03"))),
+            Reference(18446744073709551615UL,18446744073709551615UL,T(false,-128,UInt!128.fromHexString("ffffffffffffffffffffffffffffffff")),T(true,-192,UInt!128.fromHexString("ffffffffffffffff0000000000000000"))),
+        ];
+        foreach (r; references) {
+            if (r.n > size_t.max) continue;
+            assert(binomialLPMF(cast(size_t)r.k,cast(size_t)r.n,r.p) == r.value);
+        }
+    }
+    {
+        alias T = Fp!256;
+        struct Reference { ulong k; ulong n; T p; T value; }
+        enum references = [
+            Reference(0UL,1UL,T(false,long.min,UInt!256.fromHexString("1")),T(true,long.min,UInt!256.fromHexString("1"))),
+            Reference(0UL,1UL,T(false,-2000,UInt!256.fromHexString("1")),T(true,-2255,UInt!256.fromHexString("8000000000000000000000000000000000000000000000000000000000000000"))),
+            Reference(0UL,1UL,T(false,-1,UInt!256.fromHexString("1")),T(true,-256,UInt!256.fromHexString("b17217f7d1cf79abc9e3b39803f2f6af40f343267298b62d8a0d175b8baafa2c"))),
+            Reference(0UL,1UL,T(false,-256,UInt!256.fromHexString("ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff")),T(true,-248,UInt!256.fromHexString("b17217f7d1cf79abc9e3b39803f2f6af40f343267298b62d8a0d175b8baafa2c"))),
+            Reference(0UL,3UL,T(false,long.min,UInt!256.fromHexString("1")),T(true,long.min,UInt!256.fromHexString("3"))),
+            Reference(0UL,3UL,T(false,-2000,UInt!256.fromHexString("1")),T(true,-2254,UInt!256.fromHexString("c000000000000000000000000000000000000000000000000000000000000000"))),
+            Reference(0UL,3UL,T(false,-1,UInt!256.fromHexString("1")),T(true,-254,UInt!256.fromHexString("851591f9dd5b9b40d76ac6b202f6390370b6725cd5f288a22789d184a8c03ba1"))),
+            Reference(0UL,3UL,T(false,-912,UInt!256.fromHexString("8000000000000000000000000000000000000000000000000000000000000003")),T(true,-911,UInt!256.fromHexString("c000000000000000000000000000000000000000000000000000000000000005"))),
+            Reference(0UL,3UL,T(false,-256,UInt!256.fromHexString("ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff")),T(true,-246,UInt!256.fromHexString("851591f9dd5b9b40d76ac6b202f6390370b6725cd5f288a22789d184a8c03ba1"))),
+            Reference(0UL,18446744073709551615UL,T(false,long.min,UInt!256.fromHexString("1")),T(true,long.min,UInt!256.fromHexString("ffffffffffffffff"))),
+            Reference(0UL,18446744073709551615UL,T(false,-2000,UInt!256.fromHexString("1")),T(true,-2192,UInt!256.fromHexString("ffffffffffffffff000000000000000000000000000000000000000000000000"))),
+            Reference(0UL,18446744073709551615UL,T(false,-1,UInt!256.fromHexString("1")),T(true,-192,UInt!256.fromHexString("b17217f7d1cf79ab18719ba032237d03770f8f8e6ea5bf7e4919d435191243fe"))),
+            Reference(0UL,18446744073709551615UL,T(false,-256,UInt!256.fromHexString("ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff")),T(true,-184,UInt!256.fromHexString("b17217f7d1cf79ab18719ba032237d03770f8f8e6ea5bf7e4919d435191243fe"))),
+            Reference(1UL,1UL,T(false,long.min,UInt!256.fromHexString("1")),T(true,-193,UInt!256.fromHexString("b17217f7d1cf79abc9e3b39803f2f6af40f343267298b62d8a0d175b8baafa2c"))),
+            Reference(1UL,1UL,T(false,-2000,UInt!256.fromHexString("1")),T(true,-245,UInt!256.fromHexString("ad496b6802e49cd1c3285d6273db44e7256d8f938be921e878d0c8cf6664f84f"))),
+            Reference(1UL,1UL,T(false,-1,UInt!256.fromHexString("1")),T(true,-256,UInt!256.fromHexString("b17217f7d1cf79abc9e3b39803f2f6af40f343267298b62d8a0d175b8baafa2c"))),
+            Reference(1UL,1UL,T(false,-256,UInt!256.fromHexString("ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff")),T(true,-511,UInt!256.fromHexString("8000000000000000000000000000000000000000000000000000000000000000"))),
+            Reference(1UL,2UL,T(false,-1,UInt!256.fromHexString("1")),T(true,-256,UInt!256.fromHexString("b17217f7d1cf79abc9e3b39803f2f6af40f343267298b62d8a0d175b8baafa2c"))),
+            Reference(1UL,18446744073709551615UL,T(false,-64,UInt!256.fromHexString("1")),T(true,-256,UInt!256.fromHexString("ffffffffffffffff7fffffffffffffffd5555555555555554000000000000000"))),
+            Reference(2UL,7UL,T(false,-3,UInt!256.fromHexString("3")),T(true,-255,UInt!256.fromHexString("a2321bfb31d6bbfea7bb219dfc30f619af81dbb88ef690d9295672d3d0e3bc51"))),
+            Reference(3UL,3UL,T(false,long.min,UInt!256.fromHexString("1")),T(true,-191,UInt!256.fromHexString("851591f9dd5b9b40d76ac6b202f6390370b6725cd5f288a22789d184a8c03ba1"))),
+            Reference(3UL,3UL,T(false,-2000,UInt!256.fromHexString("1")),T(true,-243,UInt!256.fromHexString("81f7108e022b759d525e4609d6e473ad5c122baea8eed96e5a9c969b8ccbba3b"))),
+            Reference(3UL,3UL,T(false,-1,UInt!256.fromHexString("1")),T(true,-254,UInt!256.fromHexString("851591f9dd5b9b40d76ac6b202f6390370b6725cd5f288a22789d184a8c03ba1"))),
+            Reference(3UL,3UL,T(false,-256,UInt!256.fromHexString("ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff")),T(true,-510,UInt!256.fromHexString("c000000000000000000000000000000000000000000000000000000000000000"))),
+            Reference(9223372036854775807UL,18446744073709551614UL,T(false,-1,UInt!256.fromHexString("1")),T(true,-251,UInt!256.fromHexString("b34083aa2c70ab080a3a7a7b4df427fae1692d89a79e1cd689b2e3b9493af305"))),
+            Reference(18446744073709551615UL,18446744073709551615UL,T(false,long.min,UInt!256.fromHexString("1")),T(true,-129,UInt!256.fromHexString("b17217f7d1cf79ab18719ba032237d03770f8f8e6ea5bf7e4919d435191243fe"))),
+            Reference(18446744073709551615UL,18446744073709551615UL,T(false,-2000,UInt!256.fromHexString("1")),T(true,-181,UInt!256.fromHexString("ad496b6802e49cd115def1fa70f6a81562453231180ddd015363393bda7bd666"))),
+            Reference(18446744073709551615UL,18446744073709551615UL,T(false,-1,UInt!256.fromHexString("1")),T(true,-192,UInt!256.fromHexString("b17217f7d1cf79ab18719ba032237d03770f8f8e6ea5bf7e4919d435191243fe"))),
+            Reference(18446744073709551615UL,18446744073709551615UL,T(false,-256,UInt!256.fromHexString("ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff")),T(true,-448,UInt!256.fromHexString("ffffffffffffffff000000000000000000000000000000000000000000000000"))),
+        ];
+        foreach (r; references) {
+            if (r.n > size_t.max) continue;
+            assert(binomialLPMF(cast(size_t)r.k,cast(size_t)r.n,r.p) == r.value);
+        }
+    }
+    {
+        alias T = Fp!512;
+        struct Reference { ulong k; ulong n; T p; T value; }
+        enum references = [
+            Reference(0UL,1UL,T(false,long.min,UInt!512.fromHexString("1")),T(true,long.min,UInt!512.fromHexString("1"))),
+            Reference(0UL,1UL,T(false,-2000,UInt!512.fromHexString("1")),T(true,-2511,UInt!512.fromHexString("80000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000"))),
+            Reference(0UL,1UL,T(false,-1,UInt!512.fromHexString("1")),T(true,-512,UInt!512.fromHexString("b17217f7d1cf79abc9e3b39803f2f6af40f343267298b62d8a0d175b8baafa2be7b876206debac98559552fb4afa1b10ed2eae35c138214427573b291169b825"))),
+            Reference(0UL,1UL,T(false,-512,UInt!512.fromHexString("ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff")),T(true,-503,UInt!512.fromHexString("b17217f7d1cf79abc9e3b39803f2f6af40f343267298b62d8a0d175b8baafa2be7b876206debac98559552fb4afa1b10ed2eae35c138214427573b291169b825"))),
+            Reference(0UL,3UL,T(false,long.min,UInt!512.fromHexString("1")),T(true,long.min,UInt!512.fromHexString("3"))),
+            Reference(0UL,3UL,T(false,-2000,UInt!512.fromHexString("1")),T(true,-2510,UInt!512.fromHexString("c0000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000"))),
+            Reference(0UL,3UL,T(false,-1,UInt!512.fromHexString("1")),T(true,-510,UInt!512.fromHexString("851591f9dd5b9b40d76ac6b202f6390370b6725cd5f288a22789d184a8c03ba0edca58985270c172402ffe3c783b944cb1e302a850ea18f31d816c5ecd0f4a1c"))),
+            Reference(0UL,3UL,T(false,-1424,UInt!512.fromHexString("80000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000003")),T(true,-1423,UInt!512.fromHexString("c0000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000005"))),
+            Reference(0UL,3UL,T(false,-512,UInt!512.fromHexString("ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff")),T(true,-501,UInt!512.fromHexString("851591f9dd5b9b40d76ac6b202f6390370b6725cd5f288a22789d184a8c03ba0edca58985270c172402ffe3c783b944cb1e302a850ea18f31d816c5ecd0f4a1c"))),
+            Reference(0UL,18446744073709551615UL,T(false,long.min,UInt!512.fromHexString("1")),T(true,long.min,UInt!512.fromHexString("ffffffffffffffff"))),
+            Reference(0UL,18446744073709551615UL,T(false,-2000,UInt!512.fromHexString("1")),T(true,-2448,UInt!512.fromHexString("ffffffffffffffff0000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000"))),
+            Reference(0UL,18446744073709551615UL,T(false,-1,UInt!512.fromHexString("1")),T(true,-448,UInt!512.fromHexString("b17217f7d1cf79ab18719ba032237d03770f8f8e6ea5bf7e4919d435191243fe5dab5ec4e240b26c6ddcdcdadd0e6e7897995b3a763e06333a288cf3503196e1"))),
+            Reference(0UL,18446744073709551615UL,T(false,-512,UInt!512.fromHexString("ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff")),T(true,-439,UInt!512.fromHexString("b17217f7d1cf79ab18719ba032237d03770f8f8e6ea5bf7e4919d435191243fe5dab5ec4e240b26c6ddcdcdadd0e6e7897995b3a763e06333a288cf3503196e1"))),
+            Reference(1UL,1UL,T(false,long.min,UInt!512.fromHexString("1")),T(true,-449,UInt!512.fromHexString("b17217f7d1cf79abc9e3b39803f2f6af40f343267298b62d8a0d175b8baafa2be7b876206debac98559552fb4afa1b10ed2eae35c138214427573b291169b825"))),
+            Reference(1UL,1UL,T(false,-2000,UInt!512.fromHexString("1")),T(true,-501,UInt!512.fromHexString("ad496b6802e49cd1c3285d6273db44e7256d8f938be921e878d0c8cf6664f84ee04a235bab58268cc393d30967383e6e879f96207eb0d07c8e6b2fc61b013dd4"))),
+            Reference(1UL,1UL,T(false,-1,UInt!512.fromHexString("1")),T(true,-512,UInt!512.fromHexString("b17217f7d1cf79abc9e3b39803f2f6af40f343267298b62d8a0d175b8baafa2be7b876206debac98559552fb4afa1b10ed2eae35c138214427573b291169b825"))),
+            Reference(1UL,1UL,T(false,-512,UInt!512.fromHexString("ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff")),T(true,-1023,UInt!512.fromHexString("80000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000"))),
+            Reference(1UL,2UL,T(false,-1,UInt!512.fromHexString("1")),T(true,-512,UInt!512.fromHexString("b17217f7d1cf79abc9e3b39803f2f6af40f343267298b62d8a0d175b8baafa2be7b876206debac98559552fb4afa1b10ed2eae35c138214427573b291169b825"))),
+            Reference(1UL,18446744073709551615UL,T(false,-64,UInt!512.fromHexString("1")),T(true,-512,UInt!512.fromHexString("ffffffffffffffff7fffffffffffffffd5555555555555553ffffffffffffffff3333333333333332aaaaaaaaaaaaaaaa4924924924924924492492492492492"))),
+            Reference(2UL,7UL,T(false,-3,UInt!512.fromHexString("3")),T(true,-511,UInt!512.fromHexString("a2321bfb31d6bbfea7bb219dfc30f619af81dbb88ef690d9295672d3d0e3bc50c7b3e04c4da524039ab098c9d344c830cff156e167a91bc9a5f53b028756ed08"))),
+            Reference(3UL,3UL,T(false,long.min,UInt!512.fromHexString("1")),T(true,-447,UInt!512.fromHexString("851591f9dd5b9b40d76ac6b202f6390370b6725cd5f288a22789d184a8c03ba0edca58985270c172402ffe3c783b944cb1e302a850ea18f31d816c5ecd0f4a1c"))),
+            Reference(3UL,3UL,T(false,-2000,UInt!512.fromHexString("1")),T(true,-499,UInt!512.fromHexString("81f7108e022b759d525e4609d6e473ad5c122baea8eed96e5a9c969b8ccbba3b28379a84c0821ce992aede470d6a2ed2e5b7b0985f049c5d6ad063d49440ee5f"))),
+            Reference(3UL,3UL,T(false,-1,UInt!512.fromHexString("1")),T(true,-510,UInt!512.fromHexString("851591f9dd5b9b40d76ac6b202f6390370b6725cd5f288a22789d184a8c03ba0edca58985270c172402ffe3c783b944cb1e302a850ea18f31d816c5ecd0f4a1c"))),
+            Reference(3UL,3UL,T(false,-512,UInt!512.fromHexString("ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff")),T(true,-1022,UInt!512.fromHexString("c0000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000"))),
+            Reference(9223372036854775807UL,18446744073709551614UL,T(false,-1,UInt!512.fromHexString("1")),T(true,-507,UInt!512.fromHexString("b34083aa2c70ab080a3a7a7b4df427fae1692d89a79e1cd689b2e3b9493af3056f842f5b697cc3698e54cb2cc051c2530ebf959643803e8459b3c27770a18870"))),
+            Reference(18446744073709551615UL,18446744073709551615UL,T(false,long.min,UInt!512.fromHexString("1")),T(true,-385,UInt!512.fromHexString("b17217f7d1cf79ab18719ba032237d03770f8f8e6ea5bf7e4919d435191243fe5dab5ec4e240b26c6ddcdcdadd0e6e7897995b3a763e06333a288cf3503196e1"))),
+            Reference(18446744073709551615UL,18446744073709551615UL,T(false,-2000,UInt!512.fromHexString("1")),T(true,-437,UInt!512.fromHexString("ad496b6802e49cd115def1fa70f6a81562453231180ddd015363393bda7bd66667795a8c44f32e3de349afadbbe017e1c40bc3171778920e06cb99a59c506d58"))),
+            Reference(18446744073709551615UL,18446744073709551615UL,T(false,-1,UInt!512.fromHexString("1")),T(true,-448,UInt!512.fromHexString("b17217f7d1cf79ab18719ba032237d03770f8f8e6ea5bf7e4919d435191243fe5dab5ec4e240b26c6ddcdcdadd0e6e7897995b3a763e06333a288cf3503196e1"))),
+            Reference(18446744073709551615UL,18446744073709551615UL,T(false,-512,UInt!512.fromHexString("ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff")),T(true,-960,UInt!512.fromHexString("ffffffffffffffff0000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000"))),
+        ];
+        foreach (r; references) {
+            if (r.n > size_t.max) continue;
+            assert(binomialLPMF(cast(size_t)r.k,cast(size_t)r.n,r.p) == r.value);
+        }
+    }
+}
+// END public binomial log references
+
+version(mir_stat_test)
+@safe pure nothrow @nogc unittest
+{
+    import mir.bignum.fixed: UInt;
+    import mir.stat.distribution.bernoulli: bernoulliLPMF;
+    import std.meta: AliasSeq;
+    foreach (bits; AliasSeq!(64u,128u,256u,512u))
+    {
+        alias T = Fp!bits;
+        const p = T(0.25);
+        static assert(is(typeof(binomialLPMF(1,3,p)) == T));
+        assert(binomialLPMF(0,1,p) == bernoulliLPMF(false,p));
+        assert(binomialLPMF(1,1,p) == bernoulliLPMF(true,p));
+        assert(binomialLPMF(1,3,p) == binomialLPMF(2,3,T(0.75)));
+        foreach (zero; [T(0),T(-0.0)])
+        {
+            assert(binomialLPMF(0,size_t.max,zero) == T(0));
+            assert(!binomialLPMF(0,size_t.max,zero).sign);
+            assert(binomialLPMF(1,size_t.max,zero) == T(-double.infinity));
+        }
+        foreach (one; [T(1),T(false,0,UInt!bits(1))])
+        {
+            assert(binomialLPMF(size_t.max,size_t.max,one) == T(0));
+            assert(!binomialLPMF(size_t.max,size_t.max,one).sign);
+            assert(binomialLPMF(0,size_t.max,one) == T(-double.infinity));
+        }
+        foreach (probability; [T(0),p,T(1)])
+        {
+            assert(binomialLPMF(0,0,probability) == T(0));
+            assert(!binomialLPMF(0,0,probability).sign);
+        }
+        debug
+        {
+            import core.exception: AssertError;
+            import std.exception: assertThrown;
+            assertThrown!AssertError(binomialLPMF(3,2,p));
+            foreach (bad; [T(-0.5),T(2),T(double.nan),T(double.infinity)])
+            {
+                assertThrown!AssertError(binomialLPMF(1,2,bad));
+                assertThrown!AssertError(binomialLPMF(0,0,bad));
+            }
+        }
+    }
 }
