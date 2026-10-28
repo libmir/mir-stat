@@ -1676,3 +1676,91 @@ version(mir_stat_test_linearAlgebra)
     mtimesInto(a,b.map!(v => v),c,work);
     assert(c[0,0] == 8 && c[1,1] == 26);
 }
+
+/++
+Multiply two symmetric views without materializing either input. The result
+is an ordinary dense matrix: a product of symmetric matrices need not be
+symmetric. Each input's selected triangle is authoritative. This uses the
+native D fallback for logical indexing, with the usual result ownership.
++/
+package(mir.stat) AllocatedSlice!(Allocation.gc, Scalar!A, 2)
+mtimes(TrianglePolicy left, TrianglePolicy right, A, B)(
+    scope auto ref const(SymmetricView!(left,A)) a,
+    scope auto ref const(SymmetricView!(right,B)) b)
+    if (is(Scalar!A == Scalar!B))
+{
+    return mtimes(a, b.asSlice);
+}
+
+/++
+Multiply two symmetric views without materializing either input. The result
+is an ordinary dense matrix: a product of symmetric matrices need not be
+symmetric. Each input's selected triangle is authoritative. This uses the
+native D fallback for logical indexing, with the usual result ownership.
++/
+package(mir.stat) AllocatedSlice!(Allocation.rc, Scalar!A, 2)
+rcMtimes(TrianglePolicy left, TrianglePolicy right, A, B)(
+    scope auto ref const(SymmetricView!(left,A)) a,
+    scope auto ref const(SymmetricView!(right,B)) b)
+    if (is(Scalar!A == Scalar!B))
+{
+    return rcMtimes(a, b.asSlice);
+}
+
+/++
+Multiply two symmetric views without materializing either input. The result
+is an ordinary dense matrix: a product of symmetric matrices need not be
+symmetric. Each input's selected triangle is authoritative. This uses the
+native D fallback for logical indexing, with the usual result ownership.
++/
+package(mir.stat) AllocatedSlice!(Allocation.custom, Scalar!A, 2)
+makeMtimes(TrianglePolicy left, TrianglePolicy right, A, B, Allocator)(
+    auto ref Allocator allocator, scope auto ref const(SymmetricView!(left,A)) a,
+    scope auto ref const(SymmetricView!(right,B)) b)
+    if (is(Scalar!A == Scalar!B))
+{
+    return makeMtimes(allocator, a, b.asSlice);
+}
+
+/// Multiply two symmetric views into disjoint caller storage without allocation.
+package(mir.stat) void mtimesInto(TrianglePolicy left, TrianglePolicy right, A, B, C)(
+    scope auto ref const(SymmetricView!(left,A)) a,
+    scope auto ref const(SymmetricView!(right,B)) b, scope auto ref C output)
+    if (numericSlice!C && C.N == 2 && is(Scalar!A == Scalar!B) && is(Scalar!A == Scalar!C))
+{
+    mtimesInto(a, b.asSlice, output);
+}
+
+/// Symmetric operands need not commute; the product is an ordinary matrix.
+version(mir_stat_test_linearAlgebra)
+@safe pure nothrow unittest
+{
+    import mir.ndslice.slice: sliced;
+    double[4] aa=[4,2,double.nan,5], bb=[3,double.nan,1,2], cc;
+    auto a=symmetricView(aa[].sliced(2,2));
+    auto b=symmetricView!(TrianglePolicy.lower)(bb[].sliced(2,2));
+    assert(mtimes(a,b)==[[14,8],[11,12]]);
+    assert(rcMtimes(a.transposed,b.transposed)==[[14,8],[11,12]]);
+    mtimesInto(a,b,cc[].sliced(2,2));
+    assert(cc==[14,8,11,12]);
+}
+
+// Both structural operands work with complex arithmetic and custom result ownership.
+version(mir_stat_test_linearAlgebra)
+@system nothrow @nogc unittest
+{
+    import mir.complex: Complex;
+    import mir.ndslice.slice: sliced;
+    import std.experimental.allocator.mallocator: Mallocator;
+    import std.experimental.allocator: dispose;
+    alias T=Complex!double;
+    T[4] aa=[T(1,1),T(2,0),T(double.nan),T(3,-1)];
+    T[4] bb=[T(2,-1),T(double.nan),T(1,1),T(4,0)];
+    auto a=symmetricView(aa[].sliced(2,2));
+    auto b=symmetricView!(TrianglePolicy.lower)(bb[].sliced(2,2));
+    auto result=makeMtimes(Mallocator.instance,a,b);
+    scope(exit) Mallocator.instance.dispose(result.field);
+    auto reference=rcMtimes(a.asSlice,b.asSlice);
+    assert(result==reference);
+    assert(rcMtimes(a,b)==reference);
+}
