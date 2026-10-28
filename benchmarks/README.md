@@ -221,12 +221,13 @@ as the existing Mahalanobis cases.
 
 ### Symmetric products
 
-`symmetricVector`, `symmetricLeft`, and `symmetricRight` compare general dense
-and symmetric-view multiplication with `general` and `symmetric`. Matrix cases
-use 32 columns (or 32 rows on the left of a right-side metric). Their
-`generalMixed` and `symmetricMixed` variants use an output storage orientation
-opposite to the ordinary input. `--layout` selects the input orientation.
-Output is preallocated, and independent analytic reference checks occur outside timing.
+`symmetricVector`, `symmetricLeft`, and `symmetricRight` compare general dense,
+symmetric-view, and packed symmetric multiplication with `general`, `symmetric`,
+and `packed`. Matrix cases use 32 columns (or 32 rows on the left of a right-side
+metric). Their `generalMixed`, `symmetricMixed`, and `packedMixed` variants use
+an output storage orientation opposite to the ordinary input. `--layout` selects
+the input orientation. Output is preallocated, so these isolate computation from
+allocation. Packing and analytic reference generation are outside timing.
 
 ```sh
 dub run mir-stat:benchmarks --config=openblas --build=release --compiler=ldc2 -- --function=symmetricLeft --size=256 --iterations=20 --rounds=8 --warmup=3 --format=csv

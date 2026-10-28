@@ -257,3 +257,34 @@ package bool tryPackedQuadratic(bool workspace, TrianglePolicy triangle, Summati
     }
     else return false;
 }
+
+/// Multiply complete symmetric packed adapters using stored coordinates directly.
+/// Transpose leaves symmetry unchanged. Other adapter shapes use the general fallback.
+package bool tryPackedSymmetricNative(TrianglePolicy triangle, A, X, W)(
+    scope auto ref A a, scope auto ref X x, scope auto ref W work)
+{
+    static if (PackedAdapter!A.valid)
+    {
+        if (!completePacked!triangle(a)) return false;
+        enum stored = PackedInfo!(PackedAdapter!A.Storage).triangle;
+        foreach (i; 0 .. x.length)
+        {
+            Scalar!X sum = Scalar!X(0);
+            foreach (j; 0 .. i)
+            {
+                static if (stored == TrianglePolicy.upper) auto value = a._iterator._field.storedValue(j, i);
+                else auto value = a._iterator._field.storedValue(i, j);
+                sum += value * x[j];
+            }
+            foreach (j; i .. x.length)
+            {
+                static if (stored == TrianglePolicy.upper) auto value = a._iterator._field.storedValue(i, j);
+                else auto value = a._iterator._field.storedValue(j, i);
+                sum += value * x[j];
+            }
+            work[i] = sum;
+        }
+        return true;
+    }
+    else return false;
+}

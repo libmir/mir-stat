@@ -62,7 +62,7 @@ Symmetric packed views also support quadratic forms and Cholesky decomposition.
 `mtimes(symmetricView(a), b)` and its right-side counterpart read only the
 selected triangle. Dense matrix products use SYMM when storage orientations
 permit; eligible mixed orientations use blocked GEMM without scratch storage.
-Real vectors use SYMV. Eligible single-column real
+Real vectors use SYMV, or SPMV for packed storage. Eligible single-column real
 matrix operands share this vector dispatch while retaining matrix result shape.
 `mtimesInto(a, b, output, work)` additionally accepts explicit layout workspace
 for symmetric matrix products. Matching output strides selects an input copy;
