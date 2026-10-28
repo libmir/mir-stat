@@ -5456,6 +5456,7 @@ unittest
 unittest
 {
     import mir.math.common: approxEqual;
+    import mir.stat.descriptive.weighting: WeightedMomentNormalization;
     alias N = WeightedMomentNormalization;
     double[2] values = [0, 10];
     int[2] counts = [1, 3]; // The four observations [0, 10, 10, 10].
