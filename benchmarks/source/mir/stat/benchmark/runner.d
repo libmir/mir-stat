@@ -34,7 +34,7 @@ int main(string[] args)
             "transform", "none (default), center, or standardize (sample z-scores)", &transformName,
             "algorithms", "Comma-separated algorithm names, or all (default)", &algorithmList,
             "seed", "Random seed (default 5489)", &seed,
-            "function", "all (statistics), linearAlgebra, skewness, kurtosis, covariance, correlation, triangularLeft, triangularRight, quadratic, or mahalanobis", &selected,
+            "function", "all (statistics), linearAlgebra, skewness, kurtosis, covariance, correlation, triangularLeft, triangularRight, quadratic, mahalanobis, symmetricVector, symmetricLeft, symmetricRight, symmetricColumn, or symmetricRow", &selected,
             "layout", "rowMajor (default) or transposed; linear algebra only", &layout,
             "iterations", "Iterations per algorithm per round (statistics: 10000; algebra: 20)", &iterations,
             "size", "Observations or matrix order (statistics: 1000; algebra: 32)", &size);

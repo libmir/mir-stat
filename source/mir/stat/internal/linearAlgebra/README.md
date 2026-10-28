@@ -115,7 +115,7 @@ entries are then ignored as well. The explicitly named `mtimesTriangular` and
 `mtimesTriangularRight` families remain available for callers supplying the
 raw matrix and structural options directly.
 
-Symmetric views are accepted by quadratic forms and Cholesky decomposition.
+Symmetric views are accepted by `mtimes` on either side, quadratic forms, and Cholesky decomposition.
 Triangular views are accepted by multiplication when the other operand is an
 ordinary ndslice. Combining two structural views is not currently an overload.
 These descriptors do not certify positive definiteness or identify a matrix
@@ -291,3 +291,54 @@ explains reproducible comparisons of dense/triangular multiplication,
 quadratic forms, and the four Mahalanobis metric representations. Measurements
 separate precomputation from per-call work and compare allocating calls with
 reusable workspaces.
+
+
+## Symmetric multiplication
+
+Use the same multiplication functions after declaring symmetry:
+
+```d
+auto a = symmetricView!(TrianglePolicy.upper)(matrix);
+auto left = mtimes(a, observations);
+auto right = mtimes(observations.transposed, a);
+mtimesInto(a, observations, output);
+```
+
+The unselected triangle is never read. The ordinary operand may be a matrix
+or vector. GC, RC, custom allocation, and caller-output variants all dispatch
+on the view. Complex symmetry reflects entries without conjugating them.
+
+Eligible dense matrix products use SYMM when the ordinary input and output
+have compatible storage orientations. Eligible mixed orientations use a blocked
+calculation: GEMM handles stored off-diagonal blocks and their reflections,
+while small diagonal blocks use native D arithmetic. This avoids a full dense
+copy and requires no additional workspace. Real vectors use SYMV. Other types and layouts use native
+D arithmetic. Native D loops split at the diagonal to avoid per-entry triangle
+selection. No dense copy of the symmetric input is created.
+
+Declaring symmetry is not a universal speedup: it supplies the selected-triangle
+contract. SYMV can beat GEMV, while SYMM and GEMM may perform similarly. Mixed layouts can remain slower than dense matched layouts.
+
+For eligible `float`/`double` inputs, an ordinary operand with one column uses
+the vector kernel while keeping a rank-two output. A right-side product with
+one row follows the same rule. No workspace is needed for this specialization.
+
+For matrix products with different orientations, provide layout workspace:
+
+```d
+auto a = symmetricView(metric);
+auto b = observations.transposed;
+mtimesInto(a, b, output, work);
+```
+
+`work` has the ordinary operand/output's shape and element type. When BLAS can
+use it, workspace matching `output` receives a copy of `b` before SYMM;
+workspace matching `b` receives the product before it is copied into `output`.
+The right-side overload uses the same convention. All writable buffers must be
+mutually disjoint and disjoint from inputs, with nonoverlapping elements.
+
+Workspace may be unused: already-compatible layouts, single-column real
+products, and unsupported backend/type/storage combinations keep the ordinary
+path. Its contents are unspecified afterward. No heap storage is allocated,
+no full symmetric matrix is materialized, and no timing-based dispatch is used.
+The existing three-argument `mtimesInto` remains allocation-free without workspace.

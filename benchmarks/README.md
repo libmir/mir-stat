@@ -217,3 +217,25 @@ necessarily improve speed, especially versus dense TRMM with multiple columns.
 `precisionFastWorkspace` reuses both vectors. Both explicitly select
 `Summation.fast` and compare against the same independent precision identity
 as the existing Mahalanobis cases.
+
+
+### Symmetric products
+
+`symmetricVector`, `symmetricLeft`, and `symmetricRight` compare general dense
+and symmetric-view multiplication with `general` and `symmetric`. Matrix cases
+use 32 columns (or 32 rows on the left of a right-side metric). Their
+`generalMixed` and `symmetricMixed` variants use an output storage orientation
+opposite to the ordinary input. `--layout` selects the input orientation.
+Output is preallocated, and independent analytic reference checks occur outside timing.
+
+```sh
+dub run mir-stat:benchmarks --config=openblas --build=release --compiler=ldc2 -- --function=symmetricLeft --size=256 --iterations=20 --rounds=8 --warmup=3 --format=csv
+```
+
+The symmetric matrix families also provide `workspaceInput` and `workspaceOutput`.
+Both use opposite input/output orientations and include the selected layout copy
+inside timing; caller workspace is allocated beforehand. Their workspace strides
+select copying the input or copying the output respectively. On the native D
+backend, workspace can be unused and these retain the normal fallback.
+`symmetricColumn` and `symmetricRow` exercise rank-two one-column and one-row
+operands with the same algorithm choices, including the real vector specialization.
