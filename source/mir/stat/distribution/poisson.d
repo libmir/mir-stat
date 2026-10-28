@@ -1390,6 +1390,7 @@ T poissonLPMF(T)(const size_t k, const T lambda)
 version(mir_stat_test)
 @safe pure nothrow @nogc unittest
 {
+    import mir.bignum.fp: Fp;
     auto rate = Fp!128(1);
     rate.exponent += 66;
     assert(!poissonPMF(0,rate).coefficient);

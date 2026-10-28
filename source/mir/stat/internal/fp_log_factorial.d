@@ -96,7 +96,9 @@ package(mir.stat) struct CountLog(uint bits)
     private static I correctionLarge(ulong n)
     {
         Wide power = Wide(n);
-        Wide square = Wide(n);
+        // n is a 64-bit count, so its square needs only 128 bits. Keeping
+        // the multiplier narrow avoids a huge unrolled Wide-by-Wide product.
+        UInt!128 square = UInt!128(n);
         square *= UInt!64(n);
         I sum;
         foreach (i; 0 .. 64) {

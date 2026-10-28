@@ -2002,6 +2002,7 @@ T binomialLPMF(T)(const size_t k, const size_t n, const T p)
 version(mir_stat_test)
 @safe pure nothrow @nogc unittest
 {
+    import mir.bignum.fp: Fp;
     auto p = Fp!128(1);
     p.exponent -= 2000;
     const value = binomialLPMF(1,2,p);
