@@ -197,7 +197,9 @@ public import mir.stat.descriptive.univariate.sums;
 public import mir.stat.descriptive.univariate.quantiles;
 
 ///
-public import mir.stat.descriptive.univariate.dispersions: dispersion, variance, standardDeviation, coefficientOfVariation, VarianceAlgo, VarianceAccumulator;
+public import mir.stat.descriptive.univariate.dispersions: dispersion, variance, standardDeviation, coefficientOfVariation, VarianceAlgo, VarianceAccumulator,
+    weightedVariance, weightedStandardDeviation, WVarianceAccumulator,
+    WeightedVarianceNormalization, WeightedMomentNormalization;
 
 ///
 public import mir.stat.descriptive.univariate.moments;
@@ -229,6 +231,11 @@ unittest
     static assert(__traits(isSame, legacy.MeanAccumulator, means.MeanAccumulator));
     static assert(__traits(isSame, legacy.QuantileAlgo, quantiles.QuantileAlgo));
     static assert(__traits(isSame, legacy.VarianceAccumulator, dispersions.VarianceAccumulator));
+    static assert(__traits(isSame, legacy.weightedVariance, dispersions.weightedVariance));
+    static assert(__traits(isSame, legacy.weightedStandardDeviation, dispersions.weightedStandardDeviation));
+    static assert(__traits(isSame, legacy.WVarianceAccumulator, dispersions.WVarianceAccumulator));
+    static assert(is(legacy.WeightedMomentNormalization == dispersions.WeightedVarianceNormalization));
+    assert(legacy.weightedVariance([0.0, 10.0], [1.0, 3.0]) == 18.75);
     static assert(__traits(isSame, legacy.MomentAccumulator, moments.MomentAccumulator));
     static assert(__traits(isSame, moments.skewness, skewnessKurtosis.skewness));
     static assert(__traits(isSame, legacy.skewness, skewnessKurtosis.skewness));
