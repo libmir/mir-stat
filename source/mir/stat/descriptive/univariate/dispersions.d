@@ -7,7 +7,7 @@ $(REF VarianceAlgo, mir, stat, descriptive, univariate, dispersions) selects the
 
 Weighted spread uses $(LREF weightedVariance) and $(LREF weightedStandardDeviation).
 Select population, frequency-sample, or relative-weight-sample normalization through
-$(LREF WeightedVarianceNormalization); population is the default.
+$(REF WeightedMomentNormalization, mir, stat, descriptive, weighting); population is the default.
 
 Import `mir.stat.descriptive.univariate.dispersions` directly, or use
 $(MREF mir,stat,descriptive,univariate) for the complete univariate API.
@@ -31,6 +31,7 @@ $(TR $(TH Category) $(TH Declarations))
     ))
     $(TR $(TD Algorithm selection) $(TD
         $(REF VarianceAlgo, mir, stat, descriptive, univariate, dispersions)$(NBSP)
+        $(REF WeightedMomentNormalization, mir, stat, descriptive, weighting)$(NBSP)
         $(REF WeightedVarianceNormalization, mir, stat, descriptive, univariate, dispersions)$(NBSP)
     ))
 ))
@@ -3045,97 +3046,15 @@ unittest
     }
 }
 
-/++
-Choose what the weights mean and whether to apply a sample correction.
-
-Use population to describe the spread of the weighted distribution you have.
-Use frequencySample when each weight counts actual observations in a sample.
-Use relativeSample when each row is one observation, weights specify relative
-emphasis, and you want a sample correction under the assumptions below.
-
-For example, values [0, 10] with weights [1, 3] have the same weighted mean,
-7.5, in all three modes. Their variances differ: 18.75 for population, 25 for
-frequencySample, and 50 for relativeSample. These answer different questions;
-the larger answer is not automatically more accurate.
-
-Select the meaning explicitly. Integer weights do not automatically mean
-frequencies, and floating-point weights such as [1.0, 3.0] can be frequencies.
-See the examples on $(LREF weightedVariance) for executable calls, and
-$(REF descriptive, mir, stat) for shared guidance on weight meanings.
-+/
-enum WeightedVarianceNormalization
-{
-    /++
-    Describe the spread of a weighted distribution, without a sample correction.
-    This is the default.
-
-    Use this for a probability distribution, a complete weighted dataset, or a
-    descriptive summary when you do not want to estimate a population variance
-    from a sample. For example, an outcome is 0 with probability 25 percent and
-    10 with probability 75 percent. Its variance is 18.75. Either [0.25, 0.75]
-    or [1, 3] expresses those probabilities; weights need not sum to one.
-
-    Multiplying every weight by the same positive constant leaves the result
-    unchanged. One positive-weight observation is sufficient and has variance 0.
-
-    Formula: sum(w*(x-mean)*(x-mean)) / sum(w).
-    +/
-    population,
-    /++
-    Estimate variance from a sample stored as values and occurrence counts.
-
-    Use this to avoid expanding repeated observations. Values [0, 10] and counts
-    [1, 3] represent the four observations [0, 10, 10, 10]. The result is 25,
-    exactly the sample-variance definition used by ordinary variance on that
-    expanded sample (up to floating-point rounding).
-
-    Counts must be nonnegative whole numbers, and their total must exceed one.
-    Fractional counts such as 1.5 are invalid. A single stored row with count 3
-    represents three identical observations and has sample variance 0.
-
-    Do not normalize counts to sum to one. Changing [1, 3] to [2, 6] means an
-    eight-observation sample, so its sample correction changes: the variance
-    becomes 150/7, approximately 21.43. This mode applies the familiar division
-    by sample size minus one, using total count as the sample size.
-
-    Formula: sum(w*(x-mean)*(x-mean)) / (sum(w)-1).
-    +/
-    frequencySample,
-    /++
-    Apply a sample correction when weights give observations relative emphasis.
-
-    Use this when each row is one independent observation and weights are fixed
-    independently of the observed values. For example, two observations [0, 10]
-    have preassigned weights [1, 3]: the second receives three times the emphasis,
-    but it is still one observation, not three repeated observations. The
-    corrected variance is 50. Weights [0.25, 0.75] give the same result.
-
-    At least two rows must have positive weights. Fractional weights are allowed,
-    and multiplying all weights by the same positive constant leaves the result
-    unchanged. Equal positive weights recover ordinary sample variance. Unequal
-    weights concentrate the information in fewer observations, which this
-    correction accounts for under its statistical assumptions.
-
-    The correction is unbiased when observations are independent, share a common
-    mean and variance, and weights are fixed. It is not a general correction for
-    survey sampling or measurements with different known variances. It estimates
-    the variance of the observations, not the uncertainty of their weighted mean.
-
-    Formula: write W = sum(w), Q = sum(w*w), and
-    M2 = sum(w*(x-mean)*(x-mean)); the result is M2/(W-Q/W).
-    +/
-    relativeSample
-}
+/// Shared weight meanings and sample-correction policy.
+public import mir.stat.descriptive.weighting: WeightedMomentNormalization;
 
 /++
-Shared normalization policy for weighted variance and covariance.
-This is the same type as $(LREF WeightedVarianceNormalization), so existing
-variance calls and template instantiations remain compatible. The choices are
-population, frequencySample, and relativeSample; see that enum for assumptions
-and examples. Correlation needs no normalization choice because the common
-correction cancels between covariance and the two variances.
+Compatibility name for $(REF WeightedMomentNormalization, mir, stat, descriptive, weighting).
+This is an alias to the shared enum, with identical members and values.
+New code can use WeightedMomentNormalization for every supported statistic.
 +/
-alias WeightedMomentNormalization = WeightedVarianceNormalization;
+alias WeightedVarianceNormalization = WeightedMomentNormalization;
 // Traverse paired inputs by logical index, independently of storage strides.
 // Save forward ranges at every nesting level; single-pass ranges are consumed.
 private import mir.primitives: DeepElementType;
@@ -3227,7 +3146,7 @@ across those operations. Results need not be bitwise identical across partitions
 Unlike wmean, signed weights are not accepted and zero weights exclude values.
 +/
 struct WVarianceAccumulator(T,
-    WeightedVarianceNormalization normalization = WeightedVarianceNormalization.population,
+    WeightedMomentNormalization normalization = WeightedMomentNormalization.population,
     VarianceAlgo varianceAlgo = VarianceAlgo.hybrid,
     Summation summation = Summation.kbn)
     if (isFloatingPoint!T && isMutable!T &&
@@ -3323,7 +3242,7 @@ struct WVarianceAccumulator(T,
         assert(isFinite(weight) && weight > 0, "weighted variance: weight must fit accumulator type");
         const value = cast(T) x;
         assert(isFinite(value), "weighted variance: positive-weight observations must be finite");
-        static if (normalization == WeightedVarianceNormalization.frequencySample)
+        static if (normalization == WeightedMomentNormalization.frequencySample)
         {
             enum real maxFrequency = 2.0L ^^ T.mant_dig;
             assert(raw == floor(raw) && raw <= maxFrequency - frequency,
@@ -3434,7 +3353,7 @@ struct WVarianceAccumulator(T,
             momentScale = otherMomentScale;
             return;
         }
-        static if (normalization == WeightedVarianceNormalization.frequencySample)
+        static if (normalization == WeightedMomentNormalization.frequencySample)
         {
             enum real maxFrequency = 2.0L ^^ T.mant_dig;
             assert(otherFrequency <= maxFrequency - frequency,
@@ -3481,16 +3400,16 @@ struct WVarianceAccumulator(T,
     {
         assert(positiveCount, "weighted variance: no positive-weight observations");
         T total = cast(T) mass.sum;
-        static if (normalization == WeightedVarianceNormalization.population)
+        static if (normalization == WeightedMomentNormalization.population)
             T denominator = total;
-        else static if (normalization == WeightedVarianceNormalization.frequencySample)
+        else static if (normalization == WeightedMomentNormalization.frequencySample)
         {
             assert(frequency > 1, "weighted variance: total frequency must exceed one");
             T denominator = cast(T) ((frequency - 1) / scale);
         }
         else
         {
-            static assert(normalization == WeightedVarianceNormalization.relativeSample);
+            static assert(normalization == WeightedMomentNormalization.relativeSample);
             // W-Q/W = 2*sum(i<j, wi*wj)/W. Avoid cancellation near nEff=1.
             T denominator = 2 * (cast(T) pairs.sum / total);
         }
@@ -3527,7 +3446,7 @@ $(UL
         emphasis. Apply the sample correction for independent observations with
         a common mean and variance.)
 )
-See $(LREF WeightedVarianceNormalization) for when to choose each option,
+See $(REF WeightedMomentNormalization, mir, stat, descriptive, weighting) for when to choose each option,
 rescaling behavior and assumptions. All modes require finite, nonnegative
 weights and ignore zero-weight observations, even if their values are NaN.
 See $(LREF WVarianceAccumulator) for numerical limits and streaming use.
@@ -3537,7 +3456,7 @@ Examples:
 import mir.stat.descriptive.univariate.dispersions;
 import mir.math.common: approxEqual;
 
-alias N = WeightedVarianceNormalization;
+alias N = WeightedMomentNormalization;
 auto values = [0.0, 10.0];
 auto weights = [1.0, 3.0];
 
@@ -3571,7 +3490,7 @@ their type. F explicitly selects a floating result/accumulator type. Weights are
 converted to that type. No input is mutated; single-pass cursors are consumed.
 +/
 template weightedVariance(F,
-    WeightedVarianceNormalization normalization = WeightedVarianceNormalization.population,
+    WeightedMomentNormalization normalization = WeightedMomentNormalization.population,
     VarianceAlgo varianceAlgo = VarianceAlgo.hybrid,
     Summation summation = Summation.appropriate)
 {
@@ -3589,7 +3508,7 @@ template weightedVariance(F,
 
 /// ditto
 template weightedVariance(
-    WeightedVarianceNormalization normalization = WeightedVarianceNormalization.population,
+    WeightedMomentNormalization normalization = WeightedMomentNormalization.population,
     VarianceAlgo varianceAlgo = VarianceAlgo.hybrid,
     Summation summation = Summation.appropriate)
 {
@@ -3611,14 +3530,14 @@ would overflow or underflow. The frequency-count example
 [0, 10] with counts [1, 3] has variance 25 and standard deviation 5.
 
 Choose population, frequencySample or relativeSample for the same reasons as in
-$(LREF WeightedVarianceNormalization). Taking the square root does not change
+$(REF WeightedMomentNormalization, mir, stat, descriptive, weighting). Taking the square root does not change
 what the weights mean. The same input requirements and numerical limits apply.
 The sample correction is a correction for variance; taking its square root does
 not in general produce an unbiased estimator of population standard deviation.
 See $(LREF weightedVariance) for executable examples.
 +/
 template weightedStandardDeviation(F,
-    WeightedVarianceNormalization normalization = WeightedVarianceNormalization.population,
+    WeightedMomentNormalization normalization = WeightedMomentNormalization.population,
     VarianceAlgo varianceAlgo = VarianceAlgo.hybrid,
     Summation summation = Summation.appropriate)
 {
@@ -3636,7 +3555,7 @@ template weightedStandardDeviation(F,
 
 /// ditto
 template weightedStandardDeviation(
-    WeightedVarianceNormalization normalization = WeightedVarianceNormalization.population,
+    WeightedMomentNormalization normalization = WeightedMomentNormalization.population,
     VarianceAlgo varianceAlgo = VarianceAlgo.hybrid,
     Summation summation = Summation.appropriate)
 {
@@ -3655,7 +3574,7 @@ version(mir_stat_test)
 unittest
 {
     import mir.math.common: approxEqual;
-    alias N = WeightedVarianceNormalization;
+    alias N = WeightedMomentNormalization;
     double[2] x = [0, 10];
     double[2] w = [1, 3];
     assert(weightedVariance(x[], w[]).approxEqual(18.75));
@@ -3677,7 +3596,7 @@ unittest
 {
     import mir.math.common: approxEqual;
     import std.meta: AliasSeq;
-    alias N = WeightedVarianceNormalization;
+    alias N = WeightedMomentNormalization;
     double[4] x = [1, 2, 4, 8];
     int[4] w = [1, 3, 2, 1];
     double[7] expanded = [1, 2, 2, 2, 4, 4, 8];
@@ -3725,7 +3644,7 @@ version(mir_stat_test)
 unittest
 {
     import mir.math.common: approxEqual;
-    alias N = WeightedVarianceNormalization;
+    alias N = WeightedMomentNormalization;
     double[2] x = [0, 10];
     static foreach (factor; [1e-300, 1.0, 1e300])
     {{
@@ -3778,7 +3697,7 @@ unittest
     import core.exception: AssertError;
     import std.exception: assertThrown;
     import std.algorithm: filter;
-    alias N = WeightedVarianceNormalization;
+    alias N = WeightedMomentNormalization;
     double[2] x = [0, 10];
     double[2] w = [1, 3];
     foreach (bad; [-1.0, double.nan, double.infinity])
@@ -3814,7 +3733,7 @@ unittest
     import mir.stat.descriptive.histogram.accumulator: HistogramAccumulator;
     import mir.stat.descriptive.histogram.axis: RegularAxis, AxisOptions;
     import mir.math.common: approxEqual;
-    alias Cell = WVarianceAccumulator!(double, WeightedVarianceNormalization.frequencySample);
+    alias Cell = WVarianceAccumulator!(double, WeightedMomentNormalization.frequencySample);
     alias Axis = RegularAxis!(double, AxisOptions());
     Cell[2] storage;
     auto h = HistogramAccumulator!(typeof(storage), Axis)(storage, Axis(2, 0.0, 2.0));
@@ -3842,7 +3761,7 @@ unittest
     size_t[1] ix, iw;
     auto values = Cursor(x[], ix[]);
     auto weights = Cursor(w[], iw[]);
-    static assert(!__traits(compiles, weightedVariance!(WeightedVarianceNormalization.population,
+    static assert(!__traits(compiles, weightedVariance!(WeightedMomentNormalization.population,
         VarianceAlgo.twoPass)(values, weights)));
     assert(weightedVariance(values, weights).approxEqual(weightedVariance(x[], w[])));
     assert(ix[0] == x.length && iw[0] == w.length);
@@ -3881,7 +3800,7 @@ unittest
     import std.math: ldexp, sqrt;
     import std.meta: AliasSeq;
     import mir.math.common: approxEqual;
-    alias N = WeightedVarianceNormalization;
+    alias N = WeightedMomentNormalization;
     static foreach (T; AliasSeq!(float, double, real))
     static foreach (norm; [N.population, N.frequencySample, N.relativeSample])
     static foreach (algo; [VarianceAlgo.online, VarianceAlgo.twoPass, VarianceAlgo.hybrid])
@@ -3917,7 +3836,7 @@ version(mir_stat_test)
 unittest
 {
     import mir.math.common: approxEqual;
-    alias N = WeightedVarianceNormalization;
+    alias N = WeightedMomentNormalization;
     double[4] x = [0, 1e16, 1e16 + 2, 1e16 + 2];
     double[4] w = [1e-32, 1, 1, 1];
     static foreach (algo; [VarianceAlgo.online, VarianceAlgo.twoPass, VarianceAlgo.hybrid])

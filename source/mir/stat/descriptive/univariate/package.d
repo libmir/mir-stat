@@ -161,6 +161,7 @@ $(TR $(TH Module) $(TH Public declarations))
             $(BR)
             $(B Algorithm:)
             $(REF VarianceAlgo, mir, stat, descriptive, univariate, dispersions)$(NBSP)
+            $(REF WeightedMomentNormalization, mir, stat, descriptive, weighting)$(NBSP)
             $(REF WeightedVarianceNormalization, mir, stat, descriptive, univariate, dispersions)$(NBSP)
         )
     )
@@ -188,6 +189,8 @@ $(TR $(TH Module) $(TH Public declarations))
         $(SMALL Skewness and kurtosis.))
         $(TD
             $(B Functions:)
+            $(REF weightedSkewness, mir, stat, descriptive, univariate, skewness_kurtosis)$(NBSP)
+            $(REF weightedKurtosis, mir, stat, descriptive, univariate, skewness_kurtosis)$(NBSP)
             $(LEGACY_ANCHOR skewness)$(REF skewness, mir, stat, descriptive, univariate, skewness_kurtosis)$(NBSP)
             $(LEGACY_ANCHOR kurtosis)$(REF kurtosis, mir, stat, descriptive, univariate, skewness_kurtosis)$(NBSP)
             $(BR)
@@ -272,10 +275,16 @@ public import mir.stat.descriptive.univariate.quantiles;
 ///
 public import mir.stat.descriptive.univariate.dispersions: dispersion, variance, standardDeviation, coefficientOfVariation, VarianceAlgo, VarianceAccumulator,
     weightedVariance, weightedStandardDeviation, WVarianceAccumulator,
-    WeightedVarianceNormalization, WeightedMomentNormalization;
+    WeightedVarianceNormalization;
+
+///
+public import mir.stat.descriptive.weighting: WeightedMomentNormalization;
 
 ///
 public import mir.stat.descriptive.univariate.moments;
+
+///
+public import mir.stat.descriptive.univariate.skewness_kurtosis: weightedSkewness, weightedKurtosis;
 
 ///
 public import mir.stat.descriptive.univariate.entropies: entropy, EntropyAccumulator, entropyType;
@@ -373,4 +382,33 @@ unittest
     assert(rcMeans[0] == 2.5);
     assert(customMeans[0] == 2.5);
     assert(output[0] == 2.5);
+}
+
+version(mir_stat_test)
+unittest
+{
+    import shape = mir.stat.descriptive.univariate.skewness_kurtosis;
+    static assert(__traits(isSame, weightedSkewness, shape.weightedSkewness));
+    static assert(__traits(isSame, weightedKurtosis, shape.weightedKurtosis));
+}
+
+// All import paths must expose the same policy type, including the older name.
+version(mir_stat_test)
+@safe pure nothrow @nogc
+unittest
+{
+    import policy = mir.stat.descriptive.weighting;
+    import spread = mir.stat.descriptive.univariate.dispersions;
+    import paired = mir.stat.descriptive.multivariate;
+    static assert(is(WeightedMomentNormalization == policy.WeightedMomentNormalization));
+    static assert(is(spread.WeightedMomentNormalization == policy.WeightedMomentNormalization));
+    static assert(is(spread.WeightedVarianceNormalization == policy.WeightedMomentNormalization));
+    static assert(is(paired.WeightedMomentNormalization == policy.WeightedMomentNormalization));
+    static assert(is(spread.WVarianceAccumulator!(double, spread.WeightedVarianceNormalization.frequencySample) ==
+        spread.WVarianceAccumulator!(double, policy.WeightedMomentNormalization.frequencySample)));
+    static assert(is(paired.WCovarianceAccumulator!(double, spread.WeightedVarianceNormalization.relativeSample) ==
+        paired.WCovarianceAccumulator!(double, policy.WeightedMomentNormalization.relativeSample)));
+    double[2] x = [0, 10], w = [1, 3];
+    assert(spread.weightedVariance!(spread.WeightedVarianceNormalization.frequencySample)(x, w) ==
+        spread.weightedVariance!(policy.WeightedMomentNormalization.frequencySample)(x, w));
 }

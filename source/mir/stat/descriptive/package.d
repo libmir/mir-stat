@@ -46,6 +46,17 @@ without measurement units. Order three describes skewness; order four is raw
 kurtosis. Counts, probabilities, and relative weights share the same formula.
 There is no sample bias correction. Subtract three from order four for excess
 kurtosis, which is zero for a normal distribution.))
+$(TR $(TD Weighted skewness and kurtosis) $(TD Use weightedSkewness for
+asymmetry and weightedKurtosis for tail-sensitive shape. Population is the
+default. WeightedMomentNormalization also selects frequencySample for repeated
+sample observations or relativeSample for independent rows with fixed relative
+emphasis. Sample corrections need at least three observations for skewness and
+four for kurtosis, counting
+expanded occurrences in frequency mode or positive-weight rows in relative mode.
+These corrected standardized ratios are not generally unbiased. Kurtosis defaults
+to excess; pass isRaw=true to add three. For values [0, 10] and counts [1, 3],
+population excess kurtosis is -2/3, while frequency-sample excess kurtosis is 4.
+Relative sample correction is unavailable for these two rows.))
 $(TR $(TD Weighted covariance) $(TD Use WeightedMomentNormalization with the same
 three choices as variance. For x=[0,10], y=[0,20], weights=[1,3], covariance is
 37.5 for population, 50 for frequencySample, and 100 for relativeSample.))
@@ -73,13 +84,13 @@ of uncertainty. See $(MREF mir, stat, descriptive, histogram, api) for examples.
 These choices do not make every kind of weight interchangeable. In particular,
 relativeSample is not a survey-design correction or the uncertainty of a mean
 formed using inverse-variance weights. See
-$(REF WeightedVarianceNormalization, mir, stat, descriptive, univariate, dispersions)
+$(REF WeightedMomentNormalization, mir, stat, descriptive, weighting)
 and $(REF WeightedQuantileAlgo, mir, stat, descriptive, univariate, quantiles)
 for each estimator's assumptions.
 
 Weight validity also depends on the function. Weighted means and sums allow
 signed algebraic weights and evaluate zero-weight products: NaN times zero
-still contributes NaN. Weighted raw, central, and standardized moments, variance, covariance, correlation, and quantiles require finite,
+still contributes NaN. Weighted raw, central, and standardized moments, skewness, kurtosis, variance, covariance, correlation, and quantiles require finite,
 nonnegative weights and exclude zero-weight observations, even nonfinite ones.
 Numeric histograms require finite, nonnegative weights; accumulator cells
 decide their own rules. AssumeWeights.sumToOne in the mean API is only a
@@ -110,5 +121,7 @@ public import mir.stat.descriptive.multivariate;
 public import mir.stat.descriptive.univariate;
 ///
 public import mir.stat.descriptive.weighted;
+///
+public import mir.stat.descriptive.weighting;
 ///
 public import mir.stat.descriptive.histogram;

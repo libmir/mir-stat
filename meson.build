@@ -19,6 +19,7 @@ sources_list = [
     'mir/math/internal/log_gamma',
     'mir/math/internal/xlogy',
     'mir/stat/descriptive/multivariate',
+    'mir/stat/descriptive/weighting',
     'mir/stat/descriptive/univariate/package',
     'mir/stat/descriptive/univariate/internal/types',
     'mir/stat/descriptive/univariate/means',
