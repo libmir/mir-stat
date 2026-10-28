@@ -92,7 +92,7 @@ version(mir_stat_test_blas) version = mir_stat_test_distance;
 public import mir.stat.internal.linearAlgebra.types: TrianglePolicy, DiagonalPolicy;
 import mir.stat.internal.linearAlgebra.quadratic: quadraticForm, quadraticFormWithWorkspace;
 import mir.math.sum: Summation;
-import mir.stat.internal.linearAlgebra.views: symmetricView;
+import mir.stat.internal.linearAlgebra.views: symmetricView, isStructuralView;
 import mir.stat.internal.linearAlgebra.allocation;
 import mir.ndslice.slice: toSlice, isSlice;
 import std.traits: Unqual, isFloatingPoint;
@@ -164,7 +164,7 @@ private alias Element(A) = Unqual!(typeof(View!A.init._iterator[0]));
 /// Whether an input can be borrowed as a real floating-point vector.
 private enum vector(A) = is(typeof(A.init.asView)) && View!A.N == 1 && isFloatingPoint!(Element!A);
 /// Whether an input can be borrowed as a real floating-point matrix.
-private enum matrix(A) = is(typeof(A.init.asView)) && View!A.N == 2 && isFloatingPoint!(Element!A);
+private enum matrix(A) = !isStructuralView!A && is(typeof(A.init.asView)) && View!A.N == 2 && isFloatingPoint!(Element!A);
 /// Whether observation, center, and metric have supported ranks and matching element types.
 private enum compatible(X, C, M) = vector!X && vector!C && matrix!M &&
     is(Element!X == Element!C) && is(Element!X == Element!M);
@@ -1985,4 +1985,18 @@ version(mir_stat_test_distance)
     auto squared = makeMahalanobisSquared(Mallocator.instance, data[].sliced(2,2).byDim!0, center[], metric[].sliced(2,2));
     scope(exit) Mallocator.instance.dispose(squared.field);
     assert(distances == [5,0] && squared == [25,0]);
+}
+
+// Generic toSlice forwarding must not discard triangular metadata on metric inputs.
+version(mir_stat_test_distance)
+@safe pure nothrow @nogc unittest
+{
+    import mir.ndslice.slice: sliced;
+    import mir.stat.internal.linearAlgebra.views: triangularView;
+    double[2] x = [1,2], center;
+    double[4] values = [2,double.nan,1,3];
+    auto metric = triangularView!(TrianglePolicy.lower)(values[].sliced(2,2));
+    static foreach (form; [MahalanobisMatrix.covariance, MahalanobisMatrix.cholesky,
+        MahalanobisMatrix.inverseCovariance, MahalanobisMatrix.inverseCovarianceCholesky])
+        static assert(!__traits(compiles, mahalanobisSquared!form(x[],center[],metric)));
 }

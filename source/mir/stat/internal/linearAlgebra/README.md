@@ -171,6 +171,36 @@ unused stored entries; for packed inputs absent entries read as zero.
 Their `transposed` property retains ownership and reverses the triangle policy.
 The caller must keep borrowed storage and computed-iterator dependencies alive.
 
+### Logical slice conversion
+
+Both structural views expose a read-only `asSlice` property. It reads the
+logical matrix: symmetric views reflect their selected triangle, and triangular
+views supply zeros and optional unit diagonal entries. It never reads unused
+storage to supply those values. The adapter copies no elements and preserves
+RC ownership; borrowed storage and computed dependencies must remain alive.
+
+~~~d
+double[4] data = [double.nan, 3, double.nan, double.nan];
+auto upper = triangularView!(TrianglePolicy.upper, DiagonalPolicy.unit)(
+    data[].sliced(2, 2));
+auto logical = upper.asSlice;
+assert(logical == [[1, 3], [0, 1]]);
+auto dense = logical.slice; // Independent writable GC copy.
+auto owned = logical.rcslice; // Independent writable RC copy.
+~~~
+
+Use `makeSlice(allocator, logical)` for a custom copy, and dispose its `field`
+with the same allocator. Raw `view.storage` is different: it exposes the
+underlying square indexing and can include unused or uninitialized entries.
+
+The property participates in Mir's existing `hasAsSlice` convention.
+`view.toSlice` and forwarding operations such as `view.map!"a * 2"` consume
+logical values without requiring an explicit `.asSlice` at the call site.
+The result is an ordinary logical slice; it no longer carries structural
+metadata for algorithm selection. Pass the original view to `mtimes`,
+quadratic forms, and other structure-aware operations to retain their
+specialized paths. Mutation requires an explicit writable copy.
+
 ## Packed triangular and symmetric storage
 
 Packed stairs store `n * (n + 1) / 2` entries rather than a full square matrix.
