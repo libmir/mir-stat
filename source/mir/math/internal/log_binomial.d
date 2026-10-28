@@ -278,7 +278,9 @@ unittest
             assert(approxEqual(logBinomialCoefficient!T(n, 2), expected,
                 64 * T.epsilon, T(0)));
             assert(logBinomialCoefficient!T(n, 0) == 0);
-            assert(logBinomialCoefficient!T(n, 1) == log(T(n)));
+            // Older Phobos returns real even for float/double log inputs.
+            assert(approxEqual(logBinomialCoefficient!T(n, 1), T(log(T(n))),
+                4 * T.epsilon, T(0)));
         }
         assert(logBinomialCoefficient!T(2048, 32) == logBinomialCoefficient!T(2048, 2016));
         assert(approxEqual(logBinomialCoefficient!T(2048, 32),
