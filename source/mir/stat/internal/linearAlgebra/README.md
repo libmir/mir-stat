@@ -299,6 +299,55 @@ Fast mode does not promise compensated accuracy or identical rounding across
 backends. It is a choice for callers willing to trade that accuracy for speed,
 not a change to the default numerical contract. Results are not clamped.
 
+## Choosing the Mahalanobis API
+
+| Input | Entry point | Result |
+|---|---|---|
+| One observation vector | `mahalanobis` or `mahalanobisSquared` | Scalar |
+| Supported rectangular `byDim` / `alongDim` selection of observation vectors | Ordinary function names | One eagerly calculated result per selected observation |
+| Plain matrix with observations in columns | Explicit `Batch` functions | One eagerly calculated result per column |
+
+For vector calls, GC/RC/custom choices concern scratch storage. For allocating
+batch and selection calls, they concern the result as well as scratch.
+`WithWorkspace` variants use caller-provided buffers; vector calls still
+return their scalar result.
+
+For a matrix, `byDim!1` / `alongDim!0` selects columns, while `byDim!0` /
+`alongDim!1` selects rows. Selection order determines output order. The input
+must be a supported rectangular selection of observation vectors; this does
+not extend to arbitrary nested collections, jagged input, or higher-rank
+selections.
+
+~~~d
+import mir.stat.distance;
+import mir.ndslice.slice: sliced;
+import mir.ndslice.dynamic: transposed;
+import mir.ndslice.topology: byDim, alongDim;
+
+double[6] data = [2, 3, 4, 0, 0, 6];
+double[4] covariance = [4, 0, double.nan, 9];
+double[2] center = [0, 0];
+auto rows = data[].sliced(3, 2);
+auto columns = rows.transposed;
+auto metric = covariance[].sliced(2, 2);
+auto byRows = mahalanobisSquared(rows.byDim!0, center[], metric);
+auto byColumns = mahalanobisSquared(columns.alongDim!0, center[], metric);
+assert(byRows == [2, 4, 4] && byColumns == byRows);
+assert(mahalanobisSquaredBatch(columns, center[], metric) == byRows);
+~~~
+
+Selection adapters recover the observation matrix and forward once to the
+batch operation. Covariance is factorized once per batch. Supplying
+`MahalanobisMatrix.covarianceCholesky` reuses an existing covariance factor
+without factorization, including when the same factor is retained across calls.
+Squared-distance evaluation is available through all three input conventions.
+
+The representation choices are `covariance`, `covarianceCholesky`,
+`inverseCovariance`, and `inverseCovarianceCholesky`. Triangle definitions are
+unchanged: an upper covariance factor satisfies `S = Uᵀ U`, while an upper
+precision factor satisfies `P = Rᵀ R`. A Cholesky factor of precision is not
+simply the inverse of a covariance factor.
+
 ## Fast precision-matrix Mahalanobis distance
 
 Public distance functions keep their existing compensated defaults. For a known
@@ -520,7 +569,7 @@ takes selected scratch. Explicit batches use `quadraticFormBatchInto` for both.
 Select workspace axes explicitly too; workspace storage orientation may differ:
 
 ```d
-mahalanobisSquaredWithWorkspace!(MahalanobisMatrix.cholesky)(
+mahalanobisSquaredWithWorkspace!(MahalanobisMatrix.covarianceCholesky)(
     rows.alongDim!1, center, factor, results, scratchColumns.byDim!1);
 
 quadraticFormWithWorkspace!(Summation.fast)(
@@ -561,9 +610,9 @@ The public distance module provides `mahalanobisBatch` and
 `mahalanobisSquaredBatch`, plus `rc`, `make`, and `WithWorkspace` variants:
 
 ```d
-auto distances = mahalanobisBatch!(MahalanobisMatrix.cholesky)(
+auto distances = mahalanobisBatch!(MahalanobisMatrix.covarianceCholesky)(
     observations, center, covarianceFactor);
-mahalanobisSquaredBatchWithWorkspace!(MahalanobisMatrix.cholesky)(
+mahalanobisSquaredBatchWithWorkspace!(MahalanobisMatrix.covarianceCholesky)(
     observations, center, covarianceFactor, results, centeredWorkspace);
 mahalanobisSquaredBatchWithWorkspace!(MahalanobisMatrix.inverseCovariance,
     TrianglePolicy.upper, Summation.fast)(
