@@ -14,7 +14,11 @@ import mir.internal.utility: isFloatingPoint;
 
 private enum size_t logFactorialAlternative = 1 << 11;
 
-///
+/++
+Natural logarithm of the product of count consecutive integers starting at start.
+An empty product returns zero. The mathematical endpoint may exceed ulong.max;
+large products are evaluated logarithmically without forming that integer sum.
++/
 T logFactorial(T = double)(ulong count, ulong start = 1)
     if (isFloatingPoint!T)
     in (start, "start must be larger than zero")
@@ -23,16 +27,34 @@ T logFactorial(T = double)(ulong count, ulong start = 1)
     import mir.math.numeric: factorial;
     import std.mathspecial: logGamma;
 
-    if (count + start < logFactorialAlternative) {
+    if (count == 0)
+        return T(0);
+    // Compare without wrapping count+start into the small-product path.
+    if (count < logFactorialAlternative && start < logFactorialAlternative - count) {
         return fp_log!T(factorial(count, start));
-    } else {
-        T output = T(logGamma(count + start)); // normally logGamma(x + 1), but start is included in value so subtract out
-        if (start < logFactorialAlternative) {
-            return output - fp_log!T(factorial(start - 1));
-        } else {
-            return output - T(logGamma(start));
-        }
     }
+    // A small lower endpoint has no large gamma logarithm to cancel.
+    // Phobos already evaluates logGamma in real; convert before adding.
+    if (start < 16)
+        return T(logGamma(cast(real) count + start)) - fp_log!T(factorial(start - 1));
+    return logRisingProduct!T(count, start);
+}
+
+private @safe pure nothrow @nogc
+T logRisingProduct(T)(ulong count, ulong start)
+{
+    pragma(inline, false);
+    import std.math: log, log1p;
+    import mir.math.internal.log_gamma: logGammaStirlingCorrection;
+    const T c = count, s = start;
+    const T ratio = c / s;
+    const T logRatio = log1p(ratio);
+    // Combine logGamma(s+c)-logGamma(s) algebraically. Evaluating the two
+    // gamma logs first can lose the entire answer when c is small beside s.
+    // Both gamma arguments are >=16; reciprocal arithmetic avoids s+c.
+    return c * log(s) + (s * logRatio - c) + (c - T(0.5)) * logRatio
+        + logGammaStirlingCorrection((1 / s) / (1 + ratio))
+        - logGammaStirlingCorrection(1 / s);
 }
 
 ///
@@ -85,6 +107,39 @@ unittest
 
 private enum size_t logBinomialCoefficientAlternative = 1 << 11;
 
+// Preserve short products and avoid unsigned wraparound in large endpoints.
+version(mir_stat_test)
+@safe pure nothrow @nogc
+unittest
+{
+    import std.meta: AliasSeq;
+    import std.math: log;
+    import mir.math.common: approxEqual;
+    static foreach (T; AliasSeq!(float, double, real))
+    {{
+        foreach (start; [1UL, 16UL, 2047UL, 2048UL, 10_000_000_000_000_000UL, ulong.max])
+        {
+            assert(logFactorial!T(0, start) == 0);
+            assert(approxEqual(logFactorial!T(1, start), log(T(start)),
+                128 * T.epsilon, T(0)));
+        }
+        // Independent 120-digit references, with exact integer inputs.
+        assert(approxEqual(logFactorial!T(2048, 16),
+            T(13658.47943226613946080615327315399332L), 64 * T.epsilon, T(0)));
+        assert(approxEqual(logFactorial!T(2048, 2047),
+            T(16405.31054988202626462080640908479586L), 64 * T.epsilon, T(0)));
+        assert(approxEqual(logFactorial!T(2, 10_000_000_000_000_000UL),
+            T(73.68272297580946198857572654989964964L), 64 * T.epsilon, T(0)));
+        assert(approxEqual(logFactorial!T(2, ulong.max),
+            T(88.72283911167299960535150143802232549L), 64 * T.epsilon, T(0)));
+        // These endpoints used to wrap into the iterative factorial path.
+        assert(approxEqual(logFactorial!T(ulong.max),
+            T(799877009219260410589.2105935388033377L), 64 * T.epsilon, T(0)));
+        assert(approxEqual(logFactorial!T(ulong.max, ulong.max),
+            T(825449626509665721883.9553386757654554L), 64 * T.epsilon, T(0)));
+    }}
+}
+
 ///
 T logBinomialCoefficient(T = double)(ulong n, uint k)
     if (isFloatingPoint!T)
@@ -105,7 +160,10 @@ T logBinomialCoefficient(T = double)(ulong n, uint k)
         if (n < logBinomialCoefficientAlternative) {
             return fp_log!T(binomialCoefficient(n, k));
         } else {
-            return logFactorial!T(k, n - k + 1) - logFactorial!T(k);
+            import mir.math.internal.log_beta: logBeta;
+            // C(n,k) = 1 / (k * B(n-k+1,k)). k>=2 makes n-k+1 safe
+            // even at ulong.max; no overflowing n+1 or gamma-log difference.
+            return -logBeta(T(n - k + 1), T(k)) - log(T(k));
         }
     }
 }
@@ -202,4 +260,30 @@ unittest
     assert(logBinomialCoefficient(x, 250).approxEqual(logFactorial(x) - logFactorial(250) - logFactorial(x - 250)));
     assert(logBinomialCoefficient(x, cast(uint) x / 2).approxEqual(logFactorial(x) - logFactorial(x / 2) - logFactorial(x / 2)));
     assert(logBinomialCoefficient(x, cast(uint) x - 250).approxEqual(logBinomialCoefficient(x, 250)));
+}
+
+// Large coefficients use beta normalization without n+1 or factorial subtraction.
+version(mir_stat_test)
+@safe pure nothrow @nogc
+unittest
+{
+    import std.meta: AliasSeq;
+    import std.math: log;
+    import mir.math.common: approxEqual;
+    static foreach (T; AliasSeq!(float, double, real))
+    {{
+        foreach (n; [2047UL, 2048UL, 4096UL, 10_000_000_000_000_000UL, ulong.max])
+        {
+            const T expected = log(T(n)) + log(T(n - 1)) - log(T(2));
+            assert(approxEqual(logBinomialCoefficient!T(n, 2), expected,
+                64 * T.epsilon, T(0)));
+            assert(logBinomialCoefficient!T(n, 0) == 0);
+            assert(logBinomialCoefficient!T(n, 1) == log(T(n)));
+        }
+        assert(logBinomialCoefficient!T(2048, 32) == logBinomialCoefficient!T(2048, 2016));
+        assert(approxEqual(logBinomialCoefficient!T(2048, 32),
+            T(162.1864092813636915658867887771846208L), 64 * T.epsilon, T(0)));
+        assert(approxEqual(logBinomialCoefficient!T(ulong.max, uint.max),
+            T(99560390359.53630308783576904322921299L), 64 * T.epsilon, T(0)));
+    }}
 }

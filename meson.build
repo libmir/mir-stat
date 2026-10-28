@@ -16,6 +16,7 @@ sources_list = [
     'mir/math/internal/powi',
     'mir/math/internal/log_beta',
     'mir/math/internal/log_binomial',
+    'mir/math/internal/log_gamma',
     'mir/math/internal/xlogy',
     'mir/stat/descriptive/multivariate',
     'mir/stat/descriptive/univariate/package',

@@ -17,6 +17,7 @@ Copyright: 2022 Mir Stat Authors.
 module mir.math.internal.log_beta;
 
 import mir.internal.utility: isFloatingPoint;
+import mir.math.internal.log_gamma: logGammaStirlingCorrection;
 
 /++
 Natural logarithm of B(alpha, beta). Intermediate arithmetic retains T's
@@ -68,7 +69,7 @@ T logBetaFallback(T)(const T alpha, const T beta)
         // (a+b-1/2)*log1p(a/b) avoids forming the possibly overflowing sum.
         return smallGamma - a * log(b) + (a - b * logRatio)
             - (a - T(0.5)) * logRatio
-            + logBetaCorrection(1 / b) - logBetaCorrection(inverseSum);
+            + logGammaStirlingCorrection(1 / b) - logGammaStirlingCorrection(inverseSum);
     }
 
     // Both shapes admit Stirling expansion. a/b cannot underflow here:
@@ -76,20 +77,8 @@ T logBetaFallback(T)(const T alpha, const T beta)
     return a * log(ratio) - a * logRatio - b * logRatio
         + T(0.5) * logRatio - T(0.5) * log(a)
         + T(0.91893853320467274178032973640561764L)
-        + logBetaCorrection(1 / a) + logBetaCorrection(1 / b)
-        - logBetaCorrection(inverseSum);
-}
-
-// Stirling's correction at z>=16, evaluated with r=1/z. The first omitted
-// term is below 2e-23 at z=16, below double and 80-bit real precision.
-private @safe pure nothrow @nogc
-T logBetaCorrection(T)(const T r)
-{
-    const T r2 = r * r;
-    return r * (T(1) / 12 + r2 * (-T(1) / 360 + r2 * (T(1) / 1260
-        + r2 * (-T(1) / 1680 + r2 * (T(1) / 1188 + r2 * (-T(691) / 360360
-        + r2 * (T(1) / 156 + r2 * (-T(3617) / 122400
-        + r2 * (T(43867) / 244188)))))))));
+        + logGammaStirlingCorrection(1 / a) + logGammaStirlingCorrection(1 / b)
+        - logGammaStirlingCorrection(inverseSum);
 }
 
 // Independent references around the Stirling transition and unequal shapes.
