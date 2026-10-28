@@ -19,6 +19,8 @@ contracts and executable examples.
 | --- | --- | --- |
 | `mtimes` | Matrix × matrix, matrix × vector, vector × matrix | Matrix or vector |
 | `mtimes` | Vector × vector | Dot-product value |
+| `crossprod` | One or two matrices | `Aᵀ A` or `Aᵀ B` |
+| `tcrossprod` | One or two matrices | `A Aᵀ` or `A Bᵀ` |
 | `mtimesTriangular` | Triangular matrix on the left | Matrix or vector |
 | `mtimesTriangularRight` | Triangular matrix on the right | Matrix or vector |
 | `quadraticForm` | Vector and general or symmetric matrix | `xᵀ A x` |
@@ -54,7 +56,7 @@ does not force an RC result.
 | Custom allocator | `makeMtimes(allocator, a, b)` | Caller disposes `result.field` with that allocator |
 | Caller output | `mtimesInto(a, b, output)` | Caller supplies and retains the buffer |
 
-The same naming applies to triangular products, Cholesky decomposition, and
+The same naming applies to cross-products, triangular products, Cholesky decomposition, and
 Cholesky solves. Two-vector products and quadratic forms return a numerical
 value, without allocating result storage. Custom-allocator factories release
 their allocation if computation throws before returning the result.
@@ -68,6 +70,47 @@ For internal code that wants only one allocation strategy, import `gc`, `rc`,
 or `custom` from this package. These convenience modules expose the existing
 names and overloads; they do not add wrappers. Import views, policies,
 quadratic forms, and caller-output/in-place operations separately as needed.
+
+## Cross-products with explicit matrix shapes
+
+`crossprod(a)` forms the column Gram matrix `Aᵀ A`; `tcrossprod(a)` forms the
+row Gram matrix `A Aᵀ`. For a matrix with `m` rows and `n` columns, these return
+`n × n` and `m × m` matrices respectively. Two-input forms compute `Aᵀ B`
+(equal input row counts) or `A Bᵀ` (equal input column counts).
+
+These functions require **matrix shapes**, including for vector-like data:
+
+```d
+double[2] values = [2, 3];
+auto column = values[].sliced(2, 1);
+auto row = values[].sliced(1, 2);
+assert(crossprod(column) == [[13]]);
+assert(tcrossprod(column) == [[4, 6], [6, 9]]);
+assert(crossprod(row) == [[4, 6], [6, 9]]);
+assert(tcrossprod(row) == [[13]]);
+```
+
+Results remain matrices, even when the shape is `1 × 1`. A bare rank-one slice
+is rejected. The names describe logical transposes, independently of storage
+order. Complex values are **not conjugated**; these are symmetric products,
+not Hermitian products. No symmetry is assumed for two-input calls.
+
+Choose `crossprod` / `tcrossprod` for GC storage, `rcCrossprod` / `rcTcrossprod`
+for RC storage, `makeCrossprod` / `makeTcrossprod` for custom allocation, or
+`crossprodInto` / `tcrossprodInto` for caller output. All four styles accept
+one or two matrix inputs. Custom callers dispose the result's field using the
+same allocator. `Into` output must be disjoint from both inputs and have
+nonoverlapping elements; the two read-only inputs may overlap each other.
+
+Self-products compute one triangle using SYRK where eligible, then mirror it
+to fill the whole output. Other layouts/types use a native D triangle kernel.
+Two-input calls reuse `mtimes`; use the one-input form to explicitly request
+the self-product optimization. The functions allocate no hidden input copies
+or scratch buffers. Empty contraction dimensions produce zeros. Reduction
+order and BLAS implementations can affect rounding and performance.
+
+The operations live in `crossproducts.d`, are re-exported by the package and
+the allocation-specific convenience modules, and remain package-restricted.
 
 ## Matrix structure and views
 

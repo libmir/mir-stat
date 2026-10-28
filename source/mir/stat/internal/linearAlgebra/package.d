@@ -9,7 +9,7 @@ is not otherwise a public application API.
 `views` describes matrix structure without depending on arithmetic operations.
 `backend` centralizes optional BLAS/LAPACK availability and storage checks,
 while `allocation` handles result storage. Operation modules build on these
-helpers: `products`, `triangular`, `quadratic`, and `cholesky`.
+helpers: `products`, `crossproducts`, `triangular`, `quadratic`, and `cholesky`.
 
 Import this package to use the matrix and vector multiplication APIs from
 `mir.stat.internal.linearAlgebra.products` and triangular products from
@@ -37,6 +37,13 @@ functions. Inputs can be borrowed or owning ndslices, including transposed,
 strided, and computed views. Floating-point and complex element types are
 supported; operands must have the same element type. Complex multiplication
 does not conjugate either operand.
+
+Use `crossprod(a)` for `a.transpose * a` and `tcrossprod(a)` for
+`a * a.transpose`. Two-input forms compute `a.transpose * b` and
+`a * b.transpose`. All inputs/results are matrices; express a vector explicitly
+as `(n, 1)` or `(1, n)`. Transpose never conjugates complex elements. Self-products
+use SYRK where eligible and mirror the computed triangle; a native D fallback
+handles other inputs. GC, RC, custom allocation, and `Into` variants are available.
 
 Use `quadraticForm(x, a)` for a general real quadratic form, or
 `quadraticForm(x, symmetricView(a))` to read only one triangle of a symmetric matrix.
@@ -122,6 +129,7 @@ version(mir_stat_test_blas) version = mir_stat_test_linearAlgebra;
 /// Public structural policies shared with the distance API.
 public import mir.stat.internal.linearAlgebra.types: TrianglePolicy, DiagonalPolicy;
 package(mir.stat) import mir.stat.internal.linearAlgebra.products;
+package(mir.stat) import mir.stat.internal.linearAlgebra.crossproducts;
 package(mir.stat) import mir.stat.internal.linearAlgebra.views;
 package(mir.stat) import mir.stat.internal.linearAlgebra.quadratic;
 package(mir.stat) import mir.stat.internal.linearAlgebra.triangular;
