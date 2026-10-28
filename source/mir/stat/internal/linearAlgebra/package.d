@@ -70,6 +70,19 @@ matching ordinary-input strides selects a temporary output. Unsupported cases
 retain the no-workspace fallback; no hidden allocation or matrix expansion occurs. The same view dispatch
 works with every ownership variant and caller output.
 
+`quadraticFormBatch` evaluates one real quadratic form per observation column;
+RC/custom variants and `quadraticFormBatchInto` provide the same ownership
+choices. Its default is compensated. Explicit fast mode uses a matrix workspace
+for GEMM/SYMM and column dots. Public `mahalanobisBatch` and
+`mahalanobisSquaredBatch` live in `mir.stat.distance`; their prepared-factor
+paths use TRSM/TRMM across columns and scaled norms. Covariance is factorized
+once per batch. These APIs use one shared center and metric, not pairwise distances.
+Ordinary distance and quadratic-form names accept a vector or explicit
+`alongDim`/`byDim` observation selections. For matrices, `alongDim!0` / `byDim!1`
+selects columns and `alongDim!1` / `byDim!0` selects rows. Adapters forward to
+the batch kernels without copying; bare matrices require explicit `Batch` names.
+The logical observation axes are independent of physical storage orientation.
+
 BLAS is optional. The default configuration uses native D kernels; compatible
 native layouts can use BLAS when that dependency is available. Backend and
 summation order can affect floating-point rounding.

@@ -1,10 +1,10 @@
 /++
-Allocation-free quadratic forms for real vectors and matrices.
+Quadratic forms for real vectors and batches of observations.
 
 `quadraticForm(x, a)` evaluates `x.transpose * a * x` using every matrix entry.
 `quadraticForm(x, symmetricView(a))` uses one logical triangle and never reads
 the other. Neither overload requires positive definiteness, and negative
-results are valid. Both return scalars without modifying inputs.
+results are valid. Vector overloads return scalars without modifying inputs.
 
 Inputs must be same-type float, double or real ndslices with matching shapes.
 Borrowed, owning, const, computed and strided views are supported. Rows and
@@ -15,6 +15,19 @@ No scratch allocation or BLAS dependency is required.
 `quadraticFormWithWorkspace` uses a caller-provided vector. Its default is also
 compensated; explicit `Summation.fast` permits GEMV/SYMV/SPMV and DOT where
 eligible, with native D fallback and backend-dependent rounding.
+
+Explicit `Batch` variants accept observation columns and return or overwrite a vector.
+They retain compensated defaults; explicit fast mode with matrix workspace
+uses GEMM/SYMM and column dots. GC, RC, and custom result ownership are available.
+
+Ordinary names also accept rectangular observation selections: `alongDim!0`
+or `byDim!1` selects columns; `alongDim!1` or `byDim!0` selects rows. A bare
+matrix requires `quadraticFormBatch`. Selection adapters preserve strides and
+ownership and forward the whole matrix to the batch implementation without
+copying. Results follow selection order. `quadraticFormInto` writes caller
+output; `quadraticFormWithWorkspace` additionally takes selected scratch with
+the same observation count and vector length. Storage order does not change
+axis meaning. Jagged collections and higher-rank selections are not supported.
 
 License: $(HTTP www.apache.org/licenses/LICENSE-2.0, Apache-2.0)
 Copyright: 2026 Mir Stat Authors.
@@ -29,6 +42,9 @@ import mir.stat.internal.linearAlgebra.types: Scalar, numericSlice, TrianglePoli
 import mir.stat.internal.linearAlgebra.views: SymmetricView, symmetricView;
 import mir.math.sum: Summation, Summator;
 import std.traits: isFloatingPoint;
+import mir.ndslice.topology: universal;
+import mir.ndslice.dynamic: transposed;
+import mir.stat.internal.linearAlgebra.allocation;
 
 /// Whether a real vector and real matrix share an element type.
 private enum compatible(X, A) = numericSlice!X && X.N == 1 &&
@@ -393,4 +409,348 @@ version(mir_stat_test_linearAlgebra)
         assert(quadraticForm(x, symmetricView(a)) == 0);
         assert(quadraticForm(x, symmetricView!(TrianglePolicy.lower)(a)) == 0);
     }}
+}
+
+/// Whether column observations and vector output have the same real element type.
+private enum batchCompatible(X, R) = numericSlice!X && X.N == 2 &&
+    numericSlice!R && R.N == 1 && is(Scalar!X == Scalar!R) && isFloatingPoint!(Scalar!X);
+
+/++
+Evaluate one quadratic form per column of `x`, writing a vector of length
+`x.length!1`. The metric may be a general matrix or a symmetric view.
+Inputs share a real element type. Output must be disjoint from inputs and
+have nonoverlapping writable elements. Shapes are asserted. No allocation
+occurs. Each column uses the requested summation policy; the default is KBN.
+Use the extra-workspace overload for matrix-matrix acceleration in fast mode.
++/
+package(mir.stat) void quadraticFormBatchInto(Summation summation = Summation.kbn, X, A, R)(
+    scope auto ref X x, scope auto ref A a, scope auto ref R result)
+    if (batchCompatible!(X, R) && __traits(compiles, quadraticForm!summation(x.universal.transposed[0], a)))
+{
+    import mir.ndslice.topology: universal;
+    import mir.ndslice.dynamic: transposed;
+    assert(a.length!0 == x.length!0 && a.length!1 == x.length!0);
+    assert(result.length == x.length!1);
+    auto columns = x.universal.transposed;
+    foreach (j; 0 .. columns.length) result[j] = quadraticForm!summation(columns[j], a);
+}
+
+/++
+Batch quadratic forms with an additional writable matrix of shape `x.shape`.
+Workspace and output must be mutually disjoint and disjoint from inputs.
+Explicit `Summation.fast` computes `a*x` once using GEMM or symmetric dispatch
+(SYMM when eligible), then column dots. Other policies retain their requested
+row and final reductions. Workspace is overwritten; no allocation occurs.
++/
+package(mir.stat) void quadraticFormBatchInto(Summation summation = Summation.kbn, X, A, R, W)(
+    scope auto ref X x, scope auto ref A a, scope auto ref R result, scope auto ref W work)
+    if (batchCompatible!(X, R) && numericSlice!W && W.N == 2 && is(Scalar!X == Scalar!W) &&
+        __traits(compiles, quadraticForm!summation(x.universal.transposed[0], a)))
+{
+    import mir.ndslice.topology: universal;
+    import mir.ndslice.dynamic: transposed;
+    import mir.stat.internal.linearAlgebra.products: mtimesInto, mtimes;
+    assert(a.length!0 == x.length!0 && a.length!1 == x.length!0);
+    assert(result.length == x.length!1 && work.shape == x.shape);
+    auto columns = x.universal.transposed;
+    auto products = work.universal.transposed;
+    static if (summation == Summation.fast)
+    {
+        mtimesInto(a, x, work);
+        foreach (j; 0 .. columns.length) result[j] = mtimes(columns[j], products[j]);
+    }
+    else foreach (j; 0 .. columns.length)
+        result[j] = quadraticFormWithWorkspace!summation(columns[j], a, products[j]);
+}
+
+/++
+Return a GC-managed vector of column quadratic forms. Arguments and arithmetic
+follow `quadraticFormBatchInto`. Default policies allocate only the result;
+explicit fast mode additionally allocates a matrix workspace for GEMM/SYMM.
++/
+package(mir.stat) AllocatedSlice!(Allocation.gc, Scalar!X, 1)
+quadraticFormBatch(Summation summation = Summation.kbn, X, A)(
+    scope auto ref X x, scope auto ref A a)
+    if (numericSlice!X && X.N == 2 && isFloatingPoint!(Scalar!X) &&
+        __traits(compiles, quadraticForm!summation(x.universal.transposed[0], a)))
+{
+    int allocator;
+    return quadraticBatchAllocated!(Allocation.gc, summation)(allocator, x, a);
+}
+
+/// Observations are columns; a single metric applies to every observation.
+version(mir_stat_test_linearAlgebra)
+@safe pure nothrow unittest
+{
+    import mir.ndslice.slice: sliced;
+    double[6] data = [1, 2, 0, 2, 1, 0], buffer;
+    double[4] matrix = [4, 2, double.nan, 5];
+    double[3] output;
+    auto x = data[].sliced(2, 3);
+    auto a = symmetricView(matrix[].sliced(2, 2));
+    assert(quadraticFormBatch(x, a) == [32, 29, 0]);
+    quadraticFormBatchInto!(Summation.fast)(x, a, output[].sliced, buffer[].sliced(2, 3));
+    assert(output == [32, 29, 0]);
+}
+
+/++
+Return a reference-counted vector of column quadratic forms. Arguments and arithmetic
+follow `quadraticFormBatchInto`. Default policies allocate only the result;
+explicit fast mode additionally allocates a matrix workspace for GEMM/SYMM.
++/
+package(mir.stat) AllocatedSlice!(Allocation.rc, Scalar!X, 1)
+rcQuadraticFormBatch(Summation summation = Summation.kbn, X, A)(
+    scope auto ref X x, scope auto ref A a)
+    if (numericSlice!X && X.N == 2 && isFloatingPoint!(Scalar!X) &&
+        __traits(compiles, quadraticForm!summation(x.universal.transposed[0], a)))
+{
+    int allocator;
+    return quadraticBatchAllocated!(Allocation.rc, summation)(allocator, x, a);
+}
+
+/++
+Return a custom-allocated vector of column quadratic forms. Arguments and arithmetic
+follow `quadraticFormBatchInto`. Default policies allocate only the result;
+explicit fast mode additionally allocates a matrix workspace for GEMM/SYMM.
+Custom result storage belongs to the caller, who disposes its field.
++/
+package(mir.stat) AllocatedSlice!(Allocation.custom, Scalar!X, 1)
+makeQuadraticFormBatch(Summation summation = Summation.kbn, X, A, Allocator)(
+    auto ref Allocator allocator, scope auto ref X x, scope auto ref A a)
+    if (numericSlice!X && X.N == 2 && isFloatingPoint!(Scalar!X) &&
+        __traits(compiles, quadraticForm!summation(x.universal.transposed[0], a)))
+{
+    return quadraticBatchAllocated!(Allocation.custom, summation)(allocator, x, a);
+}
+
+/// Allocate a result and optional fast workspace, releasing custom temporaries on every exit.
+private AllocatedSlice!(policy, Scalar!X, 1) quadraticBatchAllocated(Allocation policy,
+    Summation summation, Allocator, X, A)(ref Allocator allocator, scope auto ref X x, scope auto ref A a)
+{
+    auto result = allocate!(policy, Scalar!X)(allocator, [x.length!1]);
+    scope(failure) { static if (policy == Allocation.custom) {
+        import std.experimental.allocator: dispose; allocator.dispose(result.field); } }
+    static if (summation == Summation.fast)
+    {
+        auto work = allocate!(policy, Scalar!X)(allocator, x.shape);
+        scope(exit) { static if (policy == Allocation.custom) {
+            import std.experimental.allocator: dispose; allocator.dispose(work.field); } }
+        quadraticFormBatchInto!summation(x, a, result, work);
+    }
+    else quadraticFormBatchInto!summation(x, a, result);
+    return result;
+}
+
+
+version(mir_stat_test_linearAlgebra)
+@safe pure nothrow @nogc unittest
+{
+    import mir.ndslice.slice: sliced;
+    import mir.ndslice.dynamic: reversed;
+    double large = 4/double.epsilon;
+    double[9] data = [large, 1, -large, 0, 0, 0, 0, 0, 0];
+    double[6] xs = [1, 2, 1, 2, 1, 2], ws;
+    double[2] rs;
+    auto x = xs[].sliced(3, 2); auto a = data[].sliced(3, 3);
+    auto output = rs[].sliced.universal.reversed;
+    quadraticFormBatchInto(x, a, output);
+    assert(output == [1, 4]);
+    quadraticFormBatchInto(x, a, output, ws[].sliced(3, 2));
+    assert(output == [1, 4]);
+    data[] = 0;
+    data[0] = data[4] = data[8] = -1;
+    quadraticFormBatchInto!(Summation.fast)(x, a, output, ws[].sliced(3, 2));
+    assert(output == [-3, -12]);
+    double[0] empty;
+    quadraticFormBatchInto!(Summation.fast)(empty[].sliced(0, 2), empty[].sliced(0, 0), output, empty[].sliced(0, 2));
+    assert(output == [0, 0]);
+}
+
+version(mir_stat_test_linearAlgebra)
+@system unittest
+{
+    import mir.ndslice.slice: sliced;
+    import mir.ndslice.topology: map;
+    import std.experimental.allocator.mallocator: Mallocator;
+    import std.experimental.allocator: dispose;
+    import std.exception: assertThrown;
+    struct CountingAllocator {
+        size_t allocations, releases;
+        /// Count each successful test allocation.
+        void[] allocate(size_t bytes) { ++allocations; return Mallocator.instance.allocate(bytes); }
+        /// Count each released buffer.
+        bool deallocate(void[] memory) { ++releases; return Mallocator.instance.deallocate(memory); }
+    }
+    CountingAllocator allocator;
+    double[4] a = [1, 0, 0, 1]; double[2] x = [2, 3];
+    auto r = makeQuadraticFormBatch!(Summation.fast)(allocator, x[].sliced(2, 1), a[].sliced(2, 2));
+    assert(r[0] == 13 && allocator.allocations == 2 && allocator.releases == 1);
+    allocator.dispose(r.field);
+    auto failure = new Exception("computed metric failed");
+    /// Fail after allocation to exercise independent result and workspace cleanup.
+    double fail(double value) { throw failure; }
+    assertThrown!Exception(makeQuadraticFormBatch!(Summation.fast)(allocator, x[].sliced(2, 1), a[].sliced(2, 2).map!fail));
+    assert(allocator.allocations == allocator.releases);
+    assert(rcQuadraticFormBatch(x[].sliced(2, 1), a[].sliced(2, 2))[0] == 13);
+}
+
+import mir.stat.internal.linearAlgebra.types: isObservationSelection, ObservationColumns, observationColumns;
+
+/++
+Evaluate a quadratic form for each explicitly selected observation vector.
+`x.alongDim!0` / `x.byDim!1` selects columns; `x.alongDim!1` / `x.byDim!0`
+selects rows. The result follows selection order. One selection gives a
+one-element vector. A bare matrix requires `quadraticFormBatch`.
+Only rectangular Mir slice-of-slices views are accepted. A descriptor-only
+adapter preserves strides and ownership and forwards to `quadraticFormBatch`;
+eligible fast arithmetic retains whole-batch matrix multiplication.
+The metric, arithmetic, gc ownership, and custom-disposal contracts
+follow `quadraticFormBatch`. The metric may be a general matrix or symmetric view.
++/
+package(mir.stat) AllocatedSlice!(Allocation.gc, Scalar!(ObservationColumns!X), 1)
+quadraticForm(Summation summation = Summation.kbn, X, A)(
+    scope auto ref X x, scope auto ref A a)
+    if (isObservationSelection!X && __traits(compiles,
+        quadraticFormBatch!summation(ObservationColumns!X.init, a)))
+{
+    auto columns = observationColumns(x);
+    return quadraticFormBatch!summation(columns, a);
+}
+
+/++
+Evaluate a quadratic form for each explicitly selected observation vector.
+`x.alongDim!0` / `x.byDim!1` selects columns; `x.alongDim!1` / `x.byDim!0`
+selects rows. The result follows selection order. One selection gives a
+one-element vector. A bare matrix requires `rcQuadraticFormBatch`.
+Only rectangular Mir slice-of-slices views are accepted. A descriptor-only
+adapter preserves strides and ownership and forwards to `rcQuadraticFormBatch`;
+eligible fast arithmetic retains whole-batch matrix multiplication.
+The metric, arithmetic, rc ownership, and custom-disposal contracts
+follow `rcQuadraticFormBatch`. The metric may be a general matrix or symmetric view.
++/
+package(mir.stat) AllocatedSlice!(Allocation.rc, Scalar!(ObservationColumns!X), 1)
+rcQuadraticForm(Summation summation = Summation.kbn, X, A)(
+    scope auto ref X x, scope auto ref A a)
+    if (isObservationSelection!X && __traits(compiles,
+        rcQuadraticFormBatch!summation(ObservationColumns!X.init, a)))
+{
+    auto columns = observationColumns(x);
+    return rcQuadraticFormBatch!summation(columns, a);
+}
+
+/++
+Evaluate a quadratic form for each explicitly selected observation vector.
+`x.alongDim!0` / `x.byDim!1` selects columns; `x.alongDim!1` / `x.byDim!0`
+selects rows. The result follows selection order. One selection gives a
+one-element vector. A bare matrix requires `makeQuadraticFormBatch`.
+Only rectangular Mir slice-of-slices views are accepted. A descriptor-only
+adapter preserves strides and ownership and forwards to `makeQuadraticFormBatch`;
+eligible fast arithmetic retains whole-batch matrix multiplication.
+The metric, arithmetic, custom ownership, and custom-disposal contracts
+follow `makeQuadraticFormBatch`. The metric may be a general matrix or symmetric view.
++/
+package(mir.stat) AllocatedSlice!(Allocation.custom, Scalar!(ObservationColumns!X), 1)
+makeQuadraticForm(Summation summation = Summation.kbn, X, A, Allocator)(
+    auto ref Allocator allocator, scope auto ref X x, scope auto ref A a)
+    if (isObservationSelection!X && __traits(compiles,
+        makeQuadraticFormBatch!summation(allocator, ObservationColumns!X.init, a)))
+{
+    auto columns = observationColumns(x);
+    return makeQuadraticFormBatch!summation(allocator, columns, a);
+}
+
+/++
+Write one quadratic form per selected observation to ordinary vector `result`.
+Select columns with `alongDim!0` / `byDim!1`, or rows with `alongDim!1` / `byDim!0`.
+Output length is the selection count. No allocation occurs; output must have
+nonoverlapping elements and be disjoint from inputs. Other contracts follow
+`quadraticFormBatchInto`. Use `quadraticFormWithWorkspace` for fast matrix products.
++/
+package(mir.stat) void quadraticFormInto(Summation summation = Summation.kbn, X, A, R)(
+    scope auto ref X x, scope auto ref A a, scope auto ref R result)
+    if (isObservationSelection!X && __traits(compiles,
+        quadraticFormBatchInto!summation(ObservationColumns!X.init, a, result)))
+{
+    auto columns = observationColumns(x);
+    quadraticFormBatchInto!summation(columns, a, result);
+}
+
+/++
+Write quadratic forms using explicitly selected observations and scratch vectors.
+`x` and `work` selections have equal counts and vector lengths; storage layouts
+may differ. Results follow observation selection order. No allocation occurs.
+Output and scratch must be mutually disjoint and disjoint from inputs, with
+nonoverlapping writable elements. Arithmetic follows `quadraticFormBatchInto`;
+explicit fast mode retains whole-batch GEMM/SYMM where eligible.
++/
+package(mir.stat) void quadraticFormWithWorkspace(Summation summation = Summation.kbn, X, A, R, W)(
+    scope auto ref X x, scope auto ref A a, scope auto ref R result, scope auto ref W work)
+    if (isObservationSelection!X && isObservationSelection!W && __traits(compiles,
+        quadraticFormBatchInto!summation(ObservationColumns!X.init, a, result, ObservationColumns!W.init)))
+{
+    auto columns = observationColumns(x);
+    auto scratch = observationColumns(work);
+    quadraticFormBatchInto!summation(columns, a, result, scratch);
+}
+
+/// alongDim and byDim select the same observation vectors using complementary axes.
+version(mir_stat_test_linearAlgebra)
+@safe pure nothrow unittest
+{
+    import mir.ndslice.slice: sliced;
+    import mir.ndslice.topology: alongDim, byDim;
+    double[6] rowData = [1, 2, 2, 1, 0, 0], columnData = [1, 2, 0, 2, 1, 0];
+    double[4] data = [4, 2, double.nan, 5];
+    auto rows = rowData[].sliced(3, 2);
+    auto columns = columnData[].sliced(2, 3);
+    auto metric = symmetricView(data[].sliced(2, 2));
+    auto expected = quadraticFormBatch(columns, metric);
+    assert(expected == [32,29,0]);
+    assert(quadraticForm(rows.alongDim!1, metric) == expected);
+    assert(quadraticForm(rows.byDim!0, metric) == expected);
+    assert(quadraticForm(columns.alongDim!0, metric) == expected);
+    assert(quadraticForm(columns.byDim!1, metric) == expected);
+    const selected = rows.byDim!0;
+    assert(rcQuadraticForm(selected, metric) == expected);
+    assert(quadraticForm(rows.alongDim!(-1), metric) == expected);
+    assert(quadraticForm(columns.alongDim!(-2), metric) == expected);
+    assert(quadraticForm(rows.byDim!0[0 .. 1], metric).length == 1);
+    static assert(!__traits(compiles, quadraticForm(rows, metric)));
+    assert(quadraticForm(rows[0], metric) == 32);
+}
+
+/// Caller output and selected scratch preserve whole-batch fast arithmetic without allocation.
+version(mir_stat_test_linearAlgebra)
+@safe pure nothrow @nogc unittest
+{
+    import mir.ndslice.slice: sliced;
+    import mir.ndslice.topology: alongDim, byDim;
+    double[6] data = [1,2,2,1,0,0], buffer;
+    double[4] matrix = [4,2,double.nan,5];
+    double[3] output;
+    auto observations = data[].sliced(3,2).byDim!0;
+    auto metric = symmetricView(matrix[].sliced(2,2));
+    quadraticFormInto(observations, metric, output[].sliced);
+    assert(output == [32,29,0]);
+    quadraticFormWithWorkspace!(Summation.fast)(observations, metric,
+        output[].sliced, buffer[].sliced(2,3).alongDim!0);
+    assert(output == [32,29,0]);
+    quadraticFormWithWorkspace(observations, metric,
+        output[].sliced, buffer[].sliced(3,2).alongDim!1);
+    assert(output == [32,29,0]);
+}
+
+/// Custom allocation uses the same selection and metric semantics.
+version(mir_stat_test_linearAlgebra)
+@system unittest
+{
+    import mir.ndslice.slice: sliced;
+    import mir.ndslice.topology: byDim;
+    import std.experimental.allocator.mallocator: Mallocator;
+    import std.experimental.allocator: dispose;
+    double[4] data = [1,2,0,0], matrix = [1,0,0,1];
+    auto values = makeQuadraticForm!(Summation.fast)(Mallocator.instance,
+        data[].sliced(2,2).byDim!0, matrix[].sliced(2,2));
+    scope(exit) Mallocator.instance.dispose(values.field);
+    assert(values == [5,0]);
 }

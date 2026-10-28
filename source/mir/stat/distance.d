@@ -25,13 +25,44 @@ Quadratic forms also accept indefinite matrices and may return negative values.
 
 Choose `mahalanobis` or `mahalanobisSquared` for GC scratch storage, their `rc`
 variants for temporary reference-counted storage, `make` variants for a custom
-allocator, or `WithWorkspace` variants for reusable caller storage. All return
-scalars; ownership choices apply only to temporary workspaces. Covariance input
+allocator, or `WithWorkspace` variants for reusable caller storage. Vector calls return
+scalars; their ownership choices apply only to temporary workspaces. Covariance input
 needs a matrix and vector workspace; precomputed forms normally need one vector.
 Precision-matrix calls can opt into `Summation.fast` as a third template argument
 (after the representation and triangle). This uses two vectors and permits BLAS
 SYMV plus DOT. GC, RC, custom allocation, and a two-vector `WithWorkspace`
 overload are available. Existing calls keep their compensated behavior.
+
+For multiple observations sharing one center and metric, use `mahalanobisBatch`
+or `mahalanobisSquaredBatch`. Observations are columns of a `(dimension, count)`
+matrix, and the result is a vector of length `count`. GC/RC/custom ownership
+applies to the result as well as scratch. `BatchWithWorkspace` variants accept
+caller output followed by matrix scratch. Covariance is factorized once per
+batch; prepared factors use TRSM/TRMM where eligible. Fast precision batches
+use an extra product matrix and permit SYMM plus column dots. All writable
+buffers must be mutually disjoint and disjoint from inputs.
+
+
+For explicit axis selection, pass a rectangular view made by `alongDim` or
+`byDim` to the ordinary names. For a matrix, `alongDim!0` / `byDim!1` selects
+columns; `alongDim!1` / `byDim!0` selects rows. Negative dimension indices follow
+Mir conventions. The outer selection indexes observations and each inner
+vector contains its coordinates. A selected observation always produces one
+result entry; a vector input to the ordinary function still returns a scalar.
+Bare matrices require the explicit `Batch` names, whose observations are columns.
+
+Selection changes view metadata only. Adapters recover the whole matrix and
+forward once to the batch implementation, preserving input ownership and
+eligible BLAS matrix kernels. They do not map independent distance calls or
+repeat covariance factorization per observation. Arbitrary jagged collections
+and higher-rank selections are not supported by these adapters.
+
+Storage order never determines observation axes. Select the axes of caller
+scratch separately, with the same observation count and coordinate length as
+the input selection. Output is an ordinary vector in selection order. Extra
+covariance-factor scratch remains an ordinary square matrix; extra precision
+product scratch uses an observation selection. All buffers retain the batch
+API's disjointness and nonoverlapping-element requirements.
 
 Inputs are same-type real float, double or real vectors and matrices. Vectors
 may also be dynamic arrays. Only the selected matrix triangle is read; full
@@ -1059,4 +1090,899 @@ version(mir_stat_test_distance)
         assert(mahalanobisSquaredWithWorkspace!(form,triangle,fast)(xv,cv,p,work[],product[]) == expected);
         assert(mahalanobisSquaredWithWorkspace!(form,triangle,fast)(x[0..0],center[0..0],data[0..0].sliced(0,0),work[0..0],product[0..0]) == 0);
     }}
+}
+
+/// Whether column observations, center, and metric have matching real element types.
+private enum batchCompatible(X, C, M) = matrix!X && vector!C && matrix!M &&
+    is(Element!X == Element!C) && is(Element!X == Element!M);
+
+/// Validate batch shapes before touching caller-owned output or scratch storage.
+private void checkBatch(X, C, M, R, W)(X x, C center, M metric, R result, W work)
+{
+    assert(center.length == x.length!0 && metric.length!0 == x.length!0 &&
+        metric.length!1 == x.length!0, "Incompatible Mahalanobis batch dimensions");
+    assert(result.length == x.length!1 && work.shape == x.shape,
+        "Incompatible Mahalanobis batch output or workspace");
+}
+
+/// Center every observation, checking finite inputs and only the selected metric triangle.
+private void centerBatch(TrianglePolicy triangle, X, C, M, W)(X x, C center, M metric, W work)
+{
+    static assert(triangle == TrianglePolicy.upper || triangle == TrianglePolicy.lower);
+    import std.math: isFinite;
+    foreach (i; 0 .. x.length!0)
+    {
+        assert(isFinite(center[i]), "Mahalanobis center must be finite");
+        foreach (j; 0 .. x.length!1)
+        {
+            assert(isFinite(x[i, j]), "Mahalanobis observations must be finite");
+            work[i, j] = x[i, j] - center[i];
+        }
+        foreach (j; 0 .. metric.length!1)
+            if (triangle == TrianglePolicy.upper ? j >= i : j <= i)
+                assert(isFinite(metric[i, j]), "Mahalanobis metric must be finite");
+    }
+}
+
+/// Evaluate a prepared batch after centering, using one triangular matrix operation when possible.
+private void preparedBatch(bool squared, MahalanobisMatrix form, TrianglePolicy triangle,
+    Summation summation, X, C, M, R, W)(X x, C center, M metric, R result, W work)
+{
+    import mir.ndslice.topology: universal;
+    import mir.ndslice.dynamic: transposed;
+    import std.math: sqrt;
+    checkBatch(x, center, metric, result, work);
+    centerBatch!triangle(x, center, metric, work);
+    static if (form == MahalanobisMatrix.inverseCovariance)
+    {
+        import mir.stat.internal.linearAlgebra.quadratic: quadraticFormBatchInto;
+        quadraticFormBatchInto!summation(work, symmetricView!triangle(metric), result);
+        static if (!squared) foreach (j; 0 .. result.length) result[j] = sqrt(result[j]);
+    }
+    else
+    {
+        import mir.stat.internal.linearAlgebra.triangular: triangularMatrixInPlace;
+        static if (form == MahalanobisMatrix.cholesky)
+        {
+            static if (triangle == TrianglePolicy.upper) auto a = metric.universal.transposed;
+            else auto a = metric.universal;
+            triangularMatrixInPlace!(true, TrianglePolicy.lower)(a, work);
+        }
+        else static if (form == MahalanobisMatrix.inverseCovarianceCholesky)
+        {
+            static if (triangle == TrianglePolicy.lower) auto a = metric.universal.transposed;
+            else auto a = metric.universal;
+            triangularMatrixInPlace!(false, TrianglePolicy.upper)(a, work);
+        }
+        else static assert(0, "A prepared batch requires a factor or precision matrix");
+        auto columns = work.universal.transposed;
+        foreach (j; 0 .. result.length) result[j] = scaledNorm!squared(columns[j]);
+    }
+}
+
+/++
+Compute distances for observation columns using one shared center and metric.
+Returns a GC-managed vector of length `x.length!1`. Inputs share a real element type;
+`x` has shape `(dimension, count)`, center has length `dimension`, and the metric
+is square. The selected triangle and representation follow the single-observation
+API. Covariance is factorized once per batch. Prepared covariance/precision
+factors use TRSM/TRMM where eligible and stable scaled column norms.
+Precision matrices retain compensated reductions by default; explicit
+`Summation.fast` permits SYMM and column dots with an extra matrix workspace.
+Native D fallbacks support general strides. Zero-dimensional observations have
+zero distance; a batch with no columns returns an empty vector.
++/
+AllocatedSlice!(Allocation.gc, Element!X, 1)
+mahalanobisBatch(MahalanobisMatrix form = MahalanobisMatrix.covariance,
+    TrianglePolicy triangle = TrianglePolicy.upper, Summation summation = Summation.kbn,
+    X, C, M)(
+    scope auto ref X x, scope auto ref C center, scope auto ref M metric)
+    if (batchCompatible!(X, C, M))
+{
+    int allocator;
+    return batchAllocated!(Allocation.gc, false, form, triangle, summation)(allocator, x, center, metric);
+}
+
+/++
+Compute distances for observation columns using one shared center and metric.
+Returns a reference-counted vector of length `x.length!1`. Inputs share a real element type;
+`x` has shape `(dimension, count)`, center has length `dimension`, and the metric
+is square. The selected triangle and representation follow the single-observation
+API. Covariance is factorized once per batch. Prepared covariance/precision
+factors use TRSM/TRMM where eligible and stable scaled column norms.
+Precision matrices retain compensated reductions by default; explicit
+`Summation.fast` permits SYMM and column dots with an extra matrix workspace.
+Native D fallbacks support general strides. Zero-dimensional observations have
+zero distance; a batch with no columns returns an empty vector.
++/
+AllocatedSlice!(Allocation.rc, Element!X, 1)
+rcMahalanobisBatch(MahalanobisMatrix form = MahalanobisMatrix.covariance,
+    TrianglePolicy triangle = TrianglePolicy.upper, Summation summation = Summation.kbn,
+    X, C, M)(
+    scope auto ref X x, scope auto ref C center, scope auto ref M metric)
+    if (batchCompatible!(X, C, M))
+{
+    int allocator;
+    return batchAllocated!(Allocation.rc, false, form, triangle, summation)(allocator, x, center, metric);
+}
+
+/++
+Compute distances for observation columns using one shared center and metric.
+Returns a custom-allocated vector of length `x.length!1`. Inputs share a real element type;
+`x` has shape `(dimension, count)`, center has length `dimension`, and the metric
+is square. The selected triangle and representation follow the single-observation
+API. Covariance is factorized once per batch. Prepared covariance/precision
+factors use TRSM/TRMM where eligible and stable scaled column norms.
+Precision matrices retain compensated reductions by default; explicit
+`Summation.fast` permits SYMM and column dots with an extra matrix workspace.
+Native D fallbacks support general strides. Zero-dimensional observations have
+zero distance; a batch with no columns returns an empty vector.
+Custom callers dispose the returned vector's field; temporary buffers are released.
++/
+AllocatedSlice!(Allocation.custom, Element!X, 1)
+makeMahalanobisBatch(MahalanobisMatrix form = MahalanobisMatrix.covariance,
+    TrianglePolicy triangle = TrianglePolicy.upper, Summation summation = Summation.kbn,
+    X, C, M, Allocator)(auto ref Allocator allocator,
+    scope auto ref X x, scope auto ref C center, scope auto ref M metric)
+    if (batchCompatible!(X, C, M))
+{
+    return batchAllocated!(Allocation.custom, false, form, triangle, summation)(allocator, x, center, metric);
+}
+
+/++
+Write one distance per observation column into `result`, reusing `work`.
+`result` has length `x.length!1`; `work` has shape `x.shape`. All writable
+buffers must have nonoverlapping elements and be disjoint from each other and
+all inputs. Shapes are asserted; overlap is not checked. No allocation occurs.
+This overload accepts prepared factors or a compensated precision matrix.
+Covariance and fast precision calls require the extra-workspace overload.
+Factor forms compute scaled norms directly, preserving the unsquared API's
+range. Finite-input and positive-definite preconditions match the scalar API.
++/
+void mahalanobisBatchWithWorkspace(MahalanobisMatrix form,
+    TrianglePolicy triangle = TrianglePolicy.upper, Summation summation = Summation.kbn,
+    X, C, M, R, W)(scope auto ref X x, scope auto ref C center, scope auto ref M metric,
+    scope auto ref R result, scope auto ref W work)
+    if (batchCompatible!(X, C, M) && vector!R && matrix!W &&
+        is(Element!X == Element!R) && is(Element!X == Element!W) &&
+        form != MahalanobisMatrix.covariance &&
+        !(form == MahalanobisMatrix.inverseCovariance && summation == Summation.fast))
+{
+    preparedBatch!(false, form, triangle, summation)(x.asView, center.asView, metric.asView, result.asView, work.asView);
+}
+
+/++
+Batch workspace overload with an extra matrix. For covariance, `extra` is square
+with the metric's shape and receives the Cholesky factor. For a precision matrix,
+`extra` has `x.shape` and receives the matrix product. Explicit fast precision
+uses SYMM when layouts permit. Other summation policies retain their selected reductions.
+All buffers must be mutually disjoint and disjoint from inputs; no allocation
+occurs. Other contracts follow the one-workspace overload.
++/
+void mahalanobisBatchWithWorkspace(MahalanobisMatrix form = MahalanobisMatrix.covariance,
+    TrianglePolicy triangle = TrianglePolicy.upper, Summation summation = Summation.kbn,
+    X, C, M, R, W, E)(scope auto ref X x, scope auto ref C center, scope auto ref M metric,
+    scope auto ref R result, scope auto ref W work, scope auto ref E extra)
+    if (batchCompatible!(X, C, M) && vector!R && matrix!W && matrix!E &&
+        is(Element!X == Element!R) && is(Element!X == Element!W) && is(Element!X == Element!E) &&
+        (form == MahalanobisMatrix.covariance || form == MahalanobisMatrix.inverseCovariance))
+{
+    auto xv = x.asView; auto cv = center.asView; auto mv = metric.asView;
+    auto rv = result.asView; auto wv = work.asView; auto ev = extra.asView;
+    checkBatch(xv, cv, mv, rv, wv);
+    static if (form == MahalanobisMatrix.covariance)
+    {
+        import mir.stat.internal.linearAlgebra.cholesky: choleskyDecomposeInto;
+        assert(ev.shape == mv.shape);
+        choleskyDecomposeInto!triangle(mv, ev);
+        preparedBatch!(false, MahalanobisMatrix.cholesky, triangle, summation)(xv, cv, ev, rv, wv);
+    }
+    else
+    {
+        import mir.stat.internal.linearAlgebra.quadratic: quadraticFormBatchInto;
+        import std.math: sqrt;
+        assert(ev.shape == xv.shape);
+        centerBatch!triangle(xv, cv, mv, wv);
+        quadraticFormBatchInto!summation(wv, symmetricView!triangle(mv), rv, ev);
+        foreach (j; 0 .. rv.length) rv[j] = sqrt(rv[j]);
+    }
+}
+
+/++
+Compute squared distances for observation columns using one shared center and metric.
+Returns a GC-managed vector of length `x.length!1`. Inputs share a real element type;
+`x` has shape `(dimension, count)`, center has length `dimension`, and the metric
+is square. The selected triangle and representation follow the single-observation
+API. Covariance is factorized once per batch. Prepared covariance/precision
+factors use TRSM/TRMM where eligible and stable scaled column norms.
+Precision matrices retain compensated reductions by default; explicit
+`Summation.fast` permits SYMM and column dots with an extra matrix workspace.
+Native D fallbacks support general strides. Zero-dimensional observations have
+zero distance; a batch with no columns returns an empty vector.
++/
+AllocatedSlice!(Allocation.gc, Element!X, 1)
+mahalanobisSquaredBatch(MahalanobisMatrix form = MahalanobisMatrix.covariance,
+    TrianglePolicy triangle = TrianglePolicy.upper, Summation summation = Summation.kbn,
+    X, C, M)(
+    scope auto ref X x, scope auto ref C center, scope auto ref M metric)
+    if (batchCompatible!(X, C, M))
+{
+    int allocator;
+    return batchAllocated!(Allocation.gc, true, form, triangle, summation)(allocator, x, center, metric);
+}
+
+/// Evaluate several observation columns while factorizing the covariance only once.
+version(mir_stat_test_distance)
+@safe pure unittest
+{
+    import mir.ndslice.slice: sliced;
+    double[6] observations = [1, 2, 0, 2, 4, 0];
+    double[2] center = [0, 0];
+    double[4] covariance = [4, 2, double.nan, 5];
+    auto result = mahalanobisSquaredBatch(observations[].sliced(2, 3), center[], covariance[].sliced(2, 2));
+    assert(result == [0.8125, 3.25, 0]);
+}
+
+/++
+Compute squared distances for observation columns using one shared center and metric.
+Returns a reference-counted vector of length `x.length!1`. Inputs share a real element type;
+`x` has shape `(dimension, count)`, center has length `dimension`, and the metric
+is square. The selected triangle and representation follow the single-observation
+API. Covariance is factorized once per batch. Prepared covariance/precision
+factors use TRSM/TRMM where eligible and stable scaled column norms.
+Precision matrices retain compensated reductions by default; explicit
+`Summation.fast` permits SYMM and column dots with an extra matrix workspace.
+Native D fallbacks support general strides. Zero-dimensional observations have
+zero distance; a batch with no columns returns an empty vector.
++/
+AllocatedSlice!(Allocation.rc, Element!X, 1)
+rcMahalanobisSquaredBatch(MahalanobisMatrix form = MahalanobisMatrix.covariance,
+    TrianglePolicy triangle = TrianglePolicy.upper, Summation summation = Summation.kbn,
+    X, C, M)(
+    scope auto ref X x, scope auto ref C center, scope auto ref M metric)
+    if (batchCompatible!(X, C, M))
+{
+    int allocator;
+    return batchAllocated!(Allocation.rc, true, form, triangle, summation)(allocator, x, center, metric);
+}
+
+/++
+Compute squared distances for observation columns using one shared center and metric.
+Returns a custom-allocated vector of length `x.length!1`. Inputs share a real element type;
+`x` has shape `(dimension, count)`, center has length `dimension`, and the metric
+is square. The selected triangle and representation follow the single-observation
+API. Covariance is factorized once per batch. Prepared covariance/precision
+factors use TRSM/TRMM where eligible and stable scaled column norms.
+Precision matrices retain compensated reductions by default; explicit
+`Summation.fast` permits SYMM and column dots with an extra matrix workspace.
+Native D fallbacks support general strides. Zero-dimensional observations have
+zero distance; a batch with no columns returns an empty vector.
+Custom callers dispose the returned vector's field; temporary buffers are released.
++/
+AllocatedSlice!(Allocation.custom, Element!X, 1)
+makeMahalanobisSquaredBatch(MahalanobisMatrix form = MahalanobisMatrix.covariance,
+    TrianglePolicy triangle = TrianglePolicy.upper, Summation summation = Summation.kbn,
+    X, C, M, Allocator)(auto ref Allocator allocator,
+    scope auto ref X x, scope auto ref C center, scope auto ref M metric)
+    if (batchCompatible!(X, C, M))
+{
+    return batchAllocated!(Allocation.custom, true, form, triangle, summation)(allocator, x, center, metric);
+}
+
+/++
+Write one squared distance per observation column into `result`, reusing `work`.
+`result` has length `x.length!1`; `work` has shape `x.shape`. All writable
+buffers must have nonoverlapping elements and be disjoint from each other and
+all inputs. Shapes are asserted; overlap is not checked. No allocation occurs.
+This overload accepts prepared factors or a compensated precision matrix.
+Covariance and fast precision calls require the extra-workspace overload.
+Factor forms compute scaled norms directly, preserving the unsquared API's
+range. Finite-input and positive-definite preconditions match the scalar API.
++/
+void mahalanobisSquaredBatchWithWorkspace(MahalanobisMatrix form,
+    TrianglePolicy triangle = TrianglePolicy.upper, Summation summation = Summation.kbn,
+    X, C, M, R, W)(scope auto ref X x, scope auto ref C center, scope auto ref M metric,
+    scope auto ref R result, scope auto ref W work)
+    if (batchCompatible!(X, C, M) && vector!R && matrix!W &&
+        is(Element!X == Element!R) && is(Element!X == Element!W) &&
+        form != MahalanobisMatrix.covariance &&
+        !(form == MahalanobisMatrix.inverseCovariance && summation == Summation.fast))
+{
+    preparedBatch!(true, form, triangle, summation)(x.asView, center.asView, metric.asView, result.asView, work.asView);
+}
+
+/++
+Batch workspace overload with an extra matrix. For covariance, `extra` is square
+with the metric's shape and receives the Cholesky factor. For a precision matrix,
+`extra` has `x.shape` and receives the matrix product. Explicit fast precision
+uses SYMM when layouts permit. Other summation policies retain their selected reductions.
+All buffers must be mutually disjoint and disjoint from inputs; no allocation
+occurs. Other contracts follow the one-workspace overload.
++/
+void mahalanobisSquaredBatchWithWorkspace(MahalanobisMatrix form = MahalanobisMatrix.covariance,
+    TrianglePolicy triangle = TrianglePolicy.upper, Summation summation = Summation.kbn,
+    X, C, M, R, W, E)(scope auto ref X x, scope auto ref C center, scope auto ref M metric,
+    scope auto ref R result, scope auto ref W work, scope auto ref E extra)
+    if (batchCompatible!(X, C, M) && vector!R && matrix!W && matrix!E &&
+        is(Element!X == Element!R) && is(Element!X == Element!W) && is(Element!X == Element!E) &&
+        (form == MahalanobisMatrix.covariance || form == MahalanobisMatrix.inverseCovariance))
+{
+    auto xv = x.asView; auto cv = center.asView; auto mv = metric.asView;
+    auto rv = result.asView; auto wv = work.asView; auto ev = extra.asView;
+    checkBatch(xv, cv, mv, rv, wv);
+    static if (form == MahalanobisMatrix.covariance)
+    {
+        import mir.stat.internal.linearAlgebra.cholesky: choleskyDecomposeInto;
+        assert(ev.shape == mv.shape);
+        choleskyDecomposeInto!triangle(mv, ev);
+        preparedBatch!(true, MahalanobisMatrix.cholesky, triangle, summation)(xv, cv, ev, rv, wv);
+    }
+    else
+    {
+        import mir.stat.internal.linearAlgebra.quadratic: quadraticFormBatchInto;
+        import std.math: sqrt;
+        assert(ev.shape == xv.shape);
+        centerBatch!triangle(xv, cv, mv, wv);
+        quadraticFormBatchInto!summation(wv, symmetricView!triangle(mv), rv, ev);
+
+    }
+}
+
+/// Allocate batch output and scratch, releasing custom buffers independently on failure.
+private AllocatedSlice!(policy, Element!X, 1) batchAllocated(Allocation policy, bool squared,
+    MahalanobisMatrix form, TrianglePolicy triangle, Summation summation, Allocator, X, C, M)(
+    ref Allocator allocator, scope auto ref X x, scope auto ref C center, scope auto ref M metric)
+{
+    alias T = Element!X;
+    auto result = allocate!(policy, T)(allocator, [x.length!1]);
+    scope(failure) { static if (policy == Allocation.custom) {
+        import std.experimental.allocator: dispose; allocator.dispose(result.field); } }
+    auto work = allocate!(policy, T)(allocator, x.shape);
+    scope(exit) { static if (policy == Allocation.custom) {
+        import std.experimental.allocator: dispose; allocator.dispose(work.field); } }
+    static if (form == MahalanobisMatrix.covariance ||
+        (form == MahalanobisMatrix.inverseCovariance && summation == Summation.fast))
+    {
+        static if (form == MahalanobisMatrix.covariance) auto shape = metric.shape;
+        else auto shape = x.shape;
+        auto extra = allocate!(policy, T)(allocator, shape);
+        scope(exit) { static if (policy == Allocation.custom) {
+            import std.experimental.allocator: dispose; allocator.dispose(extra.field); } }
+        static if (squared) mahalanobisSquaredBatchWithWorkspace!(form, triangle, summation)(x, center, metric, result, work, extra);
+        else mahalanobisBatchWithWorkspace!(form, triangle, summation)(x, center, metric, result, work, extra);
+    }
+    else
+    {
+        static if (squared) mahalanobisSquaredBatchWithWorkspace!(form, triangle, summation)(x, center, metric, result, work);
+        else mahalanobisBatchWithWorkspace!(form, triangle, summation)(x, center, metric, result, work);
+    }
+    return result;
+}
+
+
+// Compare every representation, triangle, and layout with independent scalar calls.
+version(mir_stat_test_distance)
+@safe pure unittest
+{
+    import mir.ndslice.slice: sliced;
+    import mir.ndslice.topology: universal, map;
+    import mir.ndslice.dynamic: transposed, reversed;
+    import std.meta: AliasSeq;
+    import std.math: sqrt, fabs;
+    static foreach (T; AliasSeq!(float, double, real))
+    static foreach (triangle; [TrianglePolicy.upper, TrianglePolicy.lower])
+    static foreach (form; [MahalanobisMatrix.covariance, MahalanobisMatrix.cholesky,
+        MahalanobisMatrix.inverseCovariance, MahalanobisMatrix.inverseCovarianceCholesky])
+    static foreach (summation; [Summation.kbn, Summation.fast])
+    foreach (tx;[false, true]) foreach (tm;[false, true])
+    {
+        T[6] xs, ws, ps; T[4] ms, fs; T[3] rs; T[2] cs = [3, 4];
+        auto x = xs[].sliced(tx ? 3 : 2, tx ? 2 : 3).universal;
+        auto work = ws[].sliced(tx ? 3 : 2, tx ? 2 : 3).universal;
+        auto product = ps[].sliced(tx ? 3 : 2, tx ? 2 : 3).universal;
+        if (tx) { x = x.transposed; work = work.transposed; product = product.transposed; }
+        auto metric = ms[].sliced(2, 2).universal;
+        if (tm) metric = metric.transposed;
+        static if (form == MahalanobisMatrix.covariance) { metric[0, 0] = 4; metric[0, 1] = metric[1, 0] = 2; metric[1, 1] = 5; }
+        else static if (form == MahalanobisMatrix.cholesky) { metric[0, 0] = 2; metric[0, 1] = metric[1, 0] = 1; metric[1, 1] = 2; }
+        else static if (form == MahalanobisMatrix.inverseCovariance) { metric[0, 0] = T(5)/16; metric[0, 1] = metric[1, 0] = T(-1)/8; metric[1, 1] = T(1)/4; }
+        else { metric[0, 0] = sqrt(T(5))/4; metric[0, 1] = metric[1, 0] = -1/(2*sqrt(T(5))); metric[1, 1] = 1/sqrt(T(5)); }
+        metric[triangle == TrianglePolicy.upper ? 1 : 0, triangle == TrianglePolicy.upper ? 0 : 1] = T.nan;
+        foreach (i;0 .. 2) foreach (j;0 .. 3) x[i, j] = cs[i]+T((i+1)*j);
+        auto result = rs[].sliced.universal.reversed;
+        auto factor = fs[].sliced(2, 2);
+        static if (form == MahalanobisMatrix.covariance)
+            mahalanobisSquaredBatchWithWorkspace!(form, triangle, summation)(x, cs[], metric, result, work, factor);
+        else static if (form == MahalanobisMatrix.inverseCovariance && summation == Summation.fast)
+            mahalanobisSquaredBatchWithWorkspace!(form, triangle, summation)(x, cs[], metric, result, work, product);
+        else mahalanobisSquaredBatchWithWorkspace!(form, triangle, summation)(x, cs[], metric, result, work);
+        auto distances = rcMahalanobisBatch!(form, triangle, summation)(x, cs[], metric);
+        auto squared = rcMahalanobisSquaredBatch!(form, triangle, summation)(x, cs[], metric);
+        auto columns = x.transposed;
+        foreach (j;0 .. 3) {
+            auto reference = rcMahalanobisSquared!(form, triangle)(columns[j], cs[], metric);
+            assert(fabs(result[j]-reference)<T(128)*T.epsilon);
+            assert(fabs(squared[j]-reference)<T(128)*T.epsilon);
+            assert(fabs(distances[j]-sqrt(reference))<T(128)*T.epsilon);
+        }
+        auto generic = x.map!(v=>v);
+        assert(rcMahalanobisSquaredBatch!(form, triangle, summation)(generic, cs[], metric).length == 3);
+    }
+}
+
+version(mir_stat_test_distance)
+@safe pure nothrow @nogc unittest
+{
+    import mir.ndslice.slice: sliced;
+    import std.math: isFinite;
+    double[4] identity = [1, 0, double.nan, 1];
+    double[2] x = [1e200, 1e200], center = [0, 0], work;
+    double[1] result;
+    mahalanobisBatchWithWorkspace!(MahalanobisMatrix.cholesky)(x[].sliced(2, 1), center[], identity[].sliced(2, 2), result[], work[].sliced(2, 1));
+    assert(isFinite(result[0]) && result[0]>1e200);
+    double[0] empty;
+    double[3] zeros;
+    mahalanobisSquaredBatchWithWorkspace!(MahalanobisMatrix.cholesky)(empty[].sliced(0, 3), empty[], empty[].sliced(0, 0), zeros[], empty[].sliced(0, 3));
+    assert(zeros == [0, 0, 0]);
+}
+
+version(mir_stat_test_distance)
+@system unittest
+{
+    import mir.ndslice.slice: sliced;
+    import std.experimental.allocator.mallocator: Mallocator;
+    import std.experimental.allocator: dispose;
+    double[4] a = [1, 0, double.nan, 1]; double[2] x = [2, 3], center = [0, 0];
+    auto r = makeMahalanobisSquaredBatch!(MahalanobisMatrix.cholesky)(Mallocator.instance, x[].sliced(2, 1), center[], a[].sliced(2, 2));
+    scope(exit) Mallocator.instance.dispose(r.field);
+    assert(r[0] == 13);
+}
+
+version(mir_stat_test_distance)
+@system unittest
+{
+    import mir.ndslice.slice: sliced;
+    import mir.ndslice.topology: map;
+    import std.experimental.allocator.mallocator: Mallocator;
+    import std.experimental.allocator: dispose;
+    import std.exception: assertThrown;
+    struct CountingAllocator {
+        size_t allocations, releases;
+        /// Count allocations made by the batch factory.
+        void[] allocate(size_t bytes) { ++allocations; return Mallocator.instance.allocate(bytes); }
+        /// Count released scratch and result buffers.
+        bool deallocate(void[] memory) { ++releases; return Mallocator.instance.deallocate(memory); }
+    }
+    CountingAllocator allocator;
+    double[4] a = [1, 0, double.nan, 1]; double[2] x = [2, 3], center = [0, 0];
+    auto r = makeMahalanobisBatch(allocator, x[].sliced(2, 1), center[], a[].sliced(2, 2));
+    assert(allocator.allocations == 3 && allocator.releases == 2);
+    allocator.dispose(r.field);
+    auto failure = new Exception("computed observation failed");
+    /// Fail while centering after all three buffers have been allocated.
+    double fail(double value) { throw failure; }
+    assertThrown!Exception(makeMahalanobisSquaredBatch!(MahalanobisMatrix.inverseCovariance,
+        TrianglePolicy.upper, Summation.fast)(allocator, x[].sliced(2, 1).map!fail, center[], a[].sliced(2, 2)));
+    assert(allocator.allocations == allocator.releases);
+}
+
+import mir.stat.internal.linearAlgebra.types: isObservationSelection, ObservationColumns, observationColumns;
+
+/++
+Evaluate selected observation vectors using `mahalanobisBatch` in one batch.
+`x.alongDim!0` or `x.byDim!1` selects matrix columns;
+`x.alongDim!1` or `x.byDim!0` selects matrix rows. Negative dimension indices
+follow Mir topology conventions. Selection order determines result order.
+The center is one vector shared by all observations; the metric is unchanged.
+This accepts rectangular Mir slice-of-slices views, not jagged collections.
+A bare matrix requires the explicit `mahalanobisBatch` name.
+
+The adapter changes descriptors only, preserving storage strides and ownership.
+Covariance is factorized once; eligible factors use whole-batch TRSM/TRMM.
+The result is a GC-managed vector with one entry per selected observation,
+including a one-element vector for a single selected observation. Allocation,
+triangle, summation, numerical, and custom-disposal contracts follow `mahalanobisBatch`.
++/
+AllocatedSlice!(Allocation.gc, Element!(ObservationColumns!X), 1)
+mahalanobis(MahalanobisMatrix form = MahalanobisMatrix.covariance,
+    TrianglePolicy triangle = TrianglePolicy.upper, Summation summation = Summation.kbn,
+    X, C, M)(
+    scope auto ref X x, scope auto ref C center, scope auto ref M metric)
+    if (isObservationSelection!X && __traits(compiles,
+        mahalanobisBatch!(form, triangle, summation)(ObservationColumns!X.init, center, metric)))
+{
+    auto columns = observationColumns(x);
+    return mahalanobisBatch!(form, triangle, summation)(columns, center, metric);
+}
+
+/++
+Evaluate selected observation vectors using `rcMahalanobisBatch` in one batch.
+`x.alongDim!0` or `x.byDim!1` selects matrix columns;
+`x.alongDim!1` or `x.byDim!0` selects matrix rows. Negative dimension indices
+follow Mir topology conventions. Selection order determines result order.
+The center is one vector shared by all observations; the metric is unchanged.
+This accepts rectangular Mir slice-of-slices views, not jagged collections.
+A bare matrix requires the explicit `rcMahalanobisBatch` name.
+
+The adapter changes descriptors only, preserving storage strides and ownership.
+Covariance is factorized once; eligible factors use whole-batch TRSM/TRMM.
+The result is a reference-counted vector with one entry per selected observation,
+including a one-element vector for a single selected observation. Allocation,
+triangle, summation, numerical, and custom-disposal contracts follow `rcMahalanobisBatch`.
++/
+AllocatedSlice!(Allocation.rc, Element!(ObservationColumns!X), 1)
+rcMahalanobis(MahalanobisMatrix form = MahalanobisMatrix.covariance,
+    TrianglePolicy triangle = TrianglePolicy.upper, Summation summation = Summation.kbn,
+    X, C, M)(
+    scope auto ref X x, scope auto ref C center, scope auto ref M metric)
+    if (isObservationSelection!X && __traits(compiles,
+        rcMahalanobisBatch!(form, triangle, summation)(ObservationColumns!X.init, center, metric)))
+{
+    auto columns = observationColumns(x);
+    return rcMahalanobisBatch!(form, triangle, summation)(columns, center, metric);
+}
+
+/++
+Evaluate selected observation vectors using `makeMahalanobisBatch` in one batch.
+`x.alongDim!0` or `x.byDim!1` selects matrix columns;
+`x.alongDim!1` or `x.byDim!0` selects matrix rows. Negative dimension indices
+follow Mir topology conventions. Selection order determines result order.
+The center is one vector shared by all observations; the metric is unchanged.
+This accepts rectangular Mir slice-of-slices views, not jagged collections.
+A bare matrix requires the explicit `makeMahalanobisBatch` name.
+
+The adapter changes descriptors only, preserving storage strides and ownership.
+Covariance is factorized once; eligible factors use whole-batch TRSM/TRMM.
+The result is a custom-allocated vector with one entry per selected observation,
+including a one-element vector for a single selected observation. Allocation,
+triangle, summation, numerical, and custom-disposal contracts follow `makeMahalanobisBatch`.
++/
+AllocatedSlice!(Allocation.custom, Element!(ObservationColumns!X), 1)
+makeMahalanobis(MahalanobisMatrix form = MahalanobisMatrix.covariance,
+    TrianglePolicy triangle = TrianglePolicy.upper, Summation summation = Summation.kbn,
+    X, C, M, Allocator)(auto ref Allocator allocator,
+    scope auto ref X x, scope auto ref C center, scope auto ref M metric)
+    if (isObservationSelection!X && __traits(compiles,
+        makeMahalanobisBatch!(form, triangle, summation)(allocator, ObservationColumns!X.init, center, metric)))
+{
+    auto columns = observationColumns(x);
+    return makeMahalanobisBatch!(form, triangle, summation)(allocator, columns, center, metric);
+}
+
+/++
+Write distances for selected observations using selected caller scratch.
+`x` and `work` are rectangular observation selections made with `alongDim` or
+`byDim`; they have equal observation counts and vector lengths, but may have
+different storage orientations. `result` is an ordinary vector in selection order.
+No allocation occurs. All writable elements must be nonoverlapping and all
+writable buffers disjoint from one another and inputs, as in `mahalanobisBatchWithWorkspace`.
+Prepared factors and compensated precision need only this workspace. Covariance
+and fast precision use the extra-workspace overload.
++/
+void mahalanobisWithWorkspace(MahalanobisMatrix form,
+    TrianglePolicy triangle = TrianglePolicy.upper, Summation summation = Summation.kbn,
+    X, C, M, R, W)(scope auto ref X x, scope auto ref C center, scope auto ref M metric,
+    scope auto ref R result, scope auto ref W work)
+    if (isObservationSelection!X && isObservationSelection!W && __traits(compiles,
+        mahalanobisBatchWithWorkspace!(form, triangle, summation)(ObservationColumns!X.init, center, metric,
+            result, ObservationColumns!W.init)))
+{
+    auto columns = observationColumns(x);
+    auto scratch = observationColumns(work);
+    mahalanobisBatchWithWorkspace!(form, triangle, summation)(columns, center, metric, result, scratch);
+}
+
+/++
+Selected-observation workspace overload with additional caller storage.
+For covariance, `extra` is an ordinary square factor workspace with metric shape.
+For precision, `extra` is an observation selection for product workspace, with
+the same observation count and vector length as `x`. Select its axes independently
+of its storage orientation. Other contracts follow the one-workspace overload.
++/
+void mahalanobisWithWorkspace(MahalanobisMatrix form = MahalanobisMatrix.covariance,
+    TrianglePolicy triangle = TrianglePolicy.upper, Summation summation = Summation.kbn,
+    X, C, M, R, W, E)(scope auto ref X x, scope auto ref C center, scope auto ref M metric,
+    scope auto ref R result, scope auto ref W work, scope auto ref E extra)
+    if (isObservationSelection!X && isObservationSelection!W &&
+        ((form == MahalanobisMatrix.covariance && __traits(compiles,
+            mahalanobisBatchWithWorkspace!(form, triangle, summation)(ObservationColumns!X.init, center, metric,
+                result, ObservationColumns!W.init, extra))) ||
+         (form == MahalanobisMatrix.inverseCovariance && isObservationSelection!E && __traits(compiles,
+            mahalanobisBatchWithWorkspace!(form, triangle, summation)(ObservationColumns!X.init, center, metric,
+                result, ObservationColumns!W.init, ObservationColumns!E.init)))))
+{
+    auto columns = observationColumns(x);
+    auto scratch = observationColumns(work);
+    static if (form == MahalanobisMatrix.covariance)
+        mahalanobisBatchWithWorkspace!(form, triangle, summation)(columns, center, metric, result, scratch, extra);
+    else
+    {
+        auto product = observationColumns(extra);
+        mahalanobisBatchWithWorkspace!(form, triangle, summation)(columns, center, metric, result, scratch, product);
+    }
+}
+
+/++
+Evaluate selected observation vectors using `mahalanobisSquaredBatch` in one batch.
+`x.alongDim!0` or `x.byDim!1` selects matrix columns;
+`x.alongDim!1` or `x.byDim!0` selects matrix rows. Negative dimension indices
+follow Mir topology conventions. Selection order determines result order.
+The center is one vector shared by all observations; the metric is unchanged.
+This accepts rectangular Mir slice-of-slices views, not jagged collections.
+A bare matrix requires the explicit `mahalanobisSquaredBatch` name.
+
+The adapter changes descriptors only, preserving storage strides and ownership.
+Covariance is factorized once; eligible factors use whole-batch TRSM/TRMM.
+The result is a GC-managed vector with one entry per selected observation,
+including a one-element vector for a single selected observation. Allocation,
+triangle, summation, numerical, and custom-disposal contracts follow `mahalanobisSquaredBatch`.
++/
+AllocatedSlice!(Allocation.gc, Element!(ObservationColumns!X), 1)
+mahalanobisSquared(MahalanobisMatrix form = MahalanobisMatrix.covariance,
+    TrianglePolicy triangle = TrianglePolicy.upper, Summation summation = Summation.kbn,
+    X, C, M)(
+    scope auto ref X x, scope auto ref C center, scope auto ref M metric)
+    if (isObservationSelection!X && __traits(compiles,
+        mahalanobisSquaredBatch!(form, triangle, summation)(ObservationColumns!X.init, center, metric)))
+{
+    auto columns = observationColumns(x);
+    return mahalanobisSquaredBatch!(form, triangle, summation)(columns, center, metric);
+}
+
+/++
+Evaluate selected observation vectors using `rcMahalanobisSquaredBatch` in one batch.
+`x.alongDim!0` or `x.byDim!1` selects matrix columns;
+`x.alongDim!1` or `x.byDim!0` selects matrix rows. Negative dimension indices
+follow Mir topology conventions. Selection order determines result order.
+The center is one vector shared by all observations; the metric is unchanged.
+This accepts rectangular Mir slice-of-slices views, not jagged collections.
+A bare matrix requires the explicit `rcMahalanobisSquaredBatch` name.
+
+The adapter changes descriptors only, preserving storage strides and ownership.
+Covariance is factorized once; eligible factors use whole-batch TRSM/TRMM.
+The result is a reference-counted vector with one entry per selected observation,
+including a one-element vector for a single selected observation. Allocation,
+triangle, summation, numerical, and custom-disposal contracts follow `rcMahalanobisSquaredBatch`.
++/
+AllocatedSlice!(Allocation.rc, Element!(ObservationColumns!X), 1)
+rcMahalanobisSquared(MahalanobisMatrix form = MahalanobisMatrix.covariance,
+    TrianglePolicy triangle = TrianglePolicy.upper, Summation summation = Summation.kbn,
+    X, C, M)(
+    scope auto ref X x, scope auto ref C center, scope auto ref M metric)
+    if (isObservationSelection!X && __traits(compiles,
+        rcMahalanobisSquaredBatch!(form, triangle, summation)(ObservationColumns!X.init, center, metric)))
+{
+    auto columns = observationColumns(x);
+    return rcMahalanobisSquaredBatch!(form, triangle, summation)(columns, center, metric);
+}
+
+/++
+Evaluate selected observation vectors using `makeMahalanobisSquaredBatch` in one batch.
+`x.alongDim!0` or `x.byDim!1` selects matrix columns;
+`x.alongDim!1` or `x.byDim!0` selects matrix rows. Negative dimension indices
+follow Mir topology conventions. Selection order determines result order.
+The center is one vector shared by all observations; the metric is unchanged.
+This accepts rectangular Mir slice-of-slices views, not jagged collections.
+A bare matrix requires the explicit `makeMahalanobisSquaredBatch` name.
+
+The adapter changes descriptors only, preserving storage strides and ownership.
+Covariance is factorized once; eligible factors use whole-batch TRSM/TRMM.
+The result is a custom-allocated vector with one entry per selected observation,
+including a one-element vector for a single selected observation. Allocation,
+triangle, summation, numerical, and custom-disposal contracts follow `makeMahalanobisSquaredBatch`.
++/
+AllocatedSlice!(Allocation.custom, Element!(ObservationColumns!X), 1)
+makeMahalanobisSquared(MahalanobisMatrix form = MahalanobisMatrix.covariance,
+    TrianglePolicy triangle = TrianglePolicy.upper, Summation summation = Summation.kbn,
+    X, C, M, Allocator)(auto ref Allocator allocator,
+    scope auto ref X x, scope auto ref C center, scope auto ref M metric)
+    if (isObservationSelection!X && __traits(compiles,
+        makeMahalanobisSquaredBatch!(form, triangle, summation)(allocator, ObservationColumns!X.init, center, metric)))
+{
+    auto columns = observationColumns(x);
+    return makeMahalanobisSquaredBatch!(form, triangle, summation)(allocator, columns, center, metric);
+}
+
+/++
+Write distances for selected observations using selected caller scratch.
+`x` and `work` are rectangular observation selections made with `alongDim` or
+`byDim`; they have equal observation counts and vector lengths, but may have
+different storage orientations. `result` is an ordinary vector in selection order.
+No allocation occurs. All writable elements must be nonoverlapping and all
+writable buffers disjoint from one another and inputs, as in `mahalanobisSquaredBatchWithWorkspace`.
+Prepared factors and compensated precision need only this workspace. Covariance
+and fast precision use the extra-workspace overload.
++/
+void mahalanobisSquaredWithWorkspace(MahalanobisMatrix form,
+    TrianglePolicy triangle = TrianglePolicy.upper, Summation summation = Summation.kbn,
+    X, C, M, R, W)(scope auto ref X x, scope auto ref C center, scope auto ref M metric,
+    scope auto ref R result, scope auto ref W work)
+    if (isObservationSelection!X && isObservationSelection!W && __traits(compiles,
+        mahalanobisSquaredBatchWithWorkspace!(form, triangle, summation)(ObservationColumns!X.init, center, metric,
+            result, ObservationColumns!W.init)))
+{
+    auto columns = observationColumns(x);
+    auto scratch = observationColumns(work);
+    mahalanobisSquaredBatchWithWorkspace!(form, triangle, summation)(columns, center, metric, result, scratch);
+}
+
+/++
+Selected-observation workspace overload with additional caller storage.
+For covariance, `extra` is an ordinary square factor workspace with metric shape.
+For precision, `extra` is an observation selection for product workspace, with
+the same observation count and vector length as `x`. Select its axes independently
+of its storage orientation. Other contracts follow the one-workspace overload.
++/
+void mahalanobisSquaredWithWorkspace(MahalanobisMatrix form = MahalanobisMatrix.covariance,
+    TrianglePolicy triangle = TrianglePolicy.upper, Summation summation = Summation.kbn,
+    X, C, M, R, W, E)(scope auto ref X x, scope auto ref C center, scope auto ref M metric,
+    scope auto ref R result, scope auto ref W work, scope auto ref E extra)
+    if (isObservationSelection!X && isObservationSelection!W &&
+        ((form == MahalanobisMatrix.covariance && __traits(compiles,
+            mahalanobisSquaredBatchWithWorkspace!(form, triangle, summation)(ObservationColumns!X.init, center, metric,
+                result, ObservationColumns!W.init, extra))) ||
+         (form == MahalanobisMatrix.inverseCovariance && isObservationSelection!E && __traits(compiles,
+            mahalanobisSquaredBatchWithWorkspace!(form, triangle, summation)(ObservationColumns!X.init, center, metric,
+                result, ObservationColumns!W.init, ObservationColumns!E.init)))))
+{
+    auto columns = observationColumns(x);
+    auto scratch = observationColumns(work);
+    static if (form == MahalanobisMatrix.covariance)
+        mahalanobisSquaredBatchWithWorkspace!(form, triangle, summation)(columns, center, metric, result, scratch, extra);
+    else
+    {
+        auto product = observationColumns(extra);
+        mahalanobisSquaredBatchWithWorkspace!(form, triangle, summation)(columns, center, metric, result, scratch, product);
+    }
+}
+
+/// Select observation rows or columns explicitly; every call uses one batch.
+version(mir_stat_test_distance)
+@safe pure unittest
+{
+    import mir.ndslice.slice: sliced;
+    import mir.ndslice.topology: alongDim, byDim;
+    double[6] rowData = [2, 3, 4, 0, 0, 6];
+    double[6] columnData = [2, 4, 0, 3, 0, 6];
+    double[2] center = [0, 0];
+    double[4] covariance = [4, 0, double.nan, 9];
+    auto rows = rowData[].sliced(3, 2);
+    auto columns = columnData[].sliced(2, 3);
+    auto metric = covariance[].sliced(2, 2);
+    // Batch names accept plain matrices with observations in columns.
+    auto expected = mahalanobisSquaredBatch(columns, center[], metric);
+    assert(expected == [2, 4, 4]);
+    assert(mahalanobisSquared(rows.alongDim!1, center[], metric) == expected);
+    assert(mahalanobisSquared(rows.byDim!0, center[], metric) == expected);
+    assert(mahalanobisSquared(columns.alongDim!0, center[], metric) == expected);
+    assert(mahalanobisSquared(columns.byDim!1, center[], metric) == expected);
+    // Vector inputs still return a scalar; one selected observation returns a vector.
+    auto scalar = mahalanobisSquared(rows[0], center[], metric);
+    static assert(is(typeof(scalar) == double));
+    assert(scalar == expected[0]);
+    assert(mahalanobisSquared(rows.byDim!0[0 .. 1], center[], metric).length == 1);
+    static assert(!__traits(compiles, mahalanobisSquared(rows, center[], metric)));
+}
+
+/// Select scratch axes independently; the square covariance-factor workspace is not selected.
+version(mir_stat_test_distance)
+@safe pure unittest
+{
+    import mir.ndslice.slice: sliced;
+    import mir.ndslice.topology: alongDim, byDim;
+    double[6] data = [2, 3, 4, 0, 0, 6], scratch;
+    double[4] covariance = [4, 0, double.nan, 9], factor;
+    double[2] center = [0, 0];
+    double[3] result;
+    auto observations = data[].sliced(3, 2).alongDim!1;
+    // Scratch stores the same three observation vectors as columns.
+    auto work = scratch[].sliced(2, 3).byDim!1;
+    mahalanobisSquaredWithWorkspace(observations, center[], covariance[].sliced(2, 2),
+        result[], work, factor[].sliced(2, 2));
+    assert(result == [2, 4, 4]);
+}
+
+/// Fast precision mode takes selected product scratch in addition to selected centered scratch.
+version(mir_stat_test_distance)
+@safe pure nothrow @nogc unittest
+{
+    import mir.ndslice.slice: sliced;
+    import mir.ndslice.topology: alongDim, byDim;
+    import std.math: fabs;
+    double[6] data = [2, 3, 4, 0, 0, 6], scratch, products;
+    double[4] precision = [0.25, 0, double.nan, 1.0 / 9];
+    double[2] center = [0, 0];
+    double[3] result;
+    mahalanobisSquaredWithWorkspace!(MahalanobisMatrix.inverseCovariance,
+        TrianglePolicy.upper, Summation.fast)(data[].sliced(3, 2).byDim!0,
+            center[], precision[].sliced(2, 2), result[],
+            scratch[].sliced(3, 2).alongDim!1, products[].sliced(2, 3).alongDim!0);
+    foreach (j; 0 .. 3) assert(fabs(result[j] - (j == 0 ? 2 : 4)) < 1e-12);
+}
+
+// Every metric form and summation policy forwards to the existing batch implementation.
+version(mir_stat_test_distance)
+@safe pure unittest
+{
+    import mir.ndslice.slice: sliced;
+    import mir.ndslice.topology: alongDim, byDim, universal;
+    import mir.ndslice.dynamic: reversed, strided;
+    import mir.ndslice.allocation: mininitRcslice;
+    double[24] data;
+    auto rows = data[].sliced(6, 4).universal.strided!(0, 1)(2, 2);
+    rows[0,0] = 1; rows[0,1] = 2;
+    rows[1,0] = 2; rows[1,1] = 4;
+    rows[2,0] = 0; rows[2,1] = 0;
+    const selected = rows.alongDim!(-1);
+    double[4] identity = [1, 0, double.nan, 1];
+    double[2] center = [0, 0];
+    double[6] buffer, product;
+    double[4] factor;
+    double[3] result;
+    static foreach (form; [MahalanobisMatrix.covariance, MahalanobisMatrix.cholesky,
+        MahalanobisMatrix.inverseCovariance, MahalanobisMatrix.inverseCovarianceCholesky])
+    static foreach (summation; [Summation.kbn, Summation.fast])
+    {{
+        auto metric = identity[].sliced(2, 2);
+        auto expected = mahalanobisSquaredBatch!(form, TrianglePolicy.upper, summation)(
+            observationColumns(selected), center[], metric);
+        assert(rcMahalanobisSquared!(form, TrianglePolicy.upper, summation)(selected, center[], metric) == expected);
+        assert(mahalanobis!(form, TrianglePolicy.upper, summation)(selected, center[], metric) ==
+            mahalanobisBatch!(form, TrianglePolicy.upper, summation)(observationColumns(selected), center[], metric));
+        assert(rcMahalanobis!(form, TrianglePolicy.upper, summation)(selected, center[], metric) ==
+            mahalanobisBatch!(form, TrianglePolicy.upper, summation)(observationColumns(selected), center[], metric));
+        auto output = result[].sliced.universal.reversed;
+        auto work = buffer[].sliced(2, 3).byDim!1;
+        auto extra = product[].sliced(3, 2).byDim!0;
+        static if (form == MahalanobisMatrix.covariance)
+        {
+            mahalanobisSquaredWithWorkspace!(form, TrianglePolicy.upper, summation)(selected, center[], metric, output, work, factor[].sliced(2, 2));
+            assert(output == expected);
+            mahalanobisWithWorkspace!(form, TrianglePolicy.upper, summation)(selected, center[], metric, output, work, factor[].sliced(2, 2));
+        }
+        else static if (form == MahalanobisMatrix.inverseCovariance && summation == Summation.fast)
+        {
+            mahalanobisSquaredWithWorkspace!(form, TrianglePolicy.upper, summation)(selected, center[], metric, output, work, extra);
+            assert(output == expected);
+            mahalanobisWithWorkspace!(form, TrianglePolicy.upper, summation)(selected, center[], metric, output, work, extra);
+        }
+        else
+        {
+            mahalanobisSquaredWithWorkspace!(form, TrianglePolicy.upper, summation)(selected, center[], metric, output, work);
+            assert(output == expected);
+            mahalanobisWithWorkspace!(form, TrianglePolicy.upper, summation)(selected, center[], metric, output, work);
+        }
+        assert(output == mahalanobisBatch!(form, TrianglePolicy.upper, summation)(observationColumns(selected), center[], metric));
+    }}
+    auto tail = rows.byDim!0[0 .. 2].universal.reversed;
+    assert(mahalanobisSquared(tail, center[], identity[].sliced(2,2)) == [20,5]);
+    double[0] empty;
+    assert(mahalanobisSquared(empty[].sliced(0,2).alongDim!1, center[], identity[].sliced(2,2)).length == 0);
+    assert(mahalanobisSquared(empty[].sliced(2,0).byDim!1, center[], identity[].sliced(2,2)).length == 0);
+    auto owner = mininitRcslice!double(3, 2);
+    foreach (i; 0 .. 3) foreach (j; 0 .. 2) owner[i,j] = rows[i,j];
+    const retained = owner.byDim!0;
+    owner = typeof(owner).init;
+    assert(rcMahalanobisSquared(retained, center[], identity[].sliced(2,2)) == [5,20,0]);
+    double[][2] jagged;
+    static assert(!__traits(compiles, mahalanobisSquared(jagged[], center[], identity[].sliced(2,2))));
+    static assert(!__traits(compiles, mahalanobisSquaredWithWorkspace!(MahalanobisMatrix.cholesky)(
+        selected, center[], identity[].sliced(2,2), result[], buffer[].sliced(3,2))));
+}
+
+/// Custom-allocation selected overloads retain caller ownership of the result.
+version(mir_stat_test_distance)
+@system unittest
+{
+    import mir.ndslice.slice: sliced;
+    import mir.ndslice.topology: alongDim, byDim;
+    import std.experimental.allocator.mallocator: Mallocator;
+    import std.experimental.allocator: dispose;
+    double[4] data = [3, 4, 0, 0], metric = [1, 0, double.nan, 1];
+    double[2] center = [0, 0];
+    auto distances = makeMahalanobis(Mallocator.instance, data[].sliced(2,2).alongDim!1, center[], metric[].sliced(2,2));
+    scope(exit) Mallocator.instance.dispose(distances.field);
+    auto squared = makeMahalanobisSquared(Mallocator.instance, data[].sliced(2,2).byDim!0, center[], metric[].sliced(2,2));
+    scope(exit) Mallocator.instance.dispose(squared.field);
+    assert(distances == [5,0] && squared == [25,0]);
 }
