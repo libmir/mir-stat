@@ -52,6 +52,14 @@ Both return scalars without allocating, regardless of input ownership.
 Its default remains compensated; explicit `Summation.fast` enables GEMV/SYMV
 (or SPMV for packed symmetric storage) and DOT where eligible.
 
+Both structural views provide an explicit read-only `asSlice` adapter for
+ordinary ndslice operations and Mir's `hasAsSlice` forwarding convention.
+It preserves ownership and logical values without copying elements, including
+reflected entries, implicit zeros, and unit diagonals. Use `.asSlice.slice`,
+`.asSlice.rcslice`, or `makeSlice(allocator, view.asSlice)` for writable copies.
+Pass the original structural view to linear algebra functions to retain
+specialized dispatch. Raw `storage` is not a logical dense conversion.
+
 `symmetricView` and `triangularView` attach structure to a matrix without
 copying its elements. Symmetric views dispatch quadratic forms and Cholesky
 decomposition; both view types dispatch multiplication with one ordinary
