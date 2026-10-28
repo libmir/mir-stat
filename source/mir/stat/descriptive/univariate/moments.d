@@ -1,5 +1,5 @@
 /++
-Raw, central, and standardized moments, including weighted raw and central moments.
+Raw, central, and standardized moments, including weighted raw, central, and standardized moments.
 
 Select the moment order with the template parameter `N`. Use a named moment
 function or $(REF moment, mir, stat, descriptive, univariate, moments) with $(REF MomentAlgo, mir, stat, descriptive, univariate, moments) to select the kind of moment.
@@ -18,6 +18,7 @@ $(TR $(TH Category) $(TH Declarations))
     $(TR $(TD Functions) $(TD
         $(REF weightedRawMoment, mir, stat, descriptive, univariate, moments)$(NBSP)
         $(REF weightedCentralMoment, mir, stat, descriptive, univariate, moments)$(NBSP)
+        $(REF weightedStandardizedMoment, mir, stat, descriptive, univariate, moments)$(NBSP)
         $(REF rawMoment, mir, stat, descriptive, univariate, moments)$(NBSP)
         $(REF centralMoment, mir, stat, descriptive, univariate, moments)$(NBSP)
         $(REF standardizedMoment, mir, stat, descriptive, univariate, moments)$(NBSP)
@@ -2084,10 +2085,11 @@ private T weightedMomentWeight(T, W)(W w)
     return weight;
 }
 
-// Restore value * (scale * residualScale * 2^^shift)^^order without forming the power.
+// Restore value / valueDivisor * (scale * residualScale * 2^^shift)^^order
+// without forming an underflowing quotient or an overflowing power.
 // Saturating exponents are far beyond any supported floating-point range;
 // powers of a fixed positive scale all move in the same direction.
-private T restoreWeightedMoment(T)(T value, T scale, size_t order, int shift = 0, T residualScale = 1)
+private T restoreWeightedMoment(T)(T value, T scale, size_t order, int shift = 0, T residualScale = 1, T valueDivisor = 1)
 {
     import std.math: frexp, ldexp;
     import std.algorithm: clamp;
@@ -2095,6 +2097,13 @@ private T restoreWeightedMoment(T)(T value, T scale, size_t order, int shift = 0
     int e;
     T result = frexp(value, e);
     long exponent = e;
+    if (valueDivisor != 1)
+    {
+        const divisorFraction = frexp(valueDivisor, e);
+        exponent -= e;
+        result = frexp(result / divisorFraction, e);
+        exponent += e;
+    }
     T factor = frexp(scale, e);
     long factorExponent = e + shift;
     const residualFraction = frexp(residualScale, e);
@@ -2199,11 +2208,12 @@ private struct WeightedMomentBounds(T)
     }
 }
 
-private struct WeightedCenteredMomentPass(T, size_t N, Summation summation)
+private struct WeightedCenteredMomentPass(T, size_t N, Summation summation, bool standardized = false)
 {
     import mir.math.internal.powi: powi;
     WeightedMomentBounds!T bounds;
     Summator!(T, summation) mass, powers;
+    static if (standardized) Summator!(T, summation) squares;
     T center = 0, divisor = 1;
 
     void put(X, W)(X x, W w)
@@ -2213,7 +2223,66 @@ private struct WeightedCenteredMomentPass(T, size_t N, Summation summation)
         if (weight == 0) return;
         const delta = bounds.difference(cast(T) x) / bounds.scale;
         mass.put(weight);
-        powers.put(weight * powi((delta - center) / divisor, N));
+        const residual = (delta - center) / divisor;
+        powers.put(weight * powi(residual, N));
+        static if (standardized) squares.put(weight * residual * residual);
+    }
+}
+
+// Shared scaled calculation: keep variance and higher powers in the same
+// coordinates so standardized moments need not form dimensional powers.
+private T weightedCenteredMoment(T, size_t N, Summation summation, bool standardized, X, W)
+    (scope ref X values, scope ref W weights)
+{
+    static if (N > (standardized ? 2 : 1))
+        static assert(weightedMomentReplayable!X && weightedMomentReplayable!W,
+            "weighted centered moments require replayable inputs for this order");
+    WeightedMomentBounds!T bounds;
+    weightedMomentEach(bounds, values, weights);
+    assert(bounds.weightScale > 0, "weighted moments: at least one positive weight is required");
+    static if (N == 1) return T(0);
+    else static if (standardized && N == 2) return T(1);
+    else
+    {
+        bounds.prepare();
+        if (bounds.scale == 0) return standardized ? T.nan : T(0);
+        enum mode = ResolveSummationType!(summation, T[], T);
+        WeightedCenteredMomentPass!(T, 1, mode) meanPass;
+        meanPass.bounds = bounds;
+        weightedMomentEach(meanPass, values, weights);
+        WeightedCenteredMomentPass!(T, N, mode, standardized) momentPass;
+        momentPass.bounds = bounds;
+        momentPass.center = cast(T) meanPass.powers.sum / cast(T) meanPass.mass.sum;
+        import std.math: abs;
+        import std.algorithm: max;
+        // Normalize by the actual largest centered residual. A fixed
+        // extra factor of two would erase high moments of unit spreads.
+        momentPass.divisor = max(abs(bounds.difference(bounds.minimum) / bounds.scale - momentPass.center),
+            abs(bounds.difference(bounds.maximum) / bounds.scale - momentPass.center));
+        weightedMomentEach(momentPass, values, weights);
+        static if (standardized)
+        {
+            import std.math: frexp, ldexp, sqrt;
+            const mass = cast(T) momentPass.mass.sum;
+            const squares = cast(T) momentPass.squares.sum;
+            if (squares == 0) return T.nan;
+            // The physical scale cancels. Split mass / squares into a
+            // fraction and exponent before taking its square root: forming
+            // the variance or its reciprocal can underflow or overflow.
+            int massExponent, squaresExponent;
+            const massFraction = frexp(mass, massExponent);
+            const squaresFraction = frexp(squares, squaresExponent);
+            const exponent = massExponent - squaresExponent;
+            const factor = sqrt(ldexp(massFraction / squaresFraction, exponent % 2));
+            // Likewise, keep powers / mass split until the final ldexp.
+            return restoreWeightedMoment(cast(T) momentPass.powers.sum,
+                factor, N, exponent / 2, T(1), mass);
+        }
+        else
+        {
+            const moment = cast(T) momentPass.powers.sum / cast(T) momentPass.mass.sum;
+            return restoreWeightedMoment(moment, bounds.scale, N, bounds.halfDifferences ? 1 : 0, momentPass.divisor);
+        }
     }
 }
 
@@ -2332,35 +2401,7 @@ template weightedCentralMoment(F, size_t N, Summation summation = Summation.appr
         if (isIterable!X && isIterable!W)
     {
         mixin WeightedMomentCheckArguments!(values, weights);
-        alias T = stdevType!F;
-        static if (N > 1)
-            static assert(weightedMomentReplayable!X && weightedMomentReplayable!W,
-                "weightedCentralMoment requires replayable inputs for orders above one");
-        WeightedMomentBounds!T bounds;
-        weightedMomentEach(bounds, values, weights);
-        assert(bounds.weightScale > 0, "weighted moments: at least one positive weight is required");
-        static if (N == 1) return T(0);
-        else
-        {
-            bounds.prepare();
-            if (bounds.scale == 0) return T(0);
-            enum mode = ResolveSummationType!(summation, T[], T);
-            WeightedCenteredMomentPass!(T, 1, mode) meanPass;
-            meanPass.bounds = bounds;
-            weightedMomentEach(meanPass, values, weights);
-            WeightedCenteredMomentPass!(T, N, mode) momentPass;
-            momentPass.bounds = bounds;
-            momentPass.center = cast(T) meanPass.powers.sum / cast(T) meanPass.mass.sum;
-            import std.math: abs;
-            import std.algorithm: max;
-            // Normalize by the actual largest centered residual. A fixed
-            // extra factor of two would erase high moments of unit spreads.
-            momentPass.divisor = max(abs(bounds.difference(bounds.minimum) / bounds.scale - momentPass.center),
-                abs(bounds.difference(bounds.maximum) / bounds.scale - momentPass.center));
-            weightedMomentEach(momentPass, values, weights);
-            const moment = cast(T) momentPass.powers.sum / cast(T) momentPass.mass.sum;
-            return restoreWeightedMoment(moment, bounds.scale, N, bounds.halfDifferences ? 1 : 0, momentPass.divisor);
-        }
+        return weightedCenteredMoment!(stdevType!F, N, summation, false)(values, weights);
     }
 }
 
@@ -2494,7 +2535,7 @@ unittest
     import std.algorithm: filter;
     const double[6] values = [1, 2, 3, 4, 5, 6];
     double[6] storage = [1, 4, 2, 5, 3, 6], weights = [1, 2, 3, 4, 5, 6];
-    static foreach (fun; AliasSeq!(weightedRawMoment, weightedCentralMoment))
+    static foreach (fun; AliasSeq!(weightedRawMoment, weightedCentralMoment, weightedStandardizedMoment))
     {{
         const expected = fun!3(values[], weights[]);
         assert(fun!3(values[].sliced(2, 3), storage[].sliced(3, 2).transposed).approxEqual(expected));
@@ -2515,7 +2556,7 @@ pure unittest
     import std.exception: assertThrown;
     import mir.ndslice.slice: sliced;
     double[2] values = [0, 10], weights = [1, 3];
-    static foreach (fun; AliasSeq!(weightedRawMoment, weightedCentralMoment))
+    static foreach (fun; AliasSeq!(weightedRawMoment, weightedCentralMoment, weightedStandardizedMoment))
     static foreach (N; [1, 2, 3])
     {{
         foreach (bad; [-1.0, double.nan, double.infinity])
@@ -2572,6 +2613,7 @@ unittest
     assert(weightedCentralMoment!3(x, w).approxEqual(-41.0 / 54));
     assert(xi[0] == 0 && wi[0] == 0);
     assert(weightedRawMoment!2(x, w).approxEqual(77.0 / 6));
+    assert(weightedStandardizedMoment!3(x, w).approxEqual(weightedStandardizedMoment!3(values, weights)));
     assert(xi[0] == 0 && wi[0] == 0);
     auto input = Cursor!false(values[], xi[]);
     auto inputWeights = Cursor!false(weights[], wi[]);
@@ -2579,10 +2621,16 @@ unittest
     static assert(!__traits(compiles, weightedCentralMoment!2(x, inputWeights)));
     Cursor!false[1] nested = [input];
     static assert(!__traits(compiles, weightedCentralMoment!2(nested, nested)));
+    static assert(!__traits(compiles, weightedStandardizedMoment!3(input, w)));
+    static assert(!__traits(compiles, weightedStandardizedMoment!3(x, inputWeights)));
+    static assert(!__traits(compiles, weightedStandardizedMoment!3(nested, nested)));
     assert(weightedRawMoment!2(input, inputWeights).approxEqual(77.0 / 6));
     assert(xi[0] == values.length && wi[0] == weights.length);
     xi[0] = wi[0] = 0;
     assert(weightedCentralMoment!1(input, inputWeights) == 0);
+    assert(xi[0] == values.length && wi[0] == weights.length);
+    xi[0] = wi[0] = 0;
+    assert(weightedStandardizedMoment!2(input, inputWeights) == 1);
     assert(xi[0] == values.length && wi[0] == weights.length);
 }
 
@@ -2598,6 +2646,7 @@ unittest
     weights[0] = 1; weights[1] = 2; weights[2] = 3;
     assert(weightedRawMoment!2(values, weights).approxEqual(77.0 / 6));
     assert(weightedCentralMoment!3(values, weights).approxEqual(-41.0 / 54));
+    assert(weightedStandardizedMoment!3(values, weights).approxEqual(weightedStandardizedMoment!3(values.asSlice, weights.asSlice)));
     assert(values.length == 3 && values[0] == 0 && values[2] == 5);
     assert(weights.length == 3 && weights[0] == 1 && weights[2] == 3);
 }
@@ -2633,14 +2682,15 @@ unittest
     else enum rejectTemporaries = false;
 
     static foreach (T; AliasSeq!(float, double, const(float), const(double)))
-    static foreach (fun; AliasSeq!(weightedRawMoment, weightedCentralMoment))
+    static foreach (fun; AliasSeq!(weightedRawMoment, weightedCentralMoment, weightedStandardizedMoment))
     static foreach (explicitType; [false, true])
     {{
         static if (explicitType)
             alias args = AliasSeq!(double, 2);
         else
             alias args = AliasSeq!(2);
-        enum expected = __traits(identifier, fun) == "weightedRawMoment" ? 4 : 0;
+        enum expected = __traits(identifier, fun) == "weightedRawMoment" ? 4 :
+            __traits(identifier, fun) == "weightedCentralMoment" ? 0 : 1;
         T[1] values = [-2], weights = [1];
         assert(fun!args(values, weights) == expected);
         assert(fun!args(values[], weights[]) == expected);
@@ -2659,5 +2709,163 @@ unittest
         // Other static-array temporaries remain usable on Windows DMD too.
         assert(fun!args(cast(T[2])[-2, -2], cast(T[2])[1, 1]) == expected);
         assert(fun!args(cast(int[1])[-2], cast(int[1])[1]) == expected);
+    }}
+}
+
+/++
+Weighted N-th central moment divided by the N-th power of the population
+standard deviation. The result has no units: use it to compare distribution
+shapes measured on different scales.
+
+Order three is population weighted skewness. Order four is raw population
+weighted kurtosis; subtract three to obtain excess kurtosis. Counts,
+probabilities, and relative weights use the same descriptive formula, with no
+sample bias correction. Multiplying all weights by a positive constant leaves
+the mathematical result unchanged.
+
+As with standardizedMoment, orders one and two return zero and one, including
+for constant observations. Unlike the unweighted shortcuts, these orders
+traverse and validate the weighted inputs. Higher orders return NaN when the
+positive-weight observations are constant or the accumulated scaled sum of
+squared deviations underflows to zero. Empty inputs and inputs with no positive weights violate preconditions.
+
+Input, result-type, weight validity, and Windows DMD temporary-array restrictions
+follow weightedRawMoment. Orders above two require replayable inputs at every
+nesting level. Three traversals find a center and scale, estimate the mean,
+and accumulate the variance and higher centered power. No observation buffer
+is allocated, and forward-range cursors are saved.
+
+The calculation keeps the variance and higher powers in scaled coordinates,
+avoiding overflow or underflow caused solely by the measurement units. Tiny
+relative weights and normalized powers may still underflow, cancellation can
+limit odd-order accuracy, and a result outside the result type's range can
+overflow. Changing the sign of all observations reverses odd-order moments
+and leaves even-order moments unchanged, up to rounding.
+
+Params:
+    F = floating result/working type, or a type promoted to floating point
+    N = positive moment order
+    summation = summation algorithm; appropriate selects pairwise summation
++/
+template weightedStandardizedMoment(F, size_t N, Summation summation = Summation.appropriate)
+    if (N > 0)
+{
+    /// values and weights must have matching shapes or lengths.
+    stdevType!F weightedStandardizedMoment(X, W)(scope auto ref X values, scope auto ref W weights)
+        if (isIterable!X && isIterable!W)
+    {
+        mixin WeightedMomentCheckArguments!(values, weights);
+        return weightedCenteredMoment!(stdevType!F, N, summation, true)(values, weights);
+    }
+}
+
+/// ditto
+template weightedStandardizedMoment(size_t N, Summation summation = Summation.appropriate)
+    if (N > 0)
+{
+    import mir.primitives: DeepElementType;
+    /// ditto
+    stdevType!(DeepElementType!X) weightedStandardizedMoment(X, W)(scope auto ref X values, scope auto ref W weights)
+        if (isIterable!X && isIterable!W)
+    {
+        mixin WeightedMomentCheckArguments!(values, weights);
+        return .weightedStandardizedMoment!(stdevType!(DeepElementType!X), N, summation)(values, weights);
+    }
+}
+
+/// Compare shape independently of the measurement units.
+@safe pure nothrow @nogc
+unittest
+{
+    import mir.math.common: approxEqual;
+    import std.math: sqrt;
+    double[2] values = [0, 10], weights = [1, 3];
+    double[2] centimeters = [0, 1000], probabilities = [0.25, 0.75];
+    assert(weightedStandardizedMoment!3(values, weights).approxEqual(-2 / sqrt(3.0)));
+    assert(weightedStandardizedMoment!4(values, weights).approxEqual(7.0 / 3));
+    assert(weightedStandardizedMoment!4(centimeters, probabilities).approxEqual(7.0 / 3));
+    // Excess kurtosis uses a normal distribution's raw kurtosis of three.
+    assert((weightedStandardizedMoment!4(values, weights) - 3).approxEqual(-2.0 / 3));
+}
+
+// Population identities and scale invariance, including dimensional moments
+// that overflow or underflow even though standardized moments are finite.
+version(mir_stat_test)
+@safe pure nothrow @nogc
+unittest
+{
+    import mir.math.common: approxEqual;
+    import mir.ndslice.slice: sliced;
+    import std.math: sqrt, isNaN;
+    import std.meta: AliasSeq;
+    static foreach (T; AliasSeq!(float, double, real))
+    static foreach (mode; [Summation.naive, Summation.pairwise, Summation.kbn, Summation.kb2, Summation.precise])
+    {{
+        T[2] values = [0, 10], weights = [1, 3], probabilities = [0.25, 0.75];
+        T[4] expanded = [0, 10, 10, 10];
+        static foreach (N; [3, 4, 5, 6, 8])
+        {{
+            const result = weightedStandardizedMoment!(T, N, mode)(values, weights);
+            assert(result.approxEqual(standardizedMoment!N(expanded[].sliced), T(128) * T.epsilon, T(0)));
+            assert(result.approxEqual(weightedStandardizedMoment!(N, mode)(values, probabilities), T(128) * T.epsilon, T(0)));
+        }}
+        assert(weightedStandardizedMoment!(3, mode)(values, weights).approxEqual(-2 / sqrt(T(3)), T(64) * T.epsilon, T(0)));
+        assert(weightedStandardizedMoment!(4, mode)(values, weights).approxEqual(T(7) / 3, T(64) * T.epsilon, T(0)));
+        assert(weightedStandardizedMoment!(5, mode)(values, weights).approxEqual(-T(20) / (3 * sqrt(T(3))), T(128) * T.epsilon, T(0)));
+        assert(weightedStandardizedMoment!(6, mode)(values, weights).approxEqual(T(61) / 9, T(128) * T.epsilon, T(0)));
+        T[2] symmetric = [-T.max, T.max], equal = [1, 1];
+        assert(weightedStandardizedMoment!(3, mode)(symmetric, equal) == 0);
+        assert(weightedStandardizedMoment!(4, mode)(symmetric, equal) == 1);
+        symmetric = [-T.min_normal, T.min_normal];
+        assert(weightedStandardizedMoment!(4, mode)(symmetric, equal) == 1);
+        T[2] adjacent = [1, 1 + T.epsilon];
+        assert(weightedStandardizedMoment!(4, mode)(adjacent, equal) == 1);
+        T[3] masked = [T.nan, 7, T.infinity], mask = [0, 1, 0];
+        assert(weightedStandardizedMoment!(1, mode)(masked, mask) == 0);
+        assert(weightedStandardizedMoment!(2, mode)(masked, mask) == 1);
+        assert(weightedStandardizedMoment!(3, mode)(masked, mask).isNaN);
+        assert(weightedStandardizedMoment!(4, mode)(masked, mask).isNaN);
+        static assert(is(typeof(weightedStandardizedMoment!3(values, weights)) == T));
+    }}
+    int[2] integers = [0, 10], counts = [1, 3];
+    static assert(is(typeof(weightedStandardizedMoment!3(integers, counts)) == double));
+    static assert(is(typeof(weightedStandardizedMoment!(float, 3)(integers, counts)) == float));
+    double[2] symmetric = [-1, 1], equal = [1, 1];
+    assert(weightedStandardizedMoment!1024(symmetric, equal) == 1);
+    assert(weightedStandardizedMoment!(size_t.max)(symmetric, equal) == 0);
+    double[3] shifted = [1e12, 1e12 + 1, 1e12 + 5], plain = [0, 1, 5], reflected = [0, -1, -5], w = [1, 2, 3];
+    static foreach (N; [3, 4, 5, 6])
+    {{
+        const expected = weightedStandardizedMoment!N(plain, w);
+        assert(weightedStandardizedMoment!N(shifted, w).approxEqual(expected, 1e-13, 0));
+        assert(weightedStandardizedMoment!N(reflected, w).approxEqual(N % 2 ? -expected : expected, 1e-13, 0));
+    }}
+    // A tiny weight can produce a large but finite standardized fourth moment.
+    double[2] rare = [0, 1], rareWeights = [1, 1e-300];
+    assert(weightedStandardizedMoment!4(rare, rareWeights).approxEqual(1e300, 1e-13, 0));
+}
+
+// Normalization must not erase surviving subnormal sums before the final
+// standardized result is restored. The expected fourth moment was computed
+// from exact rational representations of these double inputs.
+version(mir_stat_test)
+@safe pure nothrow @nogc
+unittest
+{
+    import mir.math.common: approxEqual;
+    import std.math: sqrt;
+    static foreach (mode; [Summation.naive, Summation.pairwise, Summation.kbn, Summation.kb2, Summation.precise])
+    {{
+        double[3] values = [-1e-100, 1e-100, 1];
+        double[3] weights = [1, 1, 0x1p-1074];
+        assert(weightedStandardizedMoment!(4, mode)(values, weights)
+            .approxEqual(2.4703282292062325233e76, 5e-14, 0));
+        // Here even squares / mass underflows, but skewness is finite.
+        values = [0, 0, 1];
+        assert(weightedStandardizedMoment!(3, mode)(values, weights)
+            .approxEqual(sqrt(2.0) * 0x1p537, 5e-14, 0));
+        float[3] floatValues = [0, 0, 1], floatWeights = [1, 1, 0x1p-149f];
+        assert(weightedStandardizedMoment!(3, mode)(floatValues, floatWeights)
+            .approxEqual(0x1p75f, 16 * float.epsilon, 0));
     }}
 }

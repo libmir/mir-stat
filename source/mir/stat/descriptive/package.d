@@ -41,6 +41,11 @@ relative emphasis use the same descriptive formula. For values [0, 10] with
 weights [1, 3], the second raw moment is 75 and the second central moment is
 18.75. Scaling all weights leaves both unchanged. Use weightedVariance for
 sample corrections; weightedCentralMoment always describes the distribution.))
+$(TR $(TD Weighted standardized moments) $(TD Use these to compare shape
+without measurement units. Order three describes skewness; order four is raw
+kurtosis. Counts, probabilities, and relative weights share the same formula.
+There is no sample bias correction. Subtract three from order four for excess
+kurtosis, which is zero for a normal distribution.))
 $(TR $(TD Weighted covariance) $(TD Use WeightedMomentNormalization with the same
 three choices as variance. For x=[0,10], y=[0,20], weights=[1,3], covariance is
 37.5 for population, 50 for frequencySample, and 100 for relativeSample.))
@@ -74,7 +79,7 @@ for each estimator's assumptions.
 
 Weight validity also depends on the function. Weighted means and sums allow
 signed algebraic weights and evaluate zero-weight products: NaN times zero
-still contributes NaN. Weighted raw and central moments, variance, covariance, correlation, and quantiles require finite,
+still contributes NaN. Weighted raw, central, and standardized moments, variance, covariance, correlation, and quantiles require finite,
 nonnegative weights and exclude zero-weight observations, even nonfinite ones.
 Numeric histograms require finite, nonnegative weights; accumulator cells
 decide their own rules. AssumeWeights.sumToOne in the mean API is only a
