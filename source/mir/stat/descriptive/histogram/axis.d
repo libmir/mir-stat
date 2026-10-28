@@ -434,7 +434,11 @@ public:
     ///
     BinType high()() const
     {
-        return _low + cast(BinType) _N_bin;
+        static if (is(BinType == byte) || is(BinType == ubyte) ||
+                   is(BinType == short) || is(BinType == ushort))
+            return boundary(_N_bin);
+        else
+            return _low + cast(BinType) _N_bin;
     }
 
     ///
@@ -496,7 +500,13 @@ public:
 
     private BinType boundary(size_t i) const
     {
-        return _low + cast(BinType) i;
+        static if (is(BinType == byte) || is(BinType == ubyte) ||
+                   is(BinType == short) || is(BinType == ushort))
+            // Addition promotes narrow integers to int. Construction ensures
+            // every boundary through high fits the original coordinate type.
+            return cast(BinType) (_low + cast(BinType) i);
+        else
+            return _low + cast(BinType) i;
     }
 
     ///
@@ -3256,6 +3266,40 @@ unittest
     auto crossingZero = Signed(2, -1);
     assert(crossingZero.high == 1);
     assert(crossingZero.index(0) == 1);
+}
+
+// Narrow integer coordinates retain their type after promoted boundary addition.
+version(mir_stat_test)
+pure
+unittest
+{
+    import core.exception: AssertError;
+    import std.exception: assertThrown;
+    import std.meta: AliasSeq;
+
+    static foreach (T; AliasSeq!(byte, ubyte, short, ushort))
+    {
+        static foreach (right; AliasSeq!(false, true))
+        {{
+            alias A = IntegralAxis!(T, AxisOptions(right));
+            foreach (low; [T.min, T(0), cast(T) (T.max - 4)])
+            {
+                auto axis = A(4, low);
+                static assert(is(typeof(axis.high()) == T));
+                assert(axis.high == cast(int) low + 4);
+                foreach (i; 0 .. 4)
+                {
+                    auto bin = axis.bin(i);
+                    assert(bin.low == cast(int) low + i);
+                    assert(bin.high == cast(int) low + i + 1);
+                    assert(axis.index(cast(T) (low + i + (right ? 1 : 0))) == i);
+                }
+            }
+            assertThrown!AssertError(A(0, T(0)));
+            assertThrown!AssertError(A(cast(uint) T.max + 1, T(0)));
+            assertThrown!AssertError(A(2, cast(T) (T.max - 1)));
+        }}
+    }
 }
 
 // Reject malformed axes at construction, before indexing or allocation.
