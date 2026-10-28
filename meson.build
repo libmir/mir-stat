@@ -44,6 +44,8 @@ sources_list = [
     'mir/stat/internal/fp_probability_log',
     'mir/stat/internal/fp_log_factorial',
     'mir/stat/internal/fp_binomial_log',
+    'mir/stat/internal/fp_count_deviance',
+    'mir/stat/internal/fp_poisson_log',
     'mir/stat/internal/fp_geometric_inverse',
     'mir/stat/internal/fp_poisson',
     'mir/stat/internal/fp_scaled_probability',

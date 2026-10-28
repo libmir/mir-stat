@@ -39,13 +39,6 @@ package(mir.stat) struct BinomialLog(uint bits)
         return result;
     }
 
-    private static I multiply(I a, I b)
-    {
-        auto product = a.toSize!(2 * fractionBits + 384);
-        product *= b;
-        return (product >> fractionBits).toSize!(fractionBits + 192);
-    }
-
     // x*log(x/mean)+mean-x. Near the mean, v=(x-mean)/(x+mean)
     // gives delta*v + 2*x*(v^3/3+v^5/5+...). Here |v|<1/3.
     // The grid controls absolute error in the final interior log mass;
@@ -57,24 +50,8 @@ package(mir.stat) struct BinomialLog(uint bits)
         const delta = negative ? mean-count : count-mean;
         if ((delta << 1) < count)
         {
-            auto quotient = delta.toSize!(2 * fractionBits + 384);
-            quotient <<= fractionBits;
-            quotient /= count + mean;
-            const v = quotient.toSize!(fractionBits + 192);
-            const square = multiply(v,v);
-            I sum = multiply(delta,v);
-            I term = v;
-            term *= UInt!128(x) << 1;
-            for (uint odd = 3; ; odd += 2)
-            {
-                term = multiply(term,square);
-                auto next = term;
-                next /= UInt!64(odd);
-                if (!next) break;
-                if (negative) sum -= next;
-                else sum += next;
-            }
-            return sum;
+            import mir.stat.internal.fp_count_deviance: fpCenteredDeviance;
+            return fpCenteredDeviance!fractionBits(x,mean);
         }
         // Outside the centered region cancellation is bounded. Separate
         // logarithms also avoid forming an overflowing ratio x/mean.
