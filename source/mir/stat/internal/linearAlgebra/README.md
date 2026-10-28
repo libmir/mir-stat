@@ -159,8 +159,16 @@ entries are then ignored as well. The explicitly named `mtimesTriangular` and
 raw matrix and structural options directly.
 
 Symmetric views are accepted by `mtimes` on either side, quadratic forms, and Cholesky decomposition.
+
+Symmetric metrics infer their stored triangle in Mahalanobis calls. An explicit
+conflicting triangle is rejected, and Cholesky-factor metric modes require a
+factor rather than a symmetric view. Multiplication also accepts two symmetric
+views; it produces an ordinary matrix and currently uses the native D fallback
+without materializing either input.
+
 Triangular views are accepted by multiplication when the other operand is an
-ordinary ndslice. Combining two structural views is not currently an overload.
+ordinary ndslice. Combining a triangular view with another structural view
+is not currently an overload.
 These descriptors do not certify positive definiteness or identify a matrix
 as a valid Cholesky factor.
 
@@ -200,6 +208,10 @@ The result is an ordinary logical slice; it no longer carries structural
 metadata for algorithm selection. Pass the original view to `mtimes`,
 quadratic forms, and other structure-aware operations to retain their
 specialized paths. Mutation requires an explicit writable copy.
+
+Mahalanobis accepts symmetric covariance/precision views through dedicated
+overloads. It does not implicitly accept triangular views through `toSlice`;
+support for triangular factor descriptors requires its own explicit API.
 
 ## Packed triangular and symmetric storage
 
