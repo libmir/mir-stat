@@ -42,8 +42,12 @@ Use `crossprod(a)` for `a.transpose * a` and `tcrossprod(a)` for
 `a * a.transpose`. Two-input forms compute `a.transpose * b` and
 `a * b.transpose`. All inputs/results are matrices; express a vector explicitly
 as `(n, 1)` or `(1, n)`. Transpose never conjugates complex elements. Self-products
-use SYRK where eligible and mirror the computed triangle; a native D fallback
-handles other inputs. GC, RC, custom allocation, and `Into` variants are available.
+return a symmetric view and initialize only its selected triangle (upper by
+default), using SYRK where eligible or a native D fallback.
+`result.asSlice.slice` makes a full writable dense copy. Plain
+`crossprodInto(a, output)` fills both triangles and returns a view; explicitly
+selecting `crossprodInto!(TrianglePolicy.upper)` writes only that triangle.
+Custom one-input results use `disposeSymmetric(allocator, result)` for cleanup. GC, RC, custom allocation, and `Into` variants are available.
 
 Use `quadraticForm(x, a)` for a general real quadratic form, or
 `quadraticForm(x, symmetricView(a))` to read only one triangle of a symmetric matrix.
@@ -331,4 +335,22 @@ version(mir_stat_test_linearAlgebra)
     static assert(!__traits(compiles, mtimes(1, 2)));
     static assert(!__traits(compiles, choleskyDecompose(1)));
     static assert(!__traits(compiles, quadraticForm(1, 2)));
+}
+
+/// A Gram matrix carries symmetry through downstream operations automatically.
+version(mir_stat_test_linearAlgebra)
+@safe pure unittest
+{
+    import mir.ndslice.slice: sliced;
+    import mir.ndslice.allocation: slice;
+    import mir.stat.distance: mahalanobisSquared;
+    double[4] data=[2,0,1,2];
+    double[2] values=[1,2], center=[0,0];
+    auto gram=rcCrossprod(data[].sliced(2,2));
+    auto dense=gram.asSlice.slice;
+    assert(dense==[[5,2],[2,4]]);
+    assert(quadraticForm(values[].sliced,gram)==29);
+    import std.math: fabs;
+    assert(fabs(mahalanobisSquared(values[],center[],gram)-1)<1e-14);
+    assert(mtimes(gram,gram)==[[29,18],[18,20]]);
 }

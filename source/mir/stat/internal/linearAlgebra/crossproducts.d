@@ -8,8 +8,8 @@ Represent vectors explicitly as `(n, 1)` or `(1, n)` matrices; physical storage
 order never determines mathematical orientation. Transposes do not conjugate
 complex elements, matching `mtimes`.
 
-Self-products compute one triangle with SYRK when BLAS types/layouts permit,
-then mirror it into a fully initialized symmetric result. Other types/layouts
+Allocated self-products return a symmetric view and initialize only its selected
+triangle, using SYRK when BLAS types/layouts permit. Other types/layouts
 use a native D triangle kernel. Two-input products use ordinary multiplication;
 they do not assume symmetry even when the two arguments refer to the same data.
 No input is materialized. Computed iterators must give stable values during a
@@ -24,7 +24,8 @@ version(mir_stat_test) version = mir_stat_test_linearAlgebra;
 version(mir_stat_test_blas) version = mir_stat_test_linearAlgebra;
 
 import mir.stat.internal.linearAlgebra.allocation;
-import mir.stat.internal.linearAlgebra.types: Scalar, numericSlice;
+import mir.stat.internal.linearAlgebra.types: Scalar, numericSlice, TrianglePolicy;
+import mir.stat.internal.linearAlgebra.views: SymmetricView, symmetricView, disposeSymmetric;
 import mir.stat.internal.linearAlgebra.backend: hasBlas, blasNumber, nativeSlice, blasMatrix;
 import mir.stat.internal.linearAlgebra.products: mtimes, rcMtimes, makeMtimes, mtimesInto;
 import mir.ndslice.topology: universal;
@@ -39,16 +40,18 @@ private enum compatible(A, B) = matrix!A && matrix!B && is(Scalar!A == Scalar!B)
 Compute `a.transpose * a` into GC-managed storage.
 Input must be a rank-two floating-point or complex ndslice. Returns a square
 matrix with order `a.length!1` and the unqualified input element type.
-Both triangles are initialized; transpose does not conjugate complex values.
+The returned symmetric view initializes only `triangle` (upper by default).
+Its logical indexing reflects that triangle; transpose does not conjugate complex values.
+Use `result.asSlice.slice` for a full writable dense copy.
 An empty contraction produces zeros. Input ownership is independent of result
 ownership; const, RC, computed, transposed and strided inputs are supported.
 Only the result is allocated.
 +/
-package(mir.stat) AllocatedSlice!(Allocation.gc, Scalar!A, 2)
-crossprod(A)(scope auto ref A a) if (matrix!A)
+package(mir.stat) SymmetricView!(triangle, AllocatedSlice!(Allocation.gc, Scalar!A, 2))
+crossprod(TrianglePolicy triangle = TrianglePolicy.upper, A)(scope auto ref A a) if (matrix!A)
 {
     int allocator;
-    return selfAllocated!(Allocation.gc, true)(allocator, a);
+    return selfAllocated!(Allocation.gc, true, triangle)(allocator, a);
 }
 
 /++
@@ -70,16 +73,18 @@ crossprod(A, B)(scope auto ref A a, scope auto ref B b)
 Compute `a.transpose * a` into reference-counted storage.
 Input must be a rank-two floating-point or complex ndslice. Returns a square
 matrix with order `a.length!1` and the unqualified input element type.
-Both triangles are initialized; transpose does not conjugate complex values.
+The returned symmetric view initializes only `triangle` (upper by default).
+Its logical indexing reflects that triangle; transpose does not conjugate complex values.
+Use `result.asSlice.slice` for a full writable dense copy.
 An empty contraction produces zeros. Input ownership is independent of result
 ownership; const, RC, computed, transposed and strided inputs are supported.
 Only the result is allocated.
 +/
-package(mir.stat) AllocatedSlice!(Allocation.rc, Scalar!A, 2)
-rcCrossprod(A)(scope auto ref A a) if (matrix!A)
+package(mir.stat) SymmetricView!(triangle, AllocatedSlice!(Allocation.rc, Scalar!A, 2))
+rcCrossprod(TrianglePolicy triangle = TrianglePolicy.upper, A)(scope auto ref A a) if (matrix!A)
 {
     int allocator;
-    return selfAllocated!(Allocation.rc, true)(allocator, a);
+    return selfAllocated!(Allocation.rc, true, triangle)(allocator, a);
 }
 
 /++
@@ -101,17 +106,19 @@ rcCrossprod(A, B)(scope auto ref A a, scope auto ref B b)
 Compute `a.transpose * a` into custom-allocated storage.
 Input must be a rank-two floating-point or complex ndslice. Returns a square
 matrix with order `a.length!1` and the unqualified input element type.
-Both triangles are initialized; transpose does not conjugate complex values.
+The returned symmetric view initializes only `triangle` (upper by default).
+Its logical indexing reflects that triangle; transpose does not conjugate complex values.
+Use `result.asSlice.slice` for a full writable dense copy.
 An empty contraction produces zeros. Input ownership is independent of result
 ownership; const, RC, computed, transposed and strided inputs are supported.
 Only the result is allocated.
-Dispose `result.field` with the same allocator after all views are finished.
+Use `disposeSymmetric(allocator, result)` after all derived views are finished.
 Custom result storage is released if an input iterator throws.
 +/
-package(mir.stat) AllocatedSlice!(Allocation.custom, Scalar!A, 2)
-makeCrossprod(Allocator, A)(auto ref Allocator allocator, scope auto ref A a) if (matrix!A)
+package(mir.stat) SymmetricView!(triangle, AllocatedSlice!(Allocation.custom, Scalar!A, 2))
+makeCrossprod(TrianglePolicy triangle = TrianglePolicy.upper, Allocator, A)(auto ref Allocator allocator, scope auto ref A a) if (matrix!A)
 {
-    return selfAllocated!(Allocation.custom, true)(allocator, a);
+    return selfAllocated!(Allocation.custom, true, triangle)(allocator, a);
 }
 
 /++
@@ -138,11 +145,31 @@ element type as the input. Every entry is written, including both triangles.
 Output elements must not overlap one another or the input. Shapes are checked
 with assertions; overlap is not checked. General strides are supported.
 Iterator exceptions may leave partial output. Empty contractions write zeros.
+Returns a symmetric descriptor retaining output ownership. Borrowed output
+must remain alive while using that descriptor; ignoring it still leaves both
+triangles fully initialized.
 +/
-package(mir.stat) void crossprodInto(A, C)(scope auto ref A a, scope auto ref C output)
+package(mir.stat) SymmetricView!(TrianglePolicy.upper, C)
+crossprodInto(A, C)(scope auto ref A a, return scope auto ref C output)
     if (compatible!(A, C))
 {
-    selfInto!true(a, output);
+    selfInto!(true, TrianglePolicy.upper, true)(a, output);
+    return symmetricView(output);
+}
+
+/++
+Write only the explicitly selected triangle and return its symmetric view.
+The other triangle is untouched and must not be read through raw storage.
+Shape, disjointness, and exception contracts match the full-output overload.
+The returned descriptor retains output ownership; borrowed output must remain
+alive. Without an explicit triangle, both triangles are always initialized.
++/
+package(mir.stat) SymmetricView!(triangle, C)
+crossprodInto(TrianglePolicy triangle, A, C)(scope auto ref A a, return scope auto ref C output)
+    if (compatible!(A, C))
+{
+    selfInto!(true, triangle, false)(a, output);
+    return symmetricView!triangle(output);
 }
 
 /++
@@ -163,16 +190,18 @@ package(mir.stat) void crossprodInto(A, B, C)(scope auto ref A a, scope auto ref
 Compute `a * a.transpose` into GC-managed storage.
 Input must be a rank-two floating-point or complex ndslice. Returns a square
 matrix with order `a.length!0` and the unqualified input element type.
-Both triangles are initialized; transpose does not conjugate complex values.
+The returned symmetric view initializes only `triangle` (upper by default).
+Its logical indexing reflects that triangle; transpose does not conjugate complex values.
+Use `result.asSlice.slice` for a full writable dense copy.
 An empty contraction produces zeros. Input ownership is independent of result
 ownership; const, RC, computed, transposed and strided inputs are supported.
 Only the result is allocated.
 +/
-package(mir.stat) AllocatedSlice!(Allocation.gc, Scalar!A, 2)
-tcrossprod(A)(scope auto ref A a) if (matrix!A)
+package(mir.stat) SymmetricView!(triangle, AllocatedSlice!(Allocation.gc, Scalar!A, 2))
+tcrossprod(TrianglePolicy triangle = TrianglePolicy.upper, A)(scope auto ref A a) if (matrix!A)
 {
     int allocator;
-    return selfAllocated!(Allocation.gc, false)(allocator, a);
+    return selfAllocated!(Allocation.gc, false, triangle)(allocator, a);
 }
 
 /++
@@ -194,16 +223,18 @@ tcrossprod(A, B)(scope auto ref A a, scope auto ref B b)
 Compute `a * a.transpose` into reference-counted storage.
 Input must be a rank-two floating-point or complex ndslice. Returns a square
 matrix with order `a.length!0` and the unqualified input element type.
-Both triangles are initialized; transpose does not conjugate complex values.
+The returned symmetric view initializes only `triangle` (upper by default).
+Its logical indexing reflects that triangle; transpose does not conjugate complex values.
+Use `result.asSlice.slice` for a full writable dense copy.
 An empty contraction produces zeros. Input ownership is independent of result
 ownership; const, RC, computed, transposed and strided inputs are supported.
 Only the result is allocated.
 +/
-package(mir.stat) AllocatedSlice!(Allocation.rc, Scalar!A, 2)
-rcTcrossprod(A)(scope auto ref A a) if (matrix!A)
+package(mir.stat) SymmetricView!(triangle, AllocatedSlice!(Allocation.rc, Scalar!A, 2))
+rcTcrossprod(TrianglePolicy triangle = TrianglePolicy.upper, A)(scope auto ref A a) if (matrix!A)
 {
     int allocator;
-    return selfAllocated!(Allocation.rc, false)(allocator, a);
+    return selfAllocated!(Allocation.rc, false, triangle)(allocator, a);
 }
 
 /++
@@ -225,17 +256,19 @@ rcTcrossprod(A, B)(scope auto ref A a, scope auto ref B b)
 Compute `a * a.transpose` into custom-allocated storage.
 Input must be a rank-two floating-point or complex ndslice. Returns a square
 matrix with order `a.length!0` and the unqualified input element type.
-Both triangles are initialized; transpose does not conjugate complex values.
+The returned symmetric view initializes only `triangle` (upper by default).
+Its logical indexing reflects that triangle; transpose does not conjugate complex values.
+Use `result.asSlice.slice` for a full writable dense copy.
 An empty contraction produces zeros. Input ownership is independent of result
 ownership; const, RC, computed, transposed and strided inputs are supported.
 Only the result is allocated.
-Dispose `result.field` with the same allocator after all views are finished.
+Use `disposeSymmetric(allocator, result)` after all derived views are finished.
 Custom result storage is released if an input iterator throws.
 +/
-package(mir.stat) AllocatedSlice!(Allocation.custom, Scalar!A, 2)
-makeTcrossprod(Allocator, A)(auto ref Allocator allocator, scope auto ref A a) if (matrix!A)
+package(mir.stat) SymmetricView!(triangle, AllocatedSlice!(Allocation.custom, Scalar!A, 2))
+makeTcrossprod(TrianglePolicy triangle = TrianglePolicy.upper, Allocator, A)(auto ref Allocator allocator, scope auto ref A a) if (matrix!A)
 {
-    return selfAllocated!(Allocation.custom, false)(allocator, a);
+    return selfAllocated!(Allocation.custom, false, triangle)(allocator, a);
 }
 
 /++
@@ -262,11 +295,31 @@ element type as the input. Every entry is written, including both triangles.
 Output elements must not overlap one another or the input. Shapes are checked
 with assertions; overlap is not checked. General strides are supported.
 Iterator exceptions may leave partial output. Empty contractions write zeros.
+Returns a symmetric descriptor retaining output ownership. Borrowed output
+must remain alive while using that descriptor; ignoring it still leaves both
+triangles fully initialized.
 +/
-package(mir.stat) void tcrossprodInto(A, C)(scope auto ref A a, scope auto ref C output)
+package(mir.stat) SymmetricView!(TrianglePolicy.upper, C)
+tcrossprodInto(A, C)(scope auto ref A a, return scope auto ref C output)
     if (compatible!(A, C))
 {
-    selfInto!false(a, output);
+    selfInto!(false, TrianglePolicy.upper, true)(a, output);
+    return symmetricView(output);
+}
+
+/++
+Write only the explicitly selected triangle and return its symmetric view.
+The other triangle is untouched and must not be read through raw storage.
+Shape, disjointness, and exception contracts match the full-output overload.
+The returned descriptor retains output ownership; borrowed output must remain
+alive. Without an explicit triangle, both triangles are always initialized.
++/
+package(mir.stat) SymmetricView!(triangle, C)
+tcrossprodInto(TrianglePolicy triangle, A, C)(scope auto ref A a, return scope auto ref C output)
+    if (compatible!(A, C))
+{
+    selfInto!(false, triangle, false)(a, output);
+    return symmetricView!triangle(output);
 }
 
 /++
@@ -290,19 +343,19 @@ version(mir_stat_test_linearAlgebra)
     import mir.ndslice.slice: sliced;
     double[6] data = [1, 2, 3, 4, 5, 6];
     auto a = data[].sliced(2, 3);
-    assert(crossprod(a) == [[17,22,27], [22,29,36], [27,36,45]]);
-    assert(tcrossprod(a) == [[14,32], [32,77]]);
+    assert(crossprod(a).asSlice == [[17,22,27], [22,29,36], [27,36,45]]);
+    assert(tcrossprod(a).asSlice == [[14,32], [32,77]]);
     double[4] rhs = [1,2,3,4];
     assert(crossprod(a, rhs[].sliced(2,2)) == [[13,18], [17,24], [21,30]]);
     double[12] other = [1,0,0, 0,1,0, 0,0,1, 1,1,1];
     assert(tcrossprod(a, other[].sliced(4,3)) == [[1,2,3,6], [4,5,6,15]]);
-    assert(tcrossprod(a, a) == tcrossprod(a));
+    assert(tcrossprod(a, a) == tcrossprod(a).asSlice);
     // Explicit shape determines whether a vector produces an inner or outer product.
     double[2] values = [2,3];
-    assert(crossprod(values[].sliced(2,1)) == [[13]]);
-    assert(tcrossprod(values[].sliced(2,1)) == [[4,6], [6,9]]);
-    assert(crossprod(values[].sliced(1,2)) == [[4,6], [6,9]]);
-    assert(tcrossprod(values[].sliced(1,2)) == [[13]]);
+    assert(crossprod(values[].sliced(2,1)).asSlice == [[13]]);
+    assert(tcrossprod(values[].sliced(2,1)).asSlice == [[4,6], [6,9]]);
+    assert(crossprod(values[].sliced(1,2)).asSlice == [[4,6], [6,9]]);
+    assert(tcrossprod(values[].sliced(1,2)).asSlice == [[13]]);
     static assert(!__traits(compiles, crossprod(values[].sliced)));
     static assert(!__traits(compiles, tcrossprod(values[].sliced)));
     static assert(!__traits(compiles, crossprod(a, values[].sliced)));
@@ -321,7 +374,7 @@ version(mir_stat_test_linearAlgebra)
     input[0,0]=100;
     static immutable expectedColumns = [[10.0,14], [14.0,20]];
     static immutable expectedRows = [[5.0,11], [11.0,25]];
-    assert(columns == expectedColumns && rows == expectedRows);
+    assert(columns.asSlice == expectedColumns && rows == expectedRows);
 }
 
 /// Caller-output variants overwrite the entire result without allocating.
@@ -349,7 +402,7 @@ version(mir_stat_test_linearAlgebra)
     double[4] data = [1,2,3,4];
     auto a = data[].sliced(2,2);
     auto columns = makeCrossprod(Mallocator.instance, a);
-    scope(exit) Mallocator.instance.dispose(columns.field);
+    scope(exit) disposeSymmetric(Mallocator.instance, columns);
     auto rows = makeTcrossprod(Mallocator.instance, a, a);
     scope(exit) Mallocator.instance.dispose(rows.field);
     assert(columns[0,1] == 14 && rows[0,1] == 11);
@@ -381,6 +434,18 @@ version(mir_stat_test_linearAlgebra)
         crossprodInto(a,c);
         mtimesInto(a.transposed,a,r);
         assert(c==r);
+        static foreach (triangle; [TrianglePolicy.upper, TrianglePolicy.lower])
+        {{
+            foreach(i;0..3) foreach(j;0..3) c[i,j]=T(-99);
+            auto logical=crossprodInto!triangle(a,c);
+            assert(logical.asSlice==r);
+            foreach(i;0..3) foreach(j;0..3)
+                if (triangle == TrianglePolicy.upper ? j<i : j>i)
+                    assert(c[i,j]==T(-99));
+            auto computed=crossprodInto!triangle(a.map!"a",c);
+            assert(computed.asSlice==r);
+        }}
+
         crossprodInto(a.map!"a",c);
         assert(c==r);
         crossprodInto(a,b,c[0..3,0..2]);
@@ -420,8 +485,8 @@ version(mir_stat_test_linearAlgebra)
     foreach(value;result) assert(value==0);
     crossprodInto(empty[].sliced(3,0),empty[].sliced(0,0));
     tcrossprodInto(empty[].sliced(0,3),empty[].sliced(0,0));
-    assert(rcCrossprod(empty[].sliced(3,0)).shape==[0,0]);
-    assert(rcTcrossprod(empty[].sliced(0,3)).shape==[0,0]);
+    assert(rcCrossprod(empty[].sliced(3,0)).asSlice.shape==[0,0]);
+    assert(rcTcrossprod(empty[].sliced(0,3)).asSlice.shape==[0,0]);
 }
 
 // A computed input exception must release each custom result allocation.
@@ -454,15 +519,15 @@ version(mir_stat_test_linearAlgebra)
     auto x=makeCrossprod(allocator,a,a);
     allocator.dispose(x.field);
     auto y=makeTcrossprod(allocator,a);
-    allocator.dispose(y.field);
+    disposeSymmetric(allocator, y);
     assert(allocator.allocations==6 && allocator.releases==6);
-    assert(rcCrossprod(a,a)==rcCrossprod(a));
-    assert(rcTcrossprod(a)==rcTcrossprod(a,a));
+    assert(rcCrossprod(a,a)==rcCrossprod(a).asSlice);
+    assert(rcTcrossprod(a).asSlice==rcTcrossprod(a,a));
 }
 
 /// Allocate one self-product result and release custom storage if computation throws.
-private AllocatedSlice!(policy, Scalar!A, 2) selfAllocated(Allocation policy,
-    bool transpose, Allocator, A)(ref Allocator allocator, scope auto ref A a)
+private SymmetricView!(triangle, AllocatedSlice!(policy, Scalar!A, 2)) selfAllocated(Allocation policy,
+    bool transpose, TrianglePolicy triangle, Allocator, A)(ref Allocator allocator, scope auto ref A a)
 {
     const n = a.length!(transpose ? 1 : 0);
     auto result = allocate!(policy, Scalar!A)(allocator, [n, n]);
@@ -470,13 +535,14 @@ private AllocatedSlice!(policy, Scalar!A, 2) selfAllocated(Allocation policy,
         import std.experimental.allocator: dispose;
         allocator.dispose(result.field);
     } }
-    selfInto!transpose(a, result);
-    return result;
+    selfInto!(transpose, triangle, false)(a, result);
+    return symmetricView!triangle(result);
 }
 
-/// Compute the upper triangle of a row Gram matrix, then mirror without conjugation.
-private void selfInto(bool transpose, A, C)(scope auto ref A a, scope auto ref C output)
+/// Compute the selected triangle, optionally mirroring it without conjugation.
+private void selfInto(bool transpose, TrianglePolicy triangle, bool mirror, A, C)(scope auto ref A a, scope auto ref C output)
 {
+    static assert(triangle == TrianglePolicy.upper || triangle == TrianglePolicy.lower);
     static if (transpose) auto rows = a.lightConst.universal.transposed;
     else auto rows = a.lightConst.universal;
     const n = rows.length!0;
@@ -491,18 +557,22 @@ private void selfInto(bool transpose, A, C)(scope auto ref A a, scope auto ref C
         {
             import mir.blas: syrk;
             import cblas: Uplo;
-            syrk(Uplo.Upper, T(1), rows.lightScope.lightConst, T(0), output.lightScope);
+            syrk(triangle == TrianglePolicy.upper ? Uplo.Upper : Uplo.Lower, T(1), rows.lightScope.lightConst, T(0), output.lightScope);
             accelerated = true;
         }
     }
     if (!accelerated)
-        foreach (i; 0 .. n) foreach (j; i .. n)
+        foreach (i; 0 .. n) foreach (j; (triangle == TrianglePolicy.upper ? i : 0) .. (triangle == TrianglePolicy.upper ? n : i + 1))
         {
             T sum = T(0);
             foreach (p; 0 .. k) sum += rows[i,p] * rows[j,p];
             output[i,j] = sum;
         }
-    mirrorUpper(output);
+    static if (mirror)
+    {
+        static if (triangle == TrianglePolicy.upper) mirrorUpper(output);
+        else mirrorUpper(output.universal.transposed);
+    }
 }
 
 /// Mirror square upper storage in small tiles, keeping both triangles' cache lines nearby.
@@ -548,4 +618,49 @@ version(mir_stat_test_linearAlgebra)
             assert(c[i,j]==expected);
         }
     }
+}
+
+/// Opt in to one-triangle caller output; ordinary Into still fills both halves.
+version(mir_stat_test_linearAlgebra)
+@safe pure nothrow unittest
+{
+    import mir.ndslice.slice: sliced;
+    import mir.ndslice.allocation: slice;
+    import mir.stat.internal.linearAlgebra.quadratic: quadraticForm;
+    double[4] data=[1,2,3,4], target=double.nan;
+    auto a=data[].sliced(2,2);
+    auto result=crossprodInto!(TrianglePolicy.lower)(a,target[].sliced(2,2));
+    assert(target[1] != target[1]);
+    assert(result[0,1]==14 && result[1,0]==14);
+    auto dense=result.asSlice.slice;
+    assert(dense==[[10,14],[14,20]]);
+    auto owned=rcCrossprod!(TrianglePolicy.lower)(a);
+    assert(owned.asSlice==dense);
+    double[2] x=[1,2];
+    assert(quadraticForm(x[].sliced,owned)==146);
+    crossprodInto(a,target[].sliced(2,2));
+    assert(target[1]==14);
+    version (mir_stat_test_dip1000) static assert(!__traits(compiles, {
+        @safe auto escape() {
+            double[4] local;
+            auto matrix=local[].sliced(2,2);
+            return crossprodInto(matrix,matrix);
+        }
+    }));
+}
+
+/// Returning an Into descriptor retains reference-counted caller storage.
+version(mir_stat_test_linearAlgebra)
+@safe pure nothrow @nogc unittest
+{
+    import mir.ndslice.slice: sliced;
+    import mir.ndslice.allocation: mininitRcslice;
+    /// Local output ownership is transferred through a copied descriptor.
+    auto retained() {
+        double[4] input=[1,2,3,4];
+        auto output=mininitRcslice!double(2,2);
+        return crossprodInto!(TrianglePolicy.lower)(input[].sliced(2,2),output);
+    }
+    auto result=retained();
+    assert(result[0,1]==14 && result[1,1]==20);
 }
