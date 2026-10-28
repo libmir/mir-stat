@@ -10,7 +10,7 @@ import mir.bignum.fixed: UInt;
 
 // Internal positive probability arithmetic. Inputs must be finite and nonzero.
 // Keep normalized significands and a separate biased exponent; callers must
-// bound exponent accumulation within UInt!128 and final results to at most one.
+// bound exponent accumulation within UInt!128 and prevent final Fp overflow.
 // This is not a general Fp arithmetic API.
 package(mir.stat) enum exponentBias = UInt!128.fromHexString("80000000000000000000000000000000");
 

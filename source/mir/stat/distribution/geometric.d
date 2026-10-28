@@ -7,10 +7,10 @@ succeeds; it does not mean that no trials were performed. The usual
 distribution has $(D 0 < p <= 1). The API also accepts $(D p == 0) as a
 limiting case with no success and zero mass at every finite count.
 
-PMF and integer-threshold CDF/CCDF accept built-in floating-point and $(D Fp)
+PMF, LPMF, and integer-threshold CDF/CCDF accept built-in floating-point and $(D Fp)
 probabilities. The checked inverse $(LREF geometricInvCDFChecked) accepts $(D Fp)
 probabilities and returns a proven integer count or an explicit limit status.
-Log-PMF, the floating-return inverse CDF, and floating-threshold overloads use
+The floating-return inverse CDF and floating-threshold overloads use
 built-in floating-point probabilities. PMF and LPMF take a $(D size_t) count. CDF and CCDF additionally
 accept a floating-point threshold $(D x >= -1), using the integer part of
 nonnegative finite thresholds. $(LREF geometricInvCDF) returns a floating-point count
@@ -40,7 +40,7 @@ module mir.stat.distribution.geometric;
 
 import mir.internal.utility: isFloatingPoint;
 import mir.bignum.fp: Fp;
-import mir.stat.internal.fp_probability: fpProbabilityValid;
+import mir.stat.internal.fp_probability: fpProbabilityValid, fpProbabilityLess;
 
 // Tiny probabilities and counts whose successor is not an integer size_t.
 version(mir_stat_test)
@@ -687,6 +687,13 @@ Computes the geometric log probability mass function (LPMF).
 
 Returns the natural logarithm of $(D P(K == k)).
 
+The $(D Fp) overload evaluates logarithms directly from the represented probability,
+without conversion to a hardware float or first rounding $(D 1 - p).
+It uses guarded integer series, retaining 192 extra bits before final rounding;
+this is not a universal correctly-rounded guarantee. The two nonpositive log
+terms are combined before rounding to the result type.
+Counts retain their full $(D size_t) width.
+
 Special values:
 $(TABLE
     $(TR $(TH Input) $(TH Result))
@@ -712,6 +719,37 @@ T geometricLPMF(T)(const size_t k, const T p)
     import mir.math.common: log;
     import mir.math.internal.xlogy: xlog1py;
     return xlog1py(k, -p) + log(p);   
+}
+
+/// ditto
+@safe pure nothrow @nogc
+T geometricLPMF(T)(const size_t k, const T p)
+    if (is(T == Fp!bits, uint bits))
+    in (fpProbabilityValid(p), "p must be a finite probability in [0, 1]")
+{
+    if (!p.coefficient) return T(-double.infinity);
+    if (!fpProbabilityLess(p,T(1))) return T(k ? -double.infinity : 0);
+    import mir.stat.internal.fp_probability_log: ProbabilityLog;
+    enum bits = typeof(T.init.coefficient).sizeof * 8;
+    alias L = ProbabilityLog!bits;
+    auto logarithm = L.probability(p);
+    if (k)
+        logarithm = logarithm.add(L.complement(p).multiply(L.S.from(Fp!(bits + 192)(k))));
+    auto result = logarithm.finish!bits;
+    result.sign = true;
+    return result;
+}
+
+/// Preserve Fp precision in the log mass, including for very small probabilities.
+version(mir_stat_test)
+@safe pure nothrow @nogc unittest
+{
+    import mir.bignum.fp: Fp;
+    import mir.stat.distribution.bernoulli: bernoulliLPMF;
+    auto p = Fp!128(1);
+    p.exponent -= 2000;
+    assert(geometricLPMF(0,p) == bernoulliLPMF(true,p));
+    assert(geometricLPMF(size_t.max,p) == geometricLPMF(0,p));
 }
 
 ///
@@ -1010,6 +1048,218 @@ version(mir_stat_test)
         foreach (p; [-1.0,2.0,double.infinity,double.nan]) {
             assertThrown!AssertError(geometricCDF(0,Fp!128(p)));
             assertThrown!AssertError(geometricCCDF(0,Fp!128(p)));
+        }
+    }
+}
+
+// BEGIN geometric probability log references
+version(mir_stat_test)
+@safe pure nothrow @nogc unittest
+{
+    import mir.bignum.fixed: UInt;
+    {
+        alias T = Fp!64;
+        struct Reference { T p; ulong k; T logMass; }
+        enum references = [
+            Reference(T(false,long.min,UInt!64.fromHexString("1")),17UL,T(true,-1,UInt!64.fromHexString("b17217f7d1cf79ac"))),
+            Reference(T(false,long.min,UInt!64.fromHexString("1")),18446744073709551615UL,T(true,-1,UInt!64.fromHexString("b17217f7d1cf79ac"))),
+            Reference(T(false,-2000,UInt!64.fromHexString("1")),17UL,T(true,-53,UInt!64.fromHexString("ad496b6802e49cd2"))),
+            Reference(T(false,-2000,UInt!64.fromHexString("1")),18446744073709551615UL,T(true,-53,UInt!64.fromHexString("ad496b6802e49cd2"))),
+            Reference(T(false,-385,UInt!64.fromHexString("1")),17UL,T(true,-55,UInt!64.fromHexString("856e4b05d94482fe"))),
+            Reference(T(false,-385,UInt!64.fromHexString("1")),18446744073709551615UL,T(true,-55,UInt!64.fromHexString("856e4b05d94482fe"))),
+            Reference(T(false,-384,UInt!64.fromHexString("1")),17UL,T(true,-55,UInt!64.fromHexString("851591f9dd5b9b41"))),
+            Reference(T(false,-384,UInt!64.fromHexString("1")),18446744073709551615UL,T(true,-55,UInt!64.fromHexString("851591f9dd5b9b41"))),
+            Reference(T(false,-64,UInt!64.fromHexString("1")),17UL,T(true,-58,UInt!64.fromHexString("b17217f7d1cf79ac"))),
+            Reference(T(false,-64,UInt!64.fromHexString("1")),18446744073709551615UL,T(true,-58,UInt!64.fromHexString("b57217f7d1cf79ac"))),
+            Reference(T(false,-1,UInt!64.fromHexString("1")),17UL,T(true,-60,UInt!64.fromHexString("c7a05af6cc0968e1"))),
+            Reference(T(false,-1,UInt!64.fromHexString("1")),18446744073709551615UL,T(true,0,UInt!64.fromHexString("b17217f7d1cf79ac"))),
+            Reference(T(false,long.min,UInt!64.fromHexString("3")),17UL,T(true,-1,UInt!64.fromHexString("b17217f7d1cf79aa"))),
+            Reference(T(false,long.min,UInt!64.fromHexString("3")),18446744073709551615UL,T(true,-1,UInt!64.fromHexString("b17217f7d1cf79aa"))),
+            Reference(T(false,-2,UInt!64.fromHexString("3")),17UL,T(true,-59,UInt!64.fromHexString("bed665b97587e396"))),
+            Reference(T(false,-2,UInt!64.fromHexString("3")),18446744073709551615UL,T(true,1,UInt!64.fromHexString("b17217f7d1cf79ab"))),
+            Reference(T(false,-195,UInt!64.fromHexString("155d3680a0b3f28b")),17UL,T(true,-57,UInt!64.fromHexString("ba924d3daa964b98"))),
+            Reference(T(false,-195,UInt!64.fromHexString("155d3680a0b3f28b")),18446744073709551615UL,T(true,-57,UInt!64.fromHexString("ba924d3daa964b98"))),
+            Reference(T(false,-277,UInt!64.fromHexString("2dfcf807a025849a")),17UL,T(true,-56,UInt!64.fromHexString("955b6db83dc9254e"))),
+            Reference(T(false,-277,UInt!64.fromHexString("2dfcf807a025849a")),18446744073709551615UL,T(true,-56,UInt!64.fromHexString("955b6db83dc9254e"))),
+            Reference(T(false,-349,UInt!64.fromHexString("47da373f7dfb4d2f")),17UL,T(true,-56,UInt!64.fromHexString("c6d14852b454feba"))),
+            Reference(T(false,-349,UInt!64.fromHexString("47da373f7dfb4d2f")),18446744073709551615UL,T(true,-56,UInt!64.fromHexString("c6d14852b454feba"))),
+            Reference(T(false,-111,UInt!64.fromHexString("6ce38d733ed6ff1b")),17UL,T(true,-58,UInt!64.fromHexString("85bb2748be58c319"))),
+            Reference(T(false,-111,UInt!64.fromHexString("6ce38d733ed6ff1b")),18446744073709551615UL,T(true,-48,UInt!64.fromHexString("d9e889b04fddf0f9"))),
+            Reference(T(false,-97,UInt!64.fromHexString("739145488dc18dc8")),17UL,T(true,-59,UInt!64.fromHexString("bd5a7b03e666fdb4"))),
+            Reference(T(false,-97,UInt!64.fromHexString("739145488dc18dc8")),18446744073709551615UL,T(true,-34,UInt!64.fromHexString("e7228aefe2d688ca"))),
+            Reference(T(false,-64,UInt!64.fromHexString("7fffffffffffffff")),17UL,T(true,-60,UInt!64.fromHexString("c7a05af6cc0968df"))),
+            Reference(T(false,-64,UInt!64.fromHexString("7fffffffffffffff")),18446744073709551615UL,T(true,0,UInt!64.fromHexString("b17217f7d1cf79aa"))),
+            Reference(T(false,long.min,UInt!64.fromHexString("8000000000000000")),17UL,T(true,-1,UInt!64.fromHexString("b17217f7d1cf7954"))),
+            Reference(T(false,long.min,UInt!64.fromHexString("8000000000000000")),18446744073709551615UL,T(true,-1,UInt!64.fromHexString("b17217f7d1cf7954"))),
+            Reference(T(false,-64,UInt!64.fromHexString("8000000000000001")),17UL,T(true,-60,UInt!64.fromHexString("c7a05af6cc0968e3"))),
+            Reference(T(false,-64,UInt!64.fromHexString("8000000000000001")),18446744073709551615UL,T(true,0,UInt!64.fromHexString("b17217f7d1cf79ae"))),
+            Reference(T(false,-245,UInt!64.fromHexString("c3590e78d844c8c3")),17UL,T(true,-57,UInt!64.fromHexString("fb75c72b86861549"))),
+            Reference(T(false,-245,UInt!64.fromHexString("c3590e78d844c8c3")),18446744073709551615UL,T(true,-57,UInt!64.fromHexString("fb75c72b86861549"))),
+            Reference(T(false,-182,UInt!64.fromHexString("c4283a1bd25a8240")),17UL,T(true,-57,UInt!64.fromHexString("a41d81821f3b6956"))),
+            Reference(T(false,-182,UInt!64.fromHexString("c4283a1bd25a8240")),18446744073709551615UL,T(true,-57,UInt!64.fromHexString("a41d81821f3b695c"))),
+            Reference(T(false,-203,UInt!64.fromHexString("dbc71f0e08eae614")),17UL,T(true,-57,UInt!64.fromHexString("c100026a481f7aa7"))),
+            Reference(T(false,-203,UInt!64.fromHexString("dbc71f0e08eae614")),18446744073709551615UL,T(true,-57,UInt!64.fromHexString("c100026a481f7aa7"))),
+            Reference(T(false,long.min,UInt!64.fromHexString("ffffffffffffffff")),17UL,T(true,-1,UInt!64.fromHexString("b17217f7d1cf7953"))),
+            Reference(T(false,long.min,UInt!64.fromHexString("ffffffffffffffff")),18446744073709551615UL,T(true,-1,UInt!64.fromHexString("b17217f7d1cf7953"))),
+            Reference(T(false,-385,UInt!64.fromHexString("ffffffffffffffff")),17UL,T(true,-56,UInt!64.fromHexString("de80100dbe152790"))),
+            Reference(T(false,-385,UInt!64.fromHexString("ffffffffffffffff")),18446744073709551615UL,T(true,-56,UInt!64.fromHexString("de80100dbe152790"))),
+            Reference(T(false,-384,UInt!64.fromHexString("ffffffffffffffff")),17UL,T(true,-56,UInt!64.fromHexString("ddce9df5c6435817"))),
+            Reference(T(false,-384,UInt!64.fromHexString("ffffffffffffffff")),18446744073709551615UL,T(true,-56,UInt!64.fromHexString("ddce9df5c6435817"))),
+            Reference(T(false,-64,UInt!64.fromHexString("ffffffffffffffff")),17UL,T(true,-54,UInt!64.fromHexString("bc8939774eec7147"))),
+            Reference(T(false,-64,UInt!64.fromHexString("ffffffffffffffff")),18446744073709551615UL,T(true,6,UInt!64.fromHexString("b17217f7d1cf79ab"))),
+        ];
+        foreach (r; references) {
+            if (r.k <= size_t.max)
+                assert(geometricLPMF(cast(size_t)r.k,r.p) == r.logMass);
+        }
+    }
+    {
+        alias T = Fp!128;
+        struct Reference { T p; ulong k; T logMass; }
+        enum references = [
+            Reference(T(false,long.min,UInt!128.fromHexString("1")),17UL,T(true,-65,UInt!128.fromHexString("b17217f7d1cf79abc9e3b39803f2f6af"))),
+            Reference(T(false,long.min,UInt!128.fromHexString("1")),18446744073709551615UL,T(true,-65,UInt!128.fromHexString("b17217f7d1cf79abc9e3b39803f2f6af"))),
+            Reference(T(false,-2000,UInt!128.fromHexString("1")),17UL,T(true,-117,UInt!128.fromHexString("ad496b6802e49cd1c3285d6273db44e7"))),
+            Reference(T(false,-2000,UInt!128.fromHexString("1")),18446744073709551615UL,T(true,-117,UInt!128.fromHexString("ad496b6802e49cd1c3285d6273db44e7"))),
+            Reference(T(false,-513,UInt!128.fromHexString("1")),17UL,T(true,-119,UInt!128.fromHexString("b1cad103cdb861689fc8a571cff4f02b"))),
+            Reference(T(false,-513,UInt!128.fromHexString("1")),18446744073709551615UL,T(true,-119,UInt!128.fromHexString("b1cad103cdb861689fc8a571cff4f02b"))),
+            Reference(T(false,-512,UInt!128.fromHexString("1")),17UL,T(true,-119,UInt!128.fromHexString("b17217f7d1cf79abc9e3b39803f2f6af"))),
+            Reference(T(false,-512,UInt!128.fromHexString("1")),18446744073709551615UL,T(true,-119,UInt!128.fromHexString("b17217f7d1cf79abc9e3b39803f2f6af"))),
+            Reference(T(false,-128,UInt!128.fromHexString("1")),17UL,T(true,-121,UInt!128.fromHexString("b17217f7d1cf79abc9e3b39803f2f6af"))),
+            Reference(T(false,-128,UInt!128.fromHexString("1")),18446744073709551615UL,T(true,-121,UInt!128.fromHexString("b17217f7d1cf79abcbe3b39803f2f6af"))),
+            Reference(T(false,-1,UInt!128.fromHexString("1")),17UL,T(true,-124,UInt!128.fromHexString("c7a05af6cc0968e143202a0b04715585"))),
+            Reference(T(false,-1,UInt!128.fromHexString("1")),18446744073709551615UL,T(true,-64,UInt!128.fromHexString("b17217f7d1cf79abc9e3b39803f2f6af"))),
+            Reference(T(false,long.min,UInt!128.fromHexString("3")),17UL,T(true,-65,UInt!128.fromHexString("b17217f7d1cf79a9976664426391a3c2"))),
+            Reference(T(false,long.min,UInt!128.fromHexString("3")),18446744073709551615UL,T(true,-65,UInt!128.fromHexString("b17217f7d1cf79a9976664426391a3c2"))),
+            Reference(T(false,-2,UInt!128.fromHexString("3")),17UL,T(true,-123,UInt!128.fromHexString("bed665b97587e3958dff5da05c47799f"))),
+            Reference(T(false,-2,UInt!128.fromHexString("3")),18446744073709551615UL,T(true,-63,UInt!128.fromHexString("b17217f7d1cf79ab3d445fc29bdaa1f4"))),
+            Reference(T(false,-382,UInt!128.fromHexString("803bc4493d4d4a0842bef4c83acaff")),17UL,T(true,-120,UInt!128.fromHexString("b64bbf32e5853dc6a1241a3a00126877"))),
+            Reference(T(false,-382,UInt!128.fromHexString("803bc4493d4d4a0842bef4c83acaff")),18446744073709551615UL,T(true,-120,UInt!128.fromHexString("b64bbf32e5853dc6a1241a3a00126877"))),
+            Reference(T(false,-191,UInt!128.fromHexString("a80121e07c0fd2678904cf45e2c018")),17UL,T(true,-122,UInt!128.fromHexString("c689de4538e16ebd0e80f43797751a76"))),
+            Reference(T(false,-191,UInt!128.fromHexString("a80121e07c0fd2678904cf45e2c018")),18446744073709551615UL,T(true,-122,UInt!128.fromHexString("c68f1e4e47e54f3ba15ebf2d0f4226e9"))),
+            Reference(T(false,-360,UInt!128.fromHexString("64f2572158cb0b0e40975b1d17ec17bd")),17UL,T(true,-120,UInt!128.fromHexString("a1bda0903fb3ed35ce48f971d1474472"))),
+            Reference(T(false,-360,UInt!128.fromHexString("64f2572158cb0b0e40975b1d17ec17bd")),18446744073709551615UL,T(true,-120,UInt!128.fromHexString("a1bda0903fb3ed35ce48f971d1474472"))),
+            Reference(T(false,-128,UInt!128.fromHexString("7fffffffffffffffffffffffffffffff")),17UL,T(true,-124,UInt!128.fromHexString("c7a05af6cc0968e143202a0b04715583"))),
+            Reference(T(false,-128,UInt!128.fromHexString("7fffffffffffffffffffffffffffffff")),18446744073709551615UL,T(true,-64,UInt!128.fromHexString("b17217f7d1cf79abc9e3b39803f2f6ad"))),
+            Reference(T(false,long.min,UInt!128.fromHexString("80000000000000000000000000000000")),17UL,T(true,-65,UInt!128.fromHexString("b17217f7d1cf78fbbaafebb5d8183e3d"))),
+            Reference(T(false,long.min,UInt!128.fromHexString("80000000000000000000000000000000")),18446744073709551615UL,T(true,-65,UInt!128.fromHexString("b17217f7d1cf78fbbaafebb5d8183e3d"))),
+            Reference(T(false,-128,UInt!128.fromHexString("80000000000000000000000000000001")),17UL,T(true,-124,UInt!128.fromHexString("c7a05af6cc0968e143202a0b04715587"))),
+            Reference(T(false,-128,UInt!128.fromHexString("80000000000000000000000000000001")),18446744073709551615UL,T(true,-64,UInt!128.fromHexString("b17217f7d1cf79abc9e3b39803f2f6b1"))),
+            Reference(T(false,-295,UInt!128.fromHexString("88a6330af5f71bfebdcf62dc5cea91fb")),17UL,T(true,-121,UInt!128.fromHexString("e8c44510834cce7c54fe08dccac9d95f"))),
+            Reference(T(false,-295,UInt!128.fromHexString("88a6330af5f71bfebdcf62dc5cea91fb")),18446744073709551615UL,T(true,-121,UInt!128.fromHexString("e8c44510834cce7c54fe08dccacbfbf8"))),
+            Reference(T(false,-362,UInt!128.fromHexString("9121269a633afb42483c5c0f94afce24")),17UL,T(true,-120,UInt!128.fromHexString("a2c394eebd064edee58f98f5a40c10f3"))),
+            Reference(T(false,-362,UInt!128.fromHexString("9121269a633afb42483c5c0f94afce24")),18446744073709551615UL,T(true,-120,UInt!128.fromHexString("a2c394eebd064edee58f98f5a40c10f3"))),
+            Reference(T(false,-223,UInt!128.fromHexString("a1bb70e4b5310fe8a322d6b0e9db0254")),17UL,T(true,-121,UInt!128.fromHexString("849dceb8353d6aebee7b02b26b61b008"))),
+            Reference(T(false,-223,UInt!128.fromHexString("a1bb70e4b5310fe8a322d6b0e9db0254")),18446744073709551615UL,T(true,-121,UInt!128.fromHexString("849dceb837c458af814fc6f1e07183a2"))),
+            Reference(T(false,-201,UInt!128.fromHexString("d4daf2ca7a55cf775dd9cd750c9be8c2")),17UL,T(true,-122,UInt!128.fromHexString("cb2321f2965d0451d359f1b047ec22da"))),
+            Reference(T(false,-201,UInt!128.fromHexString("d4daf2ca7a55cf775dd9cd750c9be8c2")),18446744073709551615UL,T(true,-122,UInt!128.fromHexString("cb24cba87bf1f8fd722abef23c0bb8e1"))),
+            Reference(T(false,-233,UInt!128.fromHexString("d55f5f2cec0ab39a3a52871fc04caadc")),17UL,T(true,-121,UInt!128.fromHexString("91ecd8d283c2b13d18884a2d32cb37a4"))),
+            Reference(T(false,-233,UInt!128.fromHexString("d55f5f2cec0ab39a3a52871fc04caadc")),18446744073709551615UL,T(true,-121,UInt!128.fromHexString("91ecd8d283c3869c77b53637e6567142"))),
+            Reference(T(false,long.min,UInt!128.fromHexString("ffffffffffffffffffffffffffffffff")),17UL,T(true,-65,UInt!128.fromHexString("b17217f7d1cf78fa57cbbbc634794ae5"))),
+            Reference(T(false,long.min,UInt!128.fromHexString("ffffffffffffffffffffffffffffffff")),18446744073709551615UL,T(true,-65,UInt!128.fromHexString("b17217f7d1cf78fa57cbbbc634794ae5"))),
+            Reference(T(false,-513,UInt!128.fromHexString("ffffffffffffffffffffffffffffffff")),17UL,T(true,-119,UInt!128.fromHexString("856e4b05d94482fdad4fb88bcef8327f"))),
+            Reference(T(false,-513,UInt!128.fromHexString("ffffffffffffffffffffffffffffffff")),18446744073709551615UL,T(true,-119,UInt!128.fromHexString("856e4b05d94482fdad4fb88bcef8327f"))),
+            Reference(T(false,-512,UInt!128.fromHexString("ffffffffffffffffffffffffffffffff")),17UL,T(true,-119,UInt!128.fromHexString("851591f9dd5b9b40d76ac6b202f63903"))),
+            Reference(T(false,-512,UInt!128.fromHexString("ffffffffffffffffffffffffffffffff")),18446744073709551615UL,T(true,-119,UInt!128.fromHexString("851591f9dd5b9b40d76ac6b202f63903"))),
+            Reference(T(false,-128,UInt!128.fromHexString("ffffffffffffffffffffffffffffffff")),17UL,T(true,-117,UInt!128.fromHexString("bc8939774eec71468681eed18432261a"))),
+            Reference(T(false,-128,UInt!128.fromHexString("ffffffffffffffffffffffffffffffff")),18446744073709551615UL,T(true,-57,UInt!128.fromHexString("b17217f7d1cf79ab18719ba032237d03"))),
+        ];
+        foreach (r; references) {
+            if (r.k <= size_t.max)
+                assert(geometricLPMF(cast(size_t)r.k,r.p) == r.logMass);
+        }
+    }
+    {
+        alias T = Fp!256;
+        struct Reference { T p; ulong k; T logMass; }
+        enum references = [
+            Reference(T(false,long.min,UInt!256.fromHexString("1")),17UL,T(true,-193,UInt!256.fromHexString("b17217f7d1cf79abc9e3b39803f2f6af40f343267298b62d8a0d175b8baafa2c"))),
+            Reference(T(false,long.min,UInt!256.fromHexString("1")),18446744073709551615UL,T(true,-193,UInt!256.fromHexString("b17217f7d1cf79abc9e3b39803f2f6af40f343267298b62d8a0d175b8baafa2c"))),
+            Reference(T(false,-2000,UInt!256.fromHexString("1")),17UL,T(true,-245,UInt!256.fromHexString("ad496b6802e49cd1c3285d6273db44e7256d8f938be921e878d0c8cf6664f84f"))),
+            Reference(T(false,-2000,UInt!256.fromHexString("1")),18446744073709551615UL,T(true,-245,UInt!256.fromHexString("ad496b6802e49cd1c3285d6273db44e7256d8f938be921e878d0c8cf6664f84f"))),
+            Reference(T(false,-769,UInt!256.fromHexString("1")),17UL,T(true,-246,UInt!256.fromHexString("8541ee7fdb500f1f425d3f9ee8f735c11c86af2d9f8f2ecfb2ec54ca7fa3265f"))),
+            Reference(T(false,-769,UInt!256.fromHexString("1")),18446744073709551615UL,T(true,-246,UInt!256.fromHexString("8541ee7fdb500f1f425d3f9ee8f735c11c86af2d9f8f2ecfb2ec54ca7fa3265f"))),
+            Reference(T(false,-768,UInt!256.fromHexString("1")),17UL,T(true,-246,UInt!256.fromHexString("851591f9dd5b9b40d76ac6b202f6390370b6725cd5f288a22789d184a8c03ba1"))),
+            Reference(T(false,-768,UInt!256.fromHexString("1")),18446744073709551615UL,T(true,-246,UInt!256.fromHexString("851591f9dd5b9b40d76ac6b202f6390370b6725cd5f288a22789d184a8c03ba1"))),
+            Reference(T(false,-256,UInt!256.fromHexString("1")),17UL,T(true,-248,UInt!256.fromHexString("b17217f7d1cf79abc9e3b39803f2f6af40f343267298b62d8a0d175b8baafa2c"))),
+            Reference(T(false,-256,UInt!256.fromHexString("1")),18446744073709551615UL,T(true,-248,UInt!256.fromHexString("b17217f7d1cf79abc9e3b39803f2f6af40f343267298b62d8b0d175b8baafa2c"))),
+            Reference(T(false,-1,UInt!256.fromHexString("1")),17UL,T(true,-252,UInt!256.fromHexString("c7a05af6cc0968e143202a0b047155852911ab8b40ebccf33b4eba46fd205971"))),
+            Reference(T(false,-1,UInt!256.fromHexString("1")),18446744073709551615UL,T(true,-192,UInt!256.fromHexString("b17217f7d1cf79abc9e3b39803f2f6af40f343267298b62d8a0d175b8baafa2c"))),
+            Reference(T(false,long.min,UInt!256.fromHexString("3")),17UL,T(true,-193,UInt!256.fromHexString("b17217f7d1cf79a9976664426391a3c1f8c0287c6821bcc20de491a81be9de4b"))),
+            Reference(T(false,long.min,UInt!256.fromHexString("3")),18446744073709551615UL,T(true,-193,UInt!256.fromHexString("b17217f7d1cf79a9976664426391a3c1f8c0287c6821bcc20de491a81be9de4b"))),
+            Reference(T(false,-2,UInt!256.fromHexString("3")),17UL,T(true,-251,UInt!256.fromHexString("bed665b97587e3958dff5da05c47799f7b210974732cc883b961facfaa960fc5"))),
+            Reference(T(false,-2,UInt!256.fromHexString("3")),18446744073709551615UL,T(true,-191,UInt!256.fromHexString("b17217f7d1cf79ab3d445fc29bdaa1f3eee67c7beffaf7d2ab02f5eeafbab334"))),
+            Reference(T(false,-503,UInt!256.fromHexString("1e9b726592d30ba658d702c4cd40a6d64c302ae640625db7771e120788e25f79")),17UL,T(true,-248,UInt!256.fromHexString("ad54cfc4ceb558d41b83731273e0d5b69e1baeab78d4c672c565f798f4bc71bf"))),
+            Reference(T(false,-503,UInt!256.fromHexString("1e9b726592d30ba658d702c4cd40a6d64c302ae640625db7771e120788e25f79")),18446744073709551615UL,T(true,-248,UInt!256.fromHexString("ad54cfc4ceb558d41b83731273e0d5b69e1baeab78d4c673029cdc641a628908"))),
+            Reference(T(false,-500,UInt!256.fromHexString("3ec4002d4882689ddd410923d9f3c1adfdd8b1f37fd621b253ad1d8d968a0739")),17UL,T(true,-248,UInt!256.fromHexString("aa889f60a17a6ac22409e5390478487377a9195c206d0f262c1ffd000e226110"))),
+            Reference(T(false,-500,UInt!256.fromHexString("3ec4002d4882689ddd410923d9f3c1adfdd8b1f37fd621b253ad1d8d968a0739")),18446744073709551615UL,T(true,-248,UInt!256.fromHexString("aa889f60a17a6ac22409e5390478487377a9195c206d0f2a185fffd49648eaa8"))),
+            Reference(T(false,-310,UInt!256.fromHexString("4720f4a871f2ec93ca5547d5408492cb24034b668fda7a54a82657222d4b3a8e")),17UL,T(true,-250,UInt!256.fromHexString("9ad7b0641c6f5db36a59a64727f5d81769c4b0ea9af51bb4100fb505ac92319a"))),
+            Reference(T(false,-310,UInt!256.fromHexString("4720f4a871f2ec93ca5547d5408492cb24034b668fda7a54a82657222d4b3a8e")),18446744073709551615UL,T(true,-247,UInt!256.fromHexString("a19cdf5d6773c5230e832acfeaeed8a2e704a1001239fed6e7a3b6b6173d9911"))),
+            Reference(T(false,-423,UInt!256.fromHexString("4d11226bb2db7011471dca27dde7b62d311503cec0f7abd7f1bd17a3c338aca7")),17UL,T(true,-249,UInt!256.fromHexString("e9e9839efca15d57a7d00a402ee7e8cff36f3691f11c70786134af59c7271fcb"))),
+            Reference(T(false,-423,UInt!256.fromHexString("4d11226bb2db7011471dca27dde7b62d311503cec0f7abd7f1bd17a3c338aca7")),18446744073709551615UL,T(true,-249,UInt!256.fromHexString("e9e9839efca15d57a7d00a402ee91d147d1e01ffb14be01ddb89d9411affe3be"))),
+            Reference(T(false,-430,UInt!256.fromHexString("7612335515ecf948ebdb260951f5a219d41440275124cbcfcbdd58ef250485fa")),17UL,T(true,-249,UInt!256.fromHexString("f2c353f4ddfc69c00ea9259be92cc6e4619596465661991ff31e51978df6c471"))),
+            Reference(T(false,-430,UInt!256.fromHexString("7612335515ecf948ebdb260951f5a219d41440275124cbcfcbdd58ef250485fa")),18446744073709551615UL,T(true,-249,UInt!256.fromHexString("f2c353f4ddfc69c00ea9259be92cca94f3303ef5be2b9e148f6ebfd1eece8e66"))),
+            Reference(T(false,-256,UInt!256.fromHexString("7fffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff")),17UL,T(true,-252,UInt!256.fromHexString("c7a05af6cc0968e143202a0b047155852911ab8b40ebccf33b4eba46fd20596f"))),
+            Reference(T(false,-256,UInt!256.fromHexString("7fffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff")),18446744073709551615UL,T(true,-192,UInt!256.fromHexString("b17217f7d1cf79abc9e3b39803f2f6af40f343267298b62d8a0d175b8baafa2a"))),
+            Reference(T(false,long.min,UInt!256.fromHexString("8000000000000000000000000000000000000000000000000000000000000000")),17UL,T(true,-193,UInt!256.fromHexString("b17217f7d1cf784a4897f3e4089e92730d537a4e9491450a256d50c33f700b73"))),
+            Reference(T(false,long.min,UInt!256.fromHexString("8000000000000000000000000000000000000000000000000000000000000000")),18446744073709551615UL,T(true,-193,UInt!256.fromHexString("b17217f7d1cf784a4897f3e4089e92730d537a4e9491450a256d50c33f700b73"))),
+            Reference(T(false,-256,UInt!256.fromHexString("8000000000000000000000000000000000000000000000000000000000000001")),17UL,T(true,-252,UInt!256.fromHexString("c7a05af6cc0968e143202a0b047155852911ab8b40ebccf33b4eba46fd205973"))),
+            Reference(T(false,-256,UInt!256.fromHexString("8000000000000000000000000000000000000000000000000000000000000001")),18446744073709551615UL,T(true,-192,UInt!256.fromHexString("b17217f7d1cf79abc9e3b39803f2f6af40f343267298b62d8a0d175b8baafa2e"))),
+            Reference(T(false,-405,UInt!256.fromHexString("8ca245fd14bb41832e863a0f77d20fb4de07984ea35c2a2dc0399d61d2294e0d")),17UL,T(true,-249,UInt!256.fromHexString("cfc182533e5dac574b7d8fee956fa9ce8b876a347765cb08d69b84728099c0cd"))),
+            Reference(T(false,-405,UInt!256.fromHexString("8ca245fd14bb41832e863a0f77d20fb4de07984ea35c2a2dc0399d61d2294e0d")),18446744073709551615UL,T(true,-249,UInt!256.fromHexString("cfc182533e5dac574b7d8ff75f94099fd73b81c9293aaf490112cc2c0a1207a1"))),
+            Reference(T(false,-338,UInt!256.fromHexString("ae3d3c82db49ce4aa08801907f3462d0e84f25bca22b80357ef032e8edb2d5a5")),17UL,T(true,-250,UInt!256.fromHexString("e4e42a2e3d8a4bda61b94e64ec6ca2aa322657cc8842ffdf4ddc0a81630d83c7"))),
+            Reference(T(false,-338,UInt!256.fromHexString("ae3d3c82db49ce4aa08801907f3462d0e84f25bca22b80357ef032e8edb2d5a5")),18446744073709551615UL,T(true,-250,UInt!256.fromHexString("e4e42adc7ac6ceb5ab878cc5263bd2a7d300c1b92f3b684c36445f4865feda9b"))),
+            Reference(T(false,-294,UInt!256.fromHexString("eee66cfb0ccb08a554bda8b2c9fdfd2bcc24375ff6aefe360e542751a3681ab8")),17UL,T(true,-251,UInt!256.fromHexString("d3451186377f4751cd23d60b1a864e70a7ffb47cd46ee55d6a5474d0a5166618"))),
+            Reference(T(false,-294,UInt!256.fromHexString("eee66cfb0ccb08a554bda8b2c9fdfd2bcc24375ff6aefe360e542751a3681ab8")),18446744073709551615UL,T(true,-230,UInt!256.fromHexString("eee6739537151cd4986375a326be27d906133aacce4c5c246d5d836f57c722ba"))),
+            Reference(T(false,long.min,UInt!256.fromHexString("ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff")),17UL,T(true,-193,UInt!256.fromHexString("b17217f7d1cf7848e5b3c3f464ff9f1b798c131e8cab57aba386ca765a3e9f18"))),
+            Reference(T(false,long.min,UInt!256.fromHexString("ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff")),18446744073709551615UL,T(true,-193,UInt!256.fromHexString("b17217f7d1cf7848e5b3c3f464ff9f1b798c131e8cab57aba386ca765a3e9f18"))),
+            Reference(T(false,-769,UInt!256.fromHexString("ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff")),17UL,T(true,-247,UInt!256.fromHexString("b1cad103cdb861689fc8a571cff4f02a9893bcc805d20288a0d21de73970cfa9"))),
+            Reference(T(false,-769,UInt!256.fromHexString("ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff")),18446744073709551615UL,T(true,-247,UInt!256.fromHexString("b1cad103cdb861689fc8a571cff4f02a9893bcc805d20288a0d21de73970cfa9"))),
+            Reference(T(false,-768,UInt!256.fromHexString("ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff")),17UL,T(true,-247,UInt!256.fromHexString("b17217f7d1cf79abc9e3b39803f2f6af40f343267298b62d8a0d175b8baafa2c"))),
+            Reference(T(false,-768,UInt!256.fromHexString("ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff")),18446744073709551615UL,T(true,-247,UInt!256.fromHexString("b17217f7d1cf79abc9e3b39803f2f6af40f343267298b62d8a0d175b8baafa2c"))),
+            Reference(T(false,-256,UInt!256.fromHexString("ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff")),17UL,T(true,-244,UInt!256.fromHexString("bc8939774eec71468681eed18432261a35027758d9c2419062ade8d14465a9cf"))),
+            Reference(T(false,-256,UInt!256.fromHexString("ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff")),18446744073709551615UL,T(true,-184,UInt!256.fromHexString("b17217f7d1cf79ab18719ba032237d03770f8f8e6ea5bf7e4919d435191243fe"))),
+        ];
+        foreach (r; references) {
+            if (r.k <= size_t.max)
+                assert(geometricLPMF(cast(size_t)r.k,r.p) == r.logMass);
+        }
+    }
+}
+// END geometric probability log references
+
+version(mir_stat_test)
+@safe pure nothrow @nogc unittest
+{
+    import mir.bignum.fixed: UInt;
+    import std.meta: AliasSeq;
+    foreach (T; AliasSeq!(Fp!64,Fp!128,Fp!256,Fp!512)) {
+        const zero = T(0);
+        const one = T(1);
+        const infinity = T(-double.infinity);
+        assert(geometricLPMF(0,zero) == infinity);
+        assert(geometricLPMF(0,one) == zero);
+        assert(geometricLPMF(1,one) == infinity);
+        // Exact-one endpoints must also accept an unnormalized coefficient.
+        const rawOne = T(false,0,UInt!(typeof(T.init.coefficient).sizeof * 8)(1));
+        assert(geometricLPMF(0,rawOne) == zero);
+        assert(geometricLPMF(size_t.max,rawOne) == infinity);
+        T negativeZero = zero;
+        negativeZero.sign = true;
+        assert(geometricLPMF(0,negativeZero) == infinity);
+        auto p = T(0.25);
+        const original = p;
+        p.coefficient >>= 1;
+        p.exponent += 1;
+        assert(geometricLPMF(17,p) == geometricLPMF(17,original));
+        static assert(is(typeof(geometricLPMF(0,one)) == T));
+        static assert(!__traits(compiles,geometricLPMF(0,1)));
+        debug {
+            import core.exception: AssertError;
+            import std.exception: assertThrown;
+            foreach (bad; [T(-0.5),T(1.5),T(double.infinity),T(double.nan)]) {
+                assertThrown!AssertError(geometricLPMF(0,bad));
+            }
         }
     }
 }
