@@ -793,3 +793,28 @@ mtimesTriangularRightInto(DiagonalPolicy diagonal = DiagonalPolicy.nonUnit, S, B
 {
     mtimesTriangularRightInto!(PackedInfo!S.triangle, diagonal)(b, packedMatrix(a), c);
 }
+
+/// Apply one triangular solve or multiplication to all columns in place.
+/// Callers establish square shape, matching rows, and disjoint writable storage.
+package(mir.stat) void triangularMatrixInPlace(bool solve, TrianglePolicy triangle, A, X)(
+    scope auto ref A a, scope auto ref X x)
+{
+    if (!x.length!0 || !x.length!1) return;
+    static if (hasBlas && nativeSlice!A && nativeSlice!X &&
+        (is(Scalar!A == float) || is(Scalar!A == double)))
+    {
+        if (blasMatrix(a) && blasMatrix(x))
+        {
+            import mir.blas: trsm, trmm;
+            import cblas: Side, Uplo, Diag;
+            enum uplo = triangle == TrianglePolicy.upper ? Uplo.Upper : Uplo.Lower;
+            static if (solve) trsm(Side.Left, uplo, Diag.NonUnit, Scalar!A(1), a.lightScope.lightConst, x.lightScope);
+            else trmm(Side.Left, uplo, Diag.NonUnit, Scalar!A(1), a.lightScope.lightConst, x.lightScope);
+            return;
+        }
+    }
+    import mir.ndslice.topology: universal;
+    import mir.ndslice.dynamic: transposed;
+    auto columns = x.universal.transposed;
+    foreach (j; 0 .. columns.length) triangularVectorInPlace!(solve, triangle)(a, columns[j]);
+}

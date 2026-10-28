@@ -16,7 +16,7 @@ import std.exception: enforce;
 import std.math: abs, isFinite;
 
 package(mir.stat):
-enum algebraNames = ["triangularLeft", "triangularRight", "quadratic", "mahalanobis", "symmetricVector", "symmetricLeft", "symmetricRight", "symmetricColumn", "symmetricRow"];
+enum algebraNames = ["triangularLeft", "triangularRight", "quadratic", "mahalanobis", "quadraticBatch", "mahalanobisBatch", "symmetricVector", "symmetricLeft", "symmetricRight", "symmetricColumn", "symmetricRow"];
 
 /// List the algorithms available for a validated benchmark family.
 string[] algebraAlgorithms(string name)
@@ -25,6 +25,9 @@ string[] algebraAlgorithms(string name)
     {
     case "symmetricVector": return ["general", "symmetric", "packed"];
     case "symmetricLeft", "symmetricRight", "symmetricColumn", "symmetricRow": return ["general", "symmetric", "packed", "generalMixed", "symmetricMixed", "packedMixed", "workspaceInput", "workspaceOutput"];
+    case "quadraticBatch": return ["repeated", "batch", "repeatedFast", "batchFast"];
+    case "mahalanobisBatch": return ["repeatedFactor", "batchFactor", "repeatedPrecision", "batchPrecision",
+        "repeatedPrecisionFast", "batchPrecisionFast", "repeatedPrecisionFactor", "batchPrecisionFactor"];
     case "triangularLeft", "triangularRight": return ["dense", "triangular", "packed"];
     case "quadratic": return ["composed", "general", "symmetric", "singleTriangle", "generalFast", "symmetricFast", "packedSymmetric", "packedFast"];
     case "mahalanobis": return ["covarianceGC", "factorGC", "precisionGC", "precisionFactorGC",
@@ -77,6 +80,8 @@ Result[] runAlgebra(string name, size_t iterations, size_t size, ulong seed,
     case "symmetricVector": return measureSymmetric!(true, false)(name,iterations,size,seed,selected,rounds,warmup,transpose);
     case "symmetricLeft": return measureSymmetric!(false, false)(name,iterations,size,seed,selected,rounds,warmup,transpose);
     case "symmetricRight": return measureSymmetric!(false, true)(name,iterations,size,seed,selected,rounds,warmup,transpose);
+    case "quadraticBatch": return measureBatch!false(name,iterations,size,seed,selected,rounds,warmup,transpose);
+    case "mahalanobisBatch": return measureBatch!true(name,iterations,size,seed,selected,rounds,warmup,transpose);
     case "triangularLeft": return measure!0(name, iterations, size, seed, selected, rounds, warmup, transpose);
     case "triangularRight": return measure!1(name, iterations, size, seed, selected, rounds, warmup, transpose);
     case "quadratic": return measure!2(name, iterations, size, seed, selected, rounds, warmup, transpose);
@@ -348,6 +353,108 @@ unittest
     assert(rows.length == 1);
     // Half a matrix plus vectors/scheduler fits comfortably below a full matrix.
     assert(bytes < order * order * double.sizeof);
+}
+
+/// Compare 32 observation columns per invocation, using identical reusable buffers and policies.
+private Result[] measureBatch(bool distance)(string name, size_t iterations, size_t n, ulong seed,
+    string[] selected, size_t rounds, size_t warmup, bool transpose)
+{
+    import mir.ndslice.allocation: uninitSlice;
+    import mir.math.sum: Summation;
+    import mir.random.engine.mersenne_twister: Mt19937_64;
+    import mir.random.variable: NormalVariable;
+    import std.meta: AliasSeq;
+    enum columns = 32;
+    auto labels = algebraAlgorithms(name);
+    /// Whether a buffer's consumers are selected.
+    bool needs(string label) { return !selected.length || selected.canFind(label); }
+    /// Allocate an optional metric in the requested layout.
+    auto matrix(bool needed) {
+        auto a = uninitSlice!double(needed ? n : 0, needed ? n : 0).universal;
+        return transpose ? a.transposed : a;
+    }
+    /// Allocate a batch in row-major or transposed storage without changing logical shape.
+    auto batchMatrix(bool needed = true) {
+        auto a = uninitSlice!double(needed ? (transpose ? columns : n) : 0, needed ? (transpose ? n : columns) : 0).universal;
+        return transpose ? a.transposed : a;
+    }
+    auto metric = matrix(!distance || needs("repeatedPrecision") || needs("batchPrecision") ||
+        needs("repeatedPrecisionFast") || needs("batchPrecisionFast") || needs("repeatedPrecisionFactor") || needs("batchPrecisionFactor"));
+    auto factor = matrix(distance && (needs("repeatedFactor") || needs("batchFactor")));
+    auto precisionFactor = matrix(distance && (needs("repeatedPrecisionFactor") || needs("batchPrecisionFactor")));
+    auto x = batchMatrix(); auto work = batchMatrix();
+    auto product = batchMatrix(distance && (needs("repeatedPrecisionFast") || needs("batchPrecisionFast")));
+    auto result = uninitSlice!double(columns);
+    auto reference = uninitSlice!double(columns);
+    auto u = uninitSlice!double(n); auto center = uninitSlice!double(n); center[] = 0;
+    auto rng = Mt19937_64(seed); auto normal = NormalVariable!double(0, 1);
+    real norm = 0;
+    foreach (i;0 .. n) { u[i] = normal(rng)/n; norm+=cast(real)u[i]*u[i]; }
+    foreach (i;0 .. n) foreach (j;0 .. n) {
+        auto covariance = (i == j ? 1.0 : 0.0)+u[i]*u[j];
+        if (metric.length) metric[i, j] = distance ? (i == j ? 1.0 : 0.0)-u[i]*u[j]/cast(double)(1+norm) : covariance;
+        if (factor.length) factor[i, j] = covariance;
+    }
+    if (factor.length) choleskyDecomposeInPlace(factor);
+    if (precisionFactor.length) choleskyDecomposeInto(metric, precisionFactor);
+    /// Run the same arithmetic policy as either one batch or repeated column calls.
+    double run(bool batch, MahalanobisMatrix form = MahalanobisMatrix.inverseCovariance, Summation summation = Summation.kbn)()
+    {
+        auto xc = x.transposed; auto wc = work.transposed;
+        static if (!distance) {
+            static if (batch) quadraticFormBatchInto!summation(x, symmetricView(metric), result, work);
+            else foreach (j;0 .. columns) result[j] = quadraticFormWithWorkspace!summation(xc[j], symmetricView(metric), wc[j]);
+        } else {
+            static if (form == MahalanobisMatrix.cholesky) auto m = factor;
+            else static if (form == MahalanobisMatrix.inverseCovarianceCholesky) auto m = precisionFactor;
+            else auto m = metric;
+            static if (batch) {
+                static if (form == MahalanobisMatrix.inverseCovariance && summation == Summation.fast)
+                    mahalanobisSquaredBatchWithWorkspace!(form, TrianglePolicy.upper, summation)(x, center, m, result, work, product);
+                else mahalanobisSquaredBatchWithWorkspace!(form, TrianglePolicy.upper, summation)(x, center, m, result, work);
+            } else {
+                auto pc = product.transposed;
+                foreach (j;0 .. columns) {
+                    static if (form == MahalanobisMatrix.inverseCovariance && summation == Summation.fast)
+                        result[j] = mahalanobisSquaredWithWorkspace!(form, TrianglePolicy.upper, summation)(xc[j], center, m, wc[j], pc[j]);
+                    else result[j] = mahalanobisSquaredWithWorkspace!(form)(xc[j], center, m, wc[j]);
+                }
+            }
+        }
+        return result[0];
+    }
+    static if (!distance) alias functions = AliasSeq!(run!false, run!true,
+        run!(false, MahalanobisMatrix.inverseCovariance, Summation.fast), run!(true, MahalanobisMatrix.inverseCovariance, Summation.fast));
+    else alias functions = AliasSeq!(run!(false, MahalanobisMatrix.cholesky), run!(true, MahalanobisMatrix.cholesky),
+        run!false, run!true, run!(false, MahalanobisMatrix.inverseCovariance, Summation.fast), run!(true, MahalanobisMatrix.inverseCovariance, Summation.fast),
+        run!(false, MahalanobisMatrix.inverseCovarianceCholesky), run!(true, MahalanobisMatrix.inverseCovarianceCholesky));
+    bool[functions.length] enabled;
+    foreach (i, label;labels) enabled[i] = needs(label);
+    auto active = enabled[].count(true);
+    /// Refresh inputs and the analytic rank-one reference outside timing.
+    void prepare() {
+        foreach (j;0 .. columns) {
+            real xx = 0, ux = 0;
+            foreach (i;0 .. n) { x[i, j] = normal(rng); xx+=cast(real)x[i, j]*x[i, j]; ux+=cast(real)u[i]*x[i, j]; }
+            reference[j] = cast(double)(distance ? xx-ux*ux/(1+norm) : xx+ux*ux);
+        }
+    }
+    /// Validate every observation result against an independent analytic reference.
+    void check(size_t index, double value) {
+        foreach (j;0 .. columns) enforce(isFinite(result[j]) && abs(result[j]-reference[j])<=1e-10*(1+abs(reference[j])),"Incorrect batch benchmark result");
+    }
+    Result[] results;
+    foreach (round;0 .. rounds) {
+        double[functions.length] values;
+        auto first = round%active;
+        auto elapsed = benchmarkPrepared!functions(iterations, values, enabled, BenchmarkSchedule(round == 0 ? warmup : 0, first), &prepare, &check);
+        size_t ordinal;
+        foreach (i, label;labels) if (enabled[i]) {
+            results~=Result(name~(transpose ? "_transposed" : "_rowMajor"), label, values[i], elapsed[i], Transform.none, round+1, (ordinal+active-first)%active+1);
+            ++ordinal;
+        }
+    }
+    return results;
 }
 
 /// Compare general, symmetric and packed products, including opposite output layout.

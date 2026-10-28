@@ -9,8 +9,9 @@ of result ownership. Vector-vector multiplication still returns a scalar
 without allocating.
 
 Views and structural policies are imported separately from `views` and `types`.
-Allocation-free quadratic forms, caller-output, and in-place operations remain
-in their operation modules. This module is package-restricted, not a public
+Batch quadratic forms and their selected-observation adapters are included
+with the same ownership policy.
+Caller-output and in-place operations remain in their operation modules. This module is package-restricted, not a public
 application API.
 Callers must dispose each returned slice's field with the allocator that
 created it, as described by the underlying operation.
@@ -62,3 +63,5 @@ version(mir_stat_test_linearAlgebra)
     static assert(__traits(isSame, makeCholeskyDecompose, cholesky.makeCholeskyDecompose));
     static assert(__traits(isSame, makeCholeskySolve, cholesky.makeCholeskySolve));
 }
+
+package(mir.stat) import mir.stat.internal.linearAlgebra.quadratic: makeQuadraticFormBatch, makeQuadraticForm;

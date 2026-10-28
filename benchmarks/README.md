@@ -219,7 +219,7 @@ necessarily improve speed, especially versus dense TRMM with multiple columns.
 as the existing Mahalanobis cases.
 
 
-### Symmetric products
+### Symmetric products and batches
 
 `symmetricVector`, `symmetricLeft`, and `symmetricRight` compare general dense,
 symmetric-view, and packed symmetric multiplication with `general`, `symmetric`,
@@ -232,6 +232,17 @@ allocation. Packing and analytic reference generation are outside timing.
 ```sh
 dub run mir-stat:benchmarks --config=openblas --build=release --compiler=ldc2 -- --function=symmetricLeft --size=256 --iterations=20 --rounds=8 --warmup=3 --format=csv
 ```
+
+The `quadraticBatch` algorithms are `repeated`, `batch`, `repeatedFast`, and
+`batchFast`. `mahalanobisBatch` provides `repeatedFactor`/`batchFactor`,
+`repeatedPrecision`/`batchPrecision`, `repeatedPrecisionFast`/`batchPrecisionFast`,
+and `repeatedPrecisionFactor`/`batchPrecisionFactor`. Each invocation evaluates
+32 observation columns against a shared metric with reusable workspace. Times
+are per batch, not per observation. Each pair uses the same summation policy.
+Prepared-factor construction is untimed; these do not measure covariance
+factorization or allocating batch APIs. Every result is checked against the
+independent rank-one identity outside timing.
+
 
 The symmetric matrix families also provide `workspaceInput` and `workspaceOutput`.
 Both use opposite input/output orientations and include the selected layout copy

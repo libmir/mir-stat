@@ -345,3 +345,131 @@ products, and unsupported backend/type/storage combinations keep the ordinary
 path. Its contents are unspecified afterward. No heap storage is allocated,
 no full symmetric matrix is materialized, and no timing-based dispatch is used.
 The existing three-argument `mtimesInto` remains allocation-free without workspace.
+
+
+## Selecting observation axes
+
+Use the ordinary names for a single vector or an explicit selection of vectors.
+Use the `Batch` names for a plain matrix with observations in columns:
+
+```d
+auto one = mahalanobisSquared(observation, center, metric); // Scalar
+auto many = mahalanobisSquaredBatch(columns, center, metric); // Vector
+auto fromRows = mahalanobisSquared(rows.alongDim!1, center, metric);
+auto sameRows = mahalanobisSquared(rows.byDim!0, center, metric);
+```
+
+Both selectors come from `mir.ndslice.topology`:
+
+| Observations | `alongDim` selection | Equivalent `byDim` selection |
+|---|---|---|
+| Columns of a matrix | `matrix.alongDim!0` | `matrix.byDim!1` |
+| Rows of a matrix | `matrix.alongDim!1` | `matrix.byDim!0` |
+
+`alongDim` names the coordinate dimension inside each observation. `byDim`
+names the dimension indexing observations. Their meanings are complementary
+for a matrix, not interchangeable for the same numeric axis. Negative indices
+are supported: `alongDim!(-1)` selects rows and `alongDim!(-2)` selects columns.
+
+The selected observations retain the original matrix's storage and ownership.
+Internally, `unpack` plus a transpose view recovers a matrix whose columns are
+observations. No elements are copied. The adapter forwards that whole matrix
+to the corresponding `Batch` implementation, keeping one covariance
+factorization and eligible TRSM/TRMM/GEMM/SYMM batch calls. In contrast, mapping
+the single-observation function invokes it repeatedly.
+
+Axis meaning is independent of row-major or column-major storage. A transpose
+changes logical axes, so choose axes on the view actually passed. One selected
+observation returns a one-element vector; an ordinary vector returns a scalar.
+Empty selections return empty results. Sliced, reversed, strided, and const
+selections preserve their logical order. Arbitrary arrays of separate vectors
+and higher-rank selections are outside the initial adapter contract.
+
+The allocation options are the same for explicit batches and selected views:
+
+| Ownership | Explicit batch | Selected observations |
+|---|---|---|
+| GC | `mahalanobisSquaredBatch` | `mahalanobisSquared` |
+| RC | `rcMahalanobisSquaredBatch` | `rcMahalanobisSquared` |
+| Custom | `makeMahalanobisSquaredBatch` | `makeMahalanobisSquared` |
+| Caller output/scratch | `mahalanobisSquaredBatchWithWorkspace` | `mahalanobisSquaredWithWorkspace` |
+
+Unsquared distances have the same variants. Internal quadratic forms provide
+`quadraticFormBatch`, `rcQuadraticFormBatch`, and `makeQuadraticFormBatch`, with
+selected counterparts `quadraticForm`, `rcQuadraticForm`, and `makeQuadraticForm`.
+`quadraticFormInto` writes selected results; `quadraticFormWithWorkspace` also
+takes selected scratch. Explicit batches use `quadraticFormBatchInto` for both.
+
+Select workspace axes explicitly too; workspace storage orientation may differ:
+
+```d
+mahalanobisSquaredWithWorkspace!(MahalanobisMatrix.cholesky)(
+    rows.alongDim!1, center, factor, results, scratchColumns.byDim!1);
+
+quadraticFormWithWorkspace!(Summation.fast)(
+    rows.byDim!0, symmetricView(metric), values, scratchColumns.alongDim!0);
+```
+
+Each selected scratch view must have the input's observation count and vector
+length. Output remains an ordinary vector. Covariance needs an extra ordinary
+square factor workspace; fast precision needs an extra selected product
+workspace. Inputs, output, and scratch obey the same disjointness requirements
+as their explicit batch counterparts. The adapters themselves allocate nothing.
+
+## Batches of quadratic forms and distances
+
+A batch has shape **(dimension, observation count)**: each column is one
+observation. A single metric applies to all columns. Results are vectors with
+one entry per column; observations are not compared pairwise.
+
+For internal quadratic forms:
+
+```d
+auto values = quadraticFormBatch(observations, symmetricView(metric));
+quadraticFormBatchInto(observations, symmetricView(metric), values);
+quadraticFormBatchInto!(Summation.fast)(
+    observations, symmetricView(metric), values, productWorkspace);
+```
+
+The default computes compensated row and final reductions independently for
+each column. Explicit fast mode with a matrix workspace computes all products
+at once using GEMM for general matrices or SYMM for eligible symmetric views,
+then reduces column dots. It permits backend-dependent rounding. The allocating
+`quadraticFormBatch`, `rcQuadraticFormBatch`, and `makeQuadraticFormBatch` variants
+allocate this workspace only for fast mode; other policies allocate just the
+result. These names are also available through the corresponding allocation
+convenience modules.
+
+The public distance module provides `mahalanobisBatch` and
+`mahalanobisSquaredBatch`, plus `rc`, `make`, and `WithWorkspace` variants:
+
+```d
+auto distances = mahalanobisBatch!(MahalanobisMatrix.cholesky)(
+    observations, center, covarianceFactor);
+mahalanobisSquaredBatchWithWorkspace!(MahalanobisMatrix.cholesky)(
+    observations, center, covarianceFactor, results, centeredWorkspace);
+mahalanobisSquaredBatchWithWorkspace!(MahalanobisMatrix.inverseCovariance,
+    TrianglePolicy.upper, Summation.fast)(
+    observations, center, precision, results, centeredWorkspace, productWorkspace);
+```
+
+The center is one vector shared by the batch. `results` has one element per
+column, and both centered/product workspaces have the observation matrix's
+shape. Starting from covariance requires an additional square factor workspace
+instead of a product workspace; the covariance is factorized once per batch.
+Prepared covariance factors use a single TRSM across columns, and precision
+factors use TRMM. Their final scaled column norms preserve the unsquared
+function's range. Precision matrices use compensated quadratic forms unless
+fast arithmetic is explicitly selected. Every path has a native D fallback.
+
+Caller-owned output and scratch buffers must be mutually disjoint and disjoint
+from inputs, with no overlapping writable elements. GC and RC variants manage
+output ownership; custom variants release scratch but transfer result ownership
+to the caller.
+
+The benchmark runner's `quadraticBatch` and `mahalanobisBatch` families compare
+32 columns per invocation with repeated single-column calculations using the
+same summation policy and reusable workspace. `--size` selects the dimension;
+reported time is per whole batch, not per observation. Both storage orientations
+are available through `--layout`. Setup, factorization of prepared metrics,
+and analytic-reference validation occur outside the timed operations.
