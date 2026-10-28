@@ -16,13 +16,15 @@ import std.exception: enforce;
 import std.math: abs, isFinite;
 
 package(mir.stat):
-enum algebraNames = ["triangularLeft", "triangularRight", "quadratic", "mahalanobis"];
+enum algebraNames = ["triangularLeft", "triangularRight", "quadratic", "mahalanobis", "symmetricVector", "symmetricLeft", "symmetricRight", "symmetricColumn", "symmetricRow"];
 
 /// List the algorithms available for a validated benchmark family.
 string[] algebraAlgorithms(string name)
 {
     switch (name)
     {
+    case "symmetricVector": return ["general", "symmetric"];
+    case "symmetricLeft", "symmetricRight", "symmetricColumn", "symmetricRow": return ["general", "symmetric", "generalMixed", "symmetricMixed", "workspaceInput", "workspaceOutput"];
     case "triangularLeft", "triangularRight": return ["dense", "triangular", "packed"];
     case "quadratic": return ["composed", "general", "symmetric", "singleTriangle", "generalFast", "symmetricFast", "packedSymmetric", "packedFast"];
     case "mahalanobis": return ["covarianceGC", "factorGC", "precisionGC", "precisionFactorGC",
@@ -70,6 +72,11 @@ Result[] runAlgebra(string name, size_t iterations, size_t size, ulong seed,
     validateAlgebra(name, iterations, size, Transform.none, selected, rounds);
     switch (name)
     {
+    case "symmetricColumn": return measureSymmetric!(false, false, true)(name,iterations,size,seed,selected,rounds,warmup,transpose);
+    case "symmetricRow": return measureSymmetric!(false, true, true)(name,iterations,size,seed,selected,rounds,warmup,transpose);
+    case "symmetricVector": return measureSymmetric!(true, false)(name,iterations,size,seed,selected,rounds,warmup,transpose);
+    case "symmetricLeft": return measureSymmetric!(false, false)(name,iterations,size,seed,selected,rounds,warmup,transpose);
+    case "symmetricRight": return measureSymmetric!(false, true)(name,iterations,size,seed,selected,rounds,warmup,transpose);
     case "triangularLeft": return measure!0(name, iterations, size, seed, selected, rounds, warmup, transpose);
     case "triangularRight": return measure!1(name, iterations, size, seed, selected, rounds, warmup, transpose);
     case "quadratic": return measure!2(name, iterations, size, seed, selected, rounds, warmup, transpose);
@@ -341,4 +348,138 @@ unittest
     assert(rows.length == 1);
     // Half a matrix plus vectors/scheduler fits comfortably below a full matrix.
     assert(bytes < order * order * double.sizeof);
+}
+
+/// Compare general and symmetric products, including opposite output layout.
+/// Matrix cases have 32 right-hand sides (or 32 rows for a right-side metric).
+private Result[] measureSymmetric(bool vector, bool right, bool singleColumn = false)(string name, size_t iterations,
+    size_t n, ulong seed, string[] selected, size_t rounds, size_t warmup, bool transpose)
+{
+    import mir.ndslice.allocation: uninitSlice;
+    import mir.random.engine.mersenne_twister: Mt19937_64;
+    import mir.random.variable: NormalVariable;
+    import std.meta: AliasSeq;
+    enum columns = vector || singleColumn ? 1 : 32;
+    auto labels = algebraAlgorithms(name);
+    /// Whether an algorithm is included in this run.
+    bool needs(string label) { return !selected.length || selected.canFind(label); }
+    bool needDense = needs("general") || needs("symmetric");
+    bool needOutput = needDense;
+    bool needMixed;
+    static if (!vector)
+    {
+        needDense = needDense || needs("generalMixed") || needs("symmetricMixed") || needs("workspaceInput") || needs("workspaceOutput");
+        needMixed = needs("generalMixed") || needs("symmetricMixed") || needs("workspaceInput") || needs("workspaceOutput");
+    }
+    auto a = uninitSlice!double(needDense ? n : 0, needDense ? n : 0).universal;
+    if (transpose) a = a.transposed;
+    auto u = uninitSlice!double(n);
+    auto rng = Mt19937_64(seed);
+    auto normal = NormalVariable!double(0, 1);
+    foreach (i; 0 .. n) u[i] = normal(rng)/n;
+    foreach (i; 0 .. n) foreach (j; 0 .. n)
+    {
+        auto value = (i == j ? 1.0 : 0.0) + u[i]*u[j];
+        if (needDense) a[i,j] = value;
+    }
+    static if (vector)
+    {
+        auto b = uninitSlice!double(n);
+        auto c = uninitSlice!double(n);
+        auto reference = uninitSlice!double(n);
+    }
+    else
+    {
+        /// Allocate only selected output layouts, preserving logical product shape.
+        auto matrix(bool needed, bool colMajor)
+        {
+            auto value = uninitSlice!double(needed ? (colMajor ? columns : n) : 0,
+                needed ? (colMajor ? n : columns) : 0).universal;
+            return colMajor ? value.transposed : value;
+        }
+        // Right products transpose these working descriptors before the call.
+        enum flipForRight = right;
+        auto b = matrix(true, transpose != flipForRight);
+        auto c = matrix(needOutput, transpose != flipForRight);
+        auto mixed = matrix(needMixed, transpose == flipForRight);
+        auto workInput = matrix(needs("workspaceInput"), transpose == flipForRight);
+        auto workOutput = matrix(needs("workspaceOutput"), transpose != flipForRight);
+        auto reference = matrix(true, false);
+    }
+    /// Dispatch the selected representation into a shared preallocated output.
+    double run(int representation, bool mixedLayout = false)()
+    {
+        static if (mixedLayout) auto output = mixed;
+        else auto output = c;
+        static if (representation == 0) auto metric = a;
+        else auto metric = symmetricView(a);
+        static if (right) mtimesInto(b.transposed, metric, output.transposed);
+        else mtimesInto(metric, b, output);
+        static if (vector) return output[0];
+        else return output[0,0];
+    }
+    /// Include layout conversion in timing while reusing caller workspace.
+    double runWorkspace(bool copyInput)()
+    {
+        static if (copyInput) auto work = workInput;
+        else auto work = workOutput;
+        static if (right) mtimesInto(b.transposed, symmetricView(a), mixed.transposed, work.transposed);
+        else mtimesInto(symmetricView(a), b, mixed, work);
+        return mixed[0,0];
+    }
+    static if (vector) alias functions = AliasSeq!(run!0, run!1);
+    else alias functions = AliasSeq!(run!0, run!1, run!(0,true), run!(1,true),
+        runWorkspace!true, runWorkspace!false);
+    bool[functions.length] enabled;
+    foreach (i, label; labels) enabled[i] = needs(label);
+    auto active = enabled[].count(true);
+    /// Generate shared inputs and an independent rank-one analytic reference outside timing.
+    void prepare()
+    {
+        foreach (j; 0 .. columns)
+        {
+            real dot = 0;
+            foreach (i; 0 .. n)
+            {
+                auto value = normal(rng);
+                static if (vector) b[i] = value;
+                else b[i,j] = value;
+                dot += cast(real)u[i]*value;
+            }
+            foreach (i; 0 .. n)
+            {
+                static if (vector) reference[i] = cast(double)(b[i] + u[i]*dot);
+                else reference[i,j] = cast(double)(b[i,j] + u[i]*dot);
+            }
+        }
+    }
+    /// Check every output entry after each timed call, including mixed layouts.
+    void check(size_t index, double value)
+    {
+        static if (vector) auto output = c;
+        else auto output = index < 2 ? c : mixed;
+        foreach (j; 0 .. columns) foreach (i; 0 .. n)
+        {
+            static if (vector) { auto actual = output[i]; auto expected = reference[i]; }
+            else { auto actual = output[i,j]; auto expected = reference[i,j]; }
+            enforce(isFinite(actual) && abs(actual-expected) <= 1e-10*(1+abs(expected)),
+                "Incorrect symmetric product benchmark result");
+        }
+    }
+    Result[] results;
+    foreach (round; 0 .. rounds)
+    {
+        double[functions.length] values;
+        auto first = round % active;
+        auto elapsed = benchmarkPrepared!functions(iterations, values, enabled,
+            BenchmarkSchedule(round == 0 ? warmup : 0, first), &prepare, &check);
+        size_t ordinal;
+        foreach (i, label; labels) if (enabled[i])
+        {
+            results ~= Result(name ~ (transpose ? "_transposed" : "_rowMajor"), label, values[i], elapsed[i],
+                Transform.none, round+1, (ordinal+active-first)%active+1);
+            ++ordinal;
+        }
+    }
+    return results;
 }

@@ -47,7 +47,7 @@ Its default remains compensated; explicit `Summation.fast` enables GEMV/SYMV
 
 `symmetricView` and `triangularView` attach structure to a matrix without
 copying its elements. Symmetric views dispatch quadratic forms and Cholesky
-decomposition; triangular views dispatch multiplication with one ordinary
+decomposition; both view types dispatch multiplication with one ordinary
 operand. Views are read-only, retain RC ownership when supplied, and have no
 implicit ndslice conversion. They do not assert positive definiteness or
 represent Cholesky factors. Transpose updates the selected triangle.
@@ -58,6 +58,17 @@ Bare stairs mean triangular with a stored diagonal. The direction supplies the
 triangle; `triangularView!(DiagonalPolicy.unit)(packed)` selects unit diagonal.
 Packed views retain storage ownership and do not allocate a dense input copy.
 Symmetric packed views also support quadratic forms and Cholesky decomposition.
+
+`mtimes(symmetricView(a), b)` and its right-side counterpart read only the
+selected triangle. Dense matrix products use SYMM when storage orientations
+permit; eligible mixed orientations use blocked GEMM without scratch storage.
+Real vectors use SYMV. Eligible single-column real
+matrix operands share this vector dispatch while retaining matrix result shape.
+`mtimesInto(a, b, output, work)` additionally accepts explicit layout workspace
+for symmetric matrix products. Matching output strides selects an input copy;
+matching ordinary-input strides selects a temporary output. Unsupported cases
+retain the no-workspace fallback; no hidden allocation or matrix expansion occurs. The same view dispatch
+works with every ownership variant and caller output.
 
 BLAS is optional. The default configuration uses native D kernels; compatible
 native layouts can use BLAS when that dependency is available. Backend and

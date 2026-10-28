@@ -15,7 +15,8 @@ Only result storage is allocated; input views are never materialized.
 Pass `triangularView(a)` on either side of `mtimes` to select triangular
 multiplication automatically. The same dispatch is available through `rcMtimes`,
 `makeMtimes`, and `mtimesInto`. The view carries the triangle and diagonal policy;
-the other operand must be an ordinary ndslice.
+the other operand must be an ordinary ndslice. Symmetric views work on either
+side as well, selecting SYMM/SYMV where eligible without materialization.
 
 License: $(HTTP www.apache.org/licenses/LICENSE-2.0, Apache-2.0)
 Copyright: 2026 Mir Stat Authors.
@@ -29,7 +30,7 @@ version(mir_stat_test_blas) version = mir_stat_test_linearAlgebra;
 
 import mir.stat.internal.linearAlgebra.types: Scalar, numericSlice, TrianglePolicy, DiagonalPolicy;
 import mir.stat.internal.linearAlgebra.backend: hasBlas, blasNumber, nativeSlice, blasMatrix, blasVector;
-import mir.stat.internal.linearAlgebra.views: TriangularView, triangularView;
+import mir.stat.internal.linearAlgebra.views: TriangularView, triangularView, SymmetricView, symmetricView;
 import mir.stat.internal.linearAlgebra.packed: isPacked, PackedInfo;
 import mir.stat.internal.linearAlgebra.allocation;
 
@@ -1076,4 +1077,564 @@ version(mir_stat_test_linearAlgebra)
     assert(transposed[0] == data[0]*values[0]);
     assert(transposed[1] == data[1]*values[0] + data[2]*values[1]);
     assert(rcMtimesTriangular(packed,x) == result);
+}
+
+/++
+Multiply using a symmetric view on the left. Only its selected triangle is
+read, without conjugation or dense materialization. The other operand is an
+ordinary ndslice. Ownership and dimensions follow the plain-slice overload.
+Compatible dense matrices use SYMM, or blocked GEMM for mixed orientations.
+Eligible real vectors use SYMV.
+General layouts and types retain a native D fallback.
++/
+package(mir.stat) AllocatedSlice!(Allocation.gc, Scalar!A, B.N)
+mtimes(TrianglePolicy triangle, A, B)(scope auto ref const(SymmetricView!(triangle, A)) a, scope auto ref B b)
+    if (numericSlice!B && is(Scalar!A == Scalar!B))
+{
+    int allocator;
+    auto result = allocate!(Allocation.gc, Scalar!A)(allocator, b.shape);
+    mtimesInto(a, b, result);
+    return result;
+}
+
+/// Declare symmetry once and multiply on either side using the ordinary API.
+version(mir_stat_test_linearAlgebra)
+@safe pure nothrow unittest
+{
+    import mir.ndslice.slice: sliced;
+    double[4] values = [4, 2, double.nan, 5];
+    double[6] rhs = [1, 2, 3, 4, 5, 6];
+    double[2] vector = [1, 2];
+    auto a = symmetricView(values[].sliced(2, 2));
+    assert(mtimes(a, vector[].sliced) == [8, 12]);
+    assert(mtimes(vector[].sliced, a) == [8, 12]);
+    assert(mtimes(a, rhs[].sliced(2, 3)) == [[12, 18, 24], [22, 29, 36]]);
+    assert(mtimes(rhs[].sliced(3, 2), a) == [[8, 12], [20, 26], [32, 40]]);
+}
+
+/++
+Multiply using a symmetric view on the right. Only its selected triangle is
+read, without conjugation or dense materialization. The other operand is an
+ordinary ndslice. Ownership and dimensions follow the plain-slice overload.
+Compatible dense matrices use SYMM, or blocked GEMM for mixed orientations.
+Eligible real vectors use SYMV.
+General layouts and types retain a native D fallback.
++/
+package(mir.stat) AllocatedSlice!(Allocation.gc, Scalar!A, B.N)
+mtimes(TrianglePolicy triangle, A, B)(scope auto ref B b, scope auto ref const(SymmetricView!(triangle, A)) a)
+    if (numericSlice!B && is(Scalar!A == Scalar!B))
+{
+    int allocator;
+    auto result = allocate!(Allocation.gc, Scalar!A)(allocator, b.shape);
+    mtimesInto(b, a, result);
+    return result;
+}
+
+/++
+Multiply using a symmetric view on the left. Only its selected triangle is
+read, without conjugation or dense materialization. The other operand is an
+ordinary ndslice. Ownership and dimensions follow the plain-slice overload.
+Compatible dense matrices use SYMM, or blocked GEMM for mixed orientations.
+Eligible real vectors use SYMV.
+General layouts and types retain a native D fallback.
++/
+package(mir.stat) AllocatedSlice!(Allocation.rc, Scalar!A, B.N)
+rcMtimes(TrianglePolicy triangle, A, B)(scope auto ref const(SymmetricView!(triangle, A)) a, scope auto ref B b)
+    if (numericSlice!B && is(Scalar!A == Scalar!B))
+{
+    int allocator;
+    auto result = allocate!(Allocation.rc, Scalar!A)(allocator, b.shape);
+    mtimesInto(a, b, result);
+    return result;
+}
+
+/++
+Multiply using a symmetric view on the right. Only its selected triangle is
+read, without conjugation or dense materialization. The other operand is an
+ordinary ndslice. Ownership and dimensions follow the plain-slice overload.
+Compatible dense matrices use SYMM, or blocked GEMM for mixed orientations.
+Eligible real vectors use SYMV.
+General layouts and types retain a native D fallback.
++/
+package(mir.stat) AllocatedSlice!(Allocation.rc, Scalar!A, B.N)
+rcMtimes(TrianglePolicy triangle, A, B)(scope auto ref B b, scope auto ref const(SymmetricView!(triangle, A)) a)
+    if (numericSlice!B && is(Scalar!A == Scalar!B))
+{
+    int allocator;
+    auto result = allocate!(Allocation.rc, Scalar!A)(allocator, b.shape);
+    mtimesInto(b, a, result);
+    return result;
+}
+
+/++
+Multiply using a symmetric view on the left. Only its selected triangle is
+read, without conjugation or dense materialization. The other operand is an
+ordinary ndslice. Ownership and dimensions follow the plain-slice overload.
+Compatible dense matrices use SYMM, or blocked GEMM for mixed orientations.
+Eligible real vectors use SYMV.
+General layouts and types retain a native D fallback.
++/
+package(mir.stat) AllocatedSlice!(Allocation.custom, Scalar!A, B.N)
+makeMtimes(TrianglePolicy triangle, A, B, Allocator)(auto ref Allocator allocator, scope auto ref const(SymmetricView!(triangle, A)) a, scope auto ref B b)
+    if (numericSlice!B && is(Scalar!A == Scalar!B))
+{
+    auto result = allocate!(Allocation.custom, Scalar!A)(allocator, b.shape);
+    scope(failure) { import std.experimental.allocator: dispose; allocator.dispose(result.field); }
+    mtimesInto(a, b, result);
+    return result;
+}
+
+/++
+Multiply using a symmetric view on the right. Only its selected triangle is
+read, without conjugation or dense materialization. The other operand is an
+ordinary ndslice. Ownership and dimensions follow the plain-slice overload.
+Compatible dense matrices use SYMM, or blocked GEMM for mixed orientations.
+Eligible real vectors use SYMV.
+General layouts and types retain a native D fallback.
++/
+package(mir.stat) AllocatedSlice!(Allocation.custom, Scalar!A, B.N)
+makeMtimes(TrianglePolicy triangle, A, B, Allocator)(auto ref Allocator allocator, scope auto ref B b, scope auto ref const(SymmetricView!(triangle, A)) a)
+    if (numericSlice!B && is(Scalar!A == Scalar!B))
+{
+    auto result = allocate!(Allocation.custom, Scalar!A)(allocator, b.shape);
+    scope(failure) { import std.experimental.allocator: dispose; allocator.dispose(result.field); }
+    mtimesInto(b, a, result);
+    return result;
+}
+
+/++
+Overwrite caller storage with a symmetric product. Only the selected triangle
+is read. Output has the ordinary operand's shape and must be disjoint from
+both inputs, with nonoverlapping writable elements. No allocation occurs.
++/
+package(mir.stat) void mtimesInto(TrianglePolicy triangle, A, B, C)(
+    scope auto ref const(SymmetricView!(triangle, A)) a,
+    scope auto ref B b, scope auto ref C c)
+    if (numericSlice!B && numericSlice!C && B.N == C.N &&
+        is(Scalar!A == Scalar!B) && is(Scalar!A == Scalar!C))
+{
+    auto storage = a.storage;
+    symmetricMultiply!triangle(storage, b, c);
+}
+
+/// Right symmetric product; output and aliasing requirements match the left overload.
+package(mir.stat) void mtimesInto(TrianglePolicy triangle, A, B, C)(
+    scope auto ref B b, scope auto ref const(SymmetricView!(triangle, A)) a,
+    scope auto ref C c)
+    if (numericSlice!B && numericSlice!C && B.N == C.N &&
+        is(Scalar!A == Scalar!B) && is(Scalar!A == Scalar!C))
+{
+    static if (B.N == 1) mtimesInto(a, b, c);
+    else
+    {
+        import mir.ndslice.topology: universal;
+        import mir.ndslice.dynamic: transposed;
+        mtimesInto(a, b.universal.transposed, c.universal.transposed);
+    }
+}
+
+/// Dispatch a left symmetric product, preserving logical triangle and general strides.
+private void symmetricMultiply(TrianglePolicy triangle, A, B, C)(
+    scope auto ref A a, scope auto ref B b, scope auto ref C c)
+{
+    alias T = Scalar!A;
+    assert(a.length!0 == a.length!1 && a.length!0 == b.length!0);
+    assert(b.shape == c.shape);
+    if (!b.length!0) return;
+    static if (B.N == 2)
+    {
+        if (!b.length!1) return;
+        // A rank-two single column is still a matrix result, but real
+        // arithmetic can use the same kernel as the corresponding vector.
+        static if (is(T == float) || is(T == double))
+        {
+            if (b.length!1 == 1)
+            {
+                import mir.ndslice.topology: universal;
+                import mir.ndslice.dynamic: transposed;
+                symmetricMultiply!triangle(a, b.universal.transposed[0], c.universal.transposed[0]);
+                return;
+            }
+        }
+        static if (hasBlas && blasNumber!T && nativeSlice!A && nativeSlice!B && nativeSlice!C)
+        {
+            import mir.ndslice.topology: universal;
+            auto ap = a.lightScope.lightConst.universal;
+            auto bp = b.lightScope.lightConst.universal;
+            auto cp = c.lightScope.universal;
+            if (blasMatrix(a) && blasMatrix(b) && blasMatrix(c) &&
+                sameSymmetricOrientation(bp, cp))
+            {
+                import mir.blas: symm;
+                import cblas: Side, Uplo;
+                enum uplo = triangle == TrianglePolicy.upper ? Uplo.Upper : Uplo.Lower;
+                symm(Side.Left, uplo, T(1), ap, bp, T(0), cp);
+                return;
+            }
+            if (blasMatrix(a) && blasMatrix(b) && blasMatrix(c))
+            {
+                symmetricMultiplyMixed!triangle(ap, bp, cp);
+                return;
+            }
+        }
+        import mir.ndslice.topology: universal;
+        import mir.ndslice.dynamic: transposed;
+        auto bt = b.universal.transposed;
+        auto ct = c.universal.transposed;
+        foreach (j; 0 .. b.length!1) symmetricMultiply!triangle(a, bt[j], ct[j]);
+    }
+    else
+    {
+        static if (is(T == float) || is(T == double))
+        {
+            static if (hasBlas && nativeSlice!A && nativeSlice!B && nativeSlice!C)
+            {
+                if (blasMatrix(a) && blasVector(b) && blasVector(c))
+                {
+                    import mir.blas: symv;
+                    import cblas: Uplo;
+                    enum uplo = triangle == TrianglePolicy.upper ? Uplo.Upper : Uplo.Lower;
+                    symv(uplo, T(1), a.lightScope.lightConst, b.lightScope.lightConst, T(0), c.lightScope);
+                    return;
+                }
+            }
+        }
+        foreach (i; 0 .. b.length)
+        {
+            T sum = T(0);
+            foreach (k; 0 .. i)
+            {
+                static if (triangle == TrianglePolicy.upper) sum += a[k, i] * b[k];
+                else sum += a[i, k] * b[k];
+            }
+            foreach (k; i .. b.length)
+            {
+                static if (triangle == TrianglePolicy.upper) sum += a[i, k] * b[k];
+                else sum += a[k, i] * b[k];
+            }
+            c[i] = sum;
+        }
+    }
+}
+
+
+// Exercise SYMM-compatible and mixed layouts, right products,
+// complex symmetric (not Hermitian) arithmetic, and explicit ownership.
+version(mir_stat_test_linearAlgebra)
+@system pure unittest
+{
+    import mir.ndslice.slice: sliced;
+    import mir.ndslice.topology: universal, map;
+    import mir.ndslice.dynamic: transposed, reversed;
+    import mir.ndslice.allocation: mininitRcslice;
+    import std.meta: AliasSeq;
+    import std.math: approxEqual;
+    static foreach (T; AliasSeq!(float, double, real))
+    foreach (ta; [false, true]) foreach (tb; [false, true]) foreach (tc; [false, true])
+    {
+        T[9] av; T[12] bv, cv;
+        auto a = av[].sliced(3, 3).universal;
+        auto b = bv[].sliced(tb ? 4 : 3, tb ? 3 : 4).universal;
+        auto c = cv[].sliced(tc ? 4 : 3, tc ? 3 : 4).universal;
+        if (ta) a = a.transposed;
+        if (tb) b = b.transposed;
+        if (tc) c = c.transposed;
+        foreach (i;0 .. 3) foreach (j;0 .. 3) a[i, j] = j>=i ? T(i+j+1) : T.nan;
+        foreach (i;0 .. 3) foreach (j;0 .. 4) b[i, j] = T(i+2*j+1);
+        auto view = symmetricView(a);
+        mtimesInto(view, b, c);
+        foreach (i;0 .. 3) foreach (j;0 .. 4) {
+            T expected = 0; foreach (k;0 .. 3) expected+=T(i+k+1)*b[k, j];
+            assert(c[i, j] == expected);
+        }
+        mtimesInto(b.transposed, view, c.transposed);
+        assert(rcMtimes(view, b) == c);
+        assert(mtimes(view.transposed, b) == c);
+        assert(mtimes(view, b.map!(v=>v)) == c);
+    }
+    import mir.complex: Complex;
+    alias Z = Complex!double;
+    Z[4] a = [Z(1, 1), Z(2, 3), Z(double.nan, 0), Z(4, -1)];
+    Z[2] b = [Z(1, -1), Z(2, 1)];
+    auto v = symmetricView(a[].sliced(2, 2));
+    auto result = mtimes(v, b[].sliced);
+    assert(result[0] == a[0]*b[0]+a[1]*b[1]);
+    assert(result[1] == a[1]*b[0]+a[3]*b[1]);
+    auto matrixResult = mtimes(v, b[].sliced(2, 1));
+    assert(matrixResult[0, 0] == result[0] && matrixResult[1, 0] == result[1]);
+    auto owner = mininitRcslice!double(2, 2); owner[] = 0; owner[0, 0] = owner[1, 1] = 1;
+    const retained = symmetricView(owner);
+    double[2] x = [2, 3];
+    assert(rcMtimes(retained, x[].sliced) == x[]);
+}
+
+version(mir_stat_test_linearAlgebra)
+@system unittest
+{
+    import mir.ndslice.slice: sliced;
+    import std.experimental.allocator.mallocator: Mallocator;
+    import std.experimental.allocator: dispose;
+    double[4] a = [1, 0, double.nan, 1]; double[2] x = [2, 3];
+    auto result = makeMtimes(Mallocator.instance, symmetricView(a[].sliced(2, 2)), x[].sliced);
+    scope(exit) Mallocator.instance.dispose(result.field);
+    assert(result == x[]);
+}
+
+/// Multiply mixed-layout native matrices without allocating or reading an unused triangle.
+/// Diagonal blocks initialize output; GEMM adds each stored off-diagonal block
+/// and its reflection. Small leaves preserve ascending contraction order.
+private void symmetricMultiplyMixed(TrianglePolicy triangle, A, B, C)(A a, B b, C c)
+{
+    import mir.blas: gemm;
+    import mir.ndslice.dynamic: transposed;
+    alias T = Scalar!A;
+    const n = a.length!0;
+    if (n <= 16)
+    {
+        foreach (i; 0 .. n) foreach (j; 0 .. b.length!1)
+        {
+            T sum = T(0);
+            foreach (k; 0 .. i)
+            {
+                static if (triangle == TrianglePolicy.upper) sum += a[k, i] * b[k, j];
+                else sum += a[i, k] * b[k, j];
+            }
+            foreach (k; i .. n)
+            {
+                static if (triangle == TrianglePolicy.upper) sum += a[i, k] * b[k, j];
+                else sum += a[k, i] * b[k, j];
+            }
+            c[i, j] = sum;
+        }
+        return;
+    }
+    const split = n / 2;
+    auto b0 = b[0 .. split, 0 .. $];
+    auto b1 = b[split .. $, 0 .. $];
+    auto c0 = c[0 .. split, 0 .. $];
+    auto c1 = c[split .. $, 0 .. $];
+    symmetricMultiplyMixed!triangle(a[0 .. split, 0 .. split], b0, c0);
+    symmetricMultiplyMixed!triangle(a[split .. $, split .. $], b1, c1);
+    static if (triangle == TrianglePolicy.upper) auto off = a[0 .. split, split .. $];
+    else auto off = a[split .. $, 0 .. split].transposed;
+    gemm(T(1), off, b1, T(1), c0);
+    gemm(T(1), off.transposed, b0, T(1), c1);
+}
+
+// Cross block boundaries with unequal input/output orientations, padding,
+// both stored triangles, and nonconjugating complex arithmetic.
+version(mir_stat_test_linearAlgebra)
+@safe pure unittest
+{
+    import mir.ndslice.allocation: uninitSlice;
+    import mir.ndslice.topology: universal;
+    import mir.ndslice.dynamic: transposed;
+    import mir.complex: Complex;
+    import std.meta: AliasSeq;
+    static foreach (T; AliasSeq!(float, double, Complex!double))
+    static foreach (triangle; [TrianglePolicy.upper, TrianglePolicy.lower])
+    foreach (n; [1, 17, 33, 65]) foreach (flip; [false, true])
+    {
+        auto a = uninitSlice!T(n, n + 2)[0 .. n, 0 .. n].universal;
+        if (flip) a = a.transposed;
+        auto b = uninitSlice!T(flip ? n : 5, flip ? 5 : n).universal;
+        auto c = uninitSlice!T(flip ? 5 : n, flip ? n : 5).universal;
+        if (!flip) b = b.transposed;
+        if (flip) c = c.transposed;
+        foreach (i; 0 .. n) foreach (j; 0 .. n)
+        {
+            auto value = T((i + j) % 7 + 1);
+            static if (is(T == Complex!double)) value += T(0, 1);
+            a[i, j] = (triangle == TrianglePolicy.upper ? j >= i : j <= i) ? value : T(double.nan);
+        }
+        foreach (i; 0 .. n) foreach (j; 0 .. 5) b[i, j] = T((i + j) % 5 + 1);
+        mtimesInto(symmetricView!triangle(a), b, c);
+        foreach (i; 0 .. n) foreach (j; 0 .. 5)
+        {
+            T expected = T(0);
+            foreach (k; 0 .. n)
+            {
+                auto value = T((i + k) % 7 + 1);
+                static if (is(T == Complex!double)) value += T(0, 1);
+                expected += value * b[k, j];
+            }
+            assert(c[i, j] == expected);
+        }
+        auto left = mtimes(symmetricView!triangle(a), b);
+        mtimesInto(b.transposed, symmetricView!triangle(a), c.transposed);
+        assert(left == c);
+        auto rowWork = uninitSlice!T(n, 5);
+        auto columnWork = uninitSlice!T(5, n).universal.transposed;
+        mtimesInto(symmetricView!triangle(a), b, c, rowWork);
+        assert(left == c);
+        mtimesInto(symmetricView!triangle(a), b, c, columnWork);
+        assert(left == c);
+        mtimesInto(b.transposed, symmetricView!triangle(a), c.transposed, rowWork.transposed);
+        assert(left == c);
+        mtimesInto(b.transposed, symmetricView!triangle(a), c.transposed, columnWork.transposed);
+        assert(left == c);
+    }
+}
+
+/// Mixed storage orientations do not require scratch allocation.
+version(mir_stat_test_linearAlgebra)
+@safe pure nothrow @nogc unittest
+{
+    import mir.ndslice.slice: sliced;
+    import mir.ndslice.topology: universal;
+    import mir.ndslice.dynamic: transposed;
+    double[17*17] matrix;
+    double[17*3] rhs, output;
+    auto a = matrix[].sliced(17,17);
+    auto b = rhs[].sliced(3,17).universal.transposed;
+    auto c = output[].sliced(17,3);
+    foreach (i; 0 .. 17) foreach (j; 0 .. 17)
+        a[i,j] = j < i ? double.nan : i == j ? 1 : 0;
+    b[] = 2;
+    mtimesInto(symmetricView(a),b,c);
+    assert(c == b);
+}
+
+/++
+Symmetric matrix multiplication with optional caller-provided layout workspace.
+All operands are matrices. `work` has the same shape and element type as the
+ordinary operand and output. Output and workspace must have nonoverlapping
+writable elements, be mutually disjoint, and be disjoint from both inputs.
+Shapes are asserted; overlap is not checked. No storage is allocated.
+
+For eligible BLAS matrices with different input/output orientations, workspace
+matching the output is used to copy the ordinary input before SYMM. Workspace
+matching the ordinary input receives the product, which is then copied into
+output. Thus callers choose the conversion through the workspace's strides.
+Both alternatives read only the symmetric view's selected triangle.
+
+Workspace contents are unspecified afterward. It may be unused: matching
+input/output layouts, real single-column products, or unsupported backend,
+type, or storage combinations retain the ordinary dispatch and native D fallback.
+No timing-based threshold or dense expansion of the symmetric matrix is used.
++/
+package(mir.stat) void mtimesInto(TrianglePolicy triangle, A, B, C, W)(
+    scope auto ref const(SymmetricView!(triangle, A)) a,
+    scope auto ref B b, scope auto ref C c, scope auto ref W work)
+    if (numericSlice!B && numericSlice!C && numericSlice!W && B.N == 2 && C.N == 2 && W.N == 2 &&
+        is(Scalar!A == Scalar!B) && is(Scalar!A == Scalar!C) && is(Scalar!A == Scalar!W))
+{
+    assert(a.length!0 == b.length!0 && b.shape == c.shape && b.shape == work.shape,
+        "Incompatible symmetric product workspace dimensions");
+    alias T = Scalar!A;
+    static if (hasBlas && blasNumber!T && nativeSlice!A && nativeSlice!B && nativeSlice!C && nativeSlice!W)
+    {
+        auto storage = a.storage;
+        bool directVector = false;
+        static if (is(T == float) || is(T == double)) directVector = b.length!1 == 1;
+        if (b.length!0 && b.length!1 && !directVector &&
+            blasMatrix(storage) && blasMatrix(b) && blasMatrix(c) && blasMatrix(work) &&
+            !sameSymmetricOrientation(b, c))
+        {
+            if (sameSymmetricOrientation(work, c))
+            {
+                copySymmetricProduct(b, work);
+                mtimesInto(a, work, c);
+                return;
+            }
+            if (sameSymmetricOrientation(b, work))
+            {
+                mtimesInto(a, b, work);
+                copySymmetricProduct(work, c);
+                return;
+            }
+        }
+    }
+    mtimesInto(a, b, c);
+}
+
+/// Reuse ordinary workspace when the input is a transposed view.
+version(mir_stat_test_linearAlgebra)
+@safe pure nothrow @nogc unittest
+{
+    import mir.ndslice.slice: sliced;
+    import mir.ndslice.dynamic: transposed;
+    double[4] data = [4,2,double.nan,5], input = [1,2,3,4], output, buffer;
+    auto a = symmetricView(data[].sliced(2,2));
+    auto b = input[].sliced(2,2).transposed;
+    auto c = output[].sliced(2,2);
+    auto work = buffer[].sliced(2,2);
+    mtimesInto(a,b,c,work); // Workspace matches output: copy input if useful.
+    assert(c[0,0] == 8 && c[0,1] == 20 && c[1,0] == 12 && c[1,1] == 26);
+    mtimesInto(a,b,c,work.transposed); // Workspace matches input: copy output.
+    assert(c[0,0] == 8 && c[0,1] == 20 && c[1,0] == 12 && c[1,1] == 26);
+}
+
+/// Right symmetric product with layout workspace. Shape, disjointness, and
+/// backend behavior follow the left-side workspace overload.
+package(mir.stat) void mtimesInto(TrianglePolicy triangle, A, B, C, W)(
+    scope auto ref B b, scope auto ref const(SymmetricView!(triangle, A)) a,
+    scope auto ref C c, scope auto ref W work)
+    if (numericSlice!B && numericSlice!C && numericSlice!W && B.N == 2 && C.N == 2 && W.N == 2 &&
+        is(Scalar!A == Scalar!B) && is(Scalar!A == Scalar!C) && is(Scalar!A == Scalar!W))
+{
+    import mir.ndslice.topology: universal;
+    import mir.ndslice.dynamic: transposed;
+    mtimesInto(a, b.universal.transposed, c.universal.transposed, work.universal.transposed);
+}
+
+/// Whether two BLAS-eligible descriptors satisfy mir.blas SYMM's shared orientation requirement.
+private bool sameSymmetricOrientation(B, C)(scope auto ref B b, scope auto ref C c)
+{
+    return (b._stride!1 == 1 && c._stride!1 == 1) ||
+        (b._stride!0 == 1 && c._stride!0 == 1 && b._stride!1 != 1 && c._stride!1 != 1);
+}
+
+/// Copy disjoint matrix descriptors with destination-contiguous traversal.
+private void copySymmetricProduct(B, C)(scope auto ref B b, scope auto ref C c)
+{
+    if (c._stride!1 == 1)
+        foreach (i; 0 .. c.length!0) foreach (j; 0 .. c.length!1) c[i,j] = b[i,j];
+    else
+        foreach (j; 0 .. c.length!1) foreach (i; 0 .. c.length!0) c[i,j] = b[i,j];
+}
+
+
+// Rank-two columns and rows preserve result shape while sharing real vector kernels.
+version(mir_stat_test_linearAlgebra)
+@safe pure nothrow @nogc unittest
+{
+    import mir.ndslice.slice: sliced;
+    import mir.ndslice.topology: universal;
+    import mir.ndslice.dynamic: transposed, strided;
+    import std.meta: AliasSeq;
+    static foreach (T; AliasSeq!(float,double,real))
+    {{
+        T[9] matrix = [T(2),T(1),T(3),T.nan,T(4),T(2),T.nan,T.nan,T(5)];
+        T[6] values = [T(1),T(99),T(2),T(99),T(3),T(99)], result, scratch;
+        auto a = symmetricView(matrix[].sliced(3,3));
+        auto b = values[].sliced(3,2)[0 .. 3,0 .. 1];
+        auto c = result[].sliced(3,2)[0 .. 3,0 .. 1];
+        auto work = scratch[].sliced(3,2)[0 .. 3,0 .. 1];
+        mtimesInto(a,b,c,work);
+        assert(c[0,0] == 13 && c[1,0] == 15 && c[2,0] == 22);
+        mtimesInto(b.transposed,a,c.transposed,work.transposed);
+        assert(c[0,0] == 13 && c[1,0] == 15 && c[2,0] == 22);
+        T[0] empty;
+        mtimesInto(symmetricView(empty[].sliced(0,0)),empty[].sliced(0,1),empty[].sliced(0,1),empty[].sliced(0,1));
+    }}
+}
+
+// General strides and computed inputs retain the no-copy fallback.
+version(mir_stat_test_linearAlgebra)
+@safe pure nothrow @nogc unittest
+{
+    import mir.ndslice.slice: sliced;
+    import mir.ndslice.topology: universal, map;
+    import mir.ndslice.dynamic: transposed, strided;
+    double[4] data = [4,2,double.nan,5], values = [1,2,3,4], output;
+    double[16] buffer;
+    auto a = symmetricView(data[].sliced(2,2));
+    auto b = values[].sliced(2,2).transposed;
+    auto c = output[].sliced(2,2);
+    auto work = buffer[].sliced(4,4).universal.strided!(0,1)(2,2);
+    mtimesInto(a,b,c,work);
+    assert(c[0,0] == 8 && c[1,1] == 26);
+    mtimesInto(a,b.map!(v => v),c,work);
+    assert(c[0,0] == 8 && c[1,1] == 26);
 }
