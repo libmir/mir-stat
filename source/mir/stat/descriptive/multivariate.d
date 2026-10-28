@@ -1,13 +1,20 @@
 /++
 This module contains algorithms for multivariate descriptive statistics.
 
+Weighted paired observations use $(LREF weightedCovariance),
+$(LREF weightedCorrelation), $(LREF WCovarianceAccumulator), and
+$(LREF WCorrelationAccumulator). Pass the two observation inputs first, followed
+by their shared weights. WeightedMomentNormalization shares the population,
+frequencySample and relativeSample choices with weighted variance; correlation
+has no normalization selector because the common factor cancels.
+
 Accumulator merges preserve stored correction terms when the element type and
 summation algorithm match and use KBN, KB2, or precise summation. Derived moments
 without corresponding stored summation state, mixed-type/mixed-summation merges,
 and other summation algorithms retain scalar merging.
 
 Numerical limits:
-Accumulators store unscaled sums and moments in their element type. A finite
+Unweighted accumulators store unscaled sums and moments in their element type. A finite
 mathematical covariance or correlation does not guarantee that these intermediate
 values fit. Naive algorithms also subtract raw moments and can lose precision
 when observations have a large common offset; prefer `online`, `twoPass`, or
@@ -36,7 +43,7 @@ module mir.stat.descriptive.multivariate;
 
 import mir.internal.utility: isFloatingPoint;
 import mir.math.sum: Summation, Summator;
-import std.traits: isMutable;
+import std.traits: isMutable, isIterable;
 
 
 /*
@@ -5294,4 +5301,897 @@ unittest
     y[] = b;
 
     x.correlation(y).shouldApprox == -0.0623684;
+}
+
+// Shared with weighted variance; this is an alias, not another policy type.
+public import mir.stat.descriptive.univariate.dispersions: WeightedMomentNormalization;
+private import mir.primitives: DeepElementType;
+
+private template weightedPairReplayable(R)
+{
+    import mir.ndslice.slice: isSlice, isConvertibleToSlice, toSlice;
+    import std.traits: isStaticArray;
+    import std.range.primitives: isInputRange, isForwardRange, ElementType;
+    static if (isStaticArray!R)
+        enum weightedPairReplayable = weightedPairReplayable!(typeof(R.init[0]));
+    else static if (isConvertibleToSlice!R && !isSlice!R)
+        enum weightedPairReplayable = weightedPairReplayable!(typeof(R.init.toSlice));
+    else static if (isSlice!R)
+        enum weightedPairReplayable = weightedPairReplayable!(typeof(R.init[0]));
+    else static if (isInputRange!R)
+        enum weightedPairReplayable = isForwardRange!R && weightedPairReplayable!(ElementType!R);
+    else
+        enum weightedPairReplayable = true;
+}
+
+private void weightedPairEach(Sink, X, Y, W)(ref Sink sink, scope X x, scope Y y, scope W w)
+{
+    import mir.ndslice.slice: isSlice, isConvertibleToSlice, toSlice;
+    import std.traits: isStaticArray;
+    import std.range.primitives: isInputRange, isForwardRange;
+    static if (isStaticArray!X)
+        weightedPairEach(sink, x[], y, w);
+    else static if (isStaticArray!Y)
+        weightedPairEach(sink, x, y[], w);
+    else static if (isStaticArray!W)
+        weightedPairEach(sink, x, y, w[]);
+    else static if (isConvertibleToSlice!X && !isSlice!X)
+        weightedPairEach(sink, x.toSlice, y, w);
+    else static if (isConvertibleToSlice!Y && !isSlice!Y)
+        weightedPairEach(sink, x, y.toSlice, w);
+    else static if (isConvertibleToSlice!W && !isSlice!W)
+        weightedPairEach(sink, x, y, w.toSlice);
+    else static if (isSlice!X && isSlice!Y && isSlice!W)
+    {
+        static assert(X.N == Y.N && X.N == W.N, "weighted moments: ranks must match");
+        assert(x.shape == y.shape && x.shape == w.shape, "weighted moments: shapes must match");
+        foreach (i; 0 .. x.length) weightedPairEach(sink, x[i], y[i], w[i]);
+    }
+    else static if (isInputRange!X && isInputRange!Y && isInputRange!W)
+    {
+        static if (isForwardRange!X) x = x.save;
+        static if (isForwardRange!Y) y = y.save;
+        static if (isForwardRange!W) w = w.save;
+        while (!x.empty && !y.empty && !w.empty)
+        {
+            weightedPairEach(sink, x.front, y.front, w.front);
+            x.popFront; y.popFront; w.popFront;
+        }
+        assert(x.empty && y.empty && w.empty, "weighted moments: lengths must match");
+    }
+    else sink.put(x, y, w);
+}
+
+private void weightedScaleSum(T, Summation mode)(ref Summator!(T, mode) sum, T factor)
+{
+    if (factor != 1) sum = cast(T) sum.sum * factor;
+}
+
+// Normalize and restore units together, without losing a representable result
+// to overflow or underflow in an intermediate quotient or product.
+private T weightedRestoreProduct(T)(T value, T left, T right, T denominator)
+{
+    import std.math: frexp, ldexp;
+    if (value == 0 || left == 0 || right == 0) return T(0);
+    int ev, el, er, ed;
+    const v = frexp(value, ev), l = frexp(left, el), r = frexp(right, er);
+    const d = frexp(denominator, ed);
+    return ldexp(((v * l) * r) / d, ev + el + er - ed);
+}
+
+private void weightedMergeSum(T, Summation mode)(ref Summator!(T, mode) target,
+    const ref Summator!(T, mode) source, T a = 1, T b = 1, T c = 1)
+{
+    import mir.stat.internal.summation: mergeSummator;
+    if (a == 1 && b == 1 && c == 1) mergeSummator(target, source);
+    else target.put(((cast(T) source.sum * a) * b) * c);
+}
+
+private struct WeightedCrossMoments(T, Summation mode, bool withSquares)
+{
+    alias Sum = Summator!(T, mode);
+    Sum cross;
+    static if (withSquares) Sum left, right;
+    T scaleLeft = 0, scaleRight = 0;
+
+    void scaleWeight(T factor)
+    {
+        weightedScaleSum(cross, factor);
+        static if (withSquares)
+        {
+            weightedScaleSum(left, factor);
+            weightedScaleSum(right, factor);
+        }
+    }
+
+    void scaleTo(T x, T y)
+    {
+        import std.math: abs;
+        x = abs(x); y = abs(y);
+        if (x > scaleLeft)
+        {
+            const ratio = scaleLeft / x;
+            weightedScaleSum(cross, ratio);
+            static if (withSquares)
+            {
+                weightedScaleSum(left, ratio);
+                weightedScaleSum(left, ratio);
+            }
+            scaleLeft = x;
+        }
+        if (y > scaleRight)
+        {
+            const ratio = scaleRight / y;
+            weightedScaleSum(cross, ratio);
+            static if (withSquares)
+            {
+                weightedScaleSum(right, ratio);
+                weightedScaleSum(right, ratio);
+            }
+            scaleRight = y;
+        }
+    }
+
+    void put(T x, T y, T weight)
+    {
+        if (weight == 0) return;
+        scaleTo(x, y);
+        const nx = scaleLeft == 0 ? T(0) : x / scaleLeft;
+        const ny = scaleRight == 0 ? T(0) : y / scaleRight;
+        cross.put(multivariateMergeProduct(nx, ny, weight));
+        static if (withSquares)
+        {
+            left.put((nx * weight) * nx);
+            right.put((ny * weight) * ny);
+        }
+    }
+
+    void merge(const ref WeightedCrossMoments other, T weightRatio = 1)
+    {
+        if (weightRatio == 0) return;
+        scaleTo(other.scaleLeft, other.scaleRight);
+        const rx = scaleLeft == 0 ? T(1) : other.scaleLeft / scaleLeft;
+        const ry = scaleRight == 0 ? T(1) : other.scaleRight / scaleRight;
+        weightedMergeSum(cross, other.cross, weightRatio, rx, ry);
+        static if (withSquares)
+        {
+            weightedMergeSum(left, other.left, weightRatio, rx, rx);
+            weightedMergeSum(right, other.right, weightRatio, ry, ry);
+        }
+    }
+}
+
+private struct WeightedPairAccumulator(T, WeightedMomentNormalization normalization,
+    CovarianceAlgo algorithm, Summation summation, bool withSquares)
+    if (isFloatingPoint!T && isMutable!T &&
+        (algorithm == CovarianceAlgo.online || algorithm == CovarianceAlgo.twoPass ||
+         algorithm == CovarianceAlgo.hybrid))
+{
+    private alias Sum = Summator!(T, summation);
+    private alias Moments = WeightedCrossMoments!(T, summation, withSquares);
+    private Sum mass, weightSquares, weightPairs;
+    private Moments moments;
+    private T weightScale = 0;
+    private T originLeft = 0, originRight = 0, offsetLeft = 0, offsetRight = 0;
+    private real frequency = 0;
+    private size_t positiveCount;
+
+    private static void shiftMean(ref T origin, ref T offset, T shift)
+    {
+        T leading = origin + shift;
+        T rounded = leading - origin;
+        T trailing = (origin - (leading - rounded)) + (shift - rounded) + offset;
+        origin = leading + trailing;
+        rounded = origin - leading;
+        offset = (leading - (origin - rounded)) + (trailing - rounded);
+    }
+
+    private void rescale(T scale)
+    {
+        if (weightScale == 0) { weightScale = scale; return; }
+        if (scale <= weightScale) return;
+        const ratio = weightScale / scale;
+        weightedScaleSum(mass, ratio);
+        weightedScaleSum(weightSquares, ratio);
+        weightedScaleSum(weightSquares, ratio);
+        weightedScaleSum(weightPairs, ratio);
+        weightedScaleSum(weightPairs, ratio);
+        moments.scaleWeight(ratio);
+        weightScale = scale;
+    }
+
+    /// Insert a pair with unit weight.
+    void put(X, Y)(X x, Y y) if (is(X : T) && is(Y : T)) { put(x, y, 1); }
+
+    /// Insert a pair. A zero weight excludes both values before conversion.
+    void put(X, Y, W)(scope X x, scope Y y, scope W w)
+        if (is(X : T) && is(Y : T) && is(W : real))
+    {
+        import std.math: isFinite, floor;
+        const raw = cast(real) w;
+        assert(isFinite(raw) && raw >= 0, "weighted moments: weights must be finite and nonnegative");
+        if (raw == 0) return;
+        const weight = cast(T) w, vx = cast(T) x, vy = cast(T) y;
+        assert(isFinite(weight) && weight > 0, "weighted moments: weight must fit accumulator type");
+        assert(isFinite(vx) && isFinite(vy), "weighted moments: positive-weight observations must be finite");
+        static if (normalization == WeightedMomentNormalization.frequencySample)
+        {
+            enum real limit = 2.0L ^^ T.mant_dig;
+            assert(raw == floor(raw) && raw <= limit - frequency,
+                "weighted moments: frequencies must be whole counts with an exactly representable total");
+            frequency += raw;
+        }
+        rescale(weight);
+        const a = cast(T) mass.sum, b = weight / weightScale;
+        mass.put(b); weightSquares.put(b * b); weightPairs.put(a * b);
+        if (positiveCount == 0) { originLeft = vx; originRight = vy; }
+        else
+        {
+            const dx = (vx - originLeft) - offsetLeft;
+            const dy = (vy - originRight) - offsetRight;
+            const total = cast(T) mass.sum;
+            // Divide the larger mass first so a tiny smaller mass survives.
+            moments.put(dx, dy, a < b ? (b / total) * a : (a / total) * b);
+            shiftMean(originLeft, offsetLeft, dx * (b / total));
+            shiftMean(originRight, offsetRight, dy * (b / total));
+        }
+        ++positiveCount;
+    }
+
+    private struct CenteredPass
+    {
+        T originLeft, originRight, offsetLeft, offsetRight, weightScale;
+        Moments moments;
+        Sum residualLeft, residualRight;
+        void put(X, Y, W)(X x, Y y, W w)
+        {
+            if (w == 0) return;
+            const weight = cast(T) w / weightScale;
+            if (weight == 0) return;
+            const dx = (cast(T) x - originLeft) - offsetLeft;
+            const dy = (cast(T) y - originRight) - offsetRight;
+            const sx = moments.scaleLeft, sy = moments.scaleRight;
+            moments.put(dx, dy, weight);
+            if (moments.scaleLeft > sx) weightedScaleSum(residualLeft, sx / moments.scaleLeft);
+            if (moments.scaleRight > sy) weightedScaleSum(residualRight, sy / moments.scaleRight);
+            if (moments.scaleLeft != 0) residualLeft.put(weight * (dx / moments.scaleLeft));
+            if (moments.scaleRight != 0) residualRight.put(weight * (dy / moments.scaleRight));
+        }
+    }
+
+    /// Insert equally shaped arrays, slices, or nested ranges.
+    void put(X, Y, W)(scope X x, scope Y y, scope W w)
+        if (isIterable!X && isIterable!Y && isIterable!W)
+    {
+        WeightedPairAccumulator batch;
+        weightedPairEach(batch, x, y, w);
+        enum replayable = weightedPairReplayable!X && weightedPairReplayable!Y && weightedPairReplayable!W;
+        static if (algorithm == CovarianceAlgo.twoPass)
+            static assert(replayable, "weighted moments: twoPass requires replayable inputs");
+        static if (algorithm != CovarianceAlgo.online && replayable)
+        {
+            if (batch.positiveCount)
+            {
+                CenteredPass second;
+                second.originLeft = batch.originLeft; second.originRight = batch.originRight;
+                second.offsetLeft = batch.offsetLeft; second.offsetRight = batch.offsetRight;
+                second.weightScale = batch.weightScale;
+                weightedPairEach(second, x, y, w);
+                const rx = cast(T) second.residualLeft.sum, ry = cast(T) second.residualRight.sum;
+                const total = cast(T) batch.mass.sum;
+                second.moments.cross.put(-multivariateMergeProduct(rx, ry, T(1) / total));
+                static if (withSquares)
+                {
+                    second.moments.left.put(-(rx / total) * rx);
+                    second.moments.right.put(-(ry / total) * ry);
+                    if (second.moments.left.sum < 0) second.moments.left = T(0);
+                    if (second.moments.right.sum < 0) second.moments.right = T(0);
+                }
+                // Replace moments through scalar resets, then merge their stored
+                // corrections. This also supports older precise-summator compilers.
+                batch.moments.cross = T(0);
+                static if (withSquares) { batch.moments.left = T(0); batch.moments.right = T(0); }
+                batch.moments.scaleLeft = second.moments.scaleLeft;
+                batch.moments.scaleRight = second.moments.scaleRight;
+                batch.moments.merge(second.moments);
+                shiftMean(batch.originLeft, batch.offsetLeft, (rx / total) * second.moments.scaleLeft);
+                shiftMean(batch.originRight, batch.offsetRight, (ry / total) * second.moments.scaleRight);
+            }
+        }
+        put(batch);
+    }
+
+    /// Merge the same accumulator type, including self-merges.
+    void put(const ref WeightedPairAccumulator other)
+    {
+        if (other.positiveCount == 0) return;
+        // Only compare addresses; neither pointer escapes or is dereferenced.
+        // The trusted boundary also supports builds without DIP1000.
+        if (() @trusted { return &other is &this; }())
+        {
+            // Build an independent snapshot via summator merges, avoiding
+            // precise summation's storage-copy postblit in safe code.
+            WeightedPairAccumulator snapshot;
+            snapshot.put(other);
+            put(snapshot);
+            return;
+        }
+        static if (normalization == WeightedMomentNormalization.frequencySample)
+        {
+            enum real limit = 2.0L ^^ T.mant_dig;
+            assert(other.frequency <= limit - frequency, "weighted moments: merged frequency total is too large");
+            frequency += other.frequency;
+        }
+        const commonScale = weightScale > other.weightScale ? weightScale : other.weightScale;
+        rescale(commonScale);
+        const ratio = other.weightScale / weightScale;
+        const a = cast(T) mass.sum, b = cast(T) other.mass.sum * ratio;
+        const dx = (other.originLeft - originLeft) + (other.offsetLeft - offsetLeft);
+        const dy = (other.originRight - originRight) + (other.offsetRight - offsetRight);
+        weightedMergeSum(mass, other.mass, ratio);
+        weightedMergeSum(weightSquares, other.weightSquares, ratio, ratio);
+        weightedMergeSum(weightPairs, other.weightPairs, ratio, ratio);
+        weightPairs.put(a * b);
+        moments.merge(other.moments, ratio);
+        if (positiveCount == 0)
+        {
+            originLeft = other.originLeft; originRight = other.originRight;
+            offsetLeft = other.offsetLeft; offsetRight = other.offsetRight;
+        }
+        else
+        {
+            const total = cast(T) mass.sum;
+            // Divide the larger mass first so a tiny smaller mass survives.
+            moments.put(dx, dy, a < b ? (b / total) * a : (a / total) * b);
+            shiftMean(originLeft, offsetLeft, dx * (b / total));
+            shiftMean(originRight, offsetRight, dy * (b / total));
+        }
+        positiveCount += other.positiveCount;
+    }
+
+    /// Number of positive-weight pairs, not the sum of frequencies.
+    size_t count() const @property { return positiveCount; }
+    /// Total weight; may overflow even when the result is finite.
+    T weight() const @property { return weightScale * cast(T) mass.sum; }
+    /// Weighted mean of the left input; requires positive total weight.
+    T meanLeft() const @property { assert(positiveCount); return originLeft + offsetLeft; }
+    /// Weighted mean of the right input; requires positive total weight.
+    T meanRight() const @property { assert(positiveCount); return originRight + offsetRight; }
+    /// Kish weight concentration diagnostic, not a universal degrees of freedom.
+    T effectiveSampleSize() const @property
+    {
+        assert(positiveCount);
+        const total = cast(T) mass.sum;
+        return total / (cast(T) weightSquares.sum / total);
+    }
+    private T denominator() const
+    {
+        assert(positiveCount, "weighted moments: no positive-weight observations");
+        static if (normalization == WeightedMomentNormalization.population)
+            T result = cast(T) mass.sum;
+        else static if (normalization == WeightedMomentNormalization.frequencySample)
+        {
+            assert(frequency > 1, "weighted moments: total frequency must exceed one");
+            T result = cast(T) ((frequency - 1) / weightScale);
+        }
+        else
+        {
+            static assert(normalization == WeightedMomentNormalization.relativeSample);
+            T result = 2 * (cast(T) weightPairs.sum / cast(T) mass.sum);
+        }
+        assert(result > 0, "weighted moments: insufficient effective weight");
+        return result;
+    }
+    /// Covariance under the selected policy (population for WCorrelationAccumulator).
+    T covariance() const @property
+    {
+        return weightedRestoreProduct(cast(T) moments.cross.sum,
+            moments.scaleLeft, moments.scaleRight, denominator());
+    }
+    static if (withSquares)
+    {
+        /// Pearson correlation; NaN if either weighted input has zero spread.
+        T correlation() const @property
+        {
+            import std.math: sqrt;
+            assert(positiveCount, "weighted correlation: no positive-weight observations");
+            const xx = cast(T) moments.left.sum, yy = cast(T) moments.right.sum;
+            if (xx <= 0 || yy <= 0) return T.nan;
+            const sx = sqrt(xx), sy = sqrt(yy), xy = cast(T) moments.cross.sum;
+            // Dividing by the smaller root first avoids premature underflow.
+            return sx < sy ? (xy / sx) / sy : (xy / sy) / sx;
+        }
+    }
+}
+
+/++
+Mergeable weighted covariance accumulator. Use put(x, y, weight) for a pair,
+put(x, y, weights) for a batch, and put(other) to merge the same accumulator type.
+Unit-weight pairs can be inserted with put(x, y). The read-only properties are
+count (positive-weight pairs), weight (total weight), meanLeft, meanRight,
+effectiveSampleSize (Kish concentration diagnostic), and covariance.
+Empty batches and empty merges
+are no-ops; getters other than count and weight require positive total weight.
+
+Normalization and input requirements are those of $(LREF weightedCovariance).
+The default is population normalization, hybrid updates, and KBN summation.
+Online performs one pass; twoPass requires replayable inputs; hybrid uses a
+corrected second pass for replayable inputs and online updates otherwise.
+Scalar insertions always use online updates.
+
+Weight and residual scales reduce intermediate overflow. Means retain a trailing
+correction, and matching-scale merges preserve stored summator corrections where
+supported by the summation algorithm. Rescaling transfers rounded sums; pairwise
+merges also transfer rounded sums. Results need not be bitwise independent of
+partitioning. Weight ratios, centered differences, and normalized moments remain
+subject to the accumulator type's range and rounding. Convert large integers
+only after subtracting a common offset if their differences would otherwise be lost.
++/
+template WCovarianceAccumulator(T,
+    WeightedMomentNormalization normalization = WeightedMomentNormalization.population,
+    CovarianceAlgo covarianceAlgo = CovarianceAlgo.hybrid,
+    Summation summation = Summation.kbn)
+{
+    alias WCovarianceAccumulator = WeightedPairAccumulator!(T, normalization, covarianceAlgo, summation, false);
+}
+
+/++
+Mergeable weighted Pearson correlation. Supports the same insertion, merge,
+weight validation and numerical contracts as $(LREF WCovarianceAccumulator).
+The default algorithm is hybrid and the default summation is KBN. It provides
+the same properties plus correlation.
+There is no normalization parameter: the common covariance/variance correction
+cancels. The covariance getter reports population covariance. Constant inputs
+produce NaN correlation; empty or all-zero-weight inputs cannot be queried.
++/
+template WCorrelationAccumulator(T,
+    CorrelationAlgo correlationAlgo = CorrelationAlgo.hybrid,
+    Summation summation = Summation.kbn)
+    if (correlationAlgo == CorrelationAlgo.online || correlationAlgo == CorrelationAlgo.twoPass ||
+        correlationAlgo == CorrelationAlgo.hybrid)
+{
+    private enum algorithm = correlationAlgo == CorrelationAlgo.online ? CovarianceAlgo.online :
+        correlationAlgo == CorrelationAlgo.twoPass ? CovarianceAlgo.twoPass : CovarianceAlgo.hybrid;
+    alias WCorrelationAccumulator = WeightedPairAccumulator!(T, WeightedMomentNormalization.population,
+        algorithm, summation, true);
+}
+
+private template WeightedPairType(X, Y)
+{
+    import std.traits: CommonType;
+    import mir.stat.descriptive.univariate: stdevType;
+    alias WeightedPairType = CommonType!(stdevType!(DeepElementType!X), stdevType!(DeepElementType!Y));
+}
+
+/++
+Weighted covariance measures whether two inputs tend to move together. Positive
+covariance means larger values tend to occur together; negative covariance means
+larger values of one tend to occur with smaller values of the other. Units are
+the product of the two input units.
+
+Choose WeightedMomentNormalization.population (the default) to describe the
+weighted distribution. Choose frequencySample when weights count repeated pairs
+and you want the sample covariance of the expanded data. Choose relativeSample
+for fixed relative weights on independent pairs sharing a common mean vector and
+covariance matrix. That correction estimates the covariance of observations,
+not uncertainty of their weighted means, and is not a survey-design correction.
+
+For x=[0,10], y=[0,20], weights=[1,3], the results are 37.5 (population), 50
+(frequencySample), and 100 (relativeSample). Frequency weights represent the four
+pairs (0,0), (10,20), (10,20), (10,20). Relative weights instead describe two pairs
+with influence 1:3. Scaling all weights preserves population and relativeSample
+results; scaling frequency counts changes the represented sample size.
+
+Weights must be finite and nonnegative. Zero weights exclude both coordinates,
+even NaN or infinity. Positive weights must remain positive and finite in the
+accumulator type, and both corresponding values must be finite. Frequency-sample
+weights must be whole counts totaling at most 2^^T.mant_dig, and the total must
+exceed one when querying covariance. Relative-sample covariance needs at least
+two positive-weight pairs and a representable positive correction denominator.
+Preconditions are checked by assertions.
+
+Arguments are observations first, then their shared weights. Arrays, independently
+strided slices, and nested ranges must have matching shapes and lengths. No input
+is modified; single-pass cursors are consumed. Integral observations infer double;
+mixed observation types use their common promoted type. F explicitly selects a
+floating accumulator and result type. Weights do not determine the result type.
+See $(LREF WCovarianceAccumulator) for algorithms and numerical limits.
++/
+template weightedCovariance(F,
+    WeightedMomentNormalization normalization = WeightedMomentNormalization.population,
+    CovarianceAlgo covarianceAlgo = CovarianceAlgo.hybrid,
+    Summation summation = Summation.appropriate)
+    if (isFloatingPoint!F)
+{
+    ///
+    F weightedCovariance(X, Y, W)(scope X x, scope Y y, scope W weights)
+        if (isIterable!X && isIterable!Y && isIterable!W)
+    {
+        import mir.math.sum: ResolveSummationType;
+        WCovarianceAccumulator!(F, normalization, covarianceAlgo,
+            ResolveSummationType!(summation, F[], F)) accumulator;
+        accumulator.put(x, y, weights);
+        return accumulator.covariance;
+    }
+}
+
+/// ditto
+template weightedCovariance(
+    WeightedMomentNormalization normalization = WeightedMomentNormalization.population,
+    CovarianceAlgo covarianceAlgo = CovarianceAlgo.hybrid,
+    Summation summation = Summation.appropriate)
+{
+    ///
+    WeightedPairType!(X, Y) weightedCovariance(X, Y, W)(scope X x, scope Y y, scope W weights)
+        if (isIterable!X && isIterable!Y && isIterable!W)
+    {
+        return .weightedCovariance!(WeightedPairType!(X, Y), normalization, covarianceAlgo, summation)(x, y, weights);
+    }
+}
+
+/// Choose the policy according to what each weight represents.
+version(mir_stat_test)
+@safe pure nothrow @nogc
+unittest
+{
+    import mir.stat.descriptive.multivariate: weightedCovariance, WeightedMomentNormalization;
+    import mir.math.common: approxEqual;
+    alias N = WeightedMomentNormalization;
+    double[2] x = [0, 10], y = [0, 20], weights = [1, 3];
+    assert(weightedCovariance(x, y, weights).approxEqual(37.5));
+    assert(weightedCovariance!(N.frequencySample)(x, y, weights).approxEqual(50));
+    assert(weightedCovariance!(N.relativeSample)(x, y, weights).approxEqual(100));
+    double[2] probabilities = [0.25, 0.75];
+    assert(weightedCovariance!(N.relativeSample)(x, y, probabilities).approxEqual(100));
+}
+
+/++
+Weighted Pearson correlation describes the strength and direction of a linear
+relationship on a dimensionless scale. It divides the weighted centered cross
+product by the square roots of the two weighted centered sums of squares.
+For x=[0,10], y=[0,20], weights=[1,3], correlation is 1: the positive linear
+relationship is perfect even though the two inputs use different scales.
+
+No population/sample selector is needed: a common normalization factor cancels
+from numerator and denominator. Whole-number weights give the correlation of
+the expanded sample; relative weights give the same result after a common
+positive rescaling. Fractional weights are accepted without implying repeated
+observations. This function computes Pearson correlation, not a survey-design
+uncertainty estimate or a weighted rank correlation.
+
+Inputs, algorithms and numerical limits follow $(LREF weightedCovariance).
+A constant input has zero spread, so correlation is undefined and returns NaN.
+The calculation uses scaled moments directly, allowing finite correlation even
+when covariance or individual variances cannot be represented. No result is
+clamped to [-1,1]; floating-point rounding may slightly exceed these limits.
++/
+template weightedCorrelation(F,
+    CorrelationAlgo correlationAlgo = CorrelationAlgo.hybrid,
+    Summation summation = Summation.appropriate)
+    if (isFloatingPoint!F)
+{
+    ///
+    F weightedCorrelation(X, Y, W)(scope X x, scope Y y, scope W weights)
+        if (isIterable!X && isIterable!Y && isIterable!W)
+    {
+        import mir.math.sum: ResolveSummationType;
+        WCorrelationAccumulator!(F, correlationAlgo,
+            ResolveSummationType!(summation, F[], F)) accumulator;
+        accumulator.put(x, y, weights);
+        return accumulator.correlation;
+    }
+}
+
+/// ditto
+template weightedCorrelation(
+    CorrelationAlgo correlationAlgo = CorrelationAlgo.hybrid,
+    Summation summation = Summation.appropriate)
+{
+    ///
+    WeightedPairType!(X, Y) weightedCorrelation(X, Y, W)(scope X x, scope Y y, scope W weights)
+        if (isIterable!X && isIterable!Y && isIterable!W)
+    {
+        return .weightedCorrelation!(WeightedPairType!(X, Y), correlationAlgo, summation)(x, y, weights);
+    }
+}
+
+/// Streaming pairs and merging chunks use the same correlation definition.
+version(mir_stat_test)
+@safe pure nothrow @nogc
+unittest
+{
+    import mir.stat.descriptive.multivariate: weightedCorrelation, WCorrelationAccumulator;
+    import mir.math.common: approxEqual;
+    import std.math: isNaN;
+    double[3] x = [0, 10, 20], y = [0, 20, 40], w = [1, 3, 2];
+    assert(weightedCorrelation(x, y, w).approxEqual(1));
+    WCorrelationAccumulator!double left, right;
+    left.put(x[0 .. 2], y[0 .. 2], w[0 .. 2]);
+    right.put(x[2], y[2], w[2]);
+    left.put(right);
+    assert(left.count == 3 && left.weight == 6);
+    assert(left.correlation.approxEqual(1));
+    double[3] constant = [5, 5, 5];
+    assert(weightedCorrelation(x, constant, w).isNaN);
+}
+
+// All policies agree with variance on the diagonal and with expanded counts.
+version(mir_stat_test)
+@safe pure nothrow @nogc
+unittest
+{
+    import mir.math.common: approxEqual;
+    import mir.stat.descriptive.univariate: weightedVariance, WeightedVarianceNormalization;
+    alias N = WeightedMomentNormalization;
+    static assert(is(N == WeightedVarianceNormalization));
+    double[4] x = [1, 2, 4, 8], y = [9, 3, -1, 6];
+    int[4] w = [1, 3, 2, 1];
+    double[7] expandedX = [1, 2, 2, 2, 4, 4, 8];
+    double[7] expandedY = [9, 3, 3, 3, -1, -1, 6];
+    static foreach (algo; [CovarianceAlgo.online, CovarianceAlgo.twoPass, CovarianceAlgo.hybrid])
+    static foreach (mode; [Summation.naive, Summation.pairwise, Summation.kbn, Summation.kb2, Summation.precise])
+    {{
+        assert((weightedCovariance!(N.frequencySample, algo, mode)(x, y, w))
+            .approxEqual(covariance(expandedX[], expandedY[]), 1e-12, 1e-12));
+        static foreach (norm; [N.population, N.frequencySample, N.relativeSample])
+        {{
+            alias A = WCovarianceAccumulator!(double, norm, algo, mode);
+            A batch, stream, left, right, empty;
+            batch.put(x, y, w);
+            foreach (i; 0 .. x.length) stream.put(x[i], y[i], w[i]);
+            left.put(x[0 .. 2], y[0 .. 2], w[0 .. 2]);
+            right.put(x[2 .. $], y[2 .. $], w[2 .. $]);
+            left.put(right); left.put(empty);
+            assert(stream.covariance.approxEqual(batch.covariance, 1e-12, 1e-12));
+            assert(left.covariance.approxEqual(batch.covariance, 1e-12, 1e-12));
+            assert(left.meanLeft.approxEqual(batch.meanLeft));
+            assert(left.meanRight.approxEqual(batch.meanRight));
+            assert(left.effectiveSampleSize.approxEqual(batch.effectiveSampleSize));
+            empty.put(batch);
+            assert(empty.covariance == batch.covariance);
+            assert((weightedCovariance!(norm, algo, mode)(x, x, w))
+                .approxEqual(weightedVariance!norm(x, w), 1e-12, 1e-12));
+            auto before = batch.covariance;
+            batch.put(batch);
+            const factor = norm == N.frequencySample ? 12.0 / 13 : 1.0;
+            // Relative weights count duplicated rows as independent observations.
+            const relativeFactor = (49.0 - 15) / (49.0 - 7.5);
+            assert(batch.covariance.approxEqual(before *
+                (norm == N.relativeSample ? relativeFactor : factor), 1e-12, 1e-12));
+            assert(batch.count == 8 && batch.weight.approxEqual(14));
+        }}
+    }}
+    static foreach (algo; [CorrelationAlgo.online, CorrelationAlgo.twoPass, CorrelationAlgo.hybrid])
+    static foreach (mode; [Summation.naive, Summation.pairwise, Summation.kbn, Summation.kb2, Summation.precise])
+    {{
+        alias A = WCorrelationAccumulator!(double, algo, mode);
+        A left, right, stream;
+        left.put(x[0 .. 2], y[0 .. 2], w[0 .. 2]);
+        right.put(x[2 .. $], y[2 .. $], w[2 .. $]);
+        foreach (i; 0 .. x.length) stream.put(x[i], y[i], w[i]);
+        left.put(right);
+        auto expected = correlation(expandedX[], expandedY[]);
+        assert(left.correlation.approxEqual(expected, 1e-12, 1e-12));
+        assert(stream.correlation.approxEqual(expected, 1e-12, 1e-12));
+        assert((weightedCorrelation!(algo, mode)(x, y, w)).approxEqual(expected, 1e-12, 1e-12));
+        left.put(left);
+        assert(left.correlation.approxEqual(expected, 1e-12, 1e-12));
+    }}
+}
+
+// Independent pairwise references test signs, order, offsets and partitioning.
+version(mir_stat_test)
+@safe pure nothrow @nogc
+unittest
+{
+    import mir.math.common: approxEqual;
+    alias N = WeightedMomentNormalization;
+    foreach (trial; 0 .. 30)
+    {
+        double[12] x, y, w;
+        real xy = 0, xx = 0, yy = 0, total = 0, pairWeight = 0;
+        foreach (i; 0 .. x.length)
+        {
+            x[i] = 1e12 + cast(int)((i * 19 + trial * 7) % 31) - 15;
+            y[i] = -1e12 + cast(int)((i * 11 + trial * 3) % 23) - 11;
+            w[i] = 1 + (i * 13 + trial) % 7;
+            total += w[i];
+            foreach (j; 0 .. i)
+            {
+                const dx = cast(real) x[i] - x[j], dy = cast(real) y[i] - y[j];
+                const weight = cast(real) w[i] * w[j];
+                xy += weight * dx * dy; xx += weight * dx * dx; yy += weight * dy * dy;
+                pairWeight += weight;
+            }
+        }
+        static foreach (norm; [N.population, N.frequencySample, N.relativeSample])
+        {{
+            const denom = norm == N.population ? total * total :
+                norm == N.frequencySample ? total * (total - 1) : 2 * pairWeight;
+            const expected = cast(double)(xy / denom);
+            WCovarianceAccumulator!(double, norm) left, right, reversed;
+            const cut = trial % 11 + 1;
+            left.put(x[0 .. cut], y[0 .. cut], w[0 .. cut]);
+            right.put(x[cut .. $], y[cut .. $], w[cut .. $]);
+            left.put(right);
+            foreach_reverse (i; 0 .. x.length) reversed.put(x[i], y[i], w[i]);
+            foreach (actual; [left.covariance, reversed.covariance, weightedCovariance!norm(x, y, w)])
+                assert(actual.approxEqual(expected, 1e-12, 1e-12));
+        }}
+        import std.math: sqrt;
+        const expectedCorrelation = cast(double)((xy / sqrt(xx)) / sqrt(yy));
+        assert(weightedCorrelation(x, y, w).approxEqual(expectedCorrelation, 1e-12, 1e-12));
+    }
+}
+
+// Scales for x and y must remain independent, even in a partition merge.
+version(mir_stat_test)
+@safe pure nothrow @nogc
+unittest
+{
+    import std.meta: AliasSeq;
+    import std.math: ldexp, isNaN;
+    import mir.math.common: approxEqual;
+    static foreach (T; AliasSeq!(float, double, real))
+    {{
+        T large = ldexp(T(1), T.max_exp / 2 + 4);
+        T small = 1 / large;
+        T[2] x = [0, large], y = [0, small], w = [1, 3];
+        foreach (sign; [T(-1), T(1)])
+        {
+            y[1] = sign * small;
+            assert(weightedCovariance(x, y, w).approxEqual(sign * T(3) / 16, T.epsilon * 64, T(0)));
+            assert(weightedCorrelation(x, y, w).approxEqual(sign, T.epsilon * 64, T(0)));
+            WCorrelationAccumulator!T left, right;
+            left.put(x[0], y[0], w[0]); right.put(x[1], y[1], w[1]);
+            left.put(right);
+            assert(left.correlation.approxEqual(sign, T.epsilon * 64, T(0)));
+            assert(left.covariance.approxEqual(sign * T(3) / 16, T.epsilon * 64, T(0)));
+        }
+        assert(weightedCorrelation(x, x, w).approxEqual(T(1), T.epsilon * 64, T(0)));
+        assert(weightedCorrelation(y, y, w).approxEqual(T(1), T.epsilon * 64, T(0)));
+        T[3] maskedX = [T.nan, 0, 10], maskedY = [T.infinity, 0, -20], mask = [0, 1, 3];
+        assert(weightedCovariance(maskedX, maskedY, mask).approxEqual(T(-37.5)));
+        assert(weightedCorrelation(maskedX, maskedY, mask).approxEqual(T(-1)));
+        T[2] constant = [1, 1];
+        assert(weightedCorrelation(x, constant, w).isNaN);
+        WCorrelationAccumulator!T single;
+        single.put(1, 2, 3);
+        assert(single.correlation.isNaN);
+    }}
+    double[3] x = [1, 2, 4], y = [3, 0, -1];
+    foreach (scale; [1e-300, 1.0, 1e300])
+    {
+        double[3] weights = [scale, 2 * scale, 3 * scale];
+        double[3] ordinary = [1, 2, 3];
+        assert(weightedCovariance(x, y, weights).approxEqual(weightedCovariance(x, y, ordinary)));
+        assert(weightedCorrelation(x, y, weights).approxEqual(weightedCorrelation(x, y, ordinary)));
+    }
+}
+
+// Each array may have different strides, and nested forward ranges are replayed.
+version(mir_stat_test)
+@safe pure nothrow
+unittest
+{
+    import mir.ndslice.slice: sliced;
+    import mir.ndslice.dynamic: transposed;
+    import mir.math.common: approxEqual;
+    import std.algorithm: filter;
+    double[6] x = [1, 2, 3, 4, 5, 6], y = [6, 2, 5, 1, 4, 3];
+    double[6] backing = [1, 4, 2, 5, 3, 6], w = [1, 2, 3, 4, 5, 6];
+    auto expected = weightedCovariance(x, y, w);
+    assert(weightedCovariance(x[].sliced(2, 3), y[].sliced(2, 3),
+        backing[].sliced(3, 2).transposed).approxEqual(expected));
+    assert(weightedCovariance(x[].filter!(a => true), y[], w[]).approxEqual(expected));
+    const double[6] immutableX = x;
+    assert(weightedCovariance(immutableX[], y, w).approxEqual(expected));
+    double[][] nestedX = [[1.0, 2], [3.0, 4, 5, 6]];
+    double[][] nestedY = [[6.0, 2], [5.0, 1, 4, 3]];
+    double[][] nestedW = [[1.0, 2], [3.0, 4, 5, 6]];
+    assert(weightedCovariance(nestedX, nestedY, nestedW).approxEqual(expected));
+    int[2] integral = [0, 1];
+    float[2] floats = [0, 1];
+    real[2] reals = [0, 1];
+    static assert(is(typeof(weightedCovariance(integral, integral, integral)) == double));
+    static assert(is(typeof(weightedCorrelation(floats, reals, integral)) == real));
+    static assert(is(typeof(weightedCovariance!float(x, y, w)) == float));
+}
+
+// Hybrid handles single-pass cursors; explicit twoPass rejects them.
+version(mir_stat_test)
+@safe pure nothrow @nogc
+unittest
+{
+    import mir.math.common: approxEqual;
+    struct Cursor
+    {
+        double[] values;
+        size_t[] position;
+        bool empty() const @property { return position[0] == values.length; }
+        double front() const @property { return values[position[0]]; }
+        void popFront() { ++position[0]; }
+    }
+    double[3] x = [1, 2, 4], y = [2, 7, 6], w = [1, 3, 2];
+    size_t[1] ix, iy, iw;
+    auto xr = Cursor(x[], ix[]), yr = Cursor(y[], iy[]), wr = Cursor(w[], iw[]);
+    static assert(!__traits(compiles, weightedCovariance!(WeightedMomentNormalization.population,
+        CovarianceAlgo.twoPass)(xr, yr, wr)));
+    assert(weightedCovariance(xr, yr, wr).approxEqual(weightedCovariance(x, y, w)));
+    assert(ix[0] == 3 && iy[0] == 3 && iw[0] == 3);
+}
+
+// Contracts reject invalid weights, values and shapes instead of truncating.
+version(mir_stat_test)
+@system pure nothrow @nogc
+unittest
+{
+    import core.exception: AssertError;
+    static void rejects(alias operation)()
+    {
+        bool rejected;
+        try { operation(); } catch (AssertError) { rejected = true; }
+        assert(rejected);
+    }
+    alias N = WeightedMomentNormalization;
+    rejects!(() { WCovarianceAccumulator!double a; auto v = a.covariance; })();
+    rejects!(() { WCorrelationAccumulator!double a; auto v = a.correlation; })();
+    rejects!(() { WCovarianceAccumulator!double a; a.put(0, 1, -1); })();
+    rejects!(() { WCovarianceAccumulator!double a; a.put(0, 1, double.nan); })();
+    rejects!(() { WCovarianceAccumulator!double a; a.put(0, 1, double.infinity); })();
+    rejects!(() { WCovarianceAccumulator!double a; a.put(double.nan, 1, 1); })();
+    rejects!(() { WCorrelationAccumulator!double a; a.put(0, double.infinity, 1); })();
+    rejects!(() { WCovarianceAccumulator!(double, N.frequencySample) a; a.put(0, 1, 1.5); })();
+    rejects!(() { WCovarianceAccumulator!(float, N.frequencySample) a; a.put(0, 1, 0x1p24); a.put(1, 0, 1); })();
+    rejects!(() { WCovarianceAccumulator!(double, N.frequencySample) a; a.put(0, 1, 1); auto v = a.covariance; })();
+    rejects!(() { WCovarianceAccumulator!(double, N.relativeSample) a; a.put(0, 1, 1); auto v = a.covariance; })();
+    rejects!(() { WCovarianceAccumulator!double a; double[2] x; double[1] w; a.put(x, x, w); })();
+    rejects!(() { WCovarianceAccumulator!float a; a.put(0, 1, 1e-300); })();
+}
+
+// Same-scale merges preserve compensated state, including an aliased source.
+version(mir_stat_test)
+@safe pure nothrow @nogc
+unittest
+{
+    import std.meta: AliasSeq;
+    static foreach (mode; [Summation.kbn, Summation.kb2, Summation.precise])
+    static foreach (A; AliasSeq!(WCovarianceAccumulator!(double,
+        WeightedMomentNormalization.population, CovarianceAlgo.online, mode),
+        WCorrelationAccumulator!(double, CorrelationAlgo.online, mode)))
+    {{
+        A source, target;
+        source.put(0, 0, 1);
+        source.moments.scaleLeft = source.moments.scaleRight = 1;
+        source.moments.cross.put(0x1p54);
+        source.moments.cross.put(1.0);
+        target.put(source);
+        target.moments.cross.put(-0x1p54);
+        assert(target.moments.cross.sum == 1);
+        source.put(source);
+        source.moments.cross.put(-0x1p55);
+        assert(source.moments.cross.sum == 2);
+    }}
+}
+
+// Restore observation units before a tiny normalized covariance rounds to zero.
+version(mir_stat_test)
+@safe pure nothrow @nogc
+unittest
+{
+    import mir.math.common: approxEqual;
+    double[3] x = [0x1p500, 0, 0], y = [-0x1p500, 0, 0];
+    double[3] weights = [0x1p-1074, 1, 1];
+    // The tiny pair contributes -2^-74 to the cross moment; total weight is 2.
+    enum expected = -0x1p-75;
+    static foreach (algo; [CovarianceAlgo.online, CovarianceAlgo.twoPass, CovarianceAlgo.hybrid])
+    {{
+        assert((weightedCovariance!(WeightedMomentNormalization.population, algo)(x, y, weights))
+            .approxEqual(expected, 1e-14, 0));
+        WCovarianceAccumulator!(double, WeightedMomentNormalization.population, algo) left, right;
+        left.put(x[0], y[0], weights[0]);
+        right.put(x[1 .. $], y[1 .. $], weights[1 .. $]);
+        left.put(right);
+        assert(left.covariance.approxEqual(expected, 1e-14, 0));
+    }}
 }

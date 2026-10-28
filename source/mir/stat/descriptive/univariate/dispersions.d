@@ -3135,6 +3135,16 @@ enum WeightedVarianceNormalization
     +/
     relativeSample
 }
+
+/++
+Shared normalization policy for weighted variance and covariance.
+This is the same type as $(LREF WeightedVarianceNormalization), so existing
+variance calls and template instantiations remain compatible. The choices are
+population, frequencySample, and relativeSample; see that enum for assumptions
+and examples. Correlation needs no normalization choice because the common
+correction cancels between covariance and the two variances.
++/
+alias WeightedMomentNormalization = WeightedVarianceNormalization;
 // Traverse paired inputs by logical index, independently of storage strides.
 // Save forward ranges at every nesting level; single-pass ranges are consumed.
 private import mir.primitives: DeepElementType;
@@ -3142,8 +3152,13 @@ private import mir.primitives: DeepElementType;
 private void weightedVarianceEach(Sink, X, W)(ref Sink sink, scope X x, scope W w)
 {
     import mir.ndslice.slice: toSlice;
+    import std.traits: isStaticArray;
     import std.range.primitives: isInputRange, isForwardRange;
-    static if (isConvertibleToSlice!X && !isSlice!X)
+    static if (isStaticArray!X)
+        weightedVarianceEach(sink, x[], w);
+    else static if (isStaticArray!W)
+        weightedVarianceEach(sink, x, w[]);
+    else static if (isConvertibleToSlice!X && !isSlice!X)
         weightedVarianceEach(sink, x.toSlice, w);
     else static if (isConvertibleToSlice!W && !isSlice!W)
         weightedVarianceEach(sink, x, w.toSlice);
@@ -3173,8 +3188,11 @@ private void weightedVarianceEach(Sink, X, W)(ref Sink sink, scope X x, scope W 
 private template weightedVarianceReplayable(R)
 {
     import mir.ndslice.slice: toSlice;
+    import std.traits: isStaticArray;
     import std.range.primitives: isInputRange, isForwardRange, ElementType;
-    static if (isConvertibleToSlice!R && !isSlice!R)
+    static if (isStaticArray!R)
+        enum weightedVarianceReplayable = weightedVarianceReplayable!(typeof(R.init[0]));
+    else static if (isConvertibleToSlice!R && !isSlice!R)
         enum weightedVarianceReplayable = weightedVarianceReplayable!(typeof(R.init.toSlice));
     else static if (isSlice!R)
         enum weightedVarianceReplayable = weightedVarianceReplayable!(typeof(R.init[0]));
@@ -3940,4 +3958,16 @@ unittest
     double[3] w = [1e308, 1e308, double.min_normal / 2];
     assert(weightedVariance(x[], w[]).approxEqual(1));
     assert(weightedStandardDeviation(x[], w[]).approxEqual(1));
+}
+
+// Static arrays take the same paired traversal path as dynamic arrays.
+version(mir_stat_test)
+@safe pure nothrow @nogc
+unittest
+{
+    double[2] values = [0, 10], weights = [1, 3];
+    assert(weightedVariance(values, weights) == 18.75);
+    assert(weightedStandardDeviation(values, weights) == weightedStandardDeviation(values[], weights[]));
+    double[2][2] nestedValues = [[0, 10], [0, 10]], nestedWeights = [[1, 3], [1, 3]];
+    assert(weightedVariance(nestedValues, nestedWeights) == 18.75);
 }
