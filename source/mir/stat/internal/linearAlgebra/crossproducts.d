@@ -640,7 +640,7 @@ version(mir_stat_test_linearAlgebra)
     assert(quadraticForm(x[].sliced,owned)==146);
     crossprodInto(a,target[].sliced(2,2));
     assert(target[1]==14);
-    version (mir_stat_test_dip1000) static assert(!__traits(compiles, {
+    version (mir_stat_test_lifetime) static assert(!__traits(compiles, {
         @safe auto escape() {
             double[4] local;
             auto matrix=local[].sliced(2,2);
