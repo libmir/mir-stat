@@ -5543,13 +5543,23 @@ pure unittest
     static struct Input
     {
         double[] data;
-        double front() { return data[0]; }
-        bool empty() { return data.length == 0; }
-        void popFront() { data = data[1 .. $]; }
+        double front() pure { return data[0]; }
+        bool empty() pure { return data.length == 0; }
+        void popFront() pure { data = data[1 .. $]; }
     }
+    import std.range.primitives: isInputRange, isForwardRange;
+    static assert(isInputRange!Input && !isForwardRange!Input);
     auto input = Input(values[]);
     static assert(!__traits(compiles, weightedSkewness(input, weights)));
     static assert(!__traits(compiles, weightedKurtosis(values, input)));
+    // Verify that the rejected fixture is a working single-pass range.
+    foreach (expected; values)
+    {
+        assert(!input.empty);
+        assert(input.front == expected);
+        input.popFront;
+    }
+    assert(input.empty);
 }
 
 // Every wrapper must guard its own by-value boundary before forwarding.
