@@ -597,7 +597,9 @@ unittest
     x.wsum(w).should == 203;
 }
 
-/// Column sum of matrix
+/// Column sum of matrix.
+/// The mapped result is lazy; see the $(MREF mir,stat,descriptive,univariate)
+/// overview for storing results in allocated or caller-provided memory.
 version(mir_stat_test)
 @safe pure
 unittest
@@ -614,14 +616,9 @@ unittest
     auto w = iota([2], 1).universal;
     auto result = [4, 16, 11.5, 4, 6.5, 4.25];
 
-    // Use byDim or alongDim with map to compute sum of row/column.
+    // Apply the same row weights to each column separately.
     assert(x.byDim!1.map!(a => a.wsum(w)).all!approxEqual(result));
     assert(x.alongDim!0.map!(a => a.wsum(w)).all!approxEqual(result));
-
-    // FIXME
-    // Without using map, computes the sum of the whole slice
-    // assert(x.byDim!1.wsum(w) == x.sliced.wsum);
-    // assert(x.alongDim!0.wsum(w) == x.sliced.wsum);
 }
 
 /// Can also set algorithm or output type

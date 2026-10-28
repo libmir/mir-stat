@@ -313,7 +313,9 @@ unittest
     assert(x.entropy.approxEqual(-2.327497));
 }
 
-/// Column entropy of matrix
+/// Column entropy of matrix.
+/// The mapped result is lazy; see the $(MREF mir,stat,descriptive,univariate)
+/// overview for storing results in allocated or caller-provided memory.
 version(mir_stat_test)
 @safe pure
 unittest
@@ -336,11 +338,6 @@ unittest
     // Use byDim or alongDim with map to compute entropy of row/column.
     assert(x.byDim!1.map!entropy.all!approxEqual(result));
     assert(x.alongDim!0.map!entropy.all!approxEqual(result));
-
-    // FIXME
-    // Without using map, computes the entropy of the whole slice
-    // assert(x.byDim!1.entropy == x.sliced.entropy);
-    // assert(x.alongDim!0.entropy == x.sliced.entropy);
 }
 
 /// Can also set algorithm or output type

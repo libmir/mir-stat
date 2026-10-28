@@ -549,7 +549,9 @@ unittest
     assert(x.mean == 29.25 / 12);
 }
 
-/// Column mean of matrix
+/// Column mean of matrix.
+/// The mapped result is lazy; see the $(MREF mir,stat,descriptive,univariate)
+/// overview for storing results in allocated or caller-provided memory.
 version(mir_stat_test)
 @safe pure
 unittest
@@ -568,11 +570,6 @@ unittest
     // Use byDim or alongDim with map to compute mean of row/column.
     assert(x.byDim!1.map!mean.all!approxEqual(result));
     assert(x.alongDim!0.map!mean.all!approxEqual(result));
-
-    // FIXME
-    // Without using map, computes the mean of the whole slice
-    // assert(x.byDim!1.mean == x.sliced.mean);
-    // assert(x.alongDim!0.mean == x.sliced.mean);
 }
 
 /// Can also set algorithm or output type
@@ -1059,7 +1056,9 @@ unittest
     assert(x.hmean.approxEqual(6.97269));
 }
 
-/// Column harmonic mean of matrix
+/// Column harmonic mean of matrix.
+/// The mapped result is lazy; see the $(MREF mir,stat,descriptive,univariate)
+/// overview for storing results in allocated or caller-provided memory.
 version(mir_stat_test)
 pure @safe
 unittest
@@ -1516,7 +1515,9 @@ unittest
     assert(x.gmean.approxEqual(2.36178395));
 }
 
-/// Column gmean of matrix
+/// Column gmean of matrix.
+/// The mapped result is lazy; see the $(MREF mir,stat,descriptive,univariate)
+/// overview for storing results in allocated or caller-provided memory.
 version(mir_stat_test)
 @safe pure
 unittest
@@ -1535,11 +1536,6 @@ unittest
     // Use byDim or alongDim with map to compute mean of row/column.
     assert(x.byDim!1.map!gmean.all!approxEqual(result));
     assert(x.alongDim!0.map!gmean.all!approxEqual(result));
-
-    // FIXME
-    // Without using map, computes the mean of the whole slice
-    // assert(x.byDim!1.gmean.all!approxEqual(result));
-    // assert(x.alongDim!0.gmean.all!approxEqual(result));
 }
 
 /// Can also set output type
@@ -2657,7 +2653,9 @@ unittest
     x.wmean!true(w_SumToOne).shouldApprox == 203.0 / 78;
 }
 
-/// Column mean of matrix
+/// Column mean of matrix.
+/// The mapped result is lazy; see the $(MREF mir,stat,descriptive,univariate)
+/// overview for storing results in allocated or caller-provided memory.
 version(mir_stat_test)
 @safe pure
 unittest
@@ -2674,14 +2672,9 @@ unittest
     auto w = iota([2], 1).universal;
     auto result = [4.0 / 3, 16.0 / 3, 11.5 / 3, 4.0 / 3, 6.5 / 3, 4.25 / 3];
 
-    // Use byDim or alongDim with map to compute mean of row/column.
+    // Apply the same row weights to each column separately.
     assert(x.byDim!1.map!(a => a.wmean(w)).all!approxEqual(result));
     assert(x.alongDim!0.map!(a => a.wmean(w)).all!approxEqual(result));
-
-    // FIXME
-    // Without using map, computes the mean of the whole slice
-    // assert(x.byDim!1.wmean(w) == x.sliced.wmean);
-    // assert(x.alongDim!0.wmean(w) == x.sliced.wmean);
 }
 
 /// Can also set algorithm or output type
