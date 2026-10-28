@@ -98,6 +98,8 @@ $(TR $(TH Module) $(TH Public declarations))
         $(SMALL Raw, central, and standardized moments.))
         $(TD
             $(B Functions:)
+            $(REF weightedRawMoment, mir, stat, descriptive, univariate, moments)$(NBSP)
+            $(REF weightedCentralMoment, mir, stat, descriptive, univariate, moments)$(NBSP)
             $(LEGACY_ANCHOR rawMoment)$(REF rawMoment, mir, stat, descriptive, univariate, moments)$(NBSP)
             $(LEGACY_ANCHOR centralMoment)$(REF centralMoment, mir, stat, descriptive, univariate, moments)$(NBSP)
             $(LEGACY_ANCHOR standardizedMoment)$(REF standardizedMoment, mir, stat, descriptive, univariate, moments)$(NBSP)
