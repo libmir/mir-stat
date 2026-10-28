@@ -2,7 +2,7 @@
 Skewness and kurtosis.
 
 Use $(REF skewness, mir, stat, descriptive, univariate, skewness_kurtosis) and $(REF kurtosis, mir, stat, descriptive, univariate, skewness_kurtosis) to summarize distribution shape.
-Each statistic has an accumulator type and an enum selecting its calculation
+Each unweighted statistic has an accumulator type and an enum selecting its calculation
 algorithm. See the function parameters for population and sample conventions
 and for raw versus excess kurtosis.
 
@@ -15,6 +15,8 @@ $(DIVC quickindex,
 $(BOOKTABLE,
 $(TR $(TH Category) $(TH Declarations))
     $(TR $(TD Functions) $(TD
+        $(REF weightedSkewness, mir, stat, descriptive, univariate, skewness_kurtosis)$(NBSP)
+        $(REF weightedKurtosis, mir, stat, descriptive, univariate, skewness_kurtosis)$(NBSP)
         $(REF skewness, mir, stat, descriptive, univariate, skewness_kurtosis)$(NBSP)
         $(REF kurtosis, mir, stat, descriptive, univariate, skewness_kurtosis)$(NBSP)
     ))
@@ -5204,5 +5206,248 @@ unittest
         }
         assert(batch.count == 2);
         assert(batch.centeredSumOfSquares == 2);
+    }}
+}
+
+/++
+Population weighted skewness: the third weighted standardized moment.
+
+Use skewness to describe asymmetry without measurement units. Positive values
+mean that cubed deviations on the higher side of the mean contribute more;
+negative values mean the lower side contributes more. Zero alone does not
+establish symmetry.
+
+Counts, probabilities, and relative weights use the same descriptive formula.
+Scaling all weights by a positive constant leaves the mathematical result
+unchanged. Counts agree with population skewness on expanded observations.
+This function does not apply a sample bias correction; unlike skewness, it has
+no population/sample selector.
+
+Weights must be finite and nonnegative, with at least one positive weight.
+Zero-weight observations are excluded, including NaN and infinity. Inputs must
+be replayable arrays, slices, or nested forward ranges with matching shapes.
+Constant positive-weight observations return NaN. Result-type conversion,
+numerical limits, and the Windows x64 DMD temporary-array restriction follow
+$(REF weightedStandardizedMoment, mir, stat, descriptive, univariate, moments).
+
+Params:
+    F = floating result/working type, or a type promoted to floating point
+    summation = summation algorithm; appropriate selects pairwise summation
++/
+template weightedSkewness(F, Summation summation = Summation.appropriate)
+{
+    /// values and weights must have matching shapes or lengths.
+    stdevType!F weightedSkewness(X, W)(scope auto ref X values, scope auto ref W weights)
+        if (isIterable!X && isIterable!W)
+    {
+        import mir.stat.descriptive.univariate.moments: weightedStandardizedMoment, WeightedMomentCheckArguments;
+        mixin WeightedMomentCheckArguments!(values, weights);
+        return weightedStandardizedMoment!(F, 3, summation)(values, weights);
+    }
+}
+
+/// ditto
+template weightedSkewness(Summation summation = Summation.appropriate)
+{
+    import mir.primitives: DeepElementType;
+    /// ditto
+    stdevType!(DeepElementType!X) weightedSkewness(X, W)(scope auto ref X values, scope auto ref W weights)
+        if (isIterable!X && isIterable!W)
+    {
+        import mir.stat.descriptive.univariate.moments: WeightedMomentCheckArguments;
+        mixin WeightedMomentCheckArguments!(values, weights);
+        return .weightedSkewness!(stdevType!(DeepElementType!X), summation)(values, weights);
+    }
+}
+
+/// Counts and probabilities describe the same asymmetry.
+@safe pure nothrow @nogc
+unittest
+{
+    import mir.math.common: approxEqual;
+    import std.math: sqrt;
+    double[2] values = [0, 10], probabilities = [0.25, 0.75];
+    int[2] counts = [1, 3]; // Represents [0, 10, 10, 10].
+    // The mean is 7.5: the lone lower observation is farther from the mean.
+    assert(weightedSkewness(values, counts).approxEqual(-2 / sqrt(3.0)));
+    assert(weightedSkewness(values, probabilities).approxEqual(-2 / sqrt(3.0)));
+}
+
+/++
+Population weighted kurtosis, reported as excess kurtosis by default.
+
+Raw kurtosis is the fourth weighted standardized moment. It measures the
+weighted fourth power of deviations relative to the variance squared, making
+it sensitive to extreme observations. Excess kurtosis subtracts three, so a
+normal distribution has excess kurtosis zero and raw kurtosis three. Use raw
+kurtosis when a formula asks for the fourth standardized moment; use excess
+kurtosis to compare with the normal-distribution reference.
+
+The isRaw option follows kurtosis. Counts, probabilities, and relative weights
+share the same descriptive formula, without sample bias correction. Counts
+agree with population kurtosis on expanded observations, and positive common
+weight scaling leaves the mathematical result unchanged.
+
+Input, weight, result-type, numerical, and compiler restrictions follow
+weightedSkewness. Constant positive-weight observations return NaN for both
+raw and excess kurtosis.
+
+Params:
+    F = floating result/working type, or a type promoted to floating point
+    summation = summation algorithm; appropriate selects pairwise summation
++/
+template weightedKurtosis(F, Summation summation = Summation.appropriate)
+{
+    /++
+    Params:
+        values = observations
+        weights = weights with matching shape or length
+        isRaw = true for raw kurtosis, false for excess kurtosis (default)
+    +/
+    stdevType!F weightedKurtosis(X, W)(scope auto ref X values, scope auto ref W weights, bool isRaw = false)
+        if (isIterable!X && isIterable!W)
+    {
+        import mir.stat.descriptive.univariate.moments: weightedStandardizedMoment, WeightedMomentCheckArguments;
+        mixin WeightedMomentCheckArguments!(values, weights);
+        const raw = weightedStandardizedMoment!(F, 4, summation)(values, weights);
+        return isRaw ? raw : raw - 3;
+    }
+}
+
+/// ditto
+template weightedKurtosis(Summation summation = Summation.appropriate)
+{
+    import mir.primitives: DeepElementType;
+    /// ditto
+    stdevType!(DeepElementType!X) weightedKurtosis(X, W)(scope auto ref X values, scope auto ref W weights, bool isRaw = false)
+        if (isIterable!X && isIterable!W)
+    {
+        import mir.stat.descriptive.univariate.moments: WeightedMomentCheckArguments;
+        mixin WeightedMomentCheckArguments!(values, weights);
+        return .weightedKurtosis!(stdevType!(DeepElementType!X), summation)(values, weights, isRaw);
+    }
+}
+
+/// Choose excess or raw kurtosis for the quantity you want to report.
+@safe pure nothrow @nogc
+unittest
+{
+    import mir.math.common: approxEqual;
+    double[2] values = [0, 10];
+    int[2] counts = [1, 3];
+    assert(weightedKurtosis(values, counts).approxEqual(-2.0 / 3));
+    assert(weightedKurtosis(values, counts, true).approxEqual(7.0 / 3));
+}
+
+version(mir_stat_test)
+@safe pure nothrow @nogc
+unittest
+{
+    import mir.math.common: approxEqual;
+    import mir.ndslice.slice: sliced;
+    import std.math: sqrt, isNaN;
+    import std.meta: AliasSeq;
+    static foreach (T; AliasSeq!(float, double, real))
+    static foreach (mode; [Summation.naive, Summation.pairwise, Summation.kbn, Summation.kb2, Summation.precise])
+    {{
+        const T[2] values = [0, 10], weights = [1, 3], probabilities = [0.25, 0.75];
+        T[4] expanded = [0, 10, 10, 10];
+        const skew = weightedSkewness!(T, mode)(values, weights);
+        const raw = weightedKurtosis!(T, mode)(values, weights, true);
+        assert(skew.approxEqual(-2 / sqrt(T(3)), T(64) * T.epsilon, T(0)));
+        assert(raw.approxEqual(T(7) / 3, T(64) * T.epsilon, T(0)));
+        assert(skew.approxEqual(skewness(expanded[].sliced, true), T(64) * T.epsilon, T(0)));
+        assert(raw.approxEqual(kurtosis(expanded[].sliced, true, true), T(64) * T.epsilon, T(0)));
+        assert(weightedSkewness!mode(values, probabilities).approxEqual(skew));
+        assert(weightedKurtosis!mode(values, probabilities).approxEqual(raw - 3));
+        assert(weightedKurtosis!mode(values, weights, false).approxEqual(raw - 3));
+        static assert(is(typeof(weightedSkewness(values, weights)) == T));
+        static assert(is(typeof(weightedKurtosis(values, weights)) == T));
+        T[2] extremes = [-T.max, T.max], equal = [1, 1];
+        assert(weightedSkewness!mode(extremes, equal) == 0);
+        assert(weightedKurtosis!mode(extremes, equal) == -2);
+        assert(weightedKurtosis!mode(extremes, equal, true) == 1);
+        T[3] excluded = [T.nan, 7, T.infinity], mask = [0, 1, 0];
+        assert(weightedSkewness!mode(excluded, mask).isNaN);
+        assert(weightedKurtosis!mode(excluded, mask).isNaN);
+        assert(weightedKurtosis!mode(excluded, mask, true).isNaN);
+    }}
+    int[2] integers = [0, 10], counts = [1, 3];
+    static assert(is(typeof(weightedSkewness(integers, counts)) == double));
+    static assert(is(typeof(weightedKurtosis!(float)(integers, counts)) == float));
+    static assert(is(typeof(weightedSkewness!(float)(integers, counts)) == float));
+    assert(weightedKurtosis!(float)(integers, counts, true).approxEqual(7f / 3));
+}
+
+version(mir_stat_test)
+pure unittest
+{
+    import core.exception: AssertError;
+    import std.exception: assertThrown;
+    import std.algorithm: filter;
+    import std.meta: AliasSeq;
+    import mir.math.common: approxEqual;
+    import mir.ndslice.slice: sliced;
+    import mir.ndslice.dynamic: transposed;
+    double[6] values = [0, 1, 2, 3, 4, 5], weights = [1, 2, 3, 4, 5, 6];
+    double[6] storage = [1, 4, 2, 5, 3, 6];
+    static foreach (fun; AliasSeq!(weightedSkewness, weightedKurtosis))
+    {{
+        const expected = fun(values, weights);
+        assert(fun(values[].filter!(x => true), weights[]).approxEqual(expected));
+        assert(fun(values[].sliced(2, 3), storage[].sliced(3, 2).transposed).approxEqual(expected));
+        assertThrown!AssertError(fun(values[0 .. 0], weights[0 .. 0]));
+        assertThrown!AssertError(fun(values[], weights[0 .. 1]));
+        foreach (bad; [-1.0, double.nan, double.infinity])
+        {
+            double[2] invalidWeights = [1, bad];
+            assertThrown!AssertError(fun(values[0 .. 2], invalidWeights));
+        }
+        double[2] zero = [0, 0];
+        assertThrown!AssertError(fun(values[0 .. 2], zero));
+    }}
+    static struct Input
+    {
+        double[] data;
+        double front() { return data[0]; }
+        bool empty() { return data.length == 0; }
+        void popFront() { data = data[1 .. $]; }
+    }
+    auto input = Input(values[]);
+    static assert(!__traits(compiles, weightedSkewness(input, weights)));
+    static assert(!__traits(compiles, weightedKurtosis(values, input)));
+}
+
+// Every wrapper must guard its own by-value boundary before forwarding.
+version(mir_stat_test)
+@safe pure nothrow @nogc
+unittest
+{
+    import std.math: isNaN;
+    import std.meta: AliasSeq;
+    version (DigitalMars)
+    {
+        version (Win64) enum rejectTemporaries = true;
+        else enum rejectTemporaries = false;
+    }
+    else enum rejectTemporaries = false;
+    static foreach (T; AliasSeq!(float, double, const(float), const(double)))
+    static foreach (fun; AliasSeq!(weightedSkewness, weightedKurtosis))
+    static foreach (explicitType; [false, true])
+    {{
+        static if (explicitType) alias args = AliasSeq!(double, Summation.naive);
+        else alias args = AliasSeq!(Summation.naive);
+        T[1] values = [-2], weights = [1];
+        assert(fun!args(values, weights).isNaN);
+        assert(fun!args(values[], weights[]).isNaN);
+        static if (rejectTemporaries)
+        {
+            static assert(!__traits(compiles, fun!args(cast(T[1])[-2], weights)));
+            static assert(!__traits(compiles, fun!args(values, cast(T[1])[1])));
+            static assert(!__traits(compiles, fun!args(cast(T[1])[-2], cast(T[1])[1])));
+        }
+        else
+            assert(fun!args(cast(T[1])[-2], cast(T[1])[1]).isNaN);
+        assert(fun!args(cast(T[2])[-2, -2], cast(T[2])[1, 1]).isNaN);
     }}
 }

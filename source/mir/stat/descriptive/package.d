@@ -46,6 +46,11 @@ without measurement units. Order three describes skewness; order four is raw
 kurtosis. Counts, probabilities, and relative weights share the same formula.
 There is no sample bias correction. Subtract three from order four for excess
 kurtosis, which is zero for a normal distribution.))
+$(TR $(TD Weighted skewness and kurtosis) $(TD Use weightedSkewness for
+asymmetry and weightedKurtosis for the fourth standardized moment. These use
+population formulas for all three weight meanings. Kurtosis defaults to excess
+kurtosis; pass isRaw=true for raw kurtosis. For values [0, 10] and counts [1, 3],
+excess kurtosis is -2/3 and raw kurtosis is 7/3.))
 $(TR $(TD Weighted covariance) $(TD Use WeightedMomentNormalization with the same
 three choices as variance. For x=[0,10], y=[0,20], weights=[1,3], covariance is
 37.5 for population, 50 for frequencySample, and 100 for relativeSample.))
@@ -79,7 +84,7 @@ for each estimator's assumptions.
 
 Weight validity also depends on the function. Weighted means and sums allow
 signed algebraic weights and evaluate zero-weight products: NaN times zero
-still contributes NaN. Weighted raw, central, and standardized moments, variance, covariance, correlation, and quantiles require finite,
+still contributes NaN. Weighted raw, central, and standardized moments, skewness, kurtosis, variance, covariance, correlation, and quantiles require finite,
 nonnegative weights and exclude zero-weight observations, even nonfinite ones.
 Numeric histograms require finite, nonnegative weights; accumulator cells
 decide their own rules. AssumeWeights.sumToOne in the mean API is only a

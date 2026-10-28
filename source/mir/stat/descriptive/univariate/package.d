@@ -188,6 +188,8 @@ $(TR $(TH Module) $(TH Public declarations))
         $(SMALL Skewness and kurtosis.))
         $(TD
             $(B Functions:)
+            $(REF weightedSkewness, mir, stat, descriptive, univariate, skewness_kurtosis)$(NBSP)
+            $(REF weightedKurtosis, mir, stat, descriptive, univariate, skewness_kurtosis)$(NBSP)
             $(LEGACY_ANCHOR skewness)$(REF skewness, mir, stat, descriptive, univariate, skewness_kurtosis)$(NBSP)
             $(LEGACY_ANCHOR kurtosis)$(REF kurtosis, mir, stat, descriptive, univariate, skewness_kurtosis)$(NBSP)
             $(BR)
@@ -276,6 +278,9 @@ public import mir.stat.descriptive.univariate.dispersions: dispersion, variance,
 
 ///
 public import mir.stat.descriptive.univariate.moments;
+
+///
+public import mir.stat.descriptive.univariate.skewness_kurtosis: weightedSkewness, weightedKurtosis;
 
 ///
 public import mir.stat.descriptive.univariate.entropies: entropy, EntropyAccumulator, entropyType;
@@ -373,4 +378,12 @@ unittest
     assert(rcMeans[0] == 2.5);
     assert(customMeans[0] == 2.5);
     assert(output[0] == 2.5);
+}
+
+version(mir_stat_test)
+unittest
+{
+    import shape = mir.stat.descriptive.univariate.skewness_kurtosis;
+    static assert(__traits(isSame, weightedSkewness, shape.weightedSkewness));
+    static assert(__traits(isSame, weightedKurtosis, shape.weightedKurtosis));
 }

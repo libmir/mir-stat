@@ -1970,7 +1970,7 @@ unittest
 // Remove this guard once the supported Windows DMD versions fix #24118.
 // Check every entry and traversal boundary: forwarding makes a by-value
 // parameter look like an lvalue, but cannot repair corruption on entry.
-private mixin template WeightedMomentCheckArguments(alias values, alias weights)
+package(mir.stat.descriptive.univariate) mixin template WeightedMomentCheckArguments(alias values, alias weights)
 {
     version (DigitalMars) version (Win64)
     {
