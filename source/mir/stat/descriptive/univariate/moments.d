@@ -2488,22 +2488,22 @@ version(mir_stat_test)
 unittest
 {
     import mir.math.common: approxEqual;
+    import std.meta: AliasSeq;
     import mir.ndslice.slice: sliced;
     import mir.ndslice.dynamic: transposed;
     import std.algorithm: filter;
     const double[6] values = [1, 2, 3, 4, 5, 6];
     double[6] storage = [1, 4, 2, 5, 3, 6], weights = [1, 2, 3, 4, 5, 6];
-    static foreach (fun; ["weightedRawMoment", "weightedCentralMoment"])
+    static foreach (fun; AliasSeq!(weightedRawMoment, weightedCentralMoment))
     {{
-        alias moment = mixin(fun ~ "!3");
-        const expected = moment(values[], weights[]);
-        assert(moment(values[].sliced(2, 3), storage[].sliced(3, 2).transposed).approxEqual(expected));
-        assert(moment(values[].filter!(x => true), weights[].filter!(x => true)).approxEqual(expected));
-        assert(moment(values, weights[].filter!(x => true)).approxEqual(expected));
-        assert(moment(values[].filter!(x => true), weights).approxEqual(expected));
+        const expected = fun!3(values[], weights[]);
+        assert(fun!3(values[].sliced(2, 3), storage[].sliced(3, 2).transposed).approxEqual(expected));
+        assert(fun!3(values[].filter!(x => true), weights[].filter!(x => true)).approxEqual(expected));
+        assert(fun!3(values, weights[].filter!(x => true)).approxEqual(expected));
+        assert(fun!3(values[].filter!(x => true), weights).approxEqual(expected));
         const(double)[][2] nested = [values[0 .. 2], values[2 .. $]];
         double[][2] nestedWeights = [weights[0 .. 2], weights[2 .. $]];
-        assert(moment(nested, nestedWeights).approxEqual(expected));
+        assert(fun!3(nested, nestedWeights).approxEqual(expected));
     }}
 }
 
@@ -2511,30 +2511,29 @@ version(mir_stat_test)
 pure unittest
 {
     import core.exception: AssertError;
+    import std.meta: AliasSeq;
     import std.exception: assertThrown;
     import mir.ndslice.slice: sliced;
     double[2] values = [0, 10], weights = [1, 3];
-    static foreach (fun; ["weightedRawMoment", "weightedCentralMoment"])
+    static foreach (fun; AliasSeq!(weightedRawMoment, weightedCentralMoment))
     static foreach (N; [1, 2, 3])
     {{
-        alias moment = mixin(fun ~ "!N");
         foreach (bad; [-1.0, double.nan, double.infinity])
         {
             double[2] invalid = [1, bad];
-            assertThrown!AssertError(moment(values, invalid));
+            assertThrown!AssertError(fun!N(values, invalid));
         }
         double[2] zero = [0, 0];
-        assertThrown!AssertError(moment(values, zero));
-        assertThrown!AssertError(moment(values[0 .. 0], weights[0 .. 0]));
-        assertThrown!AssertError(moment(values, weights[0 .. 1]));
-        assertThrown!AssertError(moment(values[].sliced(1, 2), weights[].sliced(2, 1)));
+        assertThrown!AssertError(fun!N(values, zero));
+        assertThrown!AssertError(fun!N(values[0 .. 0], weights[0 .. 0]));
+        assertThrown!AssertError(fun!N(values, weights[0 .. 1]));
+        assertThrown!AssertError(fun!N(values[].sliced(1, 2), weights[].sliced(2, 1)));
         double[2] nonfinite = [0, double.infinity];
-        assertThrown!AssertError(moment(nonfinite, weights));
+        assertThrown!AssertError(fun!N(nonfinite, weights));
         double[2] underflow = [1, double.min_normal];
-        alias narrow = mixin(fun ~ "!(float, N)");
-        assertThrown!AssertError(narrow(values, underflow));
+        assertThrown!AssertError(fun!(float, N)(values, underflow));
         double[2] overflow = [1, double.max];
-        assertThrown!AssertError(narrow(values, overflow));
+        assertThrown!AssertError(fun!(float, N)(values, overflow));
     }}
 }
 
@@ -2634,31 +2633,31 @@ unittest
     else enum rejectTemporaries = false;
 
     static foreach (T; AliasSeq!(float, double, const(float), const(double)))
-    static foreach (name; ["weightedRawMoment", "weightedCentralMoment"])
+    static foreach (fun; AliasSeq!(weightedRawMoment, weightedCentralMoment))
     static foreach (explicitType; [false, true])
     {{
         static if (explicitType)
-            alias moment = mixin(name ~ "!(double, 2)");
+            alias args = AliasSeq!(double, 2);
         else
-            alias moment = mixin(name ~ "!2");
-        enum expected = name == "weightedRawMoment" ? 4 : 0;
+            alias args = AliasSeq!(2);
+        enum expected = __traits(identifier, fun) == "weightedRawMoment" ? 4 : 0;
         T[1] values = [-2], weights = [1];
-        assert(moment(values, weights) == expected);
-        assert(moment(values[], weights[]) == expected);
+        assert(fun!args(values, weights) == expected);
+        assert(fun!args(values[], weights[]) == expected);
         static if (rejectTemporaries)
         {
-            static assert(!__traits(compiles, moment(cast(T[1])[-2], weights)));
-            static assert(!__traits(compiles, moment(values, cast(T[1])[1])));
-            static assert(!__traits(compiles, moment(cast(T[1])[-2], cast(T[1])[1])));
+            static assert(!__traits(compiles, fun!args(cast(T[1])[-2], weights)));
+            static assert(!__traits(compiles, fun!args(values, cast(T[1])[1])));
+            static assert(!__traits(compiles, fun!args(cast(T[1])[-2], cast(T[1])[1])));
         }
         else
         {
-            assert(moment(cast(T[1])[-2], weights) == expected);
-            assert(moment(values, cast(T[1])[1]) == expected);
-            assert(moment(cast(T[1])[-2], cast(T[1])[1]) == expected);
+            assert(fun!args(cast(T[1])[-2], weights) == expected);
+            assert(fun!args(values, cast(T[1])[1]) == expected);
+            assert(fun!args(cast(T[1])[-2], cast(T[1])[1]) == expected);
         }
         // Other static-array temporaries remain usable on Windows DMD too.
-        assert(moment(cast(T[2])[-2, -2], cast(T[2])[1, 1]) == expected);
-        assert(moment(cast(int[1])[-2], cast(int[1])[1]) == expected);
+        assert(fun!args(cast(T[2])[-2, -2], cast(T[2])[1, 1]) == expected);
+        assert(fun!args(cast(int[1])[-2], cast(int[1])[1]) == expected);
     }}
 }
