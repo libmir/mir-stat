@@ -5722,7 +5722,8 @@ version(mir_stat_test)
 unittest
 {
     import std.exception: assertThrown;
-    import core.exception: AssertError;
+    import mir.ndslice.slice: sliced;
+    import mir.ndslice.topology: map;
     real[4] values = [-1, 0, 1, 2], weights = [1, 1, 1, 0x1p-70L];
     static foreach (algorithm; [WeightedQuantileAlgo.type7, WeightedQuantileAlgo.type8])
     {{
@@ -5730,8 +5731,17 @@ unittest
         failing.failAt = 2;
         assertThrown!Exception(makeWeightedQuantile!algorithm(failing, values, weights));
         assert(failing.allocations == 2 && failing.releases == 1);
-        QuantileTestAllocator!() invalid;
-        assertThrown!AssertError(makeWeightedQuantile!algorithm(invalid, values, weights, 0.5L, 2.0L));
-        assert(invalid.allocations == 2 && invalid.releases == 2);
+        // Assertion failures need not unwind nothrow frames. Use a recoverable
+        // Exception while reading the second probability to test both buffers.
+        static real readProbability(real p) @safe pure
+        {
+            if (p > 1) throw new Exception("probability input failure");
+            return p;
+        }
+        real[2] probabilities = [0.5L, 2.0L];
+        QuantileTestAllocator!() inputFailure;
+        assertThrown!Exception(makeWeightedQuantile!algorithm(inputFailure, values, weights,
+            probabilities[].sliced.map!readProbability));
+        assert(inputFailure.allocations == 2 && inputFailure.releases == 2);
     }}
 }
