@@ -312,12 +312,15 @@ Eligible dense matrix products use SYMM when the ordinary input and output
 have compatible storage orientations. Eligible mixed orientations use a blocked
 calculation: GEMM handles stored off-diagonal blocks and their reflections,
 while small diagonal blocks use native D arithmetic. This avoids a full dense
-copy and requires no additional workspace. Real vectors use SYMV. Other types and layouts use native
+copy and requires no additional workspace. Real vectors use SYMV. Packed symmetric storage uses SPMV per column, because
+standard BLAS has no packed SYMM operation. Other types and layouts use native
 D arithmetic. Native D loops split at the diagonal to avoid per-entry triangle
-selection. No dense copy of the symmetric input is created.
+selection; complete packed views use direct stored coordinates instead of
+reconstructing square indices. No dense copy of the symmetric input is created.
 
 Declaring symmetry is not a universal speedup: it supplies the selected-triangle
-contract. SYMV can beat GEMV, while SYMM and GEMM may perform similarly. Mixed layouts can remain slower than dense matched layouts.
+contract. SYMV can beat GEMV, while SYMM and GEMM may perform similarly. Packed
+storage and mixed layouts can remain slower than dense matched layouts.
 
 For eligible `float`/`double` inputs, an ordinary operand with one column uses
 the vector kernel while keeping a rank-two output. A right-side product with

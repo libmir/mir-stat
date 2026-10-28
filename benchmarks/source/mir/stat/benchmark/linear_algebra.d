@@ -23,8 +23,8 @@ string[] algebraAlgorithms(string name)
 {
     switch (name)
     {
-    case "symmetricVector": return ["general", "symmetric"];
-    case "symmetricLeft", "symmetricRight", "symmetricColumn", "symmetricRow": return ["general", "symmetric", "generalMixed", "symmetricMixed", "workspaceInput", "workspaceOutput"];
+    case "symmetricVector": return ["general", "symmetric", "packed"];
+    case "symmetricLeft", "symmetricRight", "symmetricColumn", "symmetricRow": return ["general", "symmetric", "packed", "generalMixed", "symmetricMixed", "packedMixed", "workspaceInput", "workspaceOutput"];
     case "triangularLeft", "triangularRight": return ["dense", "triangular", "packed"];
     case "quadratic": return ["composed", "general", "symmetric", "singleTriangle", "generalFast", "symmetricFast", "packedSymmetric", "packedFast"];
     case "mahalanobis": return ["covarianceGC", "factorGC", "precisionGC", "precisionFactorGC",
@@ -350,12 +350,13 @@ unittest
     assert(bytes < order * order * double.sizeof);
 }
 
-/// Compare general and symmetric products, including opposite output layout.
+/// Compare general, symmetric and packed products, including opposite output layout.
 /// Matrix cases have 32 right-hand sides (or 32 rows for a right-side metric).
 private Result[] measureSymmetric(bool vector, bool right, bool singleColumn = false)(string name, size_t iterations,
     size_t n, ulong seed, string[] selected, size_t rounds, size_t warmup, bool transpose)
 {
     import mir.ndslice.allocation: uninitSlice;
+    import mir.ndslice.topology: stairs;
     import mir.random.engine.mersenne_twister: Mt19937_64;
     import mir.random.variable: NormalVariable;
     import std.meta: AliasSeq;
@@ -364,23 +365,29 @@ private Result[] measureSymmetric(bool vector, bool right, bool singleColumn = f
     /// Whether an algorithm is included in this run.
     bool needs(string label) { return !selected.length || selected.canFind(label); }
     bool needDense = needs("general") || needs("symmetric");
-    bool needOutput = needDense;
+    bool needPacked = needs("packed");
+    bool needOutput = needDense || needPacked;
     bool needMixed;
     static if (!vector)
     {
         needDense = needDense || needs("generalMixed") || needs("symmetricMixed") || needs("workspaceInput") || needs("workspaceOutput");
-        needMixed = needs("generalMixed") || needs("symmetricMixed") || needs("workspaceInput") || needs("workspaceOutput");
+        needPacked = needPacked || needs("packedMixed");
+        needMixed = needs("generalMixed") || needs("symmetricMixed") || needs("packedMixed") || needs("workspaceInput") || needs("workspaceOutput");
     }
     auto a = uninitSlice!double(needDense ? n : 0, needDense ? n : 0).universal;
     if (transpose) a = a.transposed;
+    auto packed = uninitSlice!double(needPacked ? n*(n+1)/2 : 0);
+    auto pv = symmetricView(packed.stairs!"-"(needPacked ? n : 0));
     auto u = uninitSlice!double(n);
     auto rng = Mt19937_64(seed);
     auto normal = NormalVariable!double(0, 1);
     foreach (i; 0 .. n) u[i] = normal(rng)/n;
+    size_t offset;
     foreach (i; 0 .. n) foreach (j; 0 .. n)
     {
         auto value = (i == j ? 1.0 : 0.0) + u[i]*u[j];
         if (needDense) a[i,j] = value;
+        if (needPacked && j >= i) packed[offset++] = value;
     }
     static if (vector)
     {
@@ -412,7 +419,8 @@ private Result[] measureSymmetric(bool vector, bool right, bool singleColumn = f
         static if (mixedLayout) auto output = mixed;
         else auto output = c;
         static if (representation == 0) auto metric = a;
-        else auto metric = symmetricView(a);
+        else static if (representation == 1) auto metric = symmetricView(a);
+        else auto metric = pv;
         static if (right) mtimesInto(b.transposed, metric, output.transposed);
         else mtimesInto(metric, b, output);
         static if (vector) return output[0];
@@ -427,8 +435,8 @@ private Result[] measureSymmetric(bool vector, bool right, bool singleColumn = f
         else mtimesInto(symmetricView(a), b, mixed, work);
         return mixed[0,0];
     }
-    static if (vector) alias functions = AliasSeq!(run!0, run!1);
-    else alias functions = AliasSeq!(run!0, run!1, run!(0,true), run!(1,true),
+    static if (vector) alias functions = AliasSeq!(run!0, run!1, run!2);
+    else alias functions = AliasSeq!(run!0, run!1, run!2, run!(0,true), run!(1,true), run!(2,true),
         runWorkspace!true, runWorkspace!false);
     bool[functions.length] enabled;
     foreach (i, label; labels) enabled[i] = needs(label);
@@ -457,7 +465,7 @@ private Result[] measureSymmetric(bool vector, bool right, bool singleColumn = f
     void check(size_t index, double value)
     {
         static if (vector) auto output = c;
-        else auto output = index < 2 ? c : mixed;
+        else auto output = index < 3 ? c : mixed;
         foreach (j; 0 .. columns) foreach (i; 0 .. n)
         {
             static if (vector) { auto actual = output[i]; auto expected = reference[i]; }

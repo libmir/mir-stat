@@ -16,7 +16,7 @@ Pass `triangularView(a)` on either side of `mtimes` to select triangular
 multiplication automatically. The same dispatch is available through `rcMtimes`,
 `makeMtimes`, and `mtimesInto`. The view carries the triangle and diagonal policy;
 the other operand must be an ordinary ndslice. Symmetric views work on either
-side as well, selecting SYMM/SYMV where eligible without materialization.
+side as well, selecting SYMM/SYMV/SPMV where eligible without materialization.
 
 License: $(HTTP www.apache.org/licenses/LICENSE-2.0, Apache-2.0)
 Copyright: 2026 Mir Stat Authors.
@@ -1084,7 +1084,7 @@ Multiply using a symmetric view on the left. Only its selected triangle is
 read, without conjugation or dense materialization. The other operand is an
 ordinary ndslice. Ownership and dimensions follow the plain-slice overload.
 Compatible dense matrices use SYMM, or blocked GEMM for mixed orientations.
-Eligible real vectors use SYMV.
+Eligible real vectors use SYMV (SPMV for packed storage).
 General layouts and types retain a native D fallback.
 +/
 package(mir.stat) AllocatedSlice!(Allocation.gc, Scalar!A, B.N)
@@ -1117,7 +1117,7 @@ Multiply using a symmetric view on the right. Only its selected triangle is
 read, without conjugation or dense materialization. The other operand is an
 ordinary ndslice. Ownership and dimensions follow the plain-slice overload.
 Compatible dense matrices use SYMM, or blocked GEMM for mixed orientations.
-Eligible real vectors use SYMV.
+Eligible real vectors use SYMV (SPMV for packed storage).
 General layouts and types retain a native D fallback.
 +/
 package(mir.stat) AllocatedSlice!(Allocation.gc, Scalar!A, B.N)
@@ -1135,7 +1135,7 @@ Multiply using a symmetric view on the left. Only its selected triangle is
 read, without conjugation or dense materialization. The other operand is an
 ordinary ndslice. Ownership and dimensions follow the plain-slice overload.
 Compatible dense matrices use SYMM, or blocked GEMM for mixed orientations.
-Eligible real vectors use SYMV.
+Eligible real vectors use SYMV (SPMV for packed storage).
 General layouts and types retain a native D fallback.
 +/
 package(mir.stat) AllocatedSlice!(Allocation.rc, Scalar!A, B.N)
@@ -1153,7 +1153,7 @@ Multiply using a symmetric view on the right. Only its selected triangle is
 read, without conjugation or dense materialization. The other operand is an
 ordinary ndslice. Ownership and dimensions follow the plain-slice overload.
 Compatible dense matrices use SYMM, or blocked GEMM for mixed orientations.
-Eligible real vectors use SYMV.
+Eligible real vectors use SYMV (SPMV for packed storage).
 General layouts and types retain a native D fallback.
 +/
 package(mir.stat) AllocatedSlice!(Allocation.rc, Scalar!A, B.N)
@@ -1171,7 +1171,7 @@ Multiply using a symmetric view on the left. Only its selected triangle is
 read, without conjugation or dense materialization. The other operand is an
 ordinary ndslice. Ownership and dimensions follow the plain-slice overload.
 Compatible dense matrices use SYMM, or blocked GEMM for mixed orientations.
-Eligible real vectors use SYMV.
+Eligible real vectors use SYMV (SPMV for packed storage).
 General layouts and types retain a native D fallback.
 +/
 package(mir.stat) AllocatedSlice!(Allocation.custom, Scalar!A, B.N)
@@ -1189,7 +1189,7 @@ Multiply using a symmetric view on the right. Only its selected triangle is
 read, without conjugation or dense materialization. The other operand is an
 ordinary ndslice. Ownership and dimensions follow the plain-slice overload.
 Compatible dense matrices use SYMM, or blocked GEMM for mixed orientations.
-Eligible real vectors use SYMV.
+Eligible real vectors use SYMV (SPMV for packed storage).
 General layouts and types retain a native D fallback.
 +/
 package(mir.stat) AllocatedSlice!(Allocation.custom, Scalar!A, B.N)
@@ -1287,6 +1287,8 @@ private void symmetricMultiply(TrianglePolicy triangle, A, B, C)(
     {
         static if (is(T == float) || is(T == double))
         {
+            import mir.stat.internal.linearAlgebra.packed: tryPackedSymmetric;
+            if (tryPackedSymmetric!triangle(a, b, c)) return;
             static if (hasBlas && nativeSlice!A && nativeSlice!B && nativeSlice!C)
             {
                 if (blasMatrix(a) && blasVector(b) && blasVector(c))
@@ -1299,6 +1301,8 @@ private void symmetricMultiply(TrianglePolicy triangle, A, B, C)(
                 }
             }
         }
+        import mir.stat.internal.linearAlgebra.packed: tryPackedSymmetricNative;
+        if (tryPackedSymmetricNative!triangle(a, b, c)) return;
         foreach (i; 0 .. b.length)
         {
             T sum = T(0);
@@ -1318,13 +1322,13 @@ private void symmetricMultiply(TrianglePolicy triangle, A, B, C)(
 }
 
 
-// Exercise SYMM-compatible and mixed layouts, right products,
+// Exercise SYMM-compatible and mixed layouts, right products, packed storage,
 // complex symmetric (not Hermitian) arithmetic, and explicit ownership.
 version(mir_stat_test_linearAlgebra)
 @system pure unittest
 {
     import mir.ndslice.slice: sliced;
-    import mir.ndslice.topology: universal, map;
+    import mir.ndslice.topology: universal, stairs, map;
     import mir.ndslice.dynamic: transposed, reversed;
     import mir.ndslice.allocation: mininitRcslice;
     import std.meta: AliasSeq;
@@ -1350,6 +1354,10 @@ version(mir_stat_test_linearAlgebra)
         mtimesInto(b.transposed, view, c.transposed);
         assert(rcMtimes(view, b) == c);
         assert(mtimes(view.transposed, b) == c);
+        T[6] packed = [1, 2, 3, 3, 4, 5];
+        auto pv = symmetricView(packed[].sliced.stairs!"-"(3));
+        assert(mtimes(pv, b) == c);
+        assert(mtimes(b.transposed, pv) == c.transposed);
         assert(mtimes(view, b.map!(v=>v)) == c);
     }
     import mir.complex: Complex;
@@ -1474,6 +1482,36 @@ version(mir_stat_test_linearAlgebra)
         mtimesInto(b.transposed, symmetricView!triangle(a), c.transposed, columnWork.transposed);
         assert(left == c);
     }
+}
+
+// Packed direct indexing supports lower storage, transpose, complex values,
+// and reversed vectors; cropped adapters retain the general indexing fallback.
+version(mir_stat_test_linearAlgebra)
+@system pure unittest
+{
+    import mir.ndslice.slice: sliced;
+    import mir.ndslice.topology: stairs, universal;
+    import mir.ndslice.dynamic: transposed, reversed;
+    import mir.complex: Complex;
+    import std.meta: AliasSeq;
+    import mir.stat.internal.linearAlgebra.packed: packedMatrix;
+    static foreach (T; AliasSeq!(float, double, real, Complex!double))
+    {{
+        T[6] data = [T(1), T(2), T(3), T(3), T(4), T(5)];
+        static if (is(T == Complex!double)) foreach (ref v; data) v += T(0, 1);
+        T[3] vector = [T(1), T(2), T(3)], output;
+        auto x = vector[].sliced.universal.reversed;
+        auto y = output[].sliced.universal.reversed;
+        auto view = symmetricView(data[].sliced.stairs!"+"(3));
+        mtimesInto(view.transposed, x, y);
+        assert(y[0] == data[0]*x[0] + data[1]*x[1] + data[3]*x[2]);
+        assert(y[1] == data[1]*x[0] + data[2]*x[1] + data[4]*x[2]);
+        assert(y[2] == data[3]*x[0] + data[4]*x[1] + data[5]*x[2]);
+        auto cropped = packedMatrix(data[].sliced.stairs!"+"(3))[1 .. 3, 1 .. 3];
+        auto result = mtimes(symmetricView!(TrianglePolicy.lower)(cropped), x[0 .. 2]);
+        assert(result[0] == data[2]*x[0] + data[4]*x[1]);
+        assert(result[1] == data[4]*x[0] + data[5]*x[1]);
+    }}
 }
 
 /// Mixed storage orientations do not require scratch allocation.
