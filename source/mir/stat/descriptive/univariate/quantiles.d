@@ -1557,16 +1557,6 @@ private real weightedUniformShiftedOverlap(Workspace)(scope Workspace workspace,
     return min(right - origin, upper) - max(left - origin, lower);
 }
 
-// TODO: Preserve small weight contributions when preparing cumulative weights
-// and effective size. Rounded boundaries can lose an overlap that matters to
-// a near-zero result: type7 on values [0,1,2], weights [1,1e-20,1], p=1e-20
-// can return about 2e-20 instead of 5e-21. Type8 has analogous boundary cases.
-// More precise query arithmetic alone cannot recover lost preparation terms.
-// A compensated rebuild was investigated but deferred: detecting uncertainty
-// near zero also triggered costly repairs for ordinary centered samples with
-// equal or nearly equal weights. A future fix should avoid that overhead.
-// Extreme underflow of squared normalized weights is a separate limitation.
-//
 // Uniform-window counterpart of the beta-weighted estimators. Use suffixes
 // for upper windows so small upper masses survive rounded cumulative prefixes.
 private auto weightedUniformQuantileAt(F, WeightedQuantileAlgo algorithm, Workspace,
@@ -1636,6 +1626,154 @@ private auto weightedUniformQuantileAt(F, WeightedQuantileAlgo algorithm, Worksp
     const normalized = min(highValue / scale, max(lowValue / scale,
         estimate.sum / coefficients.sum));
     return cast(F) (normalized * scale);
+}
+
+// Two-term arithmetic for the rare tiny-weight uniform-window path. Inputs
+// are normalized masses, counts and probabilities: even the splitter products
+// stay far below real.max for any addressable workspace. This retains low-order
+// terms, not arbitrary precision; normalized-weight underflow remains possible.
+private struct WeightedQuantileExpansion
+{
+    @safe pure nothrow @nogc:
+    real hi = 0, lo = 0;
+
+    this(real value) { hi = value; }
+
+    private static WeightedQuantileExpansion normalized(real a, real b)
+    {
+        WeightedQuantileExpansion result;
+        result.hi = a + b;
+        const z = result.hi - a;
+        result.lo = (a - (result.hi - z)) + (b - z);
+        return result;
+    }
+
+    WeightedQuantileExpansion opBinary(string op)(WeightedQuantileExpansion b) const
+        if (op == "+" || op == "-" || op == "*")
+    {
+        static if (op == "+")
+        {
+            const sum = hi + b.hi, z = sum - hi;
+            return normalized(sum, (hi - (sum - z)) + (b.hi - z) + lo + b.lo);
+        }
+        else static if (op == "-")
+        {
+            b.hi = -b.hi; b.lo = -b.lo;
+            return this + b;
+        }
+        else
+        {
+            enum real splitter = (1UL << ((real.mant_dig + 1) / 2)) + 1.0L;
+            const product = hi * b.hi, ca = splitter * hi, cb = splitter * b.hi;
+            const ah = ca - (ca - hi), al = hi - ah;
+            const bh = cb - (cb - b.hi), bl = b.hi - bh;
+            return normalized(product, ((ah * bh - product) + ah * bl + al * bh) +
+                al * bl + hi * b.lo + lo * b.hi + lo * b.lo);
+        }
+    }
+
+    int opCmp(WeightedQuantileExpansion b) const
+    {
+        const d = this - b;
+        return d.hi > 0 ? 1 : d.hi < 0 ? -1 : d.lo > 0 ? 1 : d.lo < 0 ? -1 : 0;
+    }
+
+    real value() const { return hi + lo; }
+}
+
+// Work in unnormalized interval coordinates C*W rather than C/W. For type 7,
+// the window ends at (W*W-Q)*p+Q and has width Q. Type 8 uses three times these
+// coordinates to avoid rounding thirds: upper=(3*W*W+Q)*p+Q, width=3*Q.
+private F compensatedWeightedUniformAt(F, WeightedQuantileAlgo algorithm, Workspace, P)(
+    scope Workspace workspace, P probability,
+    WeightedQuantileExpansion total, WeightedQuantileExpansion squares)
+{
+    import std.algorithm: min, max;
+    import std.math: isFinite, fabs;
+    static assert(isFloatingPoint!P, "Probabilities must be floating-point values");
+    assert(isFinite(probability) && probability >= 0 && probability <= 1,
+        "weightedQuantile: probability must be finite and in [0, 1]");
+    if (probability == 0) return cast(F) workspace[0].value;
+    if (probability == 1) return cast(F) workspace[$ - 1].value;
+    if (workspace[0].value == workspace[$ - 1].value)
+        return cast(F) workspace[0].value;
+    alias E = WeightedQuantileExpansion;
+    const reflected = probability > 0.5L;
+    const p = E(reflected ? 1 - cast(real) probability : cast(real) probability);
+    auto extent = total * total;
+    auto width = squares;
+    E upper;
+    static if (algorithm == WeightedQuantileAlgo.type7)
+        upper = (extent - squares) * p + squares;
+    else
+    {
+        extent = extent * E(3);
+        width = squares * E(3);
+        upper = (extent + squares) * p + squares;
+    }
+    upper = max(width, min(extent, upper));
+    const lower = upper - width;
+    real scale = 0;
+    Summator!(real, Summation.kbn) coefficients, estimate;
+    // Scale only contributing observations, so an excluded extreme cannot
+    // underflow all values inside the window. Reuse the same overlap arithmetic.
+    static foreach (accumulate; [false, true])
+    {{
+        E cumulative, previous;
+        foreach (j; 0 .. workspace.length)
+        {
+            const i = reflected ? workspace.length - 1 - j : j;
+            cumulative = cumulative + E(workspace[i].cumulative);
+            auto current = cumulative * total;
+            static if (algorithm == WeightedQuantileAlgo.type8)
+                current = current * E(3);
+            const overlap = (min(current, upper) - max(previous, lower)).value;
+            if (overlap > 0)
+            {
+                static if (accumulate)
+                {
+                    coefficients.put(overlap);
+                    estimate.put(overlap * (cast(real) workspace[i].value / scale));
+                }
+                else scale = max(scale, fabs(cast(real) workspace[i].value));
+            }
+            previous = current;
+        }
+        static if (!accumulate) if (scale == 0) return cast(F) 0;
+    }}
+    assert(coefficients.sum > 0, "weightedQuantile: invalid compensated uniform coefficients");
+    const normalized = min(cast(real) workspace[$ - 1].value / scale,
+        max(cast(real) workspace[0].value / scale, estimate.sum / coefficients.sum));
+    return cast(F) (normalized * scale);
+}
+
+private auto compensatedWeightedUniform(F, WeightedQuantileAlgo algorithm,
+    QuantileAllocation allocation, Context, Workspace, P)(ref Context context,
+    scope Workspace workspace, scope auto ref P probabilities, real maximum)
+{
+    import std.traits: Unqual;
+    alias E = WeightedQuantileExpansion;
+    E total, squares;
+    foreach (ref entry; workspace)
+    {
+        entry.cumulative /= maximum;
+        const mass = E(entry.cumulative);
+        total = total + mass;
+        squares = squares + mass * mass;
+    }
+    static if (isFloatingPoint!(Unqual!P))
+        return compensatedWeightedUniformAt!(F, algorithm)(workspace, probabilities, total, squares);
+    else
+    {
+        scope auto levels = quantileSlice(probabilities);
+        static assert(typeof(levels).N == 1, "Probabilities must be one-dimensional");
+        auto result = allocateQuantiles!(Unqual!F, allocation)(context, levels.length);
+        static if (allocation == QuantileAllocation.custom)
+            scope(failure) releaseQuantiles(context, result);
+        foreach (i; 0 .. levels.length)
+            result[i] = compensatedWeightedUniformAt!(F, algorithm)(workspace, levels[i], total, squares);
+        return result;
+    }
 }
 
 // Keep the estimated rank-rounding scale 4*real.epsilon*N at most 2^-30 on
@@ -1856,6 +1994,7 @@ private auto allocatedWeightedQuantile(F, WeightedQuantileAlgo algorithm,
     size_t count;
     static if (weightedQuantileUsesFrequencies!algorithm) ulong frequencyTotal;
     real maximum = 0;
+    enum uniform = algorithm == WeightedQuantileAlgo.type7 || algorithm == WeightedQuantileAlgo.type8;
     foreach (i; 0 .. masses.length)
     {
         const w = cast(real) masses[i];
@@ -1905,6 +2044,17 @@ private auto allocatedWeightedQuantile(F, WeightedQuantileAlgo algorithm,
         foreach_reverse (i; 0 .. workspace.length)
         {
             const mass = workspace[i].cumulative / maximum;
+            static if (uniform)
+            {
+                import std.math: sqrt;
+                // Inspect ratios already computed by preparation. Raw masses
+                // remain intact until the prefix pass, so fallback needs no
+                // additional allocation or scan of the original inputs.
+                enum threshold = sqrt(real.epsilon);
+                if (mass < threshold)
+                    return compensatedWeightedUniform!(F, algorithm, allocation)(
+                        context, workspace, probabilities, maximum);
+            }
             suffix.put(mass);
             squares.put(mass * mass);
             workspace[i].upper = suffix.sum;
@@ -2037,6 +2187,14 @@ probability tails to reduce cancellation. Computed negative coefficients are
 clipped to zero and the coefficient sum is normalized to correct roundoff.
 Values are scaled during accumulation to avoid overflow; roundoff outside the
 input range is clamped.
+Relative type 7 and type 8 use compensated interval arithmetic when the smallest
+positive weight divided by the largest is less than sqrt(real.epsilon). This
+threshold is a dispatch heuristic, not an error bound. The compensated path retains tiny contributions that separately rounded cumulative masses and effective
+sample size can lose. The fallback reuses the sorted workspace and leaves the
+quantile definition unchanged. It costs more arithmetic per query; ordinary
+weight ratios use the usual path. Normalized weights can still round or underflow,
+and two-term arithmetic does not guarantee relative accuracy near every zero.
+
 Arithmetic uses real, whose precision depends on the compiler and platform.
 These safeguards do not guarantee uniform accuracy in extreme beta tails.
 
@@ -5494,4 +5652,86 @@ version(mir_stat_test)
     assert((weightedQuantile!(WeightedQuantileAlgo.averagedInverseCDF)(values[], weights[], boundary)) == 4.5);
     assert((weightedQuantile!(WeightedQuantileAlgo.averagedInverseCDF)(values[], weights[], above)) == 5);
     assert(rcWeightedQuantile(values[], weights[], above) == 5);
+}
+
+// Exact-rational references evaluated for binary input weights, with no absolute
+// tolerance that could let a lost (zero) result pass. Also exercise reflected
+// windows, input permutation, zero-weight exclusion and batch probabilities.
+version(mir_stat_test)
+@safe pure nothrow @nogc
+unittest
+{
+    import mir.math.common: approxEqual;
+    struct Case { real tiny, endpoint, median; }
+    static immutable cases = [
+        Case(0x1p-50L, 4.440892098500645883217157197656665e-16L,
+            2.960594732333753403999368518280760e-16L),
+        Case(0x1p-70L, 4.235164736271501695359549123741567e-22L,
+            2.823443157514334463563466551644588e-22L),
+        Case(0x1p-100L, 3.944304526105059027058642826429489e-31L,
+            2.629536350736706018039095217611362e-31L)];
+    foreach (c; cases)
+    foreach (scale; [0x1p-400L, 1.0L, 0x1p400L])
+    {
+        real[3] points = [0, 1, 2], weights = [scale, c.tiny * scale, scale];
+        assert(rcWeightedQuantile!(WeightedQuantileAlgo.type7)(points, weights, c.tiny)
+            .approxEqual(c.endpoint, 1e-14L, 0.0L));
+        real[5] x = [2, -1, 1, 0, real.nan];
+        real[5] w = [c.tiny * scale, scale, scale, scale, 0];
+        real[5] reflected = [-2, 1, -1, 0, real.nan];
+        static foreach (algorithm; [WeightedQuantileAlgo.type7, WeightedQuantileAlgo.type8])
+        {{
+            alias q = rcWeightedQuantile!algorithm;
+            assert(q(x, w, 0.5L).approxEqual(c.median, 1e-14L, 0.0L));
+            assert(q(reflected, w, 0.5L).approxEqual(-c.median, 1e-14L, 0.0L));
+            auto results = q(x, w, 0.0L, 0.5L, 1.0L);
+            assert(results[0] == -1 && results[2] == 2);
+            assert(results[1].approxEqual(c.median, 1e-14L, 0.0L));
+            foreach (probability; [0.125L, 0.25L, 0.75L, 0.875L])
+                assert(q(x, w, probability).approxEqual(-q(reflected, w, 1 - probability), 1e-14L, 0.0L));
+        }}
+    }
+}
+
+// The fallback preserves GC/custom output ownership and scratch cleanup.
+version(mir_stat_test)
+@system pure nothrow
+unittest
+{
+    import mir.math.common: approxEqual;
+    import std.experimental.allocator: dispose;
+    real[4] x = [-1, 0, 1, 2], w = [1, 1, 1, 0x1p-70L];
+    real[3] probabilities = [0, 0.5L, 1];
+    enum expected = 2.823443157514334463563466551644588e-22L;
+    static foreach (algorithm; [WeightedQuantileAlgo.type7, WeightedQuantileAlgo.type8])
+    {{
+        assert(weightedQuantile!algorithm(x, w, 0.5L).approxEqual(expected, 1e-14L, 0.0L));
+        QuantileTestAllocator!() allocator;
+        auto result = makeWeightedQuantile!algorithm(allocator, x, w, probabilities);
+        assert(allocator.allocations == 2 && allocator.releases == 1);
+        assert(result[0] == -1 && result[2] == 2);
+        assert(result[1].approxEqual(expected, 1e-14L, 0.0L));
+        allocator.dispose(result.field);
+        assert(allocator.releases == 2);
+    }}
+}
+
+// Early fallback returns retain the same failure cleanup as ordinary queries.
+version(mir_stat_test)
+@system pure
+unittest
+{
+    import std.exception: assertThrown;
+    import core.exception: AssertError;
+    real[4] values = [-1, 0, 1, 2], weights = [1, 1, 1, 0x1p-70L];
+    static foreach (algorithm; [WeightedQuantileAlgo.type7, WeightedQuantileAlgo.type8])
+    {{
+        QuantileTestAllocator!true failing;
+        failing.failAt = 2;
+        assertThrown!Exception(makeWeightedQuantile!algorithm(failing, values, weights));
+        assert(failing.allocations == 2 && failing.releases == 1);
+        QuantileTestAllocator!() invalid;
+        assertThrown!AssertError(makeWeightedQuantile!algorithm(invalid, values, weights, 0.5L, 2.0L));
+        assert(invalid.allocations == 2 && invalid.releases == 2);
+    }}
 }
