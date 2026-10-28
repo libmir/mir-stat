@@ -618,8 +618,10 @@ unittest
 Computes the beta log probability density function (LPDF).
 
 When both shapes are at least 16, a centered calculation avoids subtracting
-large, nearly equal logarithms near the peak. Smaller shapes retain the
-direct logarithmic formula and its accuracy limits.
+large, nearly equal logarithms near the peak. When only one shape is large,
+the beta normalization is evaluated without subtracting large gamma logarithms.
+Two small normal shapes retain the direct normalization and its accuracy limits;
+subnormal shapes use the gamma recurrence to keep that normalization finite.
 
 Returns the natural logarithm of the density.
 
@@ -669,6 +671,31 @@ unittest
     assert(0.5.betaLPDF(1, 1).approxEqual(log(betaPDF(0.5, 1, 1))));
     assert(0.75.betaLPDF(1, 2).approxEqual(log(betaPDF(0.75, 1, 2))));
     assert(0.25.betaLPDF(0.5, 4).approxEqual(log(betaPDF(0.25, 0.5, 4))));
+}
+
+// A unit shape exposes normalization loss directly, including near an endpoint.
+version(mir_stat_test)
+@safe pure nothrow @nogc
+unittest
+{
+    import std.meta: AliasSeq;
+    import std.math: log, log1p, nextDown;
+    import mir.math.common: approxEqual;
+    static foreach (T; AliasSeq!(float, double, real))
+    {{
+        foreach (a; [T(16), T(1e10), T(1e16), T.max / 4])
+        {
+            assert(approxEqual(betaLPDF(T(1), a, T(1)), log(a),
+                64 * T.epsilon, T(0)));
+            assert(approxEqual(betaLPDF(T(0), T(1), a), log(a),
+                64 * T.epsilon, T(0)));
+            const T x = nextDown(T(1));
+            // B(a,1)=1/a, so log density is log(a)+(a-1)*log(x).
+            const T expected = log(a) + (a - 1) * log1p(x - 1);
+            assert(approxEqual(betaLPDF(x, a, T(1)), expected,
+                64 * T.epsilon, T(0)));
+        }
+    }}
 }
 
 // Stirling's log-gamma correction, with r=1/z and z>=16. The first omitted
