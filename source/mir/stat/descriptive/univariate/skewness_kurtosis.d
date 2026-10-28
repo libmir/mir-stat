@@ -1869,7 +1869,9 @@ unittest
     assert(x.skewness.approxEqual((117.005859 / 12) / pow(54.765625 / 11, 1.5) * (12.0 ^^ 2) / (11.0 * 10.0)));
 }
 
-/// Column skewness of matrix
+/// Column skewness of matrix.
+/// The mapped result is lazy; see the $(MREF mir,stat,descriptive,univariate)
+/// overview for storing results in allocated or caller-provided memory.
 version(mir_stat_test)
 @safe pure
 unittest
@@ -1889,11 +1891,6 @@ unittest
     // Use byDim or alongDim with map to compute skewness of row/column.
     assert(x.byDim!1.map!skewness.all!approxEqual(result));
     assert(x.alongDim!0.map!skewness.all!approxEqual(result));
-
-    // FIXME
-    // Without using map, computes the skewness of the whole slice
-    // assert(x.byDim!1.skewness == x.sliced.skewness);
-    // assert(x.alongDim!0.skewness == x.sliced.skewness);
 }
 
 /// Can also set algorithm type
@@ -4378,7 +4375,9 @@ unittest
     assert(x.kurtosis.approxEqual((792.784119 / 12) / pow(54.765625 / 12, 2.0) * (11.0 * 13.0) / (10.0 * 9.0) - 3.0 * (11.0 * 11.0) / (10.0 * 9.0)));
 }
 
-/// Column kurtosis of matrix
+/// Column kurtosis of matrix.
+/// The mapped result is lazy; see the $(MREF mir,stat,descriptive,univariate)
+/// overview for storing results in allocated or caller-provided memory.
 version(mir_stat_test)
 @safe pure
 unittest
@@ -4399,11 +4398,6 @@ unittest
     // Use byDim or alongDim with map to compute kurtosis of row/column.
     assert(x.byDim!1.map!kurtosis.all!approxEqual(result));
     assert(x.alongDim!0.map!kurtosis.all!approxEqual(result));
-
-    // FIXME
-    // Without using map, computes the kurtosis of the whole slice
-    // assert(x.byDim!1.kurtosis == x.sliced.kurtosis);
-    // assert(x.alongDim!0.kurtosis == x.sliced.kurtosis);
 }
 
 /// Can also set algorithm type

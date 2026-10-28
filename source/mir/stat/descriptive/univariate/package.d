@@ -9,6 +9,76 @@ Note that used specialized summing algorithms execute more primitive operations
 than vanilla summation. Therefore, if in certain cases maximum speed is required
 at expense of precision, one can use $(REF_ALTTEXT $(TT Summation.fast), Summation.fast, mir, math, sum)$(NBSP).
 
+## Grouped reductions and result storage
+
+Use $(NDSLICEREF topology, byDim) or
+$(NDSLICEREF topology, alongDim) to select groups, then
+$(NDSLICEREF topology, map) to calculate a statistic for each group.
+For a matrix, `x.byDim!1.map!mean` calculates column means, whereas
+`x.mean` returns one mean over the numeric matrix.
+
+The mapped view is lazy: accessing an element calculates that group's statistic.
+Repeated access can repeat the calculation, and changes to the input affect later
+results. Keep the underlying observations alive while using the view.
+To calculate once and retain results, use `slice` for GC-managed storage,
+`rcslice` for reference-counted storage, `makeSlice` for a custom allocator,
+or assign into an existing output slice. These choices use the same statistical
+calculation; they differ in storage and ownership.
+
+`sliced` creates or reshapes a view; it does not materialize a mapped result.
+The following example shows all four ways to store the calculated column means.
+The caller-provided output must have the matching shape and should not overlap
+input observations that have yet to be read.
+
+------
+import mir.stat.descriptive.univariate.means : mean;
+import mir.ndslice.slice : sliced;
+import mir.ndslice.topology : byDim, alongDim, map;
+import mir.ndslice.allocation : slice, rcslice, makeSlice;
+import std.experimental.allocator : dispose;
+import std.experimental.allocator.mallocator : Mallocator;
+
+double[6] data = [1, 2, 3, 4, 5, 6];
+auto x = data[].sliced(2, 3);
+assert(x.mean == 3.5); // One scalar over the whole matrix.
+
+auto means = x.byDim!1.map!mean;
+assert(means == [2.5, 3.5, 4.5]);
+assert(x.alongDim!0.map!mean == means);
+
+auto gcMeans = means.slice;
+auto rcMeans = means.rcslice;
+auto customMeans = makeSlice(Mallocator.instance, means);
+scope(exit) Mallocator.instance.dispose(customMeans.field);
+
+double[3] buffer;
+auto output = buffer[].sliced;
+output[] = means;
+
+assert(gcMeans == [2.5, 3.5, 4.5]);
+assert(rcMeans == gcMeans);
+assert(customMeans == gcMeans);
+assert(output == gcMeans);
+
+// The view reads current input; stored results retain calculated values.
+data[0] = 101;
+assert(means[0] == 52.5);
+assert(gcMeans[0] == 2.5);
+assert(rcMeans[0] == 2.5);
+assert(customMeans[0] == 2.5);
+assert(output[0] == 2.5);
+
+------
+
+For weighted statistics, apply the weights explicitly within each group, for
+example `x.byDim!1.map!(group => group.wmean(w))`. Here `w` supplies one
+weight per row and is reused for each column; it is not implicitly broadcast
+over the matrix. The same storage choices apply to the mapped results.
+
+Direct grouped overloads are a separate proposal tracked in
+$(LINK2 https://github.com/libmir/mir-stat/issues/226, issue 226).
+No new overload or allocation family is needed to use the composition above.
+
 $(SCRIPT inhibitQuickIndex = 1;)
 $(SCRIPT
 // Retain links to declarations and members from the former single-module page.
@@ -261,4 +331,46 @@ unittest
     assert(mir.stat.descriptive.univariate.entropy([1.0]) == 0);
     assert(legacy.median([1.0, 3.0]) == 2);
     assert(legacy.rawMoment!1([1.0, 3.0]) == 2);
+}
+
+// Keep the grouped-reduction overview example executable.
+version(mir_stat_test)
+unittest
+{
+    import mir.stat.descriptive.univariate.means : mean;
+    import mir.ndslice.slice : sliced;
+    import mir.ndslice.topology : byDim, alongDim, map;
+    import mir.ndslice.allocation : slice, rcslice, makeSlice;
+    import std.experimental.allocator : dispose;
+    import std.experimental.allocator.mallocator : Mallocator;
+
+    double[6] data = [1, 2, 3, 4, 5, 6];
+    auto x = data[].sliced(2, 3);
+    assert(x.mean == 3.5); // One scalar over the whole matrix.
+
+    auto means = x.byDim!1.map!mean;
+    assert(means == [2.5, 3.5, 4.5]);
+    assert(x.alongDim!0.map!mean == means);
+
+    auto gcMeans = means.slice;
+    auto rcMeans = means.rcslice;
+    auto customMeans = makeSlice(Mallocator.instance, means);
+    scope(exit) Mallocator.instance.dispose(customMeans.field);
+
+    double[3] buffer;
+    auto output = buffer[].sliced;
+    output[] = means;
+
+    assert(gcMeans == [2.5, 3.5, 4.5]);
+    assert(rcMeans == gcMeans);
+    assert(customMeans == gcMeans);
+    assert(output == gcMeans);
+
+    // The view reads current input; stored results retain calculated values.
+    data[0] = 101;
+    assert(means[0] == 52.5);
+    assert(gcMeans[0] == 2.5);
+    assert(rcMeans[0] == 2.5);
+    assert(customMeans[0] == 2.5);
+    assert(output[0] == 2.5);
 }

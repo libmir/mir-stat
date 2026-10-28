@@ -1495,7 +1495,9 @@ unittest
     assert(x.variance.approxEqual(54.76562 / 11));
 }
 
-/// Column variance of matrix
+/// Column variance of matrix.
+/// The mapped result is lazy; see the $(MREF mir,stat,descriptive,univariate)
+/// overview for storing results in allocated or caller-provided memory.
 version(mir_stat_test)
 @safe pure
 unittest
@@ -1515,11 +1517,6 @@ unittest
     // Use byDim or alongDim with map to compute variance of row/column.
     assert(x.byDim!1.map!variance.all!approxEqual(result));
     assert(x.alongDim!0.map!variance.all!approxEqual(result));
-
-    // FIXME
-    // Without using map, computes the variance of the whole slice
-    // assert(x.byDim!1.variance == x.sliced.variance);
-    // assert(x.alongDim!0.variance == x.sliced.variance);
 }
 
 /// Can also set algorithm type
@@ -2076,7 +2073,9 @@ unittest
     assert(x.standardDeviation.approxEqual(sqrt(54.76562 / 11)));
 }
 
-/// Column standard deviation of matrix
+/// Column standard deviation of matrix.
+/// The mapped result is lazy; see the $(MREF mir,stat,descriptive,univariate)
+/// overview for storing results in allocated or caller-provided memory.
 version(mir_stat_test)
 @safe pure
 unittest
@@ -2096,11 +2095,6 @@ unittest
     // Use byDim or alongDim with map to compute standardDeviation of row/column.
     assert(x.byDim!1.map!standardDeviation.all!approxEqual(result));
     assert(x.alongDim!0.map!standardDeviation.all!approxEqual(result));
-
-    // FIXME
-    // Without using map, computes the standardDeviation of the whole slice
-    // assert(x.byDim!1.standardDeviation == x.sliced.standardDeviation);
-    // assert(x.alongDim!0.standardDeviation == x.sliced.standardDeviation);
 }
 
 /// Can also set algorithm type
@@ -2393,7 +2387,9 @@ unittest
     assert(x.dispersion.approxEqual(54.76562 / 12));
 }
 
-/// Column dispersion of matrix
+/// Column dispersion of matrix.
+/// The mapped result is lazy; see the $(MREF mir,stat,descriptive,univariate)
+/// overview for storing results in allocated or caller-provided memory.
 version(mir_stat_test)
 @safe pure
 unittest
@@ -2413,11 +2409,6 @@ unittest
     // Use byDim or alongDim with map to compute dispersion of row/column.
     assert(x.byDim!1.map!dispersion.all!approxEqual(result));
     assert(x.alongDim!0.map!dispersion.all!approxEqual(result));
-
-    // FIXME
-    // Without using map, computes the dispersion of the whole slice
-    // assert(x.byDim!1.dispersion == x.sliced.dispersion);
-    // assert(x.alongDim!0.dispersion == x.sliced.dispersion);
 }
 
 /// Can also set functions to change type of dispersion that is used
