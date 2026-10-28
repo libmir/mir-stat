@@ -23,6 +23,54 @@ from `mir.stat.internal.linearAlgebra.quadratic`; it allocates no workspace.
 Pass a `symmetricView` to select one matrix triangle.
 Quadratic forms also accept indefinite matrices and may return negative values.
 
+API selection:
+$(BOOKTABLE ,
+    $(TR $(TH Input) $(TH Entry point) $(TH Result))
+    $(TR $(TD One observation vector)
+         $(TD `mahalanobis` or `mahalanobisSquared`)
+         $(TD Scalar))
+    $(TR $(TD Supported rectangular `byDim` or `alongDim` selection of observation vectors)
+         $(TD Ordinary function names)
+         $(TD One eagerly calculated result per selected observation))
+    $(TR $(TD Plain matrix with observations in columns)
+         $(TD Explicit `Batch` functions)
+         $(TD One eagerly calculated result per column))
+)
+Selection order determines result order. For a matrix, `byDim!1` / `alongDim!0`
+selects columns and `byDim!0` / `alongDim!1` selects rows. Selections must be
+rectangular collections of observation vectors; arbitrary nested or jagged
+collections and higher-rank selections are not accepted.
+
+For vector calls, GC/RC/custom allocation choices concern scratch storage.
+For allocating batch and selection calls, they concern the result as well as
+scratch. `WithWorkspace` variants use caller-provided output and scratch
+buffers (vector calls still return a scalar).
+
+The same observations can be selected in either orientation:
+------
+import mir.stat.distance;
+import mir.ndslice.slice: sliced;
+import mir.ndslice.dynamic: transposed;
+import mir.ndslice.topology: byDim, alongDim;
+
+double[6] data = [2, 3, 4, 0, 0, 6];
+double[4] covariance = [4, 0, double.nan, 9];
+double[2] center = [0, 0];
+auto rows = data[].sliced(3, 2);
+auto columns = rows.transposed;
+auto metric = covariance[].sliced(2, 2);
+auto byRows = mahalanobisSquared(rows.byDim!0, center[], metric);
+auto byColumns = mahalanobisSquared(columns.alongDim!0, center[], metric);
+assert(byRows == [2, 4, 4] && byColumns == byRows);
+assert(mahalanobisSquaredBatch(columns, center[], metric) == byRows);
+------
+
+Retain a covariance factor and select `MahalanobisMatrix.covarianceCholesky`
+to reuse it across calls without repeating factorization. The other
+representations remain `covariance`, `inverseCovariance`, and
+`inverseCovarianceCholesky`. The last means a Cholesky factor of the precision
+matrix, not simply the inverse of a covariance factor.
+
 Choose `mahalanobis` or `mahalanobisSquared` for GC scratch storage, their `rc`
 variants for temporary reference-counted storage, `make` variants for a custom
 allocator, or `WithWorkspace` variants for reusable caller storage. Vector calls return
@@ -100,10 +148,10 @@ import std.traits: Unqual, isFloatingPoint;
 /// Representation of the supplied covariance or precision matrix.
 enum MahalanobisMatrix
 {
-    /// Symmetric positive-definite covariance S. Factorized on each call.
+    /// Symmetric positive-definite covariance S. Factorized once per call, including a whole batch.
     covariance,
-    /// Upper U with S = U.transpose * U, or lower L with S = L * L.transpose.
-    cholesky,
+    /// Covariance factor reused without factorization: upper U with S = U.transpose * U, or lower L with S = L * L.transpose.
+    covarianceCholesky,
     /// Symmetric positive-definite precision matrix P = inverse(S).
     inverseCovariance,
     /// Upper R with P = R.transpose * R, or lower Q with P = Q * Q.transpose.
@@ -127,13 +175,20 @@ version(mir_stat_test_distance)
     auto covarianceFactor = covarianceFactorData[].sliced(2, 2);
     auto precisionFactor = precisionFactorData[].sliced(2, 2);
     auto fromCovariance = rcMahalanobisSquared(x[], center[], covariance);
-    auto fromFactor = rcMahalanobisSquared!(MahalanobisMatrix.cholesky)(x[], center[], covarianceFactor);
+    auto fromFactor = rcMahalanobisSquared!(MahalanobisMatrix.covarianceCholesky)(x[], center[], covarianceFactor);
     auto fromPrecision = rcMahalanobisSquared!(MahalanobisMatrix.inverseCovariance)(x[], center[], precision);
     auto fromPrecisionFactor = rcMahalanobisSquared!(MahalanobisMatrix.inverseCovarianceCholesky)(x[], center[], precisionFactor);
     assert(fabs(fromCovariance - 0.8125) < 1e-14);
     assert(fabs(fromFactor - fromCovariance) < 1e-14);
     assert(fabs(fromPrecision - fromCovariance) < 1e-14);
     assert(fabs(fromPrecisionFactor - fromCovariance) < 1e-14);
+    // Keep the same factor for a later observation; no decomposition is repeated.
+    double[2] next = [2, 4];
+    auto nextSquared = rcMahalanobisSquared!(MahalanobisMatrix.covarianceCholesky)(
+        next[], center[], covarianceFactor);
+    assert(nextSquared == 3.25);
+    assert(covarianceFactor[0,0] == 2 && covarianceFactor[0,1] == 1 &&
+        covarianceFactor[1,1] == 2);
 }
 
 /// Select lower-triangle storage without importing internal linear algebra.
@@ -413,7 +468,7 @@ Element!X mahalanobisWithWorkspace(MahalanobisMatrix form = MahalanobisMatrix.co
     assert(f.shape == a.shape, "Incorrect Mahalanobis factor workspace shape");
     import mir.stat.internal.linearAlgebra.cholesky: choleskyDecomposeInto;
     choleskyDecomposeInto!triangle(a, f);
-    return prepared!(false, MahalanobisMatrix.cholesky, triangle)(x.asView, center.asView, f, work.asView);
+    return prepared!(false, MahalanobisMatrix.covarianceCholesky, triangle)(x.asView, center.asView, f, work.asView);
 }
 
 /// Reuse vector storage with an already computed covariance Cholesky factor.
@@ -423,7 +478,7 @@ version(mir_stat_test_distance)
     import mir.ndslice.slice: sliced;
     double[2] x = [3,4], center = [0,0], work;
     double[4] factor = [3,0,double.nan,4];
-    auto result = mahalanobisWithWorkspace!(MahalanobisMatrix.cholesky)(
+    auto result = mahalanobisWithWorkspace!(MahalanobisMatrix.covarianceCholesky)(
         x[].sliced, center[].sliced, factor[].sliced(2,2), work[].sliced);
     assert(result > 1.414 && result < 1.415);
 }
@@ -463,7 +518,7 @@ Element!X mahalanobisSquaredWithWorkspace(MahalanobisMatrix form = MahalanobisMa
     assert(f.shape == a.shape, "Incorrect Mahalanobis factor workspace shape");
     import mir.stat.internal.linearAlgebra.cholesky: choleskyDecomposeInto;
     choleskyDecomposeInto!triangle(a, f);
-    return prepared!(true, MahalanobisMatrix.cholesky, triangle)(x.asView, center.asView, f, work.asView);
+    return prepared!(true, MahalanobisMatrix.covarianceCholesky, triangle)(x.asView, center.asView, f, work.asView);
 }
 
 /// Reuse vector storage with an already computed covariance Cholesky factor.
@@ -473,7 +528,7 @@ version(mir_stat_test_distance)
     import mir.ndslice.slice: sliced;
     double[2] x = [3,4], center = [0,0], work;
     double[4] factor = [3,0,double.nan,4];
-    auto result = mahalanobisSquaredWithWorkspace!(MahalanobisMatrix.cholesky)(
+    auto result = mahalanobisSquaredWithWorkspace!(MahalanobisMatrix.covarianceCholesky)(
         x[].sliced, center[].sliced, factor[].sliced(2,2), work[].sliced);
     assert(result == 2);
 }
@@ -569,7 +624,7 @@ private Element!X prepared(bool squared, MahalanobisMatrix form, TrianglePolicy 
         foreach (i; 0 .. metric.length!0) foreach (j; 0 .. metric.length!1)
             if (triangle == TrianglePolicy.upper ? j >= i : j <= i)
                 assert(isFinite(metric[i,j]), "Mahalanobis factor must be finite");
-        static if (form == MahalanobisMatrix.cholesky)
+        static if (form == MahalanobisMatrix.covarianceCholesky)
         {
             // S=U' U => solve U' z=d. S=L L' => solve L z=d.
             static if (triangle == TrianglePolicy.upper) auto a = metric.universal.transposed;
@@ -629,7 +684,7 @@ version(mir_stat_test_distance)
     import mir.ndslice.allocation: mininitRcslice;
     static foreach (T; AliasSeq!(float,double,real))
     static foreach (triangle; [TrianglePolicy.upper,TrianglePolicy.lower])
-    static foreach (form; [MahalanobisMatrix.covariance,MahalanobisMatrix.cholesky,
+    static foreach (form; [MahalanobisMatrix.covariance,MahalanobisMatrix.covarianceCholesky,
         MahalanobisMatrix.inverseCovariance,MahalanobisMatrix.inverseCovarianceCholesky])
     {{
         foreach (transposeStorage; [false,true])
@@ -643,7 +698,7 @@ version(mir_stat_test_distance)
                 metric[0,0] = 4; metric[1,1] = 5;
                 metric[0,1] = metric[1,0] = 2;
             }
-            else static if (form == MahalanobisMatrix.cholesky)
+            else static if (form == MahalanobisMatrix.covarianceCholesky)
             {
                 metric[0,0] = 2; metric[1,1] = 2;
                 metric[0,1] = metric[1,0] = 1;
@@ -711,9 +766,9 @@ version(mir_stat_test_distance)
     double[2] x = [1e200,1e200], center = [0,0], work;
     auto a = identity[].sliced(2,2);
     // Vector arrays are accepted directly; matrices remain ndslices.
-    auto distance = mahalanobisWithWorkspace!(MahalanobisMatrix.cholesky)(x[],center[],a,work[]);
+    auto distance = mahalanobisWithWorkspace!(MahalanobisMatrix.covarianceCholesky)(x[],center[],a,work[]);
     assert(isFinite(distance) && fabs(distance/1e200 - 1.4142135623730951) < 1e-15);
-    assert(mahalanobisSquaredWithWorkspace!(MahalanobisMatrix.cholesky)(x[],center[],a,work[]) == double.infinity);
+    assert(mahalanobisSquaredWithWorkspace!(MahalanobisMatrix.covarianceCholesky)(x[],center[],a,work[]) == double.infinity);
     x[] = 1e-200;
     distance = mahalanobisWithWorkspace!(MahalanobisMatrix.inverseCovarianceCholesky)(x[],center[],a,work[]);
     assert(distance > 0 && fabs(distance/1e-200 - 1.4142135623730951) < 1e-15);
@@ -743,12 +798,12 @@ version(mir_stat_test_distance)
     assert(makeMahalanobisSquared(allocator,x[],center[],metric) == 0.8125);
     assert(allocator.allocations == 2 && allocator.releases == 2);
     data[] = [2,1,double.nan,2];
-    assert(makeMahalanobisSquared!(MahalanobisMatrix.cholesky)(allocator,x[],center[],metric) == 0.8125);
+    assert(makeMahalanobisSquared!(MahalanobisMatrix.covarianceCholesky)(allocator,x[],center[],metric) == 0.8125);
     assert(allocator.allocations == 3 && allocator.releases == 3);
     auto failure = new Exception("input failed");
     /// Throw the test exception to verify cleanup after an input iterator fails.
     double fail(double value) { throw failure; }
-    assertThrown!Exception(makeMahalanobisSquared!(MahalanobisMatrix.cholesky)(allocator,x[],center[],metric.map!fail));
+    assertThrown!Exception(makeMahalanobisSquared!(MahalanobisMatrix.covarianceCholesky)(allocator,x[],center[],metric.map!fail));
     assert(allocator.allocations == 4 && allocator.releases == 4);
     assertThrown!Exception(makeMahalanobisSquared(allocator,x[],center[],metric.map!fail));
     assert(allocator.allocations == 6 && allocator.releases == 6);
@@ -764,7 +819,7 @@ version(mir_stat_test_distance)
     assertThrown!Exception(makeMahalanobisSquared!(inverse,TrianglePolicy.upper,Summation.fast)(allocator,x[],center[],metric.map!fail));
     assert(allocator.allocations == 12 && allocator.releases == 12);
     double[1] wrongWork;
-    assertThrown!AssertError(mahalanobisSquaredWithWorkspace!(MahalanobisMatrix.cholesky)(x[],center[],metric,wrongWork[]));
+    assertThrown!AssertError(mahalanobisSquaredWithWorkspace!(MahalanobisMatrix.covarianceCholesky)(x[],center[],metric,wrongWork[]));
 }
 
 version(mir_stat_test_distance)
@@ -797,11 +852,11 @@ version(mir_stat_test_distance)
             precisionView = precisionView.transposed;
         }
         auto precisionFactor = rcCholeskyDecompose!triangle(precisionView);
-        static foreach (form; [MahalanobisMatrix.covariance, MahalanobisMatrix.cholesky,
+        static foreach (form; [MahalanobisMatrix.covariance, MahalanobisMatrix.covarianceCholesky,
             MahalanobisMatrix.inverseCovariance, MahalanobisMatrix.inverseCovarianceCholesky])
         {{
             static if (form == MahalanobisMatrix.covariance) auto metric = covarianceView;
-            else static if (form == MahalanobisMatrix.cholesky) auto metric = factorView;
+            else static if (form == MahalanobisMatrix.covarianceCholesky) auto metric = factorView;
             else static if (form == MahalanobisMatrix.inverseCovariance) auto metric = precisionView;
             else auto metric = precisionFactor;
             auto squared = rcMahalanobisSquared!(form, triangle)(x[], center[], metric);
@@ -822,7 +877,7 @@ version(mir_stat_test_distance)
     {{
         T[] x, center, work;
         Slice!(T*, 2) metric, factorWork;
-        static foreach (form; [MahalanobisMatrix.covariance, MahalanobisMatrix.cholesky,
+        static foreach (form; [MahalanobisMatrix.covariance, MahalanobisMatrix.covarianceCholesky,
             MahalanobisMatrix.inverseCovariance, MahalanobisMatrix.inverseCovarianceCholesky])
         {
             static assert(is(typeof(mahalanobis!form(x, center, metric)) == T));
@@ -1142,7 +1197,7 @@ private void preparedBatch(bool squared, MahalanobisMatrix form, TrianglePolicy 
     else
     {
         import mir.stat.internal.linearAlgebra.triangular: triangularMatrixInPlace;
-        static if (form == MahalanobisMatrix.cholesky)
+        static if (form == MahalanobisMatrix.covarianceCholesky)
         {
             static if (triangle == TrianglePolicy.upper) auto a = metric.universal.transposed;
             else auto a = metric.universal;
@@ -1275,7 +1330,7 @@ void mahalanobisBatchWithWorkspace(MahalanobisMatrix form = MahalanobisMatrix.co
         import mir.stat.internal.linearAlgebra.cholesky: choleskyDecomposeInto;
         assert(ev.shape == mv.shape);
         choleskyDecomposeInto!triangle(mv, ev);
-        preparedBatch!(false, MahalanobisMatrix.cholesky, triangle, summation)(xv, cv, ev, rv, wv);
+        preparedBatch!(false, MahalanobisMatrix.covarianceCholesky, triangle, summation)(xv, cv, ev, rv, wv);
     }
     else
     {
@@ -1415,7 +1470,7 @@ void mahalanobisSquaredBatchWithWorkspace(MahalanobisMatrix form = MahalanobisMa
         import mir.stat.internal.linearAlgebra.cholesky: choleskyDecomposeInto;
         assert(ev.shape == mv.shape);
         choleskyDecomposeInto!triangle(mv, ev);
-        preparedBatch!(true, MahalanobisMatrix.cholesky, triangle, summation)(xv, cv, ev, rv, wv);
+        preparedBatch!(true, MahalanobisMatrix.covarianceCholesky, triangle, summation)(xv, cv, ev, rv, wv);
     }
     else
     {
@@ -1471,7 +1526,7 @@ version(mir_stat_test_distance)
     import std.math: sqrt, fabs;
     static foreach (T; AliasSeq!(float, double, real))
     static foreach (triangle; [TrianglePolicy.upper, TrianglePolicy.lower])
-    static foreach (form; [MahalanobisMatrix.covariance, MahalanobisMatrix.cholesky,
+    static foreach (form; [MahalanobisMatrix.covariance, MahalanobisMatrix.covarianceCholesky,
         MahalanobisMatrix.inverseCovariance, MahalanobisMatrix.inverseCovarianceCholesky])
     static foreach (summation; [Summation.kbn, Summation.fast])
     foreach (tx;[false, true]) foreach (tm;[false, true])
@@ -1484,7 +1539,7 @@ version(mir_stat_test_distance)
         auto metric = ms[].sliced(2, 2).universal;
         if (tm) metric = metric.transposed;
         static if (form == MahalanobisMatrix.covariance) { metric[0, 0] = 4; metric[0, 1] = metric[1, 0] = 2; metric[1, 1] = 5; }
-        else static if (form == MahalanobisMatrix.cholesky) { metric[0, 0] = 2; metric[0, 1] = metric[1, 0] = 1; metric[1, 1] = 2; }
+        else static if (form == MahalanobisMatrix.covarianceCholesky) { metric[0, 0] = 2; metric[0, 1] = metric[1, 0] = 1; metric[1, 1] = 2; }
         else static if (form == MahalanobisMatrix.inverseCovariance) { metric[0, 0] = T(5)/16; metric[0, 1] = metric[1, 0] = T(-1)/8; metric[1, 1] = T(1)/4; }
         else { metric[0, 0] = sqrt(T(5))/4; metric[0, 1] = metric[1, 0] = -1/(2*sqrt(T(5))); metric[1, 1] = 1/sqrt(T(5)); }
         metric[triangle == TrianglePolicy.upper ? 1 : 0, triangle == TrianglePolicy.upper ? 0 : 1] = T.nan;
@@ -1518,11 +1573,11 @@ version(mir_stat_test_distance)
     double[4] identity = [1, 0, double.nan, 1];
     double[2] x = [1e200, 1e200], center = [0, 0], work;
     double[1] result;
-    mahalanobisBatchWithWorkspace!(MahalanobisMatrix.cholesky)(x[].sliced(2, 1), center[], identity[].sliced(2, 2), result[], work[].sliced(2, 1));
+    mahalanobisBatchWithWorkspace!(MahalanobisMatrix.covarianceCholesky)(x[].sliced(2, 1), center[], identity[].sliced(2, 2), result[], work[].sliced(2, 1));
     assert(isFinite(result[0]) && result[0]>1e200);
     double[0] empty;
     double[3] zeros;
-    mahalanobisSquaredBatchWithWorkspace!(MahalanobisMatrix.cholesky)(empty[].sliced(0, 3), empty[], empty[].sliced(0, 0), zeros[], empty[].sliced(0, 3));
+    mahalanobisSquaredBatchWithWorkspace!(MahalanobisMatrix.covarianceCholesky)(empty[].sliced(0, 3), empty[], empty[].sliced(0, 0), zeros[], empty[].sliced(0, 3));
     assert(zeros == [0, 0, 0]);
 }
 
@@ -1533,7 +1588,7 @@ version(mir_stat_test_distance)
     import std.experimental.allocator.mallocator: Mallocator;
     import std.experimental.allocator: dispose;
     double[4] a = [1, 0, double.nan, 1]; double[2] x = [2, 3], center = [0, 0];
-    auto r = makeMahalanobisSquaredBatch!(MahalanobisMatrix.cholesky)(Mallocator.instance, x[].sliced(2, 1), center[], a[].sliced(2, 2));
+    auto r = makeMahalanobisSquaredBatch!(MahalanobisMatrix.covarianceCholesky)(Mallocator.instance, x[].sliced(2, 1), center[], a[].sliced(2, 2));
     scope(exit) Mallocator.instance.dispose(r.field);
     assert(r[0] == 13);
 }
@@ -1842,12 +1897,12 @@ version(mir_stat_test_distance)
 {
     import mir.ndslice.slice: sliced;
     import mir.ndslice.topology: alongDim, byDim;
+    import mir.ndslice.dynamic: transposed;
     double[6] rowData = [2, 3, 4, 0, 0, 6];
-    double[6] columnData = [2, 4, 0, 3, 0, 6];
     double[2] center = [0, 0];
     double[4] covariance = [4, 0, double.nan, 9];
     auto rows = rowData[].sliced(3, 2);
-    auto columns = columnData[].sliced(2, 3);
+    auto columns = rows.transposed;
     auto metric = covariance[].sliced(2, 2);
     // Batch names accept plain matrices with observations in columns.
     auto expected = mahalanobisSquaredBatch(columns, center[], metric);
@@ -1919,7 +1974,7 @@ version(mir_stat_test_distance)
     double[6] buffer, product;
     double[4] factor;
     double[3] result;
-    static foreach (form; [MahalanobisMatrix.covariance, MahalanobisMatrix.cholesky,
+    static foreach (form; [MahalanobisMatrix.covariance, MahalanobisMatrix.covarianceCholesky,
         MahalanobisMatrix.inverseCovariance, MahalanobisMatrix.inverseCovarianceCholesky])
     static foreach (summation; [Summation.kbn, Summation.fast])
     {{
@@ -1966,7 +2021,7 @@ version(mir_stat_test_distance)
     assert(rcMahalanobisSquared(retained, center[], identity[].sliced(2,2)) == [5,20,0]);
     double[][2] jagged;
     static assert(!__traits(compiles, mahalanobisSquared(jagged[], center[], identity[].sliced(2,2))));
-    static assert(!__traits(compiles, mahalanobisSquaredWithWorkspace!(MahalanobisMatrix.cholesky)(
+    static assert(!__traits(compiles, mahalanobisSquaredWithWorkspace!(MahalanobisMatrix.covarianceCholesky)(
         selected, center[], identity[].sliced(2,2), result[], buffer[].sliced(3,2))));
 }
 
@@ -2400,7 +2455,7 @@ version(mir_stat_test_distance)
     assert(rcMahalanobisSquared!(MahalanobisMatrix.inverseCovariance)(x[],center[],metric)==32);
     assert(mahalanobisSquared(x[],center[],metric.transposed)==0.8125);
     static assert(!__traits(compiles,mahalanobisSquared!(MahalanobisMatrix.covariance,TrianglePolicy.upper)(x[],center[],metric)));
-    static assert(!__traits(compiles,mahalanobisSquared!(MahalanobisMatrix.cholesky)(x[],center[],metric)));
+    static assert(!__traits(compiles,mahalanobisSquared!(MahalanobisMatrix.covarianceCholesky)(x[],center[],metric)));
 }
 
 // Structural metrics preserve axis selection, batch workspace, and summation dispatch.
@@ -2468,7 +2523,7 @@ version(mir_stat_test_distance)
     assert(rcMahalanobisSquared(retained, center[], identity[].sliced(2,2)) == [5,20,0]);
     double[][2] jagged;
     static assert(!__traits(compiles, mahalanobisSquared(jagged[], center[], identity[].sliced(2,2))));
-    static assert(!__traits(compiles, mahalanobisSquaredWithWorkspace!(MahalanobisMatrix.cholesky)(
+    static assert(!__traits(compiles, mahalanobisSquaredWithWorkspace!(MahalanobisMatrix.covarianceCholesky)(
         selected, center[], identity[].sliced(2,2), result[], buffer[].sliced(3,2))));
 }
 
@@ -2527,7 +2582,7 @@ version(mir_stat_test_distance)
     double[2] x = [1,2], center;
     double[4] values = [2,double.nan,1,3];
     auto metric = triangularView!(TrianglePolicy.lower)(values[].sliced(2,2));
-    static foreach (form; [MahalanobisMatrix.covariance, MahalanobisMatrix.cholesky,
+    static foreach (form; [MahalanobisMatrix.covariance, MahalanobisMatrix.covarianceCholesky,
         MahalanobisMatrix.inverseCovariance, MahalanobisMatrix.inverseCovarianceCholesky])
         static assert(!__traits(compiles, mahalanobisSquared!form(x[],center[],metric)));
 }

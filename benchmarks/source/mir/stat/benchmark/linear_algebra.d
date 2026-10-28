@@ -208,7 +208,7 @@ private Result[] measure(int family)(string name, size_t iterations, size_t n, u
     /// Measure squared distance including GC scratch allocation and covariance factorization.
     double covarianceGC() { return mahalanobisSquared(x,center,a); }
     /// Measure squared distance from a covariance factor with GC scratch.
-    double factorGC() { return mahalanobisSquared!(MahalanobisMatrix.cholesky)(x,center,factor); }
+    double factorGC() { return mahalanobisSquared!(MahalanobisMatrix.covarianceCholesky)(x,center,factor); }
     /// Measure squared distance from a precision matrix with GC scratch.
     double precisionGC() { return mahalanobisSquared!(MahalanobisMatrix.inverseCovariance)(x,center,precision); }
     /// Measure squared distance from a precision factor with GC scratch.
@@ -216,7 +216,7 @@ private Result[] measure(int family)(string name, size_t iterations, size_t n, u
     /// Measure covariance factorization and squared distance with reusable buffers.
     double covarianceWorkspace() { return mahalanobisSquaredWithWorkspace(x,center,a,work,factorWork); }
     /// Measure squared distance using a covariance factor and reusable workspace.
-    double factorWorkspace() { return mahalanobisSquaredWithWorkspace!(MahalanobisMatrix.cholesky)(x,center,factor,work); }
+    double factorWorkspace() { return mahalanobisSquaredWithWorkspace!(MahalanobisMatrix.covarianceCholesky)(x,center,factor,work); }
     /// Measure squared distance using a precision matrix and reusable workspace.
     double precisionWorkspace() { return mahalanobisSquaredWithWorkspace!(MahalanobisMatrix.inverseCovariance)(x,center,precision,work); }
     /// Measure squared distance using a precision factor and reusable workspace.
@@ -408,7 +408,7 @@ private Result[] measureBatch(bool distance)(string name, size_t iterations, siz
             static if (batch) quadraticFormBatchInto!summation(x, symmetricView(metric), result, work);
             else foreach (j;0 .. columns) result[j] = quadraticFormWithWorkspace!summation(xc[j], symmetricView(metric), wc[j]);
         } else {
-            static if (form == MahalanobisMatrix.cholesky) auto m = factor;
+            static if (form == MahalanobisMatrix.covarianceCholesky) auto m = factor;
             else static if (form == MahalanobisMatrix.inverseCovarianceCholesky) auto m = precisionFactor;
             else auto m = metric;
             static if (batch) {
@@ -428,7 +428,7 @@ private Result[] measureBatch(bool distance)(string name, size_t iterations, siz
     }
     static if (!distance) alias functions = AliasSeq!(run!false, run!true,
         run!(false, MahalanobisMatrix.inverseCovariance, Summation.fast), run!(true, MahalanobisMatrix.inverseCovariance, Summation.fast));
-    else alias functions = AliasSeq!(run!(false, MahalanobisMatrix.cholesky), run!(true, MahalanobisMatrix.cholesky),
+    else alias functions = AliasSeq!(run!(false, MahalanobisMatrix.covarianceCholesky), run!(true, MahalanobisMatrix.covarianceCholesky),
         run!false, run!true, run!(false, MahalanobisMatrix.inverseCovariance, Summation.fast), run!(true, MahalanobisMatrix.inverseCovariance, Summation.fast),
         run!(false, MahalanobisMatrix.inverseCovarianceCholesky), run!(true, MahalanobisMatrix.inverseCovarianceCholesky));
     bool[functions.length] enabled;
