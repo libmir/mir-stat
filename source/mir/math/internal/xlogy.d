@@ -75,3 +75,19 @@ unittest
     assert(xlog1py(0.0, 2) == 0);
     assert(xlog1py(0.5, 4).approxEqual(0.5 * log(1 + 4.0)));
 }
+
+// A large multiplier must not amplify an increment already lost by log1p.
+version(mir_stat_test)
+@safe pure nothrow @nogc
+unittest
+{
+    import std.meta: AliasSeq;
+    import mir.math.common: approxEqual;
+    static foreach (T; AliasSeq!(float, double, real))
+    {
+        assert(approxEqual(xlog1py(1 / T.epsilon, T.epsilon / 16),
+            T(1) / 16, 4 * T.epsilon, T(0)));
+        assert(approxEqual(xlog1py(1 / T.epsilon, -T.epsilon / 16),
+            -T(1) / 16, 4 * T.epsilon, T(0)));
+    }
+}

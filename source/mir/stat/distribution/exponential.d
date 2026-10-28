@@ -309,6 +309,20 @@ unittest
     assert(0.1175031.exponentialInvCDF(0.5).approxEqual(0.25));
 }
 
+// Scaling a tiny probability must preserve a representable quantile.
+version(mir_stat_test)
+@safe pure nothrow @nogc
+unittest
+{
+    import std.meta: AliasSeq;
+    import mir.math.common: approxEqual;
+    static foreach (T; AliasSeq!(float, double, real))
+    {{
+        const T p = T.epsilon / 16;
+        assert(approxEqual(exponentialInvCDF(p, p), T(1), 4 * T.epsilon, T(0)));
+    }}
+}
+
 /++
 Computes the exponential log probability density function (LPDF).
 
