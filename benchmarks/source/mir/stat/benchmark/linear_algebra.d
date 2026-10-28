@@ -16,13 +16,14 @@ import std.exception: enforce;
 import std.math: abs, isFinite;
 
 package(mir.stat):
-enum algebraNames = ["triangularLeft", "triangularRight", "quadratic", "mahalanobis", "quadraticBatch", "mahalanobisBatch", "symmetricVector", "symmetricLeft", "symmetricRight", "symmetricColumn", "symmetricRow"];
+enum algebraNames = ["crossprod", "tcrossprod", "triangularLeft", "triangularRight", "quadratic", "mahalanobis", "quadraticBatch", "mahalanobisBatch", "symmetricVector", "symmetricLeft", "symmetricRight", "symmetricColumn", "symmetricRow"];
 
 /// List the algorithms available for a validated benchmark family.
 string[] algebraAlgorithms(string name)
 {
     switch (name)
     {
+    case "crossprod", "tcrossprod": return ["general", "specialized"];
     case "symmetricVector": return ["general", "symmetric", "packed"];
     case "symmetricLeft", "symmetricRight", "symmetricColumn", "symmetricRow": return ["general", "symmetric", "packed", "generalMixed", "symmetricMixed", "packedMixed", "workspaceInput", "workspaceOutput"];
     case "quadraticBatch": return ["repeated", "batch", "repeatedFast", "batchFast"];
@@ -75,6 +76,8 @@ Result[] runAlgebra(string name, size_t iterations, size_t size, ulong seed,
     validateAlgebra(name, iterations, size, Transform.none, selected, rounds);
     switch (name)
     {
+    case "crossprod": return measureCrossProduct!true(name,iterations,size,seed,selected,rounds,warmup,transpose);
+    case "tcrossprod": return measureCrossProduct!false(name,iterations,size,seed,selected,rounds,warmup,transpose);
     case "symmetricColumn": return measureSymmetric!(false, false, true)(name,iterations,size,seed,selected,rounds,warmup,transpose);
     case "symmetricRow": return measureSymmetric!(false, true, true)(name,iterations,size,seed,selected,rounds,warmup,transpose);
     case "symmetricVector": return measureSymmetric!(true, false)(name,iterations,size,seed,selected,rounds,warmup,transpose);
@@ -597,4 +600,75 @@ private Result[] measureSymmetric(bool vector, bool right, bool singleColumn = f
         }
     }
     return results;
+}
+
+/// Compare one-triangle self-products with general multiplication using identical reusable output.
+private Result[] measureCrossProduct(bool cross)(string name, size_t iterations,
+    size_t n, ulong seed, string[] selected, size_t rounds, size_t warmup, bool transpose)
+{
+    import mir.ndslice.allocation: uninitSlice;
+    import mir.random.engine.mersenne_twister: Mt19937_64;
+    import mir.random.variable: NormalVariable;
+    enum contraction = 32;
+    enum labels = ["general", "specialized"];
+    const inputRows = cross ? contraction : n;
+    const inputColumns = cross ? n : contraction;
+    auto a = uninitSlice!double(transpose ? inputColumns : inputRows,
+        transpose ? inputRows : inputColumns).universal;
+    if (transpose) a = a.transposed;
+    static if (cross) auto rows = a.transposed;
+    else auto rows = a;
+    auto output = uninitSlice!double(n,n).universal;
+    if (transpose) output = output.transposed;
+    auto reference = uninitSlice!double(n,n);
+    auto rng = Mt19937_64(seed);
+    auto normal = NormalVariable!double(0,1);
+    /// Refresh logical row vectors and independently accumulate their products in extended precision.
+    void prepare() {
+        foreach (i;0..n) foreach (k;0..contraction) rows[i,k]=normal(rng);
+        foreach (i;0..n) foreach (j;0..n) {
+            real sum = 0;
+            foreach (k;0..contraction) sum+=cast(real)rows[i,k]*rows[j,k];
+            reference[i,j]=cast(double)sum;
+        }
+    }
+    /// Ordinary matrix multiplication provides the performance baseline.
+    double general() { mtimesInto(rows,rows.transposed,output); return output[0,0]; }
+    /// Include triangle mirroring inside the specialized operation's timed interval.
+    double specialized() {
+        static if(cross) crossprodInto(a,output);
+        else tcrossprodInto(a,output);
+        return output[0,0];
+    }
+    /// Validate every output entry outside the timed region.
+    void check(size_t index, double value) {
+        foreach(i;0..n) foreach(j;0..n)
+            enforce(isFinite(output[i,j]) && abs(output[i,j]-reference[i,j])<=1e-10*(1+abs(reference[i,j])),
+                "Incorrect cross-product benchmark result");
+    }
+    bool[2] enabled;
+    foreach(i,label;labels) enabled[i]=!selected.length || selected.canFind(label);
+    auto active=enabled[].count(true);
+    Result[] results;
+    foreach(round;0..rounds) {
+        double[2] values;
+        auto first=round%active;
+        auto elapsed=benchmarkPrepared!(general,specialized)(iterations,values,enabled,
+            BenchmarkSchedule(round==0 ? warmup : 0,first),&prepare,&check);
+        size_t ordinal;
+        foreach(i,label;labels) if(enabled[i]) {
+            results~=Result(name~(transpose ? "_transposed" : "_rowMajor"),label,values[i],elapsed[i],
+                Transform.none,round+1,(ordinal+active-first)%active+1);
+            ++ordinal;
+        }
+    }
+    return results;
+}
+
+// Check both cross-product orientations and benchmark scheduling.
+unittest
+{
+    foreach(name; ["crossprod", "tcrossprod"])
+    foreach(transpose; [false,true])
+        assert(runAlgebra(name,1,3,5489,[],2,1,transpose).length==4);
 }

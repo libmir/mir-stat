@@ -251,3 +251,15 @@ select copying the input or copying the output respectively. On the native D
 backend, workspace can be unused and these retain the normal fallback.
 `symmetricColumn` and `symmetricRow` exercise rank-two one-column and one-row
 operands with the same algorithm choices, including the real vector specialization.
+
+
+`crossprod` and `tcrossprod` compare `general` matrix multiplication with
+`specialized` one-triangle self-products, including output mirroring in timing.
+`--size` is the square output order; contraction length is 32. Input and output
+buffers are reused. Both storage layouts are supported, and every result entry
+is checked against an extended-precision reference outside timing. These cases
+measure caller-output operations, not result allocation costs.
+
+```sh
+dub run mir-stat:benchmarks --config=openblas --build=release --compiler=ldc2 -- --function=crossprod --size=256 --iterations=20 --rounds=8 --warmup=3 --format=csv
+```
