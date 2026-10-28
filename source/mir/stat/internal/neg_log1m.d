@@ -38,8 +38,8 @@ T negLog1m(T)(const T p)
     static if (__VERSION__ == 2102)
     {
         // mir.math.internal.log1p deliberately avoids this frontend's broken
-        // log1p implementation. Its log(1 + x) fallback also loses tiny p.
-        // Here -log(1 - p) = p + O(p*p), so returning p below epsilon has
+        // log1p implementation. This specialized path uses the same log
+        // correction below. Since -log(1 - p) = p + O(p*p), returning p has
         // relative truncation error below approximately epsilon / 2.
         if (p < T.epsilon)
             return p;
