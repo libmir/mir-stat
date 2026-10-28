@@ -450,7 +450,7 @@ version(mir_stat_test_linearAlgebra)
     assert(logical[0,0] == 4 && logical[1,0] == 6 && logical[0,1] == 0);
     double[0] empty;
     assert(triangularView(empty[].sliced(0,0)).asSlice.shape == [0,0]);
-    version(mir_stat_test_dip1000) static assert(!__traits(compiles, {
+    version(mir_stat_test_lifetime) static assert(!__traits(compiles, {
         @safe auto escape()
         {
             double[4] local;
