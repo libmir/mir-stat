@@ -98,8 +98,7 @@ Comparison compareAt(uint fractionBits, uint bits)(size_t k, Fp!bits p, Fp!bits 
 private @safe pure nothrow @nogc
 Comparison compare(uint bits)(size_t k, Fp!bits p, Fp!bits q)
 {
-    if (!k)
-        return fpProbabilityLess(p,q) ? Comparison.below : Comparison.reached;
+    // The search handles count zero before bracketing; all probes are positive.
     // The union bound CDF(k) <= (k+1)*p proves many out-of-range cases
     // without resolving 1-p on a fixed-point grid.
     auto trials = UInt!128(k);
