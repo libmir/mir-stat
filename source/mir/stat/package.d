@@ -9,8 +9,8 @@ $(BOOKTABLE ,
     $(TR $(TDNW $(MREF mir,stat,constant)) $(TD Constants used in other statistical modules ))
     $(TR $(TDNW $(MREF mir,stat,descriptive)) $(TD Descriptive Statistics ))
     $(TR $(TDNW $(MREF mir,stat,distribution)) $(TD Statistical Distributions ))
-    $(TR $(TDNW $(MREF mir,stat,inference)) $(TD Probability Density/Mass Functions ))
-    $(TR $(TDNW $(MREF mir,stat,transform)) $(TD Algorithms for statistical inference ))
+    $(TR $(TDNW $(MREF mir,stat,inference)) $(TD Algorithms for statistical inference ))
+    $(TR $(TDNW $(MREF mir,stat,transform)) $(TD Data transformations ))
 )
 
 ## Example
@@ -92,4 +92,18 @@ unittest
               2.0, 7.5, 5.0, 1.0, 1.5, 0.0];
     double p;
     y.dAgostinoPearsonTest(p).shouldApprox == 4.151936053369771;
+}
+
+// Categorical functions must also be available through the top-level package.
+version(mir_stat_test)
+@safe pure nothrow @nogc
+unittest
+{
+    import aggregate = mir.stat;
+    import categorical = mir.stat.distribution.categorical;
+
+    static foreach (name; ["categoricalPMF", "categoricalCDF",
+                          "categoricalCCDF", "categoricalInvCDF"])
+        static assert(__traits(isSame, __traits(getMember, aggregate, name),
+                                      __traits(getMember, categorical, name)));
 }
