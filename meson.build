@@ -40,6 +40,7 @@ sources_list = [
     'mir/stat/descriptive/histogram/internal/shared_counts',
     'mir/stat/internal/borrow',
     'mir/stat/internal/fp_probability',
+    'mir/stat/internal/fp_geometric_inverse',
     'mir/stat/internal/fp_poisson',
     'mir/stat/internal/fp_scaled_probability',
     'mir/stat/internal/gamma',

@@ -8,10 +8,12 @@ distribution has $(D 0 < p <= 1). The API also accepts $(D p == 0) as a
 limiting case with no success and zero mass at every finite count.
 
 PMF and integer-threshold CDF/CCDF accept built-in floating-point and $(D Fp)
-probabilities. Log-PMF, inverse CDF, and floating-threshold overloads use
+probabilities. The checked inverse $(LREF geometricInvCDFChecked) accepts $(D Fp)
+probabilities and returns a proven integer count or an explicit limit status.
+Log-PMF, the floating-return inverse CDF, and floating-threshold overloads use
 built-in floating-point probabilities. PMF and LPMF take a $(D size_t) count. CDF and CCDF additionally
 accept a floating-point threshold $(D x >= -1), using the integer part of
-nonnegative finite thresholds. Inverse CDF returns a floating-point count
+nonnegative finite thresholds. $(LREF geometricInvCDF) returns a floating-point count
 and has explicit endpoint conventions described below.
 
 The $(D Fp) tails use 192 extra working bits and separate intermediate exponents.
@@ -338,6 +340,157 @@ version(mir_stat_test)
     assert(geometricPMF(1, 0.5) == 0.25); // One failure, then success.
     assert(approxEqual(geometricCDF(1.5, 0.5), 0.75));
     assert(approxEqual(geometricCCDF(1.5, 0.5), 0.25));
+}
+
+/++
+Outcome of $(LREF geometricInvCDFChecked).
++/
+enum GeometricInverseStatus
+{
+    /// The count is proven to be the least nonnegative k with CDF(k) >= q.
+    found,
+    /// q == 0 and p < 1: the existing inverse convention returns -1.
+    belowSupport,
+    /// q == 1, or p == 0 and q > 0: the existing convention returns infinity.
+    infinite,
+    /// The finite mathematical count is proven to exceed maxCount.
+    countLimit,
+    /// The working precision could not prove a required comparison.
+    precisionLimit
+}
+
+/++
+Checked inverse result. Read count only when status is found, or use
+tryGetCount to extract it conditionally. Other statuses do not carry an
+approximate count. A default-initialized result is unresolved.
++/
+struct GeometricInverseResult
+{
+    /// Outcome of the search or endpoint convention.
+    GeometricInverseStatus status = GeometricInverseStatus.precisionLimit;
+    /// Exact integer count for found; otherwise unused and zero.
+    size_t count;
+
+    /// Assign the proven count and return true, or leave destination unchanged.
+    bool tryGetCount(ref size_t destination) const @safe pure nothrow @nogc
+    {
+        if (status != GeometricInverseStatus.found)
+            return false;
+        destination = count;
+        return true;
+    }
+}
+
+/++
+Computes a checked geometric inverse CDF for represented $(D Fp) probabilities.
+
+For 0 < p < 1 and 0 < q < 1, found proves that count is the least integer
+k >= 0 satisfying 1 - (1-p)^(k+1) >= q in exact arithmetic. Comparisons
+use outward-rounded fixed-point intervals, not the rounded public CDF.
+
+Endpoint precedence matches geometricInvCDF: q == 1 returns infinite first;
+then p == 1 returns found with count zero; then q == 0 returns belowSupport;
+then p == 0 returns infinite. Endpoints are independent of maxCount.
+
+The inclusive maxCount limits the returned integer, not the number of
+iterations. A countLimit result proves the finite quantile exceeds that limit;
+it is not infinity. The default limit depends on the platform's size_t width.
+Increasing maxCount may resolve countLimit, but cannot increase precision.
+
+Comparisons first use bits+128 fractional bits, then bits+512. If neither
+proves a comparison, precisionLimit is returned even if the count fits the
+limit. In particular, tiny p and q near small-count jumps can require more
+fractional bits than this budget. A precisionLimit result supplies neither
+an approximate answer nor proof that the count exceeds maxCount. Retrying
+identical inputs has the same outcome. Callers must propagate the unresolved
+result or use a separately justified method, rather than fall back to a
+rounded CDF or hardware logarithms.
+
+The search allocates no memory. At fixed probability precision, it uses
+O(log(maxCount+1)^2) wide-integer products in the worst case.
+
+Params:
+    q = finite represented cumulative probability in [0,1]
+    p = finite represented success probability in [0,1]
+    maxCount = inclusive largest count permitted in a found result
+Returns:
+    A proven count, an endpoint convention, or an explicit resource limit.
+Preconditions:
+    Both probabilities must be valid even when contracts are disabled.
++/
+@safe pure nothrow @nogc
+GeometricInverseResult geometricInvCDFChecked(uint bits)(Fp!bits q, Fp!bits p,
+    size_t maxCount = size_t.max)
+    in (fpProbabilityValid(p), "p must be finite and between zero and one")
+    in (fpProbabilityValid(q), "q must be finite and between zero and one")
+{
+    import mir.stat.internal.fp_geometric_inverse: evaluate = geometricInvCDFChecked;
+    return evaluate(q,p,maxCount);
+}
+
+/// Extract a proven count or retry with a larger inclusive count limit.
+version(mir_stat_test)
+@safe pure nothrow @nogc unittest
+{
+    import mir.bignum.fp: Fp;
+    alias T = Fp!128;
+    alias Status = GeometricInverseStatus;
+    auto result = geometricInvCDFChecked(T(0.875),T(0.5),1);
+    assert(result.status == Status.countLimit);
+    size_t count = 99;
+    assert(!result.tryGetCount(count) && count == 99);
+    result = geometricInvCDFChecked(T(0.875),T(0.5),2);
+    assert(result.status == Status.found);
+    assert(result.tryGetCount(count) && count == 2);
+}
+
+/// Endpoint conventions and unresolved precision have separate outcomes.
+version(mir_stat_test)
+@safe pure nothrow @nogc unittest
+{
+    import mir.bignum.fp: Fp;
+    alias T = Fp!128;
+    alias Status = GeometricInverseStatus;
+    assert(geometricInvCDFChecked(T(0),T(0.5)).status == Status.belowSupport);
+    assert(geometricInvCDFChecked(T(1),T(1)).status == Status.infinite);
+    const zero = geometricInvCDFChecked(T(0),T(1));
+    assert(zero.status == Status.found && zero.count == 0);
+    auto p = T(1); p.exponent -= 1100;
+    auto q = p; q.exponent += 1;
+    const unresolved = geometricInvCDFChecked(q,p);
+    assert(unresolved.status == Status.precisionLimit);
+    size_t count = 99;
+    assert(!unresolved.tryGetCount(count) && count == 99);
+}
+
+version(mir_stat_test)
+@safe pure nothrow @nogc unittest
+{
+    static foreach (bits; [64u,128u,256u]) {{
+        alias T = Fp!bits;
+        const q = T(0.75), p = T(0.5);
+        const result = geometricInvCDFChecked(q,p);
+        assert(result.status == GeometricInverseStatus.found && result.count == 1);
+    }}
+    // The established hardware-floating inverse and its return type are unchanged.
+    static assert(is(typeof(geometricInvCDF(0.75,0.5)) == double));
+    assert(geometricInvCDF(0.75,0.5) == 1);
+}
+
+version(mir_stat_test)
+@system unittest
+{
+    bool contractsEnabled;
+    void probe() in { contractsEnabled = true; } do {}
+    probe();
+    if (contractsEnabled) {
+        import core.exception: AssertError;
+        import std.exception: assertThrown;
+        foreach (value; [-1.0,2.0,double.infinity,double.nan]) {
+            assertThrown!AssertError(geometricInvCDFChecked(Fp!128(value),Fp!128(0.5)));
+            assertThrown!AssertError(geometricInvCDFChecked(Fp!128(0.5),Fp!128(value)));
+        }
+    }
 }
 
 /++
