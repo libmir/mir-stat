@@ -1,0 +1,551 @@
+/++
+Matrix cross-products with explicit orientation and result ownership.
+
+`crossprod(a)` computes `a.transpose * a`; `tcrossprod(a)` computes
+`a * a.transpose`. Two-input overloads compute `a.transpose * b` and
+`a * b.transpose`, respectively. All inputs and results are rank-two matrices.
+Represent vectors explicitly as `(n, 1)` or `(1, n)` matrices; physical storage
+order never determines mathematical orientation. Transposes do not conjugate
+complex elements, matching `mtimes`.
+
+Self-products compute one triangle with SYRK when BLAS types/layouts permit,
+then mirror it into a fully initialized symmetric result. Other types/layouts
+use a native D triangle kernel. Two-input products use ordinary multiplication;
+they do not assume symmetry even when the two arguments refer to the same data.
+No input is materialized. Computed iterators must give stable values during a
+call. Backend and reduction order can change floating-point rounding.
+
+License: $(HTTP www.apache.org/licenses/LICENSE-2.0, Apache-2.0)
+Copyright: 2026 Mir Stat Authors.
++/
+module mir.stat.internal.linearAlgebra.crossproducts;
+
+version(mir_stat_test) version = mir_stat_test_linearAlgebra;
+version(mir_stat_test_blas) version = mir_stat_test_linearAlgebra;
+
+import mir.stat.internal.linearAlgebra.allocation;
+import mir.stat.internal.linearAlgebra.types: Scalar, numericSlice;
+import mir.stat.internal.linearAlgebra.backend: hasBlas, blasNumber, nativeSlice, blasMatrix;
+import mir.stat.internal.linearAlgebra.products: mtimes, rcMtimes, makeMtimes, mtimesInto;
+import mir.ndslice.topology: universal;
+import mir.ndslice.dynamic: transposed;
+
+/// Whether an operand is a floating-point or complex rank-two slice.
+private enum matrix(A) = numericSlice!A && A.N == 2;
+/// Matrix operands must share an unqualified element type.
+private enum compatible(A, B) = matrix!A && matrix!B && is(Scalar!A == Scalar!B);
+
+/++
+Compute `a.transpose * a` into GC-managed storage.
+Input must be a rank-two floating-point or complex ndslice. Returns a square
+matrix with order `a.length!1` and the unqualified input element type.
+Both triangles are initialized; transpose does not conjugate complex values.
+An empty contraction produces zeros. Input ownership is independent of result
+ownership; const, RC, computed, transposed and strided inputs are supported.
+Only the result is allocated.
++/
+package(mir.stat) AllocatedSlice!(Allocation.gc, Scalar!A, 2)
+crossprod(A)(scope auto ref A a) if (matrix!A)
+{
+    int allocator;
+    return selfAllocated!(Allocation.gc, true)(allocator, a);
+}
+
+/++
+Compute `a.transpose * b` into GC-managed storage.
+Both inputs must be rank-two matrices with matching element types and equal
+row counts. Returns shape `(a.length!1, b.length!1)`. No symmetry is assumed,
+and complex values are not conjugated. Strides and input ownership are
+independent. Allocation and arithmetic follow `mtimes`; incompatible
+dimensions violate assertion-checked preconditions.
++/
+package(mir.stat) AllocatedSlice!(Allocation.gc, Scalar!A, 2)
+crossprod(A, B)(scope auto ref A a, scope auto ref B b)
+    if (compatible!(A, B))
+{
+    return mtimes(a.lightConst.universal.transposed, b);
+}
+
+/++
+Compute `a.transpose * a` into reference-counted storage.
+Input must be a rank-two floating-point or complex ndslice. Returns a square
+matrix with order `a.length!1` and the unqualified input element type.
+Both triangles are initialized; transpose does not conjugate complex values.
+An empty contraction produces zeros. Input ownership is independent of result
+ownership; const, RC, computed, transposed and strided inputs are supported.
+Only the result is allocated.
++/
+package(mir.stat) AllocatedSlice!(Allocation.rc, Scalar!A, 2)
+rcCrossprod(A)(scope auto ref A a) if (matrix!A)
+{
+    int allocator;
+    return selfAllocated!(Allocation.rc, true)(allocator, a);
+}
+
+/++
+Compute `a.transpose * b` into reference-counted storage.
+Both inputs must be rank-two matrices with matching element types and equal
+row counts. Returns shape `(a.length!1, b.length!1)`. No symmetry is assumed,
+and complex values are not conjugated. Strides and input ownership are
+independent. Allocation and arithmetic follow `rcMtimes`; incompatible
+dimensions violate assertion-checked preconditions.
++/
+package(mir.stat) AllocatedSlice!(Allocation.rc, Scalar!A, 2)
+rcCrossprod(A, B)(scope auto ref A a, scope auto ref B b)
+    if (compatible!(A, B))
+{
+    return rcMtimes(a.lightConst.universal.transposed, b);
+}
+
+/++
+Compute `a.transpose * a` into custom-allocated storage.
+Input must be a rank-two floating-point or complex ndslice. Returns a square
+matrix with order `a.length!1` and the unqualified input element type.
+Both triangles are initialized; transpose does not conjugate complex values.
+An empty contraction produces zeros. Input ownership is independent of result
+ownership; const, RC, computed, transposed and strided inputs are supported.
+Only the result is allocated.
+Dispose `result.field` with the same allocator after all views are finished.
+Custom result storage is released if an input iterator throws.
++/
+package(mir.stat) AllocatedSlice!(Allocation.custom, Scalar!A, 2)
+makeCrossprod(Allocator, A)(auto ref Allocator allocator, scope auto ref A a) if (matrix!A)
+{
+    return selfAllocated!(Allocation.custom, true)(allocator, a);
+}
+
+/++
+Compute `a.transpose * b` into custom-allocated storage.
+Both inputs must be rank-two matrices with matching element types and equal
+row counts. Returns shape `(a.length!1, b.length!1)`. No symmetry is assumed,
+and complex values are not conjugated. Strides and input ownership are
+independent. Allocation and arithmetic follow `makeMtimes`; incompatible
+dimensions violate assertion-checked preconditions.
+Dispose `result.field` with the same allocator after all views are finished.
+Custom result storage is released if an input iterator throws.
++/
+package(mir.stat) AllocatedSlice!(Allocation.custom, Scalar!A, 2)
+makeCrossprod(Allocator, A, B)(auto ref Allocator allocator, scope auto ref A a, scope auto ref B b)
+    if (compatible!(A, B))
+{
+    return makeMtimes(allocator, a.lightConst.universal.transposed, b);
+}
+
+/++
+Overwrite caller storage with `a.transpose * a` without allocating.
+Output must be a square rank-two matrix of order `a.length!1`, with the same
+element type as the input. Every entry is written, including both triangles.
+Output elements must not overlap one another or the input. Shapes are checked
+with assertions; overlap is not checked. General strides are supported.
+Iterator exceptions may leave partial output. Empty contractions write zeros.
++/
+package(mir.stat) void crossprodInto(A, C)(scope auto ref A a, scope auto ref C output)
+    if (compatible!(A, C))
+{
+    selfInto!true(a, output);
+}
+
+/++
+Overwrite caller storage with `a.transpose * b` without allocating.
+Input matrices must have equal row counts. Output has shape `(a.length!1, b.length!1)`;
+all element types must match. Output must have nonoverlapping elements and be
+disjoint from both inputs; the inputs may overlap each other. Shape checks use
+assertions; overlap is not checked. Arithmetic, general-stride support, and
+partial output on iterator exceptions follow `mtimesInto`.
++/
+package(mir.stat) void crossprodInto(A, B, C)(scope auto ref A a, scope auto ref B b,
+    scope auto ref C output) if (compatible!(A, B) && compatible!(A, C))
+{
+    mtimesInto(a.lightConst.universal.transposed, b, output);
+}
+
+/++
+Compute `a * a.transpose` into GC-managed storage.
+Input must be a rank-two floating-point or complex ndslice. Returns a square
+matrix with order `a.length!0` and the unqualified input element type.
+Both triangles are initialized; transpose does not conjugate complex values.
+An empty contraction produces zeros. Input ownership is independent of result
+ownership; const, RC, computed, transposed and strided inputs are supported.
+Only the result is allocated.
++/
+package(mir.stat) AllocatedSlice!(Allocation.gc, Scalar!A, 2)
+tcrossprod(A)(scope auto ref A a) if (matrix!A)
+{
+    int allocator;
+    return selfAllocated!(Allocation.gc, false)(allocator, a);
+}
+
+/++
+Compute `a * b.transpose` into GC-managed storage.
+Both inputs must be rank-two matrices with matching element types and equal
+column counts. Returns shape `(a.length!0, b.length!0)`. No symmetry is assumed,
+and complex values are not conjugated. Strides and input ownership are
+independent. Allocation and arithmetic follow `mtimes`; incompatible
+dimensions violate assertion-checked preconditions.
++/
+package(mir.stat) AllocatedSlice!(Allocation.gc, Scalar!A, 2)
+tcrossprod(A, B)(scope auto ref A a, scope auto ref B b)
+    if (compatible!(A, B))
+{
+    return mtimes(a, b.lightConst.universal.transposed);
+}
+
+/++
+Compute `a * a.transpose` into reference-counted storage.
+Input must be a rank-two floating-point or complex ndslice. Returns a square
+matrix with order `a.length!0` and the unqualified input element type.
+Both triangles are initialized; transpose does not conjugate complex values.
+An empty contraction produces zeros. Input ownership is independent of result
+ownership; const, RC, computed, transposed and strided inputs are supported.
+Only the result is allocated.
++/
+package(mir.stat) AllocatedSlice!(Allocation.rc, Scalar!A, 2)
+rcTcrossprod(A)(scope auto ref A a) if (matrix!A)
+{
+    int allocator;
+    return selfAllocated!(Allocation.rc, false)(allocator, a);
+}
+
+/++
+Compute `a * b.transpose` into reference-counted storage.
+Both inputs must be rank-two matrices with matching element types and equal
+column counts. Returns shape `(a.length!0, b.length!0)`. No symmetry is assumed,
+and complex values are not conjugated. Strides and input ownership are
+independent. Allocation and arithmetic follow `rcMtimes`; incompatible
+dimensions violate assertion-checked preconditions.
++/
+package(mir.stat) AllocatedSlice!(Allocation.rc, Scalar!A, 2)
+rcTcrossprod(A, B)(scope auto ref A a, scope auto ref B b)
+    if (compatible!(A, B))
+{
+    return rcMtimes(a, b.lightConst.universal.transposed);
+}
+
+/++
+Compute `a * a.transpose` into custom-allocated storage.
+Input must be a rank-two floating-point or complex ndslice. Returns a square
+matrix with order `a.length!0` and the unqualified input element type.
+Both triangles are initialized; transpose does not conjugate complex values.
+An empty contraction produces zeros. Input ownership is independent of result
+ownership; const, RC, computed, transposed and strided inputs are supported.
+Only the result is allocated.
+Dispose `result.field` with the same allocator after all views are finished.
+Custom result storage is released if an input iterator throws.
++/
+package(mir.stat) AllocatedSlice!(Allocation.custom, Scalar!A, 2)
+makeTcrossprod(Allocator, A)(auto ref Allocator allocator, scope auto ref A a) if (matrix!A)
+{
+    return selfAllocated!(Allocation.custom, false)(allocator, a);
+}
+
+/++
+Compute `a * b.transpose` into custom-allocated storage.
+Both inputs must be rank-two matrices with matching element types and equal
+column counts. Returns shape `(a.length!0, b.length!0)`. No symmetry is assumed,
+and complex values are not conjugated. Strides and input ownership are
+independent. Allocation and arithmetic follow `makeMtimes`; incompatible
+dimensions violate assertion-checked preconditions.
+Dispose `result.field` with the same allocator after all views are finished.
+Custom result storage is released if an input iterator throws.
++/
+package(mir.stat) AllocatedSlice!(Allocation.custom, Scalar!A, 2)
+makeTcrossprod(Allocator, A, B)(auto ref Allocator allocator, scope auto ref A a, scope auto ref B b)
+    if (compatible!(A, B))
+{
+    return makeMtimes(allocator, a, b.lightConst.universal.transposed);
+}
+
+/++
+Overwrite caller storage with `a * a.transpose` without allocating.
+Output must be a square rank-two matrix of order `a.length!0`, with the same
+element type as the input. Every entry is written, including both triangles.
+Output elements must not overlap one another or the input. Shapes are checked
+with assertions; overlap is not checked. General strides are supported.
+Iterator exceptions may leave partial output. Empty contractions write zeros.
++/
+package(mir.stat) void tcrossprodInto(A, C)(scope auto ref A a, scope auto ref C output)
+    if (compatible!(A, C))
+{
+    selfInto!false(a, output);
+}
+
+/++
+Overwrite caller storage with `a * b.transpose` without allocating.
+Input matrices must have equal column counts. Output has shape `(a.length!0, b.length!0)`;
+all element types must match. Output must have nonoverlapping elements and be
+disjoint from both inputs; the inputs may overlap each other. Shape checks use
+assertions; overlap is not checked. Arithmetic, general-stride support, and
+partial output on iterator exceptions follow `mtimesInto`.
++/
+package(mir.stat) void tcrossprodInto(A, B, C)(scope auto ref A a, scope auto ref B b,
+    scope auto ref C output) if (compatible!(A, B) && compatible!(A, C))
+{
+    mtimesInto(a, b.lightConst.universal.transposed, output);
+}
+
+/// Column and row Gram matrices have explicit, independent shapes.
+version(mir_stat_test_linearAlgebra)
+@safe pure nothrow unittest
+{
+    import mir.ndslice.slice: sliced;
+    double[6] data = [1, 2, 3, 4, 5, 6];
+    auto a = data[].sliced(2, 3);
+    assert(crossprod(a) == [[17,22,27], [22,29,36], [27,36,45]]);
+    assert(tcrossprod(a) == [[14,32], [32,77]]);
+    double[4] rhs = [1,2,3,4];
+    assert(crossprod(a, rhs[].sliced(2,2)) == [[13,18], [17,24], [21,30]]);
+    double[12] other = [1,0,0, 0,1,0, 0,0,1, 1,1,1];
+    assert(tcrossprod(a, other[].sliced(4,3)) == [[1,2,3,6], [4,5,6,15]]);
+    assert(tcrossprod(a, a) == tcrossprod(a));
+    // Explicit shape determines whether a vector produces an inner or outer product.
+    double[2] values = [2,3];
+    assert(crossprod(values[].sliced(2,1)) == [[13]]);
+    assert(tcrossprod(values[].sliced(2,1)) == [[4,6], [6,9]]);
+    assert(crossprod(values[].sliced(1,2)) == [[4,6], [6,9]]);
+    assert(tcrossprod(values[].sliced(1,2)) == [[13]]);
+    static assert(!__traits(compiles, crossprod(values[].sliced)));
+    static assert(!__traits(compiles, tcrossprod(values[].sliced)));
+    static assert(!__traits(compiles, crossprod(a, values[].sliced)));
+}
+
+/// Reference-counted inputs and outputs have independent lifetimes.
+version(mir_stat_test_linearAlgebra)
+@safe pure nothrow @nogc unittest
+{
+    import mir.ndslice.allocation: mininitRcslice;
+    auto input = mininitRcslice!double(2,2);
+    input[0,0]=1; input[0,1]=2; input[1,0]=3; input[1,1]=4;
+    const source = input;
+    auto columns = rcCrossprod(source);
+    auto rows = rcTcrossprod(source, source);
+    input[0,0]=100;
+    static immutable expectedColumns = [[10.0,14], [14.0,20]];
+    static immutable expectedRows = [[5.0,11], [11.0,25]];
+    assert(columns == expectedColumns && rows == expectedRows);
+}
+
+/// Caller-output variants overwrite the entire result without allocating.
+version(mir_stat_test_linearAlgebra)
+@safe pure nothrow @nogc unittest
+{
+    import mir.ndslice.slice: sliced;
+    double[6] data = [1,2,3,4,5,6];
+    double[9] columns = double.nan;
+    double[4] rows = double.nan;
+    auto a = data[].sliced(2,3);
+    crossprodInto(a, columns[].sliced(3,3));
+    tcrossprodInto(a, a, rows[].sliced(2,2));
+    assert(columns[1] == 22 && columns[3] == 22 && columns[8] == 45);
+    assert(rows[0] == 14 && rows[1] == 32 && rows[2] == 32 && rows[3] == 77);
+}
+
+/// Custom results are disposed through the allocator that created them.
+version(mir_stat_test_linearAlgebra)
+@system nothrow @nogc unittest
+{
+    import mir.ndslice.slice: sliced;
+    import std.experimental.allocator.mallocator: Mallocator;
+    import std.experimental.allocator: dispose;
+    double[4] data = [1,2,3,4];
+    auto a = data[].sliced(2,2);
+    auto columns = makeCrossprod(Mallocator.instance, a);
+    scope(exit) Mallocator.instance.dispose(columns.field);
+    auto rows = makeTcrossprod(Mallocator.instance, a, a);
+    scope(exit) Mallocator.instance.dispose(rows.field);
+    assert(columns[0,1] == 14 && rows[0,1] == 11);
+}
+
+// Exercise every input/output orientation, padding, fallback strides, and numeric type.
+version(mir_stat_test_linearAlgebra)
+@safe pure nothrow @nogc unittest
+{
+    import mir.ndslice.slice: sliced;
+    import mir.ndslice.dynamic: reversed;
+    import mir.ndslice.topology: map;
+    import mir.complex: Complex;
+    import std.meta: AliasSeq;
+    static foreach (T; AliasSeq!(float, double, real, Complex!double))
+    foreach (ta; [false,true]) foreach (tc; [false,true]) foreach (reverse; [false,true])
+    {
+        T[25] aa, bb, cc, rr;
+        auto a=aa[].sliced(5,5)[0 .. (ta ? 3 : 2),0 .. (ta ? 2 : 3)].universal;
+        if(ta) a=a.transposed;
+        if(reverse) a=a.reversed!0;
+        foreach(i;0..2) foreach(j;0..3) a[i,j]=T(i*3+j+1);
+        auto b=bb[].sliced(5,5)[0..2,0..2].universal;
+        b[0,0]=T(2); b[0,1]=T(1); b[1,0]=T(0); b[1,1]=T(3);
+        auto c=cc[].sliced(5,5)[0..3,0..3].universal;
+        auto r=rr[].sliced(5,5)[0..3,0..3].universal;
+        if(tc) c=c.transposed;
+        if(reverse) c=c.reversed!1;
+        crossprodInto(a,c);
+        mtimesInto(a.transposed,a,r);
+        assert(c==r);
+        crossprodInto(a.map!"a",c);
+        assert(c==r);
+        crossprodInto(a,b,c[0..3,0..2]);
+        mtimesInto(a.transposed,b,r[0..3,0..2]);
+        assert(c[0..3,0..2]==r[0..3,0..2]);
+        tcrossprodInto(a,c[0..2,0..2]);
+        mtimesInto(a,a.transposed,r[0..2,0..2]);
+        assert(c[0..2,0..2]==r[0..2,0..2]);
+        tcrossprodInto(a,a.map!"a",c[0..2,0..2]);
+        assert(c[0..2,0..2]==r[0..2,0..2]);
+    }
+}
+
+// Complex products use transpose rather than conjugate transpose.
+version(mir_stat_test_linearAlgebra)
+@safe pure nothrow @nogc unittest
+{
+    import mir.complex: Complex;
+    import mir.ndslice.slice: sliced;
+    alias C=Complex!double;
+    C[2] values=[C(1,1),C(2,-1)]; C[4] result;
+    crossprodInto(values[].sliced(1,2), result[].sliced(2,2));
+    assert(result[0]==C(0,2) && result[1]==C(3,1));
+    assert(result[2]==C(3,1) && result[3]==C(3,-4));
+}
+
+// Empty contraction dimensions write zeros; zero-sized result dimensions stay empty.
+version(mir_stat_test_linearAlgebra)
+@safe pure nothrow @nogc unittest
+{
+    import mir.ndslice.slice: sliced;
+    double[0] empty; double[9] result=double.nan;
+    crossprodInto(empty[].sliced(0,3),result[].sliced(3,3));
+    foreach(value;result) assert(value==0);
+    result[]=double.nan;
+    tcrossprodInto(empty[].sliced(3,0),result[].sliced(3,3).transposed);
+    foreach(value;result) assert(value==0);
+    crossprodInto(empty[].sliced(3,0),empty[].sliced(0,0));
+    tcrossprodInto(empty[].sliced(0,3),empty[].sliced(0,0));
+    assert(rcCrossprod(empty[].sliced(3,0)).shape==[0,0]);
+    assert(rcTcrossprod(empty[].sliced(0,3)).shape==[0,0]);
+}
+
+// A computed input exception must release each custom result allocation.
+version(mir_stat_test_linearAlgebra)
+@system unittest
+{
+    import mir.ndslice.slice: sliced;
+    import mir.ndslice.topology: map;
+    import std.experimental.allocator.mallocator: Mallocator;
+    import std.experimental.allocator: dispose;
+    import std.exception: assertThrown;
+    struct CountingAllocator {
+        size_t allocations, releases;
+        /// Count successful storage requests.
+        void[] allocate(size_t bytes) { ++allocations; return Mallocator.instance.allocate(bytes); }
+        /// Count released result buffers.
+        bool deallocate(void[] memory) { ++releases; return Mallocator.instance.deallocate(memory); }
+    }
+    CountingAllocator allocator;
+    double[4] values=[1,2,3,4];
+    auto a=values[].sliced(2,2);
+    auto failure=new Exception("computed input failed");
+    /// Throw after result allocation to exercise failure cleanup.
+    double fail(double x) { throw failure; }
+    assertThrown!Exception(makeCrossprod(allocator,a.map!fail));
+    assertThrown!Exception(makeTcrossprod(allocator,a.map!fail));
+    assertThrown!Exception(makeCrossprod(allocator,a,a.map!fail));
+    assertThrown!Exception(makeTcrossprod(allocator,a,a.map!fail));
+    assert(allocator.allocations==4 && allocator.releases==4);
+    auto x=makeCrossprod(allocator,a,a);
+    allocator.dispose(x.field);
+    auto y=makeTcrossprod(allocator,a);
+    allocator.dispose(y.field);
+    assert(allocator.allocations==6 && allocator.releases==6);
+    assert(rcCrossprod(a,a)==rcCrossprod(a));
+    assert(rcTcrossprod(a)==rcTcrossprod(a,a));
+}
+
+/// Allocate one self-product result and release custom storage if computation throws.
+private AllocatedSlice!(policy, Scalar!A, 2) selfAllocated(Allocation policy,
+    bool transpose, Allocator, A)(ref Allocator allocator, scope auto ref A a)
+{
+    const n = a.length!(transpose ? 1 : 0);
+    auto result = allocate!(policy, Scalar!A)(allocator, [n, n]);
+    scope(failure) { static if (policy == Allocation.custom) {
+        import std.experimental.allocator: dispose;
+        allocator.dispose(result.field);
+    } }
+    selfInto!transpose(a, result);
+    return result;
+}
+
+/// Compute the upper triangle of a row Gram matrix, then mirror without conjugation.
+private void selfInto(bool transpose, A, C)(scope auto ref A a, scope auto ref C output)
+{
+    static if (transpose) auto rows = a.lightConst.universal.transposed;
+    else auto rows = a.lightConst.universal;
+    const n = rows.length!0;
+    const k = rows.length!1;
+    assert(output.length!0 == n && output.length!1 == n,
+        "Incorrect cross-product output shape");
+    alias T = Scalar!A;
+    bool accelerated;
+    static if (hasBlas && blasNumber!T && nativeSlice!A && nativeSlice!C)
+    {
+        if (n && k && blasMatrix(rows) && blasMatrix(output))
+        {
+            import mir.blas: syrk;
+            import cblas: Uplo;
+            syrk(Uplo.Upper, T(1), rows.lightScope.lightConst, T(0), output.lightScope);
+            accelerated = true;
+        }
+    }
+    if (!accelerated)
+        foreach (i; 0 .. n) foreach (j; i .. n)
+        {
+            T sum = T(0);
+            foreach (p; 0 .. k) sum += rows[i,p] * rows[j,p];
+            output[i,j] = sum;
+        }
+    mirrorUpper(output);
+}
+
+/// Mirror square upper storage in small tiles, keeping both triangles' cache lines nearby.
+/// Output is disjoint from inputs; diagonal entries are already initialized.
+private void mirrorUpper(C)(scope auto ref C output)
+{
+    import std.algorithm: min;
+    enum tile = 32;
+    const n = output.length!0;
+    for (size_t row = 0; row < n; row += tile)
+        for (size_t column = 0; column <= row; column += tile)
+        {
+            const rowEnd = min(n, row + tile);
+            const columnEnd = min(n, column + tile);
+            if (output._stride!0 == 1 && output._stride!1 != 1)
+                foreach (j; column .. columnEnd)
+                    foreach (i; (row > j ? row : j + 1) .. rowEnd)
+                        output[i,j] = output[j,i];
+            else
+                foreach (i; row .. rowEnd)
+                    foreach (j; column .. min(i, columnEnd))
+                        output[i,j] = output[j,i];
+        }
+}
+
+version(mir_stat_test_linearAlgebra)
+@safe pure nothrow @nogc unittest
+{
+    import mir.ndslice.slice: sliced;
+    foreach (n; [31,32,33,65]) foreach (transpose; [false,true])
+    {
+        double[65*3] input;
+        double[65*65] buffer;
+        auto a=input[0..n*3].sliced(n,3);
+        foreach (i;0..n) foreach (k;0..3) a[i,k]=cast(double)(i+k+1);
+        auto c=buffer[0..n*n].sliced(n,n).universal;
+        if (transpose) c=c.transposed;
+        tcrossprodInto(a,c);
+        foreach (i;0..n) foreach (j;0..n)
+        {
+            double expected=0;
+            foreach(k;0..3) expected+=(i+k+1)*(j+k+1);
+            assert(c[i,j]==expected);
+        }
+    }
+}

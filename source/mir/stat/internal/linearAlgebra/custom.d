@@ -9,6 +9,7 @@ of result ownership. Vector-vector multiplication still returns a scalar
 without allocating.
 
 Views and structural policies are imported separately from `views` and `types`.
+Matrix cross-products are included with matrix-only inputs and results.
 Batch quadratic forms and their selected-observation adapters are included
 with the same ownership policy.
 Caller-output and in-place operations remain in their operation modules. This module is package-restricted, not a public
@@ -65,3 +66,6 @@ version(mir_stat_test_linearAlgebra)
 }
 
 package(mir.stat) import mir.stat.internal.linearAlgebra.quadratic: makeQuadraticFormBatch, makeQuadraticForm;
+
+/// Matrix-only cross-products with the selected result ownership.
+package(mir.stat) import mir.stat.internal.linearAlgebra.crossproducts: makeCrossprod, makeTcrossprod;
