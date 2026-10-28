@@ -7,8 +7,8 @@ $(D size_t). Forward functions and count-returning inverse CDFs require
 $(D lambda > 0): a zero rate is rejected even though it is a mathematical
 limiting case. Tables use a finite positive rate unless stated otherwise.
 
-Only the direct PMF has an $(D Fp) overload, also available as
-$(LREF fp_poissonPMF). CDF, CCDF, log-PMF, and inverse functions use built-in
+The direct PMF and LPMF accept $(D Fp) rates. The Fp PMF is also available
+as $(LREF fp_poissonPMF). CDF, CCDF, and inverse functions use built-in
 floating-point values. Normal approximations need not match the direct or
 gamma algorithms at finite counts.
 
@@ -388,7 +388,9 @@ and masses below the representable range round to zero. Counts retain their
 full $(D size_t) width. Factorial construction costs $(D O(k)) except for
 proven underflow shortcuts, so very large counts remain impractical even when
 their probabilities are representable. This implementation favors accuracy
-over the speed of hardware-floating-point PMFs.
+over the speed of hardware-floating-point PMFs. Use $(LREF poissonLPMF)
+to compute a log probability directly at Fp precision, including when the
+PMF would underflow.
 
 Finite positive rates below the hardware exponent range are accepted. A zero
 rate remains a contract violation, consistently with the existing Poisson API.
@@ -1325,6 +1327,12 @@ For large counts, the calculation centers the logarithm around the mean rather
 than subtracting large log-factorial and power terms. This preserves accuracy
 when the count and rate are close.
 
+The $(D Fp) overload returns the same Fp type and retains the full $(D size_t)
+count. Guarded logarithms, Stirling corrections, and a centered deviance series
+avoid conversion through hardware floating point. Finite rates throughout the
+Fp exponent range are accepted; $(D k == 0) returns the exact negated rate.
+This is guarded evaluation, not a universal correctly-rounded guarantee.
+
 Returns the natural logarithm of $(D P(X == k)), which can remain finite
 when the PMF underflows to zero.
 
@@ -1332,7 +1340,7 @@ Special values:
 $(TABLE
     $(TR $(TH Input) $(TH Result))
     $(TR $(TD $(D k == 0)) $(TD $(D -lambda)))
-    $(TR $(TD $(D lambda == T.infinity)) $(TD $(D -T.infinity)))
+    $(TR $(TD $(D lambda == +infinity)) $(TD Negative infinity))
     $(TR $(TD $(D lambda <= 0) or NaN) $(TD Contract violation))
 )
 
@@ -1358,6 +1366,36 @@ T poissonLPMF(T)(const size_t k, const T lambda)
     if (k < 32)
         return k * log(lambda) - (logFactorial!T(k) + lambda);
     return cast(T) poissonLogMass(k, cast(real) lambda);
+}
+
+/// ditto
+@safe pure nothrow @nogc
+T poissonLPMF(T)(const size_t k, const T lambda)
+    if (is(T == Fp!bits, uint bits))
+    in (!lambda.sign && (lambda.exponent == long.max ? !lambda.coefficient : !!lambda.coefficient),
+        "lambda must be positive and not NaN")
+{
+    if (!k || lambda.exponent == long.max)
+    {
+        T result = lambda;
+        result.sign = true;
+        return result;
+    }
+    import mir.stat.internal.fp_poisson_log: PoissonLog;
+    enum bits = typeof(T.init.coefficient).sizeof * 8;
+    return PoissonLog!bits.mass(k,lambda);
+}
+
+/// Compute the log mass directly when the PMF underflows.
+version(mir_stat_test)
+@safe pure nothrow @nogc unittest
+{
+    auto rate = Fp!128(1);
+    rate.exponent += 66;
+    assert(!poissonPMF(0,rate).coefficient);
+    auto expected = rate;
+    expected.sign = true;
+    assert(poissonLPMF(0,rate) == expected);
 }
 
 // Large central counts must not lose the log mass to cancellation.
@@ -1402,4 +1440,127 @@ unittest
     for (size_t i; i <= 10; i++) {
         assert(i.poissonLPMF(5.0).exp.approxEqual(poissonPMF(i, 5.0)));
     }
+}
+// BEGIN public Poisson log references
+version(mir_stat_test)
+@safe pure nothrow @nogc unittest
+{
+    import mir.bignum.fixed: UInt;
+    {
+        alias T = Fp!64;
+        struct Reference { ulong k; T rate; T value; }
+        enum references = [
+            Reference(1UL,T(false,0,UInt!64.fromHexString("1")),T(true,-63,UInt!64.fromHexString("8000000000000000"))),
+            Reference(3UL,T(false,0,UInt!64.fromHexString("5")),T(true,-63,UInt!64.fromHexString("fb5230930bc33f89"))),
+            Reference(32UL,T(false,0,UInt!64.fromHexString("20")),T(true,-62,UInt!64.fromHexString("a9e1dcdb5818955f"))),
+            Reference(1000000000000UL,T(false,0,UInt!64.fromHexString("e8d4a51000")),T(true,-60,UInt!64.fromHexString("ebc04db0b25dd3c2"))),
+            Reference(18446744073709551615UL,T(false,0,UInt!64.fromHexString("ffffffffffffffff")),T(true,-59,UInt!64.fromHexString("b8cc1469eaff26d5"))),
+            Reference(1UL,T(false,long.min,UInt!64.fromHexString("1")),T(true,-1,UInt!64.fromHexString("b17217f7d1cf79ac"))),
+            Reference(18446744073709551615UL,T(false,-2000,UInt!64.fromHexString("1")),T(true,11,UInt!64.fromHexString("b2b4fc27c173189e"))),
+            Reference(1UL,T(false,66,UInt!64.fromHexString("1")),T(true,2,UInt!64.fromHexString("fffffffffffffff5"))),
+            Reference(18446744073709551615UL,T(false,long.max-1,UInt!64.fromHexString("ffffffffffffffff")),T(true,long.max-1,UInt!64.fromHexString("ffffffffffffffff"))),
+        ];
+        foreach (r; references) {
+            if (r.k > size_t.max) continue;
+            assert(poissonLPMF(cast(size_t)r.k,r.rate) == r.value);
+        }
+    }
+    {
+        alias T = Fp!128;
+        struct Reference { ulong k; T rate; T value; }
+        enum references = [
+            Reference(1UL,T(false,0,UInt!128.fromHexString("1")),T(true,-127,UInt!128.fromHexString("80000000000000000000000000000000"))),
+            Reference(3UL,T(false,0,UInt!128.fromHexString("5")),T(true,-127,UInt!128.fromHexString("fb5230930bc33f8967cb28d579916ec4"))),
+            Reference(32UL,T(false,0,UInt!128.fromHexString("20")),T(true,-126,UInt!128.fromHexString("a9e1dcdb5818955e92b49e080ddd5f40"))),
+            Reference(1000000000000UL,T(false,0,UInt!128.fromHexString("e8d4a51000")),T(true,-124,UInt!128.fromHexString("ebc04db0b25dd3c27391ddc2c548b9e9"))),
+            Reference(18446744073709551615UL,T(false,0,UInt!128.fromHexString("ffffffffffffffff")),T(true,-123,UInt!128.fromHexString("b8cc1469eaff26d56b3442c2b8be6a5b"))),
+            Reference(1UL,T(false,long.min,UInt!128.fromHexString("1")),T(true,-65,UInt!128.fromHexString("b17217f7d1cf79abc9e3b39803f2f6af"))),
+            Reference(18446744073709551615UL,T(false,-2000,UInt!128.fromHexString("1")),T(true,-53,UInt!128.fromHexString("b2b4fc27c173189e7185af291a33c099"))),
+            Reference(1UL,T(false,66,UInt!128.fromHexString("1")),T(true,-62,UInt!128.fromHexString("fffffffffffffff490257486fa20a86d"))),
+            Reference(18446744073709551615UL,T(false,long.max-1,UInt!128.fromHexString("ffffffffffffffffffffffffffffffff")),T(true,long.max-1,UInt!128.fromHexString("ffffffffffffffffffffffffffffffff"))),
+        ];
+        foreach (r; references) {
+            if (r.k > size_t.max) continue;
+            assert(poissonLPMF(cast(size_t)r.k,r.rate) == r.value);
+        }
+    }
+    {
+        alias T = Fp!256;
+        struct Reference { ulong k; T rate; T value; }
+        enum references = [
+            Reference(1UL,T(false,0,UInt!256.fromHexString("1")),T(true,-255,UInt!256.fromHexString("8000000000000000000000000000000000000000000000000000000000000000"))),
+            Reference(3UL,T(false,0,UInt!256.fromHexString("5")),T(true,-255,UInt!256.fromHexString("fb5230930bc33f8967cb28d579916ec4119119dea2eddcfc1c416f2034597e6f"))),
+            Reference(32UL,T(false,0,UInt!256.fromHexString("20")),T(true,-254,UInt!256.fromHexString("a9e1dcdb5818955e92b49e080ddd5f4043083b8a75e8344d5fd925d7198d06d5"))),
+            Reference(1000000000000UL,T(false,0,UInt!256.fromHexString("e8d4a51000")),T(true,-252,UInt!256.fromHexString("ebc04db0b25dd3c27391ddc2c548b9e8eb9bfa052d25258030d5b06fe93906d4"))),
+            Reference(18446744073709551615UL,T(false,0,UInt!256.fromHexString("ffffffffffffffff")),T(true,-251,UInt!256.fromHexString("b8cc1469eaff26d56b3442c2b8be6a5b08c61cf8308837dd4da846c3ca929a7c"))),
+            Reference(1UL,T(false,long.min,UInt!256.fromHexString("1")),T(true,-193,UInt!256.fromHexString("b17217f7d1cf79abc9e3b39803f2f6af40f343267298b62d8a0d175b8baafa2c"))),
+            Reference(18446744073709551615UL,T(false,-2000,UInt!256.fromHexString("1")),T(true,-181,UInt!256.fromHexString("b2b4fc27c173189e7185af291a33c098d3ba7fb8966604a6b1d475a6b95bdebb"))),
+            Reference(1UL,T(false,66,UInt!256.fromHexString("1")),T(true,-190,UInt!256.fromHexString("fffffffffffffff490257486fa20a86d7cd2ecb3bed719b450522c059d284211"))),
+            Reference(18446744073709551615UL,T(false,long.max-1,UInt!256.fromHexString("ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff")),T(true,long.max-1,UInt!256.fromHexString("ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff"))),
+        ];
+        foreach (r; references) {
+            if (r.k > size_t.max) continue;
+            assert(poissonLPMF(cast(size_t)r.k,r.rate) == r.value);
+        }
+    }
+    {
+        alias T = Fp!512;
+        struct Reference { ulong k; T rate; T value; }
+        enum references = [
+            Reference(1UL,T(false,0,UInt!512.fromHexString("1")),T(true,-511,UInt!512.fromHexString("80000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000"))),
+            Reference(3UL,T(false,0,UInt!512.fromHexString("5")),T(true,-511,UInt!512.fromHexString("fb5230930bc33f8967cb28d579916ec4119119dea2eddcfc1c416f2034597e6e9fa29c9bb84a432c08bedb0f0d872d1b813e8e5d8b7ccfb750ed8fb299874a76"))),
+            Reference(32UL,T(false,0,UInt!512.fromHexString("20")),T(true,-510,UInt!512.fromHexString("a9e1dcdb5818955e92b49e080ddd5f4043083b8a75e8344d5fd925d7198d06d4aca06d9e0af2a50055bdb513df118bee2b5b8e220154933855515720464d755d"))),
+            Reference(1000000000000UL,T(false,0,UInt!512.fromHexString("e8d4a51000")),T(true,-508,UInt!512.fromHexString("ebc04db0b25dd3c27391ddc2c548b9e8eb9bfa052d25258030d5b06fe93906d42f8ea980296e0afc5e6fc996cf24c22ebbe42027c3ace73635a7dddc47e8327d"))),
+            Reference(18446744073709551615UL,T(false,0,UInt!512.fromHexString("ffffffffffffffff")),T(true,-507,UInt!512.fromHexString("b8cc1469eaff26d56b3442c2b8be6a5b08c61cf8308837dd4da846c3ca929a7bcaab31a0562ab4b79085ee0c1f21dab00f9521c95da0c0fa93e58bc1b03c4728"))),
+            Reference(1UL,T(false,long.min,UInt!512.fromHexString("1")),T(true,-449,UInt!512.fromHexString("b17217f7d1cf79abc9e3b39803f2f6af40f343267298b62d8a0d175b8baafa2be7b876206debac98559552fb4afa1b10ed2eae35c138214427573b291169b825"))),
+            Reference(18446744073709551615UL,T(false,-2000,UInt!512.fromHexString("1")),T(true,-437,UInt!512.fromHexString("b2b4fc27c173189e7185af291a33c098d3ba7fb8966604a6b1d475a6b95bdebb24f5569d7b2f7e3b35e4dcf4adbacfc200a55053c651b4550b86a04b37b633ee"))),
+            Reference(1UL,T(false,66,UInt!512.fromHexString("1")),T(true,-446,UInt!512.fromHexString("fffffffffffffff490257486fa20a86d7cd2ecb3bed719b450522c059d2842109a27fe997f7ae02b909c62e8ea4f602e7be026cdaae14168b67dc5890be1db1b"))),
+            Reference(18446744073709551615UL,T(false,long.max-1,UInt!512.fromHexString("ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff")),T(true,long.max-1,UInt!512.fromHexString("ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff"))),
+        ];
+        foreach (r; references) {
+            if (r.k > size_t.max) continue;
+            assert(poissonLPMF(cast(size_t)r.k,r.rate) == r.value);
+        }
+    }
+}
+// END public Poisson log references
+
+version(mir_stat_test)
+@safe pure nothrow @nogc unittest
+{
+    import mir.bignum.fixed: UInt;
+    import std.meta: AliasSeq;
+    foreach (bits; AliasSeq!(64u,128u,256u,512u))
+    {
+        alias T = Fp!bits;
+        const rate = T(1);
+        static assert(is(typeof(poissonLPMF(1,rate)) == T));
+        assert(poissonLPMF(1,rate) == T(-1));
+        // The zero-count result preserves even raw and subnormal inputs.
+        UInt!bits ones;
+        ones.data[] = size_t.max;
+        foreach (value; [T(false,-3,UInt!bits(3)),
+                         T(false,long.min,UInt!bits(1)),
+                         T(false,long.max-1,ones),rate])
+        {
+            const result = poissonLPMF(0,value);
+            assert(result.sign);
+            assert(result.coefficient == value.coefficient);
+            assert(result.exponent == value.exponent);
+        }
+        foreach (k; [size_t(0),size_t(1),size_t.max])
+            assert(poissonLPMF(k,T(double.infinity)) == T(-double.infinity));
+        debug
+        {
+            import core.exception: AssertError;
+            import std.exception: assertThrown;
+            foreach (bad; [T(0),T(-0.0),T(-1),T(-double.infinity),T(double.nan)])
+            {
+                assertThrown!AssertError(poissonLPMF(0,bad));
+                assertThrown!AssertError(poissonLPMF(1,bad));
+            }
+        }
+    }
+    foreach (T; AliasSeq!(float,double,real))
+        static assert(is(typeof(poissonLPMF(1,T(1))) == T));
 }
