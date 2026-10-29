@@ -2,6 +2,10 @@ project('mir-stat', 'd', version : '0.3.1', license: 'Apache-2.0')
 
 description = 'Dlang Statistical Package'
 
+# The full library suite includes high-precision numerical tests. Allow
+# 20 minutes instead of Meson's default 30 seconds in both CI systems.
+add_test_setup('numerics', timeout_multiplier: 40, is_default: true)
+
 # Match the default DUB library configuration. Optional BLAS and benchmark
 # dependencies are exercised by their separate DUB configurations.
 subprojects = ['mir-core', 'mir-algorithm']
@@ -43,6 +47,10 @@ sources_list = [
     'mir/stat/internal/borrow',
     'mir/stat/internal/fp_probability',
     'mir/stat/internal/fp_probability_log',
+    'mir/stat/internal/fp_log_factorial',
+    'mir/stat/internal/fp_binomial_log',
+    'mir/stat/internal/fp_count_deviance',
+    'mir/stat/internal/fp_poisson_log',
     'mir/stat/internal/fp_geometric_inverse',
     'mir/stat/internal/fp_poisson',
     'mir/stat/internal/fp_scaled_probability',
