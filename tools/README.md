@@ -56,3 +56,29 @@ Run `python3 tools/test_build_docs.py` for driver regression checks.
 
 The existing compiler matrix and CircleCI release publishing remain separate.
 An HTML build does not verify every link or the external online example runner.
+
+## Slow numerical references
+
+Run `dub test mir-stat:slow-numerics --build=unittest-optimized` for only the
+slow numerical tests with DMD or LDC. The focused package imports the five
+modules containing these tests and compiles their required mir-stat implementation,
+without building or running
+unrelated ordinary tests. Add `--compiler=ldc2` to select LDC. Optimization and
+inlining retain assertions, contracts, and bounds checks. Omit the build option
+for an unoptimized run.
+
+The slow suite includes the 256- and 512-bit centered binomial log-mass sweeps,
+512-bit log-factorial and Poisson log-mass sweeps, and the existing large-count
+binomial and negative-binomial tests. These use `mir_stat_test_slow_numerics`
+independently of `mir_stat_test`; their reference generators preserve the guards.
+Ordinary tests retain the smaller internal sweeps, public API references at all
+four widths, and the other Fp boundary and regression tests.
+
+Use `dub test --build=unittest-slow-numerics` to run ordinary and slow tests
+together through the full library build. When adding slow tests in another
+module, also import it in `tests/slow_numerics/suite.d`.
+
+CI runs the focused slow numerical suite once per pull request or push to
+`master`, in the Linux `ldc-latest` job. Ordinary coverage, release, and lifetime
+tests retain their full compiler and operating-system matrices. The slow run
+keeps DUB build and test markers in its logs to separate compilation from execution.

@@ -54,9 +54,9 @@ def reference(n,bits,precision):
 
 
 def render():
-    lines=['// BEGIN log-factorial references','version(mir_stat_test)',
-           '@safe pure nothrow @nogc unittest','{']
+    lines = ['// BEGIN log-factorial references']
     for bits in (64,128,256,512):
+        block_start = len(lines)
         threshold=crossover(bits)
         counts=sorted({1,2,3,16,32,threshold-1,threshold,threshold+1,2**32-1,2**32,10**12,2**64-1})
         width=bits+192
@@ -73,7 +73,12 @@ def render():
         lines+=['        ];','        foreach (r; references) {',
                 '            assert(L.factorial(r.n) == r.factorial);',
                 '            assert(L.correction(r.n) == r.correction);','        }','    }']
-    return '\n'.join(lines+['}','// END log-factorial references'])
+        block = lines[block_start:]
+        version = 'mir_stat_test_slow_numerics' if bits >= 512 else 'mir_stat_test'
+        lines[block_start:] = [f'version({version})',
+                              '@safe pure nothrow @nogc unittest',
+                              *(line[4:] for line in block), '']
+    return '\n'.join(lines+['// END log-factorial references'])
 
 
 if __name__=='__main__':
