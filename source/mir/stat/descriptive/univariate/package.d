@@ -152,6 +152,7 @@ $(TR $(TH Module) $(TH Public declarations))
             $(REF standardDeviation, mir, stat, descriptive, univariate, dispersions)$(NBSP)
             $(REF weightedVariance, mir, stat, descriptive, univariate, dispersions)$(NBSP)
             $(REF weightedStandardDeviation, mir, stat, descriptive, univariate, dispersions)$(NBSP)
+            $(REF weightedCoefficientOfVariation, mir, stat, descriptive, univariate, dispersions)$(NBSP)
             $(REF coefficientOfVariation, mir, stat, descriptive, univariate, dispersions)$(NBSP)
             $(REF dispersion, mir, stat, descriptive, univariate, dispersions)$(NBSP)
             $(BR)
@@ -274,7 +275,7 @@ public import mir.stat.descriptive.univariate.quantiles;
 
 ///
 public import mir.stat.descriptive.univariate.dispersions: dispersion, variance, standardDeviation, coefficientOfVariation, VarianceAlgo, VarianceAccumulator,
-    weightedVariance, weightedStandardDeviation, WVarianceAccumulator,
+    weightedVariance, weightedStandardDeviation, weightedCoefficientOfVariation, WVarianceAccumulator,
     WeightedVarianceNormalization;
 
 ///
@@ -340,6 +341,7 @@ unittest
     assert(mir.stat.descriptive.univariate.entropy([1.0]) == 0);
     assert(legacy.median([1.0, 3.0]) == 2);
     assert(legacy.rawMoment!1([1.0, 3.0]) == 2);
+    assert(legacy.weightedCoefficientOfVariation([1.0, 3.0], [1.0, 1.0]) == 0.5);
 }
 
 // Keep the grouped-reduction overview example executable.

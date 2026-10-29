@@ -5329,23 +5329,56 @@ private void weightedPairEach(Sink, X, Y, W)(ref Sink sink, scope X x, scope Y y
     import mir.ndslice.slice: isSlice, isConvertibleToSlice, toSlice;
     import std.traits: isStaticArray;
     import std.range.primitives: isInputRange, isForwardRange;
-    static if (isStaticArray!X)
-        weightedPairEach(sink, x[], y, w);
-    else static if (isStaticArray!Y)
-        weightedPairEach(sink, x, y[], w);
-    else static if (isStaticArray!W)
-        weightedPairEach(sink, x, y, w[]);
-    else static if (isConvertibleToSlice!X && !isSlice!X)
+    // Index static arrays directly instead of taking the address of a scope
+    // array containing pointers, which DIP1000 rejects in @safe code.
+    static if (isConvertibleToSlice!X && !isSlice!X && !isStaticArray!X)
         weightedPairEach(sink, x.toSlice, y, w);
-    else static if (isConvertibleToSlice!Y && !isSlice!Y)
+    else static if (isConvertibleToSlice!Y && !isSlice!Y && !isStaticArray!Y)
         weightedPairEach(sink, x, y.toSlice, w);
-    else static if (isConvertibleToSlice!W && !isSlice!W)
+    else static if (isConvertibleToSlice!W && !isSlice!W && !isStaticArray!W)
         weightedPairEach(sink, x, y, w.toSlice);
-    else static if (isSlice!X && isSlice!Y && isSlice!W)
+    else static if ((isStaticArray!X || isSlice!X) &&
+        (isStaticArray!Y || isSlice!Y) && (isStaticArray!W || isSlice!W))
     {
-        static assert(X.N == Y.N && X.N == W.N, "weighted moments: ranks must match");
-        assert(x.shape == y.shape && x.shape == w.shape, "weighted moments: shapes must match");
+        static if (isSlice!X && isSlice!Y && isSlice!W)
+        {
+            static assert(X.N == Y.N && X.N == W.N, "weighted moments: ranks must match");
+            assert(x.shape == y.shape && x.shape == w.shape, "weighted moments: shapes must match");
+        }
+        else
+            assert(x.length == y.length && x.length == w.length, "weighted moments: lengths must match");
         foreach (i; 0 .. x.length) weightedPairEach(sink, x[i], y[i], w[i]);
+    }
+    else static if ((isStaticArray!X || isStaticArray!Y || isStaticArray!W) &&
+        (isStaticArray!X || isInputRange!X) &&
+        (isStaticArray!Y || isInputRange!Y) &&
+        (isStaticArray!W || isInputRange!W))
+    {
+        static if (isStaticArray!X) const length = x.length;
+        else static if (isStaticArray!Y) const length = y.length;
+        else const length = w.length;
+        static if (isStaticArray!X) assert(x.length == length, "weighted moments: lengths must match");
+        else static if (isForwardRange!X) x = x.save;
+        static if (isStaticArray!Y) assert(y.length == length, "weighted moments: lengths must match");
+        else static if (isForwardRange!Y) y = y.save;
+        static if (isStaticArray!W) assert(w.length == length, "weighted moments: lengths must match");
+        else static if (isForwardRange!W) w = w.save;
+        foreach (i; 0 .. length)
+        {
+            static if (!isStaticArray!X) assert(!x.empty, "weighted moments: lengths must match");
+            enum xElement = isStaticArray!X ? "x[i]" : "x.front";
+            static if (!isStaticArray!Y) assert(!y.empty, "weighted moments: lengths must match");
+            enum yElement = isStaticArray!Y ? "y[i]" : "y.front";
+            static if (!isStaticArray!W) assert(!w.empty, "weighted moments: lengths must match");
+            enum wElement = isStaticArray!W ? "w[i]" : "w.front";
+            mixin("weightedPairEach(sink, " ~ xElement ~ ", " ~ yElement ~ ", " ~ wElement ~ ");");
+            static if (!isStaticArray!X) x.popFront;
+            static if (!isStaticArray!Y) y.popFront;
+            static if (!isStaticArray!W) w.popFront;
+        }
+        static if (!isStaticArray!X) assert(x.empty, "weighted moments: lengths must match");
+        static if (!isStaticArray!Y) assert(y.empty, "weighted moments: lengths must match");
+        static if (!isStaticArray!W) assert(w.empty, "weighted moments: lengths must match");
     }
     else static if (isInputRange!X && isInputRange!Y && isInputRange!W)
     {
@@ -6194,4 +6227,74 @@ unittest
         left.put(right);
         assert(left.covariance.approxEqual(expected, 1e-14, 0));
     }}
+}
+
+// Exercise every position of a pointer-bearing static array among slices
+// and forward ranges without weakening @safe lifetime checking.
+version(mir_stat_test)
+@safe pure nothrow @nogc unittest
+{
+    import mir.math.common: approxEqual;
+    import mir.ndslice.slice: sliced;
+    import std.algorithm.iteration: filter;
+    double[4] a = [2, 4, 6, 8], b = [3, 7, 8, 12], w = [1, 2, 3, 4];
+    double[][2] x = [a[0 .. 2], a[2 .. 4]];
+    double[][2] y = [b[0 .. 2], b[2 .. 4]];
+    double[][2] weights = [w[0 .. 2], w[2 .. 4]];
+    static foreach (xs; ["x", "a[].sliced(2, 2)", "a[].sliced(2, 2).filter!(row => true)"])
+    static foreach (ys; ["y", "b[].sliced(2, 2)", "b[].sliced(2, 2).filter!(row => true)"])
+    static foreach (ws; ["weights", "w[].sliced(2, 2)", "w[].sliced(2, 2).filter!(row => true)"])
+    {
+        assert(mixin("weightedCovariance(" ~ xs ~ ", " ~ ys ~ ", " ~ ws ~ ")").approxEqual(
+            weightedCovariance(a[], b[], w[])));
+        assert(mixin("weightedCorrelation(" ~ xs ~ ", " ~ ys ~ ", " ~ ws ~ ")").approxEqual(
+            weightedCorrelation(a[], b[], w[])));
+    }
+    const cx = x;
+    assert(weightedCovariance(cx, y, weights).approxEqual(weightedCovariance(a[], b[], w[])));
+    assert(x[0].ptr == a.ptr && x[0].length == 2 && y[0].length == 2 && weights[0].length == 2);
+}
+
+version(mir_stat_test)
+@safe pure nothrow @nogc unittest
+{
+    import mir.ndslice.slice: sliced;
+    import mir.math.common: approxEqual;
+    struct Cursor
+    {
+        double[] data;
+        size_t[] index;
+        @safe pure nothrow @nogc:
+        @property bool empty() const { return index[0] == data.length; }
+        @property double front() const { return data[index[0]]; }
+        void popFront() { ++index[0]; }
+    }
+    double[3] x = [2, 4, 8], y = [3, 7, 9], w = [1, 2, 3];
+    size_t[1] xi, yi, wi;
+    const expected = weightedCovariance(x[], y[], w[]);
+    assert(weightedCovariance(x, Cursor(y[], yi[]), Cursor(w[], wi[])).approxEqual(expected));
+    assert(yi[0] == 3 && wi[0] == 3);
+    yi[0] = wi[0] = 0;
+    assert(weightedCovariance(Cursor(x[], xi[]), y, Cursor(w[], wi[])).approxEqual(expected));
+    assert(xi[0] == 3 && wi[0] == 3);
+    xi[0] = wi[0] = 0;
+    assert(weightedCovariance(Cursor(x[], xi[]), Cursor(y[], yi[]), w).approxEqual(expected));
+    assert(xi[0] == 3 && yi[0] == 3);
+}
+
+version(mir_stat_test)
+unittest
+{
+    import std.algorithm.iteration: filter;
+    import std.exception: assertThrown;
+    import core.exception: AssertError;
+    double[2] x = [2, 4];
+    double[3] w = [1, 2, 3];
+    assertThrown!AssertError(weightedCovariance(x, x, w));
+    static foreach (r; ["w[].filter!(v => true)", "w[0 .. 1].filter!(v => true)"])
+    {
+        assertThrown!AssertError(mixin("weightedCovariance(x, x, " ~ r ~ ")"));
+        assertThrown!AssertError(mixin("weightedCovariance(x, " ~ r ~ ", x)"));
+        assertThrown!AssertError(mixin("weightedCovariance(" ~ r ~ ", x, x)"));
+    }
 }

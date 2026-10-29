@@ -22,6 +22,7 @@ $(TR $(TH Category) $(TH Declarations))
         $(REF standardDeviation, mir, stat, descriptive, univariate, dispersions)$(NBSP)
         $(REF weightedVariance, mir, stat, descriptive, univariate, dispersions)$(NBSP)
         $(REF weightedStandardDeviation, mir, stat, descriptive, univariate, dispersions)$(NBSP)
+        $(REF weightedCoefficientOfVariation, mir, stat, descriptive, univariate, dispersions)$(NBSP)
         $(REF coefficientOfVariation, mir, stat, descriptive, univariate, dispersions)$(NBSP)
         $(REF dispersion, mir, stat, descriptive, univariate, dispersions)$(NBSP)
     ))
@@ -3064,20 +3065,45 @@ private void weightedVarianceEach(Sink, X, W)(ref Sink sink, scope X x, scope W 
     import mir.ndslice.slice: toSlice;
     import std.traits: isStaticArray;
     import std.range.primitives: isInputRange, isForwardRange;
-    static if (isStaticArray!X)
-        weightedVarianceEach(sink, x[], w);
-    else static if (isStaticArray!W)
-        weightedVarianceEach(sink, x, w[]);
-    else static if (isConvertibleToSlice!X && !isSlice!X)
+    // Index static arrays directly: slicing a scope array containing pointers
+    // prevents @safe inference under DIP1000.
+    static if (isConvertibleToSlice!X && !isSlice!X && !isStaticArray!X)
         weightedVarianceEach(sink, x.toSlice, w);
-    else static if (isConvertibleToSlice!W && !isSlice!W)
+    else static if (isConvertibleToSlice!W && !isSlice!W && !isStaticArray!W)
         weightedVarianceEach(sink, x, w.toSlice);
-    else static if (isSlice!X && isSlice!W)
+    else static if ((isStaticArray!X || isSlice!X) && (isStaticArray!W || isSlice!W))
     {
-        static assert(X.N == W.N, "weighted variance: ranks must match");
-        assert(x.shape == w.shape, "weighted variance: shapes must match");
+        static if (isSlice!X && isSlice!W)
+        {
+            static assert(X.N == W.N, "weighted variance: ranks must match");
+            assert(x.shape == w.shape, "weighted variance: shapes must match");
+        }
+        else
+            assert(x.length == w.length, "weighted variance: lengths must match");
         foreach (i; 0 .. x.length)
             weightedVarianceEach(sink, x[i], w[i]);
+    }
+    else static if (isStaticArray!X && isInputRange!W)
+    {
+        static if (isForwardRange!W) w = w.save;
+        foreach (i; 0 .. x.length)
+        {
+            assert(!w.empty, "weighted variance: lengths must match");
+            weightedVarianceEach(sink, x[i], w.front);
+            w.popFront;
+        }
+        assert(w.empty, "weighted variance: lengths must match");
+    }
+    else static if (isInputRange!X && isStaticArray!W)
+    {
+        static if (isForwardRange!X) x = x.save;
+        foreach (i; 0 .. w.length)
+        {
+            assert(!x.empty, "weighted variance: lengths must match");
+            weightedVarianceEach(sink, x.front, w[i]);
+            x.popFront;
+        }
+        assert(x.empty, "weighted variance: lengths must match");
     }
     else static if (isInputRange!X && isInputRange!W)
     {
@@ -3431,6 +3457,27 @@ struct WVarianceAccumulator(T,
         T denominator = varianceDenominator();
         return (sqrt(cast(T) moment2.sum) / sqrt(denominator)) * momentScale;
     }
+
+    /// Standard deviation divided by the positive weighted mean.
+    /// Uses scaled factors without first forming dimensional variance or spread.
+    T coefficientOfVariation() const @property
+    {
+        import std.math: frexp, ldexp, sqrt;
+        const average = mean;
+        assert(average > 0, "weightedCoefficientOfVariation: mean must be larger than zero");
+        const denominator = varianceDenominator();
+        const centered = cast(T) moment2.sum;
+        if (centered == 0) return 0;
+        int momentExponent, denominatorExponent, scaleExponent, meanExponent;
+        const momentFraction = frexp(centered, momentExponent);
+        const denominatorFraction = frexp(denominator, denominatorExponent);
+        const scaleFraction = frexp(momentScale, scaleExponent);
+        const meanFraction = frexp(average, meanExponent);
+        const exponent = momentExponent - denominatorExponent;
+        const factor = sqrt(ldexp(momentFraction / denominatorFraction, exponent % 2));
+        return ldexp(factor * (scaleFraction / meanFraction),
+            exponent / 2 + scaleExponent - meanExponent);
+    }
 }
 /++
 Weighted variance of paired values and weights, without materializing the inputs.
@@ -3567,6 +3614,111 @@ template weightedStandardDeviation(
     }
 }
 
+
+/++
+Weighted standard deviation divided by the positive weighted mean.
+
+Use this dimensionless ratio to compare relative spread across quantities with
+meaningful zero points, such as durations or lengths. A result of 0.2 means the
+standard deviation is 20 percent of the mean. Multiplying all observations by
+a positive unit-conversion factor leaves the mathematical result unchanged;
+adding an offset generally changes it. Avoid using it for measurements with an
+arbitrary zero point, such as Celsius temperatures.
+
+The weighted mean must be strictly positive in the working type, matching
+coefficientOfVariation. Zero or negative means violate an assertion; a mean
+near zero can produce a very large ratio. Constant positive observations have
+ratio zero when the selected sample correction has enough observations.
+
+Choose $(REF WeightedMomentNormalization, mir, stat, descriptive, weighting):
+$(UL
+    $(LI $(D population), the default, describes the weighted distribution.)
+    $(LI $(D frequencySample) treats whole-number weights as sample occurrence
+        counts and matches coefficientOfVariation on expanded observations.)
+    $(LI $(D relativeSample) treats each row as an independent observation with
+        fixed relative emphasis and a common mean and variance.)
+)
+Relative weights may be rescaled without changing the mathematical result;
+frequency counts must retain their sample-size meaning. These choices correct
+the variance, not the final ratio: neither sample mode generally gives an
+unbiased estimator of the population coefficient of variation.
+
+Input shapes, weight validity, zero-weight exclusion, algorithm choices, and
+rounding limits follow $(LREF weightedVariance) and $(LREF WVarianceAccumulator).
+The mean and spread share one accumulator; inputs are not traversed separately
+for a weighted mean. Online and hybrid modes accept single-pass ranges, while
+twoPass requires replayable inputs. The final ratio uses scaled factors rather
+than forming an unscaled variance or standard deviation. The accumulator mean
+and centered sums still have their documented numerical limits.
+On Windows x64 DMD, store one-element float/double static arrays in named
+variables before passing them, as required by weighted moments for DMD issue
+24118. Named scalar-element static arrays are borrowed as slices.
+
+Params:
+    F = floating result/working type, or a type promoted to floating point
+    normalization = population (default), frequencySample, or relativeSample
+    varianceAlgo = online, twoPass, or hybrid (default)
+    summation = summation algorithm; appropriate selects pairwise summation
++/
+template weightedCoefficientOfVariation(F,
+    WeightedMomentNormalization normalization = WeightedMomentNormalization.population,
+    VarianceAlgo varianceAlgo = VarianceAlgo.hybrid,
+    Summation summation = Summation.appropriate)
+{
+    /// values and weights must have matching shapes or lengths.
+    stdevType!F weightedCoefficientOfVariation(X, W)(scope auto ref X values, scope auto ref W weights)
+        if (isIterable!X && isIterable!W)
+    {
+        import std.traits: isStaticArray;
+        import mir.stat.descriptive.univariate.moments: WeightedMomentCheckArguments;
+        mixin WeightedMomentCheckArguments!(values, weights);
+        alias T = stdevType!F;
+        WVarianceAccumulator!(T, normalization, varianceAlgo,
+            ResolveSummationType!(summation, T[], T)) accumulator;
+        static if (isStaticArray!X && is(typeof(values[0]) : real)) scope auto x = values[];
+        else alias x = values;
+        static if (isStaticArray!W && is(typeof(weights[0]) : real)) scope auto w = weights[];
+        else alias w = weights;
+        accumulator.put(x, w);
+        return accumulator.coefficientOfVariation;
+    }
+}
+
+/// ditto
+template weightedCoefficientOfVariation(
+    WeightedMomentNormalization normalization = WeightedMomentNormalization.population,
+    VarianceAlgo varianceAlgo = VarianceAlgo.hybrid,
+    Summation summation = Summation.appropriate)
+{
+    /// ditto
+    stdevType!(DeepElementType!X) weightedCoefficientOfVariation(X, W)(scope auto ref X values, scope auto ref W weights)
+        if (isIterable!X && isIterable!W)
+    {
+        import mir.stat.descriptive.univariate.moments: WeightedMomentCheckArguments;
+        mixin WeightedMomentCheckArguments!(values, weights);
+        return .weightedCoefficientOfVariation!(stdevType!(DeepElementType!X), normalization, varianceAlgo, summation)(values, weights);
+    }
+}
+
+/// The mean is 7.5 in all three modes; the spread correction changes the ratio.
+@safe pure nothrow @nogc
+unittest
+{
+    import mir.stat.descriptive.weighting: WeightedMomentNormalization;
+    import mir.math.common: approxEqual;
+    import std.math: sqrt;
+    alias N = WeightedMomentNormalization;
+    double[2] values = [0, 10];
+    int[2] counts = [1, 3];
+    double[2] probabilities = [0.25, 0.75];
+    // Describe a distribution with 25 percent at zero and 75 percent at ten.
+    assert(weightedCoefficientOfVariation(values, probabilities).approxEqual(1 / sqrt(3.0)));
+    // Four sampled observations [0, 10, 10, 10]: standard deviation 5 / mean 7.5.
+    assert(weightedCoefficientOfVariation!(N.frequencySample)(values, counts).approxEqual(2.0 / 3));
+    // Two independent rows with preassigned relative emphasis 1:3.
+    assert(weightedCoefficientOfVariation!(N.relativeSample)(values, counts).approxEqual(sqrt(50.0) / 7.5));
+    assert(weightedCoefficientOfVariation!(N.relativeSample)(values, probabilities).approxEqual(sqrt(50.0) / 7.5));
+}
 
 /// The same data has different sample corrections under different weight meanings.
 version(mir_stat_test)
@@ -3880,4 +4032,195 @@ unittest
     assert(weightedStandardDeviation(values, weights) == weightedStandardDeviation(values[], weights[]));
     double[2][2] nestedValues = [[0, 10], [0, 10]], nestedWeights = [[1, 3], [1, 3]];
     assert(weightedVariance(nestedValues, nestedWeights) == 18.75);
+}
+
+version(mir_stat_test)
+@safe pure nothrow @nogc
+unittest
+{
+    import mir.math.common: approxEqual;
+    import mir.ndslice.slice: sliced;
+    import std.math: sqrt;
+    import std.meta: AliasSeq;
+    alias N = WeightedMomentNormalization;
+    static foreach (T; AliasSeq!(float, double, real))
+    static foreach (mode; [Summation.naive, Summation.pairwise, Summation.kbn, Summation.kb2, Summation.precise])
+    static foreach (algo; [VarianceAlgo.online, VarianceAlgo.twoPass, VarianceAlgo.hybrid])
+    {{
+        T[2] x = [2, 6], w = [1, 3], probabilities = [0.25, 0.75];
+        T[4] expanded = [2, 6, 6, 6];
+        const tol = 64 * T.epsilon;
+        static foreach (norm; [N.population, N.frequencySample, N.relativeSample])
+        {{
+            const expected = norm == N.population ? sqrt(T(3)) / 5 :
+                norm == N.frequencySample ? T(0.4) : sqrt(T(8)) / 5;
+            const result = weightedCoefficientOfVariation!(T, norm, algo, mode)(x, w);
+            assert(result.approxEqual(expected, tol, T(0)));
+            assert(weightedCoefficientOfVariation!(norm, algo, mode)(x, w).approxEqual(expected, tol, T(0)));
+            WVarianceAccumulator!(T, norm, algo, mode) a, b;
+            a.put(x[0], w[0]);
+            b.put(x[1], w[1]);
+            a.put(b);
+            assert(a.coefficientOfVariation.approxEqual(expected, tol, T(0)));
+            foreach (scale; [T.min_normal, T(1), T.max / 8])
+            {
+                T[2] scaled = [2 * scale, 6 * scale];
+                assert(weightedCoefficientOfVariation!(norm, algo, mode)(scaled, w).approxEqual(expected, tol, T(0)));
+            }
+            T[2] constant = [7, 7];
+            assert(weightedCoefficientOfVariation!(norm, algo, mode)(constant, w) == 0);
+        }}
+        assert(weightedCoefficientOfVariation!(N.frequencySample, algo, mode)(x, w).approxEqual(
+            coefficientOfVariation!(T, algo, mode)(expanded[].sliced), tol, T(0)));
+        assert(weightedCoefficientOfVariation!(N.population, algo, mode)(x, probabilities).approxEqual(sqrt(T(3))/5, tol, T(0)));
+        assert(weightedCoefficientOfVariation!(N.relativeSample, algo, mode)(x, probabilities).approxEqual(sqrt(T(8))/5, tol, T(0)));
+        T[3] masked = [T.nan, 2, 6], mask = [0, 1, 3];
+        assert(weightedCoefficientOfVariation!(N.population, algo, mode)(masked, mask).approxEqual(sqrt(T(3))/5, tol, T(0)));
+    }}
+    int[2] x = [2, 6], w = [1, 3];
+    static assert(is(typeof(weightedCoefficientOfVariation(x, w)) == double));
+    static assert(is(typeof(weightedCoefficientOfVariation!float(x, w)) == float));
+}
+
+version(mir_stat_test)
+@safe pure nothrow @nogc
+unittest
+{
+    import mir.math.common: approxEqual;
+    import mir.ndslice.slice: sliced;
+    import mir.ndslice.dynamic: transposed;
+    import std.algorithm: filter;
+    import std.range.primitives: isInputRange, isForwardRange;
+    double[4] x = [1, 2, 4, 8], w = [1, 3, 2, 1], storage = [1, 2, 3, 1];
+    const expected = weightedCoefficientOfVariation(x, w);
+    assert(weightedCoefficientOfVariation(x[].sliced(2, 2), storage[].sliced(2, 2).transposed).approxEqual(expected));
+    assert(weightedCoefficientOfVariation(x[].filter!(a => true), w[].filter!(a => true)).approxEqual(expected));
+    static struct Cursor
+    {
+        double[] data;
+        size_t[] index;
+        double front() @safe pure nothrow @nogc { return data[index[0]]; }
+        bool empty() @safe pure nothrow @nogc { return index[0] == data.length; }
+        void popFront() @safe pure nothrow @nogc { ++index[0]; }
+    }
+    static assert(isInputRange!Cursor && !isForwardRange!Cursor);
+    size_t[1] xi, wi;
+    auto xr = Cursor(x[], xi[]), wr = Cursor(w[], wi[]);
+    static assert(!__traits(compiles, weightedCoefficientOfVariation!(WeightedMomentNormalization.population, VarianceAlgo.twoPass)(xr, wr)));
+    assert(weightedCoefficientOfVariation(xr, wr).approxEqual(expected));
+    assert(xi[0] == 4 && wi[0] == 4);
+}
+
+version(mir_stat_test)
+pure unittest
+{
+    import std.exception: assertThrown;
+    import core.exception: AssertError;
+    alias N = WeightedMomentNormalization;
+    double[2] w = [1, 1], zero = [0, 0], negative = [-1, -2], cancelling = [-1, 1], x = [1, 2];
+    import mir.math.common: approxEqual;
+    double[][2] nested = [x[0 .. 1], x[1 .. 2]], nestedWeights = [w[0 .. 1], w[1 .. 2]];
+    assert(weightedCoefficientOfVariation(nested, nestedWeights).approxEqual(weightedCoefficientOfVariation(x, w)));
+    assertThrown!AssertError(weightedCoefficientOfVariation(zero, w));
+    assertThrown!AssertError(weightedCoefficientOfVariation(negative, w));
+    assertThrown!AssertError(weightedCoefficientOfVariation(cancelling, w));
+    assertThrown!AssertError(weightedCoefficientOfVariation(x, zero));
+    assertThrown!AssertError(weightedCoefficientOfVariation(x[0 .. 0], w[0 .. 0]));
+    assertThrown!AssertError(weightedCoefficientOfVariation(x, w[0 .. 1]));
+    foreach (bad; [-1.0, double.nan, double.infinity])
+    {
+        double[2] invalid = [1, bad];
+        assertThrown!AssertError(weightedCoefficientOfVariation(x, invalid));
+    }
+    double[2] fractional = [1, 0.5];
+    assertThrown!AssertError(weightedCoefficientOfVariation!(N.frequencySample)(x, fractional));
+    assertThrown!AssertError(weightedCoefficientOfVariation!(N.frequencySample)(x[0 .. 1], w[0 .. 1]));
+    assertThrown!AssertError(weightedCoefficientOfVariation!(N.relativeSample)(x[0 .. 1], w[0 .. 1]));
+    WVarianceAccumulator!double empty;
+    assertThrown!AssertError(empty.coefficientOfVariation);
+}
+
+version(mir_stat_test)
+@safe pure nothrow @nogc
+unittest
+{
+    import std.meta: AliasSeq;
+    static foreach (T; AliasSeq!(float, double, const(float), const(double)))
+    {{
+        T[1] x = [7], w = [1];
+        assert(weightedCoefficientOfVariation(x, w) == 0);
+        assert(weightedCoefficientOfVariation!double(x, w) == 0);
+        version(DigitalMars) version(Win64)
+        {
+            static assert(!__traits(compiles, weightedCoefficientOfVariation(cast(T[1])[7], w)));
+            static assert(!__traits(compiles, weightedCoefficientOfVariation!double(x, cast(T[1])[1])));
+        }
+        assert(weightedCoefficientOfVariation(cast(T[2])[7, 7], cast(T[2])[1, 1]) == 0);
+    }}
+}
+
+// Pointer-bearing static arrays must remain usable from @safe DIP1000 code,
+// including mixtures with independently traversed slices and forward ranges.
+version(mir_stat_test)
+@safe pure nothrow @nogc unittest
+{
+    import mir.math.common: approxEqual;
+    import mir.ndslice.slice: sliced;
+    import std.algorithm.iteration: filter;
+    double[4] a = [2, 4, 6, 8], b = [3, 7, 8, 12], w = [1, 2, 3, 4];
+    double[][2] x = [a[0 .. 2], a[2 .. 4]];
+    double[][2] y = [b[0 .. 2], b[2 .. 4]];
+    double[][2] weights = [w[0 .. 2], w[2 .. 4]];
+    alias N = WeightedMomentNormalization;
+    static foreach (algo; [VarianceAlgo.online, VarianceAlgo.twoPass, VarianceAlgo.hybrid])
+    static foreach (xs; ["x", "a[].sliced(2, 2)", "a[].sliced(2, 2).filter!(row => true)"])
+    static foreach (ws; ["weights", "w[].sliced(2, 2)", "w[].sliced(2, 2).filter!(row => true)"])
+    {
+        assert(mixin("weightedVariance!(double, N.population, algo)(" ~ xs ~ ", " ~ ws ~ ")").approxEqual(
+            weightedVariance!(double, N.population, algo)(a[], w[])));
+        assert(mixin("weightedStandardDeviation!(double, N.population, algo)(" ~ xs ~ ", " ~ ws ~ ")").approxEqual(
+            weightedStandardDeviation!(double, N.population, algo)(a[], w[])));
+        assert(mixin("weightedCoefficientOfVariation!(double, N.population, algo)(" ~ xs ~ ", " ~ ws ~ ")").approxEqual(
+            weightedCoefficientOfVariation!(double, N.population, algo)(a[], w[])));
+    }
+    const cx = x;
+    assert(weightedVariance(cx, weights).approxEqual(weightedVariance(a[], w[])));
+    assert(x[0].ptr == a.ptr && x[0].length == 2 && x[1].length == 2);
+}
+
+version(mir_stat_test)
+@safe pure nothrow @nogc unittest
+{
+    import mir.ndslice.slice: sliced;
+    import mir.math.common: approxEqual;
+    struct Cursor
+    {
+        double[] data;
+        size_t[] index;
+        @safe pure nothrow @nogc:
+        @property bool empty() const { return index[0] == data.length; }
+        @property double front() const { return data[index[0]]; }
+        void popFront() { ++index[0]; }
+    }
+    double[3] x = [2, 4, 8], y = [3, 7, 9], w = [1, 2, 3];
+    size_t[1] xi, yi, wi;
+    assert(weightedVariance(x, Cursor(w[], wi[])).approxEqual(weightedVariance(x[], w[])));
+    assert(wi[0] == 3);
+    assert(weightedVariance(Cursor(x[], xi[]), w).approxEqual(weightedVariance(x[], w[])));
+    assert(xi[0] == 3);
+}
+
+version(mir_stat_test)
+unittest
+{
+    import std.algorithm.iteration: filter;
+    import std.exception: assertThrown;
+    import core.exception: AssertError;
+    double[2] x = [2, 4];
+    double[3] w = [1, 2, 3];
+    assertThrown!AssertError(weightedVariance(x, w));
+    assertThrown!AssertError(weightedVariance(x, w[].filter!(v => true)));
+    assertThrown!AssertError(weightedVariance(x, w[0 .. 1].filter!(v => true)));
+    assertThrown!AssertError(weightedVariance(w[].filter!(v => true), x));
+    assertThrown!AssertError(weightedVariance(w[0 .. 1].filter!(v => true), x));
 }

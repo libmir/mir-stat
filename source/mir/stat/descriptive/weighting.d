@@ -2,7 +2,7 @@
 Shared normalization for weighted statistics.
 
 $(LREF WeightedMomentNormalization) is the single policy used by weighted
-variance, standard deviation, covariance, skewness, and kurtosis. The policy
+variance, standard deviation, coefficient of variation, covariance, skewness, and kurtosis. The policy
 selects the meaning of weights and whether to apply a sample correction;
 each statistic supplies its own formula and minimum sample size.
 
