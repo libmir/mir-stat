@@ -57,6 +57,11 @@ These corrected standardized ratios are not generally unbiased. Kurtosis default
 to excess; pass isRaw=true to add three. For values [0, 10] and counts [1, 3],
 population excess kurtosis is -2/3, while frequency-sample excess kurtosis is 4.
 Relative sample correction is unavailable for these two rows.))
+$(TR $(TD Weighted coefficient of variation) $(TD Divide weighted standard deviation
+by the positive weighted mean to compare relative spread. Use the same three
+normalization choices as variance. For values [0, 10] and weights [1, 3], the
+population ratio is about 0.577, frequency-sample ratio 0.667, and relative-sample
+ratio 0.943. Sample correction does not generally make this ratio unbiased.))
 $(TR $(TD Weighted covariance) $(TD Use WeightedMomentNormalization with the same
 three choices as variance. For x=[0,10], y=[0,20], weights=[1,3], covariance is
 37.5 for population, 50 for frequencySample, and 100 for relativeSample.))
