@@ -52,6 +52,7 @@ def render():
     out = ['// BEGIN centered binomial references', 'version(mir_stat_test)',
            '@safe pure nothrow @nogc unittest', '{']
     for bits in (64,128,256,512):
+        block_start = len(out)
         out += ['    {', f'        alias T = Fp!{bits};',
                 '        struct Reference { ulong k; ulong n; T p; T value; }',
                 '        enum references = [']
@@ -63,6 +64,12 @@ def render():
             out.append(f'            Reference({k}UL,{n}UL,T(false,{ep},UInt!{bits}.fromHexString("{c:x}")),T(true,{exponent},UInt!{bits}.fromHexString("{coef:x}"))),')
         out += ['        ];', '        foreach (r; references)',
                 f'            assert(BinomialLog!{bits}.mass(r.k,r.n,r.p) == r.value);', '    }']
+        if bits >= 256:
+            block = out[block_start:]
+            out[block_start:] = [
+                '    // Keep the expensive wide reference sweep in the slow suite.',
+                '    version(mir_stat_test_slow_numerics)', '    {',
+                *('    ' + line for line in block), '    }']
     return '\n'.join(out+['}', '// END centered binomial references'])
 
 

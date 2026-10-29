@@ -52,6 +52,7 @@ def render():
     lines=['// BEGIN Poisson log references','version(mir_stat_test)',
            '@safe pure nothrow @nogc unittest','{']
     for bits in (64,128,256,512):
+        block_start = len(lines)
         lines+=['    {',f'        alias T = Fp!{bits};',
                 '        struct Reference { ulong k; T rate; T value; }',
                 '        enum references = [']
@@ -64,6 +65,12 @@ def render():
             lines.append(f'            Reference({k}UL,T(false,{exponent(e)},UInt!{bits}.fromHexString("{c:x}")),T(true,{exponent(exp)},UInt!{bits}.fromHexString("{coef:x}"))),')
         lines+=['        ];','        foreach (r; references)',
                 f'            assert(PoissonLog!{bits}.mass(r.k,r.rate) == r.value);','    }']
+        if bits >= 512:
+            block = lines[block_start:]
+            lines[block_start:] = [
+                '    // Keep the expensive wide reference sweep in the slow suite.',
+                '    version(mir_stat_test_slow_numerics)', '    {',
+                *('    ' + line for line in block), '    }']
     return '\n'.join(lines+['}','// END Poisson log references'])
 
 

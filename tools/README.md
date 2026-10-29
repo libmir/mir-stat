@@ -56,3 +56,12 @@ Run `python3 tools/test_build_docs.py` for driver regression checks.
 
 The existing compiler matrix and CircleCI release publishing remain separate.
 An HTML build does not verify every link or the external online example runner.
+
+## Slow numerical references
+
+Run `dub test --build=unittest-slow-numerics` to include the expensive internal
+Fp reference sweeps: 256- and 512-bit centered binomial log masses, and 512-bit
+log-factorials and Poisson log masses. These use `mir_stat_test_slow_numerics`
+in addition to `mir_stat_test`; their reference generators preserve the guards.
+Ordinary tests retain the smaller internal sweeps, public API references at all
+four widths, and the other Fp boundary and regression tests.
