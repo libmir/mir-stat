@@ -2,6 +2,10 @@ project('mir-stat', 'd', version : '0.3.1', license: 'Apache-2.0')
 
 description = 'Dlang Statistical Package'
 
+# The full library suite includes high-precision numerical tests. Allow
+# 20 minutes instead of Meson's default 30 seconds in both CI systems.
+add_test_setup('numerics', timeout_multiplier: 40, is_default: true)
+
 # Match the default DUB library configuration. Optional BLAS and benchmark
 # dependencies are exercised by their separate DUB configurations.
 subprojects = ['mir-core', 'mir-algorithm']

@@ -46,7 +46,10 @@ uploaded as `meson-test-logs` even on failure.
 The driver creates the pinned extractor's default `out` directory before
 starting parallel example extraction. Single-file results go to stdout, but
 the extractor still creates this directory and otherwise races on first use.
-All build modes retain two Ninja build jobs.
+All build modes retain two Ninja build jobs. The shared Meson configuration uses a timeout multiplier
+of 40, allowing 20 minutes for the full numerical library suite instead of the
+template's default 30 seconds in both GitHub Actions and CircleCI. Tests still
+fail if they exceed that limit.
 
 Use `--tests-only` for library tests without HTML or extracted examples.
 Run `python3 tools/test_build_docs.py` for driver regression checks.
