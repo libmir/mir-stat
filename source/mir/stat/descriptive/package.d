@@ -73,6 +73,10 @@ match the corresponding quantiles of an expanded sample. Other algorithms
 treat weights as relative masses and are unchanged by scaling all weights.
 For values [0, 10] with weights [2, 2], the first quartile is 0 under
 frequencyType7 and 2.5 under relative-mass type7.))
+$(TR $(TD Weighted interquartile range) $(TD Subtract the weighted 25th percentile
+from the 75th percentile using WeightedQuantileAlgo. For values [0, 10] and
+weights [1, 3], inverseCDF gives 10; frequencyType7 gives 2.5, matching the
+expanded sample [0, 10, 10, 10]. No variance normalization option is needed.))
 $(TR $(TD Weighted histograms) $(TD Bin totals add weights, so scaling all
 weights scales the totals. Relative frequencies divide by the total and stay
 unchanged. Per-bin accumulators use their own statistical policies.))
