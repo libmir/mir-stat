@@ -1,0 +1,21 @@
+name "slow-numerics"
+description "Focused slow numerical tests for mir-stat"
+license "Apache-2.0"
+targetType "library"
+targetPath "../../build/slow-numerics"
+sourcePaths "."
+importPaths "../../source"
+dependency "mir-algorithm" version=">=3.20.1"
+versions "mir_stat_test_slow_numerics"
+
+// Compile mir-stat imports without enabling dependency unittests.
+dflags "-lowmem" "-i=mir.stat" "-i=mir.math.internal" platform="dmd"
+dflags "-lowmem" "-i=mir.stat" "-i=mir.math.internal" platform="ldc"
+
+buildType "unittest" {
+    buildOptions "unittests" "debugMode" "debugInfo"
+}
+// Retain assertions, contracts, and bounds checks while optimizing the slow loops.
+buildType "unittest-optimized" {
+    buildOptions "unittests" "debugMode" "debugInfo" "optimize" "inline"
+}

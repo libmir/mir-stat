@@ -49,8 +49,7 @@ def reference(k,n,c,e,bits,precision):
 
 
 def render():
-    out = ['// BEGIN centered binomial references', 'version(mir_stat_test)',
-           '@safe pure nothrow @nogc unittest', '{']
+    out = ['// BEGIN centered binomial references']
     for bits in (64,128,256,512):
         block_start = len(out)
         out += ['    {', f'        alias T = Fp!{bits};',
@@ -64,13 +63,12 @@ def render():
             out.append(f'            Reference({k}UL,{n}UL,T(false,{ep},UInt!{bits}.fromHexString("{c:x}")),T(true,{exponent},UInt!{bits}.fromHexString("{coef:x}"))),')
         out += ['        ];', '        foreach (r; references)',
                 f'            assert(BinomialLog!{bits}.mass(r.k,r.n,r.p) == r.value);', '    }']
-        if bits >= 256:
-            block = out[block_start:]
-            out[block_start:] = [
-                '    // Keep the expensive wide reference sweep in the slow suite.',
-                '    version(mir_stat_test_slow_numerics)', '    {',
-                *('    ' + line for line in block), '    }']
-    return '\n'.join(out+['}', '// END centered binomial references'])
+        block = out[block_start:]
+        version = 'mir_stat_test_slow_numerics' if bits >= 256 else 'mir_stat_test'
+        out[block_start:] = [f'version({version})',
+                              '@safe pure nothrow @nogc unittest',
+                              *(line[4:] for line in block), '']
+    return '\n'.join(out+['// END centered binomial references'])
 
 
 if __name__ == '__main__':

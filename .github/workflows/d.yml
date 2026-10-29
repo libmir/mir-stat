@@ -185,9 +185,12 @@ jobs:
         }
         Write-Output "Preserved $($reports.Count) general coverage reports"
 
+    # Run slow numerical sweeps once; ordinary Fp tests stay in the full matrix.
+    # The focused suite makes optimized LDC faster overall than DMD.
     - name: Run slow numerical tests
-      if: matrix.dc == 'dmd-latest' || matrix.dc == 'ldc-latest'
-      run: dub -q test --build=unittest-slow-numerics
+      if: matrix.os == 'ubuntu-latest' && matrix.dc == 'ldc-latest'
+      # Keep build/link/run markers to distinguish compilation from test runtime.
+      run: dub test mir-stat:slow-numerics --build=unittest-optimized
 
     - name: Run DIP1000 lifetime tests
       run: dub -q test --build=unittest-dip1000

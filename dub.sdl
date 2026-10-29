@@ -10,6 +10,7 @@ dependency "mir-algorithm" version=">=3.20.1"
 toolchainRequirements frontend=">=2.097"
 
 subPackage "benchmarks"
+subPackage "tests/slow_numerics"
 
 configuration "library" {
     targetType "library"
