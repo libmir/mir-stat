@@ -33,6 +33,7 @@ $(TR $(TH Category) $(TH Declarations))
         $(REF makeWeightedQuantile, mir, stat, descriptive, univariate, quantiles)$(NBSP)
     ))
     $(TR $(TD Measures of spread) $(TD
+        $(REF weightedInterquartileRange, mir, stat, descriptive, univariate, quantiles)$(NBSP)
         $(REF interquartileRange, mir, stat, descriptive, univariate, quantiles)$(NBSP)
         $(REF medianAbsoluteDeviation, mir, stat, descriptive, univariate, quantiles)$(NBSP)
     ))
@@ -63,7 +64,7 @@ import mir.internal.utility: isFloatingPoint;
 import mir.math.common: fmamath;
 import mir.math.sum: Summator, ResolveSummationType;
 import mir.ndslice.slice: isConvertibleToSlice, isSlice, Slice, SliceKind;
-import std.traits: isIterable, isMutable;
+import std.traits: isIterable, isMutable, isIntegral;
 
 import mir.stat.descriptive.univariate.internal.types: statType, meanType;
 import mir.stat.descriptive.univariate.means: mean;
@@ -4790,6 +4791,106 @@ package(mir.stat) auto quantileSpread(F, QuantileAlgo algorithm, bool modify, S,
 }
 
 /++
+Difference between the weighted 75th and 25th percentiles.
+
+Use this measure of spread when the middle half of the weighted distribution
+is more useful than a standard deviation that is sensitive to extreme values.
+The result has the same units as the observations. Inputs are not modified.
+
+Choose the existing $(LREF WeightedQuantileAlgo), rather than a variance
+normalization policy:
+$(UL
+    $(LI $(D inverseCDF), the default, selects observed values at the two
+        cumulative-weight thresholds. Use it to describe a weighted distribution.)
+    $(LI $(D frequencyType7) or $(D frequencyType8) treats whole-number weights
+        as occurrence counts and uses the corresponding expanded-sample
+        quantile convention. Rescaling counts changes the sample.)
+    $(LI The remaining algorithms treat weights as relative emphasis; scaling
+        all weights by a common positive factor leaves the mathematical result
+        unchanged. See $(LREF WeightedQuantileAlgo) for their definitions.)
+)
+For example, values [0, 10] with counts [1, 3] represent [0, 10, 10, 10].
+The inverse-CDF quartiles are 0 and 10, giving a spread of 10. Frequency type 7
+interpolates the lower quartile to 7.5, giving a spread of 2.5. These are
+alternative quantile conventions, not sample-variance corrections.
+
+Both quartiles share one sorted workspace, using reference-counted scratch
+storage as in $(LREF rcWeightedQuantile). Input requirements, zero-weight
+exclusion, weight validation, and algorithm-specific limits follow
+$(LREF weightedQuantile). Only one-dimensional inputs are supported.
+
+For inverseCDF with integral observations, subtract selected observations
+before conversion to preserve small differences at large offsets. An integral
+result must fit the result type. Other cases use real intermediates and convert
+the final difference to the result type. Interpolated quartiles are still
+rounded separately in real, so a large common offset can hide a small spread;
+real precision depends on the compiler and platform.
+
+Params:
+    F = result type; inferred as for weightedQuantile when omitted
+    algorithm = weighted quantile definition, default inverseCDF
++/
+template weightedInterquartileRange(F,
+    WeightedQuantileAlgo algorithm = WeightedQuantileAlgo.inverseCDF)
+    if (isFloatingPoint!F || (algorithm == WeightedQuantileAlgo.inverseCDF && isIntegral!F))
+{
+    /++
+    Params:
+        data = observations corresponding to the weights
+        weights = nonnegative finite relative weights, or whole-number counts
+            for frequencyType7 and frequencyType8
+    +/
+    F weightedInterquartileRange(Data, Weights)(
+        scope auto ref Data data, scope auto ref Weights weights)
+    {
+        import mir.primitives: DeepElementType;
+        import std.traits: Unqual;
+        alias Element = Unqual!(DeepElementType!Data);
+        static if (algorithm == WeightedQuantileAlgo.inverseCDF && isIntegral!Element)
+        {
+            auto quartiles = rcWeightedQuantile!algorithm(data, weights, 0.25, 0.75);
+            const ulong distance = cast(ulong) quartiles[1] - cast(ulong) quartiles[0];
+            static if (isIntegral!F)
+                assert(distance <= F.max, "weightedInterquartileRange: result is out of range");
+            return cast(F) distance;
+        }
+        else
+        {
+            static assert(isFloatingPoint!F,
+                "weightedInterquartileRange: nonintegral observations require a floating result");
+            auto quartiles = rcWeightedQuantile!(real, algorithm)(data, weights, 0.25, 0.75);
+            return cast(F)(quartiles[1] - quartiles[0]);
+        }
+    }
+}
+
+/// ditto
+template weightedInterquartileRange(
+    WeightedQuantileAlgo algorithm = WeightedQuantileAlgo.inverseCDF)
+{
+    /// ditto
+    auto weightedInterquartileRange(Data, Weights)(
+        scope auto ref Data data, scope auto ref Weights weights)
+    {
+        alias F = WeightedQuantileResult!(Data, algorithm);
+        return .weightedInterquartileRange!(F, algorithm)(data, weights);
+    }
+}
+
+/// The quantile convention determines the spread of the same weighted data.
+@safe pure nothrow @nogc unittest
+{
+    import mir.stat.descriptive.univariate.quantiles: WeightedQuantileAlgo;
+    import mir.math.common: approxEqual;
+    double[2] values = [0, 10];
+    int[2] counts = [1, 3];
+    double[2] probabilities = [0.25, 0.75];
+    assert(weightedInterquartileRange(values, counts) == 10);
+    assert(weightedInterquartileRange(values, probabilities) == 10);
+    assert(weightedInterquartileRange!(WeightedQuantileAlgo.frequencyType7)(values, counts).approxEqual(2.5));
+}
+
+/++
 Computes the interquartile range of the input.
 
 For integral observations, the difference is computed before converting a common
@@ -5762,4 +5863,82 @@ unittest
             probabilities[].sliced.map!readProbability));
         assert(inputFailure.allocations == 2 && inputFailure.releases == 2);
     }}
+}
+
+version(mir_stat_test)
+@safe pure nothrow @nogc unittest
+{
+    import mir.math.common: approxEqual;
+    import mir.ndslice.slice: sliced;
+    import mir.ndslice.topology: stride;
+    import std.meta: AliasSeq;
+    alias A = WeightedQuantileAlgo;
+    static foreach (T; AliasSeq!(float, double, real))
+    {{
+        T[4] values = [0, 2, 6, 10], weights = [1, 2, 1, 2];
+        T[6] expanded = [0, 2, 2, 6, 10, 10];
+        static foreach (algorithm; __traits(allMembers, A))
+        {{
+            enum algo = __traits(getMember, A, algorithm);
+            const spread = weightedInterquartileRange!(algo)(values, weights);
+            assert(spread >= 0);
+            T[4] constant = [3, 3, 3, 3];
+            assert(weightedInterquartileRange!(algo)(constant, weights) == 0);
+            static if (algo == A.frequencyType7 || algo == A.frequencyType8)
+            {
+                enum ordinary = algo == A.frequencyType7 ? QuantileAlgo.type7 : QuantileAlgo.type8;
+                assert(spread.approxEqual(interquartileRange!ordinary(expanded[].sliced), 128 * T.epsilon));
+            }
+            else
+            {
+                T[4] scaledWeights = [4, 8, 4, 8];
+                assert(spread.approxEqual(weightedInterquartileRange!algo(values, scaledWeights), 128 * T.epsilon));
+            }
+        }}
+        static assert(is(typeof(weightedInterquartileRange(values, weights)) == T));
+        T[2] extreme = [-T.max, T.max];
+        T[2] equal = [1, 1];
+        assert(weightedInterquartileRange!float(extreme, equal) == float.infinity);
+    }}
+    long[2] nearMax = [long.max - 3, long.max];
+    int[2] equal = [1, 1];
+    assert(weightedInterquartileRange(nearMax, equal) == 3);
+    assert(weightedInterquartileRange!float(nearMax, equal) == 3);
+    ulong[2] fullUnsigned = [0, ulong.max];
+    assert(weightedInterquartileRange(fullUnsigned, equal) == ulong.max);
+    long[2] fullSigned = [long.min, long.max];
+    assert(weightedInterquartileRange!ulong(fullSigned, equal) == ulong.max);
+    double[4] storage = [0, 999, 10, 999];
+    double[4] masses = [1, 999, 3, 999];
+    assert(weightedInterquartileRange(storage[].sliced.stride(2), masses[].sliced.stride(2)) == 10);
+    const double[2] values = [0.0, 10.0];
+    const int[2] counts = [1, 3];
+    assert(weightedInterquartileRange(values, counts) == 10);
+    double[3] masked = [double.nan, 0, 10];
+    int[3] mask = [0, 1, 3];
+    assert(weightedInterquartileRange(masked, mask) == 10);
+    double[1] one = [7];
+    int[1] weight = [1];
+    assert(weightedInterquartileRange(one, weight) == 0);
+}
+
+version(mir_stat_test)
+unittest
+{
+    import std.exception: assertThrown;
+    import core.exception: AssertError;
+    long[2] extremes = [long.min, long.max];
+    int[2] equal = [1, 1];
+    assertThrown!AssertError(weightedInterquartileRange(extremes, equal));
+    double[2] x = [0, 10], zero = [0, 0], negative = [1, -1], fractional = [1, 0.5];
+    assertThrown!AssertError(weightedInterquartileRange(x, zero));
+    assertThrown!AssertError(weightedInterquartileRange(x, negative));
+    assertThrown!AssertError(weightedInterquartileRange(x, equal[0 .. 1]));
+    assertThrown!AssertError(weightedInterquartileRange(x[0 .. 0], equal[0 .. 0]));
+    assertThrown!AssertError(weightedInterquartileRange!(WeightedQuantileAlgo.frequencyType7)(x, fractional));
+    foreach (bad; [double.nan, double.infinity])
+    {
+        double[2] weights = [1, bad];
+        assertThrown!AssertError(weightedInterquartileRange(x, weights));
+    }
 }
