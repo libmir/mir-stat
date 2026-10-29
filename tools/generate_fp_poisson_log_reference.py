@@ -22,6 +22,9 @@ def cases(bits):
             values.add((k,c,e))
         for offset in (-1,0,1):
             values.add((k,2**(bits-1)+offset,193))
+            # Rates around one fixed-point grid unit exercise right shifts
+            # that retain a unit or truncate the rate to zero.
+            values.add((k,2**(bits-1)+offset,-(2*bits+319)))
     rng=random.Random(15700+bits)
     for _ in range(8):
         values.add((rng.randrange(1,2**64),rng.randrange(1,2**bits),rng.randrange(-100,201)-bits))
