@@ -6,7 +6,7 @@ Copyright: 2026 Mir Stat Authors.
 module mir.stat.internal.fp_probability_log;
 
 import mir.bignum.fp: Fp;
-import mir.bignum.fixed: UInt;
+import mir.bignum.fixed: UInt, extendedMul;
 import mir.stat.internal.fp_scaled_probability: ProbabilityScaled;
 
 // Guarded logarithms for distribution calculations. The probability methods
@@ -27,8 +27,7 @@ package(mir.stat) struct ProbabilityLog(uint bits)
 
     private static I multiply(I a, I b)
     {
-        auto product = a.toSize!(2 * fractionBits + 128);
-        product *= b;
+        auto product = extendedMul(a,b);
         return (product >> fractionBits).toSize!(fractionBits + 64);
     }
 

@@ -5,7 +5,7 @@ Copyright: 2026 Mir Stat Authors.
 +/
 module mir.stat.internal.fp_count_deviance;
 
-import mir.bignum.fixed: UInt;
+import mir.bignum.fixed: UInt, extendedMul;
 
 // Shared fixed-point series for x*log(x/mean)+mean-x near the mean.
 // Inputs and output have fractionBits fractional bits. Callers provide
@@ -23,8 +23,7 @@ UInt!size fpCenteredDeviance(uint fractionBits, ulong size)(ulong x, UInt!size m
     assert((delta << 1) < count, "mean must be within half the count");
     I multiply(I a, I b)
     {
-        auto product = a.toSize!(2 * size);
-        product *= b;
+        auto product = extendedMul(a,b);
         return (product >> fractionBits).toSize!size;
     }
     // v=(x-mean)/(x+mean), |v|<1/3:
