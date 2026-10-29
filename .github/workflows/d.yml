@@ -81,9 +81,9 @@ jobs:
         trap cleanup EXIT
         status=0
         # DUB sizes its parallel pool from CPU affinity. Limit it to two CPUs,
-        # with 4 GiB virtual memory per process to leave room for the runner.
+        # with 6 GiB virtual memory per process to leave room for the runner.
         (
-          ulimit -v $((4 * 1024 * 1024)) || exit $?
+          ulimit -v $((6 * 1024 * 1024)) || exit $?
           exec taskset -c 0,1 /usr/bin/time -v dub test --compiler=gdc-15 --build-mode=singleFile --parallel
         ) || status=$?
         echo "GDC test command exit status: $status"
