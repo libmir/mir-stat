@@ -188,6 +188,48 @@ jobs:
       # Keep build/link/run markers so CI log timestamps separate build and test time.
       run: dub test --build=unittest-release
 
+  # Compile and run the full lifetime suite independently of coverage.
+  lifetime:
+    name: DIP1000 lifetime tests
+    permissions:
+      contents: read
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+        dc: [ldc-latest, ldc-beta, dmd-latest, dmd-beta]
+    runs-on: ${{ matrix.os }}
+
+    steps:
+    - uses: actions/checkout@v7.0.1
+
+    - name: D Compiler Installation
+      uses: dlang-community/setup-dlang@v2.0.0
+      with:
+        compiler: ${{ matrix.dc }}
+
+    # setup-dlang v2 sets DC to windows/bin/dmd, bypassing bin64 on PATH.
+    - name: Select 64-bit Windows DMD
+      if: runner.os == 'Windows' && startsWith(matrix.dc, 'dmd-')
+      shell: pwsh
+      run: |
+        $compiler = Join-Path (Split-Path (Split-Path $env:DC -Parent) -Parent) 'bin64/dmd.exe'
+        if (!(Test-Path -LiteralPath $compiler -PathType Leaf)) { throw "Missing 64-bit DMD: $compiler" }
+        "DC=$compiler" >> $env:GITHUB_ENV
+
+    - name: Report toolchain versions
+      shell: pwsh
+      run: |
+        Write-Output "DC=$env:DC"
+        & $env:DC --version
+        if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+        dub --version
+        if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
+    - name: Run DIP1000 lifetime tests
+      # Keep build/link/run markers to distinguish compilation from test execution.
+      run: dub test --build=unittest-dip1000
+
   test:
     name: Dub Tests
     permissions:
@@ -249,9 +291,6 @@ jobs:
       if: matrix.os == 'ubuntu-latest' && matrix.dc == 'ldc-latest'
       # Keep build/link/run markers to distinguish compilation from test runtime.
       run: dub test mir-stat:slow-numerics --build=unittest-optimized
-
-    - name: Run DIP1000 lifetime tests
-      run: dub -q test --build=unittest-dip1000
 
     - name: Install Lapack
       if: contains( matrix.os, 'ubuntu')
