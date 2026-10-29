@@ -23,6 +23,14 @@ package(mir.stat) struct ProbabilityLog(uint bits)
     alias I = UInt!(fractionBits + 64);
 
 
+    // Share the fixed-point log(2) series within a sequence of count logs.
+    // The context belongs to one caller; there is no mutable global state.
+    struct Context
+    {
+        private I logTwo;
+        private bool initialized;
+    }
+
     @safe pure nothrow @nogc:
 
     private static I multiply(I a, I b)
@@ -84,7 +92,8 @@ package(mir.stat) struct ProbabilityLog(uint bits)
         in (!value.sign && !!value.coefficient && value.exponent != long.max,
             "value must be finite and positive")
     {
-        return logDyadic(value.coefficient, value.exponent);
+        Context context;
+        return logDyadic(value.coefficient, value.exponent, context);
     }
 
     // Log of an exact integer count. UInt!128 also admits endpoints such as
@@ -92,10 +101,18 @@ package(mir.stat) struct ProbabilityLog(uint bits)
     static Fp!(bits + 192) logCount(UInt!128 count)
         in (!!count, "count must be positive")
     {
-        return logDyadic(count, 0);
+        Context context;
+        return logCount(count, context);
     }
 
-    private static Fp!(bits + 192) logDyadic(uint inputBits)(UInt!inputBits coefficient, long exponent)
+    static Fp!(bits + 192) logCount(UInt!128 count, ref Context context)
+        in (!!count, "count must be positive")
+    {
+        return logDyadic(count, 0, context);
+    }
+
+    private static Fp!(bits + 192) logDyadic(uint inputBits)(UInt!inputBits coefficient,
+        long exponent, ref Context context)
     {
         const top = inputBits - coefficient.ctlz - 1;
         const c = coefficient.toSize!(fractionBits + 64);
@@ -109,7 +126,11 @@ package(mir.stat) struct ProbabilityLog(uint bits)
                             : top - (0UL - cast(ulong)exponent);
         auto logarithm = negative ? ratio(base-c,base+c) : ratio(c-base,c+base);
         if (count) {
-            auto term = ratio(I(1),I(3));
+            if (!context.initialized) {
+                context.logTwo = ratio(I(1),I(3));
+                context.initialized = true;
+            }
+            auto term = context.logTwo;
             term *= count;
             logarithm += term;
         }
@@ -294,8 +315,12 @@ version(mir_stat_test)
             CountReference(UInt!128.fromHexString("10000000000000001"),W(false,-250,UInt!256.fromHexString("b17217f7d1cf79abcde3b39803f2f6af3ef343267298b62d8b626cb0e1004f81"))),
             CountReference(UInt!128.fromHexString("ffffffffffffffffffffffffffffffff"),W(false,-249,UInt!256.fromHexString("b17217f7d1cf79abc9e3b39803f2f6af3ef343267298b62d8a0d175b8baafa2c"))),
         ];
-        foreach (r; counts)
+        L.Context context;
+        foreach (r; counts) {
             assert(L.logCount(r.count) == r.logarithm);
+            assert(L.logCount(r.count, context) == r.logarithm);
+        }
+        assert(L.logCount(UInt!128(1), context) == W(0));
     }
     {
         alias L = ProbabilityLog!128;
@@ -338,8 +363,12 @@ version(mir_stat_test)
             CountReference(UInt!128.fromHexString("10000000000000001"),W(false,-314,UInt!320.fromHexString("b17217f7d1cf79abcde3b39803f2f6af3ef343267298b62d8b626cb0e1004f813c0dcb75c34101ee"))),
             CountReference(UInt!128.fromHexString("ffffffffffffffffffffffffffffffff"),W(false,-313,UInt!320.fromHexString("b17217f7d1cf79abc9e3b39803f2f6af3ef343267298b62d8a0d175b8baafa2be6b876206debac98"))),
         ];
-        foreach (r; counts)
+        L.Context context;
+        foreach (r; counts) {
             assert(L.logCount(r.count) == r.logarithm);
+            assert(L.logCount(r.count, context) == r.logarithm);
+        }
+        assert(L.logCount(UInt!128(1), context) == W(0));
     }
     {
         alias L = ProbabilityLog!256;
@@ -382,8 +411,12 @@ version(mir_stat_test)
             CountReference(UInt!128.fromHexString("10000000000000001"),W(false,-442,UInt!448.fromHexString("b17217f7d1cf79abcde3b39803f2f6af3ef343267298b62d8b626cb0e1004f813c0dcb75c34101edabb7751d6d1c3d330ea625ad38af98bc"))),
             CountReference(UInt!128.fromHexString("ffffffffffffffffffffffffffffffff"),W(false,-441,UInt!448.fromHexString("b17217f7d1cf79abc9e3b39803f2f6af3ef343267298b62d8a0d175b8baafa2be6b876206debac98559552fb4afa1b10ec84038b168d7699"))),
         ];
-        foreach (r; counts)
+        L.Context context;
+        foreach (r; counts) {
             assert(L.logCount(r.count) == r.logarithm);
+            assert(L.logCount(r.count, context) == r.logarithm);
+        }
+        assert(L.logCount(UInt!128(1), context) == W(0));
     }
     {
         alias L = ProbabilityLog!512;
@@ -426,8 +459,12 @@ version(mir_stat_test)
             CountReference(UInt!128.fromHexString("10000000000000001"),W(false,-698,UInt!704.fromHexString("b17217f7d1cf79abcde3b39803f2f6af3ef343267298b62d8b626cb0e1004f813c0dcb75c34101edabb7751d6d1c3d330ea625ad38af98bb9f60fbc51b2a542efeb2d3d6be54a96124fe3d3763df5eb11caa67c071025cfb"))),
             CountReference(UInt!128.fromHexString("ffffffffffffffffffffffffffffffff"),W(false,-697,UInt!704.fromHexString("b17217f7d1cf79abc9e3b39803f2f6af3ef343267298b62d8a0d175b8baafa2be6b876206debac98559552fb4afa1b10ec84038b168d76997cac907e66bf0d7a936c1f6b77a03e1a70212f6686d18dd40ed98ab2a0254f2a"))),
         ];
-        foreach (r; counts)
+        L.Context context;
+        foreach (r; counts) {
             assert(L.logCount(r.count) == r.logarithm);
+            assert(L.logCount(r.count, context) == r.logarithm);
+        }
+        assert(L.logCount(UInt!128(1), context) == W(0));
     }
 }
 // END positive logarithm references
@@ -461,6 +498,8 @@ version(mir_stat_test)
             foreach (bad; [T(0),T(-1),T(double.infinity),T(double.nan)])
                 assertThrown!AssertError(L.logPositive(bad));
             assertThrown!AssertError(L.logCount(UInt!128(0)));
+            L.Context context;
+            assertThrown!AssertError(L.logCount(UInt!128(0), context));
         }
     }
 }

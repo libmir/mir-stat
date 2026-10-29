@@ -46,8 +46,12 @@ def render():
                 '        struct CountReference { UInt!128 count; W logarithm; }','        enum counts = [']
         for c in counts:
             out += [f'            CountReference(UInt!128.fromHexString("{c:x}"),{expected(c,0)}),']
-        out += ['        ];','        foreach (r; counts)',
-                '            assert(L.logCount(r.count) == r.logarithm);','    }']
+        out += ['        ];','        L.Context context;',
+                '        foreach (r; counts) {',
+                '            assert(L.logCount(r.count) == r.logarithm);',
+                '            assert(L.logCount(r.count, context) == r.logarithm);',
+                '        }',
+                '        assert(L.logCount(UInt!128(1), context) == W(0));','    }']
     return '\n'.join(out+['}','// END positive logarithm references'])
 
 

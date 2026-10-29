@@ -115,8 +115,10 @@ package(mir.stat) struct CountLog(uint bits)
     {
         I sum;
         if (n < 2) return sum;
+        // Reuse log(2) without changing the rounding of individual terms.
+        Logs.Context context;
         for (ulong i = 2; ; ++i) {
-            sum += fixed(Logs.logCount(UInt!128(i)));
+            sum += fixed(Logs.logCount(UInt!128(i), context));
             if (i == n) break;
         }
         return sum;
