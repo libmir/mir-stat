@@ -65,6 +65,11 @@ jobs:
       if: runner.os == 'Linux'
       run: bash .github/scripts/linux-resources.sh report
 
+    - name: Report Windows runner resources
+      if: runner.os == 'Windows'
+      shell: pwsh
+      run: ./.github/scripts/windows-resources.ps1 Report
+
     - name: D Compiler Installation
       uses: dlang-community/setup-dlang@v2.0.0
       with:
@@ -123,6 +128,11 @@ jobs:
       if: runner.os == 'Linux'
       run: bash .github/scripts/linux-resources.sh report
 
+    - name: Report Windows runner resources
+      if: runner.os == 'Windows'
+      shell: pwsh
+      run: ./.github/scripts/windows-resources.ps1 Report
+
     - name: D Compiler Installation
       uses: dlang-community/setup-dlang@v2.0.0
       with:
@@ -163,7 +173,8 @@ jobs:
 
     - name: Run optimized release tests (Windows)
       if: runner.os == 'Windows'
-      run: dub test --build=unittest-release
+      shell: pwsh
+      run: ./.github/scripts/windows-resources.ps1 Run dub test --build=unittest-release
 
     - name: Report Linux release kernel memory diagnostics
       if: ${{ always() && runner.os == 'Linux' }}
@@ -187,6 +198,11 @@ jobs:
     - name: Report Linux runner resources
       if: runner.os == 'Linux'
       run: bash .github/scripts/linux-resources.sh report
+
+    - name: Report Windows runner resources
+      if: runner.os == 'Windows'
+      shell: pwsh
+      run: ./.github/scripts/windows-resources.ps1 Report
 
     - name: D Compiler Installation
       uses: dlang-community/setup-dlang@v2.0.0
@@ -232,6 +248,11 @@ jobs:
     - name: Report Linux runner resources
       if: runner.os == 'Linux'
       run: bash .github/scripts/linux-resources.sh report
+
+    - name: Report Windows runner resources
+      if: runner.os == 'Windows'
+      shell: pwsh
+      run: ./.github/scripts/windows-resources.ps1 Report
 
     - name: D Compiler Installation
       uses: dlang-community/setup-dlang@v2.0.0
