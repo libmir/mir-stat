@@ -85,7 +85,9 @@ try {
         Write-Warning 'Periodic Windows memory monitoring unavailable; continuing with the command.'
     }
     try {
-        $native = Get-Command -Name $Command[0] -CommandType Application -ErrorAction Stop
+        # Match normal command lookup when several toolchains provide the executable.
+        $native = Get-Command -Name $Command[0] -CommandType Application -ErrorAction Stop |
+            Select-Object -First 1
         $commandArgs = @($Command | Select-Object -Skip 1)
         $clock = [Diagnostics.Stopwatch]::StartNew()
         & $native.Source @commandArgs
