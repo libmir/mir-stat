@@ -22,6 +22,10 @@ jobs:
     steps:
     - uses: actions/checkout@v7.0.1
 
+    - name: Report Linux runner resources
+      if: runner.os == 'Linux'
+      run: bash .github/scripts/linux-resources.sh report
+
     - name: Install GDC and DUB
       run: |
         sudo apt-get update
@@ -35,66 +39,16 @@ jobs:
     # Optimized GDC tests are blocked by ndslice's narrow-integer
     # safety-check helper: https://github.com/libmir/mir-algorithm/issues/483
     # Revisit unittest-release coverage once the dependency fix is available.
-    - name: Report GDC resource limits
-      run: |
-        free -m
-        swapon --show
-        ulimit -a
-        cat /proc/self/cgroup
-        # Report the job's cgroup and ancestor limits when cgroup v2 is available.
-        group=$(awk -F: '$1 == "0" { print $3 }' /proc/self/cgroup)
-        path="/sys/fs/cgroup${group}"
-        while [[ -n "$group" && "$path" == /sys/fs/cgroup* ]]; do
-          for name in memory.max memory.swap.max memory.events; do
-            if [[ -r "$path/$name" ]]; then
-              echo "$path/$name"
-              cat "$path/$name"
-            fi
-          done
-          [[ "$path" == /sys/fs/cgroup ]] && break
-          path=$(dirname "$path")
-        done
-
     - name: Run standard tests
       run: |
-        # Stream snapshots so evidence survives an abrupt runner termination.
-        monitor_memory() {
-          sleep_pid=
-          trap 'if [[ -n "$sleep_pid" ]]; then kill "$sleep_pid" 2>/dev/null || true; wait "$sleep_pid" 2>/dev/null || true; fi; exit 0' TERM INT
-          while true; do
-            date -u '+Memory snapshot %Y-%m-%dT%H:%M:%SZ'
-            free -m
-            # RSS is in KiB; omit command arguments from process diagnostics.
-            ps -eo pid,ppid,rss,comm --sort=-rss | head -n 11 || true
-            sleep 15 &
-            sleep_pid=$!
-            wait "$sleep_pid" || true
-            sleep_pid=
-          done
-        }
-        monitor_memory &
-        monitor_pid=$!
-        cleanup() {
-          kill "$monitor_pid" 2>/dev/null || true
-          wait "$monitor_pid" 2>/dev/null || true
-        }
-        trap cleanup EXIT
-        status=0
         # DUB sizes its parallel pool from CPU affinity. Limit it to two CPUs,
         # with 6 GiB virtual memory per process to leave room for the runner.
-        (
-          ulimit -v $((6 * 1024 * 1024)) || exit $?
-          exec taskset -c 0,1 /usr/bin/time -v dub test --compiler=gdc-15 --build-mode=singleFile --parallel
-        ) || status=$?
-        echo "GDC test command exit status: $status"
-        exit "$status"
+        ulimit -v $((6 * 1024 * 1024))
+        exec taskset -c 0,1 bash .github/scripts/linux-resources.sh run dub test --compiler=gdc-15 --build-mode=singleFile --parallel
 
     - name: Report GDC kernel memory diagnostics
       if: ${{ always() }}
-      run: |
-        free -m
-        # Best effort: kernel logs may be unavailable, especially after runner loss.
-        sudo -n dmesg --ctime | grep -Ei 'out of memory|oom|killed process|memory cgroup' | tail -n 80 || true
+      run: bash .github/scripts/linux-resources.sh kernel
 
   benchmarks:
     name: Benchmark tests
@@ -106,6 +60,10 @@ jobs:
 
     steps:
     - uses: actions/checkout@v7.0.1
+
+    - name: Report Linux runner resources
+      if: runner.os == 'Linux'
+      run: bash .github/scripts/linux-resources.sh report
 
     - name: D Compiler Installation
       uses: dlang-community/setup-dlang@v2.0.0
@@ -161,6 +119,10 @@ jobs:
     steps:
     - uses: actions/checkout@v7.0.1
 
+    - name: Report Linux runner resources
+      if: runner.os == 'Linux'
+      run: bash .github/scripts/linux-resources.sh report
+
     - name: D Compiler Installation
       uses: dlang-community/setup-dlang@v2.0.0
       with:
@@ -184,9 +146,18 @@ jobs:
         dub --version
         if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 
-    - name: Run optimized release tests
+    - name: Run optimized release tests (Linux)
+      if: runner.os == 'Linux'
       # Keep build/link/run markers so CI log timestamps separate build and test time.
+      run: bash .github/scripts/linux-resources.sh run dub test --build=unittest-release
+
+    - name: Run optimized release tests (Windows)
+      if: runner.os == 'Windows'
       run: dub test --build=unittest-release
+
+    - name: Report Linux release kernel memory diagnostics
+      if: ${{ always() && runner.os == 'Linux' }}
+      run: bash .github/scripts/linux-resources.sh kernel
 
   # Compile and run the full lifetime suite independently of coverage.
   lifetime:
@@ -202,6 +173,10 @@ jobs:
 
     steps:
     - uses: actions/checkout@v7.0.1
+
+    - name: Report Linux runner resources
+      if: runner.os == 'Linux'
+      run: bash .github/scripts/linux-resources.sh report
 
     - name: D Compiler Installation
       uses: dlang-community/setup-dlang@v2.0.0
@@ -243,6 +218,10 @@ jobs:
 
     steps:
     - uses: actions/checkout@v7.0.1
+
+    - name: Report Linux runner resources
+      if: runner.os == 'Linux'
+      run: bash .github/scripts/linux-resources.sh report
 
     - name: D Compiler Installation
       uses: dlang-community/setup-dlang@v2.0.0
