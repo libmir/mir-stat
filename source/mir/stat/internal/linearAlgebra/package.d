@@ -58,13 +58,19 @@ Both return scalars without allocating, regardless of input ownership.
 Its default remains compensated; explicit `Summation.fast` enables GEMV/SYMV
 (or SPMV for packed symmetric storage) and DOT where eligible.
 
-Both structural views provide an explicit read-only `asSlice` adapter for
+Structural views provide an explicit read-only `asSlice` adapter for
 ordinary ndslice operations and Mir's `hasAsSlice` forwarding convention.
 It preserves ownership and logical values without copying elements, including
 reflected entries, implicit zeros, and unit diagonals. Use `.asSlice.slice`,
 `.asSlice.rcslice`, or `makeSlice(allocator, view.asSlice)` for writable copies.
 Pass the original structural view to linear algebra functions to retain
 specialized dispatch. Raw `storage` is not a logical dense conversion.
+
+`diagonalView(vector)` supplies a square diagonal matrix without allocating.
+It supports multiplication on either side and self/two-input cross-products.
+Multiplication returns ordinary dense results; cross-product self-results
+remain symmetric views. This matrix structure is distinct from `DiagonalPolicy`,
+which selects a triangular unit diagonal.
 
 `symmetricView` and `triangularView` attach structure to a matrix without
 copying its elements. Symmetric views dispatch quadratic forms and Cholesky
@@ -112,7 +118,7 @@ For a square triangular operand, declare its structure with `triangularView`:
 `mtimes(triangularView(a), b)` selects a left triangular product, and
 `mtimes(b, triangularView(a))` selects a right triangular product. The same
 view dispatch works with `rcMtimes`, `makeMtimes`, and `mtimesInto`; the other
-operand must be an ordinary ndslice. Triangle and diagonal options belong to
+operand may be an ordinary ndslice or a diagonal view. Triangle and diagonal options belong to
 the view, so subsequent calls need not repeat them.
 
 The `mtimesTriangular` and `mtimesTriangularRight` families also accept the raw

@@ -19,6 +19,11 @@ multiplication automatically. The same dispatch is available through `rcMtimes`,
 the other operand must be an ordinary ndslice. Symmetric views work on either
 side as well, selecting SYMM/SYMV/SPMV where eligible without materialization.
 
+A `diagonalView(vector)` scales rows on the left or columns on the right.
+It accepts ordinary, triangular, symmetric, or diagonal operands without
+materializing an input. Results retain the ordinary dense slice contract.
+All allocation families and caller-output variants share this dispatch.
+
 License: $(HTTP www.apache.org/licenses/LICENSE-2.0, Apache-2.0)
 Copyright: 2026 Mir Stat Authors.
 +/
@@ -29,6 +34,7 @@ version(mir_stat_test) version = mir_stat_test_linearAlgebra;
 version(mir_stat_test_blas) version = mir_stat_test_linearAlgebra;
 
 
+import mir.stat.internal.linearAlgebra.views: diagonalView, DiagonalView, DiagonalInfo, logicalOperand;
 import mir.stat.internal.linearAlgebra.types: Scalar, numericSlice, TrianglePolicy, DiagonalPolicy;
 import mir.stat.internal.linearAlgebra.backend: hasBlas, blasNumber, nativeSlice, blasMatrix, blasVector;
 import mir.stat.internal.linearAlgebra.views: TriangularView, triangularView, SymmetricView, symmetricView;
@@ -1851,4 +1857,254 @@ version(mir_stat_test_linearAlgebra)
     auto reference=rcMtimes(a.asSlice,b.asSlice);
     assert(result==reference);
     assert(rcMtimes(a,b)==reference);
+}
+
+
+
+/// Whether diagonal scaling accepts the other logical numeric operand.
+private enum diagonalCompatible(D, B) = numericSlice!D && D.N == 1 &&
+    __traits(compiles, logicalOperand(B.init)) &&
+    numericSlice!(typeof(logicalOperand(B.init))) &&
+    is(Scalar!D == Scalar!(typeof(logicalOperand(B.init))));
+
+/++
+Diagonal scaling on the left, returning gc storage.
+Reads only the stored diagonal and the other operand's logical entries.
+Results are ordinary dense slices, including for two diagonal operands.
+Shapes, aliasing, and custom disposal follow mtimes. Structural operands may
+be combined explicitly; complex arithmetic never conjugates either input.
++/
+package(mir.stat) AllocatedSlice!(Allocation.gc, Scalar!D, B.N)
+mtimes(D, B)(scope auto ref const(DiagonalView!D) a, scope auto ref B b)
+    if (diagonalCompatible!(D,B))
+{
+    int allocator;
+    auto other = logicalOperand(b);
+    assert(a.length!0 == other.length!0);
+    auto result = allocate!(Allocation.gc, Scalar!D)(allocator, other.shape);
+
+    mtimesInto(a, b, result);
+    return result;
+}
+
+/++
+Diagonal scaling on the right, returning gc storage.
+Reads only the stored diagonal and the other operand's logical entries.
+Results are ordinary dense slices, including for two diagonal operands.
+Shapes, aliasing, and custom disposal follow mtimes. Structural operands may
+be combined explicitly; complex arithmetic never conjugates either input.
++/
+package(mir.stat) AllocatedSlice!(Allocation.gc, Scalar!D, B.N)
+mtimes(D, B)(scope auto ref B b, scope auto ref const(DiagonalView!D) a)
+    if (diagonalCompatible!(D,B) && !DiagonalInfo!B.valid)
+{
+    int allocator;
+    auto other = logicalOperand(b);
+    static if (B.N == 1) assert(a.length!0 == other.length!0);
+    else assert(a.length!0 == other.length!1);
+    auto result = allocate!(Allocation.gc, Scalar!D)(allocator, other.shape);
+
+    mtimesInto(other, a, result);
+    return result;
+}
+
+/++
+Diagonal scaling on the left, returning rc storage.
+Reads only the stored diagonal and the other operand's logical entries.
+Results are ordinary dense slices, including for two diagonal operands.
+Shapes, aliasing, and custom disposal follow mtimes. Structural operands may
+be combined explicitly; complex arithmetic never conjugates either input.
++/
+package(mir.stat) AllocatedSlice!(Allocation.rc, Scalar!D, B.N)
+rcMtimes(D, B)(scope auto ref const(DiagonalView!D) a, scope auto ref B b)
+    if (diagonalCompatible!(D,B))
+{
+    int allocator;
+    auto other = logicalOperand(b);
+    assert(a.length!0 == other.length!0);
+    auto result = allocate!(Allocation.rc, Scalar!D)(allocator, other.shape);
+
+    mtimesInto(a, b, result);
+    return result;
+}
+
+/++
+Diagonal scaling on the right, returning rc storage.
+Reads only the stored diagonal and the other operand's logical entries.
+Results are ordinary dense slices, including for two diagonal operands.
+Shapes, aliasing, and custom disposal follow mtimes. Structural operands may
+be combined explicitly; complex arithmetic never conjugates either input.
++/
+package(mir.stat) AllocatedSlice!(Allocation.rc, Scalar!D, B.N)
+rcMtimes(D, B)(scope auto ref B b, scope auto ref const(DiagonalView!D) a)
+    if (diagonalCompatible!(D,B) && !DiagonalInfo!B.valid)
+{
+    int allocator;
+    auto other = logicalOperand(b);
+    static if (B.N == 1) assert(a.length!0 == other.length!0);
+    else assert(a.length!0 == other.length!1);
+    auto result = allocate!(Allocation.rc, Scalar!D)(allocator, other.shape);
+
+    mtimesInto(other, a, result);
+    return result;
+}
+
+/++
+Diagonal scaling on the left, returning custom storage.
+Reads only the stored diagonal and the other operand's logical entries.
+Results are ordinary dense slices, including for two diagonal operands.
+Shapes, aliasing, and custom disposal follow mtimes. Structural operands may
+be combined explicitly; complex arithmetic never conjugates either input.
++/
+package(mir.stat) AllocatedSlice!(Allocation.custom, Scalar!D, B.N)
+makeMtimes(D, B, Allocator)(auto ref Allocator allocator, scope auto ref const(DiagonalView!D) a, scope auto ref B b)
+    if (diagonalCompatible!(D,B))
+{
+
+    auto other = logicalOperand(b);
+    assert(a.length!0 == other.length!0);
+    auto result = allocate!(Allocation.custom, Scalar!D)(allocator, other.shape);
+    scope(failure) { import std.experimental.allocator: dispose; allocator.dispose(result.field); }
+    mtimesInto(a, b, result);
+    return result;
+}
+
+/++
+Diagonal scaling on the right, returning custom storage.
+Reads only the stored diagonal and the other operand's logical entries.
+Results are ordinary dense slices, including for two diagonal operands.
+Shapes, aliasing, and custom disposal follow mtimes. Structural operands may
+be combined explicitly; complex arithmetic never conjugates either input.
++/
+package(mir.stat) AllocatedSlice!(Allocation.custom, Scalar!D, B.N)
+makeMtimes(D, B, Allocator)(auto ref Allocator allocator, scope auto ref B b, scope auto ref const(DiagonalView!D) a)
+    if (diagonalCompatible!(D,B) && !DiagonalInfo!B.valid)
+{
+
+    auto other = logicalOperand(b);
+    static if (B.N == 1) assert(a.length!0 == other.length!0);
+    else assert(a.length!0 == other.length!1);
+    auto result = allocate!(Allocation.custom, Scalar!D)(allocator, other.shape);
+    scope(failure) { import std.experimental.allocator: dispose; allocator.dispose(result.field); }
+    mtimesInto(other, a, result);
+    return result;
+}
+
+/++
+Write diagonal row scaling without allocating.
+Output must have the other operand's shape, be disjoint from both inputs, and
+have nonoverlapping elements. Computed and strided inputs are supported.
++/
+package(mir.stat) void mtimesInto(D,B,C)(scope auto ref const(DiagonalView!D) a, scope auto ref B b, scope auto ref C output)
+    if (diagonalCompatible!(D,B) && numericSlice!C && C.N == B.N && is(Scalar!D == Scalar!C))
+{
+    auto other = logicalOperand(b);
+    assert(output.shape == other.shape);
+    static if (DiagonalInfo!B.valid)
+    {
+        assert(a.shape == b.shape);
+        foreach(i; 0 .. a.length!0) foreach(j; 0 .. a.length!1)
+            output[i,j] = i == j ? a[i,i] * b[j,j] : Scalar!D(0);
+    }
+    else static if (B.N == 1)
+    {
+        assert(a.length!0 == other.length);
+        foreach(i; 0 .. other.length) output[i] = a[i,i] * other[i];
+    }
+    else
+    {
+        assert(a.length!0 == other.length!0);
+        foreach(i; 0 .. other.length!0) foreach(j; 0 .. other.length!1)
+            output[i,j] = a[i,i] * other[i,j];
+    }
+}
+
+/++
+Write diagonal column scaling without allocating.
+Output must have the other operand's shape, be disjoint from both inputs, and
+have nonoverlapping elements. Computed and strided inputs are supported.
++/
+package(mir.stat) void mtimesInto(D,B,C)(scope auto ref B b, scope auto ref const(DiagonalView!D) a, scope auto ref C output)
+    if (diagonalCompatible!(D,B) && numericSlice!C && C.N == B.N && is(Scalar!D == Scalar!C) && !DiagonalInfo!B.valid)
+{
+    auto other = logicalOperand(b);
+    assert(output.shape == other.shape);
+    static if (B.N == 1)
+    {
+        assert(a.length!0 == other.length);
+        foreach(i; 0 .. other.length) output[i] = other[i] * a[i,i];
+    }
+    else
+    {
+        assert(a.length!0 == other.length!1);
+        foreach(i; 0 .. other.length!0) foreach(j; 0 .. other.length!1)
+            output[i,j] = other[i,j] * a[j,j];
+    }
+}
+
+
+/// Diagonal multiplication scales rows on the left and columns on the right.
+version(mir_stat_test_linearAlgebra)
+@safe pure nothrow unittest
+{
+    import mir.ndslice.slice: sliced;
+    double[2] ds = [2,3], xs = [5,7];
+    double[4] bs = [1,2,3,4];
+    auto d = diagonalView(ds[].sliced);
+    auto b = bs[].sliced(2,2);
+    assert(mtimes(d,xs[].sliced) == [10,21]);
+    assert(mtimes(xs[].sliced,d) == [10,21]);
+    assert(mtimes(d,b) == [[2,4],[9,12]]);
+    assert(mtimes(b,d) == [[2,6],[6,12]]);
+    assert(mtimes(d,d) == [[4,0],[0,9]]);
+    assert(mtimes(d,triangularView(b)) == [[2,4],[0,12]]);
+    assert(mtimes(symmetricView(b),d) == [[2,6],[4,12]]);
+}
+
+// Compare layouts and ownership families against explicit dense materialization.
+version(mir_stat_test_linearAlgebra)
+@system unittest
+{
+    import mir.ndslice.slice: sliced;
+    import mir.ndslice.dynamic: strided, reversed, transposed;
+    import mir.ndslice.topology: universal, map;
+    import mir.ndslice.allocation: rcslice;
+    import std.experimental.allocator.mallocator: Mallocator;
+    import std.experimental.allocator: dispose;
+    import std.exception: assertThrown;
+    import core.exception: AssertError;
+    import std.meta: AliasSeq;
+    static foreach(T; AliasSeq!(float,double,real)) {{
+        T[4] ds=[2,99,3,99], bs=[1,2,3,4], outputs;
+        auto storage=ds[].sliced.strided!0(2).reversed!0;
+        const d=diagonalView(storage.rcslice);
+        auto b=bs[].sliced(2,2).universal.transposed;
+        auto reference=rcMtimes(d.asSlice,b);
+        assert(rcMtimes(d,b)==reference);
+        auto result=makeMtimes(Mallocator.instance,d,b);
+        scope(exit) Mallocator.instance.dispose(result.field);
+        assert(result==reference);
+        auto output=outputs[].sliced(2,2).universal.transposed.reversed!0;
+        mtimesInto(d,b,output);
+        assert(output==reference);
+        assert(rcMtimes(b,d)==rcMtimes(b,d.asSlice));
+        auto right=makeMtimes(Mallocator.instance,b,d);
+        scope(exit) Mallocator.instance.dispose(right.field);
+        assert(right==rcMtimes(b,d.asSlice));
+        mtimesInto(b,d,output);
+        assert(output==right);
+        assert(rcMtimes(diagonalView(storage.map!(v=>v)),b)==reference);
+        assertThrown!AssertError(rcMtimes(d,bs[].sliced));
+        T[0] empty;
+        auto e=diagonalView(empty[].sliced);
+        assert(rcMtimes(e,empty[].sliced).length==0);
+        assert(rcMtimes(e,empty[].sliced(0,3)).shape==[0,3]);
+        assert(rcMtimes(empty[].sliced(3,0),e).shape==[3,0]);
+    }}
+    import mir.complex: Complex;
+    alias Z=Complex!double;
+    Z[2] ds=[Z(1,1),Z(2,-1)], xs=[Z(2,1),Z(1,-1)];
+    auto d=diagonalView(ds[].sliced);
+    assert(rcMtimes(d,xs[].sliced)==[ds[0]*xs[0],ds[1]*xs[1]]);
+    assert(rcMtimes(xs[].sliced,d.transposed)==[xs[0]*ds[0],xs[1]*ds[1]]);
 }

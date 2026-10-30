@@ -3,7 +3,8 @@ Read-only structural matrix views without copying matrix elements.
 
 `symmetricView` reflects a selected triangle across the diagonal.
 `triangularView` supplies zeros outside the selected triangle and, optionally,
-ones on an implicit diagonal. Neither view validates positive definiteness or
+ones on an implicit diagonal. A `diagonalView` supplies a vector as the diagonal and zeros elsewhere.
+No view validates positive definiteness or
 identifies a Cholesky factor. Complex symmetry does not imply conjugation.
 
 A view stores the supplied ndslice descriptor by value. Borrowed slices still
@@ -12,11 +13,11 @@ allocation is performed. Changes through the original storage remain visible.
 The caller must preserve borrowed storage and computed-iterator dependencies.
 
 Views deliberately have no implicit ndslice conversion. Structure-aware
-algorithms dispatch explicitly; `storage` exposes the raw underlying matrix
+algorithms dispatch explicitly; `storage` exposes the raw underlying storage (a vector for diagonal views)
 read-only. Dense storage includes unused entries; packed storage provides
 square indexing with zeros outside the stored triangle. Transpose keeps
 storage ownership and updates triangle metadata without copying elements.
-Both views expose a read-only logical asSlice adapter compatible with Mir's
+All views expose a read-only logical asSlice adapter compatible with Mir's
 hasAsSlice/toSlice convention. Generic forwarding reads logical values without
 copying; it does not preserve structural dispatch. Use the original view for
 structure-aware algorithms, or explicitly allocate a writable dense copy.
@@ -297,7 +298,7 @@ package(mir.stat) template SymmetricInfo(V)
 }
 
 /// Structural descriptors must be dispatched before generic asSlice conversion.
-package(mir.stat) enum isStructuralView(V) = SymmetricInfo!V.valid ||
+package(mir.stat) enum isStructuralView(V) = DiagonalInfo!V.valid || SymmetricInfo!V.valid ||
     is(Unqual!V : TriangularView!(triangle, diagonal, A),
         TrianglePolicy triangle, DiagonalPolicy diagonal, A);
 
@@ -508,4 +509,135 @@ version(mir_stat_test_linearAlgebra)
     }
     auto logical = retained();
     assert(logical[0,0] == 2 && logical[1,0] == 6 && logical[0,1] == 0);
+}
+
+
+/++
+Create a read-only square diagonal matrix from a numeric vector.
+The vector supplies the diagonal; all other entries are implicit zeros.
+This expresses structure, not positive definiteness or a Cholesky factor.
+The descriptor retains RC ownership; borrowed and computed storage must outlive
+the view. No allocation or copying occurs. Complex values are not conjugated.
+Unlike DiagonalPolicy, which describes a triangular matrix's unit diagonal,
+this view describes the whole matrix and always uses the supplied values.
++/
+package(mir.stat) DiagonalView!A diagonalView(A)(A diagonal)
+    if (isSlice!A && A.N == 1 && __traits(compiles, Unqual!(typeof(diagonal[0]))(0)))
+{
+    return DiagonalView!A(diagonal);
+}
+
+/// Read-only diagonal matrix descriptor. Construct with diagonalView.
+package(mir.stat) struct DiagonalView(A)
+{
+    private A _storage;
+    /// Logical matrix rank.
+    enum N = 2;
+    /// Logical square shape, independent of diagonal stride.
+    @property size_t[2] shape() const { return [_storage.length, _storage.length]; }
+    /// Length of either logical dimension.
+    size_t length(size_t dimension = 0)() const
+    {
+        static assert(dimension < 2);
+        return _storage.length;
+    }
+    private alias Element = Unqual!(typeof(const(A).init[0]));
+    /// Read one entry; off-diagonal access never evaluates the stored vector.
+    Element opIndex(size_t i, size_t j) const
+    {
+        assert(i < length!0 && j < length!1, "Diagonal view index out of bounds");
+        if (i != j) return Element(0);
+        Element value = _storage[i];
+        return value;
+    }
+    /// Read-only underlying vector, retaining its existing owner.
+    @property auto storage() const { return _storage.lightConst; }
+    /// Borrow the diagonal with a lifetime tied to this descriptor.
+    package(mir.stat) @property auto borrowStorage() return scope const
+    {
+        return _storage.lightScope.lightConst;
+    }
+    /// Ordinary transpose is identical, including for complex values.
+    @property auto transposed() const { return diagonalView(_storage.lightConst); }
+    /++
+    Read-only logical matrix slice, without allocating or dropping RC ownership.
+    Use .slice, .rcslice, or makeSlice on the adapter for a writable dense copy.
+    Pass the original view to arithmetic to preserve diagonal specialization.
+    +/
+    @property auto asSlice() return scope const
+    {
+        import mir.ndslice.slice: sliced;
+        const n = length!0;
+        assert(!n || n <= cast(size_t)ptrdiff_t.max / n,
+            "Diagonal logical shape exceeds iterator indexing range");
+        auto view = diagonalView(_storage.lightConst);
+        return FieldIterator!(LogicalMatrixField!(typeof(view)))(0,
+            LogicalMatrixField!(typeof(view))(view)).sliced(n,n);
+    }
+}
+
+/// Recognize diagonal structure without guessing from ordinary matrix entries.
+package(mir.stat) template DiagonalInfo(V)
+{
+    static if (is(Unqual!V : DiagonalView!A, A))
+    {
+        enum valid = true;
+        alias Storage = A;
+    }
+    else enum valid = false;
+}
+
+/// Logical slice of an ordinary operand or an explicitly structured matrix.
+package(mir.stat) auto logicalOperand(A)(return scope A a)
+{
+    static if (isStructuralView!A) return a.asSlice;
+    else return a.lightConst;
+}
+
+/// A diagonal view stores a vector; asSlice is the logical square matrix.
+version(mir_stat_test_linearAlgebra)
+@safe pure nothrow unittest
+{
+    import mir.ndslice.slice: sliced;
+    import mir.ndslice.allocation: slice, rcslice;
+    import mir.ndslice.dynamic: strided, reversed;
+    double[4] data = [2, 99, 3, 99];
+    auto d = diagonalView(data[].sliced.strided!0(2));
+    assert(d.shape == [2,2] && d[0,1] == 0 && d[1,1] == 3);
+    assert(d.storage == [2,3]);
+    assert(d.transposed.asSlice == [[2,0],[0,3]]);
+    auto dense = d.asSlice.slice;
+    auto retained = diagonalView(d.storage.rcslice).asSlice;
+    data[0] = 4;
+    assert(d[0,0] == 4 && dense[0,0] == 2 && retained[0,0] == 2);
+    const reversedView = diagonalView(data[].sliced.strided!0(2).reversed!0);
+    assert(reversedView[0,0] == 3 && reversedView[1,1] == 4);
+    static assert(!__traits(compiles, d[0,0] = 7));
+    static assert(!__traits(compiles, d.asSlice[0,0] = 7));
+}
+
+// RC adapters retain ownership; borrowed stack storage may not escape.
+version(mir_stat_test_linearAlgebra)
+@safe pure nothrow @nogc unittest
+{
+    import mir.ndslice.allocation: mininitRcslice;
+    import mir.ndslice.slice: sliced;
+    import mir.ndslice.topology: map;
+    /// Return an owning logical slice after the local owner is destroyed.
+    auto retained()
+    {
+        auto owner = mininitRcslice!double(2);
+        owner[0] = 2;
+        owner[1] = 3;
+        return diagonalView(owner).transposed.map!"a * 2";
+    }
+    auto logical = retained();
+    assert(logical[0,0] == 4 && logical[1,1] == 6 && logical[0,1] == 0);
+    version(mir_stat_test_lifetime) static assert(!__traits(compiles, {
+        @safe auto escape()
+        {
+            double[2] local;
+            return diagonalView(local[].sliced).asSlice;
+        }
+    }));
 }
