@@ -36,9 +36,9 @@ alias skew = skewness;
 alias kurt = kurtosis;
 ///
 alias cv = coefficientOfVariation;
-///
+/// Interquartile range using GC-managed scratch; use rcInterquartileRange for RC scratch.
 alias iqr = interquartileRange;
-///
+/// Median absolute deviation using GC-managed scratch; use rcMedianAbsoluteDeviation for RC scratch.
 alias mad = medianAbsoluteDeviation;
 
 
