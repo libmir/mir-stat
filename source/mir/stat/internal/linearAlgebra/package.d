@@ -67,14 +67,13 @@ Pass the original structural view to linear algebra functions to retain
 specialized dispatch. Raw `storage` is not a logical dense conversion.
 
 `diagonalView(vector)` supplies a square diagonal matrix without allocating.
-It supports multiplication on either side and self/two-input cross-products.
-Multiplication returns ordinary dense results; cross-product self-results
-remain symmetric views. This matrix structure is distinct from `DiagonalPolicy`,
-which selects a triangular unit diagonal.
-
-Diagonal quadratic forms take linear time and retain batch and observation-
-selection support. Cholesky decomposition returns a dense factor, while solves
-accept diagonal factors and scale vector or matrix right-hand sides.
+It supports multiplication on either side, self/two-input cross-products,
+quadratic forms, Cholesky decomposition and solves, and all Mahalanobis
+representations, including batch and observation-selection calls.
+Multiplication and factorization return ordinary dense results; cross-product
+self-results remain symmetric views. Diagonal quadratic forms take linear time,
+and diagonal Mahalanobis calls avoid dense factor storage. This matrix structure
+is distinct from `DiagonalPolicy`, which selects a triangular unit diagonal.
 
 `symmetricView` and `triangularView` attach structure to a matrix without
 copying its elements. Symmetric views dispatch quadratic forms and Cholesky

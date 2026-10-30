@@ -76,13 +76,23 @@ copy. This follows the same ownership conventions as the other structural views.
 | `quadraticForm` | Linear-time weighted sum of squares, with the chosen summation policy |
 | `choleskyDecompose` | Square roots on the diagonal of a dense factor result |
 | `choleskySolve` | Coordinate scaling using the supplied diagonal factor |
+| Mahalanobis | Coordinate scaling or a diagonal quadratic form for all four representations |
 
 These paths support the existing GC, RC, custom allocator, and caller-buffer
-families where applicable. Quadratic forms also retain batch,
+families where applicable. Quadratic forms and Mahalanobis also retain batch,
 `byDim`, and `alongDim` support. Products return dense results consistently with
 ordinary inputs; producing a square result still writes quadratic-size storage.
 Self cross-products initialize only the selected triangle unless a full `Into`
 result is requested. They do not conjugate complex entries.
+
+Diagonal Mahalanobis covariance needs no dense factor workspace. A batch
+computes each covariance square root once, then shares it across observations.
+Prepared factors avoid those square roots. One observation-shaped scratch
+matrix suffices for every diagonal representation, including fast precision;
+single-observation covariance needs just one scratch vector. If extra factor
+or product workspace is explicitly supplied, it is still filled as documented.
+Covariance/precision entries must be positive; supplied factor entries must be
+nonzero. The representation enum keeps its existing meaning.
 
 `DiagonalPolicy.unit` describes an implicit unit diagonal in a triangular
 matrix. It is separate from `DiagonalView`, which describes the whole matrix
