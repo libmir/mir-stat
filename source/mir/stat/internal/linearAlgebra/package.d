@@ -32,8 +32,10 @@ Allocated results are contiguous `Slice!(T*, N)` values for GC/custom storage
 and `Slice!(RCI!T, N)` values for RC storage, where `T` is the unqualified input
 element type and `N` is the output rank. GC and custom results share a type,
 but custom results still require disposal with their allocator.
-Two vector operands produce a scalar without allocation in the first three
-functions. Inputs can be borrowed or owning ndslices, including transposed,
+`mtimes` requires at least one matrix operand. Use `dotProduct(x, y)` for
+a scalar dot product or `dotProduct(x)` for a sum of squares; neither allocates.
+Map these independent reductions over selected vectors, then choose result
+storage with `slice`, `rcslice`, `makeSlice`, or caller-buffer assignment. Inputs can be borrowed or owning ndslices, including transposed,
 strided, and computed views. Floating-point and complex element types are
 supported; operands must have the same element type. Complex multiplication
 does not conjugate either operand.
@@ -286,9 +288,11 @@ version(mir_stat_test_linearAlgebra)
         Matrix a;
         const RcMatrix owned;
         auto computed = a.map!((T value) => value);
-        static assert(is(typeof(mtimes(x, x)) == T));
-        static assert(is(typeof(rcMtimes(x, x)) == T));
-        static assert(is(typeof(makeMtimes(Mallocator.instance, x, x)) == T));
+        static assert(is(typeof(dotProduct(x, x)) == T));
+        static assert(is(typeof(dotProduct(x)) == T));
+        static assert(!__traits(compiles, mtimes(x, x)));
+        static assert(!__traits(compiles, rcMtimes(x, x)));
+        static assert(!__traits(compiles, makeMtimes(Mallocator.instance, x, x)));
         static assert(is(typeof(mtimes(a, a)) == Matrix));
         static assert(is(typeof(rcMtimes(a, a)) == RcMatrix));
         static assert(is(typeof(makeMtimes(Mallocator.instance, a, a)) == Matrix));

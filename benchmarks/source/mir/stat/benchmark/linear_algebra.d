@@ -194,7 +194,7 @@ private Result[] measure(int family)(string name, size_t iterations, size_t n, u
     /// Evaluate packed symmetric BLAS or its native D fallback.
     double packedFast() { import mir.math.sum: Summation; return quadraticFormWithWorkspace!(Summation.fast)(x,symmetricView(packed),work); }
     /// Evaluate a quadratic form through a matrix-vector product and dot product.
-    double composed() { mtimesInto(a,x,work); return mtimes(x,work); }
+    double composed() { mtimesInto(a,x,work); return dotProduct(x,work); }
     /// Evaluate the general compensated quadratic form.
     double general() { return quadraticForm(x,a); }
     /// Evaluate the compensated quadratic form through a symmetric view.

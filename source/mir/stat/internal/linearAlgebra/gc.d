@@ -5,8 +5,8 @@ Import this module within `mir.stat` to select this result-storage strategy.
 It selectively re-exports `mtimes`, `mtimesTriangular`, `mtimesTriangularRight`,
 `choleskyDecompose`, and `choleskySolve` with their original names and overloads.
 There are no wrappers or new implementations. Input ownership is independent
-of result ownership. Vector-vector multiplication still returns a scalar
-without allocating.
+of result ownership. Scalar dot products are allocation-free; import `dotProduct` separately
+from `products`. Matrix multiplication requires at least one matrix operand.
 
 Views and structural policies are imported separately from `views` and `types`.
 Matrix cross-products are included with matrix-only inputs and results.
