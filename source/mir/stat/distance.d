@@ -112,6 +112,19 @@ covariance-factor scratch remains an ordinary square matrix; extra precision
 product scratch uses an observation selection. All buffers retain the batch
 API's disjointness and nonoverlapping-element requirements.
 
+Internal callers may supply `diagonalView(diagonal)` for any representation.
+It stores only the diagonal vector; triangle selection has no effect on values.
+Covariance and factor forms scale coordinates and use scaled norms; precision
+uses the selected quadratic-form summation. A batch shares each covariance
+square root across observations. Nonpositive covariance entries throw the same
+factorization exception as dense covariance, including in release builds.
+These calls need only one vector workspace
+or one observation-shaped batch workspace, including covariance and fast
+precision batches. Explicit two-vector precision calls still fill both buffers;
+extra covariance-factor workspace, if supplied, still receives a dense factor.
+No diagonal constructor is re-exported by this public module. The view carries
+structure only; MahalanobisMatrix still determines what its entries represent.
+
 Inputs are same-type real float, double or real vectors and matrices. Vectors
 may also be dynamic arrays. Only the selected matrix triangle is read; full
 covariance/precision matrices are assumed symmetric. Inputs must be finite,
@@ -138,6 +151,7 @@ version(mir_stat_test_blas) version = mir_stat_test_distance;
 
 /// Shared matrix policies; the algebra operations themselves remain internal.
 public import mir.stat.internal.linearAlgebra.types: TrianglePolicy, DiagonalPolicy;
+import mir.stat.internal.linearAlgebra.views: DiagonalView, DiagonalInfo, diagonalView;
 import mir.stat.internal.linearAlgebra.quadratic: quadraticForm, quadraticFormWithWorkspace;
 import mir.math.sum: Summation;
 import mir.stat.internal.linearAlgebra.views: symmetricView;
@@ -208,20 +222,25 @@ version(mir_stat_test_distance)
 /// Borrow an ndslice or array as a view tied to the input lifetime; callers retain owning inputs.
 private auto asView(A)(return scope auto ref A value)
 {
-    static if (isSlice!A) return value.lightScope;
+    static if (DiagonalInfo!A.valid) return diagonalView(value.borrowStorage);
+    else static if (isSlice!A) return value.lightScope;
     else return value.toSlice;
 }
 
 /// Borrowed ndslice descriptor used for array and slice inputs.
 private alias View(A) = typeof(A.init.asView);
 /// Unqualified floating-point element type of an observation or workspace.
-private alias Element(A) = Unqual!(typeof(View!A.init._iterator[0]));
+private template Element(A)
+{
+    static if (DiagonalInfo!A.valid) alias Element = Unqual!(typeof(A.init[0,0]));
+    else alias Element = Unqual!(typeof(View!A.init._iterator[0]));
+}
 /// Whether an input can be borrowed as a real floating-point vector.
 private enum vector(A) = is(typeof(A.init.asView)) && View!A.N == 1 && isFloatingPoint!(Element!A);
 /// Whether an input can be borrowed as a real floating-point matrix.
 private enum matrix(A) = !isStructuralView!A && is(typeof(A.init.asView)) && View!A.N == 2 && isFloatingPoint!(Element!A);
 /// Whether observation, center, and metric have supported ranks and matching element types.
-private enum compatible(X, C, M) = vector!X && vector!C && matrix!M &&
+private enum compatible(X, C, M) = vector!X && vector!C && (matrix!M || DiagonalInfo!M.valid) &&
     is(Element!X == Element!C) && is(Element!X == Element!M);
 
 /++
@@ -435,7 +454,8 @@ version(mir_stat_test_distance)
 
 /++
 Compute distance with reusable workspace and a precomputed metric.
-`form` must explicitly select a precomputed representation. Inputs follow
+`form` must explicitly select a precomputed representation, except that internal
+diagonal-view covariance calls also use this single-vector overload. Inputs follow
 `mahalanobis`. `work` must be a writable vector of length `x.length` and the same
 element type. Its elements must not overlap each other or any input. No
 allocation is performed. Its contents are overwritten and unspecified afterward.
@@ -444,7 +464,7 @@ Input iterator exceptions may leave partial workspace contents.
 Element!X mahalanobisWithWorkspace(MahalanobisMatrix form = MahalanobisMatrix.covariance,
     TrianglePolicy triangle = TrianglePolicy.upper, X, C, M, W)(scope auto ref X x,
     scope auto ref C center, scope auto ref M metric, scope auto ref W work)
-    if (form != MahalanobisMatrix.covariance && compatible!(X,C,M) &&
+    if ((form != MahalanobisMatrix.covariance || DiagonalInfo!M.valid) && compatible!(X,C,M) &&
         vector!W && is(Element!X == Element!W))
 {
     return prepared!(false, form, triangle)(x.asView, center.asView, metric.asView, work.asView);
@@ -468,7 +488,13 @@ Element!X mahalanobisWithWorkspace(MahalanobisMatrix form = MahalanobisMatrix.co
     assert(f.shape == a.shape, "Incorrect Mahalanobis factor workspace shape");
     import mir.stat.internal.linearAlgebra.cholesky: choleskyDecomposeInto;
     choleskyDecomposeInto!triangle(a, f);
-    return prepared!(false, MahalanobisMatrix.covarianceCholesky, triangle)(x.asView, center.asView, f, work.asView);
+    static if (DiagonalInfo!M.valid)
+    {
+        import mir.ndslice.topology: diagonal;
+        return prepared!(false, MahalanobisMatrix.covarianceCholesky, triangle)(
+            x.asView, center.asView, diagonalView(f.diagonal), work.asView);
+    }
+    else return prepared!(false, MahalanobisMatrix.covarianceCholesky, triangle)(x.asView, center.asView, f, work.asView);
 }
 
 /// Reuse vector storage with an already computed covariance Cholesky factor.
@@ -485,7 +511,8 @@ version(mir_stat_test_distance)
 
 /++
 Compute squared distance with reusable workspace and a precomputed metric.
-`form` must explicitly select a precomputed representation. Inputs follow
+`form` must explicitly select a precomputed representation, except that internal
+diagonal-view covariance calls also use this single-vector overload. Inputs follow
 `mahalanobis`. `work` must be a writable vector of length `x.length` and the same
 element type. Its elements must not overlap each other or any input. No
 allocation is performed. Its contents are overwritten and unspecified afterward.
@@ -494,7 +521,7 @@ Input iterator exceptions may leave partial workspace contents.
 Element!X mahalanobisSquaredWithWorkspace(MahalanobisMatrix form = MahalanobisMatrix.covariance,
     TrianglePolicy triangle = TrianglePolicy.upper, X, C, M, W)(scope auto ref X x,
     scope auto ref C center, scope auto ref M metric, scope auto ref W work)
-    if (form != MahalanobisMatrix.covariance && compatible!(X,C,M) &&
+    if ((form != MahalanobisMatrix.covariance || DiagonalInfo!M.valid) && compatible!(X,C,M) &&
         vector!W && is(Element!X == Element!W))
 {
     return prepared!(true, form, triangle)(x.asView, center.asView, metric.asView, work.asView);
@@ -518,7 +545,13 @@ Element!X mahalanobisSquaredWithWorkspace(MahalanobisMatrix form = MahalanobisMa
     assert(f.shape == a.shape, "Incorrect Mahalanobis factor workspace shape");
     import mir.stat.internal.linearAlgebra.cholesky: choleskyDecomposeInto;
     choleskyDecomposeInto!triangle(a, f);
-    return prepared!(true, MahalanobisMatrix.covarianceCholesky, triangle)(x.asView, center.asView, f, work.asView);
+    static if (DiagonalInfo!M.valid)
+    {
+        import mir.ndslice.topology: diagonal;
+        return prepared!(true, MahalanobisMatrix.covarianceCholesky, triangle)(
+            x.asView, center.asView, diagonalView(f.diagonal), work.asView);
+    }
+    else return prepared!(true, MahalanobisMatrix.covarianceCholesky, triangle)(x.asView, center.asView, f, work.asView);
 }
 
 /// Reuse vector storage with an already computed covariance Cholesky factor.
@@ -559,6 +592,7 @@ private Element!X evaluate(Allocation policy, bool squared, MahalanobisMatrix fo
     TrianglePolicy triangle, Allocator, X,C,M)(ref Allocator allocator,
     scope auto ref X x, scope auto ref C center, scope auto ref M metric)
 {
+    static assert(triangle == TrianglePolicy.upper || triangle == TrianglePolicy.lower);
     auto xv = x.asView;
     auto cv = center.asView;
     auto mv = metric.asView;
@@ -573,7 +607,9 @@ private Element!X evaluate(Allocation policy, bool squared, MahalanobisMatrix fo
             allocator.dispose(work.field);
         }
     }
-    static if (form == MahalanobisMatrix.covariance)
+    static if (DiagonalInfo!M.valid)
+        return diagonalDistance!(squared,form)(xv,cv,mv,work);
+    else static if (form == MahalanobisMatrix.covariance)
     {
         auto factor = allocate!(policy,T)(allocator, mv.shape);
         scope(exit)
@@ -595,51 +631,59 @@ private Element!X evaluate(Allocation policy, bool squared, MahalanobisMatrix fo
 private Element!X prepared(bool squared, MahalanobisMatrix form, TrianglePolicy triangle, X,C,M,W)(
     X x, C center, M metric, W work)
 {
-    import std.math: isFinite, sqrt;
     static assert(triangle == TrianglePolicy.upper || triangle == TrianglePolicy.lower);
-    static assert(form != MahalanobisMatrix.covariance);
-    check(x,center,metric,work);
-    alias T = Element!X;
-    foreach (i; 0 .. x.length)
+    static if (DiagonalInfo!M.valid)
     {
-        auto a = x[i];
-        auto b = center[i];
-        assert(isFinite(a) && isFinite(b), "Mahalanobis vectors must be finite");
-        work[i] = a - b;
-    }
-    static if (form == MahalanobisMatrix.inverseCovariance)
-    {
-        foreach (i; 0 .. metric.length!0) foreach (j; 0 .. metric.length!1)
-            if (triangle == TrianglePolicy.upper ? j >= i : j <= i)
-                assert(isFinite(metric[i,j]), "Mahalanobis metric must be finite");
-        auto result = quadraticForm(work, symmetricView!triangle(metric));
-        static if (squared) return result;
-        else return sqrt(result);
+        return diagonalDistance!(squared,form)(x,center,metric,work);
     }
     else
     {
-        import mir.ndslice.topology: universal;
-        import mir.ndslice.dynamic: transposed;
-        import mir.stat.internal.linearAlgebra.triangular: triangularVectorInPlace;
-        foreach (i; 0 .. metric.length!0) foreach (j; 0 .. metric.length!1)
-            if (triangle == TrianglePolicy.upper ? j >= i : j <= i)
-                assert(isFinite(metric[i,j]), "Mahalanobis factor must be finite");
-        static if (form == MahalanobisMatrix.covarianceCholesky)
+        import std.math: isFinite, sqrt;
+        static assert(form != MahalanobisMatrix.covariance);
+        check(x,center,metric,work);
+        alias T = Element!X;
+        foreach (i; 0 .. x.length)
         {
-            // S=U' U => solve U' z=d. S=L L' => solve L z=d.
-            static if (triangle == TrianglePolicy.upper) auto a = metric.universal.transposed;
-            else auto a = metric.universal;
-            triangularVectorInPlace!(true,TrianglePolicy.lower)(a,work);
+            auto a = x[i];
+            auto b = center[i];
+            assert(isFinite(a) && isFinite(b), "Mahalanobis vectors must be finite");
+            work[i] = a - b;
         }
-        else static if (form == MahalanobisMatrix.inverseCovarianceCholesky)
+        static if (form == MahalanobisMatrix.inverseCovariance)
         {
-            // P=R' R => z=R d. P=Q Q' => z=Q' d.
-            static if (triangle == TrianglePolicy.lower) auto a = metric.universal.transposed;
-            else auto a = metric.universal;
-            triangularVectorInPlace!(false,TrianglePolicy.upper)(a,work);
+            foreach (i; 0 .. metric.length!0) foreach (j; 0 .. metric.length!1)
+                if (triangle == TrianglePolicy.upper ? j >= i : j <= i)
+                    assert(isFinite(metric[i,j]), "Mahalanobis metric must be finite");
+            auto result = quadraticForm(work, symmetricMetric!triangle(metric));
+            static if (squared) return result;
+            else return sqrt(result);
         }
-        else static assert(0, "Unknown Mahalanobis matrix representation");
-        return scaledNorm!squared(work);
+        else
+        {
+            import mir.ndslice.topology: universal;
+            import mir.ndslice.dynamic: transposed;
+            import mir.stat.internal.linearAlgebra.triangular: triangularVectorInPlace;
+            foreach (i; 0 .. metric.length!0) foreach (j; 0 .. metric.length!1)
+                if (triangle == TrianglePolicy.upper ? j >= i : j <= i)
+                    assert(isFinite(metric[i,j]), "Mahalanobis factor must be finite");
+            static if (form == MahalanobisMatrix.covarianceCholesky)
+            {
+                // S=U' U => solve U' z=d. S=L L' => solve L z=d.
+                static if (triangle == TrianglePolicy.upper) auto a = metric.universal.transposed;
+                else auto a = metric.universal;
+                triangularVectorInPlace!(true,TrianglePolicy.lower)(a,work);
+            }
+            else static if (form == MahalanobisMatrix.inverseCovarianceCholesky)
+            {
+                // P=R' R => z=R d. P=Q Q' => z=Q' d.
+                static if (triangle == TrianglePolicy.lower) auto a = metric.universal.transposed;
+                else auto a = metric.universal;
+                triangularVectorInPlace!(false,TrianglePolicy.upper)(a,work);
+            }
+            else static assert(0, "Unknown Mahalanobis matrix representation");
+            return scaledNorm!squared(work);
+        }
+
     }
 }
 
@@ -1050,6 +1094,7 @@ private Element!X precisionAllocated(Allocation policy, bool squared, TrianglePo
     Summation summation, Allocator, X, C, M)(ref Allocator allocator,
     scope auto ref X x, scope auto ref C center, scope auto ref M metric)
 {
+    static assert(triangle == TrianglePolicy.upper || triangle == TrianglePolicy.lower);
     auto xv = x.asView;
     auto cv = center.asView;
     auto mv = metric.asView;
@@ -1079,23 +1124,43 @@ private Element!X precisionAllocated(Allocation policy, bool squared, TrianglePo
 private Element!X precisionWorkspace(bool squared, TrianglePolicy triangle, Summation summation, X,C,M,W,P)(
     X x, C center, M metric, W work, P productWork)
 {
-    import std.math: isFinite, sqrt;
     static assert(triangle == TrianglePolicy.upper || triangle == TrianglePolicy.lower);
-    check(x, center, metric, work);
-    assert(productWork.length == x.length, "Incorrect Mahalanobis product workspace length");
-    foreach (i; 0 .. x.length)
+    static if (DiagonalInfo!M.valid)
     {
-        auto a = x[i];
-        auto b = center[i];
-        assert(isFinite(a) && isFinite(b), "Mahalanobis vectors must be finite");
-        work[i] = a - b;
+        import mir.math.common: sqrt;
+        import std.math: isFinite;
+        check(x,center,metric,work);
+        assert(productWork.length == x.length);
+        foreach(i; 0 .. x.length)
+        {
+            assert(isFinite(x[i]) && isFinite(center[i]));
+            assert(isFinite(metric[i,i]) && metric[i,i] > 0);
+            work[i] = x[i] - center[i];
+        }
+        auto result = quadraticFormWithWorkspace!summation(work,metric,productWork);
+        static if (squared) return result;
+        else return sqrt(result);
     }
-    foreach (i; 0 .. metric.length!0) foreach (j; 0 .. metric.length!1)
-        if (triangle == TrianglePolicy.upper ? j >= i : j <= i)
-            assert(isFinite(metric[i,j]), "Mahalanobis metric must be finite");
-    auto result = quadraticFormWithWorkspace!summation(work, symmetricView!triangle(metric), productWork);
-    static if (squared) return result;
-    else return sqrt(result);
+    else
+    {
+        import std.math: isFinite, sqrt;
+        check(x, center, metric, work);
+        assert(productWork.length == x.length, "Incorrect Mahalanobis product workspace length");
+        foreach (i; 0 .. x.length)
+        {
+            auto a = x[i];
+            auto b = center[i];
+            assert(isFinite(a) && isFinite(b), "Mahalanobis vectors must be finite");
+            work[i] = a - b;
+        }
+        foreach (i; 0 .. metric.length!0) foreach (j; 0 .. metric.length!1)
+            if (triangle == TrianglePolicy.upper ? j >= i : j <= i)
+                assert(isFinite(metric[i,j]), "Mahalanobis metric must be finite");
+        auto result = quadraticFormWithWorkspace!summation(work, symmetricMetric!triangle(metric), productWork);
+        static if (squared) return result;
+        else return sqrt(result);
+
+    }
 }
 
 /// Reuse two vectors to opt into BLAS-compatible precision arithmetic.
@@ -1148,7 +1213,7 @@ version(mir_stat_test_distance)
 }
 
 /// Whether column observations, center, and metric have matching real element types.
-private enum batchCompatible(X, C, M) = matrix!X && vector!C && matrix!M &&
+private enum batchCompatible(X, C, M) = matrix!X && vector!C && (matrix!M || DiagonalInfo!M.valid) &&
     is(Element!X == Element!C) && is(Element!X == Element!M);
 
 /// Validate batch shapes before touching caller-owned output or scratch storage.
@@ -1173,9 +1238,12 @@ private void centerBatch(TrianglePolicy triangle, X, C, M, W)(X x, C center, M m
             assert(isFinite(x[i, j]), "Mahalanobis observations must be finite");
             work[i, j] = x[i, j] - center[i];
         }
-        foreach (j; 0 .. metric.length!1)
-            if (triangle == TrianglePolicy.upper ? j >= i : j <= i)
-                assert(isFinite(metric[i, j]), "Mahalanobis metric must be finite");
+        static if (DiagonalInfo!M.valid)
+            assert(isFinite(metric[i,i]) && metric[i,i] > 0, "Diagonal precision must be finite and positive");
+        else
+            foreach (j; 0 .. metric.length!1)
+                if (triangle == TrianglePolicy.upper ? j >= i : j <= i)
+                    assert(isFinite(metric[i, j]), "Mahalanobis metric must be finite");
     }
 }
 
@@ -1183,35 +1251,86 @@ private void centerBatch(TrianglePolicy triangle, X, C, M, W)(X x, C center, M m
 private void preparedBatch(bool squared, MahalanobisMatrix form, TrianglePolicy triangle,
     Summation summation, X, C, M, R, W)(X x, C center, M metric, R result, W work)
 {
-    import mir.ndslice.topology: universal;
-    import mir.ndslice.dynamic: transposed;
-    import std.math: sqrt;
-    checkBatch(x, center, metric, result, work);
-    centerBatch!triangle(x, center, metric, work);
-    static if (form == MahalanobisMatrix.inverseCovariance)
+    static assert(triangle == TrianglePolicy.upper || triangle == TrianglePolicy.lower);
+    static if (DiagonalInfo!M.valid)
     {
-        import mir.stat.internal.linearAlgebra.quadratic: quadraticFormBatchInto;
-        quadraticFormBatchInto!summation(work, symmetricView!triangle(metric), result);
-        static if (!squared) foreach (j; 0 .. result.length) result[j] = sqrt(result[j]);
+        import mir.ndslice.topology: universal;
+        import mir.ndslice.dynamic: transposed;
+        checkBatch(x,center,metric,result,work);
+        import mir.math.common: sqrt;
+        import std.math: isFinite;
+        // Prepare each coordinate once, sharing its factor across observations.
+        foreach (i; 0 .. x.length!0)
+        {
+            auto d = metric[i,i];
+            assert(isFinite(d) && isFinite(center[i]), "Mahalanobis inputs must be finite");
+            static if (form == MahalanobisMatrix.covariance)
+            {
+                import mir.exception: enforce;
+                enforce!"Cholesky factorization failed"(d > 0);
+            }
+            else static if (form == MahalanobisMatrix.inverseCovariance)
+                assert(d > 0, "Diagonal metric must be positive definite");
+            else assert(d != 0, "Diagonal factor must be nonsingular");
+            static if (form == MahalanobisMatrix.covariance) auto factor = sqrt(d);
+            else auto factor = d;
+            foreach (j; 0 .. x.length!1)
+            {
+                assert(isFinite(x[i,j]), "Mahalanobis observations must be finite");
+                auto delta = x[i,j] - center[i];
+                static if (form == MahalanobisMatrix.covariance || form == MahalanobisMatrix.covarianceCholesky)
+                    work[i,j] = delta / factor;
+                else static if (form == MahalanobisMatrix.inverseCovarianceCholesky)
+                    work[i,j] = factor * delta;
+                else static if (form == MahalanobisMatrix.inverseCovariance) work[i,j] = delta;
+                else static assert(0, "Unknown Mahalanobis matrix representation");
+            }
+        }
+        auto columns = work.universal.transposed;
+        foreach (j; 0 .. result.length)
+        {
+            static if (form == MahalanobisMatrix.inverseCovariance)
+            {
+                auto value = quadraticForm!summation(columns[j], metric);
+                static if (squared) result[j] = value;
+                else result[j] = sqrt(value);
+            }
+            else result[j] = scaledNorm!squared(columns[j]);
+        }
     }
     else
     {
-        import mir.stat.internal.linearAlgebra.triangular: triangularMatrixInPlace;
-        static if (form == MahalanobisMatrix.covarianceCholesky)
+        import mir.ndslice.topology: universal;
+        import mir.ndslice.dynamic: transposed;
+        import std.math: sqrt;
+        checkBatch(x, center, metric, result, work);
+        centerBatch!triangle(x, center, metric, work);
+        static if (form == MahalanobisMatrix.inverseCovariance)
         {
-            static if (triangle == TrianglePolicy.upper) auto a = metric.universal.transposed;
-            else auto a = metric.universal;
-            triangularMatrixInPlace!(true, TrianglePolicy.lower)(a, work);
+            import mir.stat.internal.linearAlgebra.quadratic: quadraticFormBatchInto;
+            quadraticFormBatchInto!summation(work, symmetricMetric!triangle(metric), result);
+            static if (!squared) foreach (j; 0 .. result.length) result[j] = sqrt(result[j]);
         }
-        else static if (form == MahalanobisMatrix.inverseCovarianceCholesky)
+        else
         {
-            static if (triangle == TrianglePolicy.lower) auto a = metric.universal.transposed;
-            else auto a = metric.universal;
-            triangularMatrixInPlace!(false, TrianglePolicy.upper)(a, work);
+            import mir.stat.internal.linearAlgebra.triangular: triangularMatrixInPlace;
+            static if (form == MahalanobisMatrix.covarianceCholesky)
+            {
+                static if (triangle == TrianglePolicy.upper) auto a = metric.universal.transposed;
+                else auto a = metric.universal;
+                triangularMatrixInPlace!(true, TrianglePolicy.lower)(a, work);
+            }
+            else static if (form == MahalanobisMatrix.inverseCovarianceCholesky)
+            {
+                static if (triangle == TrianglePolicy.lower) auto a = metric.universal.transposed;
+                else auto a = metric.universal;
+                triangularMatrixInPlace!(false, TrianglePolicy.upper)(a, work);
+            }
+            else static assert(0, "A prepared batch requires a factor or precision matrix");
+            auto columns = work.universal.transposed;
+            foreach (j; 0 .. result.length) result[j] = scaledNorm!squared(columns[j]);
         }
-        else static assert(0, "A prepared batch requires a factor or precision matrix");
-        auto columns = work.universal.transposed;
-        foreach (j; 0 .. result.length) result[j] = scaledNorm!squared(columns[j]);
+
     }
 }
 
@@ -1290,7 +1409,8 @@ Write one distance per observation column into `result`, reusing `work`.
 buffers must have nonoverlapping elements and be disjoint from each other and
 all inputs. Shapes are asserted; overlap is not checked. No allocation occurs.
 This overload accepts prepared factors or a compensated precision matrix.
-Covariance and fast precision calls require the extra-workspace overload.
+Ordinary covariance and fast precision calls require the extra-workspace overload.
+Internal diagonal-view calls accept every representation here without extra scratch.
 Factor forms compute scaled norms directly, preserving the unsquared API's
 range. Finite-input and positive-definite preconditions match the scalar API.
 +/
@@ -1300,8 +1420,8 @@ void mahalanobisBatchWithWorkspace(MahalanobisMatrix form,
     scope auto ref R result, scope auto ref W work)
     if (batchCompatible!(X, C, M) && vector!R && matrix!W &&
         is(Element!X == Element!R) && is(Element!X == Element!W) &&
-        form != MahalanobisMatrix.covariance &&
-        !(form == MahalanobisMatrix.inverseCovariance && summation == Summation.fast))
+        (form != MahalanobisMatrix.covariance || DiagonalInfo!M.valid) &&
+        (!(form == MahalanobisMatrix.inverseCovariance && summation == Summation.fast) || DiagonalInfo!M.valid))
 {
     preparedBatch!(false, form, triangle, summation)(x.asView, center.asView, metric.asView, result.asView, work.asView);
 }
@@ -1330,7 +1450,13 @@ void mahalanobisBatchWithWorkspace(MahalanobisMatrix form = MahalanobisMatrix.co
         import mir.stat.internal.linearAlgebra.cholesky: choleskyDecomposeInto;
         assert(ev.shape == mv.shape);
         choleskyDecomposeInto!triangle(mv, ev);
-        preparedBatch!(false, MahalanobisMatrix.covarianceCholesky, triangle, summation)(xv, cv, ev, rv, wv);
+        static if (DiagonalInfo!M.valid)
+        {
+            import mir.ndslice.topology: diagonal;
+            preparedBatch!(false, MahalanobisMatrix.covarianceCholesky, triangle, summation)(
+                xv, cv, diagonalView(ev.diagonal), rv, wv);
+        }
+        else preparedBatch!(false, MahalanobisMatrix.covarianceCholesky, triangle, summation)(xv, cv, ev, rv, wv);
     }
     else
     {
@@ -1338,7 +1464,7 @@ void mahalanobisBatchWithWorkspace(MahalanobisMatrix form = MahalanobisMatrix.co
         import std.math: sqrt;
         assert(ev.shape == xv.shape);
         centerBatch!triangle(xv, cv, mv, wv);
-        quadraticFormBatchInto!summation(wv, symmetricView!triangle(mv), rv, ev);
+        quadraticFormBatchInto!summation(wv, symmetricMetric!triangle(mv), rv, ev);
         foreach (j; 0 .. rv.length) rv[j] = sqrt(rv[j]);
     }
 }
@@ -1430,7 +1556,8 @@ Write one squared distance per observation column into `result`, reusing `work`.
 buffers must have nonoverlapping elements and be disjoint from each other and
 all inputs. Shapes are asserted; overlap is not checked. No allocation occurs.
 This overload accepts prepared factors or a compensated precision matrix.
-Covariance and fast precision calls require the extra-workspace overload.
+Ordinary covariance and fast precision calls require the extra-workspace overload.
+Internal diagonal-view calls accept every representation here without extra scratch.
 Factor forms compute scaled norms directly, preserving the unsquared API's
 range. Finite-input and positive-definite preconditions match the scalar API.
 +/
@@ -1440,8 +1567,8 @@ void mahalanobisSquaredBatchWithWorkspace(MahalanobisMatrix form,
     scope auto ref R result, scope auto ref W work)
     if (batchCompatible!(X, C, M) && vector!R && matrix!W &&
         is(Element!X == Element!R) && is(Element!X == Element!W) &&
-        form != MahalanobisMatrix.covariance &&
-        !(form == MahalanobisMatrix.inverseCovariance && summation == Summation.fast))
+        (form != MahalanobisMatrix.covariance || DiagonalInfo!M.valid) &&
+        (!(form == MahalanobisMatrix.inverseCovariance && summation == Summation.fast) || DiagonalInfo!M.valid))
 {
     preparedBatch!(true, form, triangle, summation)(x.asView, center.asView, metric.asView, result.asView, work.asView);
 }
@@ -1470,7 +1597,13 @@ void mahalanobisSquaredBatchWithWorkspace(MahalanobisMatrix form = MahalanobisMa
         import mir.stat.internal.linearAlgebra.cholesky: choleskyDecomposeInto;
         assert(ev.shape == mv.shape);
         choleskyDecomposeInto!triangle(mv, ev);
-        preparedBatch!(true, MahalanobisMatrix.covarianceCholesky, triangle, summation)(xv, cv, ev, rv, wv);
+        static if (DiagonalInfo!M.valid)
+        {
+            import mir.ndslice.topology: diagonal;
+            preparedBatch!(true, MahalanobisMatrix.covarianceCholesky, triangle, summation)(
+                xv, cv, diagonalView(ev.diagonal), rv, wv);
+        }
+        else preparedBatch!(true, MahalanobisMatrix.covarianceCholesky, triangle, summation)(xv, cv, ev, rv, wv);
     }
     else
     {
@@ -1478,7 +1611,7 @@ void mahalanobisSquaredBatchWithWorkspace(MahalanobisMatrix form = MahalanobisMa
         import std.math: sqrt;
         assert(ev.shape == xv.shape);
         centerBatch!triangle(xv, cv, mv, wv);
-        quadraticFormBatchInto!summation(wv, symmetricView!triangle(mv), rv, ev);
+        quadraticFormBatchInto!summation(wv, symmetricMetric!triangle(mv), rv, ev);
 
     }
 }
@@ -1495,7 +1628,9 @@ private AllocatedSlice!(policy, Element!X, 1) batchAllocated(Allocation policy, 
     auto work = allocate!(policy, T)(allocator, x.shape);
     scope(exit) { static if (policy == Allocation.custom) {
         import std.experimental.allocator: dispose; allocator.dispose(work.field); } }
-    static if (form == MahalanobisMatrix.covariance ||
+    static if (DiagonalInfo!M.valid)
+        preparedBatch!(squared,form,triangle,summation)(x.asView,center.asView,metric.asView,result,work);
+    else static if (form == MahalanobisMatrix.covariance ||
         (form == MahalanobisMatrix.inverseCovariance && summation == Summation.fast))
     {
         static if (form == MahalanobisMatrix.covariance) auto shape = metric.shape;
@@ -2109,7 +2244,7 @@ Element!X makeMahalanobisSquared(MahalanobisMatrix form = MahalanobisMatrix.cova
 Element!X mahalanobisWithWorkspace(MahalanobisMatrix form = MahalanobisMatrix.covariance,
     TrianglePolicy triangle, X, C, M, W)(scope auto ref X x,
     scope auto ref C center, scope auto ref const(SymmetricView!(triangle, M)) metric, scope auto ref W work)
-    if (form != MahalanobisMatrix.covariance && compatible!(X,C,M) &&
+    if ((form != MahalanobisMatrix.covariance || DiagonalInfo!M.valid) && compatible!(X,C,M) &&
         vector!W && is(Element!X == Element!W) && (form == MahalanobisMatrix.covariance || form == MahalanobisMatrix.inverseCovariance) &&
         __traits(compiles, mahalanobisWithWorkspace!(form, triangle)(x, center, metric.borrowStorage, work)))
 {
@@ -2129,7 +2264,7 @@ Element!X mahalanobisWithWorkspace(MahalanobisMatrix form = MahalanobisMatrix.co
 Element!X mahalanobisSquaredWithWorkspace(MahalanobisMatrix form = MahalanobisMatrix.covariance,
     TrianglePolicy triangle, X, C, M, W)(scope auto ref X x,
     scope auto ref C center, scope auto ref const(SymmetricView!(triangle, M)) metric, scope auto ref W work)
-    if (form != MahalanobisMatrix.covariance && compatible!(X,C,M) &&
+    if ((form != MahalanobisMatrix.covariance || DiagonalInfo!M.valid) && compatible!(X,C,M) &&
         vector!W && is(Element!X == Element!W) && (form == MahalanobisMatrix.covariance || form == MahalanobisMatrix.inverseCovariance) &&
         __traits(compiles, mahalanobisSquaredWithWorkspace!(form, triangle)(x, center, metric.borrowStorage, work)))
 {
@@ -2246,8 +2381,8 @@ void mahalanobisBatchWithWorkspace(MahalanobisMatrix form,
     scope auto ref R result, scope auto ref W work)
     if (batchCompatible!(X, C, M) && vector!R && matrix!W &&
         is(Element!X == Element!R) && is(Element!X == Element!W) &&
-        form != MahalanobisMatrix.covariance &&
-        !(form == MahalanobisMatrix.inverseCovariance && summation == Summation.fast) && (form == MahalanobisMatrix.covariance || form == MahalanobisMatrix.inverseCovariance) &&
+        (form != MahalanobisMatrix.covariance || DiagonalInfo!M.valid) &&
+        (!(form == MahalanobisMatrix.inverseCovariance && summation == Summation.fast) || DiagonalInfo!M.valid) && (form == MahalanobisMatrix.covariance || form == MahalanobisMatrix.inverseCovariance) &&
         __traits(compiles, mahalanobisBatchWithWorkspace!(form, triangle, summation)(x, center, metric.borrowStorage, result, work)))
 {
     return mahalanobisBatchWithWorkspace!(form, triangle, summation)(x, center, metric.borrowStorage, result, work);
@@ -2301,8 +2436,8 @@ void mahalanobisSquaredBatchWithWorkspace(MahalanobisMatrix form,
     scope auto ref R result, scope auto ref W work)
     if (batchCompatible!(X, C, M) && vector!R && matrix!W &&
         is(Element!X == Element!R) && is(Element!X == Element!W) &&
-        form != MahalanobisMatrix.covariance &&
-        !(form == MahalanobisMatrix.inverseCovariance && summation == Summation.fast) && (form == MahalanobisMatrix.covariance || form == MahalanobisMatrix.inverseCovariance) &&
+        (form != MahalanobisMatrix.covariance || DiagonalInfo!M.valid) &&
+        (!(form == MahalanobisMatrix.inverseCovariance && summation == Summation.fast) || DiagonalInfo!M.valid) && (form == MahalanobisMatrix.covariance || form == MahalanobisMatrix.inverseCovariance) &&
         __traits(compiles, mahalanobisSquaredBatchWithWorkspace!(form, triangle, summation)(x, center, metric.borrowStorage, result, work)))
 {
     return mahalanobisSquaredBatchWithWorkspace!(form, triangle, summation)(x, center, metric.borrowStorage, result, work);
@@ -2585,4 +2720,233 @@ version(mir_stat_test_distance)
     static foreach (form; [MahalanobisMatrix.covariance, MahalanobisMatrix.covarianceCholesky,
         MahalanobisMatrix.inverseCovariance, MahalanobisMatrix.inverseCovarianceCholesky])
         static assert(!__traits(compiles, mahalanobisSquared!form(x[],center[],metric)));
+}
+
+
+/// Preserve explicit diagonal structure; otherwise select the ordinary matrix triangle.
+private auto symmetricMetric(TrianglePolicy triangle, M)(return scope M metric)
+{
+    static if (DiagonalInfo!M.valid) return metric;
+    else return symmetricView!triangle(metric);
+}
+
+/++
+Evaluate independent-coordinate metrics in linear time. Precision entries use
+the requested quadratic-form summation; covariance and factor representations
+use scaled norms after coordinate scaling. No dense matrix is materialized.
++/
+private Element!X diagonalDistance(bool squared, MahalanobisMatrix form,
+    Summation summation = Summation.kbn, X,C,M,W)(X x, C center, M metric, W work)
+{
+    import mir.math.common: sqrt;
+    import std.math: isFinite;
+    check(x,center,metric,work);
+    foreach(i; 0 .. x.length)
+    {
+        auto d = metric[i,i];
+        assert(isFinite(d) && isFinite(x[i]) && isFinite(center[i]), "Mahalanobis inputs must be finite");
+        static if (form == MahalanobisMatrix.covariance)
+        {
+            import mir.exception: enforce;
+            enforce!"Cholesky factorization failed"(d > 0);
+        }
+        else static if (form == MahalanobisMatrix.inverseCovariance)
+            assert(d > 0, "Diagonal metric must be positive definite");
+        else assert(d != 0, "Diagonal factor must be nonsingular");
+        auto delta = x[i] - center[i];
+        static if (form == MahalanobisMatrix.covariance) work[i] = delta / sqrt(d);
+        else static if (form == MahalanobisMatrix.covarianceCholesky) work[i] = delta / d;
+        else static if (form == MahalanobisMatrix.inverseCovarianceCholesky) work[i] = d * delta;
+        else static if (form == MahalanobisMatrix.inverseCovariance) work[i] = delta;
+        else static assert(0, "Unknown Mahalanobis matrix representation");
+    }
+    static if (form == MahalanobisMatrix.inverseCovariance)
+    {
+        auto result = quadraticForm!summation(work,metric);
+        static if (squared) return result;
+        else return sqrt(result);
+    }
+    else return scaledNorm!squared(work);
+}
+
+/++
+A diagonal view avoids dense covariance storage and factorization.
+Representations keep their existing meaning: a precision Cholesky diagonal
+contains square roots of precision entries, not covariance factor entries.
+Use the same metric for vectors, batches, and explicit row/column selections.
++/
+version(mir_stat_test_distance)
+@safe pure unittest
+{
+    import mir.ndslice.slice: sliced;
+    import mir.ndslice.topology: byDim;
+    double[2] ds=[4,9], x=[2,3], zero=[0,0], work;
+    auto covariance=diagonalView(ds[].sliced);
+    assert(mahalanobisSquared(x[],zero[],covariance)==2);
+    assert(mahalanobisSquaredWithWorkspace(x[],zero[],covariance,work[])==2);
+    double[4] rows=[2,3,4,6];
+    assert(mahalanobisSquared(rows[].sliced(2,2).byDim!0,zero[],covariance)==[2,8]);
+}
+
+// All representations, allocation families, and workspace layouts agree.
+version(mir_stat_test_distance)
+@system unittest
+{
+    import mir.ndslice.slice: sliced;
+    import mir.ndslice.topology: byDim, alongDim, universal;
+    import mir.ndslice.dynamic: transposed, reversed;
+    import mir.math.common: fabs;
+    import std.experimental.allocator.mallocator: Mallocator;
+    import std.experimental.allocator: dispose;
+    import std.exception: assertThrown;
+    import core.exception: AssertError;
+    static foreach(form; [MahalanobisMatrix.covariance,MahalanobisMatrix.covarianceCholesky,
+        MahalanobisMatrix.inverseCovariance,MahalanobisMatrix.inverseCovarianceCholesky])
+    static foreach(triangle; [TrianglePolicy.upper,TrianglePolicy.lower])
+    static foreach(summation; [Summation.kbn,Summation.fast]) {{
+        double[2] ds,x=[2,3],center=[0,0],ws,ps,rs;
+        double[4] xs=[2,4,3,6],work,extra;
+        static if(form==MahalanobisMatrix.covariance) ds=[4,9];
+        else static if(form==MahalanobisMatrix.covarianceCholesky) ds=[2,3];
+        else static if(form==MahalanobisMatrix.inverseCovariance) ds=[0.25,1.0/9];
+        else ds=[0.5,1.0/3];
+        auto metric=diagonalView(ds[].sliced);
+        assert(fabs(rcMahalanobisSquared!(form,triangle)(x[],center[],metric)-2)<1e-14);
+        assert(fabs(makeMahalanobisSquared!(form,triangle)(Mallocator.instance,x[],center[],metric)-2)<1e-14);
+        auto batch=xs[].sliced(2,2);
+        auto result=rs[].sliced.universal.reversed;
+        auto scratch=work[].sliced(2,2).universal.transposed;
+        mahalanobisSquaredBatchWithWorkspace!(form,triangle,summation)(batch,center[],metric,result,scratch);
+        assert(fabs(result[0]-2)<1e-14 && fabs(result[1]-8)<1e-14);
+        auto owned=makeMahalanobisSquaredBatch!(form,triangle,summation)(Mallocator.instance,batch,center[],metric);
+        scope(exit) Mallocator.instance.dispose(owned.field);
+        assert(fabs(owned[1]-8)<1e-14);
+        auto distances=rcMahalanobisBatch!(form,triangle,summation)(batch,center[],metric);
+        assert(fabs(distances[1]*distances[1]-8)<1e-13);
+        mahalanobisSquaredWithWorkspace!(form,triangle,summation)(batch.byDim!1,center[],metric,
+            result,scratch.alongDim!0);
+        assert(fabs(result[1]-8)<1e-14);
+        static if(form==MahalanobisMatrix.covariance || form==MahalanobisMatrix.inverseCovariance)
+        {
+            mahalanobisSquaredBatchWithWorkspace!(form,triangle,summation)(batch,center[],metric,result,scratch,extra[].sliced(2,2));
+            assert(fabs(result[1]-8)<1e-14);
+        }
+        static if(form==MahalanobisMatrix.covariance)
+        {
+            assert(fabs(mahalanobisSquaredWithWorkspace!(form,triangle)(
+                x[],center[],metric,ws[],extra[].sliced(2,2))-2)<1e-14);
+            assert(fabs(mahalanobisWithWorkspace!(form,triangle)(
+                x[],center[],metric,ws[],extra[].sliced(2,2))^^2-2)<1e-14);
+        }
+        static if(form==MahalanobisMatrix.inverseCovariance)
+        {
+            assert(fabs(mahalanobisSquaredWithWorkspace!(form,triangle,summation)(x[],center[],metric,ws[],ps[])-2)<1e-14);
+            assert(fabs(rcMahalanobisSquared!(form,triangle,summation)(x[],center[],metric)-2)<1e-14);
+            assert(fabs(makeMahalanobisSquared!(form,triangle,summation)(Mallocator.instance,x[],center[],metric)-2)<1e-14);
+        }
+    }}
+    double[1] bad=[0],x=[1],zero=[0];
+    assertThrown!Exception(mahalanobisSquared(x[],zero[],diagonalView(bad[].sliced)));
+    double[0] empty;
+    auto metric=diagonalView(empty[].sliced);
+    assert(mahalanobisSquared(empty[],empty[],metric)==0);
+    assert(mahalanobisSquaredBatch(empty[].sliced(0,2),empty[],metric)==[0,0]);
+    double[1] huge=[double.max/4],one=[1];
+    auto norm=mahalanobis!(MahalanobisMatrix.covarianceCholesky)(huge[],zero[],diagonalView(one[].sliced));
+    assert(norm==huge[0]); // squaring first would overflow
+}
+
+// Allocation counts protect the absence of dense scratch and cleanup on iterator failure.
+version(mir_stat_test_distance)
+@system unittest
+{
+    import mir.ndslice.slice: sliced;
+    import mir.ndslice.topology: map;
+    import mir.stat.internal.linearAlgebra.quadratic: makeQuadraticFormBatch;
+    import mir.stat.internal.linearAlgebra.products: makeMtimes;
+    import mir.stat.internal.linearAlgebra.cholesky: makeCholeskyDecompose;
+    import std.experimental.allocator.mallocator: Mallocator;
+    import std.experimental.allocator: dispose;
+    import std.exception: assertThrown;
+    struct CountingAllocator
+    {
+        size_t allocations, releases, bytes;
+        /// Count requested storage and delegate allocation to malloc.
+        void[] allocate(size_t n)
+        {
+            ++allocations;
+            bytes += n;
+            return Mallocator.instance.allocate(n);
+        }
+        /// Count releases and delegate deallocation to malloc.
+        bool deallocate(void[] memory)
+        {
+            ++releases;
+            return Mallocator.instance.deallocate(memory);
+        }
+    }
+    CountingAllocator allocator;
+    double[2] diagonal = [4,9], x = [2,3], center = [0,0];
+    double[6] observations = [2,4,6,3,6,9];
+    auto metric = diagonalView(diagonal[].sliced);
+    assert(makeMahalanobisSquared(allocator, x[], center[], metric) == 2);
+    assert(allocator.allocations == 1 && allocator.releases == 1);
+    auto batch = observations[].sliced(2,3);
+    auto results = makeMahalanobisSquaredBatch(allocator, batch, center[], metric);
+    assert(results == [2,8,18]);
+    allocator.dispose(results.field);
+    assert(allocator.allocations == 3 && allocator.releases == 3);
+    // Only a vector, a result vector, and one observation-shaped scratch matrix.
+    assert(allocator.bytes == (2 + 3 + 6) * double.sizeof);
+    auto quadratic = makeQuadraticFormBatch!(Summation.fast)(allocator, batch, metric);
+    allocator.dispose(quadratic.field);
+    assert(allocator.allocations == 4 && allocator.releases == 4);
+    assert(allocator.bytes == (2 + 3 + 6 + 3) * double.sizeof);
+    auto failure = new Exception("diagonal iterator failed");
+    /// Raise an input error after allocating result or scratch storage.
+    double fail(double value) { throw failure; }
+    auto failing = diagonalView(diagonal[].sliced.map!fail);
+    assertThrown!Exception(makeMtimes(allocator, failing, batch));
+    assertThrown!Exception(makeCholeskyDecompose(allocator, failing));
+    assertThrown!Exception(makeMahalanobisSquaredBatch(allocator, batch, center[], failing));
+    assert(allocator.allocations == 8 && allocator.releases == 8);
+}
+
+// Covariance factorization failures remain catchable across every entry path.
+version(mir_stat_test_distance)
+@system unittest
+{
+    import mir.ndslice.slice: sliced;
+    import mir.ndslice.topology: byDim;
+    import std.exception: assertThrown;
+    import std.experimental.allocator.mallocator: Mallocator;
+    foreach (invalid; [0.0, -1.0])
+    {
+        double[2] values = [1, invalid], x = [1,2], center = [0,0], work, result;
+        double[4] observations = [1,2,3,4], scratch, factor;
+        auto metric = diagonalView(values[].sliced);
+        auto batch = observations[].sliced(2,2);
+        auto workspace = scratch[].sliced(2,2);
+        auto factorWorkspace = factor[].sliced(2,2);
+        assertThrown!Exception(mahalanobis(x[], center[], metric));
+        assertThrown!Exception(mahalanobisSquared(x[], center[], metric));
+        assertThrown!Exception(rcMahalanobisSquared(x[], center[], metric));
+        assertThrown!Exception(makeMahalanobisSquared(Mallocator.instance, x[], center[], metric));
+        assertThrown!Exception(mahalanobisWithWorkspace(x[], center[], metric, work[]));
+        assertThrown!Exception(mahalanobisSquaredWithWorkspace(x[], center[], metric, work[]));
+        assertThrown!Exception(mahalanobisSquaredWithWorkspace(x[], center[], metric, work[], factorWorkspace));
+        assertThrown!Exception(mahalanobisBatch(batch, center[], metric));
+        assertThrown!Exception(mahalanobisSquaredBatch(batch, center[], metric));
+        assertThrown!Exception(rcMahalanobisSquaredBatch(batch, center[], metric));
+        assertThrown!Exception(makeMahalanobisSquaredBatch(Mallocator.instance, batch, center[], metric));
+        assertThrown!Exception(mahalanobisBatchWithWorkspace!(MahalanobisMatrix.covariance)(
+            batch, center[], metric, result[], workspace));
+        assertThrown!Exception(mahalanobisSquaredBatchWithWorkspace!(MahalanobisMatrix.covariance)(
+            batch, center[], metric, result[], workspace));
+        assertThrown!Exception(mahalanobisSquaredBatchWithWorkspace(
+            batch, center[], metric, result[], workspace, factorWorkspace));
+        assertThrown!Exception(mahalanobisSquared(batch.byDim!0, center[], metric));
+        assertThrown!Exception(mahalanobisSquaredWithWorkspace!(MahalanobisMatrix.covariance)(
+            batch.byDim!0, center[], metric, result[], workspace.byDim!0));
+    }
 }
