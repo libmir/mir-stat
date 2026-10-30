@@ -146,8 +146,18 @@ jobs:
         dub --version
         if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 
-    - name: Run optimized release tests (Linux)
-      if: runner.os == 'Linux'
+    - name: Run optimized release tests (Linux LDC)
+      if: runner.os == 'Linux' && startsWith(matrix.dc, 'ldc-')
+      shell: bash
+      run: |
+        # DUB sizes its parallel pool from CPU affinity. Select up to four CPUs
+        # from the allowed set rather than assuming CPU IDs 0-3 are available.
+        cpus=$(python3 -c 'import os; print(",".join(map(str, sorted(os.sched_getaffinity(0))[:4])))')
+        echo "Linux LDC build CPU affinity: $cpus (at most four compiler workers)"
+        exec taskset -c "$cpus" bash .github/scripts/linux-resources.sh run dub test --build=unittest-release --build-mode=singleFile --parallel
+
+    - name: Run optimized release tests (Linux DMD)
+      if: runner.os == 'Linux' && startsWith(matrix.dc, 'dmd-')
       # Keep build/link/run markers so CI log timestamps separate build and test time.
       run: bash .github/scripts/linux-resources.sh run dub test --build=unittest-release
 
