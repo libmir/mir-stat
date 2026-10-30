@@ -1621,30 +1621,33 @@ private AllocatedSlice!(policy, Element!X, 1) batchAllocated(Allocation policy, 
     MahalanobisMatrix form, TrianglePolicy triangle, Summation summation, Allocator, X, C, M)(
     ref Allocator allocator, scope auto ref X x, scope auto ref C center, scope auto ref M metric)
 {
+    auto xv = x.asView;
+    auto cv = center.asView;
+    auto mv = metric.asView;
     alias T = Element!X;
-    auto result = allocate!(policy, T)(allocator, [x.length!1]);
+    auto result = allocate!(policy, T)(allocator, [xv.length!1]);
     scope(failure) { static if (policy == Allocation.custom) {
         import std.experimental.allocator: dispose; allocator.dispose(result.field); } }
-    auto work = allocate!(policy, T)(allocator, x.shape);
+    auto work = allocate!(policy, T)(allocator, xv.shape);
     scope(exit) { static if (policy == Allocation.custom) {
         import std.experimental.allocator: dispose; allocator.dispose(work.field); } }
     static if (DiagonalInfo!M.valid)
-        preparedBatch!(squared,form,triangle,summation)(x.asView,center.asView,metric.asView,result,work);
+        preparedBatch!(squared,form,triangle,summation)(xv,cv,mv,result,work);
     else static if (form == MahalanobisMatrix.covariance ||
         (form == MahalanobisMatrix.inverseCovariance && summation == Summation.fast))
     {
-        static if (form == MahalanobisMatrix.covariance) auto shape = metric.shape;
-        else auto shape = x.shape;
+        static if (form == MahalanobisMatrix.covariance) auto shape = mv.shape;
+        else auto shape = xv.shape;
         auto extra = allocate!(policy, T)(allocator, shape);
         scope(exit) { static if (policy == Allocation.custom) {
             import std.experimental.allocator: dispose; allocator.dispose(extra.field); } }
-        static if (squared) mahalanobisSquaredBatchWithWorkspace!(form, triangle, summation)(x, center, metric, result, work, extra);
-        else mahalanobisBatchWithWorkspace!(form, triangle, summation)(x, center, metric, result, work, extra);
+        static if (squared) mahalanobisSquaredBatchWithWorkspace!(form, triangle, summation)(xv, cv, mv, result, work, extra);
+        else mahalanobisBatchWithWorkspace!(form, triangle, summation)(xv, cv, mv, result, work, extra);
     }
     else
     {
-        static if (squared) mahalanobisSquaredBatchWithWorkspace!(form, triangle, summation)(x, center, metric, result, work);
-        else mahalanobisBatchWithWorkspace!(form, triangle, summation)(x, center, metric, result, work);
+        static if (squared) mahalanobisSquaredBatchWithWorkspace!(form, triangle, summation)(xv, cv, mv, result, work);
+        else mahalanobisBatchWithWorkspace!(form, triangle, summation)(xv, cv, mv, result, work);
     }
     return result;
 }
@@ -2949,4 +2952,55 @@ version(mir_stat_test_distance)
         assertThrown!Exception(mahalanobisSquaredWithWorkspace!(MahalanobisMatrix.covariance)(
             batch.byDim!0, center[], metric, result[], workspace.byDim!0));
     }
+}
+
+// Allocating batches normalize asSlice-only wrappers just like workspace calls.
+version(mir_stat_test_distance)
+@system unittest
+{
+    import mir.ndslice.slice: Slice, sliced;
+    import mir.ndslice.dynamic: transposed;
+    import mir.ndslice.topology: byDim, alongDim;
+    import std.experimental.allocator.mallocator: Mallocator;
+    import std.experimental.allocator: dispose;
+    struct MatrixWrapper
+    {
+        Slice!(double*, 2) data;
+        /// Expose only the logical matrix, without shape or length forwarding.
+        @property auto asSlice() { return data; }
+    }
+    struct VectorWrapper
+    {
+        Slice!(double*) data;
+        /// Expose the center through the same conversion convention.
+        @property auto asSlice() { return data; }
+    }
+    double[4] observations = [3, 0, 0, 4];
+    double[4] identity = [1, 0, double.nan, 1];
+    double[2] zero = [0, 0];
+    auto x = MatrixWrapper(observations[].sliced(2, 2));
+    auto metric = MatrixWrapper(identity[].sliced(2, 2));
+    auto center = VectorWrapper(zero[].sliced);
+    static foreach (form; [MahalanobisMatrix.covariance,
+        MahalanobisMatrix.covarianceCholesky, MahalanobisMatrix.inverseCovariance,
+        MahalanobisMatrix.inverseCovarianceCholesky])
+    static foreach (summation; [Summation.kbn, Summation.fast])
+    {{
+        assert(mahalanobisSquaredBatch!(form, TrianglePolicy.upper, summation)(x, center, metric) == [9, 16]);
+        assert(mahalanobisBatch!(form, TrianglePolicy.upper, summation)(x, center, metric) == [3, 4]);
+        assert(rcMahalanobisSquaredBatch!(form, TrianglePolicy.upper, summation)(x, center, metric) == [9, 16]);
+        assert(rcMahalanobisBatch!(form, TrianglePolicy.upper, summation)(x, center, metric) == [3, 4]);
+        auto squared = makeMahalanobisSquaredBatch!(form, TrianglePolicy.upper, summation)(
+            Mallocator.instance, x, center, metric);
+        scope(exit) Mallocator.instance.dispose(squared.field);
+        auto distances = makeMahalanobisBatch!(form, TrianglePolicy.upper, summation)(
+            Mallocator.instance, x, center, metric);
+        scope(exit) Mallocator.instance.dispose(distances.field);
+        assert(squared == [9, 16] && distances == [3, 4]);
+        // Selection adapters also accept a metric with no direct shape member.
+        assert(mahalanobisSquared!(form, TrianglePolicy.upper, summation)(
+            x.data.alongDim!0, center, metric) == [9, 16]);
+        assert(rcMahalanobis!(form, TrianglePolicy.upper, summation)(
+            x.data.transposed.byDim!0, center, metric) == [3, 4]);
+    }}
 }
