@@ -2073,12 +2073,30 @@ private auto allocatedWeightedQuantile(F, WeightedQuantileAlgo algorithm,
     else
     {
         Summator!(real, Summation.kahan) cumulative;
-        foreach (i; 0 .. workspace.length)
+        static if (algorithm == WeightedQuantileAlgo.inverseCDF ||
+            algorithm == WeightedQuantileAlgo.averagedInverseCDF)
         {
-            // Scaling before accumulation avoids overflow in the raw weight sum.
-            cumulative.put(workspace[i].cumulative / maximum);
-            workspace[i].cumulative = cumulative.sum;
+            import std.math: frexp, ldexp;
+            int exponent;
+            frexp(maximum, exponent);
+            // A power-of-two scale avoids rounding each weight through an
+            // arbitrary divisor, which can move an exact CDF boundary.
+            // Keep the largest scaled weight in [1, 2), retaining at least
+            // as much subnormal range as division by the largest weight.
+            foreach (i; 0 .. workspace.length)
+            {
+                cumulative.put(ldexp(workspace[i].cumulative, 1 - exponent));
+                workspace[i].cumulative = cumulative.sum;
+            }
         }
+        else
+            foreach (i; 0 .. workspace.length)
+            {
+                // Effective-size algorithms use the same scale in their
+                // prefix, suffix, and squared-weight sums.
+                cumulative.put(workspace[i].cumulative / maximum);
+                workspace[i].cumulative = cumulative.sum;
+            }
     }
     real effectiveSize = 1;
     static if (weightedQuantileUsesEffectiveSize!algorithm)
@@ -2161,9 +2179,11 @@ Except for frequencyType7 and frequencyType8, the mathematical result is
 invariant to positive rescaling of all weights. Frequency algorithms instead
 use exact cumulative integer counts and the total frequency as sample size.
 For probability-weight algorithms, cumulative masses use compensated summation
-in $(TT real), after dividing by the
-largest weight to avoid raw-sum overflow. For inverseCDF and averagedInverseCDF,
-each boundary is the cumulative mass divided by the total mass in $(TT real).
+in $(TT real). InverseCDF and averagedInverseCDF scale weights by a common power
+of two to avoid raw-sum overflow without introducing division roundoff into
+otherwise exactly representable weights. Other probability-weight algorithms
+divide by the largest weight. For inverseCDF and averagedInverseCDF, each
+boundary is the cumulative mass divided by the total mass in $(TT real).
 The requested probability is compared with that represented boundary without a
 tolerance. This avoids rounding the probability onto a boundary by multiplying
 it by the total mass. Rounding and underflow can affect tiny masses or
@@ -5941,4 +5961,36 @@ unittest
         double[2] weights = [1, bad];
         assertThrown!AssertError(weightedInterquartileRange(x, weights));
     }
+}
+
+// Empirical CDF boundaries must not move just because weights such as 1, 2,
+// and 3 were individually divided by 3 before accumulation.
+version(mir_stat_test)
+@safe pure nothrow @nogc unittest
+{
+    import std.math: nextafter, ldexp;
+    alias A = WeightedQuantileAlgo;
+    int[6] values = [0, -1, 1, -1, -1, 1];
+    real[6] weights = [1, 2, 3, 1, 2, 3];
+    int[3] combined = [-1, 0, 1];
+    real[3] totals = [5, 1, 6];
+    static foreach (algorithm; [A.inverseCDF, A.averagedInverseCDF])
+    {{
+        alias q = rcWeightedQuantile!(double, algorithm);
+        enum expected = algorithm == A.inverseCDF ? 0.0 : 0.5;
+        foreach (exponent; [0, real.max_exp - 3, real.min_exp - real.mant_dig])
+        {
+            real[6] scaled;
+            real[3] grouped;
+            foreach (i; 0 .. scaled.length) scaled[i] = ldexp(weights[i], exponent);
+            foreach (i; 0 .. grouped.length) grouped[i] = ldexp(totals[i], exponent);
+            assert(q(values, scaled, 0.5L) == expected);
+            assert(q(combined, grouped, 0.5L) == expected);
+            assert(q(values, scaled, nextafter(0.5L, 0.0L)) == 0);
+            assert(q(values, scaled, nextafter(0.5L, 1.0L)) == 1);
+        }
+        real[7] maskedValues = [real.nan, 0, -1, 1, -1, -1, 1];
+        int[7] mask = [0, 1, 2, 3, 1, 2, 3];
+        assert(q(maskedValues, mask, 0.5L) == expected);
+    }}
 }
