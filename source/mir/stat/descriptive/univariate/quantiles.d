@@ -2938,10 +2938,14 @@ unittest
 
 /++
 Compute weighted quantiles using a caller-selected allocator.
+An allocator variable is passed by reference; a temporary allocator is also accepted.
+
 Uses the definitions, input requirements, and numerical rules of $(LREF weightedQuantile).
 Scratch is released before returning, including on failure. A scalar result
 requires no disposal. For a result slice, the caller must dispose its field with
-the same allocator after all uses. Attributes depend on the allocator.
+the same allocator after all uses. If passing a temporary allocator, its backing
+storage and a compatible allocator for disposal must outlive the result.
+Attributes depend on the allocator.
 Inputs remain unchanged; omitted probabilities request quartiles.
 The allocator comes first, then observations and weights:
 `makeWeightedQuantile(allocator, data, weights, probabilities)`.
@@ -2962,7 +2966,7 @@ template makeWeightedQuantile(F, WeightedQuantileAlgo algorithm = WeightedQuanti
         probabilities = scalar, array/slice, or variadic probabilities; omitted for quartiles
     +/
     auto makeWeightedQuantile(Allocator, Data, Weights, P...)(
-        ref Allocator allocator, scope auto ref Data data, scope auto ref Weights weights,
+        auto ref Allocator allocator, scope auto ref Data data, scope auto ref Weights weights,
         scope auto ref P probabilities)
     {
         return dispatchWeightedQuantile!(F, algorithm, QuantileAllocation.custom)(
@@ -2982,7 +2986,7 @@ template makeWeightedQuantile(WeightedQuantileAlgo algorithm = WeightedQuantileA
         probabilities = scalar, array/slice, or variadic probabilities; omitted for quartiles
     +/
     auto makeWeightedQuantile(Allocator, Data, Weights, P...)(
-        ref Allocator allocator, scope auto ref Data data, scope auto ref Weights weights,
+        auto ref Allocator allocator, scope auto ref Data data, scope auto ref Weights weights,
         scope auto ref P probabilities)
     {
         alias F = WeightedQuantileResult!(Data, algorithm);
@@ -4079,10 +4083,14 @@ unittest
 
 /++
 Compute quantiles using a caller-selected allocator for scratch and results.
+An allocator variable is passed by reference; a temporary allocator is also accepted.
+
 Scratch storage is released before returning, including on failure. For multiple
 probabilities, the caller owns the returned result and must release its field
 through the same allocator after all uses. Construction failure releases any
-result allocation as well. Attributes depend on the allocator.
+result allocation as well. If passing a temporary allocator, its backing storage
+and a compatible allocator for disposal must outlive the result. Attributes
+depend on the allocator.
 
 By default observations are copied before partitioning. Setting allowModifySlice
 permits rearranging the input and avoids that scratch allocation. When input
@@ -4106,7 +4114,7 @@ template makeQuantile(F, QuantileAlgo algorithm = QuantileAlgo.type7, bool allow
         data = observations as a slice or array
         probabilities = a scalar, probability slice/array, or variadic probabilities; omitted for quartiles
     +/
-    auto makeQuantile(Allocator, Data, P...)(ref Allocator allocator, scope auto ref Data data, scope auto ref P probabilities)
+    auto makeQuantile(Allocator, Data, P...)(auto ref Allocator allocator, scope auto ref Data data, scope auto ref P probabilities)
     {
         return dispatchQuantile!(F, algorithm, allowModifySlice, QuantileAllocation.custom)(
             allocator, data, probabilities);
@@ -4122,7 +4130,7 @@ template makeQuantile(QuantileAlgo algorithm = QuantileAlgo.type7, bool allowMod
         data = observations as a slice or array
         probabilities = a scalar, probability slice/array, or variadic probabilities; omitted for quartiles
     +/
-    auto makeQuantile(Allocator, Data, P...)(ref Allocator allocator, scope auto ref Data data, scope auto ref P probabilities)
+    auto makeQuantile(Allocator, Data, P...)(auto ref Allocator allocator, scope auto ref Data data, scope auto ref P probabilities)
     {
         alias F = quantileType!(typeof(quantileSlice(data)), algorithm);
         return dispatchQuantile!(F, algorithm, allowModifySlice, QuantileAllocation.custom)(
@@ -5947,6 +5955,7 @@ unittest
 
 /++
 Compute a median using caller-selected scratch allocation.
+An allocator variable is passed by reference; a temporary allocator is also accepted.
 
 The median convention, result type, and numerical behavior follow $(LREF median).
 Use this function to direct temporary storage to an allocator, for example a
@@ -5971,7 +5980,7 @@ template makeMedian(F, bool allowModify = false)
         allocator = allocator for temporary storage
         data = observations
     +/
-    meanType!F makeMedian(Allocator, Data)(ref Allocator allocator, scope auto ref Data data)
+    meanType!F makeMedian(Allocator, Data)(auto ref Allocator allocator, scope auto ref Data data)
     {
         return allocatedMedian!(F, allowModify, QuantileAllocation.custom)(allocator, data);
     }
@@ -5981,7 +5990,7 @@ template makeMedian(F, bool allowModify = false)
 template makeMedian(bool allowModify = false)
 {
     /// ditto
-    auto makeMedian(Allocator, Data)(ref Allocator allocator, scope auto ref Data data)
+    auto makeMedian(Allocator, Data)(auto ref Allocator allocator, scope auto ref Data data)
     {
         alias F = meanType!(typeof(quantileSlice(data)));
         return .makeMedian!(F, allowModify)(allocator, data);
@@ -5990,6 +5999,7 @@ template makeMedian(bool allowModify = false)
 
 /++
 Compute a weighted median using caller-selected scratch allocation.
+An allocator variable is passed by reference; a temporary allocator is also accepted.
 
 Uses the fixed averaged inverse-CDF convention of $(LREF weightedMedian).
 For values [0, 10] and equal weights the result is 5. Inputs remain unchanged;
@@ -6009,7 +6019,7 @@ template makeWeightedMedian(F)
         data = observations corresponding to the weights
         weights = nonnegative finite relative weights
     +/
-    F makeWeightedMedian(Allocator, Data, Weights)(ref Allocator allocator,
+    F makeWeightedMedian(Allocator, Data, Weights)(auto ref Allocator allocator,
         scope auto ref Data data, scope auto ref Weights weights)
     {
         return makeWeightedQuantile!(F, WeightedQuantileAlgo.averagedInverseCDF)(
@@ -6018,7 +6028,7 @@ template makeWeightedMedian(F)
 }
 
 /// ditto
-auto makeWeightedMedian(Allocator, Data, Weights)(ref Allocator allocator,
+auto makeWeightedMedian(Allocator, Data, Weights)(auto ref Allocator allocator,
     scope auto ref Data data, scope auto ref Weights weights)
 {
     alias F = WeightedQuantileResult!(Data, WeightedQuantileAlgo.averagedInverseCDF);
@@ -6027,6 +6037,7 @@ auto makeWeightedMedian(Allocator, Data, Weights)(ref Allocator allocator,
 
 /++
 Compute an interquartile range using caller-selected scratch allocation.
+An allocator variable is passed by reference; a temporary allocator is also accepted.
 
 Uses the definitions, result types, and numerical safeguards of
 $(LREF interquartileRange). Omitted probabilities select 0.25 and 0.75;
@@ -6055,7 +6066,7 @@ template makeInterquartileRange(F, QuantileAlgo quantileAlgo = QuantileAlgo.type
         probabilities = optional lo, or lo and hi
     +/
     @fmamath quantileType!(F, quantileAlgo) makeInterquartileRange(Allocator, Data, P...)(
-        ref Allocator allocator, scope auto ref Data data, scope auto ref P probabilities)
+        auto ref Allocator allocator, scope auto ref Data data, scope auto ref P probabilities)
         if (P.length <= 2)
     {
         alias Result = typeof(return);
@@ -6077,7 +6088,7 @@ template makeInterquartileRange(QuantileAlgo quantileAlgo = QuantileAlgo.type7,
     bool allowModifySlice = false)
 {
     /// ditto
-    @fmamath auto makeInterquartileRange(Allocator, Data, P...)(ref Allocator allocator,
+    @fmamath auto makeInterquartileRange(Allocator, Data, P...)(auto ref Allocator allocator,
         scope auto ref Data data, scope auto ref P probabilities)
         if (P.length <= 2)
     {
@@ -6100,6 +6111,7 @@ template makeInterquartileRange(string quantileAlgo, bool allowModifySlice = fal
 
 /++
 Compute a weighted interquartile range using caller-selected scratch allocation.
+An allocator variable is passed by reference; a temporary allocator is also accepted.
 
 Uses the definitions, result types, and numerical limits of
 $(LREF weightedInterquartileRange). Both quartiles share one sorted workspace;
@@ -6123,7 +6135,7 @@ template makeWeightedInterquartileRange(F,
         data = observations corresponding to the weights
         weights = relative weights, or counts for frequency algorithms
     +/
-    F makeWeightedInterquartileRange(Allocator, Data, Weights)(ref Allocator allocator,
+    F makeWeightedInterquartileRange(Allocator, Data, Weights)(auto ref Allocator allocator,
         scope auto ref Data data, scope auto ref Weights weights)
     {
         return allocatedWeightedSpread!(F, algorithm, QuantileAllocation.custom)(allocator, data, weights);
@@ -6135,7 +6147,7 @@ template makeWeightedInterquartileRange(
     WeightedQuantileAlgo algorithm = WeightedQuantileAlgo.inverseCDF)
 {
     /// ditto
-    auto makeWeightedInterquartileRange(Allocator, Data, Weights)(ref Allocator allocator,
+    auto makeWeightedInterquartileRange(Allocator, Data, Weights)(auto ref Allocator allocator,
         scope auto ref Data data, scope auto ref Weights weights)
     {
         alias F = WeightedQuantileResult!(Data, algorithm);
@@ -6280,6 +6292,7 @@ version(mir_stat_test)
 
 /++
 Compute raw median absolute deviation using caller-selected scratch allocation.
+An allocator variable is passed by reference; a temporary allocator is also accepted.
 
 Uses the convention, result types, and numerical safeguards of
 $(LREF medianAbsoluteDeviation). For values [0, 2, 6, 10], the median is 4,
@@ -6309,7 +6322,7 @@ template makeMedianAbsoluteDeviation(F)
         data = observations
     +/
     @fmamath meanType!F makeMedianAbsoluteDeviation(Allocator, Data)(
-        ref Allocator allocator, scope auto ref Data data)
+        auto ref Allocator allocator, scope auto ref Data data)
     {
         scope auto source = quantileSlice(data);
         return allocatedMAD!(F, QuantileAllocation.custom)(allocator, source.lightScope);
@@ -6318,7 +6331,7 @@ template makeMedianAbsoluteDeviation(F)
 
 /// ditto
 @fmamath auto makeMedianAbsoluteDeviation(Allocator, Data)(
-    ref Allocator allocator, scope auto ref Data data)
+    auto ref Allocator allocator, scope auto ref Data data)
 {
     alias F = meanType!(typeof(quantileSlice(data)));
     return .makeMedianAbsoluteDeviation!F(allocator, data);
@@ -6326,6 +6339,7 @@ template makeMedianAbsoluteDeviation(F)
 
 /++
 Compute raw weighted median absolute deviation using caller-selected scratch allocation.
+An allocator variable is passed by reference; a temporary allocator is also accepted.
 
 Uses the definitions, result types, and numerical limits of
 $(LREF weightedMedianAbsoluteDeviation). Both median stages default to
@@ -6355,7 +6369,7 @@ template makeWeightedMedianAbsoluteDeviation(F,
         weights = relative weights, or occurrence counts for frequency algorithms
     +/
     meanType!F makeWeightedMedianAbsoluteDeviation(Allocator, Data, Weights)(
-        ref Allocator allocator, scope auto ref Data data, scope auto ref Weights weights)
+        auto ref Allocator allocator, scope auto ref Data data, scope auto ref Weights weights)
     {
         return allocatedWeightedMAD!(F, algorithm, QuantileAllocation.custom)(allocator, data, weights);
     }
@@ -6367,7 +6381,7 @@ template makeWeightedMedianAbsoluteDeviation(
 {
     /// ditto
     auto makeWeightedMedianAbsoluteDeviation(Allocator, Data, Weights)(
-        ref Allocator allocator, scope auto ref Data data, scope auto ref Weights weights)
+        auto ref Allocator allocator, scope auto ref Data data, scope auto ref Weights weights)
     {
         import mir.primitives: DeepElementType;
         return .makeWeightedMedianAbsoluteDeviation!(DeepElementType!Data, algorithm)(allocator, data, weights);
@@ -7598,4 +7612,56 @@ version(mir_stat_test)
         else
             static assert(!__traits(compiles, () @nogc { return mixin(name)(values[]); }));
     }}
+}
+
+// Allocator variables are borrowed; temporary allocators can supply scalar scratch
+// or returned storage whose allocation state survives the temporary object.
+version(mir_stat_test)
+@system pure nothrow @nogc unittest
+{
+    import std.experimental.allocator.mallocator: Mallocator;
+    import std.experimental.allocator: dispose;
+    struct Allocator
+    {
+        enum alignment = Mallocator.alignment;
+        size_t* allocations;
+        size_t* releases;
+        @disable this(this);
+        void[] allocate(size_t bytes) @system pure nothrow @nogc
+        {
+            ++*allocations;
+            return Mallocator.instance.allocate(bytes);
+        }
+        bool deallocate(void[] memory) @system pure nothrow @nogc
+        {
+            ++*releases;
+            return Mallocator.instance.deallocate(memory);
+        }
+    }
+    size_t allocations, releases;
+    auto allocator = Allocator(&allocations, &releases);
+    double[4] data = [0, 2, 6, 10];
+    int[4] weights = [1, 1, 1, 1];
+    assert(makeMedian(allocator, data) == 4);
+    assert(allocations == 1 && releases == 1);
+    assert(makeMedian(Allocator(&allocations, &releases), data) == 4);
+    assert(makeWeightedMedian(Allocator(&allocations, &releases), data, weights) == 4);
+    assert(makeInterquartileRange(Allocator(&allocations, &releases), data) == 5.5);
+    assert(makeWeightedInterquartileRange(Allocator(&allocations, &releases), data, weights) == 6);
+    assert(makeMedianAbsoluteDeviation(Allocator(&allocations, &releases), data) == 3);
+    assert(makeWeightedMedianAbsoluteDeviation(Allocator(&allocations, &releases), data, weights) == 3);
+    assert(makeQuantile(Allocator(&allocations, &releases), data, 0.5) == 4);
+    assert(makeWeightedQuantile!(WeightedQuantileAlgo.averagedInverseCDF)(
+        Allocator(&allocations, &releases), data, weights, 0.5) == 4);
+    assert(allocations == releases);
+    const before = allocations;
+    auto quantiles = makeQuantile(Allocator(&allocations, &releases), data, 0.25, 0.75);
+    assert(quantiles == [1.5, 7.0]);
+    assert(allocations == before + 2 && releases == allocations - 1);
+    allocator.dispose(quantiles.field);
+    auto weighted = makeWeightedQuantile(Allocator(&allocations, &releases), data, weights, 0.25, 0.75);
+    assert(weighted == [0.0, 6.0]);
+    assert(releases == allocations - 1);
+    allocator.dispose(weighted.field);
+    assert(allocations == releases);
 }
