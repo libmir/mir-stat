@@ -75,6 +75,18 @@ example `x.byDim!1.map!(group => group.wmean(w))`. Here `w` supplies one
 weight per row and is reused for each column; it is not implicitly broadcast
 over the matrix. The same storage choices apply to the mapped results.
 
+Median and interquartile-range functions use reference-counted scratch storage
+by default. Use `makeMedian`, `makeWeightedMedian`, `makeInterquartileRange`, or
+`makeWeightedInterquartileRange` when your application supplies an allocator,
+for example a pool used across many calculations. These functions return
+scalars and release their scratch before returning; no result disposal is needed.
+
+Allocator choice is separate from permission to change input order. Ordinary
+median and IQR allow input rearrangement through their existing boolean option,
+which avoids the scratch copy. Weighted versions preserve both observations
+and weights and still need a workspace. These choices do not change the
+statistical convention.
+
 Direct grouped overloads are a separate proposal tracked in
 $(LINK2 https://github.com/libmir/mir-stat/issues/226, issue 226).
 No new overload or allocation family is needed to use the composition above.
@@ -125,6 +137,7 @@ $(TR $(TH Module) $(TH Public declarations))
         $(TD
             $(B Ordinary quantiles:)
             $(LEGACY_ANCHOR median)$(REF median, mir, stat, descriptive, univariate, quantiles)$(NBSP)
+            $(REF makeMedian, mir, stat, descriptive, univariate, quantiles)$(NBSP)
             $(LEGACY_ANCHOR quantile)$(REF quantile, mir, stat, descriptive, univariate, quantiles)$(NBSP)
             $(LEGACY_ANCHOR rcquantile)$(REF rcquantile, mir, stat, descriptive, univariate, quantiles)$(NBSP)
             $(LEGACY_ANCHOR makeQuantile)$(REF makeQuantile, mir, stat, descriptive, univariate, quantiles)$(NBSP)
@@ -132,13 +145,16 @@ $(TR $(TH Module) $(TH Public declarations))
             $(BR)
             $(B Weighted quantiles:)
             $(REF weightedMedian, mir, stat, descriptive, univariate, quantiles)$(NBSP)
+            $(REF makeWeightedMedian, mir, stat, descriptive, univariate, quantiles)$(NBSP)
             $(LEGACY_ANCHOR weightedQuantile)$(REF weightedQuantile, mir, stat, descriptive, univariate, quantiles)$(NBSP)
             $(LEGACY_ANCHOR rcWeightedQuantile)$(REF rcWeightedQuantile, mir, stat, descriptive, univariate, quantiles)$(NBSP)
             $(LEGACY_ANCHOR makeWeightedQuantile)$(REF makeWeightedQuantile, mir, stat, descriptive, univariate, quantiles)$(NBSP)
             $(BR)
             $(B Spread:)
             $(REF weightedInterquartileRange, mir, stat, descriptive, univariate, quantiles)$(NBSP)
+            $(REF makeWeightedInterquartileRange, mir, stat, descriptive, univariate, quantiles)$(NBSP)
             $(LEGACY_ANCHOR interquartileRange)$(REF interquartileRange, mir, stat, descriptive, univariate, quantiles)$(NBSP)
+            $(REF makeInterquartileRange, mir, stat, descriptive, univariate, quantiles)$(NBSP)
             $(REF weightedMedianAbsoluteDeviation, mir, stat, descriptive, univariate, quantiles)$(NBSP)
             $(LEGACY_ANCHOR medianAbsoluteDeviation)$(REF medianAbsoluteDeviation, mir, stat, descriptive, univariate, quantiles)$(NBSP)
             $(BR)
