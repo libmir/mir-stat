@@ -2438,7 +2438,9 @@ unittest
 }
 
 // Reference identities across output types, moment orders, and summation modes.
+// Keep each unittest small to reduce DMD release compilation time.
 version(mir_stat_test)
+static foreach (mode; [Summation.naive, Summation.pairwise, Summation.kbn, Summation.kb2, Summation.precise])
 @safe pure nothrow @nogc
 unittest
 {
@@ -2448,7 +2450,6 @@ unittest
     import mir.ndslice.slice: sliced;
     import std.meta: AliasSeq;
     static foreach (T; AliasSeq!(float, double, real))
-    static foreach (mode; [Summation.naive, Summation.pairwise, Summation.kbn, Summation.kb2, Summation.precise])
     {{
         T[4] values = [-2, 0, 1, 5];
         int[4] counts = [1, 2, 3, 1];
@@ -2470,6 +2471,12 @@ unittest
         static assert(is(typeof(weightedRawMoment!2(values, counts)) == T));
         static assert(is(typeof(weightedCentralMoment!2(values, counts)) == T));
     }}
+}
+
+version(mir_stat_test)
+@safe pure nothrow @nogc
+unittest
+{
     int[2] integers = [50_000, 100_000];
     int[2] weights = [1, 1];
     assert(weightedRawMoment!2(integers, weights) == 6.25e9);
