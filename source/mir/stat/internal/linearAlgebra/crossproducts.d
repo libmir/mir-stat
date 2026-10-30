@@ -15,6 +15,11 @@ they do not assume symmetry even when the two arguments refer to the same data.
 No input is materialized. Computed iterators must give stable values during a
 call. Backend and reduction order can change floating-point rounding.
 
+Diagonal views use coordinate products rather than general matrix kernels.
+Self-products retain the symmetric-view result and selected-triangle writes;
+two-input products return ordinary dense matrices. Complex entries are squared
+without conjugation. All result ownership and caller-output forms are supported.
+
 License: $(HTTP www.apache.org/licenses/LICENSE-2.0, Apache-2.0)
 Copyright: 2026 Mir Stat Authors.
 +/
@@ -23,6 +28,7 @@ module mir.stat.internal.linearAlgebra.crossproducts;
 version(mir_stat_test) version = mir_stat_test_linearAlgebra;
 version(mir_stat_test_blas) version = mir_stat_test_linearAlgebra;
 
+import mir.stat.internal.linearAlgebra.views: diagonalView, DiagonalView, DiagonalInfo, logicalOperand;
 import mir.stat.internal.linearAlgebra.allocation;
 import mir.stat.internal.linearAlgebra.types: Scalar, numericSlice, TrianglePolicy;
 import mir.stat.internal.linearAlgebra.views: SymmetricView, symmetricView, disposeSymmetric;
@@ -663,4 +669,369 @@ version(mir_stat_test_linearAlgebra)
     }
     auto result=retained();
     assert(result[0,1]==14 && result[1,1]==20);
+}
+
+
+/++
+Diagonal self-product with gc storage. Returns the same symmetric-view
+result as an ordinary matrix self-product, without a cubic matrix calculation.
+Only the selected triangle is initialized; custom results use disposeSymmetric.
+Complex diagonal entries are squared without conjugation.
++/
+package(mir.stat) SymmetricView!(triangle, AllocatedSlice!(Allocation.gc,Scalar!D,2))
+crossprod(TrianglePolicy triangle = TrianglePolicy.upper,D)(
+    scope auto ref const(DiagonalView!D) a)
+    if (numericSlice!D && D.N == 1)
+{
+    int allocator;
+    auto result = allocate!(Allocation.gc,Scalar!D)(allocator,a.shape);
+
+    diagonalSelfInto!(false,triangle)(a,result);
+    return symmetricView!triangle(result);
+}
+
+/// Diagonal two-input cross-product; other inputs are logical matrices and no symmetry is assumed.
+package(mir.stat) AllocatedSlice!(Allocation.gc,Scalar!D,2)
+crossprod(D,B)(scope auto ref const(DiagonalView!D) a, scope auto ref B b)
+    if (numericSlice!D && D.N == 1 && B.N == 2 &&
+        __traits(compiles, mtimes(a,crossOperand!false(b))))
+{
+    return mtimes(a,crossOperand!false(b));
+}
+
+/// Diagonal two-input cross-product; other inputs are logical matrices and no symmetry is assumed.
+package(mir.stat) AllocatedSlice!(Allocation.gc,Scalar!D,2)
+crossprod(D,B)(scope auto ref B b, scope auto ref const(DiagonalView!D) a)
+    if (numericSlice!D && D.N == 1 && B.N == 2 &&
+        __traits(compiles, mtimes(crossOperand!true(b),a)) && !DiagonalInfo!B.valid)
+{
+    return mtimes(crossOperand!true(b),a);
+}
+
+/++
+Diagonal self-product with rc storage. Returns the same symmetric-view
+result as an ordinary matrix self-product, without a cubic matrix calculation.
+Only the selected triangle is initialized; custom results use disposeSymmetric.
+Complex diagonal entries are squared without conjugation.
++/
+package(mir.stat) SymmetricView!(triangle, AllocatedSlice!(Allocation.rc,Scalar!D,2))
+rcCrossprod(TrianglePolicy triangle = TrianglePolicy.upper,D)(
+    scope auto ref const(DiagonalView!D) a)
+    if (numericSlice!D && D.N == 1)
+{
+    int allocator;
+    auto result = allocate!(Allocation.rc,Scalar!D)(allocator,a.shape);
+
+    diagonalSelfInto!(false,triangle)(a,result);
+    return symmetricView!triangle(result);
+}
+
+/// Diagonal two-input cross-product; other inputs are logical matrices and no symmetry is assumed.
+package(mir.stat) AllocatedSlice!(Allocation.rc,Scalar!D,2)
+rcCrossprod(D,B)(scope auto ref const(DiagonalView!D) a, scope auto ref B b)
+    if (numericSlice!D && D.N == 1 && B.N == 2 &&
+        __traits(compiles, rcMtimes(a,crossOperand!false(b))))
+{
+    return rcMtimes(a,crossOperand!false(b));
+}
+
+/// Diagonal two-input cross-product; other inputs are logical matrices and no symmetry is assumed.
+package(mir.stat) AllocatedSlice!(Allocation.rc,Scalar!D,2)
+rcCrossprod(D,B)(scope auto ref B b, scope auto ref const(DiagonalView!D) a)
+    if (numericSlice!D && D.N == 1 && B.N == 2 &&
+        __traits(compiles, rcMtimes(crossOperand!true(b),a)) && !DiagonalInfo!B.valid)
+{
+    return rcMtimes(crossOperand!true(b),a);
+}
+
+/++
+Diagonal self-product with custom storage. Returns the same symmetric-view
+result as an ordinary matrix self-product, without a cubic matrix calculation.
+Only the selected triangle is initialized; custom results use disposeSymmetric.
+Complex diagonal entries are squared without conjugation.
++/
+package(mir.stat) SymmetricView!(triangle, AllocatedSlice!(Allocation.custom,Scalar!D,2))
+makeCrossprod(TrianglePolicy triangle = TrianglePolicy.upper,D,Allocator)(
+    auto ref Allocator allocator, scope auto ref const(DiagonalView!D) a)
+    if (numericSlice!D && D.N == 1)
+{
+
+    auto result = allocate!(Allocation.custom,Scalar!D)(allocator,a.shape);
+    scope(failure) { import std.experimental.allocator: dispose; allocator.dispose(result.field); }
+    diagonalSelfInto!(false,triangle)(a,result);
+    return symmetricView!triangle(result);
+}
+
+/// Diagonal two-input cross-product; other inputs are logical matrices and no symmetry is assumed.
+package(mir.stat) AllocatedSlice!(Allocation.custom,Scalar!D,2)
+makeCrossprod(D,B,Allocator)(auto ref Allocator allocator, scope auto ref const(DiagonalView!D) a, scope auto ref B b)
+    if (numericSlice!D && D.N == 1 && B.N == 2 &&
+        __traits(compiles, makeMtimes(allocator,a,crossOperand!false(b))))
+{
+    return makeMtimes(allocator,a,crossOperand!false(b));
+}
+
+/// Diagonal two-input cross-product; other inputs are logical matrices and no symmetry is assumed.
+package(mir.stat) AllocatedSlice!(Allocation.custom,Scalar!D,2)
+makeCrossprod(D,B,Allocator)(auto ref Allocator allocator, scope auto ref B b, scope auto ref const(DiagonalView!D) a)
+    if (numericSlice!D && D.N == 1 && B.N == 2 &&
+        __traits(compiles, makeMtimes(allocator,crossOperand!true(b),a)) && !DiagonalInfo!B.valid)
+{
+    return makeMtimes(allocator,crossOperand!true(b),a);
+}
+
+/// Diagonal self-product into caller storage; fills both triangles. Output must be disjoint from the input.
+package(mir.stat) SymmetricView!(TrianglePolicy.upper,C)
+crossprodInto(D,C)(scope auto ref const(DiagonalView!D) a, scope auto ref C output)
+    if (numericSlice!D && D.N == 1 && matrix!C && is(Scalar!D == Scalar!C))
+{
+    diagonalSelfInto!(true,TrianglePolicy.upper)(a,output);
+    return symmetricView!(TrianglePolicy.upper)(output);
+}
+
+/// Diagonal self-product into caller storage; writes only the explicitly selected triangle. Output must be disjoint from the input.
+package(mir.stat) SymmetricView!(triangle,C)
+crossprodInto(TrianglePolicy triangle,D,C)(scope auto ref const(DiagonalView!D) a, scope auto ref C output)
+    if (numericSlice!D && D.N == 1 && matrix!C && is(Scalar!D == Scalar!C))
+{
+    diagonalSelfInto!(false,triangle)(a,output);
+    return symmetricView!(triangle)(output);
+}
+
+/// Write a diagonal two-input cross-product. Output shape and disjointness follow mtimesInto.
+package(mir.stat) void crossprodInto(D,B,C)(scope auto ref const(DiagonalView!D) a, scope auto ref B b, scope auto ref C output)
+    if (numericSlice!D && D.N == 1 && B.N == 2 &&
+        __traits(compiles, mtimesInto(a,crossOperand!false(b),output)))
+{
+    mtimesInto(a,crossOperand!false(b),output);
+}
+
+/// Write a diagonal two-input cross-product. Output shape and disjointness follow mtimesInto.
+package(mir.stat) void crossprodInto(D,B,C)(scope auto ref B b, scope auto ref const(DiagonalView!D) a, scope auto ref C output)
+    if (numericSlice!D && D.N == 1 && B.N == 2 &&
+        __traits(compiles, mtimesInto(crossOperand!true(b),a,output)) && !DiagonalInfo!B.valid)
+{
+    mtimesInto(crossOperand!true(b),a,output);
+}
+
+/++
+Diagonal self-product with gc storage. Returns the same symmetric-view
+result as an ordinary matrix self-product, without a cubic matrix calculation.
+Only the selected triangle is initialized; custom results use disposeSymmetric.
+Complex diagonal entries are squared without conjugation.
++/
+package(mir.stat) SymmetricView!(triangle, AllocatedSlice!(Allocation.gc,Scalar!D,2))
+tcrossprod(TrianglePolicy triangle = TrianglePolicy.upper,D)(
+    scope auto ref const(DiagonalView!D) a)
+    if (numericSlice!D && D.N == 1)
+{
+    int allocator;
+    auto result = allocate!(Allocation.gc,Scalar!D)(allocator,a.shape);
+
+    diagonalSelfInto!(false,triangle)(a,result);
+    return symmetricView!triangle(result);
+}
+
+/// Diagonal two-input cross-product; other inputs are logical matrices and no symmetry is assumed.
+package(mir.stat) AllocatedSlice!(Allocation.gc,Scalar!D,2)
+tcrossprod(D,B)(scope auto ref const(DiagonalView!D) a, scope auto ref B b)
+    if (numericSlice!D && D.N == 1 && B.N == 2 &&
+        __traits(compiles, mtimes(a,crossOperand!true(b))))
+{
+    return mtimes(a,crossOperand!true(b));
+}
+
+/// Diagonal two-input cross-product; other inputs are logical matrices and no symmetry is assumed.
+package(mir.stat) AllocatedSlice!(Allocation.gc,Scalar!D,2)
+tcrossprod(D,B)(scope auto ref B b, scope auto ref const(DiagonalView!D) a)
+    if (numericSlice!D && D.N == 1 && B.N == 2 &&
+        __traits(compiles, mtimes(crossOperand!false(b),a)) && !DiagonalInfo!B.valid)
+{
+    return mtimes(crossOperand!false(b),a);
+}
+
+/++
+Diagonal self-product with rc storage. Returns the same symmetric-view
+result as an ordinary matrix self-product, without a cubic matrix calculation.
+Only the selected triangle is initialized; custom results use disposeSymmetric.
+Complex diagonal entries are squared without conjugation.
++/
+package(mir.stat) SymmetricView!(triangle, AllocatedSlice!(Allocation.rc,Scalar!D,2))
+rcTcrossprod(TrianglePolicy triangle = TrianglePolicy.upper,D)(
+    scope auto ref const(DiagonalView!D) a)
+    if (numericSlice!D && D.N == 1)
+{
+    int allocator;
+    auto result = allocate!(Allocation.rc,Scalar!D)(allocator,a.shape);
+
+    diagonalSelfInto!(false,triangle)(a,result);
+    return symmetricView!triangle(result);
+}
+
+/// Diagonal two-input cross-product; other inputs are logical matrices and no symmetry is assumed.
+package(mir.stat) AllocatedSlice!(Allocation.rc,Scalar!D,2)
+rcTcrossprod(D,B)(scope auto ref const(DiagonalView!D) a, scope auto ref B b)
+    if (numericSlice!D && D.N == 1 && B.N == 2 &&
+        __traits(compiles, rcMtimes(a,crossOperand!true(b))))
+{
+    return rcMtimes(a,crossOperand!true(b));
+}
+
+/// Diagonal two-input cross-product; other inputs are logical matrices and no symmetry is assumed.
+package(mir.stat) AllocatedSlice!(Allocation.rc,Scalar!D,2)
+rcTcrossprod(D,B)(scope auto ref B b, scope auto ref const(DiagonalView!D) a)
+    if (numericSlice!D && D.N == 1 && B.N == 2 &&
+        __traits(compiles, rcMtimes(crossOperand!false(b),a)) && !DiagonalInfo!B.valid)
+{
+    return rcMtimes(crossOperand!false(b),a);
+}
+
+/++
+Diagonal self-product with custom storage. Returns the same symmetric-view
+result as an ordinary matrix self-product, without a cubic matrix calculation.
+Only the selected triangle is initialized; custom results use disposeSymmetric.
+Complex diagonal entries are squared without conjugation.
++/
+package(mir.stat) SymmetricView!(triangle, AllocatedSlice!(Allocation.custom,Scalar!D,2))
+makeTcrossprod(TrianglePolicy triangle = TrianglePolicy.upper,D,Allocator)(
+    auto ref Allocator allocator, scope auto ref const(DiagonalView!D) a)
+    if (numericSlice!D && D.N == 1)
+{
+
+    auto result = allocate!(Allocation.custom,Scalar!D)(allocator,a.shape);
+    scope(failure) { import std.experimental.allocator: dispose; allocator.dispose(result.field); }
+    diagonalSelfInto!(false,triangle)(a,result);
+    return symmetricView!triangle(result);
+}
+
+/// Diagonal two-input cross-product; other inputs are logical matrices and no symmetry is assumed.
+package(mir.stat) AllocatedSlice!(Allocation.custom,Scalar!D,2)
+makeTcrossprod(D,B,Allocator)(auto ref Allocator allocator, scope auto ref const(DiagonalView!D) a, scope auto ref B b)
+    if (numericSlice!D && D.N == 1 && B.N == 2 &&
+        __traits(compiles, makeMtimes(allocator,a,crossOperand!true(b))))
+{
+    return makeMtimes(allocator,a,crossOperand!true(b));
+}
+
+/// Diagonal two-input cross-product; other inputs are logical matrices and no symmetry is assumed.
+package(mir.stat) AllocatedSlice!(Allocation.custom,Scalar!D,2)
+makeTcrossprod(D,B,Allocator)(auto ref Allocator allocator, scope auto ref B b, scope auto ref const(DiagonalView!D) a)
+    if (numericSlice!D && D.N == 1 && B.N == 2 &&
+        __traits(compiles, makeMtimes(allocator,crossOperand!false(b),a)) && !DiagonalInfo!B.valid)
+{
+    return makeMtimes(allocator,crossOperand!false(b),a);
+}
+
+/// Diagonal self-product into caller storage; fills both triangles. Output must be disjoint from the input.
+package(mir.stat) SymmetricView!(TrianglePolicy.upper,C)
+tcrossprodInto(D,C)(scope auto ref const(DiagonalView!D) a, scope auto ref C output)
+    if (numericSlice!D && D.N == 1 && matrix!C && is(Scalar!D == Scalar!C))
+{
+    diagonalSelfInto!(true,TrianglePolicy.upper)(a,output);
+    return symmetricView!(TrianglePolicy.upper)(output);
+}
+
+/// Diagonal self-product into caller storage; writes only the explicitly selected triangle. Output must be disjoint from the input.
+package(mir.stat) SymmetricView!(triangle,C)
+tcrossprodInto(TrianglePolicy triangle,D,C)(scope auto ref const(DiagonalView!D) a, scope auto ref C output)
+    if (numericSlice!D && D.N == 1 && matrix!C && is(Scalar!D == Scalar!C))
+{
+    diagonalSelfInto!(false,triangle)(a,output);
+    return symmetricView!(triangle)(output);
+}
+
+/// Write a diagonal two-input cross-product. Output shape and disjointness follow mtimesInto.
+package(mir.stat) void tcrossprodInto(D,B,C)(scope auto ref const(DiagonalView!D) a, scope auto ref B b, scope auto ref C output)
+    if (numericSlice!D && D.N == 1 && B.N == 2 &&
+        __traits(compiles, mtimesInto(a,crossOperand!true(b),output)))
+{
+    mtimesInto(a,crossOperand!true(b),output);
+}
+
+/// Write a diagonal two-input cross-product. Output shape and disjointness follow mtimesInto.
+package(mir.stat) void tcrossprodInto(D,B,C)(scope auto ref B b, scope auto ref const(DiagonalView!D) a, scope auto ref C output)
+    if (numericSlice!D && D.N == 1 && B.N == 2 &&
+        __traits(compiles, mtimesInto(crossOperand!false(b),a,output)) && !DiagonalInfo!B.valid)
+{
+    mtimesInto(crossOperand!false(b),a,output);
+}
+
+/// Fill the requested portion of a dense result without reading implicit zeros.
+private void diagonalSelfInto(bool full,TrianglePolicy triangle,D,C)(
+    scope auto ref const(DiagonalView!D) a, scope auto ref C output)
+{
+    static assert(triangle == TrianglePolicy.upper || triangle == TrianglePolicy.lower);
+    assert(a.shape == output.shape);
+    foreach(i; 0 .. a.length!0)
+    {
+        auto d = a[i,i];
+        foreach(j; 0 .. a.length!1)
+            if (full || (triangle == TrianglePolicy.upper ? j >= i : j <= i))
+                output[i,j] = i == j ? d*d : Scalar!D(0);
+    }
+}
+
+
+/// Diagonal cross-products preserve symmetric self-results and explicit triangle writes.
+version(mir_stat_test_linearAlgebra)
+@system unittest
+{
+    import mir.ndslice.slice: sliced;
+    import std.experimental.allocator.mallocator: Mallocator;
+    import std.experimental.allocator: dispose;
+    double[2] ds=[2,3]; double[4] values=[1,2,3,4], buffer=[-99,-99,-99,-99];
+    auto a=diagonalView(ds[].sliced); auto b=values[].sliced(2,2);
+    assert(crossprod(a).asSlice==[[4,0],[0,9]]);
+    assert(tcrossprod(a).asSlice==[[4,0],[0,9]]);
+    assert(rcCrossprod(a).asSlice==rcTcrossprod(a).asSlice);
+    auto custom=makeCrossprod(Mallocator.instance,a);
+    scope(exit) disposeSymmetric(Mallocator.instance,custom);
+    auto customT=makeTcrossprod(Mallocator.instance,a);
+    scope(exit) disposeSymmetric(Mallocator.instance,customT);
+    assert(custom.asSlice==customT.asSlice);
+    auto outView=buffer[].sliced(2,2);
+    crossprodInto!(TrianglePolicy.upper)(a,outView);
+    assert(buffer==[4,0,-99,9]);
+    tcrossprodInto(a,outView);
+    assert(buffer==[4,0,0,9]);
+    assert(crossprod(a,b)==crossprod(a.asSlice,b));
+    assert(crossprod(b,a)==crossprod(b,a.asSlice));
+    assert(tcrossprod(a,b)==tcrossprod(a.asSlice,b));
+    assert(tcrossprod(b,a)==tcrossprod(b,a.asSlice));
+    crossprodInto(a,b,outView); assert(outView==rcCrossprod(a,b));
+    tcrossprodInto(b,a,outView); assert(outView==rcTcrossprod(b,a));
+    auto ab=makeCrossprod(Mallocator.instance,a,b);
+    scope(exit) Mallocator.instance.dispose(ab.field);
+    auto ba=makeTcrossprod(Mallocator.instance,b,a);
+    scope(exit) Mallocator.instance.dispose(ba.field);
+    assert(ab==rcCrossprod(a,b) && ba==rcTcrossprod(b,a));
+}
+
+/// Preserve diagonal structure through an ordinary transpose; adapt other logical matrices.
+private auto crossOperand(bool transpose, B)(return scope B b)
+{
+    static if (DiagonalInfo!B.valid) return b;
+    else static if (transpose) return logicalOperand(b).universal.transposed;
+    else return logicalOperand(b);
+}
+
+
+// Two diagonal operands preserve implicit zeros, including with nonfinite entries.
+version(mir_stat_test_linearAlgebra)
+@safe pure nothrow unittest
+{
+    import mir.ndslice.slice: sliced;
+    import mir.complex: Complex;
+    double[2] values = [double.nan, 3];
+    auto d = diagonalView(values[].sliced);
+    auto c = crossprod(d, d);
+    auto t = tcrossprod(d, d);
+    assert(c[0,1] == 0 && c[1,0] == 0 && c[1,1] == 9);
+    assert(t[0,1] == 0 && t[1,0] == 0 && t[1,1] == 9);
+    alias Z = Complex!double;
+    Z[2] complexValues = [Z(1,1), Z(2,-1)];
+    auto z = diagonalView(complexValues[].sliced);
+    auto product = crossprod(z);
+    assert(product[0,0] == Z(0,2) && product[1,1] == Z(3,-4));
+    assert(product[0,1] == Z(0));
 }

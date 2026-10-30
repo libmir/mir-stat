@@ -44,6 +44,46 @@ Transposing a slice changes its logical shape and indexing without copying.
 can legitimately return negative results. Cholesky decomposition does require
 positive definiteness; no regularization or pseudoinverse is performed.
 
+## Diagonal matrices
+
+Use `diagonalView(diagonal)` to describe a square matrix stored as a vector.
+It retains RC ownership when present and allocates nothing. Borrowed storage
+must remain alive. Transpose leaves its values unchanged, including for complex
+entries. The view is read-only, but changes through the original vector remain
+visible.
+
+```d
+double[2] diagonal = [2, 3];
+double[4] values = [1, 2, 3, 4];
+auto d = diagonalView(diagonal[].sliced);
+auto a = values[].sliced(2, 2);
+assert(mtimes(d, a) == [[2, 4], [9, 12]]); // Scale rows.
+assert(mtimes(a, d) == [[2, 6], [6, 12]]); // Scale columns.
+assert(d.storage == [2, 3]);
+assert(d.asSlice == [[2, 0], [0, 3]]);
+```
+
+Pass the original view to preserve specialized dispatch. `.storage` exposes
+the vector; `.asSlice` exposes the logical square matrix without copying.
+Use `.asSlice.slice`, `.asSlice.rcslice`, or `makeSlice` for a writable dense
+copy. This follows the same ownership conventions as the other structural views.
+
+| Operation | Diagonal behavior |
+| --- | --- |
+| `mtimes` | Row/column scaling; accepts another ordinary or structural operand |
+| `crossprod`, `tcrossprod` | Coordinate products; self-results remain symmetric views |
+
+These paths support the existing GC, RC, custom allocator, and caller-buffer
+families where applicable. Products return dense results consistently with
+ordinary inputs; producing a square result still writes quadratic-size storage.
+Self cross-products initialize only the selected triangle unless a full `Into`
+result is requested. They do not conjugate complex entries.
+
+`DiagonalPolicy.unit` describes an implicit unit diagonal in a triangular
+matrix. It is separate from `DiagonalView`, which describes the whole matrix
+using explicit diagonal values. A view does not certify positive definiteness
+or identify a factor.
+
 ## Choosing storage ownership
 
 Input ownership and result ownership are independent. Passing an RC matrix
@@ -196,8 +236,8 @@ the allocation-specific convenience modules, and remain package-restricted.
 - `DiagonalPolicy.unit` supplies ones on a triangular matrix's diagonal
   without reading stored diagonal entries. `.nonUnit` reads the stored values.
 
-`DiagonalPolicy` is not a diagonal-matrix representation. A standalone
-`DiagonalView` is outside the current scope.
+`DiagonalPolicy` is not a diagonal-matrix representation. Use
+`diagonalView(vector)` for that; see the diagonal-matrix examples above.
 
 Declare triangular structure once, then use the usual multiplication function:
 
@@ -253,9 +293,9 @@ The caller must keep borrowed storage and computed-iterator dependencies alive.
 
 ### Logical slice conversion
 
-Both structural views expose a read-only `asSlice` property. It reads the
+All structural views expose a read-only `asSlice` property. It reads the
 logical matrix: symmetric views reflect their selected triangle, and triangular
-views supply zeros and optional unit diagonal entries. It never reads unused
+views supply zeros and optional unit diagonal entries. Diagonal views read their vector on the diagonal and supply zeros elsewhere. It never reads unused
 storage to supply those values. The adapter copies no elements and preserves
 RC ownership; borrowed storage and computed dependencies must remain alive.
 
