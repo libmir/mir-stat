@@ -1282,7 +1282,7 @@ template robustScale(F,
         assert(low_quartile < 0.5, "robustScale: low_quartile must be less than 0.5");
 
         import mir.ndslice.topology: flattened;
-        import mir.stat.descriptive.univariate: median, meanType, rcquantile, quantileType;
+        import mir.stat.descriptive.univariate: rcMedian, meanType, rcquantile, quantileType;
 
         static if (!allowModifySlice) {
             import mir.ndslice.allocation: rcslice;
@@ -1327,9 +1327,11 @@ template robustScale(F,
         }
         else
         {
-            quantileType!(F, quantileAlgo) low_quartile_value = temp.rcquantile!(F, quantileAlgo, allowModifySlice)(low_quartile);
-            meanType!F median_value = temp.median!(F, allowModifySlice);
-            quantileType!(F, quantileAlgo) high_quartile_value = temp.rcquantile!(F, quantileAlgo, allowModifySlice)(cast(F) 1 - low_quartile);
+            // temp is either our private copy or caller storage that may be
+            // rearranged. Reuse it for all three selections.
+            quantileType!(F, quantileAlgo) low_quartile_value = temp.rcquantile!(F, quantileAlgo, true)(low_quartile);
+            meanType!F median_value = temp.rcMedian!(F, true);
+            quantileType!(F, quantileAlgo) high_quartile_value = temp.rcquantile!(F, quantileAlgo, true)(cast(F) 1 - low_quartile);
 
             static if (isFloatingPoint!(slice.DeepElement) &&
                        isFloatingPoint!(typeof(low_quartile_value)) &&
@@ -1610,4 +1612,30 @@ unittest
 
     static immutable result = [14.583333, 0.583333, -0.083333, 0.083333, 0.416667, -0.083333, 0.583333, -0.583333, -1.583333, -18.750000];
     assert(x.robustScale.all!approxEqual(result));
+}
+
+// Private scratch may be rearranged while the returned view keeps the original
+// order, shape, and connection to caller storage.
+version(mir_stat_test)
+@safe pure nothrow @nogc unittest
+{
+    import mir.ndslice.slice: sliced;
+    import mir.ndslice.topology: stride;
+    import mir.ndslice.dynamic: transposed;
+    import mir.math.common: approxEqual;
+    double[12] data = [5, 99, 0, 99, 4, 99, 1, 99, 3, 99, 2, 99];
+    auto samples = data[].sliced.stride(2);
+    auto view = samples.robustScale;
+    foreach (i; 0 .. samples.length)
+        assert(view[i].approxEqual((samples[i] - 2.5) / 2.5));
+    assert(data == [5, 99, 0, 99, 4, 99, 1, 99, 3, 99, 2, 99]);
+    data[0] = 7.5;
+    assert(view[0] == 2);
+    const double[6] matrixData = [5, 0, 4, 1, 3, 2];
+    auto matrix = matrixData[].sliced(2, 3).transposed;
+    auto scaled = matrix.robustScale;
+    assert(scaled.shape == matrix.shape);
+    foreach (i; 0 .. 3)
+        foreach (j; 0 .. 2)
+            assert(scaled[i, j].approxEqual((matrix[i, j] - 2.5) / 2.5));
 }

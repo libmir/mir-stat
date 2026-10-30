@@ -22,6 +22,8 @@ $(BOOKTABLE,
 $(TR $(TH Category) $(TH Declarations))
     $(TR $(TD Ordinary quantiles) $(TD
         $(REF median, mir, stat, descriptive, univariate, quantiles)$(NBSP)
+        $(REF rcMedian, mir, stat, descriptive, univariate, quantiles)$(NBSP)
+        $(REF makeMedian, mir, stat, descriptive, univariate, quantiles)$(NBSP)
         $(REF quantile, mir, stat, descriptive, univariate, quantiles)$(NBSP)
         $(REF rcquantile, mir, stat, descriptive, univariate, quantiles)$(NBSP)
         $(REF makeQuantile, mir, stat, descriptive, univariate, quantiles)$(NBSP)
@@ -29,15 +31,25 @@ $(TR $(TH Category) $(TH Declarations))
     ))
     $(TR $(TD Weighted quantiles) $(TD
         $(REF weightedMedian, mir, stat, descriptive, univariate, quantiles)$(NBSP)
+        $(REF rcWeightedMedian, mir, stat, descriptive, univariate, quantiles)$(NBSP)
+        $(REF makeWeightedMedian, mir, stat, descriptive, univariate, quantiles)$(NBSP)
         $(REF weightedQuantile, mir, stat, descriptive, univariate, quantiles)$(NBSP)
         $(REF rcWeightedQuantile, mir, stat, descriptive, univariate, quantiles)$(NBSP)
         $(REF makeWeightedQuantile, mir, stat, descriptive, univariate, quantiles)$(NBSP)
     ))
     $(TR $(TD Measures of spread) $(TD
         $(REF weightedInterquartileRange, mir, stat, descriptive, univariate, quantiles)$(NBSP)
+        $(REF rcWeightedInterquartileRange, mir, stat, descriptive, univariate, quantiles)$(NBSP)
+        $(REF makeWeightedInterquartileRange, mir, stat, descriptive, univariate, quantiles)$(NBSP)
         $(REF interquartileRange, mir, stat, descriptive, univariate, quantiles)$(NBSP)
+        $(REF rcInterquartileRange, mir, stat, descriptive, univariate, quantiles)$(NBSP)
+        $(REF makeInterquartileRange, mir, stat, descriptive, univariate, quantiles)$(NBSP)
         $(REF weightedMedianAbsoluteDeviation, mir, stat, descriptive, univariate, quantiles)$(NBSP)
+        $(REF rcWeightedMedianAbsoluteDeviation, mir, stat, descriptive, univariate, quantiles)$(NBSP)
+        $(REF makeWeightedMedianAbsoluteDeviation, mir, stat, descriptive, univariate, quantiles)$(NBSP)
         $(REF medianAbsoluteDeviation, mir, stat, descriptive, univariate, quantiles)$(NBSP)
+        $(REF rcMedianAbsoluteDeviation, mir, stat, descriptive, univariate, quantiles)$(NBSP)
+        $(REF makeMedianAbsoluteDeviation, mir, stat, descriptive, univariate, quantiles)$(NBSP)
     ))
     $(TR $(TD Algorithm selection) $(TD
         $(REF QuantileAlgo, mir, stat, descriptive, univariate, quantiles)$(NBSP)
@@ -71,95 +83,57 @@ import std.traits: isIterable, isMutable, isIntegral;
 import mir.stat.descriptive.univariate.internal.types: statType, meanType;
 import mir.stat.descriptive.univariate.means: mean;
 
+private meanType!F allocatedMedian(F, bool allowModify, QuantileAllocation allocation,
+    Allocator, Data)(ref Allocator allocator, scope auto ref Data data)
+{
+    import std.traits: Unqual;
+    import mir.ndslice.topology: flattened;
+    scope auto source = quantileSlice(data);
+    static if (allowModify)
+        return rcMedian!(F, true)(source);
+    else
+    {
+        alias Element = Unqual!(typeof(source).DeepElement);
+        if (source.elementCount <= 2)
+        {
+            assert(source.elementCount > 0, "median: slice must have length greater than zero");
+            alias Result = typeof(return);
+            static if ((isIntegral!Element || isFloatingPoint!Element) && isFloatingPoint!Result)
+            {
+                scope auto flat = source.flattened;
+                return flat.length == 1 ? cast(Result) flat[0] : medianMidpoint!Result(flat[0], flat[1]);
+            }
+            else
+                return mean!Result(source);
+        }
+        auto scratch = allocateQuantiles!(Element, allocation)(allocator, source.elementCount);
+        static if (allocation == QuantileAllocation.custom)
+            scope(exit) releaseQuantiles(allocator, scratch);
+        scope auto flat = source.lightScope.flattened;
+        foreach (i; 0 .. flat.length) scratch[i] = flat[i];
+        return rcMedian!(F, true)(scratch.lightScope);
+    }
+}
+
 /++
-Computes the median of `slice`.
+Compute the same statistic as $(LREF rcMedian) using GC-managed scratch.
 
-For an odd number of observations, this is the middle sorted observation;
-for an even number, it is the average of the two middle observations.
-For at least two observations, this agrees mathematically with the type 2
-or type 7 quantile at probability 0.5. The dedicated median implementation
-uses selection and small-input fast paths. For observations
-with unequal weights, see $(LREF weightedMedian).
+The result is a scalar and requires no disposal. Statistical conventions,
+result types, and input-modification options follow $(LREF rcMedian).
+Use $(LREF rcMedian) for reference-counted scratch that is released before
+return, or $(LREF makeMedian) for a custom allocator.
 
-By default, if `F` is not floating point type or complex type, then the result
-will have a `double` type if `F` is implicitly convertible to a floating point
-type or a type for which `isComplex!F` is true.
-
-Can also pass a boolean variable, `allowModify`, that allows the input slice to
-be modified. By default, a reference-counted copy is made.
-
-Params:
-    F = output type
-    allowModify = Allows the input slice to be modified, default is false
-Returns:
-    the median of the slice
-
-See_also:
-    $(REF mean, mir, stat, descriptive, univariate, means)
+Migration: this ordinary name previously used reference-counted scratch.
+Call $(LREF rcMedian) to retain that allocation policy and support for
+`@nogc` callers. GC scratch can remain allocated until collection.
 +/
 template median(F, bool allowModify = false)
 {
-    import std.traits: Unqual;
-
-    /++
-    Params:
-        slice = slice
-    +/
-    @nogc
+    /// ditto
     meanType!F median(Iterator, size_t N, SliceKind kind)(Slice!(Iterator, N, kind) slice)
     {
-        static assert (!allowModify ||
-                       isMutable!(slice.DeepElement),
-                           "allowModify must be false or the input must be mutable");
-        alias G = typeof(return);
-        size_t len = slice.elementCount;
-        assert(len > 0, "median: slice must have length greater than zero");
-
-        import mir.ndslice.topology: as, flattened;
-
-        static if (!allowModify) {
-            import mir.ndslice.allocation: rcslice;
-
-            if (len > 2) {
-                auto view = slice.lightScope;
-                auto val = view.as!(Unqual!(slice.DeepElement)).rcslice;
-                auto temp = val.lightScope.flattened;
-                return .median!(G, true)(temp);
-            } else {
-                import std.traits: isIntegral;
-                static if ((isIntegral!(slice.DeepElement) ||
-                            isFloatingPoint!(slice.DeepElement)) && isFloatingPoint!G) {
-                    // Retain integral endpoints until averaging; converting
-                    // them independently can lose cancellation at the midpoint.
-                    auto flat = slice.flattened;
-                    return len == 1 ? cast(G) flat[0] : medianMidpoint!G(flat[0], flat[1]);
-                } else {
-                    return mean!G(slice);
-                }
-            }
-        } else {
-            import mir.ndslice.sorting: partitionAt;
-
-            auto temp = slice.flattened;
-
-            if (len > 5) {
-                size_t half_n = len / 2;
-                partitionAt(temp, half_n);
-                if (len % 2 == 1) {
-                    return cast(G) temp[half_n];
-                } else {
-                    // The lower-half partition cannot change the upper median.
-                    // Read it first to avoid combining the final two loads after
-                    // partitioning has just written individual elements.
-                    auto upper = temp[half_n];
-                    // Move the largest value in the first half to half_n - 1.
-                    partitionAt(temp[0 .. half_n], half_n - 1);
-                    return medianMidpoint!G(temp[half_n - 1], upper);
-                }
-            } else {
-                return smallMedianImpl!(G)(temp);
-            }
-        }
+        QuantileContext context;
+        return allocatedMedian!(F, allowModify, QuantileAllocation.gc)(context, slice.lightScope);
     }
 }
 
@@ -204,6 +178,478 @@ auto median(T)(T sliceLike)
     return median(sliceLike.toSlice);
 }
 
+
+/++
+Compute the same statistic as $(LREF rcWeightedMedian) using GC-managed scratch.
+
+The result is a scalar and requires no disposal. Statistical conventions,
+result types, and input-modification options follow $(LREF rcWeightedMedian).
+Use $(LREF rcWeightedMedian) for reference-counted scratch that is released before
+return, or $(LREF makeWeightedMedian) for a custom allocator.
+
+Migration: this ordinary name previously used reference-counted scratch.
+Call $(LREF rcWeightedMedian) to retain that allocation policy and support for
+`@nogc` callers. GC scratch can remain allocated until collection.
++/
+template weightedMedian(F)
+    if (isFloatingPoint!F)
+{
+    /++
+    Params:
+        data = observations corresponding to the weights
+        weights = nonnegative finite relative weights
+    +/
+    F weightedMedian(Data, Weights)(
+        scope auto ref Data data, scope auto ref Weights weights)
+    {
+        return weightedQuantile!(F, WeightedQuantileAlgo.averagedInverseCDF)(
+            data, weights, 0.5);
+    }
+}
+
+/// ditto
+auto weightedMedian(Data, Weights)(
+    scope auto ref Data data, scope auto ref Weights weights)
+{
+    alias F = WeightedQuantileResult!(Data, WeightedQuantileAlgo.averagedInverseCDF);
+    return .weightedMedian!F(data, weights);
+}
+
+
+/++
+Compute the same statistic as $(LREF rcWeightedInterquartileRange) using GC-managed scratch.
+
+The result is a scalar and requires no disposal. Statistical conventions,
+result types, and input-modification options follow $(LREF rcWeightedInterquartileRange).
+Use $(LREF rcWeightedInterquartileRange) for reference-counted scratch that is released before
+return, or $(LREF makeWeightedInterquartileRange) for a custom allocator.
+
+Migration: this ordinary name previously used reference-counted scratch.
+Call $(LREF rcWeightedInterquartileRange) to retain that allocation policy and support for
+`@nogc` callers. GC scratch can remain allocated until collection.
++/
+template weightedInterquartileRange(F,
+    WeightedQuantileAlgo algorithm = WeightedQuantileAlgo.inverseCDF)
+    if (isFloatingPoint!F || (algorithm == WeightedQuantileAlgo.inverseCDF && isIntegral!F))
+{
+    /++
+    Params:
+        data = observations corresponding to the weights
+        weights = nonnegative finite relative weights, or whole-number counts
+            for frequencyType7 and frequencyType8
+    +/
+    F weightedInterquartileRange(Data, Weights)(
+        scope auto ref Data data, scope auto ref Weights weights)
+    {
+        QuantileContext context;
+        return allocatedWeightedSpread!(F, algorithm, QuantileAllocation.gc)(context, data, weights);
+    }
+}
+
+/// ditto
+template weightedInterquartileRange(
+    WeightedQuantileAlgo algorithm = WeightedQuantileAlgo.inverseCDF)
+{
+    /// ditto
+    auto weightedInterquartileRange(Data, Weights)(
+        scope auto ref Data data, scope auto ref Weights weights)
+    {
+        alias F = WeightedQuantileResult!(Data, algorithm);
+        return .weightedInterquartileRange!(F, algorithm)(data, weights);
+    }
+}
+
+
+/++
+Compute the same statistic as $(LREF rcInterquartileRange) using GC-managed scratch.
+
+The result is a scalar and requires no disposal. Statistical conventions,
+result types, and input-modification options follow $(LREF rcInterquartileRange).
+Use $(LREF rcInterquartileRange) for reference-counted scratch that is released before
+return, or $(LREF makeInterquartileRange) for a custom allocator.
+
+Migration: this ordinary name previously used reference-counted scratch.
+Call $(LREF rcInterquartileRange) to retain that allocation policy and support for
+`@nogc` callers. GC scratch can remain allocated until collection.
++/
+template interquartileRange(F, QuantileAlgo quantileAlgo = QuantileAlgo.type7,
+                            bool allowModifySlice = false)
+{
+    import mir.ndslice.slice: isConvertibleToSlice, isSlice, Slice, SliceKind;
+
+    /++
+    Params:
+        slice = slice
+    +/
+    @fmamath quantileType!(F, quantileAlgo) interquartileRange(
+        Iterator, size_t N, SliceKind kind)(
+            Slice!(Iterator, N, kind) slice)
+    {
+        import core.lifetime: move;
+
+        alias FF = typeof(return);
+        return quantileSpread!(FF, quantileAlgo, allowModifySlice, QuantileAllocation.gc)(slice.move, 0.25, 0.75);
+    }
+
+    /++
+    Params:
+        slice = slice
+        lo = low value
+    +/
+    @fmamath quantileType!(F, quantileAlgo) interquartileRange(
+        Iterator, size_t N, SliceKind kind, P)(
+            Slice!(Iterator, N, kind) slice,
+            P lo)
+    {
+        import core.lifetime: move;
+
+        alias FF = typeof(return);
+        return quantileSpread!(FF, quantileAlgo, allowModifySlice, QuantileAllocation.gc)(slice.move, lo, 1 - lo);
+    }
+
+    /++
+    Params:
+        slice = slice
+        lo = low value
+        hi = high value
+    +/
+    @fmamath quantileType!(F, quantileAlgo) interquartileRange(
+        Iterator, size_t N, SliceKind kind, P, Q)(
+            Slice!(Iterator, N, kind) slice,
+            P lo,
+            Q hi)
+    {
+        import core.lifetime: move;
+
+        alias FF = typeof(return);
+        return quantileSpread!(FF, quantileAlgo, allowModifySlice, QuantileAllocation.gc)(slice.move, lo, hi);
+    }
+
+    /++
+    Params:
+        array = array
+    +/
+    @fmamath quantileType!(F[], quantileAlgo) interquartileRange(scope F[] array...)
+    {
+        import mir.ndslice.slice: sliced;
+
+        alias FF = typeof(return);
+        return .interquartileRange!(FF, quantileAlgo, allowModifySlice)(array.sliced);
+    }
+
+    /// ditto
+    @fmamath auto interquartileRange(SliceLike)(SliceLike x)
+        if (isConvertibleToSlice!SliceLike && !isSlice!SliceLike)
+    {
+        import mir.ndslice.slice: toSlice;
+        return .interquartileRange!(F, quantileAlgo, allowModifySlice)(x.toSlice);
+    }
+}
+
+/// ditto
+template interquartileRange(QuantileAlgo quantileAlgo = QuantileAlgo.type7,
+                            bool allowModifySlice = false)
+{
+    import mir.ndslice.slice: isConvertibleToSlice, isSlice, Slice, SliceKind;
+
+    /// ditto
+    @fmamath quantileType!(Slice!(Iterator), quantileAlgo)
+        interquartileRange(Iterator, size_t N, SliceKind kind)(
+            Slice!(Iterator, N, kind) slice)
+    {
+        import core.lifetime: move;
+
+        alias F = typeof(return);
+        return .interquartileRange!(F, quantileAlgo, allowModifySlice)(slice.move);
+    }
+
+    /// ditto
+    @fmamath quantileType!(Slice!(Iterator), quantileAlgo)
+        interquartileRange(Iterator, size_t N, SliceKind kind, F)(
+            Slice!(Iterator, N, kind) slice,
+            F lo)
+    {
+        import core.lifetime: move;
+
+        alias FF = typeof(return);
+        return .interquartileRange!(FF, quantileAlgo, allowModifySlice)(slice.move, lo);
+    }
+
+    /// ditto
+    @fmamath quantileType!(Slice!(Iterator), quantileAlgo)
+        interquartileRange(Iterator, size_t N, SliceKind kind, F)(
+            Slice!(Iterator, N, kind) slice,
+            F lo,
+            F hi)
+    {
+        import core.lifetime: move;
+
+        alias FF = typeof(return);
+        return .interquartileRange!(FF, quantileAlgo, allowModifySlice)(slice.move, lo, hi);
+    }
+
+    /// ditto
+    @fmamath quantileType!(T[], quantileAlgo)
+        interquartileRange(T)(scope T[] array...)
+    {
+        import core.lifetime: move;
+
+        alias F = typeof(return);
+        return .interquartileRange!(F, quantileAlgo, allowModifySlice)(array);
+    }
+
+    /// ditto
+    @fmamath auto interquartileRange(SliceLike)(SliceLike x)
+        if (isConvertibleToSlice!SliceLike && !isSlice!SliceLike)
+    {
+        import mir.ndslice.slice: toSlice;
+        alias F = quantileType!(typeof(x.toSlice), quantileAlgo);
+        return .interquartileRange!(F, quantileAlgo, allowModifySlice)(x);
+    }
+}
+
+/// ditto
+template interquartileRange(F, string quantileAlgo, bool allowModifySlice = false)
+{
+    mixin("alias interquartileRange = .interquartileRange!(F, QuantileAlgo." ~ quantileAlgo ~ ", allowModifySlice);");
+}
+
+/// ditto
+template interquartileRange(string quantileAlgo, bool allowModifySlice = false)
+{
+    mixin("alias interquartileRange = .interquartileRange!(QuantileAlgo." ~ quantileAlgo ~ ", allowModifySlice);");
+}
+
+
+/++
+Compute the same statistic as $(LREF rcWeightedMedianAbsoluteDeviation) using GC-managed scratch.
+
+The result is a scalar and requires no disposal. Statistical conventions,
+result types, and input-modification options follow $(LREF rcWeightedMedianAbsoluteDeviation).
+Use $(LREF rcWeightedMedianAbsoluteDeviation) for reference-counted scratch that is released before
+return, or $(LREF makeWeightedMedianAbsoluteDeviation) for a custom allocator.
+
+Migration: this ordinary name previously used reference-counted scratch.
+Call $(LREF rcWeightedMedianAbsoluteDeviation) to retain that allocation policy and support for
+`@nogc` callers. GC scratch can remain allocated until collection.
++/
+template weightedMedianAbsoluteDeviation(F,
+    WeightedQuantileAlgo algorithm = WeightedQuantileAlgo.averagedInverseCDF)
+{
+    /++
+    Params:
+        data = observations corresponding to the weights
+        weights = relative weights, or occurrence counts for frequency algorithms
+    +/
+    meanType!F weightedMedianAbsoluteDeviation(Data, Weights)(
+        scope auto ref Data data, scope auto ref Weights weights)
+    {
+        QuantileContext context;
+        return allocatedWeightedMAD!(F, algorithm, QuantileAllocation.gc)(context, data, weights);
+    }
+}
+
+/// ditto
+template weightedMedianAbsoluteDeviation(
+    WeightedQuantileAlgo algorithm = WeightedQuantileAlgo.averagedInverseCDF)
+{
+    /// ditto
+    auto weightedMedianAbsoluteDeviation(Data, Weights)(
+        scope auto ref Data data, scope auto ref Weights weights)
+    {
+        import mir.primitives: DeepElementType;
+        return .weightedMedianAbsoluteDeviation!(DeepElementType!Data, algorithm)(data, weights);
+    }
+}
+
+
+/++
+Compute the same statistic as $(LREF rcMedianAbsoluteDeviation) using GC-managed scratch.
+
+The result is a scalar and requires no disposal. Statistical conventions,
+result types, and input-modification options follow $(LREF rcMedianAbsoluteDeviation).
+Use $(LREF rcMedianAbsoluteDeviation) for reference-counted scratch that is released before
+return, or $(LREF makeMedianAbsoluteDeviation) for a custom allocator.
+
+Migration: this ordinary name previously used reference-counted scratch.
+Call $(LREF rcMedianAbsoluteDeviation) to retain that allocation policy and support for
+`@nogc` callers. GC scratch can remain allocated until collection.
++/
+template medianAbsoluteDeviation(F)
+{
+    /++
+    Params:
+        slice = slice
+    +/
+    @fmamath meanType!F medianAbsoluteDeviation(Iterator, size_t N, SliceKind kind)(
+            Slice!(Iterator, N, kind) slice)
+    {
+        QuantileContext context;
+        return allocatedMAD!(F, QuantileAllocation.gc)(context, slice.lightScope);
+    }
+}
+
+/// ditto
+@fmamath meanType!(Slice!(Iterator, N, kind))
+    medianAbsoluteDeviation(Iterator, size_t N, SliceKind kind)(
+        Slice!(Iterator, N, kind) slice)
+{
+    import core.lifetime: move;
+
+    alias F = typeof(return);
+    return medianAbsoluteDeviation!F(slice.move);
+}
+
+/// ditto
+@fmamath meanType!(T[]) medianAbsoluteDeviation(T)(scope const T[] ar...)
+{
+    import mir.ndslice.slice: sliced;
+
+    alias G = typeof(return);
+    return medianAbsoluteDeviation!G(ar.sliced);
+}
+
+/// ditto
+@fmamath auto medianAbsoluteDeviation(SliceLike)(SliceLike x)
+    if (isConvertibleToSlice!SliceLike && !isSlice!SliceLike)
+{
+    import mir.ndslice.slice: toSlice;
+    return medianAbsoluteDeviation(x.toSlice);
+}
+
+/++
+Computes the median of `slice`.
+
+For an odd number of observations, this is the middle sorted observation;
+for an even number, it is the average of the two middle observations.
+For at least two observations, this agrees mathematically with the type 2
+or type 7 quantile at probability 0.5. The dedicated median implementation
+uses selection and small-input fast paths. For observations
+with unequal weights, see $(LREF weightedMedian).
+
+By default, if `F` is not floating point type or complex type, then the result
+will have a `double` type if `F` is implicitly convertible to a floating point
+type or a type for which `isComplex!F` is true.
+
+Can also pass a boolean variable, `allowModify`, that allows the input slice to
+be modified. By default, a reference-counted copy is made.
+
+Params:
+    F = output type
+    allowModify = Allows the input slice to be modified, default is false
+Returns:
+    the median of the slice
+
+See_also:
+    $(REF mean, mir, stat, descriptive, univariate, means)
++/
+template rcMedian(F, bool allowModify = false)
+{
+    import std.traits: Unqual;
+
+    /++
+    Params:
+        slice = slice
+    +/
+    @nogc
+    meanType!F rcMedian(Iterator, size_t N, SliceKind kind)(Slice!(Iterator, N, kind) slice)
+    {
+        static assert (!allowModify ||
+                       isMutable!(slice.DeepElement),
+                           "allowModify must be false or the input must be mutable");
+        alias G = typeof(return);
+        size_t len = slice.elementCount;
+        assert(len > 0, "median: slice must have length greater than zero");
+
+        import mir.ndslice.topology: as, flattened;
+
+        static if (!allowModify) {
+            import mir.ndslice.allocation: rcslice;
+
+            if (len > 2) {
+                auto view = slice.lightScope;
+                auto val = view.as!(Unqual!(slice.DeepElement)).rcslice;
+                auto temp = val.lightScope.flattened;
+                return .rcMedian!(G, true)(temp);
+            } else {
+                import std.traits: isIntegral;
+                static if ((isIntegral!(slice.DeepElement) ||
+                            isFloatingPoint!(slice.DeepElement)) && isFloatingPoint!G) {
+                    // Retain integral endpoints until averaging; converting
+                    // them independently can lose cancellation at the midpoint.
+                    auto flat = slice.flattened;
+                    return len == 1 ? cast(G) flat[0] : medianMidpoint!G(flat[0], flat[1]);
+                } else {
+                    return mean!G(slice);
+                }
+            }
+        } else {
+            import mir.ndslice.sorting: partitionAt;
+
+            auto temp = slice.flattened;
+
+            if (len > 5) {
+                size_t half_n = len / 2;
+                partitionAt(temp, half_n);
+                if (len % 2 == 1) {
+                    return cast(G) temp[half_n];
+                } else {
+                    // The lower-half partition cannot change the upper median.
+                    // Read it first to avoid combining the final two loads after
+                    // partitioning has just written individual elements.
+                    auto upper = temp[half_n];
+                    // Move the largest value in the first half to half_n - 1.
+                    partitionAt(temp[0 .. half_n], half_n - 1);
+                    return medianMidpoint!G(temp[half_n - 1], upper);
+                }
+            } else {
+                return smallMedianImpl!(G)(temp);
+            }
+        }
+    }
+}
+
+/// ditto
+template rcMedian(bool allowModify = false)
+{
+    import core.lifetime: move;
+    import mir.primitives: DeepElementType;
+
+    /// ditto
+    meanType!(Slice!(Iterator, N, kind))
+        rcMedian(Iterator, size_t N, SliceKind kind)(Slice!(Iterator, N, kind) slice)
+    {
+        static assert (!allowModify ||
+                       isMutable!(DeepElementType!(Slice!(Iterator, N, kind))),
+                           "allowModify must be false or the input must be mutable");
+        alias F = typeof(return);
+        return .rcMedian!(F, allowModify)(slice.move);
+    }
+}
+
+/++
+Params:
+    ar = array
++/
+meanType!(T[]) rcMedian(T)(scope const T[] ar...)
+{
+    import mir.ndslice.slice: sliced;
+
+    alias F = typeof(return);
+    return rcMedian!(F, false)(ar.sliced);
+}
+
+/++
+Params:
+    sliceLike = type that satisfies `isConvertibleToSlice!T && !isSlice!T`
++/
+auto rcMedian(T)(T sliceLike)
+    if (isConvertibleToSlice!T && !isSlice!T)
+{
+    import mir.ndslice.slice: toSlice;
+    return rcMedian(sliceLike.toSlice);
+}
+
 /// Median of vector
 version(mir_stat_test)
 @safe pure nothrow
@@ -212,10 +658,10 @@ unittest
     import mir.ndslice.slice: sliced;
 
     auto x0 = [9.0, 1, 0, 2, 3, 4, 6, 8, 7, 10, 5].sliced;
-    assert(x0.median == 5);
+    assert(x0.rcMedian == 5);
 
     auto x1 = [9.0, 1, 0, 2, 3, 4, 6, 8, 7, 10].sliced;
-    assert(x1.median == 5);
+    assert(x1.rcMedian == 5);
 }
 
 /// Median of dynamic array
@@ -224,10 +670,10 @@ version(mir_stat_test)
 unittest
 {
     auto x0 = [9.0, 1, 0, 2, 3, 4, 6, 8, 7, 10, 5];
-    assert(x0.median == 5);
+    assert(x0.rcMedian == 5);
 
     auto x1 = [9.0, 1, 0, 2, 3, 4, 6, 8, 7, 10];
-    assert(x1.median == 5);
+    assert(x1.rcMedian == 5);
 }
 
 /// Median of matrix
@@ -242,7 +688,7 @@ unittest
         [4.0, 6, 8, 7, 10]
     ].fuse;
 
-    assert(x0.median == 5);
+    assert(x0.rcMedian == 5);
 }
 
 /// Row median of matrix
@@ -264,8 +710,8 @@ unittest
     auto result = [1.75, 1.75].sliced;
 
     // Use byDim or alongDim with map to compute median of row/column.
-    assert(x.byDim!0.map!median.all!approxEqual(result));
-    assert(x.alongDim!1.map!median.all!approxEqual(result));
+    assert(x.byDim!0.map!rcMedian.all!approxEqual(result));
+    assert(x.alongDim!1.map!rcMedian.all!approxEqual(result));
 }
 
 /// Can allow original slice to be modified or set output type
@@ -276,10 +722,10 @@ unittest
     import mir.ndslice.slice: sliced;
 
     auto x0 = [9.0, 1, 0, 2, 3, 4, 6, 8, 7, 10, 5].sliced;
-    assert(x0.median!true == 5);
+    assert(x0.rcMedian!true == 5);
 
     auto x1 = [9, 1, 0, 2, 3, 4, 6, 8, 7, 10].sliced;
-    assert(x1.median!(float, true) == 5);
+    assert(x1.rcMedian!(float, true) == 5);
 }
 
 /// Arbitrary median
@@ -287,7 +733,7 @@ version(mir_stat_test)
 @safe pure nothrow @nogc
 unittest
 {
-    assert(median(0, 1, 2, 3, 4) == 2);
+    assert(rcMedian(0, 1, 2, 3, 4) == 2);
 }
 
 // @nogc test
@@ -298,7 +744,7 @@ unittest
     import mir.ndslice.slice: sliced;
 
     static immutable x = [9.0, 1, 0, 2, 3];
-    assert(x.sliced.median == 2);
+    assert(x.sliced.rcMedian == 2);
 }
 
 // withAsSlice test
@@ -315,7 +761,7 @@ unittest
     foreach(i, ref e; x)
         e = a[i];
 
-    assert(x.median.approxEqual(5));
+    assert(x.rcMedian.approxEqual(5));
 }
 
 /++
@@ -329,9 +775,9 @@ unittest
     import mir.ndslice.slice: sliced;
 
     auto x = [9, 1, 0, 2, 3, 4, 6, 8, 7, 10].sliced;
-    assert(x.median!float == 5f);
+    assert(x.rcMedian!float == 5f);
 
-    auto y = x.median;
+    auto y = x.rcMedian;
     assert(y == 5.0);
     static assert(is(typeof(y) == double));
 }
@@ -345,46 +791,46 @@ unittest
     import mir.ndslice.slice: sliced;
 
     auto x = [3, 3, 2, 0, 2, 0].sliced;
-    assert(x.median!float.approxEqual(2));
+    assert(x.rcMedian!float.approxEqual(2));
 
     x[] = [2, 2, 4, 0, 4, 3];
-    assert(x.median!float.approxEqual(2.5));
+    assert(x.rcMedian!float.approxEqual(2.5));
     x[] = [1, 4, 5, 4, 4, 3];
-    assert(x.median!float.approxEqual(4));
+    assert(x.rcMedian!float.approxEqual(4));
     x[] = [1, 5, 3, 5, 2, 2];
-    assert(x.median!float.approxEqual(2.5));
+    assert(x.rcMedian!float.approxEqual(2.5));
     x[] = [4, 3, 2, 1, 4, 5];
-    assert(x.median!float.approxEqual(3.5));
+    assert(x.rcMedian!float.approxEqual(3.5));
     x[] = [4, 5, 3, 5, 5, 4];
-    assert(x.median!float.approxEqual(4.5));
+    assert(x.rcMedian!float.approxEqual(4.5));
     x[] = [3, 3, 3, 0, 0, 1];
-    assert(x.median!float.approxEqual(2));
+    assert(x.rcMedian!float.approxEqual(2));
     x[] = [4, 2, 2, 1, 2, 5];
-    assert(x.median!float.approxEqual(2));
+    assert(x.rcMedian!float.approxEqual(2));
     x[] = [2, 3, 1, 4, 5, 5];
-    assert(x.median!float.approxEqual(3.5));
+    assert(x.rcMedian!float.approxEqual(3.5));
     x[] = [1, 1, 4, 5, 5, 5];
-    assert(x.median!float.approxEqual(4.5));
+    assert(x.rcMedian!float.approxEqual(4.5));
     x[] = [2, 4, 0, 5, 1, 0];
-    assert(x.median!float.approxEqual(1.5));
+    assert(x.rcMedian!float.approxEqual(1.5));
     x[] = [3, 5, 2, 5, 4, 2];
-    assert(x.median!float.approxEqual(3.5));
+    assert(x.rcMedian!float.approxEqual(3.5));
     x[] = [3, 5, 4, 1, 4, 3];
-    assert(x.median!float.approxEqual(3.5));
+    assert(x.rcMedian!float.approxEqual(3.5));
     x[] = [4, 2, 0, 3, 1, 3];
-    assert(x.median!float.approxEqual(2.5));
+    assert(x.rcMedian!float.approxEqual(2.5));
     x[] = [100, 4, 5, 0, 5, 1];
-    assert(x.median!float.approxEqual(4.5));
+    assert(x.rcMedian!float.approxEqual(4.5));
     x[] = [100, 5, 4, 0, 5, 1];
-    assert(x.median!float.approxEqual(4.5));
+    assert(x.rcMedian!float.approxEqual(4.5));
     x[] = [100, 5, 4, 0, 1, 5];
-    assert(x.median!float.approxEqual(4.5));
+    assert(x.rcMedian!float.approxEqual(4.5));
     x[] = [4, 5, 100, 1, 5, 0];
-    assert(x.median!float.approxEqual(4.5));
+    assert(x.rcMedian!float.approxEqual(4.5));
     x[] = [0, 1, 2, 2, 3, 4];
-    assert(x.median!float.approxEqual(2));
+    assert(x.rcMedian!float.approxEqual(2));
     x[] = [0, 2, 2, 3, 4, 5];
-    assert(x.median!float.approxEqual(2.5));
+    assert(x.rcMedian!float.approxEqual(2.5));
 }
 
 // smallMedianImpl tests
@@ -396,19 +842,19 @@ unittest
     import mir.ndslice.slice: sliced;
 
     auto x0 = [9.0, 1, 0, 2, 3].sliced;
-    assert(x0.median.approxEqual(2));
+    assert(x0.rcMedian.approxEqual(2));
 
     auto x1 = [9.0, 1, 0, 2].sliced;
-    assert(x1.median.approxEqual(1.5));
+    assert(x1.rcMedian.approxEqual(1.5));
 
     auto x2 = [9.0, 0, 1].sliced;
-    assert(x2.median.approxEqual(1));
+    assert(x2.rcMedian.approxEqual(1));
 
     auto x3 = [1.0, 0].sliced;
-    assert(x3.median.approxEqual(0.5));
+    assert(x3.rcMedian.approxEqual(0.5));
 
     auto x4 = [1.0].sliced;
-    assert(x4.median.approxEqual(1));
+    assert(x4.rcMedian.approxEqual(1));
 }
 
 // Check issue #328 fixed
@@ -419,7 +865,7 @@ unittest
     import mir.ndslice.topology: iota;
 
     auto x = iota(18);
-    auto y = median(x);
+    auto y = rcMedian(x);
     assert(y == 8.5);
 }
 
@@ -549,23 +995,23 @@ private @safe pure nothrow @nogc void testFloatingMedianMidpoints(T)()
         auto values = storage[0 .. n];
         foreach (value; [T.max, -T.max, tiny, -tiny, T.infinity, -T.infinity]) {
             values[] = value;
-            assert(median(values.sliced) == value);
-            assert(median!true(values.sliced) == value);
+            assert(rcMedian(values.sliced) == value);
+            assert(rcMedian!true(values.sliced) == value);
         }
         foreach (i, ref value; values)
             value = cast(T)(n - 1 - i);
-        assert(median(values.sliced) == cast(T)(n - 1) / 2);
+        assert(rcMedian(values.sliced) == cast(T)(n - 1) / 2);
         // The default overload must leave the input unchanged.
         foreach (i, value; values)
             assert(value == cast(T)(n - 1 - i));
-        assert(median!true(values.sliced) == cast(T)(n - 1) / 2);
+        assert(rcMedian!true(values.sliced) == cast(T)(n - 1) / 2);
     }
     T[2] extremes = [-T.max, T.max];
-    assert(median(extremes[].sliced) == 0);
-    assert(median!true(extremes[].sliced) == 0);
+    assert(rcMedian(extremes[].sliced) == 0);
+    assert(rcMedian!true(extremes[].sliced) == 0);
     T[2] infinities = [-T.infinity, T.infinity];
-    assert(median(infinities[].sliced).isNaN);
-    assert(median!true(infinities[].sliced).isNaN);
+    assert(rcMedian(infinities[].sliced).isNaN);
+    assert(rcMedian!true(infinities[].sliced).isNaN);
 }
 
 version(mir_stat_test)
@@ -587,8 +1033,8 @@ private @safe pure nothrow @nogc void testIntegralMedianMidpoints(T)()
         auto values = storage[0 .. n];
         foreach (value; [T.min, T.max]) {
             values[] = value;
-            assert(median(values.sliced) == cast(double) value);
-            assert(median!true(values.sliced) == cast(double) value);
+            assert(rcMedian(values.sliced) == cast(double) value);
+            assert(rcMedian!true(values.sliced) == cast(double) value);
         }
     }
 }
@@ -608,12 +1054,12 @@ version(mir_stat_test)
         auto values = storage[0 .. n];
         values[0 .. n / 2] = long.min;
         values[n / 2 .. $] = long.max;
-        assert(median(values.sliced) == -0.5);
-        assert(median!true(values.sliced) == -0.5);
+        assert(rcMedian(values.sliced) == -0.5);
+        assert(rcMedian!true(values.sliced) == -0.5);
     }
     int[4] equal = [int.max, int.max, int.max, int.max];
-    assert(median!float(equal[].sliced) == cast(float) int.max);
-    assert(medianAbsoluteDeviation(equal[].sliced) == 0);
+    assert(rcMedian!float(equal[].sliced) == cast(float) int.max);
+    assert(rcMedianAbsoluteDeviation(equal[].sliced) == 0);
 }
 
 // The short no-copy path retains qualifiers, layouts, and generic conversion.
@@ -624,17 +1070,17 @@ version(mir_stat_test)
     import mir.ndslice.topology: universal;
 
     const double[2] values = [double.max, double.max];
-    assert(median(values[].sliced(1, 2).universal) == double.max);
+    assert(rcMedian(values[].sliced(1, 2).universal) == double.max);
     const double[1] single = [3];
-    assert(median(single[].sliced) == 3);
+    assert(rcMedian(single[].sliced) == 3);
 
     struct Wrapper {
         double value;
         alias value this;
     }
     Wrapper[4] wrapped = [Wrapper(1), Wrapper(3), Wrapper(2), Wrapper(4)];
-    assert(median(wrapped[].sliced) == 2.5);
-    assert(median(wrapped[0 .. 2].sliced) == 2);
+    assert(rcMedian(wrapped[].sliced) == 2.5);
+    assert(rcMedian(wrapped[0 .. 2].sliced) == 2);
 }
 
 /++
@@ -1758,7 +2204,7 @@ private F compensatedWeightedUniformAt(F, WeightedQuantileAlgo algorithm, Worksp
 }
 
 private auto compensatedWeightedUniform(F, WeightedQuantileAlgo algorithm,
-    QuantileAllocation allocation, Context, Workspace, P)(ref Context context,
+    QuantileAllocation allocation, size_t fixedResultLength = 0, Context, Workspace, P)(ref Context context,
     scope Workspace workspace, scope auto ref P probabilities, real maximum)
 {
     import std.traits: Unqual;
@@ -1777,8 +2223,17 @@ private auto compensatedWeightedUniform(F, WeightedQuantileAlgo algorithm,
     {
         scope auto levels = quantileSlice(probabilities);
         static assert(typeof(levels).N == 1, "Probabilities must be one-dimensional");
-        auto result = allocateQuantiles!(Unqual!F, allocation)(context, levels.length);
-        static if (allocation == QuantileAllocation.custom)
+        static if (fixedResultLength)
+        {
+            // Scalar summaries can keep a small set of quantiles on the stack.
+            assert(levels.length == fixedResultLength);
+            Unqual!F[fixedResultLength] result;
+        }
+        else
+        {
+            auto result = allocateQuantiles!(Unqual!F, allocation)(context, levels.length);
+        }
+        static if (!fixedResultLength && allocation == QuantileAllocation.custom)
             scope(failure) releaseQuantiles(context, result);
         foreach (i; 0 .. levels.length)
             result[i] = compensatedWeightedUniformAt!(F, algorithm)(workspace, levels[i], total, squares);
@@ -1972,7 +2427,7 @@ private auto weightedQuantileAt(F, WeightedQuantileAlgo algorithm, Workspace, P)
 }
 
 private auto allocatedWeightedQuantile(F, WeightedQuantileAlgo algorithm,
-    QuantileAllocation allocation, Context, Weights, Data, P)(
+    QuantileAllocation allocation, size_t fixedResultLength = 0, Context, Weights, Data, P)(
     ref Context context, scope auto ref Weights weights,
     scope auto ref Data data, scope auto ref P probabilities)
 {
@@ -2062,7 +2517,7 @@ private auto allocatedWeightedQuantile(F, WeightedQuantileAlgo algorithm,
                 // additional allocation or scan of the original inputs.
                 enum threshold = sqrt(real.epsilon);
                 if (mass < threshold)
-                    return compensatedWeightedUniform!(F, algorithm, allocation)(
+                    return compensatedWeightedUniform!(F, algorithm, allocation, fixedResultLength)(
                         context, workspace, probabilities, maximum);
             }
             suffix.put(mass);
@@ -2125,8 +2580,17 @@ private auto allocatedWeightedQuantile(F, WeightedQuantileAlgo algorithm,
     {
         scope auto levels = quantileSlice(probabilities);
         static assert(typeof(levels).N == 1, "Probabilities must be one-dimensional");
-        auto result = allocateQuantiles!(Unqual!F, allocation)(context, levels.length);
-        static if (allocation == QuantileAllocation.custom)
+        static if (fixedResultLength)
+        {
+            // Scalar summaries can keep a small set of quantiles on the stack.
+            assert(levels.length == fixedResultLength);
+            Unqual!F[fixedResultLength] result;
+        }
+        else
+        {
+            auto result = allocateQuantiles!(Unqual!F, allocation)(context, levels.length);
+        }
+        static if (!fixedResultLength && allocation == QuantileAllocation.custom)
             scope(failure) releaseQuantiles(context, result);
         foreach (i; 0 .. levels.length)
             result[i] = weightedQuantileAt!(F, algorithm)(workspace, levels[i], effectiveSize);
@@ -2303,9 +2767,9 @@ unittest
     const int[3] weights = [1, 2, 1];
     // Sorted cumulative weights are 1, 3, 4. Half the total is 2,
     // so the median is the first observation whose cumulative weight reaches 2.
-    auto median = weightedQuantile(values, weights, 0.5);
-    static assert(is(typeof(median) == int));
-    assert(median == 10);
+    auto rcMedian = weightedQuantile(values, weights, 0.5);
+    static assert(is(typeof(rcMedian) == int));
+    assert(rcMedian == 10);
     // At an exact boundary, select the observation on that boundary.
     assert(weightedQuantile(values, weights, 0.25) == 0);
     assert(weightedQuantile(values, weights) == [0, 0, 10, 10, 20]);
@@ -2351,9 +2815,9 @@ unittest
     import mir.ndslice.slice: sliced;
     const double[4] values = [1, 2, 3, 10000];
     const double[4] weights = [1, 4, 4, 1];
-    auto median = weightedQuantile!(WeightedQuantileAlgo.trimmedHarrellDavis)(
+    auto rcMedian = weightedQuantile!(WeightedQuantileAlgo.trimmedHarrellDavis)(
         values[].sliced, weights[].sliced, 0.5);
-    assert(median.approxEqual(2.5));
+    assert(rcMedian.approxEqual(2.5));
     assert(weightedQuantile(values, weights, 0.5) == 2);
     auto smooth = weightedQuantile!(WeightedQuantileAlgo.harrellDavis)(values, weights, 0.5);
     assert(smooth.approxEqual(292.59361886338557));
@@ -2474,10 +2938,14 @@ unittest
 
 /++
 Compute weighted quantiles using a caller-selected allocator.
+An allocator variable is passed by reference; a temporary allocator is also accepted.
+
 Uses the definitions, input requirements, and numerical rules of $(LREF weightedQuantile).
 Scratch is released before returning, including on failure. A scalar result
 requires no disposal. For a result slice, the caller must dispose its field with
-the same allocator after all uses. Attributes depend on the allocator.
+the same allocator after all uses. If passing a temporary allocator, its backing
+storage and a compatible allocator for disposal must outlive the result.
+Attributes depend on the allocator.
 Inputs remain unchanged; omitted probabilities request quartiles.
 The allocator comes first, then observations and weights:
 `makeWeightedQuantile(allocator, data, weights, probabilities)`.
@@ -2498,7 +2966,7 @@ template makeWeightedQuantile(F, WeightedQuantileAlgo algorithm = WeightedQuanti
         probabilities = scalar, array/slice, or variadic probabilities; omitted for quartiles
     +/
     auto makeWeightedQuantile(Allocator, Data, Weights, P...)(
-        ref Allocator allocator, scope auto ref Data data, scope auto ref Weights weights,
+        auto ref Allocator allocator, scope auto ref Data data, scope auto ref Weights weights,
         scope auto ref P probabilities)
     {
         return dispatchWeightedQuantile!(F, algorithm, QuantileAllocation.custom)(
@@ -2518,7 +2986,7 @@ template makeWeightedQuantile(WeightedQuantileAlgo algorithm = WeightedQuantileA
         probabilities = scalar, array/slice, or variadic probabilities; omitted for quartiles
     +/
     auto makeWeightedQuantile(Allocator, Data, Weights, P...)(
-        ref Allocator allocator, scope auto ref Data data, scope auto ref Weights weights,
+        auto ref Allocator allocator, scope auto ref Data data, scope auto ref Weights weights,
         scope auto ref P probabilities)
     {
         alias F = WeightedQuantileResult!(Data, algorithm);
@@ -3615,10 +4083,14 @@ unittest
 
 /++
 Compute quantiles using a caller-selected allocator for scratch and results.
+An allocator variable is passed by reference; a temporary allocator is also accepted.
+
 Scratch storage is released before returning, including on failure. For multiple
 probabilities, the caller owns the returned result and must release its field
 through the same allocator after all uses. Construction failure releases any
-result allocation as well. Attributes depend on the allocator.
+result allocation as well. If passing a temporary allocator, its backing storage
+and a compatible allocator for disposal must outlive the result. Attributes
+depend on the allocator.
 
 By default observations are copied before partitioning. Setting allowModifySlice
 permits rearranging the input and avoids that scratch allocation. When input
@@ -3642,7 +4114,7 @@ template makeQuantile(F, QuantileAlgo algorithm = QuantileAlgo.type7, bool allow
         data = observations as a slice or array
         probabilities = a scalar, probability slice/array, or variadic probabilities; omitted for quartiles
     +/
-    auto makeQuantile(Allocator, Data, P...)(ref Allocator allocator, scope auto ref Data data, scope auto ref P probabilities)
+    auto makeQuantile(Allocator, Data, P...)(auto ref Allocator allocator, scope auto ref Data data, scope auto ref P probabilities)
     {
         return dispatchQuantile!(F, algorithm, allowModifySlice, QuantileAllocation.custom)(
             allocator, data, probabilities);
@@ -3658,7 +4130,7 @@ template makeQuantile(QuantileAlgo algorithm = QuantileAlgo.type7, bool allowMod
         data = observations as a slice or array
         probabilities = a scalar, probability slice/array, or variadic probabilities; omitted for quartiles
     +/
-    auto makeQuantile(Allocator, Data, P...)(ref Allocator allocator, scope auto ref Data data, scope auto ref P probabilities)
+    auto makeQuantile(Allocator, Data, P...)(auto ref Allocator allocator, scope auto ref Data data, scope auto ref P probabilities)
     {
         alias F = quantileType!(typeof(quantileSlice(data)), algorithm);
         return dispatchQuantile!(F, algorithm, allowModifySlice, QuantileAllocation.custom)(
@@ -3871,6 +4343,65 @@ private struct QuantileTestAllocator(bool throwing = false)
         ++releases;
         return Mallocator.instance.deallocate(memory);
     }
+}
+
+// Fixed-size summary results need only the sorted workspace, including when
+// relative weights require the compensated type 7/type 8 path.
+version(mir_stat_test)
+@system pure nothrow @nogc unittest
+{
+    alias A = WeightedQuantileAlgo;
+    double[4] values = [0, 2, 6, 10];
+    double[2] probabilities = [0.25, 0.75];
+    double[4][2] cases = [[1.0, 2, 1, 2], [1e-30, 2, 1, 2]];
+    foreach (weights; cases)
+        static foreach (member; __traits(allMembers, A))
+        {{
+            enum algorithm = __traits(getMember, A, member);
+            static if (algorithm == A.frequencyType7 || algorithm == A.frequencyType8)
+                const supported = weights[0] == 1;
+            else
+                enum supported = true;
+            if (supported)
+            {
+                QuantileTestAllocator!() allocator;
+                auto pair = allocatedWeightedQuantile!(real, algorithm,
+                    QuantileAllocation.custom, 2)(allocator, weights, values, probabilities);
+                static assert(is(typeof(pair) == real[2]));
+                assert(allocator.allocations == 1 && allocator.releases == 1);
+                auto expected = rcWeightedQuantile!(real, algorithm)(values, weights, probabilities);
+                assert(pair[0] == expected[0] && pair[1] == expected[1]);
+                assert(rcWeightedInterquartileRange!(real, algorithm)(values, weights) == pair[1] - pair[0]);
+            }
+        }}
+}
+
+// Both result-storage paths release scratch when evaluation fails.
+version(mir_stat_test)
+@system unittest
+{
+    import std.exception: assertThrown;
+    import mir.ndslice.slice: sliced;
+    import mir.ndslice.topology: map;
+    double[3] values = [0, 2, 10];
+    double[3] weights = [1e-30, 1, 1];
+    double[2] invalid = [0.25, 2];
+    static double readProbability(double probability)
+    {
+        if (probability > 1) throw new Exception("probability read failed");
+        return probability;
+    }
+    auto probabilities = invalid[].sliced.map!readProbability;
+    static foreach (algorithm; [WeightedQuantileAlgo.averagedInverseCDF,
+        WeightedQuantileAlgo.type7])
+    {{
+        QuantileTestAllocator!() fixedAllocator, sliceAllocator;
+        assertThrown!Exception((allocatedWeightedQuantile!(double, algorithm,
+            QuantileAllocation.custom, 2)(fixedAllocator, weights, values, probabilities)));
+        assert(fixedAllocator.allocations == 1 && fixedAllocator.releases == 1);
+        assertThrown!Exception(makeWeightedQuantile!algorithm(sliceAllocator, values, weights, probabilities));
+        assert(sliceAllocator.allocations == 2 && sliceAllocator.releases == 2);
+    }}
 }
 
 // Scratch is released before return, while result storage remains caller-owned.
@@ -4622,22 +5153,22 @@ unittest
     enum long base = 1L << 53;
     long[3] values = [base + 2, base, base + 1];
     const original = values;
-    assert(interquartileRange(values[].sliced) == 1);
-    assert(interquartileRange(values[].sliced, 0.25f) == 1);
-    assert(interquartileRange(values[].sliced, 0.25, 0.75) == 1);
-    assert(interquartileRange!(QuantileAlgo.type1)(values[].sliced) == 2);
-    assert(interquartileRange!(double, QuantileAlgo.type1)(values[].sliced) == 2);
+    assert(rcInterquartileRange(values[].sliced) == 1);
+    assert(rcInterquartileRange(values[].sliced, 0.25f) == 1);
+    assert(rcInterquartileRange(values[].sliced, 0.25, 0.75) == 1);
+    assert(rcInterquartileRange!(QuantileAlgo.type1)(values[].sliced) == 2);
+    assert(rcInterquartileRange!(double, QuantileAlgo.type1)(values[].sliced) == 2);
     // Type 6 clamps these probabilities to the endpoints. Preserve their
     // exact difference even when floating-point conversion would lose it.
     long[2] endpoints = [base, base + 1];
-    assert(interquartileRange!(QuantileAlgo.type6)(endpoints[].sliced, 0, 1) == 1);
+    assert(rcInterquartileRange!(QuantileAlgo.type6)(endpoints[].sliced, 0, 1) == 1);
     assert(values == original);
-    assert(interquartileRange!(QuantileAlgo.type7, true)(values[].sliced) == 1);
+    assert(rcInterquartileRange!(QuantileAlgo.type7, true)(values[].sliced) == 1);
     ulong[3] top = [ulong.max - 2, ulong.max - 1, ulong.max];
-    assert(interquartileRange(top[].sliced) == 1);
+    assert(rcInterquartileRange(top[].sliced) == 1);
     long[3] bottom = [long.min, long.min + 1, long.min + 2];
-    assert(interquartileRange(bottom[].sliced) == 1);
-    assert(interquartileRange!(QuantileAlgo.type1)(bottom[].sliced, 0.75, 0.25) == -2);
+    assert(rcInterquartileRange(bottom[].sliced) == 1);
+    assert(rcInterquartileRange!(QuantileAlgo.type1)(bottom[].sliced, 0.75, 0.25) == -2);
 }
 
 // Integer probability arguments select endpoints just like floating literals.
@@ -4648,13 +5179,13 @@ unittest
     import mir.ndslice.slice: sliced;
     int[3] integers = [2, 4, 8];
     double[3] floating = [2, 4, 8];
-    assert(interquartileRange(integers[].sliced, 0, 1) == 6);
-    assert(interquartileRange(floating[].sliced, 0, 1) == 6);
-    assert(interquartileRange(integers[].sliced, 0) == 6);
-    assert(interquartileRange(floating[].sliced, 0) == 6);
-    assert(interquartileRange!float(floating[].sliced, 0, 1) == 6);
-    assert(interquartileRange!(QuantileAlgo.type1)(integers[].sliced, 0, 1) == 6);
-    assert(interquartileRange!double(floating[].sliced, 0, 0.5L) == 2);
+    assert(rcInterquartileRange(integers[].sliced, 0, 1) == 6);
+    assert(rcInterquartileRange(floating[].sliced, 0, 1) == 6);
+    assert(rcInterquartileRange(integers[].sliced, 0) == 6);
+    assert(rcInterquartileRange(floating[].sliced, 0) == 6);
+    assert(rcInterquartileRange!float(floating[].sliced, 0, 1) == 6);
+    assert(rcInterquartileRange!(QuantileAlgo.type1)(integers[].sliced, 0, 1) == 6);
+    assert(rcInterquartileRange!double(floating[].sliced, 0, 0.5L) == 2);
 }
 
 // Floating spreads retain interpolation offsets until the final subtraction.
@@ -4664,16 +5195,16 @@ unittest
 {
     import mir.ndslice.slice: sliced;
     double[2] adjacent = [0x1p60, 0x1p60 + 256];
-    assert(interquartileRange(adjacent[].sliced) == 128);
-    assert(interquartileRange(adjacent[].sliced, 0.75, 0.25) == -128);
-    assert(interquartileRange(adjacent[].sliced, 0.5, 0.5) == 0);
+    assert(rcInterquartileRange(adjacent[].sliced) == 128);
+    assert(rcInterquartileRange(adjacent[].sliced, 0.75, 0.25) == -128);
+    assert(rcInterquartileRange(adjacent[].sliced, 0.5, 0.5) == 0);
     double[5] values = [0x1p60, 0x1p60 + 256, 0x1p60 + 512,
         0x1p60 + 768, 0x1p60 + 1024];
     const original = values;
-    assert(interquartileRange!float(values[].sliced) == 512);
+    assert(rcInterquartileRange!float(values[].sliced) == 512);
     assert(values == original);
-    assert(interquartileRange!(float, QuantileAlgo.type7, true)(values[].sliced) == 512);
-    assert(interquartileRange!(QuantileAlgo.type1)(adjacent[].sliced) == 256);
+    assert(rcInterquartileRange!(float, QuantileAlgo.type7, true)(values[].sliced) == 512);
+    assert(rcInterquartileRange!(QuantileAlgo.type1)(adjacent[].sliced) == 256);
 }
 
 // Weighted endpoint distances can fit even when their subtraction overflows.
@@ -4687,11 +5218,11 @@ unittest
     static foreach (T; AliasSeq!(float, double, real))
     {{
         T[2] extremes = [-T.max, T.max];
-        assert(interquartileRange(extremes[].sliced) == T.max);
-        assert(interquartileRange(extremes[].sliced, 0, 1) == T.infinity);
-        assert(interquartileRange(extremes[].sliced, 0.5, 0.5) == 0);
+        assert(rcInterquartileRange(extremes[].sliced) == T.max);
+        assert(rcInterquartileRange(extremes[].sliced, 0, 1) == T.infinity);
+        assert(rcInterquartileRange(extremes[].sliced, 0.5, 0.5) == 0);
         T[2] infinite = [T.infinity, T.infinity];
-        assert(interquartileRange(infinite[].sliced).isNaN);
+        assert(rcInterquartileRange(infinite[].sliced).isNaN);
     }}
 }
 
@@ -4710,7 +5241,17 @@ private W weightedQuantileGap(W, T, G)(T a, T b, G fraction)
 
 // Shared with robustScale so integral spreads are not reconstructed by
 // subtracting two separately rounded quantiles.
-package(mir.stat) auto quantileSpread(F, QuantileAlgo algorithm, bool modify, S, P, Q)(
+package(mir.stat) auto quantileSpread(F, QuantileAlgo algorithm, bool modify,
+    QuantileAllocation allocation = QuantileAllocation.rc, S, P, Q)(
+    S source, P lo, Q hi)
+{
+    QuantileContext context;
+    return allocatedQuantileSpread!(F, algorithm, modify, allocation)(
+        context, source, lo, hi);
+}
+
+private auto allocatedQuantileSpread(F, QuantileAlgo algorithm, bool modify,
+    QuantileAllocation allocation, Context, S, P, Q)(ref Context context,
     S source, P lo, Q hi)
 {
     import std.traits: isIntegral, Unqual, CommonType;
@@ -4724,16 +5265,19 @@ package(mir.stat) auto quantileSpread(F, QuantileAlgo algorithm, bool modify, S,
     else alias Level = Probability;
     auto lowerProbability = cast(Level) lo;
     auto upperProbability = cast(Level) hi;
+    static if (modify) scope auto workspace = source.flattened;
+    else
+    {
+        auto owner = allocateQuantiles!(T, allocation)(context, source.elementCount);
+        static if (allocation == QuantileAllocation.custom)
+            scope(exit) releaseQuantiles(context, owner);
+        scope auto flat = source.lightScope.flattened;
+        foreach (i; 0 .. flat.length)
+            owner[i] = flat[i];
+        scope auto workspace = owner.lightScope;
+    }
     static if (isIntegral!T)
     {
-        static if (modify) scope auto workspace = source.flattened;
-        else
-        {
-            import mir.ndslice.allocation: rcslice;
-            import mir.ndslice.topology: as;
-            auto owner = source.lightScope.flattened.as!T.rcslice;
-            scope auto workspace = owner.lightScope;
-        }
         const lower = selectQuantile!algorithm(workspace, lowerProbability);
         const upper = selectQuantile!algorithm(workspace, upperProbability);
         const negative = upper.low < lower.low;
@@ -4770,16 +5314,6 @@ package(mir.stat) auto quantileSpread(F, QuantileAlgo algorithm, bool modify, S,
     }
     else static if (isFloatingPoint!T && isFloatingPoint!F)
     {
-        static if (modify) scope auto workspace = source.flattened;
-        else
-        {
-            import mir.ndslice.allocation: rcslice;
-            auto owner = rcslice!T([source.elementCount], T.init);
-            scope auto flat = source.lightScope.flattened;
-            foreach (i; 0 .. flat.length)
-                owner[i] = flat[i];
-            scope auto workspace = owner.lightScope;
-        }
         auto lower = selectQuantile!algorithm(workspace, lowerProbability);
         auto upper = selectQuantile!algorithm(workspace, upperProbability);
         alias Work = CommonType!(T, F, Level, double);
@@ -4814,8 +5348,9 @@ package(mir.stat) auto quantileSpread(F, QuantileAlgo algorithm, bool modify, S,
     }
     else
     {
-        auto values = rcquantile!(F, algorithm, modify)(source, lowerProbability, upperProbability);
-        return values[1] - values[0];
+        const lower = quantileImpl!(F, algorithm)(workspace, lowerProbability);
+        const upper = quantileImpl!(F, algorithm)(workspace, upperProbability);
+        return upper - lower;
     }
 }
 
@@ -4853,7 +5388,7 @@ in the floating-point result.
 Params:
     F = floating-point result type; inferred as for averagedInverseCDF when omitted
 +/
-template weightedMedian(F)
+template rcWeightedMedian(F)
     if (isFloatingPoint!F)
 {
     /++
@@ -4861,7 +5396,7 @@ template weightedMedian(F)
         data = observations corresponding to the weights
         weights = nonnegative finite relative weights
     +/
-    F weightedMedian(Data, Weights)(
+    F rcWeightedMedian(Data, Weights)(
         scope auto ref Data data, scope auto ref Weights weights)
     {
         return rcWeightedQuantile!(F, WeightedQuantileAlgo.averagedInverseCDF)(
@@ -4870,11 +5405,11 @@ template weightedMedian(F)
 }
 
 /// ditto
-auto weightedMedian(Data, Weights)(
+auto rcWeightedMedian(Data, Weights)(
     scope auto ref Data data, scope auto ref Weights weights)
 {
     alias F = WeightedQuantileResult!(Data, WeightedQuantileAlgo.averagedInverseCDF);
-    return .weightedMedian!F(data, weights);
+    return .rcWeightedMedian!F(data, weights);
 }
 
 ///
@@ -4883,10 +5418,10 @@ version(mir_stat_test)
 {
     const int[2] values = [0, 10];
     const int[2] equal = [1, 1], counts = [1, 3];
-    assert(weightedMedian(values, equal) == 5);
-    assert(weightedMedian(values, counts) == 10);
+    assert(rcWeightedMedian(values, equal) == 5);
+    assert(rcWeightedMedian(values, counts) == 10);
     const double[2] proportions = [0.25, 0.75];
-    assert(weightedMedian(values, proportions) == 10);
+    assert(rcWeightedMedian(values, proportions) == 10);
     assert(rcWeightedQuantile!(WeightedQuantileAlgo.inverseCDF)(values, equal, 0.5) == 0);
 }
 
@@ -4902,31 +5437,31 @@ version(mir_stat_test)
         T[5] values = [9, 1, 5, 3, 7];
         int[5] equal = [1, 1, 1, 1, 1];
         foreach (n; 1 .. values.length + 1)
-            assert(weightedMedian(values[0 .. n], equal[0 .. n]) == median(values[0 .. n]));
+            assert(rcWeightedMedian(values[0 .. n], equal[0 .. n]) == rcMedian(values[0 .. n]));
         int[5] counts = [1, 2, 1, 3, 1];
         T[8] expanded = [9, 1, 1, 5, 3, 3, 3, 7];
-        assert(weightedMedian(values, counts) == median(expanded[]));
+        assert(rcWeightedMedian(values, counts) == rcMedian(expanded[]));
         assert(values == [9, 1, 5, 3, 7]);
         assert(counts == [1, 2, 1, 3, 1]);
     }}
     const int[6] values = [0, -1, 1, -1, -1, 1];
     const int[6] counts = [1, 2, 3, 1, 2, 3];
-    assert(weightedMedian(values, counts) == 0.5);
-    assert(weightedMedian!float(values, counts) == 0.5f);
-    static assert(is(typeof(weightedMedian(values, counts)) == double));
-    static assert(is(typeof(weightedMedian!float(values, counts)) == float));
+    assert(rcWeightedMedian(values, counts) == 0.5);
+    assert(rcWeightedMedian!float(values, counts) == 0.5f);
+    static assert(is(typeof(rcWeightedMedian(values, counts)) == double));
+    static assert(is(typeof(rcWeightedMedian!float(values, counts)) == float));
     static foreach (T; AliasSeq!(float, double, real))
     {{
         T[2] x = [0, 10];
-        static assert(is(typeof(weightedMedian(x, x)) == T));
-        assert(weightedMedian(x, [1, 1]) == 5);
+        static assert(is(typeof(rcWeightedMedian(x, x)) == T));
+        assert(rcWeightedMedian(x, [1, 1]) == 5);
     }}
     const double[4] storage = [0, double.nan, 10, double.nan];
     const int[4] masses = [1, 0, 1, 0];
-    assert(weightedMedian(storage, masses) == 5);
-    assert(weightedMedian(storage[].sliced.stride(2), masses[].sliced.stride(2)) == 5);
-    assert(weightedMedian([double.max, double.max], [1, 1]) == double.max);
-    assert(weightedMedian([-double.max, double.max], [1, 1]) == 0);
+    assert(rcWeightedMedian(storage, masses) == 5);
+    assert(rcWeightedMedian(storage[].sliced.stride(2), masses[].sliced.stride(2)) == 5);
+    assert(rcWeightedMedian([double.max, double.max], [1, 1]) == double.max);
+    assert(rcWeightedMedian([-double.max, double.max], [1, 1]) == 0);
 }
 
 version(mir_stat_test)
@@ -4935,11 +5470,38 @@ version(mir_stat_test)
     import core.exception: AssertError;
     import std.exception: assertThrown;
     double[2] values = [0, 10];
-    assertThrown!AssertError(weightedMedian(values, [0, 0]));
-    assertThrown!AssertError(weightedMedian(values, [1, -1]));
-    assertThrown!AssertError(weightedMedian(values, [1]));
-    assertThrown!AssertError(weightedMedian(values[0 .. 0], values[0 .. 0]));
-    assertThrown!AssertError(weightedMedian(values, [1, double.infinity]));
+    assertThrown!AssertError(rcWeightedMedian(values, [0, 0]));
+    assertThrown!AssertError(rcWeightedMedian(values, [1, -1]));
+    assertThrown!AssertError(rcWeightedMedian(values, [1]));
+    assertThrown!AssertError(rcWeightedMedian(values[0 .. 0], values[0 .. 0]));
+    assertThrown!AssertError(rcWeightedMedian(values, [1, double.infinity]));
+}
+
+private F allocatedWeightedSpread(F, WeightedQuantileAlgo algorithm,
+    QuantileAllocation allocation, Context, Data, Weights)(ref Context context,
+    scope auto ref Data data, scope auto ref Weights weights)
+{
+    import mir.primitives: DeepElementType;
+    import std.traits: Unqual;
+    alias Element = Unqual!(DeepElementType!Data);
+    double[2] probabilities = [0.25, 0.75];
+    static if (algorithm == WeightedQuantileAlgo.inverseCDF && isIntegral!Element)
+    {
+        auto quartiles = allocatedWeightedQuantile!(Element, algorithm, allocation, 2)(
+            context, weights, data, probabilities);
+        const ulong distance = cast(ulong) quartiles[1] - cast(ulong) quartiles[0];
+        static if (isIntegral!F)
+            assert(distance <= F.max, "weightedInterquartileRange: result is out of range");
+        return cast(F) distance;
+    }
+    else
+    {
+        static assert(isFloatingPoint!F,
+            "weightedInterquartileRange: nonintegral observations require a floating result");
+        auto quartiles = allocatedWeightedQuantile!(real, algorithm, allocation, 2)(
+            context, weights, data, probabilities);
+        return cast(F)(quartiles[1] - quartiles[0]);
+    }
 }
 
 /++
@@ -4982,7 +5544,7 @@ Params:
     F = result type; inferred as for weightedQuantile when omitted
     algorithm = weighted quantile definition, default inverseCDF
 +/
-template weightedInterquartileRange(F,
+template rcWeightedInterquartileRange(F,
     WeightedQuantileAlgo algorithm = WeightedQuantileAlgo.inverseCDF)
     if (isFloatingPoint!F || (algorithm == WeightedQuantileAlgo.inverseCDF && isIntegral!F))
 {
@@ -4992,40 +5554,24 @@ template weightedInterquartileRange(F,
         weights = nonnegative finite relative weights, or whole-number counts
             for frequencyType7 and frequencyType8
     +/
-    F weightedInterquartileRange(Data, Weights)(
+    F rcWeightedInterquartileRange(Data, Weights)(
         scope auto ref Data data, scope auto ref Weights weights)
     {
-        import mir.primitives: DeepElementType;
-        import std.traits: Unqual;
-        alias Element = Unqual!(DeepElementType!Data);
-        static if (algorithm == WeightedQuantileAlgo.inverseCDF && isIntegral!Element)
-        {
-            auto quartiles = rcWeightedQuantile!algorithm(data, weights, 0.25, 0.75);
-            const ulong distance = cast(ulong) quartiles[1] - cast(ulong) quartiles[0];
-            static if (isIntegral!F)
-                assert(distance <= F.max, "weightedInterquartileRange: result is out of range");
-            return cast(F) distance;
-        }
-        else
-        {
-            static assert(isFloatingPoint!F,
-                "weightedInterquartileRange: nonintegral observations require a floating result");
-            auto quartiles = rcWeightedQuantile!(real, algorithm)(data, weights, 0.25, 0.75);
-            return cast(F)(quartiles[1] - quartiles[0]);
-        }
+        QuantileContext context;
+        return allocatedWeightedSpread!(F, algorithm, QuantileAllocation.rc)(context, data, weights);
     }
 }
 
 /// ditto
-template weightedInterquartileRange(
+template rcWeightedInterquartileRange(
     WeightedQuantileAlgo algorithm = WeightedQuantileAlgo.inverseCDF)
 {
     /// ditto
-    auto weightedInterquartileRange(Data, Weights)(
+    auto rcWeightedInterquartileRange(Data, Weights)(
         scope auto ref Data data, scope auto ref Weights weights)
     {
         alias F = WeightedQuantileResult!(Data, algorithm);
-        return .weightedInterquartileRange!(F, algorithm)(data, weights);
+        return .rcWeightedInterquartileRange!(F, algorithm)(data, weights);
     }
 }
 
@@ -5037,9 +5583,9 @@ template weightedInterquartileRange(
     double[2] values = [0, 10];
     int[2] counts = [1, 3];
     double[2] probabilities = [0.25, 0.75];
-    assert(weightedInterquartileRange(values, counts) == 10);
-    assert(weightedInterquartileRange(values, probabilities) == 10);
-    assert(weightedInterquartileRange!(WeightedQuantileAlgo.frequencyType7)(values, counts).approxEqual(2.5));
+    assert(rcWeightedInterquartileRange(values, counts) == 10);
+    assert(rcWeightedInterquartileRange(values, probabilities) == 10);
+    assert(rcWeightedInterquartileRange!(WeightedQuantileAlgo.frequencyType7)(values, counts).approxEqual(2.5));
 }
 
 /++
@@ -5078,7 +5624,7 @@ Returns:
 See_also:
     $(LREF quantile)
 +/
-template interquartileRange(F, QuantileAlgo quantileAlgo = QuantileAlgo.type7,
+template rcInterquartileRange(F, QuantileAlgo quantileAlgo = QuantileAlgo.type7,
                             bool allowModifySlice = false)
 {
     import mir.ndslice.slice: isConvertibleToSlice, isSlice, Slice, SliceKind;
@@ -5087,7 +5633,7 @@ template interquartileRange(F, QuantileAlgo quantileAlgo = QuantileAlgo.type7,
     Params:
         slice = slice
     +/
-    @fmamath quantileType!(F, quantileAlgo) interquartileRange(
+    @fmamath quantileType!(F, quantileAlgo) rcInterquartileRange(
         Iterator, size_t N, SliceKind kind)(
             Slice!(Iterator, N, kind) slice)
     {
@@ -5102,7 +5648,7 @@ template interquartileRange(F, QuantileAlgo quantileAlgo = QuantileAlgo.type7,
         slice = slice
         lo = low value
     +/
-    @fmamath quantileType!(F, quantileAlgo) interquartileRange(
+    @fmamath quantileType!(F, quantileAlgo) rcInterquartileRange(
         Iterator, size_t N, SliceKind kind, P)(
             Slice!(Iterator, N, kind) slice,
             P lo)
@@ -5119,7 +5665,7 @@ template interquartileRange(F, QuantileAlgo quantileAlgo = QuantileAlgo.type7,
         lo = low value
         hi = high value
     +/
-    @fmamath quantileType!(F, quantileAlgo) interquartileRange(
+    @fmamath quantileType!(F, quantileAlgo) rcInterquartileRange(
         Iterator, size_t N, SliceKind kind, P, Q)(
             Slice!(Iterator, N, kind) slice,
             P lo,
@@ -5135,55 +5681,55 @@ template interquartileRange(F, QuantileAlgo quantileAlgo = QuantileAlgo.type7,
     Params:
         array = array
     +/
-    @fmamath quantileType!(F[], quantileAlgo) interquartileRange(scope F[] array...)
+    @fmamath quantileType!(F[], quantileAlgo) rcInterquartileRange(scope F[] array...)
     {
         import mir.ndslice.slice: sliced;
 
         alias FF = typeof(return);
-        return .interquartileRange!(FF, quantileAlgo, allowModifySlice)(array.sliced);
+        return .rcInterquartileRange!(FF, quantileAlgo, allowModifySlice)(array.sliced);
     }
 
     /// ditto
-    @fmamath auto interquartileRange(SliceLike)(SliceLike x)
+    @fmamath auto rcInterquartileRange(SliceLike)(SliceLike x)
         if (isConvertibleToSlice!SliceLike && !isSlice!SliceLike)
     {
         import mir.ndslice.slice: toSlice;
-        return .interquartileRange!(F, quantileAlgo, allowModifySlice)(x.toSlice);
+        return .rcInterquartileRange!(F, quantileAlgo, allowModifySlice)(x.toSlice);
     }
 }
 
 /// ditto
-template interquartileRange(QuantileAlgo quantileAlgo = QuantileAlgo.type7,
+template rcInterquartileRange(QuantileAlgo quantileAlgo = QuantileAlgo.type7,
                             bool allowModifySlice = false)
 {
     import mir.ndslice.slice: isConvertibleToSlice, isSlice, Slice, SliceKind;
 
     /// ditto
     @fmamath quantileType!(Slice!(Iterator), quantileAlgo)
-        interquartileRange(Iterator, size_t N, SliceKind kind)(
+        rcInterquartileRange(Iterator, size_t N, SliceKind kind)(
             Slice!(Iterator, N, kind) slice)
     {
         import core.lifetime: move;
 
         alias F = typeof(return);
-        return .interquartileRange!(F, quantileAlgo, allowModifySlice)(slice.move);
+        return .rcInterquartileRange!(F, quantileAlgo, allowModifySlice)(slice.move);
     }
 
     /// ditto
     @fmamath quantileType!(Slice!(Iterator), quantileAlgo)
-        interquartileRange(Iterator, size_t N, SliceKind kind, F)(
+        rcInterquartileRange(Iterator, size_t N, SliceKind kind, F)(
             Slice!(Iterator, N, kind) slice,
             F lo)
     {
         import core.lifetime: move;
 
         alias FF = typeof(return);
-        return .interquartileRange!(FF, quantileAlgo, allowModifySlice)(slice.move, lo);
+        return .rcInterquartileRange!(FF, quantileAlgo, allowModifySlice)(slice.move, lo);
     }
 
     /// ditto
     @fmamath quantileType!(Slice!(Iterator), quantileAlgo)
-        interquartileRange(Iterator, size_t N, SliceKind kind, F)(
+        rcInterquartileRange(Iterator, size_t N, SliceKind kind, F)(
             Slice!(Iterator, N, kind) slice,
             F lo,
             F hi)
@@ -5191,39 +5737,39 @@ template interquartileRange(QuantileAlgo quantileAlgo = QuantileAlgo.type7,
         import core.lifetime: move;
 
         alias FF = typeof(return);
-        return .interquartileRange!(FF, quantileAlgo, allowModifySlice)(slice.move, lo, hi);
+        return .rcInterquartileRange!(FF, quantileAlgo, allowModifySlice)(slice.move, lo, hi);
     }
 
     /// ditto
     @fmamath quantileType!(T[], quantileAlgo)
-        interquartileRange(T)(scope T[] array...)
+        rcInterquartileRange(T)(scope T[] array...)
     {
         import core.lifetime: move;
 
         alias F = typeof(return);
-        return .interquartileRange!(F, quantileAlgo, allowModifySlice)(array);
+        return .rcInterquartileRange!(F, quantileAlgo, allowModifySlice)(array);
     }
 
     /// ditto
-    @fmamath auto interquartileRange(SliceLike)(SliceLike x)
+    @fmamath auto rcInterquartileRange(SliceLike)(SliceLike x)
         if (isConvertibleToSlice!SliceLike && !isSlice!SliceLike)
     {
         import mir.ndslice.slice: toSlice;
         alias F = quantileType!(typeof(x.toSlice), quantileAlgo);
-        return .interquartileRange!(F, quantileAlgo, allowModifySlice)(x);
+        return .rcInterquartileRange!(F, quantileAlgo, allowModifySlice)(x);
     }
 }
 
 /// ditto
-template interquartileRange(F, string quantileAlgo, bool allowModifySlice = false)
+template rcInterquartileRange(F, string quantileAlgo, bool allowModifySlice = false)
 {
-    mixin("alias interquartileRange = .interquartileRange!(F, QuantileAlgo." ~ quantileAlgo ~ ", allowModifySlice);");
+    mixin("alias rcInterquartileRange = .rcInterquartileRange!(F, QuantileAlgo." ~ quantileAlgo ~ ", allowModifySlice);");
 }
 
 /// ditto
-template interquartileRange(string quantileAlgo, bool allowModifySlice = false)
+template rcInterquartileRange(string quantileAlgo, bool allowModifySlice = false)
 {
-    mixin("alias interquartileRange = .interquartileRange!(QuantileAlgo." ~ quantileAlgo ~ ", allowModifySlice);");
+    mixin("alias rcInterquartileRange = .rcInterquartileRange!(QuantileAlgo." ~ quantileAlgo ~ ", allowModifySlice);");
 }
 
 /// Simple example
@@ -5236,9 +5782,9 @@ unittest
 
     auto x = [3.0, 1.0, 4.0, 2.0, 0.0].sliced;
 
-    assert(x.interquartileRange.approxEqual(2.0));
-    assert(x.interquartileRange(0.25).approxEqual(2.0));
-    assert(x.interquartileRange(0.25, 0.75).approxEqual(2.0));
+    assert(x.rcInterquartileRange.approxEqual(2.0));
+    assert(x.rcInterquartileRange(0.25).approxEqual(2.0));
+    assert(x.rcInterquartileRange(0.25, 0.75).approxEqual(2.0));
 }
 
 //no change in x by default
@@ -5252,7 +5798,7 @@ unittest
 
     auto x = [3.0, 1.0, 4.0, 2.0, 0.0].sliced;
     auto x_copy = x.dup;
-    auto result = x.interquartileRange;
+    auto result = x.rcInterquartileRange;
 
     assert(x.all!approxEqual(x_copy));
 }
@@ -5268,7 +5814,7 @@ unittest
     auto x = [1.0, 9.8, 0.2, 8.5, 5.8, 3.5, 4.5, 8.2, 5.2, 5.2,
               2.5, 1.8, 2.2, 3.8, 5.2, 9.2, 6.2, 9.2, 9.2, 8.5].sliced;
 
-    assert(x.interquartileRange.approxEqual(5.25));
+    assert(x.rcInterquartileRange.approxEqual(5.25));
 }
 
 /// Interquartile Range of matrix
@@ -5285,7 +5831,7 @@ unittest
         [2.5, 1.8, 2.2, 3.8, 5.2, 9.2, 6.2, 9.2, 9.2, 8.5]
     ].fuse;
 
-    assert(x.interquartileRange.approxEqual(5.25));
+    assert(x.rcInterquartileRange.approxEqual(5.25));
 }
 
 /// Allow modification of input
@@ -5300,7 +5846,7 @@ unittest
     auto x = [3.0, 1.0, 4.0, 2.0, 0.0].sliced;
     auto x_copy = x.dup;
 
-    auto result = x.interquartileRange!(QuantileAlgo.type7, true);
+    auto result = x.rcInterquartileRange!(QuantileAlgo.type7, true);
     assert(!x.all!approxEqual(x_copy));
 }
 
@@ -5315,15 +5861,15 @@ unittest
     auto x = [1.0, 9.8, 0.2, 8.5, 5.8, 3.5, 4.5, 8.2, 5.2, 5.2,
               2.5, 1.8, 2.2, 3.8, 5.2, 9.2, 6.2, 9.2, 9.2, 8.5].sliced;
 
-    assert(x.interquartileRange!"type1".approxEqual(6.0));
-    assert(x.interquartileRange!"type2".approxEqual(5.5));
-    assert(x.interquartileRange!"type3".approxEqual(6.0));
-    assert(x.interquartileRange!"type4".approxEqual(6.0));
-    assert(x.interquartileRange!"type5".approxEqual(5.5));
-    assert(x.interquartileRange!"type6".approxEqual(5.75));
-    assert(x.interquartileRange!"type7".approxEqual(5.25));
-    assert(x.interquartileRange!"type8".approxEqual(5.583333));
-    assert(x.interquartileRange!"type9".approxEqual(5.5625));
+    assert(x.rcInterquartileRange!"type1".approxEqual(6.0));
+    assert(x.rcInterquartileRange!"type2".approxEqual(5.5));
+    assert(x.rcInterquartileRange!"type3".approxEqual(6.0));
+    assert(x.rcInterquartileRange!"type4".approxEqual(6.0));
+    assert(x.rcInterquartileRange!"type5".approxEqual(5.5));
+    assert(x.rcInterquartileRange!"type6".approxEqual(5.75));
+    assert(x.rcInterquartileRange!"type7".approxEqual(5.25));
+    assert(x.rcInterquartileRange!"type8".approxEqual(5.583333));
+    assert(x.rcInterquartileRange!"type9".approxEqual(5.5625));
 }
 
 /// Can also set algorithm or output type
@@ -5338,11 +5884,11 @@ unittest
 
     auto x = a * 10_000;
 
-    auto result0 = x.interquartileRange!float;
+    auto result0 = x.rcInterquartileRange!float;
     assert(result0.approxEqual(10_000));
     static assert(is(typeof(result0) == float));
 
-    auto result1 = x.interquartileRange!(float, "type8");
+    auto result1 = x.rcInterquartileRange!(float, "type8");
     assert(result1.approxEqual(6.666667e37));
     static assert(is(typeof(result1) == float));
 }
@@ -5356,7 +5902,7 @@ unittest
 
     double[] x = [3.0, 1.0, 4.0, 2.0, 0.0];
 
-    assert(x.interquartileRange.approxEqual(2.0));
+    assert(x.rcInterquartileRange.approxEqual(2.0));
 }
 
 // withAsSlice test
@@ -5375,10 +5921,10 @@ unittest
     foreach(i, ref e; x)
         e = a[i];
 
-    assert(x.interquartileRange.approxEqual(5.25));
-    assert(x.interquartileRange!double.approxEqual(5.25));
+    assert(x.rcInterquartileRange.approxEqual(5.25));
+    assert(x.rcInterquartileRange!double.approxEqual(5.25));
     // The asSlice adapter must forward both result type and algorithm.
-    auto selected = x.interquartileRange!(float, QuantileAlgo.type1);
+    auto selected = x.rcInterquartileRange!(float, QuantileAlgo.type1);
     static assert(is(typeof(selected) == float));
     assert(selected == 6);
 }
@@ -5390,7 +5936,7 @@ unittest
 {
     import mir.math.common: approxEqual;
 
-    assert(interquartileRange(3.0, 1.0, 4.0, 2.0, 0.0).approxEqual(2.0));
+    assert(rcInterquartileRange(3.0, 1.0, 4.0, 2.0, 0.0).approxEqual(2.0));
 }
 
 // @nogc test
@@ -5404,7 +5950,654 @@ unittest
     static immutable x = [1.0, 9.8, 0.2, 8.5, 5.8, 3.5, 4.5, 8.2, 5.2, 5.2,
                           2.5, 1.8, 2.2, 3.8, 5.2, 9.2, 6.2, 9.2, 9.2, 8.5];
 
-    assert(x.sliced.interquartileRange.approxEqual(5.25));
+    assert(x.sliced.rcInterquartileRange.approxEqual(5.25));
+}
+
+/++
+Compute a median using caller-selected scratch allocation.
+An allocator variable is passed by reference; a temporary allocator is also accepted.
+
+The median convention, result type, and numerical behavior follow $(LREF median).
+Use this function to direct temporary storage to an allocator, for example a
+pool shared by repeated calculations. The scalar result owns no storage and
+requires no disposal. Scratch is released before return, including on exceptions.
+Attributes depend on the allocator's allocation and deallocation operations.
+
+By default inputs are unchanged. Setting allowModify permits rearranging the
+observations and avoids scratch allocation. One or two observations also need
+no scratch when inputs are preserved. An unused allocator is not invoked.
+Arrays and Mir slices are accepted; multidimensional slices are flattened for
+selection, as in median.
+
+Params:
+    F = output type, promoted as for median
+    allowModify = permit input rearrangement, default false
++/
+template makeMedian(F, bool allowModify = false)
+{
+    /++
+    Params:
+        allocator = allocator for temporary storage
+        data = observations
+    +/
+    meanType!F makeMedian(Allocator, Data)(auto ref Allocator allocator, scope auto ref Data data)
+    {
+        return allocatedMedian!(F, allowModify, QuantileAllocation.custom)(allocator, data);
+    }
+}
+
+/// ditto
+template makeMedian(bool allowModify = false)
+{
+    /// ditto
+    auto makeMedian(Allocator, Data)(auto ref Allocator allocator, scope auto ref Data data)
+    {
+        alias F = meanType!(typeof(quantileSlice(data)));
+        return .makeMedian!(F, allowModify)(allocator, data);
+    }
+}
+
+/++
+Compute a weighted median using caller-selected scratch allocation.
+An allocator variable is passed by reference; a temporary allocator is also accepted.
+
+Uses the fixed averaged inverse-CDF convention of $(LREF weightedMedian).
+For values [0, 10] and equal weights the result is 5. Inputs remain unchanged;
+there is no input-modification option. All temporary storage uses allocator
+and is released before return, including on exceptions. The scalar result
+requires no disposal. Attributes depend on the allocator.
+
+Params:
+    F = floating-point result type, inferred as for weightedMedian when omitted
++/
+template makeWeightedMedian(F)
+    if (isFloatingPoint!F)
+{
+    /++
+    Params:
+        allocator = allocator for temporary storage
+        data = observations corresponding to the weights
+        weights = nonnegative finite relative weights
+    +/
+    F makeWeightedMedian(Allocator, Data, Weights)(auto ref Allocator allocator,
+        scope auto ref Data data, scope auto ref Weights weights)
+    {
+        return makeWeightedQuantile!(F, WeightedQuantileAlgo.averagedInverseCDF)(
+            allocator, data, weights, 0.5);
+    }
+}
+
+/// ditto
+auto makeWeightedMedian(Allocator, Data, Weights)(auto ref Allocator allocator,
+    scope auto ref Data data, scope auto ref Weights weights)
+{
+    alias F = WeightedQuantileResult!(Data, WeightedQuantileAlgo.averagedInverseCDF);
+    return .makeWeightedMedian!F(allocator, data, weights);
+}
+
+/++
+Compute an interquartile range using caller-selected scratch allocation.
+An allocator variable is passed by reference; a temporary allocator is also accepted.
+
+Uses the definitions, result types, and numerical safeguards of
+$(LREF interquartileRange). Omitted probabilities select 0.25 and 0.75;
+one probability lo selects lo and 1 - lo; two select lo and hi.
+Both selections share one workspace, preserving small differences at large
+integral or floating-point offsets before rounding the result.
+
+Inputs are unchanged by default. Set allowModifySlice to permit rearranging
+the observations and avoid scratch allocation. Otherwise allocator supplies
+the copy, which is released before return, including on exceptions. The scalar
+result requires no disposal. Attributes depend on the allocator. Allocation
+choice changes storage management, not the quantile convention.
+
+Params:
+    F = output type, inferred as for interquartileRange when omitted
+    quantileAlgo = quantile convention, default type7
+    allowModifySlice = permit input rearrangement, default false
++/
+template makeInterquartileRange(F, QuantileAlgo quantileAlgo = QuantileAlgo.type7,
+    bool allowModifySlice = false)
+{
+    /++
+    Params:
+        allocator = allocator for temporary storage
+        data = observations, as an array or Mir slice
+        probabilities = optional lo, or lo and hi
+    +/
+    @fmamath quantileType!(F, quantileAlgo) makeInterquartileRange(Allocator, Data, P...)(
+        auto ref Allocator allocator, scope auto ref Data data, scope auto ref P probabilities)
+        if (P.length <= 2)
+    {
+        alias Result = typeof(return);
+        scope auto source = quantileSlice(data);
+        static if (P.length == 0)
+            return allocatedQuantileSpread!(Result, quantileAlgo, allowModifySlice,
+                QuantileAllocation.custom)(allocator, source, 0.25, 0.75);
+        else static if (P.length == 1)
+            return allocatedQuantileSpread!(Result, quantileAlgo, allowModifySlice,
+                QuantileAllocation.custom)(allocator, source, probabilities[0], 1 - probabilities[0]);
+        else
+            return allocatedQuantileSpread!(Result, quantileAlgo, allowModifySlice,
+                QuantileAllocation.custom)(allocator, source, probabilities[0], probabilities[1]);
+    }
+}
+
+/// ditto
+template makeInterquartileRange(QuantileAlgo quantileAlgo = QuantileAlgo.type7,
+    bool allowModifySlice = false)
+{
+    /// ditto
+    @fmamath auto makeInterquartileRange(Allocator, Data, P...)(auto ref Allocator allocator,
+        scope auto ref Data data, scope auto ref P probabilities)
+        if (P.length <= 2)
+    {
+        alias F = quantileType!(typeof(quantileSlice(data)), quantileAlgo);
+        return .makeInterquartileRange!(F, quantileAlgo, allowModifySlice)(allocator, data, probabilities);
+    }
+}
+
+/// ditto
+template makeInterquartileRange(F, string quantileAlgo, bool allowModifySlice = false)
+{
+    mixin("alias makeInterquartileRange = .makeInterquartileRange!(F, QuantileAlgo." ~ quantileAlgo ~ ", allowModifySlice);");
+}
+
+/// ditto
+template makeInterquartileRange(string quantileAlgo, bool allowModifySlice = false)
+{
+    mixin("alias makeInterquartileRange = .makeInterquartileRange!(QuantileAlgo." ~ quantileAlgo ~ ", allowModifySlice);");
+}
+
+/++
+Compute a weighted interquartile range using caller-selected scratch allocation.
+An allocator variable is passed by reference; a temporary allocator is also accepted.
+
+Uses the definitions, result types, and numerical limits of
+$(LREF weightedInterquartileRange). Both quartiles share one sorted workspace;
+the pair of quantiles needs no separate allocation. Inputs remain unchanged.
+All scratch uses allocator and is released before return, including on
+exceptions. The scalar result requires no disposal. Attributes depend on the
+allocator. Choose algorithm for the statistical convention and allocator for
+storage management; there is no input-modification option.
+
+Params:
+    F = output type, inferred as for weightedInterquartileRange when omitted
+    algorithm = weighted quantile convention, default inverseCDF
++/
+template makeWeightedInterquartileRange(F,
+    WeightedQuantileAlgo algorithm = WeightedQuantileAlgo.inverseCDF)
+    if (isFloatingPoint!F || (algorithm == WeightedQuantileAlgo.inverseCDF && isIntegral!F))
+{
+    /++
+    Params:
+        allocator = allocator for temporary storage
+        data = observations corresponding to the weights
+        weights = relative weights, or counts for frequency algorithms
+    +/
+    F makeWeightedInterquartileRange(Allocator, Data, Weights)(auto ref Allocator allocator,
+        scope auto ref Data data, scope auto ref Weights weights)
+    {
+        return allocatedWeightedSpread!(F, algorithm, QuantileAllocation.custom)(allocator, data, weights);
+    }
+}
+
+/// ditto
+template makeWeightedInterquartileRange(
+    WeightedQuantileAlgo algorithm = WeightedQuantileAlgo.inverseCDF)
+{
+    /// ditto
+    auto makeWeightedInterquartileRange(Allocator, Data, Weights)(auto ref Allocator allocator,
+        scope auto ref Data data, scope auto ref Weights weights)
+    {
+        alias F = WeightedQuantileResult!(Data, algorithm);
+        return .makeWeightedInterquartileRange!(F, algorithm)(allocator, data, weights);
+    }
+}
+
+/// A custom allocator controls scratch; all four results are scalars.
+version(mir_stat_test)
+@system pure nothrow @nogc unittest
+{
+    import std.experimental.allocator.mallocator: Mallocator;
+    double[4] data = [0, 2, 6, 10];
+    int[4] weights = [1, 2, 1, 2];
+    assert(makeMedian(Mallocator.instance, data) == 4);
+    assert(makeWeightedMedian(Mallocator.instance, data, weights) == 4);
+    assert(makeInterquartileRange(Mallocator.instance, data) == 5.5);
+    assert(makeWeightedInterquartileRange(Mallocator.instance, data, weights) == 8);
+    // Permit rearrangement to avoid allocating the ordinary median workspace.
+    assert(makeMedian!true(Mallocator.instance, data) == 4);
+}
+
+// Custom summary factories preserve their ordinary/weighted contracts while
+// directing all scratch through the supplied allocator.
+version(mir_stat_test)
+@system pure nothrow @nogc unittest
+{
+    import mir.ndslice.slice: sliced;
+    import mir.ndslice.dynamic: transposed;
+    import mir.ndslice.topology: stride;
+    import std.meta: AliasSeq;
+    import mir.math.common: approxEqual;
+    const double[6] original = [5, 0, 4, 1, 3, 2];
+    int[6] weights = [1, 1, 2, 1, 2, 1];
+    QuantileTestAllocator!() allocator;
+    assert(makeMedian(allocator, original) == 2.5);
+    assert(makeWeightedMedian(allocator, original, weights) == rcWeightedMedian(original, weights));
+    assert(makeInterquartileRange(allocator, original) == 2.5);
+    assert(makeWeightedInterquartileRange(allocator, original, weights) == rcWeightedInterquartileRange(original, weights));
+    assert(allocator.allocations == 4 && allocator.releases == 4);
+    assert(original == [5, 0, 4, 1, 3, 2] && weights == [1, 1, 2, 1, 2, 1]);
+
+    double[2] pair = [0, 10];
+    assert(makeMedian(allocator, pair) == 5);
+    assert(makeMedian(allocator, pair[0 .. 1]) == 0);
+    assert(allocator.allocations == 4 && allocator.releases == 4);
+    // A mutation-permitted scalar calculation does not require an allocator API.
+    struct UnusedAllocator {}
+    UnusedAllocator unused;
+    double[6] mutableData = original;
+    assert(makeMedian!true(unused, mutableData) == 2.5);
+    assert(makeInterquartileRange!(QuantileAlgo.type7, true)(unused, mutableData) == 2.5);
+    static assert(!__traits(compiles, makeMedian!true(unused, original)));
+    static assert(!__traits(compiles, makeInterquartileRange!(QuantileAlgo.type7, true)(unused, original)));
+
+    auto matrix = original[].sliced(2, 3).transposed;
+    assert(makeMedian!float(allocator, matrix) == 2.5f);
+    assert(makeInterquartileRange!float(allocator, matrix) == 2.5f);
+    static assert(is(typeof(makeMedian!float(allocator, matrix)) == float));
+    static assert(is(typeof(makeWeightedMedian!float(allocator, original, weights)) == float));
+    double[8] strided = [0, 99, 2, 99, 6, 99, 10, 99];
+    int[8] masses = [1, 99, 2, 99, 1, 99, 2, 99];
+    assert(makeMedian(allocator, strided[].sliced.stride(2)) == 4);
+    assert(makeInterquartileRange(allocator, strided[].sliced.stride(2)) == 5.5);
+    assert(makeWeightedMedian(allocator, strided[].sliced.stride(2), masses[].sliced.stride(2)) == 4);
+    assert(makeWeightedInterquartileRange(allocator, strided[].sliced.stride(2), masses[].sliced.stride(2)) == 8);
+
+    static foreach (T; AliasSeq!(float, double, real, int, long, ulong))
+    {{
+        T[4] data = [0, 2, 6, 10];
+        int[4] counts = [1, 2, 1, 2];
+        assert(makeMedian(allocator, data) == rcMedian(data[]));
+        static foreach (member; __traits(allMembers, QuantileAlgo))
+        {{
+            enum algorithm = __traits(getMember, QuantileAlgo, member);
+            assert(makeInterquartileRange!algorithm(allocator, data) == rcInterquartileRange!algorithm(data[].sliced));
+            assert(makeInterquartileRange!algorithm(allocator, data, 0.125) == rcInterquartileRange!algorithm(data[].sliced, 0.125));
+            assert(makeInterquartileRange!algorithm(allocator, data, 0.25, 0.875) == rcInterquartileRange!algorithm(data[].sliced, 0.25, 0.875));
+        }}
+        static foreach (member; __traits(allMembers, WeightedQuantileAlgo))
+        {{
+            enum algorithm = __traits(getMember, WeightedQuantileAlgo, member);
+            auto before = allocator.allocations;
+            assert(makeWeightedInterquartileRange!algorithm(allocator, data, counts) == rcWeightedInterquartileRange!algorithm(data, counts));
+            assert(allocator.allocations == before + 1 && allocator.releases == allocator.allocations);
+        }}
+    }}
+    long[4] high = [long.max - 6, long.max - 4, long.max - 2, long.max];
+    assert(makeInterquartileRange!float(allocator, high) == 3);
+    assert(makeInterquartileRange!"type7"(allocator, high) == 3);
+    assert(makeInterquartileRange!(float, "type7")(allocator, high, 0.75, 0.25) == -3);
+    int[4] equal = [1, 1, 1, 1];
+    assert(makeWeightedInterquartileRange!float(allocator, high, equal) == 4);
+    double[4] values = [0, 2, 6, 10], tinyMasses = [1e-30, 2, 1, 2];
+    assert(makeWeightedInterquartileRange!(WeightedQuantileAlgo.type7)(allocator, values, tinyMasses) ==
+        rcWeightedInterquartileRange!(WeightedQuantileAlgo.type7)(values, tinyMasses));
+    assert(allocator.allocations == allocator.releases);
+}
+
+// Safe allocators retain safe use; a throwing input releases the allocated copy.
+version(mir_stat_test)
+@safe pure nothrow unittest
+{
+    import std.experimental.allocator.gc_allocator: GCAllocator;
+    struct SafeAllocator
+    {
+        enum alignment = GCAllocator.alignment;
+        size_t releases;
+        void[] allocate(size_t bytes) @safe pure nothrow { return GCAllocator.instance.allocate(bytes); }
+        bool deallocate(void[] memory) @safe pure nothrow @nogc { ++releases; return true; }
+    }
+    SafeAllocator allocator;
+    const double[4] data = [0, 2, 6, 10];
+    const int[4] weights = [1, 2, 1, 2];
+    assert(makeMedian(allocator, data) == 4);
+    assert(makeInterquartileRange(allocator, data) == 5.5);
+    assert(makeWeightedMedian(allocator, data, weights) == 4);
+    assert(makeWeightedInterquartileRange(allocator, data, weights) == 8);
+    assert(allocator.releases == 4);
+}
+
+version(mir_stat_test)
+@system unittest
+{
+    import std.exception: assertThrown;
+    import mir.ndslice.slice: sliced;
+    import mir.ndslice.topology: map;
+    static double failRead(double value) { throw new Exception("observation read failed"); }
+    double[4] data = [0, 2, 6, 10];
+    int[4] weights = [1, 2, 1, 2];
+    auto throwing = data[].sliced.map!failRead;
+    QuantileTestAllocator!() allocator;
+    assertThrown!Exception(makeMedian(allocator, throwing));
+    assert(allocator.allocations == 1 && allocator.releases == 1);
+    assertThrown!Exception(makeInterquartileRange(allocator, throwing));
+    assert(allocator.allocations == 2 && allocator.releases == 2);
+    // Weighted input validation reads the view before allocating its workspace.
+    assertThrown!Exception(makeWeightedMedian(allocator, throwing, weights));
+    assertThrown!Exception(makeWeightedInterquartileRange(allocator, throwing, weights));
+    assert(allocator.allocations == 2 && allocator.releases == 2);
+}
+
+/++
+Compute raw median absolute deviation using caller-selected scratch allocation.
+An allocator variable is passed by reference; a temporary allocator is also accepted.
+
+Uses the convention, result types, and numerical safeguards of
+$(LREF medianAbsoluteDeviation). For values [0, 2, 6, 10], the median is 4,
+the absolute deviations are [4, 2, 2, 6], and their median is 3.
+No normal-distribution scaling factor is applied.
+
+Use this function when an application supplies its own allocator for temporary
+storage. All scratch uses allocator and is released before return, including
+on exceptions. The scalar result requires no disposal. Attributes depend on
+the allocator and input operations. Inputs remain unchanged; there is no
+allowModify option, since replacing observations with deviations is different
+from rearranging them and can require a different element type.
+
+Integral observations retain exact differences where supported by the ordinary
+MAD calculation. The output type does not narrow the center before deviations
+are computed. Arrays and Mir slices are accepted, including multidimensional
+slices. Small inputs can need no scratch and therefore make no allocator calls.
+
+Params:
+    F = output type, promoted as for medianAbsoluteDeviation
++/
+template makeMedianAbsoluteDeviation(F)
+{
+    /++
+    Params:
+        allocator = allocator for temporary storage
+        data = observations
+    +/
+    @fmamath meanType!F makeMedianAbsoluteDeviation(Allocator, Data)(
+        auto ref Allocator allocator, scope auto ref Data data)
+    {
+        scope auto source = quantileSlice(data);
+        return allocatedMAD!(F, QuantileAllocation.custom)(allocator, source.lightScope);
+    }
+}
+
+/// ditto
+@fmamath auto makeMedianAbsoluteDeviation(Allocator, Data)(
+    auto ref Allocator allocator, scope auto ref Data data)
+{
+    alias F = meanType!(typeof(quantileSlice(data)));
+    return .makeMedianAbsoluteDeviation!F(allocator, data);
+}
+
+/++
+Compute raw weighted median absolute deviation using caller-selected scratch allocation.
+An allocator variable is passed by reference; a temporary allocator is also accepted.
+
+Uses the definitions, result types, and numerical limits of
+$(LREF weightedMedianAbsoluteDeviation). Both median stages default to
+averagedInverseCDF, matching $(LREF weightedMedian). Each deviation retains
+its observation's original weight. For [0, 10] with equal weights the default
+MAD is 5; choosing inverseCDF gives 0. Allocator choice does not change this
+statistical convention, and no normal-distribution scaling factor is applied.
+
+All temporary buffers, including both weighted quantile workspaces, use
+allocator and are released before return, including on exceptions. The scalar
+result needs no disposal. Attributes depend on the allocator and input
+operations. Both observations and weights remain unchanged; there is no
+input-modification option. Use this function to control temporary allocation
+while retaining weighted MAD's integral-offset and overflow safeguards.
+
+Params:
+    F = output type, promoted as for weightedMedianAbsoluteDeviation
+    algorithm = weighted quantile convention, default averagedInverseCDF
++/
+template makeWeightedMedianAbsoluteDeviation(F,
+    WeightedQuantileAlgo algorithm = WeightedQuantileAlgo.averagedInverseCDF)
+{
+    /++
+    Params:
+        allocator = allocator for temporary storage
+        data = observations corresponding to the weights
+        weights = relative weights, or occurrence counts for frequency algorithms
+    +/
+    meanType!F makeWeightedMedianAbsoluteDeviation(Allocator, Data, Weights)(
+        auto ref Allocator allocator, scope auto ref Data data, scope auto ref Weights weights)
+    {
+        return allocatedWeightedMAD!(F, algorithm, QuantileAllocation.custom)(allocator, data, weights);
+    }
+}
+
+/// ditto
+template makeWeightedMedianAbsoluteDeviation(
+    WeightedQuantileAlgo algorithm = WeightedQuantileAlgo.averagedInverseCDF)
+{
+    /// ditto
+    auto makeWeightedMedianAbsoluteDeviation(Allocator, Data, Weights)(
+        auto ref Allocator allocator, scope auto ref Data data, scope auto ref Weights weights)
+    {
+        import mir.primitives: DeepElementType;
+        return .makeWeightedMedianAbsoluteDeviation!(DeepElementType!Data, algorithm)(allocator, data, weights);
+    }
+}
+
+/// Allocator selection leaves the raw MAD convention unchanged.
+version(mir_stat_test)
+@system pure nothrow @nogc unittest
+{
+    import std.experimental.allocator.mallocator: Mallocator;
+    const double[4] values = [0, 2, 6, 10];
+    const int[4] weights = [1, 1, 1, 1];
+    assert(makeMedianAbsoluteDeviation(Mallocator.instance, values) == 3);
+    assert(makeWeightedMedianAbsoluteDeviation(Mallocator.instance, values, weights) == 3);
+    const int[2] pair = [0, 10], equal = [1, 1];
+    assert(makeWeightedMedianAbsoluteDeviation(Mallocator.instance, pair, equal) == 5);
+    assert(makeWeightedMedianAbsoluteDeviation!(WeightedQuantileAlgo.inverseCDF)(Mallocator.instance, pair, equal) == 0);
+}
+
+// Count every MAD buffer, including both weighted quantile workspaces.
+version(mir_stat_test)
+@system pure nothrow @nogc unittest
+{
+    import std.meta: AliasSeq;
+    import mir.ndslice.slice: sliced;
+    import mir.ndslice.dynamic: transposed;
+    import mir.ndslice.topology: stride;
+    alias A = WeightedQuantileAlgo;
+    static foreach (T; AliasSeq!(float, double, real, int, long, ulong))
+    {{
+        T[4] values = [0, 2, 6, 10];
+        int[4] weights = [1, 2, 1, 2];
+        QuantileTestAllocator!() ordinary;
+        assert(makeMedianAbsoluteDeviation(ordinary, values) == 3);
+        enum count = isIntegral!T && T.sizeof == 8 ? 1 : 2;
+        assert(ordinary.allocations == count && ordinary.releases == count);
+        static foreach (member; __traits(allMembers, A))
+        {{
+            enum algorithm = __traits(getMember, A, member);
+            QuantileTestAllocator!() allocator;
+            const result = makeWeightedMedianAbsoluteDeviation!algorithm(allocator, values, weights);
+            assert(result == rcWeightedMedianAbsoluteDeviation!algorithm(values, weights));
+            enum expected = isIntegral!T && algorithm != A.inverseCDF ? 4 : 3;
+            assert(allocator.allocations == expected && allocator.releases == expected);
+        }}
+        assert(values == [0, 2, 6, 10] && weights == [1, 2, 1, 2]);
+    }}
+    QuantileTestAllocator!() allocator;
+    const long[3] high = [long.max - 2, long.max - 1, long.max];
+    const int[3] equal = [1, 1, 1];
+    assert(makeMedianAbsoluteDeviation!float(allocator, high) == 1);
+    assert(makeWeightedMedianAbsoluteDeviation!float(allocator, high, equal) == 1);
+    const long[2] adjacent = [long.max - 1, long.max];
+    const int[2] pair = [1, 1];
+    assert(makeMedianAbsoluteDeviation(allocator, adjacent) == 0.5);
+    assert(makeWeightedMedianAbsoluteDeviation(allocator, adjacent, pair) == 0.5);
+    const long[2] full = [long.min, long.max];
+    assert(makeMedianAbsoluteDeviation(allocator, full) == 0x1p63);
+    assert(makeWeightedMedianAbsoluteDeviation(allocator, full, pair) == 0x1p63);
+    real[4] extreme = [-real.max, -real.max / 2, real.max / 2, real.max];
+    int[4] uniform = [1, 1, 1, 1];
+    assert(makeWeightedMedianAbsoluteDeviation!(A.inverseCDF)(allocator, extreme, uniform) == real.max / 2);
+    const double[4] values = [0, 2, 6, 10];
+    auto matrix = values[].sliced(2, 2).transposed;
+    assert(makeMedianAbsoluteDeviation(allocator, matrix) == 3);
+    static assert(is(typeof(makeMedianAbsoluteDeviation!float(allocator, matrix)) == float));
+    static assert(is(typeof(makeWeightedMedianAbsoluteDeviation!float(allocator, values, uniform)) == float));
+    const double[8] storage = [0, 99, 2, 99, 6, 99, 10, 99];
+    const int[8] masses = [1, 99, 1, 99, 1, 99, 1, 99];
+    assert(makeMedianAbsoluteDeviation(allocator, storage[].sliced.stride(2)) == 3);
+    assert(makeWeightedMedianAbsoluteDeviation(allocator, storage[].sliced.stride(2), masses[].sliced.stride(2)) == 3);
+    const double[3] masked = [double.nan, 0, 10];
+    assert(makeWeightedMedianAbsoluteDeviation(allocator, masked, [0, 1, 1]) == 5);
+    assert(allocator.allocations == allocator.releases);
+    QuantileTestAllocator!() small;
+    assert(makeMedianAbsoluteDeviation(small, [7.0]) == 0);
+    assert(makeMedianAbsoluteDeviation(small, [0.0, 10.0]) == 5);
+    assert(makeMedianAbsoluteDeviation(small, adjacent) == 0.5);
+    assert(small.allocations == 0 && small.releases == 0);
+}
+
+version(mir_stat_test)
+@safe pure nothrow unittest
+{
+    import std.experimental.allocator.gc_allocator: GCAllocator;
+    struct SafeAllocator
+    {
+        enum alignment = GCAllocator.alignment;
+        size_t allocations, releases;
+        void[] allocate(size_t bytes) @safe pure nothrow
+        {
+            ++allocations;
+            return GCAllocator.instance.allocate(bytes);
+        }
+        bool deallocate(void[] memory) @safe pure nothrow @nogc { ++releases; return true; }
+    }
+    SafeAllocator allocator;
+    double[4] data = [0, 2, 6, 10];
+    int[4] equal = [1, 1, 1, 1];
+    assert(makeMedianAbsoluteDeviation(allocator, data) == 3);
+    assert(makeWeightedMedianAbsoluteDeviation(allocator, data, equal) == 3);
+    assert(allocator.allocations == 5 && allocator.releases == 5);
+}
+
+// Failing at any allocation releases all buffers that were obtained earlier.
+version(mir_stat_test)
+@system unittest
+{
+    import std.exception: assertThrown;
+    import std.meta: AliasSeq;
+    import mir.ndslice.slice: sliced;
+    import mir.ndslice.topology: map;
+    alias A = WeightedQuantileAlgo;
+    static foreach (T; AliasSeq!(double, long))
+    {{
+        T[4] values = [0, 2, 6, 10];
+        int[4] weights = [1, 1, 1, 1];
+        enum count = isIntegral!T ? 1 : 2;
+        foreach (failAt; 1 .. count + 1)
+        {
+            QuantileTestAllocator!true allocator;
+            allocator.failAt = failAt;
+            assertThrown!Exception(makeMedianAbsoluteDeviation(allocator, values));
+            assert(allocator.allocations == failAt && allocator.releases == failAt - 1);
+        }
+        static foreach (algorithm; [A.inverseCDF, A.averagedInverseCDF])
+        {{
+            enum weightedCount = isIntegral!T && algorithm != A.inverseCDF ? 4 : 3;
+            foreach (failAt; 1 .. weightedCount + 1)
+            {
+                QuantileTestAllocator!true allocator;
+                allocator.failAt = failAt;
+                assertThrown!Exception(makeWeightedMedianAbsoluteDeviation!algorithm(allocator, values, weights));
+                assert(allocator.allocations == failAt && allocator.releases == failAt - 1);
+            }
+        }}
+    }}
+    static double failRead(double value) { throw new Exception("MAD input read failed"); }
+    double[4] values = [0, 2, 6, 10];
+    QuantileTestAllocator!() allocator;
+    auto throwing = values[].sliced.map!failRead;
+    assertThrown!Exception(makeMedianAbsoluteDeviation(allocator, throwing));
+    assert(allocator.allocations == 1 && allocator.releases == 1);
+}
+
+private meanType!F allocatedWeightedMAD(F, WeightedQuantileAlgo algorithm,
+    QuantileAllocation allocation, Context, Data, Weights)(ref Context context,
+    scope auto ref Data data, scope auto ref Weights weights)
+{
+    import std.traits: Unqual, isNumeric;
+    import std.math: abs, isFinite, ldexp;
+    alias Result = typeof(return);
+    static assert(isFloatingPoint!Result,
+        "weightedMedianAbsoluteDeviation: result must be floating point");
+    scope auto values = quantileSlice(data);
+    scope auto masses = quantileSlice(weights);
+    static assert(typeof(values).N == 1 && typeof(masses).N == 1,
+        "weightedMedianAbsoluteDeviation: inputs must be one-dimensional");
+    alias Element = Unqual!(typeof(values).DeepElement);
+    static assert(isNumeric!Element,
+        "weightedMedianAbsoluteDeviation: observations must be numeric");
+    assert(values.length == masses.length,
+        "weightedMedianAbsoluteDeviation: lengths must match");
+    static if (isIntegral!Element)
+    {
+        Element anchor = Element.max;
+        foreach (i; 0 .. values.length)
+            if (masses[i] > 0 && values[i] < anchor) anchor = values[i];
+        auto offsets = allocateQuantiles!(ulong, allocation)(context, values.length);
+        static if (allocation == QuantileAllocation.custom)
+            scope(exit) releaseQuantiles(context, offsets);
+        foreach (i; 0 .. values.length)
+            if (masses[i] > 0)
+                offsets[i] = cast(ulong) values[i] - cast(ulong) anchor;
+        static if (algorithm == WeightedQuantileAlgo.inverseCDF)
+        {
+            const center = allocatedWeightedQuantile!(ulong, algorithm, allocation)(context, masses, offsets, 0.5);
+            foreach (ref value; offsets)
+                value = value < center ? center - value : value - center;
+            return cast(Result) allocatedWeightedQuantile!(ulong, algorithm, allocation)(context, masses, offsets, 0.5);
+        }
+        else
+        {
+            const center = allocatedWeightedQuantile!(real, algorithm, allocation)(context, masses, offsets, 0.5);
+            auto deviations = allocateQuantiles!(real, allocation)(context, values.length);
+            static if (allocation == QuantileAllocation.custom)
+                scope(exit) releaseQuantiles(context, deviations);
+            foreach (i; 0 .. values.length)
+                if (masses[i] > 0) deviations[i] = abs(cast(real) offsets[i] - center);
+            return cast(Result) allocatedWeightedQuantile!(real, algorithm, allocation)(context, masses, deviations, 0.5);
+        }
+    }
+    else
+    {
+        const center = allocatedWeightedQuantile!(real, algorithm, allocation)(context, masses, values, 0.5);
+        bool halve;
+        foreach (i; 0 .. values.length)
+            if (masses[i] > 0 && !isFinite(cast(real) values[i] - center))
+                halve = true;
+        auto deviations = allocateQuantiles!(real, allocation)(context, values.length);
+        static if (allocation == QuantileAllocation.custom)
+            scope(exit) releaseQuantiles(context, deviations);
+        foreach (i; 0 .. values.length)
+            if (masses[i] > 0)
+            {
+                const value = cast(real) values[i];
+                const gap = value - center;
+                // Preserve close differences before scaling; split the
+                // subtraction only when the unscaled gap overflows.
+                deviations[i] = halve ? (isFinite(gap) ? abs(gap) / 2 :
+                    abs(value / 2 - center / 2)) : abs(gap);
+            }
+        const result = allocatedWeightedQuantile!(real, algorithm, allocation)(context, masses, deviations, 0.5);
+        return cast(Result) (halve ? ldexp(result, 1) : result);
+    }
 }
 
 /++
@@ -5461,7 +6654,7 @@ Params:
     F = result type, promoted to floating point as for medianAbsoluteDeviation
     algorithm = weighted quantile definition, default averagedInverseCDF
 +/
-template weightedMedianAbsoluteDeviation(F,
+template rcWeightedMedianAbsoluteDeviation(F,
     WeightedQuantileAlgo algorithm = WeightedQuantileAlgo.averagedInverseCDF)
 {
     /++
@@ -5469,83 +6662,24 @@ template weightedMedianAbsoluteDeviation(F,
         data = observations corresponding to the weights
         weights = relative weights, or occurrence counts for frequency algorithms
     +/
-    meanType!F weightedMedianAbsoluteDeviation(Data, Weights)(
+    meanType!F rcWeightedMedianAbsoluteDeviation(Data, Weights)(
         scope auto ref Data data, scope auto ref Weights weights)
     {
-        import mir.ndslice.allocation: rcslice;
-        import std.traits: Unqual, isNumeric;
-        import std.math: abs, isFinite, ldexp;
-        alias Result = typeof(return);
-        static assert(isFloatingPoint!Result,
-            "weightedMedianAbsoluteDeviation: result must be floating point");
-        scope auto values = quantileSlice(data);
-        scope auto masses = quantileSlice(weights);
-        static assert(typeof(values).N == 1 && typeof(masses).N == 1,
-            "weightedMedianAbsoluteDeviation: inputs must be one-dimensional");
-        alias Element = Unqual!(typeof(values).DeepElement);
-        static assert(isNumeric!Element,
-            "weightedMedianAbsoluteDeviation: observations must be numeric");
-        assert(values.length == masses.length,
-            "weightedMedianAbsoluteDeviation: lengths must match");
-        static if (isIntegral!Element)
-        {
-            Element anchor = Element.max;
-            foreach (i; 0 .. values.length)
-                if (masses[i] > 0 && values[i] < anchor) anchor = values[i];
-            auto offsets = rcslice!ulong([values.length], 0UL);
-            foreach (i; 0 .. values.length)
-                if (masses[i] > 0)
-                    offsets[i] = cast(ulong) values[i] - cast(ulong) anchor;
-            static if (algorithm == WeightedQuantileAlgo.inverseCDF)
-            {
-                const center = rcWeightedQuantile!(ulong, algorithm)(offsets, masses, 0.5);
-                foreach (ref value; offsets)
-                    value = value < center ? center - value : value - center;
-                return cast(Result) rcWeightedQuantile!(ulong, algorithm)(offsets, masses, 0.5);
-            }
-            else
-            {
-                const center = rcWeightedQuantile!(real, algorithm)(offsets, masses, 0.5);
-                auto deviations = rcslice!real([values.length], 0.0L);
-                foreach (i; 0 .. values.length)
-                    if (masses[i] > 0) deviations[i] = abs(cast(real) offsets[i] - center);
-                return cast(Result) rcWeightedQuantile!(real, algorithm)(deviations, masses, 0.5);
-            }
-        }
-        else
-        {
-            const center = rcWeightedQuantile!(real, algorithm)(values, masses, 0.5);
-            bool halve;
-            foreach (i; 0 .. values.length)
-                if (masses[i] > 0 && !isFinite(cast(real) values[i] - center))
-                    halve = true;
-            auto deviations = rcslice!real([values.length], 0.0L);
-            foreach (i; 0 .. values.length)
-                if (masses[i] > 0)
-                {
-                    const value = cast(real) values[i];
-                    const gap = value - center;
-                    // Preserve close differences before scaling; split the
-                    // subtraction only when the unscaled gap overflows.
-                    deviations[i] = halve ? (isFinite(gap) ? abs(gap) / 2 :
-                        abs(value / 2 - center / 2)) : abs(gap);
-                }
-            const result = rcWeightedQuantile!(real, algorithm)(deviations, masses, 0.5);
-            return cast(Result) (halve ? ldexp(result, 1) : result);
-        }
+        QuantileContext context;
+        return allocatedWeightedMAD!(F, algorithm, QuantileAllocation.rc)(context, data, weights);
     }
 }
 
 /// ditto
-template weightedMedianAbsoluteDeviation(
+template rcWeightedMedianAbsoluteDeviation(
     WeightedQuantileAlgo algorithm = WeightedQuantileAlgo.averagedInverseCDF)
 {
     /// ditto
-    auto weightedMedianAbsoluteDeviation(Data, Weights)(
+    auto rcWeightedMedianAbsoluteDeviation(Data, Weights)(
         scope auto ref Data data, scope auto ref Weights weights)
     {
         import mir.primitives: DeepElementType;
-        return .weightedMedianAbsoluteDeviation!(DeepElementType!Data, algorithm)(data, weights);
+        return .rcWeightedMedianAbsoluteDeviation!(DeepElementType!Data, algorithm)(data, weights);
     }
 }
 
@@ -5555,15 +6689,86 @@ template weightedMedianAbsoluteDeviation(
     import mir.stat.descriptive.univariate.quantiles: WeightedQuantileAlgo;
     double[2] values = [0, 10];
     int[2] counts = [1, 1];
-    assert(weightedMedianAbsoluteDeviation(values, counts) == 5);
-    assert(weightedMedianAbsoluteDeviation!(WeightedQuantileAlgo.inverseCDF)(values, counts) == 0);
-    assert(weightedMedianAbsoluteDeviation!(WeightedQuantileAlgo.frequencyType7)(values, counts) == 5);
-    assert(weightedMedianAbsoluteDeviation!(WeightedQuantileAlgo.averagedInverseCDF)(values, counts) == 5);
+    assert(rcWeightedMedianAbsoluteDeviation(values, counts) == 5);
+    assert(rcWeightedMedianAbsoluteDeviation!(WeightedQuantileAlgo.inverseCDF)(values, counts) == 0);
+    assert(rcWeightedMedianAbsoluteDeviation!(WeightedQuantileAlgo.frequencyType7)(values, counts) == 5);
+    assert(rcWeightedMedianAbsoluteDeviation!(WeightedQuantileAlgo.averagedInverseCDF)(values, counts) == 5);
     double[3] data = [0, 10, 1000];
     double[3] emphasis = [2, 3, 1];
     // The weighted median is 10. Distances [10, 0, 990] keep weights [2, 3, 1].
     // Half the deviation mass is at 0, so average 0 and 10.
-    assert(weightedMedianAbsoluteDeviation(data, emphasis) == 5);
+    assert(rcWeightedMedianAbsoluteDeviation(data, emphasis) == 5);
+}
+
+private @fmamath meanType!F allocatedMAD(F, QuantileAllocation allocation,
+    Context, S)(ref Context context, scope S slice)
+{
+    import mir.math.common: fabs;
+    import mir.ndslice.topology: map;
+    import std.traits: Unqual, isIntegral, CommonType;
+
+    alias G = typeof(return);
+    static assert(isFloatingPoint!G, "medianAbsoluteDeviation: output type must be floating point");
+    alias Element = Unqual!(typeof(slice).DeepElement);
+    static if (isIntegral!Element && Element.sizeof == 8)
+    {
+        import mir.ndslice.topology: flattened;
+        scope auto flat = slice.lightScope.flattened;
+        assert(flat.length > 0, "medianAbsoluteDeviation: slice must have length greater than zero");
+        if (flat.length == 1) return G(0);
+        if (flat.length == 2)
+        {
+            const a = flat[0], b = flat[1];
+            const ulong gap = a < b ? cast(ulong) b - cast(ulong) a :
+                cast(ulong) a - cast(ulong) b;
+            return cast(G) gap / 2;
+        }
+        // Bias signed integers into unsigned sort order. Distances remain
+        // unchanged, and unsigned storage can hold the full-domain gap.
+        enum ulong bias = Element.min < 0 ? 1UL << 63 : 0;
+        auto owner = allocateQuantiles!(ulong, allocation)(context, flat.length);
+        static if (allocation == QuantileAllocation.custom)
+            scope(exit) releaseQuantiles(context, owner);
+        foreach (i; 0 .. flat.length) owner[i] = cast(ulong) flat[i] ^ bias;
+        scope auto workspace = owner.lightScope;
+        const middle = selectQuantile!(QuantileAlgo.type7)(workspace, 0.5);
+        const gap = middle.high - middle.low;
+        const anchor = middle.fraction == 0 ? middle.low : middle.low + gap / 2;
+        const ulong half = middle.fraction == 0 ? 0 : gap & 1;
+        // With a half-integral center every deviation has fractional part
+        // .5. Store just its integer part, then restore that common half.
+        foreach (ref value; workspace)
+            value = value <= anchor ? anchor - value : value - anchor - half;
+        const deviations = selectQuantile!(QuantileAlgo.type7)(workspace, 0.5);
+        // Twice the MAD is integral and no greater than the input range,
+        // so this sum fits in ulong even for the full signed domain.
+        // Combine before conversion, avoiding a second rounding of .5.
+        const ulong twiceMad = deviations.fraction == 0 ?
+            2 * deviations.low + half : deviations.low + deviations.high + half;
+        return cast(G) twiceMad / 2;
+    }
+    else
+    {
+        // Match center's arithmetic without a closure over the allocator.
+        import mir.ndslice.topology: vmap;
+        import mir.ndslice.internal: LeftOp, ImplicitlyUnqual;
+        static if (isIntegral!Element) alias Work = CommonType!(G, double);
+        else static if (isFloatingPoint!Element) alias Work = CommonType!(G, Element);
+        else alias Work = G;
+        static if (allocation == QuantileAllocation.custom)
+            const center = makeMedian!Work(context, slice);
+        else static if (allocation == QuantileAllocation.rc)
+            const center = rcMedian!Work(slice);
+        else
+            const center = median!Work(slice);
+        scope auto deviations = slice.vmap(LeftOp!("-", ImplicitlyUnqual!(typeof(center)))(center)).map!fabs;
+        static if (allocation == QuantileAllocation.custom)
+            return makeMedian!G(context, deviations);
+        else static if (allocation == QuantileAllocation.rc)
+            return rcMedian!G(deviations);
+        else
+            return median!G(deviations);
+    }
 }
 
 /++
@@ -5583,98 +6788,46 @@ Params:
 Returns:
     The median absolute deviation of the input
 +/
-template medianAbsoluteDeviation(F)
+template rcMedianAbsoluteDeviation(F)
 {
     /++
     Params:
         slice = slice
     +/
-    @fmamath meanType!F medianAbsoluteDeviation(Iterator, size_t N, SliceKind kind)(
+    @fmamath meanType!F rcMedianAbsoluteDeviation(Iterator, size_t N, SliceKind kind)(
             Slice!(Iterator, N, kind) slice)
     {
-        import core.lifetime: move;
-        import mir.math.common: fabs;
-        import mir.ndslice.topology: map;
-        import mir.stat.transform: center;
-        import std.traits: Unqual, isIntegral, CommonType;
-
-        alias G = typeof(return);
-        static assert(isFloatingPoint!G, "medianAbsoluteDeviation: output type must be floating point");
-        alias Element = Unqual!(typeof(slice).DeepElement);
-        static if (isIntegral!Element && Element.sizeof == 8)
-        {
-            import mir.ndslice.allocation: rcslice;
-            import mir.ndslice.topology: flattened;
-            auto flat = slice.lightScope.flattened;
-            assert(flat.length > 0, "medianAbsoluteDeviation: slice must have length greater than zero");
-            if (flat.length == 1) return G(0);
-            if (flat.length == 2)
-            {
-                const a = flat[0], b = flat[1];
-                const ulong gap = a < b ? cast(ulong) b - cast(ulong) a :
-                    cast(ulong) a - cast(ulong) b;
-                return cast(G) gap / 2;
-            }
-            // Bias signed integers into unsigned sort order. Distances remain
-            // unchanged, and unsigned storage can hold the full-domain gap.
-            enum ulong bias = Element.min < 0 ? 1UL << 63 : 0;
-            auto owner = flat.map!(a => cast(ulong) a ^ bias).rcslice;
-            auto workspace = owner.lightScope;
-            const middle = selectQuantile!(QuantileAlgo.type7)(workspace, 0.5);
-            const gap = middle.high - middle.low;
-            const anchor = middle.fraction == 0 ? middle.low : middle.low + gap / 2;
-            const ulong half = middle.fraction == 0 ? 0 : gap & 1;
-            // With a half-integral center every deviation has fractional part
-            // .5. Store just its integer part, then restore that common half.
-            foreach (ref value; workspace)
-                value = value <= anchor ? anchor - value : value - anchor - half;
-            const deviations = selectQuantile!(QuantileAlgo.type7)(workspace, 0.5);
-            // Twice the MAD is integral and no greater than the input range,
-            // so this sum fits in ulong even for the full signed domain.
-            // Combine before conversion, avoiding a second rounding of .5.
-            const ulong twiceMad = deviations.fraction == 0 ?
-                2 * deviations.low + half : deviations.low + deviations.high + half;
-            return cast(G) twiceMad / 2;
-        }
-        else static if (isFloatingPoint!Element || isIntegral!Element)
-        {
-            // F describes the output, not the precision of the center. In
-            // particular, do not narrow double observations to a float center.
-            static if (isIntegral!Element) alias Work = CommonType!(G, double);
-            else alias Work = CommonType!(G, Element);
-            return slice.move.center!(median!(Work, false)).map!fabs.median!(G, false);
-        }
-        else
-            return slice.move.center!(median!(G, false)).map!fabs.median!(G, false);
+        QuantileContext context;
+        return allocatedMAD!(F, QuantileAllocation.rc)(context, slice.lightScope);
     }
 }
 
 /// ditto
 @fmamath meanType!(Slice!(Iterator, N, kind))
-    medianAbsoluteDeviation(Iterator, size_t N, SliceKind kind)(
+    rcMedianAbsoluteDeviation(Iterator, size_t N, SliceKind kind)(
         Slice!(Iterator, N, kind) slice)
 {
     import core.lifetime: move;
 
     alias F = typeof(return);
-    return medianAbsoluteDeviation!F(slice.move);
+    return rcMedianAbsoluteDeviation!F(slice.move);
 }
 
 /// ditto
-@fmamath meanType!(T[]) medianAbsoluteDeviation(T)(scope const T[] ar...)
+@fmamath meanType!(T[]) rcMedianAbsoluteDeviation(T)(scope const T[] ar...)
 {
     import mir.ndslice.slice: sliced;
 
     alias G = typeof(return);
-    return medianAbsoluteDeviation!G(ar.sliced);
+    return rcMedianAbsoluteDeviation!G(ar.sliced);
 }
 
 /// ditto
-@fmamath auto medianAbsoluteDeviation(SliceLike)(SliceLike x)
+@fmamath auto rcMedianAbsoluteDeviation(SliceLike)(SliceLike x)
     if (isConvertibleToSlice!SliceLike && !isSlice!SliceLike)
 {
     import mir.ndslice.slice: toSlice;
-    return medianAbsoluteDeviation(x.toSlice);
+    return rcMedianAbsoluteDeviation(x.toSlice);
 }
 
 /// medianAbsoluteDeviation of vector
@@ -5688,7 +6841,7 @@ unittest
     auto x = [0.0, 1.0, 1.5, 2.0, 3.5, 4.25,
               2.0, 7.5, 5.0, 1.0, 1.5, 0.0].sliced;
 
-    assert(x.medianAbsoluteDeviation.approxEqual(1.25));
+    assert(x.rcMedianAbsoluteDeviation.approxEqual(1.25));
 }
 
 // dynamic array test
@@ -5701,7 +6854,7 @@ unittest
     auto x = [0.0, 1.0, 1.5, 2.0, 3.5, 4.25,
               2.0, 7.5, 5.0, 1.0, 1.5, 0.0];
 
-    assert(x.medianAbsoluteDeviation.approxEqual(1.25));
+    assert(x.rcMedianAbsoluteDeviation.approxEqual(1.25));
 }
 
 /// Median Absolute Deviation of matrix
@@ -5717,7 +6870,7 @@ unittest
         [2.0, 7.5, 5.0, 1.0, 1.5, 0.0]
     ].fuse;
 
-    assert(x.medianAbsoluteDeviation.approxEqual(1.25));
+    assert(x.rcMedianAbsoluteDeviation.approxEqual(1.25));
 }
 
 /// Median Absolute Deviation of dynamic array
@@ -5730,7 +6883,7 @@ unittest
     auto x = [0.0, 1.0, 1.5, 2.0, 3.5, 4.25,
               2.0, 7.5, 5.0, 1.0, 1.5, 0.0];
 
-    assert(x.medianAbsoluteDeviation.approxEqual(1.25));
+    assert(x.rcMedianAbsoluteDeviation.approxEqual(1.25));
 }
 
 // @nogc test
@@ -5744,7 +6897,7 @@ unittest
     static immutable x = [0.0, 1.0, 1.5, 2.0, 3.5, 4.25,
                           2.0, 7.5, 5.0, 1.0, 1.5, 0.0];
 
-    assert(x.sliced.medianAbsoluteDeviation.approxEqual(1.25));
+    assert(x.sliced.rcMedianAbsoluteDeviation.approxEqual(1.25));
 }
 
 // withAsSlice test
@@ -5762,7 +6915,7 @@ unittest
     foreach(i, ref e; x)
         e = a[i];
 
-    assert(a.medianAbsoluteDeviation.approxEqual(1.25));
+    assert(a.rcMedianAbsoluteDeviation.approxEqual(1.25));
 }
 
 // Translation must not hide the spread of nearby 64-bit integers.
@@ -5782,8 +6935,8 @@ unittest
             // Exact deviations for the consecutive samples of lengths 1..8.
             static immutable expected = [0.0, 0.5, 1, 1, 1, 1.5, 2, 2];
             const exact = expected[n - 1];
-            assert(medianAbsoluteDeviation(data[0 .. n].sliced) == exact);
-            assert(medianAbsoluteDeviation!float(data[0 .. n].sliced) == exact);
+            assert(rcMedianAbsoluteDeviation(data[0 .. n].sliced) == exact);
+            assert(rcMedianAbsoluteDeviation!float(data[0 .. n].sliced) == exact);
         }
         foreach (i, value; data)
             assert(value == base + cast(long) i); // Selection only rearranges our copy.
@@ -5791,22 +6944,22 @@ unittest
 
     ulong[5] upper = [ulong.max - 4, ulong.max - 3, ulong.max - 2,
                       ulong.max - 1, ulong.max];
-    assert(medianAbsoluteDeviation(upper[].sliced) == 1);
-    assert(medianAbsoluteDeviation(upper[3 .. 5].sliced) == 0.5);
-    assert(medianAbsoluteDeviation(upper[4 .. 5].sliced) == 0);
+    assert(rcMedianAbsoluteDeviation(upper[].sliced) == 1);
+    assert(rcMedianAbsoluteDeviation(upper[3 .. 5].sliced) == 0.5);
+    assert(rcMedianAbsoluteDeviation(upper[4 .. 5].sliced) == 0);
 
     long[2] extremes = [long.min, long.max];
-    assert(medianAbsoluteDeviation(extremes[].sliced) == 0x1p63);
-    assert(medianAbsoluteDeviation!float(extremes[].sliced) == 0x1p63f);
+    assert(rcMedianAbsoluteDeviation(extremes[].sliced) == 0x1p63);
+    assert(rcMedianAbsoluteDeviation!float(extremes[].sliced) == 0x1p63f);
     long[4] wide = [long.min, long.min, long.max, long.max];
-    assert(medianAbsoluteDeviation(wide[].sliced) == 0x1p63);
+    assert(rcMedianAbsoluteDeviation(wide[].sliced) == 0x1p63);
     // Combining the median deviation and its shared half after conversion
     // would round twice and lose one here. The exact MAD is 2^52 + 1.
     ulong[4] rounding = [0, 1UL << 53, (1UL << 53) + 3, (1UL << 54) + 2];
-    assert(medianAbsoluteDeviation(rounding[].sliced) == 0x1.0000000000001p52);
+    assert(rcMedianAbsoluteDeviation(rounding[].sliced) == 0x1.0000000000001p52);
 
     ulong[4] unsignedWide = [0, 0, ulong.max, ulong.max];
-    assert(medianAbsoluteDeviation(unsignedWide[].sliced) == 0x1p63);
+    assert(rcMedianAbsoluteDeviation(unsignedWide[].sliced) == 0x1p63);
 }
 
 // Two-element deviations must be independent of input order.
@@ -5817,12 +6970,12 @@ unittest
     import mir.ndslice.slice: sliced;
 
     long[2] reversed = [long.max, long.min];
-    assert(medianAbsoluteDeviation(reversed[].sliced) == 0x1p63);
+    assert(rcMedianAbsoluteDeviation(reversed[].sliced) == 0x1p63);
     assert(reversed[0] == long.max && reversed[1] == long.min);
     ulong[2] adjacent = [ulong.max, ulong.max - 1];
-    assert(medianAbsoluteDeviation(adjacent[].sliced) == 0.5);
+    assert(rcMedianAbsoluteDeviation(adjacent[].sliced) == 0.5);
     long[2] equal = [long.min, long.min];
-    assert(medianAbsoluteDeviation(equal[].sliced) == 0);
+    assert(rcMedianAbsoluteDeviation(equal[].sliced) == 0);
 }
 
 // A narrow result must not round the center before subtraction.
@@ -5834,12 +6987,12 @@ unittest
 
     double[5] data = [0x1p60, 0x1p60 + 256, 0x1p60 + 512,
                       0x1p60 + 768, 0x1p60 + 1024];
-    auto result = medianAbsoluteDeviation!float(data[].sliced);
+    auto result = rcMedianAbsoluteDeviation!float(data[].sliced);
     static assert(is(typeof(result) == float));
     assert(result == 256);
     int[5] integers = [int.max - 4, int.max - 3, int.max - 2,
                       int.max - 1, int.max];
-    assert(medianAbsoluteDeviation!float(integers[].sliced) == 1);
+    assert(rcMedianAbsoluteDeviation!float(integers[].sliced) == 1);
 }
 
 // Integer centering also works through strided, const, and slice-like inputs.
@@ -5855,12 +7008,12 @@ unittest
     const long[6] data = [base, base + 1, base + 2,
                           base + 3, base + 4, base + 5];
     auto matrix = data[].sliced(2, 3).transposed;
-    assert(medianAbsoluteDeviation(matrix) == 1.5);
-    assert(medianAbsoluteDeviation(matrix[1]) == 1.5);
+    assert(rcMedianAbsoluteDeviation(matrix) == 1.5);
+    assert(rcMedianAbsoluteDeviation(matrix[1]) == 1.5);
     auto owner = RCArray!long(6);
     foreach (i, ref value; owner)
         value = data[i];
-    assert(medianAbsoluteDeviation(owner) == 1.5);
+    assert(rcMedianAbsoluteDeviation(owner) == 1.5);
 }
 
 // Preserve ties and distinguish adjacent probabilities at represented rank/n
@@ -5967,7 +7120,7 @@ private void testTinyType7Probabilities(T)()
         assert((quantileImpl!(T, QuantileAlgo.type7)(values[].sliced, p)) == p);
         auto parts = selectQuantile!(QuantileAlgo.type7)(values[].sliced, p);
         assert(parts.low == 0 && parts.high == 1 && parts.fraction == p);
-        assert(interquartileRange!T(values[].sliced, T(0), p) == p);
+        assert(rcInterquartileRange!T(values[].sliced, T(0), p) == p);
     }
 }
 
@@ -6074,7 +7227,7 @@ version(mir_stat_test)
 unittest
 {
     import mir.math.common: approxEqual;
-    struct Case { real tiny, endpoint, median; }
+    struct Case { real tiny, endpoint, rcMedian; }
     static immutable cases = [
         Case(0x1p-50L, 4.440892098500645883217157197656665e-16L,
             2.960594732333753403999368518280760e-16L),
@@ -6094,11 +7247,11 @@ unittest
         static foreach (algorithm; [WeightedQuantileAlgo.type7, WeightedQuantileAlgo.type8])
         {{
             alias q = rcWeightedQuantile!algorithm;
-            assert(q(x, w, 0.5L).approxEqual(c.median, 1e-14L, 0.0L));
-            assert(q(reflected, w, 0.5L).approxEqual(-c.median, 1e-14L, 0.0L));
+            assert(q(x, w, 0.5L).approxEqual(c.rcMedian, 1e-14L, 0.0L));
+            assert(q(reflected, w, 0.5L).approxEqual(-c.rcMedian, 1e-14L, 0.0L));
             auto results = q(x, w, 0.0L, 0.5L, 1.0L);
             assert(results[0] == -1 && results[2] == 2);
-            assert(results[1].approxEqual(c.median, 1e-14L, 0.0L));
+            assert(results[1].approxEqual(c.rcMedian, 1e-14L, 0.0L));
             foreach (probability; [0.125L, 0.25L, 0.75L, 0.875L])
                 assert(q(x, w, probability).approxEqual(-q(reflected, w, 1 - probability), 1e-14L, 0.0L));
         }}
@@ -6191,46 +7344,46 @@ version(mir_stat_test)
         static foreach (algorithm; __traits(allMembers, A))
         {{
             enum algo = __traits(getMember, A, algorithm);
-            const spread = weightedInterquartileRange!(algo)(values, weights);
+            const spread = rcWeightedInterquartileRange!(algo)(values, weights);
             assert(spread >= 0);
             T[4] constant = [3, 3, 3, 3];
-            assert(weightedInterquartileRange!(algo)(constant, weights) == 0);
+            assert(rcWeightedInterquartileRange!(algo)(constant, weights) == 0);
             static if (algo == A.frequencyType7 || algo == A.frequencyType8)
             {
                 enum ordinary = algo == A.frequencyType7 ? QuantileAlgo.type7 : QuantileAlgo.type8;
-                assert(spread.approxEqual(interquartileRange!ordinary(expanded[].sliced), 128 * T.epsilon));
+                assert(spread.approxEqual(rcInterquartileRange!ordinary(expanded[].sliced), 128 * T.epsilon));
             }
             else
             {
                 T[4] scaledWeights = [4, 8, 4, 8];
-                assert(spread.approxEqual(weightedInterquartileRange!algo(values, scaledWeights), 128 * T.epsilon));
+                assert(spread.approxEqual(rcWeightedInterquartileRange!algo(values, scaledWeights), 128 * T.epsilon));
             }
         }}
-        static assert(is(typeof(weightedInterquartileRange(values, weights)) == T));
+        static assert(is(typeof(rcWeightedInterquartileRange(values, weights)) == T));
         T[2] extreme = [-T.max, T.max];
         T[2] equal = [1, 1];
-        assert(weightedInterquartileRange!float(extreme, equal) == float.infinity);
+        assert(rcWeightedInterquartileRange!float(extreme, equal) == float.infinity);
     }}
     long[2] nearMax = [long.max - 3, long.max];
     int[2] equal = [1, 1];
-    assert(weightedInterquartileRange(nearMax, equal) == 3);
-    assert(weightedInterquartileRange!float(nearMax, equal) == 3);
+    assert(rcWeightedInterquartileRange(nearMax, equal) == 3);
+    assert(rcWeightedInterquartileRange!float(nearMax, equal) == 3);
     ulong[2] fullUnsigned = [0, ulong.max];
-    assert(weightedInterquartileRange(fullUnsigned, equal) == ulong.max);
+    assert(rcWeightedInterquartileRange(fullUnsigned, equal) == ulong.max);
     long[2] fullSigned = [long.min, long.max];
-    assert(weightedInterquartileRange!ulong(fullSigned, equal) == ulong.max);
+    assert(rcWeightedInterquartileRange!ulong(fullSigned, equal) == ulong.max);
     double[4] storage = [0, 999, 10, 999];
     double[4] masses = [1, 999, 3, 999];
-    assert(weightedInterquartileRange(storage[].sliced.stride(2), masses[].sliced.stride(2)) == 10);
+    assert(rcWeightedInterquartileRange(storage[].sliced.stride(2), masses[].sliced.stride(2)) == 10);
     const double[2] values = [0.0, 10.0];
     const int[2] counts = [1, 3];
-    assert(weightedInterquartileRange(values, counts) == 10);
+    assert(rcWeightedInterquartileRange(values, counts) == 10);
     double[3] masked = [double.nan, 0, 10];
     int[3] mask = [0, 1, 3];
-    assert(weightedInterquartileRange(masked, mask) == 10);
+    assert(rcWeightedInterquartileRange(masked, mask) == 10);
     double[1] one = [7];
     int[1] weight = [1];
-    assert(weightedInterquartileRange(one, weight) == 0);
+    assert(rcWeightedInterquartileRange(one, weight) == 0);
 }
 
 version(mir_stat_test)
@@ -6240,17 +7393,17 @@ unittest
     import core.exception: AssertError;
     long[2] extremes = [long.min, long.max];
     int[2] equal = [1, 1];
-    assertThrown!AssertError(weightedInterquartileRange(extremes, equal));
+    assertThrown!AssertError(rcWeightedInterquartileRange(extremes, equal));
     double[2] x = [0, 10], zero = [0, 0], negative = [1, -1], fractional = [1, 0.5];
-    assertThrown!AssertError(weightedInterquartileRange(x, zero));
-    assertThrown!AssertError(weightedInterquartileRange(x, negative));
-    assertThrown!AssertError(weightedInterquartileRange(x, equal[0 .. 1]));
-    assertThrown!AssertError(weightedInterquartileRange(x[0 .. 0], equal[0 .. 0]));
-    assertThrown!AssertError(weightedInterquartileRange!(WeightedQuantileAlgo.frequencyType7)(x, fractional));
+    assertThrown!AssertError(rcWeightedInterquartileRange(x, zero));
+    assertThrown!AssertError(rcWeightedInterquartileRange(x, negative));
+    assertThrown!AssertError(rcWeightedInterquartileRange(x, equal[0 .. 1]));
+    assertThrown!AssertError(rcWeightedInterquartileRange(x[0 .. 0], equal[0 .. 0]));
+    assertThrown!AssertError(rcWeightedInterquartileRange!(WeightedQuantileAlgo.frequencyType7)(x, fractional));
     foreach (bad; [double.nan, double.infinity])
     {
         double[2] weights = [1, bad];
-        assertThrown!AssertError(weightedInterquartileRange(x, weights));
+        assertThrown!AssertError(rcWeightedInterquartileRange(x, weights));
     }
 }
 
@@ -6268,64 +7421,64 @@ version(mir_stat_test)
         int[4] weights = [1, 2, 1, 2], scaledWeights = [4, 8, 4, 8];
         T[6] expanded = [0, 2, 2, 6, 10, 10];
         int[4] equalWeights = [1, 1, 1, 1];
-        assert(weightedMedianAbsoluteDeviation(values, equalWeights) ==
-            medianAbsoluteDeviation(values[].sliced));
-        assert(weightedMedianAbsoluteDeviation(values, weights) ==
-            medianAbsoluteDeviation(expanded[].sliced));
+        assert(rcWeightedMedianAbsoluteDeviation(values, equalWeights) ==
+            rcMedianAbsoluteDeviation(values[].sliced));
+        assert(rcWeightedMedianAbsoluteDeviation(values, weights) ==
+            rcMedianAbsoluteDeviation(expanded[].sliced));
         static foreach (member; __traits(allMembers, A))
         {{
             enum algo = __traits(getMember, A, member);
-            const result = weightedMedianAbsoluteDeviation!algo(values, weights);
+            const result = rcWeightedMedianAbsoluteDeviation!algo(values, weights);
             alias R = typeof(result);
             T[4] constant = [3, 3, 3, 3];
-            assert(weightedMedianAbsoluteDeviation!algo(constant, weights) == 0);
+            assert(rcWeightedMedianAbsoluteDeviation!algo(constant, weights) == 0);
             static if (algo == A.frequencyType7 || algo == A.frequencyType8)
-                assert(result.approxEqual(medianAbsoluteDeviation(expanded[].sliced), 256 * R.epsilon));
+                assert(result.approxEqual(rcMedianAbsoluteDeviation(expanded[].sliced), 256 * R.epsilon));
             else
-                assert(result.approxEqual(weightedMedianAbsoluteDeviation!algo(values, scaledWeights), 256 * R.epsilon));
+                assert(result.approxEqual(rcWeightedMedianAbsoluteDeviation!algo(values, scaledWeights), 256 * R.epsilon));
             // Translating and scaling observations preserve/scale raw MAD.
             T[4] transformed = [20, 24, 32, 40];
-            assert((2 * result).approxEqual(weightedMedianAbsoluteDeviation!algo(transformed, weights), 256 * R.epsilon));
+            assert((2 * result).approxEqual(rcWeightedMedianAbsoluteDeviation!algo(transformed, weights), 256 * R.epsilon));
         }}
     }}
     double[4] values = [100, 0, 2, 10];
     int[4] weights = [1, 2, 3, 4];
-    assert(weightedMedianAbsoluteDeviation(values, weights) == 4);
+    assert(rcWeightedMedianAbsoluteDeviation(values, weights) == 4);
     assert(values == [100, 0, 2, 10] && weights == [1, 2, 3, 4]);
     double[8] storage = [100, 99, 0, 99, 2, 99, 10, 99];
     int[8] masses = [1, 99, 2, 99, 3, 99, 4, 99];
-    assert(weightedMedianAbsoluteDeviation(storage[].sliced.stride(2), masses[].sliced.stride(2)) == 4);
+    assert(rcWeightedMedianAbsoluteDeviation(storage[].sliced.stride(2), masses[].sliced.stride(2)) == 4);
     const double[3] masked = [double.nan, 0, 10];
     const int[3] mask = [0, 1, 1];
-    assert(weightedMedianAbsoluteDeviation(masked, mask) == 5);
-    assert(weightedMedianAbsoluteDeviation!(A.frequencyType7)(masked, mask) == 5);
+    assert(rcWeightedMedianAbsoluteDeviation(masked, mask) == 5);
+    assert(rcWeightedMedianAbsoluteDeviation!(A.frequencyType7)(masked, mask) == 5);
     double[1] one = [7];
     int[1] unit = [1];
-    assert(weightedMedianAbsoluteDeviation(one, unit) == 0);
-    static assert(is(typeof(weightedMedianAbsoluteDeviation(values, weights)) == double));
-    static assert(is(typeof(weightedMedianAbsoluteDeviation!float(values, weights)) == float));
+    assert(rcWeightedMedianAbsoluteDeviation(one, unit) == 0);
+    static assert(is(typeof(rcWeightedMedianAbsoluteDeviation(values, weights)) == double));
+    static assert(is(typeof(rcWeightedMedianAbsoluteDeviation!float(values, weights)) == float));
     long[3] nearMax = [long.max - 2, long.max - 1, long.max];
     int[3] equal = [1, 1, 1];
     static foreach (algo; [A.inverseCDF, A.averagedInverseCDF, A.frequencyType7, A.frequencyType8])
     {
-        assert(weightedMedianAbsoluteDeviation!algo(nearMax, equal) == 1);
-        assert(weightedMedianAbsoluteDeviation!(float, algo)(nearMax, equal) == 1);
+        assert(rcWeightedMedianAbsoluteDeviation!algo(nearMax, equal) == 1);
+        assert(rcWeightedMedianAbsoluteDeviation!(float, algo)(nearMax, equal) == 1);
     }
     long[2] adjacent = [long.max - 1, long.max];
     int[2] pair = [1, 1];
-    assert(weightedMedianAbsoluteDeviation(adjacent, pair) == 0.5);
-    assert(weightedMedianAbsoluteDeviation!(A.frequencyType7)(adjacent, pair) == 0.5);
+    assert(rcWeightedMedianAbsoluteDeviation(adjacent, pair) == 0.5);
+    assert(rcWeightedMedianAbsoluteDeviation!(A.frequencyType7)(adjacent, pair) == 0.5);
     long[2] fullSigned = [long.min, long.max];
-    assert(weightedMedianAbsoluteDeviation!(A.inverseCDF)(fullSigned, pair) == 0);
-    assert(weightedMedianAbsoluteDeviation(fullSigned, pair) == 0x1p63);
-    assert(weightedMedianAbsoluteDeviation!(A.frequencyType7)(fullSigned, pair) == 0x1p63);
+    assert(rcWeightedMedianAbsoluteDeviation!(A.inverseCDF)(fullSigned, pair) == 0);
+    assert(rcWeightedMedianAbsoluteDeviation(fullSigned, pair) == 0x1p63);
+    assert(rcWeightedMedianAbsoluteDeviation!(A.frequencyType7)(fullSigned, pair) == 0x1p63);
     ulong[3] unsignedHigh = [ulong.max - 2, ulong.max - 1, ulong.max];
-    assert(weightedMedianAbsoluteDeviation!(A.frequencyType7)(unsignedHigh, equal) == 1);
+    assert(rcWeightedMedianAbsoluteDeviation!(A.frequencyType7)(unsignedHigh, equal) == 1);
     real[4] extreme = [-real.max, -real.max / 2, real.max / 2, real.max];
     int[4] uniform = [1, 1, 1, 1];
     // The last deviation overflows real, but the selected MAD is finite.
-    assert(weightedMedianAbsoluteDeviation!(A.inverseCDF)(extreme, uniform) == real.max / 2);
-    assert(weightedMedianAbsoluteDeviation(extreme, uniform).approxEqual(real.max * 0.75L));
+    assert(rcWeightedMedianAbsoluteDeviation!(A.inverseCDF)(extreme, uniform) == real.max / 2);
+    assert(rcWeightedMedianAbsoluteDeviation(extreme, uniform).approxEqual(real.max * 0.75L));
 }
 
 version(mir_stat_test)
@@ -6335,21 +7488,21 @@ unittest
     import core.exception: AssertError;
     double[2] x = [0, 10], zero = [0, 0], negative = [1, -1], fractional = [1, 0.5];
     int[2] integers = [0, 10];
-    assertThrown!AssertError(weightedMedianAbsoluteDeviation(x, zero));
-    assertThrown!AssertError(weightedMedianAbsoluteDeviation(integers, zero));
-    assertThrown!AssertError(weightedMedianAbsoluteDeviation(x, negative));
-    assertThrown!AssertError(weightedMedianAbsoluteDeviation(integers, negative));
-    assertThrown!AssertError(weightedMedianAbsoluteDeviation(x, zero[0 .. 1]));
-    assertThrown!AssertError(weightedMedianAbsoluteDeviation(x[0 .. 0], zero[0 .. 0]));
-    assertThrown!AssertError(weightedMedianAbsoluteDeviation!(WeightedQuantileAlgo.frequencyType7)(x, fractional));
-    assertThrown!AssertError(weightedMedianAbsoluteDeviation!(WeightedQuantileAlgo.frequencyType7)(integers, fractional));
+    assertThrown!AssertError(rcWeightedMedianAbsoluteDeviation(x, zero));
+    assertThrown!AssertError(rcWeightedMedianAbsoluteDeviation(integers, zero));
+    assertThrown!AssertError(rcWeightedMedianAbsoluteDeviation(x, negative));
+    assertThrown!AssertError(rcWeightedMedianAbsoluteDeviation(integers, negative));
+    assertThrown!AssertError(rcWeightedMedianAbsoluteDeviation(x, zero[0 .. 1]));
+    assertThrown!AssertError(rcWeightedMedianAbsoluteDeviation(x[0 .. 0], zero[0 .. 0]));
+    assertThrown!AssertError(rcWeightedMedianAbsoluteDeviation!(WeightedQuantileAlgo.frequencyType7)(x, fractional));
+    assertThrown!AssertError(rcWeightedMedianAbsoluteDeviation!(WeightedQuantileAlgo.frequencyType7)(integers, fractional));
     foreach (bad; [double.nan, double.infinity])
     {
         double[2] invalid = [1, bad];
-        assertThrown!AssertError(weightedMedianAbsoluteDeviation(x, invalid));
-        assertThrown!AssertError(weightedMedianAbsoluteDeviation(integers, invalid));
+        assertThrown!AssertError(rcWeightedMedianAbsoluteDeviation(x, invalid));
+        assertThrown!AssertError(rcWeightedMedianAbsoluteDeviation(integers, invalid));
         double[2] weights = [1, 1];
-        assertThrown!AssertError(weightedMedianAbsoluteDeviation(invalid, weights));
+        assertThrown!AssertError(rcWeightedMedianAbsoluteDeviation(invalid, weights));
     }
 }
 
@@ -6383,4 +7536,132 @@ version(mir_stat_test)
         int[7] mask = [0, 1, 2, 3, 1, 2, 3];
         assert(q(maskedValues, mask, 0.5L) == expected);
     }}
+}
+
+/// Allocation families preserve results; only scratch ownership changes.
+version(mir_stat_test)
+@safe pure nothrow unittest
+{
+    import mir.ndslice.slice: sliced;
+    import mir.ndslice.dynamic: transposed;
+    import mir.ndslice.topology: stride;
+    import mir.stat.descriptive.aliases: iqr, mad;
+    import std.meta: AliasSeq;
+    static foreach (T; AliasSeq!(float, double, real, int, long, ulong))
+    {{
+        const T[6] values = [5, 0, 4, 1, 3, 2];
+        const int[6] weights = [1, 1, 2, 1, 2, 1];
+        auto matrix = values[].sliced(2, 3).transposed;
+        assert(median(matrix) == rcMedian(matrix));
+        assert(medianAbsoluteDeviation(matrix) == rcMedianAbsoluteDeviation(matrix));
+        assert(weightedMedian(values, weights) == rcWeightedMedian(values, weights));
+        static foreach (member; __traits(allMembers, QuantileAlgo))
+        {{
+            enum algorithm = __traits(getMember, QuantileAlgo, member);
+            assert(interquartileRange!algorithm(matrix) == rcInterquartileRange!algorithm(matrix));
+            assert(interquartileRange!algorithm(matrix, 0.125) == rcInterquartileRange!algorithm(matrix, 0.125));
+            assert(interquartileRange!algorithm(matrix, 0.25, 0.875) == rcInterquartileRange!algorithm(matrix, 0.25, 0.875));
+        }}
+        static foreach (member; __traits(allMembers, WeightedQuantileAlgo))
+        {{
+            enum algorithm = __traits(getMember, WeightedQuantileAlgo, member);
+            assert(weightedInterquartileRange!algorithm(values, weights) == rcWeightedInterquartileRange!algorithm(values, weights));
+            assert(weightedMedianAbsoluteDeviation!algorithm(values, weights) == rcWeightedMedianAbsoluteDeviation!algorithm(values, weights));
+        }}
+        assert(values == [5, 0, 4, 1, 3, 2]);
+    }}
+    const double[8] storage = [0, 99, 2, 99, 6, 99, 10, 99];
+    const int[8] masses = [1, 99, 1, 99, 1, 99, 1, 99];
+    auto data = storage[].sliced.stride(2);
+    auto weights = masses[].sliced.stride(2);
+    assert(median(data) == 4 && weightedMedian(data, weights) == 4);
+    assert(interquartileRange(data) == 5.5 && weightedInterquartileRange(data, weights) == 6);
+    assert(medianAbsoluteDeviation(data) == 3 && weightedMedianAbsoluteDeviation(data, weights) == 3);
+    assert(iqr(data) == 5.5 && mad(data) == 3);
+    assert(interquartileRange!"type7"(data) == rcInterquartileRange!"type7"(data));
+    assert(interquartileRange!(float, "type7")(data) == 5.5f);
+    static assert(is(typeof(median!float(data)) == float));
+    static assert(is(typeof(weightedMedian!float(data, weights)) == float));
+    const long[3] high = [long.max - 2, long.max - 1, long.max];
+    assert(medianAbsoluteDeviation!float(high[].sliced) == 1);
+    assert(weightedMedianAbsoluteDeviation!float(high, [1, 1, 1]) == 1);
+    assert(median([7.0]) == 7 && medianAbsoluteDeviation([7.0]) == 0);
+}
+
+// RC remains usable without the GC, as do in-place ordinary operations.
+version(mir_stat_test)
+@safe pure nothrow @nogc unittest
+{
+    import mir.ndslice.slice: sliced;
+    double[4] values = [0, 2, 6, 10];
+    int[4] weights = [1, 1, 1, 1];
+    assert(rcMedian(values[]) == 4);
+    assert(rcWeightedMedian(values, weights) == 4);
+    assert(rcInterquartileRange(values[]) == 5.5);
+    assert(rcWeightedInterquartileRange(values, weights) == 6);
+    assert(rcMedianAbsoluteDeviation(values[]) == 3);
+    assert(rcWeightedMedianAbsoluteDeviation(values, weights) == 3);
+    assert(median!true(values[].sliced) == 4);
+    assert(interquartileRange!(QuantileAlgo.type7, true)(values[].sliced) == 5.5);
+    static foreach (name; ["median", "weightedMedian", "interquartileRange",
+        "weightedInterquartileRange", "medianAbsoluteDeviation", "weightedMedianAbsoluteDeviation"])
+    {{
+        enum weighted = name.length >= 8 && name[0 .. 8] == "weighted";
+        static if (weighted)
+            static assert(!__traits(compiles, () @nogc { return mixin(name)(values, weights); }));
+        else
+            static assert(!__traits(compiles, () @nogc { return mixin(name)(values[]); }));
+    }}
+}
+
+// Allocator variables are borrowed; temporary allocators can supply scalar scratch
+// or returned storage whose allocation state survives the temporary object.
+version(mir_stat_test)
+@system pure nothrow @nogc unittest
+{
+    import std.experimental.allocator.mallocator: Mallocator;
+    import std.experimental.allocator: dispose;
+    struct Allocator
+    {
+        enum alignment = Mallocator.alignment;
+        size_t* allocations;
+        size_t* releases;
+        @disable this(this);
+        void[] allocate(size_t bytes) @system pure nothrow @nogc
+        {
+            ++*allocations;
+            return Mallocator.instance.allocate(bytes);
+        }
+        bool deallocate(void[] memory) @system pure nothrow @nogc
+        {
+            ++*releases;
+            return Mallocator.instance.deallocate(memory);
+        }
+    }
+    size_t allocations, releases;
+    auto allocator = Allocator(&allocations, &releases);
+    double[4] data = [0, 2, 6, 10];
+    int[4] weights = [1, 1, 1, 1];
+    assert(makeMedian(allocator, data) == 4);
+    assert(allocations == 1 && releases == 1);
+    assert(makeMedian(Allocator(&allocations, &releases), data) == 4);
+    assert(makeWeightedMedian(Allocator(&allocations, &releases), data, weights) == 4);
+    assert(makeInterquartileRange(Allocator(&allocations, &releases), data) == 5.5);
+    assert(makeWeightedInterquartileRange(Allocator(&allocations, &releases), data, weights) == 6);
+    assert(makeMedianAbsoluteDeviation(Allocator(&allocations, &releases), data) == 3);
+    assert(makeWeightedMedianAbsoluteDeviation(Allocator(&allocations, &releases), data, weights) == 3);
+    assert(makeQuantile(Allocator(&allocations, &releases), data, 0.5) == 4);
+    assert(makeWeightedQuantile!(WeightedQuantileAlgo.averagedInverseCDF)(
+        Allocator(&allocations, &releases), data, weights, 0.5) == 4);
+    assert(allocations == releases);
+    const before = allocations;
+    auto quantiles = makeQuantile(Allocator(&allocations, &releases), data, 0.25, 0.75);
+    assert(quantiles == [1.5, 7.0]);
+    assert(allocations == before + 2 && releases == allocations - 1);
+    allocator.dispose(quantiles.field);
+    auto weighted = makeWeightedQuantile(Allocator(&allocations, &releases), data, weights, 0.25, 0.75);
+    assert(weighted == [0.0, 6.0]);
+    assert(releases == allocations - 1);
+    allocator.dispose(weighted.field);
+    assert(allocations == releases);
 }
