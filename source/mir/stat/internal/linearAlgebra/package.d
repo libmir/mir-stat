@@ -72,6 +72,10 @@ Multiplication returns ordinary dense results; cross-product self-results
 remain symmetric views. This matrix structure is distinct from `DiagonalPolicy`,
 which selects a triangular unit diagonal.
 
+Diagonal quadratic forms take linear time and retain batch and observation-
+selection support. Cholesky decomposition returns a dense factor, while solves
+accept diagonal factors and scale vector or matrix right-hand sides.
+
 `symmetricView` and `triangularView` attach structure to a matrix without
 copying its elements. Symmetric views dispatch quadratic forms and Cholesky
 decomposition; both view types dispatch multiplication with one ordinary

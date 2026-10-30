@@ -29,6 +29,12 @@ output; `quadraticFormWithWorkspace` additionally takes selected scratch with
 the same observation count and vector length. Storage order does not change
 axis meaning. Jagged collections and higher-rank selections are not supported.
 
+A diagonal view evaluates sum(x[i] * (d[i] * x[i])) in linear time.
+It preserves the chosen summation policy and accepts negative diagonal entries.
+Batch and selection overloads share this specialization; allocating diagonal
+batches need only result storage, even in fast mode. Explicit workspace calls
+still fill the supplied vector or matrix product buffer.
+
 License: $(HTTP www.apache.org/licenses/LICENSE-2.0, Apache-2.0)
 Copyright: 2026 Mir Stat Authors.
 +/
@@ -38,6 +44,7 @@ module mir.stat.internal.linearAlgebra.quadratic;
 version(mir_stat_test) version = mir_stat_test_linearAlgebra;
 version(mir_stat_test_blas) version = mir_stat_test_linearAlgebra;
 
+import mir.stat.internal.linearAlgebra.views: diagonalView, DiagonalView, DiagonalInfo;
 import mir.stat.internal.linearAlgebra.types: Scalar, numericSlice, TrianglePolicy;
 import mir.stat.internal.linearAlgebra.views: SymmetricView, symmetricView;
 import mir.math.sum: Summation, Summator;
@@ -530,7 +537,7 @@ private AllocatedSlice!(policy, Scalar!X, 1) quadraticBatchAllocated(Allocation 
     auto result = allocate!(policy, Scalar!X)(allocator, [x.length!1]);
     scope(failure) { static if (policy == Allocation.custom) {
         import std.experimental.allocator: dispose; allocator.dispose(result.field); } }
-    static if (summation == Summation.fast)
+    static if (summation == Summation.fast && !DiagonalInfo!A.valid)
     {
         auto work = allocate!(policy, Scalar!X)(allocator, x.shape);
         scope(exit) { static if (policy == Allocation.custom) {
@@ -753,4 +760,76 @@ version(mir_stat_test_linearAlgebra)
         data[].sliced(2,2).byDim!0, matrix[].sliced(2,2));
     scope(exit) Mallocator.instance.dispose(values.field);
     assert(values == [5,0]);
+}
+
+
+
+/++
+Evaluate a diagonal quadratic form in linear time without scratch allocation.
+The default KBN reduction and explicit summation policies match quadraticForm.
+Diagonal values may be negative; positive definiteness is not required.
++/
+package(mir.stat) Scalar!X quadraticForm(Summation summation = Summation.kbn, X,D)(
+    scope auto ref X x, scope auto ref const(DiagonalView!D) a)
+    if (numericSlice!X && X.N == 1 && numericSlice!D && D.N == 1 &&
+        isFloatingPoint!(Scalar!X) && is(Scalar!X == Scalar!D))
+{
+    assert(x.length == a.length!0);
+    Summator!(Scalar!X, summation) total;
+    foreach(i; 0 .. x.length) total.put(x[i] * (a[i,i] * x[i]));
+    return total.sum;
+}
+
+/++
+Evaluate a diagonal quadratic form and write a*x to caller workspace.
+Workspace must match x and be disjoint from both inputs. No allocation occurs.
+The selected summation policy is preserved, including the compensated default.
++/
+package(mir.stat) Scalar!X quadraticFormWithWorkspace(Summation summation = Summation.kbn, X,D,W)(
+    scope auto ref X x, scope auto ref const(DiagonalView!D) a, scope auto ref W work)
+    if (numericSlice!X && X.N == 1 && numericSlice!D && D.N == 1 &&
+        isFloatingPoint!(Scalar!X) && is(Scalar!X == Scalar!D) && numericSlice!W && W.N == 1 && is(Scalar!X == Scalar!W))
+{
+    assert(x.length == a.length!0 && work.length == x.length);
+    Summator!(Scalar!X, summation) total;
+    foreach(i; 0 .. x.length) { work[i] = a[i,i] * x[i]; total.put(x[i] * work[i]); }
+    return total.sum;
+}
+
+
+/// Diagonal quadratic forms retain compensation and work with observation selections.
+version(mir_stat_test_linearAlgebra)
+@safe pure nothrow unittest
+{
+    import mir.ndslice.slice: sliced;
+    import mir.ndslice.topology: byDim;
+    double[2] ds=[2,3], xs=[4,5], work;
+    auto d=diagonalView(ds[].sliced);
+    assert(quadraticForm(xs[].sliced,d)==107);
+    assert(quadraticFormWithWorkspace(xs[].sliced,d,work[].sliced)==107);
+    assert(work==[8,15]);
+    double[4] rows=[1,2,3,4], scratch;
+    double[2] result;
+    auto observations=rows[].sliced(2,2).byDim!0;
+    assert(quadraticForm(observations,d)==[14,66]);
+    quadraticFormWithWorkspace!(Summation.fast)(observations,d,result[].sliced,
+        scratch[].sliced(2,2).byDim!0);
+    assert(result==[14,66]);
+    double[3] cancellation=[4/double.epsilon,1,-4/double.epsilon], ones=[1,1,1];
+    assert(quadraticForm(ones[].sliced,diagonalView(cancellation[].sliced))==1);
+}
+
+version(mir_stat_test_linearAlgebra)
+@system unittest
+{
+    import mir.ndslice.slice: sliced;
+    import std.experimental.allocator.mallocator: Mallocator;
+    import std.experimental.allocator: dispose;
+    double[2] ds=[-2,3], xs=[1,2];
+    auto d=diagonalView(ds[].sliced);
+    auto x=xs[].sliced(2,1);
+    assert(rcQuadraticFormBatch(x,d)==[10]);
+    auto result=makeQuadraticFormBatch!(Summation.fast)(Mallocator.instance,x,d);
+    scope(exit) Mallocator.instance.dispose(result.field);
+    assert(result==[10]);
 }

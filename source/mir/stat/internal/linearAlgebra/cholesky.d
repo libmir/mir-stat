@@ -16,6 +16,13 @@ The `choleskySolve` family reuses a factor for vector or matrix right-hand
 sides, without forming an inverse. Choose GC, RC, custom, caller-output, or
 in-place solution storage. Optional BLAS accelerates compatible native solves.
 
+A diagonal view reads only its stored vector. Decomposition returns the same
+dense factor type as ordinary input, with square roots on the diagonal and
+zeros elsewhere. A supplied diagonal factor solves by coordinate scaling.
+GC, RC, custom and caller-output forms are supported, as is in-place RHS
+solution. The view itself is read-only: in-place factorization requires a
+writable dense copy such as view.asSlice.slice.
+
 License: $(HTTP www.apache.org/licenses/LICENSE-2.0, Apache-2.0)
 Copyright: 2026 Mir Stat Authors.
 +/
@@ -25,6 +32,7 @@ module mir.stat.internal.linearAlgebra.cholesky;
 version(mir_stat_test) version = mir_stat_test_linearAlgebra;
 version(mir_stat_test_blas) version = mir_stat_test_linearAlgebra;
 
+import mir.stat.internal.linearAlgebra.views: diagonalView, DiagonalView;
 import mir.stat.internal.linearAlgebra.allocation;
 import mir.stat.internal.linearAlgebra.types: Scalar, numericSlice, TrianglePolicy;
 import mir.stat.internal.linearAlgebra.backend: hasBlas, hasLapack, nativeSlice, blasMatrix, blasVector;
@@ -854,4 +862,216 @@ version(mir_stat_test_linearAlgebra)
     assertThrown!AssertError(makeCholeskySolve(allocator, factor, wrongRhs));
     assert(allocator.allocations == 3);
     assertThrown!AssertError(choleskySolveInto(factor, rhs, wrongRhs));
+}
+
+
+
+/++
+Diagonal factorization with gc result ownership.
+Uses only the stored diagonal. The dense result has square roots on the diagonal and zeros elsewhere.
+Contracts and custom disposal follow the ordinary choleskyDecompose overload.
++/
+package(mir.stat) AllocatedSlice!(Allocation.gc, Scalar!D, 2)
+choleskyDecompose(TrianglePolicy triangle = TrianglePolicy.upper, D)(
+    scope auto ref const(DiagonalView!D) a)
+    if (numericSlice!D && D.N == 1 && isFloatingPoint!(Scalar!D))
+{
+    int allocator;
+
+    auto result = allocate!(Allocation.gc, Scalar!D)(allocator, a.shape);
+
+    choleskyDecomposeInto!triangle(a,result);
+    return result;
+}
+
+/++
+Diagonal factor solve with gc result ownership.
+Uses only the stored diagonal. Two divisions avoid forming the squared factor diagonal.
+Contracts and custom disposal follow the ordinary choleskySolve overload.
++/
+package(mir.stat) AllocatedSlice!(Allocation.gc, Scalar!D, B.N)
+choleskySolve(TrianglePolicy triangle = TrianglePolicy.upper, D,B)(
+    scope auto ref const(DiagonalView!D) a, scope auto ref B b)
+    if (numericSlice!D && D.N == 1 && isFloatingPoint!(Scalar!D) && rightHandSide!B && is(Scalar!D == Scalar!B))
+{
+    int allocator;
+    assert(a.length!0 == b.length!0);
+    auto result = allocate!(Allocation.gc, Scalar!D)(allocator, b.shape);
+
+    choleskySolveInto!triangle(a,b,result);
+    return result;
+}
+
+/++
+Diagonal factorization with rc result ownership.
+Uses only the stored diagonal. The dense result has square roots on the diagonal and zeros elsewhere.
+Contracts and custom disposal follow the ordinary rcCholeskyDecompose overload.
++/
+package(mir.stat) AllocatedSlice!(Allocation.rc, Scalar!D, 2)
+rcCholeskyDecompose(TrianglePolicy triangle = TrianglePolicy.upper, D)(
+    scope auto ref const(DiagonalView!D) a)
+    if (numericSlice!D && D.N == 1 && isFloatingPoint!(Scalar!D))
+{
+    int allocator;
+
+    auto result = allocate!(Allocation.rc, Scalar!D)(allocator, a.shape);
+
+    choleskyDecomposeInto!triangle(a,result);
+    return result;
+}
+
+/++
+Diagonal factor solve with rc result ownership.
+Uses only the stored diagonal. Two divisions avoid forming the squared factor diagonal.
+Contracts and custom disposal follow the ordinary rcCholeskySolve overload.
++/
+package(mir.stat) AllocatedSlice!(Allocation.rc, Scalar!D, B.N)
+rcCholeskySolve(TrianglePolicy triangle = TrianglePolicy.upper, D,B)(
+    scope auto ref const(DiagonalView!D) a, scope auto ref B b)
+    if (numericSlice!D && D.N == 1 && isFloatingPoint!(Scalar!D) && rightHandSide!B && is(Scalar!D == Scalar!B))
+{
+    int allocator;
+    assert(a.length!0 == b.length!0);
+    auto result = allocate!(Allocation.rc, Scalar!D)(allocator, b.shape);
+
+    choleskySolveInto!triangle(a,b,result);
+    return result;
+}
+
+/++
+Diagonal factorization with custom result ownership.
+Uses only the stored diagonal. The dense result has square roots on the diagonal and zeros elsewhere.
+Contracts and custom disposal follow the ordinary makeCholeskyDecompose overload.
++/
+package(mir.stat) AllocatedSlice!(Allocation.custom, Scalar!D, 2)
+makeCholeskyDecompose(TrianglePolicy triangle = TrianglePolicy.upper, D,Allocator)(
+    auto ref Allocator allocator, scope auto ref const(DiagonalView!D) a)
+    if (numericSlice!D && D.N == 1 && isFloatingPoint!(Scalar!D))
+{
+
+
+    auto result = allocate!(Allocation.custom, Scalar!D)(allocator, a.shape);
+    scope(failure) { import std.experimental.allocator: dispose; allocator.dispose(result.field); }
+    choleskyDecomposeInto!triangle(a,result);
+    return result;
+}
+
+/++
+Diagonal factor solve with custom result ownership.
+Uses only the stored diagonal. Two divisions avoid forming the squared factor diagonal.
+Contracts and custom disposal follow the ordinary makeCholeskySolve overload.
++/
+package(mir.stat) AllocatedSlice!(Allocation.custom, Scalar!D, B.N)
+makeCholeskySolve(TrianglePolicy triangle = TrianglePolicy.upper, D,B,Allocator)(
+    auto ref Allocator allocator, scope auto ref const(DiagonalView!D) a, scope auto ref B b)
+    if (numericSlice!D && D.N == 1 && isFloatingPoint!(Scalar!D) && rightHandSide!B && is(Scalar!D == Scalar!B))
+{
+
+    assert(a.length!0 == b.length!0);
+    auto result = allocate!(Allocation.custom, Scalar!D)(allocator, b.shape);
+    scope(failure) { import std.experimental.allocator: dispose; allocator.dispose(result.field); }
+    choleskySolveInto!triangle(a,b,result);
+    return result;
+}
+
+/++
+Write a dense diagonal Cholesky factor. Output must be square, match the view,
+and be disjoint from its diagonal storage. Finite inputs are required;
+nonpositive entries throw. Failure may leave partial output, as for dense input.
++/
+package(mir.stat) void choleskyDecomposeInto(TrianglePolicy triangle = TrianglePolicy.upper,D,C)(
+    scope auto ref const(DiagonalView!D) a, scope auto ref C output)
+    if (numericSlice!D && D.N == 1 && matrix!C && is(Scalar!D == Scalar!C))
+{
+    import mir.math.common: sqrt;
+    import std.math: isFinite;
+    import mir.exception: enforce;
+    static assert(triangle == TrianglePolicy.upper || triangle == TrianglePolicy.lower);
+    assert(output.shape == a.shape);
+    foreach(i; 0 .. a.length!0)
+    {
+        auto value = a[i,i];
+        assert(isFinite(value), "Cholesky input must be finite");
+        enforce!"Cholesky factorization failed"(value > 0);
+        foreach(j; 0 .. a.length!0) output[i,j] = i == j ? sqrt(value) : Scalar!D(0);
+    }
+}
+
+/++
+Solve using a diagonal Cholesky factor, writing caller storage.
+Output may exactly alias b, but must otherwise be disjoint from inputs and
+have nonoverlapping elements. Factor entries must be finite and nonzero.
++/
+package(mir.stat) void choleskySolveInto(TrianglePolicy triangle = TrianglePolicy.upper,D,B,C)(
+    scope auto ref const(DiagonalView!D) factor, scope auto ref B b, scope auto ref C output)
+    if (numericSlice!D && D.N == 1 && isFloatingPoint!(Scalar!D) && rightHandSide!B && rightHandSide!C &&
+        B.N == C.N && is(Scalar!D == Scalar!B) && is(Scalar!D == Scalar!C))
+{
+    import std.math: isFinite;
+    static assert(triangle == TrianglePolicy.upper || triangle == TrianglePolicy.lower);
+    assert(factor.length!0 == b.length!0 && output.shape == b.shape);
+    foreach(i; 0 .. b.length!0)
+    {
+        auto d = factor[i,i];
+        assert(isFinite(d) && d != 0, "Cholesky factor diagonal must be finite and nonzero");
+        static if (B.N == 1) output[i] = (b[i] / d) / d;
+        else foreach(j; 0 .. b.length!1) output[i,j] = (b[i,j] / d) / d;
+    }
+}
+
+/// Overwrite vector or matrix right-hand sides using a read-only diagonal factor.
+package(mir.stat) void choleskySolveInPlace(TrianglePolicy triangle = TrianglePolicy.upper,D,X)(
+    scope auto ref const(DiagonalView!D) factor, scope auto ref X x)
+    if (numericSlice!D && D.N == 1 && isFloatingPoint!(Scalar!D) && rightHandSide!X && is(Scalar!D == Scalar!X))
+{
+    choleskySolveInto!triangle(factor,x,x);
+}
+
+
+/// Diagonal factorization returns a dense factor; a diagonal factor solves by scaling.
+version(mir_stat_test_linearAlgebra)
+@safe pure unittest
+{
+    import mir.ndslice.slice: sliced;
+    double[2] ds=[4,9], roots=[2,3], rhs=[8,18];
+    auto covariance=diagonalView(ds[].sliced);
+    assert(choleskyDecompose(covariance)==[[2,0],[0,3]]);
+    auto factor=diagonalView(roots[].sliced);
+    assert(choleskySolve(factor,rhs[].sliced)==[2,2]);
+    choleskySolveInPlace(factor,rhs[].sliced);
+    assert(rhs==[2,2]);
+}
+
+version(mir_stat_test_linearAlgebra)
+@system unittest
+{
+    import mir.ndslice.slice: sliced;
+    import mir.ndslice.topology: universal;
+    import mir.ndslice.dynamic: transposed, reversed;
+    import std.exception: assertThrown;
+    import core.exception: AssertError;
+    import std.experimental.allocator.mallocator: Mallocator;
+    import std.experimental.allocator: dispose;
+    double[2] ds=[4,9], roots=[2,3];
+    double[4] rhs=[8,12,18,27], output;
+    auto a=diagonalView(ds[].sliced);
+    auto factor=diagonalView(roots[].sliced);
+    auto result=makeCholeskyDecompose(Mallocator.instance,a);
+    scope(exit) Mallocator.instance.dispose(result.field);
+    assert(result==rcCholeskyDecompose!(TrianglePolicy.lower)(a));
+    auto b=rhs[].sliced(2,2);
+    auto solution=makeCholeskySolve(Mallocator.instance,factor,b);
+    scope(exit) Mallocator.instance.dispose(solution.field);
+    assert(solution==rcCholeskySolve(factor,b));
+    auto outView=output[].sliced(2,2).universal.transposed.reversed!0;
+    choleskySolveInto(factor,b,outView);
+    assert(outView==[[2,3],[2,3]]);
+    choleskyDecomposeInto(a,outView);
+    assert(outView==[[2,0],[0,3]]);
+    ds[1]=0;
+    assertThrown!Exception(rcCholeskyDecompose(a));
+    ds[1]=double.nan;
+    assertThrown!AssertError(rcCholeskyDecompose(a));
+    roots[0]=0;
+    assertThrown!AssertError(choleskySolveInPlace(factor,b));
 }

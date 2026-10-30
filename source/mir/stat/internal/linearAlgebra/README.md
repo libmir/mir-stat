@@ -23,7 +23,7 @@ contracts and executable examples.
 | `tcrossprod` | One or two matrices | `A Aᵀ` or `A Bᵀ` |
 | `mtimesTriangular` | Triangular matrix on the left | Matrix or vector |
 | `mtimesTriangularRight` | Triangular matrix on the right | Matrix or vector |
-| `quadraticForm` | Vector and general or symmetric matrix | `xᵀ A x` |
+| `quadraticForm` | Vector and general, symmetric, or diagonal matrix | `xᵀ A x` |
 | `quadraticFormWithWorkspace` | Same inputs and a separate vector workspace | Compensated or explicitly fast `xᵀ A x` |
 | `choleskyDecompose` | Real symmetric positive-definite matrix | Upper or lower Cholesky factor |
 | `choleskySolve` | Existing Cholesky factor and vector or matrix right-hand side | Solution of `A X = B` |
@@ -53,12 +53,13 @@ entries. The view is read-only, but changes through the original vector remain
 visible.
 
 ```d
-double[2] diagonal = [2, 3];
+double[2] diagonal = [2, 3], x = [4, 5];
 double[4] values = [1, 2, 3, 4];
 auto d = diagonalView(diagonal[].sliced);
 auto a = values[].sliced(2, 2);
 assert(mtimes(d, a) == [[2, 4], [9, 12]]); // Scale rows.
 assert(mtimes(a, d) == [[2, 6], [6, 12]]); // Scale columns.
+assert(quadraticForm(x[].sliced, d) == 107);
 assert(d.storage == [2, 3]);
 assert(d.asSlice == [[2, 0], [0, 3]]);
 ```
@@ -72,9 +73,13 @@ copy. This follows the same ownership conventions as the other structural views.
 | --- | --- |
 | `mtimes` | Row/column scaling; accepts another ordinary or structural operand |
 | `crossprod`, `tcrossprod` | Coordinate products; self-results remain symmetric views |
+| `quadraticForm` | Linear-time weighted sum of squares, with the chosen summation policy |
+| `choleskyDecompose` | Square roots on the diagonal of a dense factor result |
+| `choleskySolve` | Coordinate scaling using the supplied diagonal factor |
 
 These paths support the existing GC, RC, custom allocator, and caller-buffer
-families where applicable. Products return dense results consistently with
+families where applicable. Quadratic forms also retain batch,
+`byDim`, and `alongDim` support. Products return dense results consistently with
 ordinary inputs; producing a square result still writes quadratic-size storage.
 Self cross-products initialize only the selected triangle unless a full `Into`
 result is requested. They do not conjugate complex entries.
@@ -82,7 +87,8 @@ result is requested. They do not conjugate complex entries.
 `DiagonalPolicy.unit` describes an implicit unit diagonal in a triangular
 matrix. It is separate from `DiagonalView`, which describes the whole matrix
 using explicit diagonal values. A view does not certify positive definiteness
-or identify a factor.
+or identify a factor. In-place Cholesky factorization cannot modify a read-only
+view; materialize a writable matrix first. In-place RHS solves remain supported.
 
 ## Choosing storage ownership
 
