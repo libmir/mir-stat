@@ -131,6 +131,7 @@ $(TR $(TH Module) $(TH Public declarations))
             $(LEGACY_ANCHOR quantileInto)$(REF quantileInto, mir, stat, descriptive, univariate, quantiles)$(NBSP)
             $(BR)
             $(B Weighted quantiles:)
+            $(REF weightedMedian, mir, stat, descriptive, univariate, quantiles)$(NBSP)
             $(LEGACY_ANCHOR weightedQuantile)$(REF weightedQuantile, mir, stat, descriptive, univariate, quantiles)$(NBSP)
             $(LEGACY_ANCHOR rcWeightedQuantile)$(REF rcWeightedQuantile, mir, stat, descriptive, univariate, quantiles)$(NBSP)
             $(LEGACY_ANCHOR makeWeightedQuantile)$(REF makeWeightedQuantile, mir, stat, descriptive, univariate, quantiles)$(NBSP)
@@ -342,6 +343,7 @@ unittest
     assert(mir.stat.descriptive.univariate.entropy([1.0]) == 0);
     assert(legacy.median([1.0, 3.0]) == 2);
     assert(legacy.rawMoment!1([1.0, 3.0]) == 2);
+    assert(legacy.weightedMedian([0.0, 10.0], [1, 1]) == 5);
     assert(legacy.weightedInterquartileRange([0.0, 10.0], [1, 3]) == 10);
     assert(legacy.weightedCoefficientOfVariation([1.0, 3.0], [1.0, 1.0]) == 0.5);
 }

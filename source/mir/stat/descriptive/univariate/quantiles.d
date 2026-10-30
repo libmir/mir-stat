@@ -28,6 +28,7 @@ $(TR $(TH Category) $(TH Declarations))
         $(REF quantileInto, mir, stat, descriptive, univariate, quantiles)$(NBSP)
     ))
     $(TR $(TD Weighted quantiles) $(TD
+        $(REF weightedMedian, mir, stat, descriptive, univariate, quantiles)$(NBSP)
         $(REF weightedQuantile, mir, stat, descriptive, univariate, quantiles)$(NBSP)
         $(REF rcWeightedQuantile, mir, stat, descriptive, univariate, quantiles)$(NBSP)
         $(REF makeWeightedQuantile, mir, stat, descriptive, univariate, quantiles)$(NBSP)
@@ -71,6 +72,13 @@ import mir.stat.descriptive.univariate.means: mean;
 
 /++
 Computes the median of `slice`.
+
+For an odd number of observations, this is the middle sorted observation;
+for an even number, it is the average of the two middle observations.
+For at least two observations, this agrees mathematically with the type 2
+or type 7 quantile at probability 0.5. The dedicated median implementation
+uses selection and small-input fast paths. For observations
+with unequal weights, see $(LREF weightedMedian).
 
 By default, if `F` is not floating point type or complex type, then the result
 will have a `double` type if `F` is implicitly convertible to a floating point
@@ -4808,6 +4816,129 @@ package(mir.stat) auto quantileSpread(F, QuantileAlgo algorithm, bool modify, S,
         auto values = rcquantile!(F, algorithm, modify)(source, lowerProbability, upperProbability);
         return values[1] - values[0];
     }
+}
+
+/++
+Computes the weighted median using the averaged inverse empirical CDF.
+
+Sort the observations and add their weights until reaching half the total
+weight. If the cumulative weight is exactly half, average that observation
+and the next positive-weight observation. Otherwise, return the observation
+that takes the cumulative weight past half.
+
+For example, values [0, 10] with weights [1, 1] have median 5; with weights
+[1, 3], their weighted median is 10. Use this function for a single measure
+of the center when some observations deserve more weight than others.
+With equal weights it follows the ordinary $(LREF median) convention.
+With whole-number counts it follows the median of the expanded sample:
+[0, 10] with counts [1, 3] represents [0, 10, 10, 10].
+
+Weights are relative masses: multiplying every weight by the same positive
+factor leaves the mathematical result unchanged. This function is equivalent
+to $(D rcWeightedQuantile!(F, WeightedQuantileAlgo.averagedInverseCDF)(data, weights, 0.5)).
+It has one fixed convention, just as $(LREF median) does. To choose another
+convention, use $(LREF weightedQuantile) or $(LREF rcWeightedQuantile) at 0.5.
+For example, inverseCDF selects 0 rather than 5 for [0, 10] with equal weights;
+use that convention when the result must be an observed value.
+
+Inputs are not modified. Sorting uses reference-counted scratch storage.
+Only one-dimensional inputs are supported. Weights must be finite and
+nonnegative, with at least one positive weight; observations with zero weight
+are excluded. Other input requirements and floating-point limits follow
+$(LREF weightedQuantile), including comparisons with represented CDF
+boundaries without a tolerance. Large integral observations can lose precision
+in the floating-point result.
+
+Params:
+    F = floating-point result type; inferred as for averagedInverseCDF when omitted
++/
+template weightedMedian(F)
+    if (isFloatingPoint!F)
+{
+    /++
+    Params:
+        data = observations corresponding to the weights
+        weights = nonnegative finite relative weights
+    +/
+    F weightedMedian(Data, Weights)(
+        scope auto ref Data data, scope auto ref Weights weights)
+    {
+        return rcWeightedQuantile!(F, WeightedQuantileAlgo.averagedInverseCDF)(
+            data, weights, 0.5);
+    }
+}
+
+/// ditto
+auto weightedMedian(Data, Weights)(
+    scope auto ref Data data, scope auto ref Weights weights)
+{
+    alias F = WeightedQuantileResult!(Data, WeightedQuantileAlgo.averagedInverseCDF);
+    return .weightedMedian!F(data, weights);
+}
+
+///
+version(mir_stat_test)
+@safe pure nothrow @nogc unittest
+{
+    const int[2] values = [0, 10];
+    const int[2] equal = [1, 1], counts = [1, 3];
+    assert(weightedMedian(values, equal) == 5);
+    assert(weightedMedian(values, counts) == 10);
+    const double[2] proportions = [0.25, 0.75];
+    assert(weightedMedian(values, proportions) == 10);
+    assert(rcWeightedQuantile!(WeightedQuantileAlgo.inverseCDF)(values, equal, 0.5) == 0);
+}
+
+version(mir_stat_test)
+@safe pure nothrow @nogc unittest
+{
+    import mir.ndslice.slice: sliced;
+    import mir.ndslice.topology: stride;
+
+    import std.meta: AliasSeq;
+    static foreach (T; AliasSeq!(float, double, real, int, long, ulong))
+    {{
+        T[5] values = [9, 1, 5, 3, 7];
+        int[5] equal = [1, 1, 1, 1, 1];
+        foreach (n; 1 .. values.length + 1)
+            assert(weightedMedian(values[0 .. n], equal[0 .. n]) == median(values[0 .. n]));
+        int[5] counts = [1, 2, 1, 3, 1];
+        T[8] expanded = [9, 1, 1, 5, 3, 3, 3, 7];
+        assert(weightedMedian(values, counts) == median(expanded[]));
+        assert(values == [9, 1, 5, 3, 7]);
+        assert(counts == [1, 2, 1, 3, 1]);
+    }}
+    const int[6] values = [0, -1, 1, -1, -1, 1];
+    const int[6] counts = [1, 2, 3, 1, 2, 3];
+    assert(weightedMedian(values, counts) == 0.5);
+    assert(weightedMedian!float(values, counts) == 0.5f);
+    static assert(is(typeof(weightedMedian(values, counts)) == double));
+    static assert(is(typeof(weightedMedian!float(values, counts)) == float));
+    static foreach (T; AliasSeq!(float, double, real))
+    {{
+        T[2] x = [0, 10];
+        static assert(is(typeof(weightedMedian(x, x)) == T));
+        assert(weightedMedian(x, [1, 1]) == 5);
+    }}
+    const double[4] storage = [0, double.nan, 10, double.nan];
+    const int[4] masses = [1, 0, 1, 0];
+    assert(weightedMedian(storage, masses) == 5);
+    assert(weightedMedian(storage[].sliced.stride(2), masses[].sliced.stride(2)) == 5);
+    assert(weightedMedian([double.max, double.max], [1, 1]) == double.max);
+    assert(weightedMedian([-double.max, double.max], [1, 1]) == 0);
+}
+
+version(mir_stat_test)
+@system unittest
+{
+    import core.exception: AssertError;
+    import std.exception: assertThrown;
+    double[2] values = [0, 10];
+    assertThrown!AssertError(weightedMedian(values, [0, 0]));
+    assertThrown!AssertError(weightedMedian(values, [1, -1]));
+    assertThrown!AssertError(weightedMedian(values, [1]));
+    assertThrown!AssertError(weightedMedian(values[0 .. 0], values[0 .. 0]));
+    assertThrown!AssertError(weightedMedian(values, [1, double.infinity]));
 }
 
 /++
