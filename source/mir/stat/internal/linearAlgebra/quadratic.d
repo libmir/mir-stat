@@ -188,16 +188,16 @@ private Scalar!X quadraticWorkspace(bool symmetric, TrianglePolicy triangle, Sum
     alias T = Scalar!X;
     static if (summation == Summation.fast)
     {
-        import mir.stat.internal.linearAlgebra.products: mtimes, mtimesInto;
+        import mir.stat.internal.linearAlgebra.products: dotProduct, mtimesInto;
         static if (!symmetric)
         {
             mtimesInto(a, x, work);
-            return mtimes(x, work);
+            return dotProduct(x, work);
         }
         else
         {
             import mir.stat.internal.linearAlgebra.packed: tryPackedSymmetric;
-            if (tryPackedSymmetric!triangle(a, x, work)) return mtimes(x, work);
+            if (tryPackedSymmetric!triangle(a, x, work)) return dotProduct(x, work);
             import mir.stat.internal.linearAlgebra.backend: hasBlas, blasNumber, nativeSlice, blasMatrix, blasVector;
             static if (hasBlas && blasNumber!T && nativeSlice!A && nativeSlice!X && nativeSlice!W)
             {
@@ -207,7 +207,7 @@ private Scalar!X quadraticWorkspace(bool symmetric, TrianglePolicy triangle, Sum
                     import cblas: Uplo;
                     enum uplo = triangle == TrianglePolicy.upper ? Uplo.Upper : Uplo.Lower;
                     symv(uplo, T(1), a.lightScope.lightConst, x.lightScope.lightConst, T(0), work.lightScope);
-                    return mtimes(x, work);
+                    return dotProduct(x, work);
                 }
             }
         }
@@ -449,7 +449,7 @@ package(mir.stat) void quadraticFormBatchInto(Summation summation = Summation.kb
 {
     import mir.ndslice.topology: universal;
     import mir.ndslice.dynamic: transposed;
-    import mir.stat.internal.linearAlgebra.products: mtimesInto, mtimes;
+    import mir.stat.internal.linearAlgebra.products: mtimesInto, dotProduct;
     assert(a.length!0 == x.length!0 && a.length!1 == x.length!0);
     assert(result.length == x.length!1 && work.shape == x.shape);
     auto columns = x.universal.transposed;
@@ -457,7 +457,7 @@ package(mir.stat) void quadraticFormBatchInto(Summation summation = Summation.kb
     static if (summation == Summation.fast)
     {
         mtimesInto(a, x, work);
-        foreach (j; 0 .. columns.length) result[j] = mtimes(columns[j], products[j]);
+        foreach (j; 0 .. columns.length) result[j] = dotProduct(columns[j], products[j]);
     }
     else foreach (j; 0 .. columns.length)
         result[j] = quadraticFormWithWorkspace!summation(columns[j], a, products[j]);

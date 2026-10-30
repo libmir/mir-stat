@@ -18,7 +18,7 @@ contracts and executable examples.
 | Operation | Inputs | Result |
 | --- | --- | --- |
 | `mtimes` | Matrix × matrix, matrix × vector, vector × matrix | Matrix or vector |
-| `mtimes` | Vector × vector | Dot-product value |
+| `dotProduct` | Two vectors, or one vector for a self-product | Scalar sum of products or squares |
 | `crossprod` | One or two matrices | `Aᵀ A` or `Aᵀ B` |
 | `tcrossprod` | One or two matrices | `A Aᵀ` or `A Bᵀ` |
 | `mtimesTriangular` | Triangular matrix on the left | Matrix or vector |
@@ -57,7 +57,7 @@ does not force an RC result.
 | Caller output | `mtimesInto(a, b, output)` | Caller supplies and retains the buffer |
 
 The same naming applies to cross-products, triangular products, Cholesky decomposition, and
-Cholesky solves. Two-vector products and quadratic forms return a numerical
+Cholesky solves. Vector dot products and quadratic forms return a numerical
 value, without allocating result storage. Custom-allocator factories release
 their allocation if computation throws before returning the result.
 
@@ -70,6 +70,46 @@ For internal code that wants only one allocation strategy, import `gc`, `rc`,
 or `custom` from this package. These convenience modules expose the existing
 names and overloads; they do not add wrappers. Import views, policies,
 quadratic forms, and caller-output/in-place operations separately as needed.
+
+## Dot products and independent row/column reductions
+
+Use `dotProduct(x, y)` for a scalar sum of products and `dotProduct(x)` for
+a sum of squares. Both accept rank-one slices and allocate nothing. Complex
+values are not conjugated; the self-product is not a Hermitian squared norm.
+The arithmetic is uncompensated and may use BLAS for compatible real vectors.
+
+`mtimes` requires at least one matrix. For an outer product, explicitly give
+the operands shapes `(m, 1)` and `(1, n)`; the result is an `(m, n)` matrix.
+Cross-products likewise require explicit matrix shapes.
+
+Independent reductions follow the same composition model as mapped means:
+select vectors, map a scalar operation, then choose whether and how to store
+the results. For same-shaped matrices `a` and `b`:
+
+```d
+assert(a.shape == b.shape);
+auto rows = zip(a.byDim!0, b.byDim!0)
+    .map!((x, y) => dotProduct(x, y));
+auto gcResult = rows.slice;
+auto rcResult = rows.rcslice;
+auto customResult = makeSlice(allocator, rows); // dispose its field afterward
+output[] = rows; // caller-owned slice, with the same shape
+
+auto columnSquares = a.alongDim!0.map!(column => dotProduct(column));
+```
+
+Import `byDim`, `alongDim`, `zip`, and `map` from `mir.ndslice.topology`, and
+`slice`, `rcslice`, and `makeSlice` from `mir.ndslice.allocation`.
+Rows are selected by `byDim!0` / `alongDim!1`; columns by `byDim!1` /
+`alongDim!0`. Mapping is lazy and repeats computation when reread; keep source
+storage alive, or materialize while it is valid. Materialization makes a snapshot.
+There are no GC/RC/custom dot-product factories or implicit broadcasting.
+Executable documentation examples in `products.d` cover all four storage choices.
+
+This does not replace the eager selection overloads for quadratic forms and
+Mahalanobis distance: those preserve shared factorization and whole-batch
+matrix kernels. Cholesky decomposes a matrix, and its matrix right-hand-side
+solve already batches columns; selection does not implicitly change either API.
 
 ## Cross-products with explicit matrix shapes
 

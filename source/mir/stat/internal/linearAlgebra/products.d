@@ -1,8 +1,9 @@
 /++
 Matrix products with explicit result ownership. `mtimes` uses GC storage,
 `rcMtimes` uses RC storage, and `makeMtimes` uses the supplied allocator.
-Vector-vector products return a scalar and do not allocate. Products do not
-conjugate complex inputs. Inputs may be borrowed or RC slices, independently
+`dotProduct` returns a scalar without allocation. `mtimes` requires at least
+one matrix operand. Products do not conjugate complex inputs.
+Inputs may be borrowed or RC slices, independently
 of output ownership. General strides use an allocation-free native D kernel.
 When BLAS is available, compatible single/double precision real and complex
 layouts use BLAS.
@@ -38,13 +39,120 @@ import mir.stat.internal.linearAlgebra.allocation;
 private enum compatible(A, B) = numericSlice!A && numericSlice!B &&
     is(Scalar!A == Scalar!B);
 
-// A vector-vector product is scalar; other products have the contracted rank.
-private template ProductResult(Allocation policy, A, B)
+/// Matrix products have the contracted rank and explicit result ownership.
+private alias ProductResult(Allocation policy, A, B) =
+    AllocatedSlice!(policy, Scalar!A, A.N + B.N - 2);
+
+/++
+Return the scalar sum of corresponding vector products without allocating.
+Both operands must be rank-one numeric ndslices with the same element type
+and length. Empty vectors return zero. Complex inputs are not conjugated:
+this is a bilinear dot product, not a Hermitian inner product.
+
+Borrowed, owning, const, strided, reversed, and computed views are supported.
+Compatible float/double storage uses BLAS when available; other inputs use
+a native D fallback. Summation is not compensated, and rounding may depend
+on the backend. Computed iterators determine the inferred function attributes.
+
+For independent row/column products, select vectors with `byDim` or `alongDim`
+and map this function. The map is lazy: choose `.slice`, `.rcslice`,
+`makeSlice`, or assignment to an existing slice to control result storage.
+There are no allocation-specific dot-product variants or implicit broadcasting.
++/
+package(mir.stat) Scalar!A dotProduct(A, B)(scope auto ref A a, scope auto ref B b)
+    if (compatible!(A, B) && A.N == 1 && B.N == 1)
 {
-    static if (A.N == 1 && B.N == 1)
-        alias ProductResult = Scalar!A;
-    else
-        alias ProductResult = AllocatedSlice!(policy, Scalar!A, A.N + B.N - 2);
+    assert(a.length == b.length, "Dot-product vector lengths must match");
+    alias T = Scalar!A;
+    static if (hasBlas && (is(T == float) || is(T == double)) && nativeSlice!A && nativeSlice!B)
+    {
+        if (a.length && blasVector(a) && blasVector(b))
+        {
+            import mir.blas: dot;
+            return dot(a.lightScope.lightConst, b.lightScope.lightConst);
+        }
+    }
+    T result = T(0);
+    foreach (i; 0 .. a.length)
+        result += a[i] * b[i];
+    return result;
+}
+
+/++
+Return the sum of vector element squares without allocating.
+Equivalent to `dotProduct(x, x)`, including its backend and rounding behavior.
+Complex elements are squared without conjugation; this is not a squared norm.
++/
+package(mir.stat) Scalar!A dotProduct(A)(scope auto ref A a)
+    if (numericSlice!A && A.N == 1)
+{
+    return dotProduct(a, a);
+}
+
+/// Scalar dot products and explicit matrix shapes distinguish inner and outer products.
+version(mir_stat_test_linearAlgebra)
+@safe pure nothrow @nogc unittest
+{
+    import mir.ndslice.slice: sliced;
+    double[3] xs = [1, 2, 3], ys = [4, 5, 6];
+    auto x = xs[].sliced;
+    auto y = ys[].sliced;
+    assert(dotProduct(x, y) == 32);
+    assert(dotProduct(x) == 14);
+    static assert(is(typeof(dotProduct(x, y)) == double));
+    static assert(!__traits(compiles, mtimes(x, y)));
+    static assert(!__traits(compiles, rcMtimes(x, y)));
+    double[9] output;
+    auto outer = output[].sliced(3, 3);
+    mtimesInto(xs[].sliced(3, 1), ys[].sliced(1, 3), outer);
+    static immutable expected = [[4.0, 5, 6], [8.0, 10, 12], [12.0, 15, 18]];
+    assert(outer == expected);
+}
+
+/// Map corresponding rows or columns lazily, then choose GC or RC storage.
+version(mir_stat_test_linearAlgebra)
+@safe pure nothrow unittest
+{
+    import mir.ndslice.slice: sliced;
+    import mir.ndslice.topology: byDim, alongDim, zip, map;
+    import mir.ndslice.allocation: slice, rcslice;
+    double[6] xs = [1, 2, 3, 4, 5, 6], ys = [7, 8, 9, 10, 11, 12];
+    auto a = xs[].sliced(2, 3);
+    auto b = ys[].sliced(2, 3);
+    // Require equal matrix shapes when pairing all corresponding vectors.
+    assert(a.shape == b.shape);
+    auto rows = zip(a.byDim!0, b.byDim!0).map!((x, y) => dotProduct(x, y));
+    auto gcRows = rows.slice;
+    assert(gcRows == [50, 167]);
+    auto columns = zip(a.alongDim!0, b.alongDim!0).map!((x, y) => dotProduct(x, y));
+    auto rcColumns = columns.rcslice;
+    assert(rcColumns == [47, 71, 99]);
+    // Self-products use the same selection convention, without zip.
+    assert(a.alongDim!1.map!(row => dotProduct(row)).slice == [14, 77]);
+    assert(a.byDim!1.map!(column => dotProduct(column)).slice == [17, 29, 45]);
+    // Lazy values observe source changes; already materialized results do not.
+    xs[0] = 2;
+    assert(rows[0] == 57 && gcRows[0] == 50);
+}
+
+/// Materialize independent reductions in custom or caller-owned storage.
+version(mir_stat_test_linearAlgebra)
+@system nothrow @nogc unittest
+{
+    import mir.ndslice.slice: sliced;
+    import mir.ndslice.topology: byDim, map;
+    import mir.ndslice.allocation: makeSlice;
+    import std.experimental.allocator.mallocator: Mallocator;
+    import std.experimental.allocator: dispose;
+    double[6] xs = [1, 2, 3, 4, 5, 6];
+    auto values = xs[].sliced(2, 3).byDim!0.map!(row => dotProduct(row));
+    auto owned = makeSlice(Mallocator.instance, values);
+    scope(exit) Mallocator.instance.dispose(owned.field);
+    assert(owned == [14, 77]);
+    double[2] buffer;
+    auto output = buffer[].sliced;
+    output[] = values;
+    assert(output == [14, 77]);
 }
 
 /++
@@ -53,7 +161,8 @@ Multiply two matrices or vectors, allocating a GC-managed result when needed.
 This is matrix multiplication, not element-wise multiplication. For shapes
 `(m, k)` and `(k, n)`, the result has shape `(m, n)`. A matrix and a vector
 produce a vector of length `m`; a vector and a matrix produce a vector of
-length `n`. Two vectors of length `k` produce a scalar, without allocation.
+length `n`. Two vectors are rejected; use `dotProduct(a, b)` for a scalar
+or reshape to `(m, 1)` and `(1, n)` for an outer-product matrix.
 Complex inputs are multiplied without conjugation.
 
 Use `mtimes(triangularView(a), b)` or `mtimes(b, triangularView(a))` for a
@@ -64,7 +173,7 @@ Params:
     a = Left operand, a rank-one or rank-two ndslice.
     b = Right operand with the same floating-point or complex element type.
 Returns:
-    A GC-backed slice, or a scalar for two vector operands. The result element
+    A GC-backed slice. The result element
     type is the unqualified input element type.
 Preconditions:
     The inner dimensions must match. Empty inner dimensions yield zeros.
@@ -72,7 +181,7 @@ See_Also: $(LINK2 #rcMtimes, rcMtimes), $(LINK2 #makeMtimes, makeMtimes), $(LINK
 +/
 package(mir.stat) ProductResult!(Allocation.gc, A, B)
 mtimes(A, B)(scope auto ref A a, scope auto ref B b)
-    if (compatible!(A, B))
+    if (compatible!(A, B) && (A.N == 2 || B.N == 2))
 {
     int unused;
     return multiplyWithAllocation!(Allocation.gc)(unused, a, b);
@@ -122,7 +231,7 @@ version(mir_stat_test_linearAlgebra)
     auto v = data[].sliced;
     assert(mtimes(a, v) == [14, 32]);
     assert(mtimes(v, b) == [58, 64]);
-    assert(mtimes(v, v) == 14);
+    assert(dotProduct(v, v) == 14);
 }
 
 /// Declare matrix structure once and use ordinary multiplication syntax on either side.
@@ -157,14 +266,14 @@ Params:
     a = Left matrix or vector operand.
     b = Right operand of the same floating-point or complex element type.
 Returns:
-    An RC-backed slice, or an allocation-free scalar for two vectors.
+    An RC-backed slice.
 Preconditions:
     The inner dimensions must match.
 See_Also: $(LINK2 #mtimes, mtimes), $(LINK2 #makeMtimes, makeMtimes), $(LINK2 #mtimesInto, mtimesInto)
 +/
 package(mir.stat) ProductResult!(Allocation.rc, A, B)
 rcMtimes(A, B)(scope auto ref A a, scope auto ref B b)
-    if (compatible!(A, B))
+    if (compatible!(A, B) && (A.N == 2 || B.N == 2))
 {
     int unused;
     return multiplyWithAllocation!(Allocation.rc)(unused, a, b);
@@ -262,8 +371,7 @@ Params:
     a = Left matrix or vector operand.
     b = Right operand of the same floating-point or complex element type.
 Returns:
-    A slice backed by the supplied allocator, or a scalar for two vectors.
-    Scalar products do not call the allocator.
+    A slice backed by the supplied allocator.
 Preconditions:
     The inner dimensions must match; they are checked before allocation.
 Throws:
@@ -273,7 +381,7 @@ See_Also: $(LINK2 #mtimes, mtimes), $(LINK2 #rcMtimes, rcMtimes), $(LINK2 #mtime
 package(mir.stat) ProductResult!(Allocation.custom, A, B)
 makeMtimes(Allocator, A, B)(auto ref Allocator allocator,
     scope auto ref A a, scope auto ref B b)
-    if (compatible!(A, B))
+    if (compatible!(A, B) && (A.N == 2 || B.N == 2))
 {
     return multiplyWithAllocation!(Allocation.custom)(allocator, a, b);
 }
@@ -356,62 +464,42 @@ private void checkMultiplicationDimensions(A, B)(scope auto ref A a, scope auto 
         assert(a.length == b.length!0, "Incompatible product dimensions");
 }
 
-// Shared factory: scalar products allocate nothing; other products allocate
-// according to policy and delegate computation to mtimesInto.
-/// Compute a dot product directly, or allocate one result and release custom storage if computation throws.
+/// Allocate the product and release custom storage if computation throws.
 private ProductResult!(policy, A, B)
 multiplyWithAllocation(Allocation policy, Allocator, A, B)(ref Allocator allocator,
     scope auto ref A a, scope auto ref B b)
 {
     checkMultiplicationDimensions(a, b);
     alias T = Scalar!A;
-    static if (A.N == 1 && B.N == 1)
+    static if (A.N == 2 && B.N == 2)
+        size_t[2] shape = [a.length!0, b.length!1];
+    else static if (A.N == 2)
+        size_t[1] shape = [a.length!0];
+    else
+        size_t[1] shape = [b.length!1];
+    auto result = allocate!(policy, T)(allocator, shape);
+    static if (policy == Allocation.custom)
     {
-        static if (hasBlas && (is(T == float) || is(T == double)) && nativeSlice!A && nativeSlice!B)
+        scope(failure)
         {
-            if (a.length && blasVector(a) && blasVector(b))
-            {
-                import mir.blas: dot;
-                return dot(a.lightScope.lightConst, b.lightScope.lightConst);
-            }
+            import std.experimental.allocator: dispose;
+            allocator.dispose(result.field);
         }
-        T result = T(0);
-        foreach (i; 0 .. a.length)
-            result += a[i] * b[i];
+        mtimesInto(a, b, result);
         return result;
     }
     else
     {
-        static if (A.N == 2 && B.N == 2)
-            size_t[2] shape = [a.length!0, b.length!1];
-        else static if (A.N == 2)
-            size_t[1] shape = [a.length!0];
-        else
-            size_t[1] shape = [b.length!1];
-        auto result = allocate!(policy, T)(allocator, shape);
-        static if (policy == Allocation.custom)
-        {
-            scope(failure)
-            {
-                import std.experimental.allocator: dispose;
-                allocator.dispose(result.field);
-            }
-            mtimesInto(a, b, result);
-            return result;
-        }
-        else
-        {
-            mtimesInto(a, b, result);
-            return result;
-        }
+        mtimesInto(a, b, result);
+        return result;
     }
 }
 
 /++
 Write a matrix or vector product into existing storage without allocating.
 
-Shapes and arithmetic follow $(LINK2 #mtimes, mtimes), except that two vector operands
-are not supported: use $(LINK2 #mtimes, mtimes) for an allocation-free scalar result.
+Shapes and arithmetic follow $(LINK2 #mtimes, mtimes). Two vector operands
+are not supported: use $(LINK2 #dotProduct, dotProduct) for a scalar result.
 Every output element is overwritten; its prior value is ignored. General
 strided output is supported. Empty inner dimensions fill the output with zeros.
 
@@ -584,7 +672,7 @@ version(mir_stat_test_linearAlgebra)
     auto v = vector[].sliced;
     assert(rcMtimes(a, v) == [14, 32]);
     assert(rcMtimes(v, at) == [14, 32]);
-    assert(rcMtimes(v, v) == 14);
+    assert(dotProduct(v, v) == 14);
     auto emptyA = mininitRcslice!double(2, 0);
     auto emptyB = mininitRcslice!double(0, 3);
     assert(rcMtimes(emptyA, emptyB) == zeros);
@@ -650,7 +738,7 @@ version(mir_stat_test_linearAlgebra)
     Complex!double[1] z = [Complex!double(1, 1)];
     auto zs = z[].sliced;
     // A bilinear product, not a conjugating inner product.
-    assert(rcMtimes(zs, zs) == Complex!double(0, 2));
+    assert(dotProduct(zs, zs) == Complex!double(0, 2));
     auto zm = z[].sliced(1, 1);
     assert(rcMtimes(zm, zm)[0, 0] == Complex!double(0, 2));
     assert(rcMtimes(zm, zs)[0] == Complex!double(0, 2));
@@ -678,11 +766,11 @@ version(mir_stat_test_linearAlgebra)
     assert(transposedVectorProduct == [14, 19, 24]);
     assert(rcMtimes(v, a) == transposedVectorProduct);
     assert(rcMtimes(a.reversed!1, b.reversed!0) == product);
-    assert(rcMtimes(v.reversed!0, v) == 12);
+    assert(dotProduct(v.reversed!0, v) == 12);
     auto mapped = a.map!"a * 2";
     auto doubled = rcMtimes(mapped, b);
     assert(doubled == product.map!"a * 2");
-    assert(rcMtimes(v.map!"a * 2", v) == 26);
+    assert(dotProduct(v.map!"a * 2", v) == 26);
     double[4] stridedVector = [2, -99, 3, -99];
     auto sv = stridedVector[].sliced.strided!0(2);
     assert(rcMtimes(at, sv) == transposedVectorProduct);
@@ -723,7 +811,7 @@ version(mir_stat_test_linearAlgebra)
     assert(allocator.allocations == 1 && allocator.releases == 0);
     allocator.dispose(result.field);
     assert(allocator.releases == 1);
-    assert(makeMtimes(allocator, data[].sliced, data[].sliced) == 30);
+    assert(dotProduct(data[].sliced) == 30);
     assert(allocator.allocations == 1); // scalar products allocate nothing
     auto bad = data[].sliced(1, 4);
     assertThrown!AssertError(makeMtimes(allocator, a, bad));
@@ -771,7 +859,7 @@ version(mir_stat_test_linearAlgebra)
     auto vectorOutput = vectorStorage[].sliced;
     mtimesInto(a, empty, vectorOutput);
     assert(vectorStorage == [0, 0]);
-    assert(rcMtimes(empty, empty) == 0);
+    assert(dotProduct(empty, empty) == 0);
 }
 
 version(mir_stat_test_linearAlgebra)
