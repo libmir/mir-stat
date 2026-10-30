@@ -176,8 +176,31 @@ jobs:
         echo "Linux DMD build CPU affinity: $cpus (at most three compiler workers)"
         exec taskset -c "$cpus" bash .github/scripts/linux-resources.sh run dub test --build=unittest-release --build-mode=singleFile --parallel
 
-    - name: Run optimized release tests (Windows)
-      if: runner.os == 'Windows'
+    - name: Run optimized release tests (Windows DMD)
+      if: runner.os == 'Windows' && startsWith(matrix.dc, 'dmd-')
+      shell: pwsh
+      # DUB uses the system CPU count on Windows, not process affinity.
+      # Use native parallelism only within the validated runner capacity.
+      # Replace this capacity check with an explicit worker limit when supported:
+      # https://github.com/dlang/dub/issues/3177
+      run: |
+        $buildArgs = @('test', '--build=unittest-release', '--build-mode=singleFile')
+        try {
+            $machine = Get-CimInstance Win32_ComputerSystem -OperationTimeoutSec 5 -ErrorAction Stop
+            $cpus = [int]$machine.NumberOfLogicalProcessors
+            if ($cpus -ge 2 -and $cpus -le 4 -and $machine.TotalPhysicalMemory -ge 12GB) {
+                $buildArgs += '--parallel'
+                Write-Output "Windows DMD per-file compilation: up to $cpus workers."
+            } else {
+                Write-Output "Windows DMD per-file compilation: sequential fallback ($cpus CPUs)."
+            }
+        } catch {
+            Write-Warning 'Runner capacity unavailable; using sequential per-file compilation.'
+        }
+        ./.github/scripts/windows-resources.ps1 Run dub @buildArgs
+
+    - name: Run optimized release tests (Windows LDC)
+      if: runner.os == 'Windows' && startsWith(matrix.dc, 'ldc-')
       shell: pwsh
       run: ./.github/scripts/windows-resources.ps1 Run dub test --build=unittest-release
 
