@@ -168,8 +168,13 @@ jobs:
 
     - name: Run optimized release tests (Linux DMD)
       if: runner.os == 'Linux' && startsWith(matrix.dc, 'dmd-')
-      # Keep build/link/run markers so CI log timestamps separate build and test time.
-      run: bash .github/scripts/linux-resources.sh run dub test --build=unittest-release
+      shell: bash
+      run: |
+        # Per-file compilation reduces peak memory; bound DUB's worker pool
+        # using up to three CPUs from the runner's allowed affinity set.
+        cpus=$(python3 -c 'import os; print(",".join(map(str, sorted(os.sched_getaffinity(0))[:3])))')
+        echo "Linux DMD build CPU affinity: $cpus (at most three compiler workers)"
+        exec taskset -c "$cpus" bash .github/scripts/linux-resources.sh run dub test --build=unittest-release --build-mode=singleFile --parallel
 
     - name: Run optimized release tests (Windows)
       if: runner.os == 'Windows'
