@@ -1758,7 +1758,7 @@ private F compensatedWeightedUniformAt(F, WeightedQuantileAlgo algorithm, Worksp
 }
 
 private auto compensatedWeightedUniform(F, WeightedQuantileAlgo algorithm,
-    QuantileAllocation allocation, Context, Workspace, P)(ref Context context,
+    QuantileAllocation allocation, size_t fixedResultLength = 0, Context, Workspace, P)(ref Context context,
     scope Workspace workspace, scope auto ref P probabilities, real maximum)
 {
     import std.traits: Unqual;
@@ -1777,8 +1777,17 @@ private auto compensatedWeightedUniform(F, WeightedQuantileAlgo algorithm,
     {
         scope auto levels = quantileSlice(probabilities);
         static assert(typeof(levels).N == 1, "Probabilities must be one-dimensional");
-        auto result = allocateQuantiles!(Unqual!F, allocation)(context, levels.length);
-        static if (allocation == QuantileAllocation.custom)
+        static if (fixedResultLength)
+        {
+            // Scalar summaries can keep a small set of quantiles on the stack.
+            assert(levels.length == fixedResultLength);
+            Unqual!F[fixedResultLength] result;
+        }
+        else
+        {
+            auto result = allocateQuantiles!(Unqual!F, allocation)(context, levels.length);
+        }
+        static if (!fixedResultLength && allocation == QuantileAllocation.custom)
             scope(failure) releaseQuantiles(context, result);
         foreach (i; 0 .. levels.length)
             result[i] = compensatedWeightedUniformAt!(F, algorithm)(workspace, levels[i], total, squares);
@@ -1972,7 +1981,7 @@ private auto weightedQuantileAt(F, WeightedQuantileAlgo algorithm, Workspace, P)
 }
 
 private auto allocatedWeightedQuantile(F, WeightedQuantileAlgo algorithm,
-    QuantileAllocation allocation, Context, Weights, Data, P)(
+    QuantileAllocation allocation, size_t fixedResultLength = 0, Context, Weights, Data, P)(
     ref Context context, scope auto ref Weights weights,
     scope auto ref Data data, scope auto ref P probabilities)
 {
@@ -2062,7 +2071,7 @@ private auto allocatedWeightedQuantile(F, WeightedQuantileAlgo algorithm,
                 // additional allocation or scan of the original inputs.
                 enum threshold = sqrt(real.epsilon);
                 if (mass < threshold)
-                    return compensatedWeightedUniform!(F, algorithm, allocation)(
+                    return compensatedWeightedUniform!(F, algorithm, allocation, fixedResultLength)(
                         context, workspace, probabilities, maximum);
             }
             suffix.put(mass);
@@ -2125,8 +2134,17 @@ private auto allocatedWeightedQuantile(F, WeightedQuantileAlgo algorithm,
     {
         scope auto levels = quantileSlice(probabilities);
         static assert(typeof(levels).N == 1, "Probabilities must be one-dimensional");
-        auto result = allocateQuantiles!(Unqual!F, allocation)(context, levels.length);
-        static if (allocation == QuantileAllocation.custom)
+        static if (fixedResultLength)
+        {
+            // Scalar summaries can keep a small set of quantiles on the stack.
+            assert(levels.length == fixedResultLength);
+            Unqual!F[fixedResultLength] result;
+        }
+        else
+        {
+            auto result = allocateQuantiles!(Unqual!F, allocation)(context, levels.length);
+        }
+        static if (!fixedResultLength && allocation == QuantileAllocation.custom)
             scope(failure) releaseQuantiles(context, result);
         foreach (i; 0 .. levels.length)
             result[i] = weightedQuantileAt!(F, algorithm)(workspace, levels[i], effectiveSize);
@@ -3873,6 +3891,65 @@ private struct QuantileTestAllocator(bool throwing = false)
     }
 }
 
+// Fixed-size summary results need only the sorted workspace, including when
+// relative weights require the compensated type 7/type 8 path.
+version(mir_stat_test)
+@system pure nothrow @nogc unittest
+{
+    alias A = WeightedQuantileAlgo;
+    double[4] values = [0, 2, 6, 10];
+    double[2] probabilities = [0.25, 0.75];
+    double[4][2] cases = [[1.0, 2, 1, 2], [1e-30, 2, 1, 2]];
+    foreach (weights; cases)
+        static foreach (member; __traits(allMembers, A))
+        {{
+            enum algorithm = __traits(getMember, A, member);
+            static if (algorithm == A.frequencyType7 || algorithm == A.frequencyType8)
+                const supported = weights[0] == 1;
+            else
+                enum supported = true;
+            if (supported)
+            {
+                QuantileTestAllocator!() allocator;
+                auto pair = allocatedWeightedQuantile!(real, algorithm,
+                    QuantileAllocation.custom, 2)(allocator, weights, values, probabilities);
+                static assert(is(typeof(pair) == real[2]));
+                assert(allocator.allocations == 1 && allocator.releases == 1);
+                auto expected = rcWeightedQuantile!(real, algorithm)(values, weights, probabilities);
+                assert(pair[0] == expected[0] && pair[1] == expected[1]);
+                assert(weightedInterquartileRange!(real, algorithm)(values, weights) == pair[1] - pair[0]);
+            }
+        }}
+}
+
+// Both result-storage paths release scratch when evaluation fails.
+version(mir_stat_test)
+@system unittest
+{
+    import std.exception: assertThrown;
+    import mir.ndslice.slice: sliced;
+    import mir.ndslice.topology: map;
+    double[3] values = [0, 2, 10];
+    double[3] weights = [1e-30, 1, 1];
+    double[2] invalid = [0.25, 2];
+    static double readProbability(double probability)
+    {
+        if (probability > 1) throw new Exception("probability read failed");
+        return probability;
+    }
+    auto probabilities = invalid[].sliced.map!readProbability;
+    static foreach (algorithm; [WeightedQuantileAlgo.averagedInverseCDF,
+        WeightedQuantileAlgo.type7])
+    {{
+        QuantileTestAllocator!() fixedAllocator, sliceAllocator;
+        assertThrown!Exception((allocatedWeightedQuantile!(double, algorithm,
+            QuantileAllocation.custom, 2)(fixedAllocator, weights, values, probabilities)));
+        assert(fixedAllocator.allocations == 1 && fixedAllocator.releases == 1);
+        assertThrown!Exception(makeWeightedQuantile!algorithm(sliceAllocator, values, weights, probabilities));
+        assert(sliceAllocator.allocations == 2 && sliceAllocator.releases == 2);
+    }}
+}
+
 // Scratch is released before return, while result storage remains caller-owned.
 version(mir_stat_test)
 @system pure nothrow @nogc
@@ -4998,9 +5075,12 @@ template weightedInterquartileRange(F,
         import mir.primitives: DeepElementType;
         import std.traits: Unqual;
         alias Element = Unqual!(DeepElementType!Data);
+        QuantileContext context;
+        double[2] probabilities = [0.25, 0.75];
         static if (algorithm == WeightedQuantileAlgo.inverseCDF && isIntegral!Element)
         {
-            auto quartiles = rcWeightedQuantile!algorithm(data, weights, 0.25, 0.75);
+            auto quartiles = allocatedWeightedQuantile!(Element, algorithm, QuantileAllocation.rc, 2)(
+                context, weights, data, probabilities);
             const ulong distance = cast(ulong) quartiles[1] - cast(ulong) quartiles[0];
             static if (isIntegral!F)
                 assert(distance <= F.max, "weightedInterquartileRange: result is out of range");
@@ -5010,7 +5090,8 @@ template weightedInterquartileRange(F,
         {
             static assert(isFloatingPoint!F,
                 "weightedInterquartileRange: nonintegral observations require a floating result");
-            auto quartiles = rcWeightedQuantile!(real, algorithm)(data, weights, 0.25, 0.75);
+            auto quartiles = allocatedWeightedQuantile!(real, algorithm, QuantileAllocation.rc, 2)(
+                context, weights, data, probabilities);
             return cast(F)(quartiles[1] - quartiles[0]);
         }
     }
