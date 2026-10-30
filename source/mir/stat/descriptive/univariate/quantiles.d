@@ -28,6 +28,7 @@ $(TR $(TH Category) $(TH Declarations))
         $(REF quantileInto, mir, stat, descriptive, univariate, quantiles)$(NBSP)
     ))
     $(TR $(TD Weighted quantiles) $(TD
+        $(REF weightedMedian, mir, stat, descriptive, univariate, quantiles)$(NBSP)
         $(REF weightedQuantile, mir, stat, descriptive, univariate, quantiles)$(NBSP)
         $(REF rcWeightedQuantile, mir, stat, descriptive, univariate, quantiles)$(NBSP)
         $(REF makeWeightedQuantile, mir, stat, descriptive, univariate, quantiles)$(NBSP)
@@ -35,6 +36,7 @@ $(TR $(TH Category) $(TH Declarations))
     $(TR $(TD Measures of spread) $(TD
         $(REF weightedInterquartileRange, mir, stat, descriptive, univariate, quantiles)$(NBSP)
         $(REF interquartileRange, mir, stat, descriptive, univariate, quantiles)$(NBSP)
+        $(REF weightedMedianAbsoluteDeviation, mir, stat, descriptive, univariate, quantiles)$(NBSP)
         $(REF medianAbsoluteDeviation, mir, stat, descriptive, univariate, quantiles)$(NBSP)
     ))
     $(TR $(TD Algorithm selection) $(TD
@@ -71,6 +73,13 @@ import mir.stat.descriptive.univariate.means: mean;
 
 /++
 Computes the median of `slice`.
+
+For an odd number of observations, this is the middle sorted observation;
+for an even number, it is the average of the two middle observations.
+For at least two observations, this agrees mathematically with the type 2
+or type 7 quantile at probability 0.5. The dedicated median implementation
+uses selection and small-input fast paths. For observations
+with unequal weights, see $(LREF weightedMedian).
 
 By default, if `F` is not floating point type or complex type, then the result
 will have a `double` type if `F` is implicitly convertible to a floating point
@@ -2073,12 +2082,30 @@ private auto allocatedWeightedQuantile(F, WeightedQuantileAlgo algorithm,
     else
     {
         Summator!(real, Summation.kahan) cumulative;
-        foreach (i; 0 .. workspace.length)
+        static if (algorithm == WeightedQuantileAlgo.inverseCDF ||
+            algorithm == WeightedQuantileAlgo.averagedInverseCDF)
         {
-            // Scaling before accumulation avoids overflow in the raw weight sum.
-            cumulative.put(workspace[i].cumulative / maximum);
-            workspace[i].cumulative = cumulative.sum;
+            import std.math: frexp, ldexp;
+            int exponent;
+            frexp(maximum, exponent);
+            // A power-of-two scale avoids rounding each weight through an
+            // arbitrary divisor, which can move an exact CDF boundary.
+            // Keep the largest scaled weight in [1, 2), retaining at least
+            // as much subnormal range as division by the largest weight.
+            foreach (i; 0 .. workspace.length)
+            {
+                cumulative.put(ldexp(workspace[i].cumulative, 1 - exponent));
+                workspace[i].cumulative = cumulative.sum;
+            }
         }
+        else
+            foreach (i; 0 .. workspace.length)
+            {
+                // Effective-size algorithms use the same scale in their
+                // prefix, suffix, and squared-weight sums.
+                cumulative.put(workspace[i].cumulative / maximum);
+                workspace[i].cumulative = cumulative.sum;
+            }
     }
     real effectiveSize = 1;
     static if (weightedQuantileUsesEffectiveSize!algorithm)
@@ -2161,9 +2188,11 @@ Except for frequencyType7 and frequencyType8, the mathematical result is
 invariant to positive rescaling of all weights. Frequency algorithms instead
 use exact cumulative integer counts and the total frequency as sample size.
 For probability-weight algorithms, cumulative masses use compensated summation
-in $(TT real), after dividing by the
-largest weight to avoid raw-sum overflow. For inverseCDF and averagedInverseCDF,
-each boundary is the cumulative mass divided by the total mass in $(TT real).
+in $(TT real). InverseCDF and averagedInverseCDF scale weights by a common power
+of two to avoid raw-sum overflow without introducing division roundoff into
+otherwise exactly representable weights. Other probability-weight algorithms
+divide by the largest weight. For inverseCDF and averagedInverseCDF, each
+boundary is the cumulative mass divided by the total mass in $(TT real).
 The requested probability is compared with that represented boundary without a
 tolerance. This avoids rounding the probability onto a boundary by multiplying
 it by the total mass. Rounding and underflow can affect tiny masses or
@@ -4791,6 +4820,129 @@ package(mir.stat) auto quantileSpread(F, QuantileAlgo algorithm, bool modify, S,
 }
 
 /++
+Computes the weighted median using the averaged inverse empirical CDF.
+
+Sort the observations and add their weights until reaching half the total
+weight. If the cumulative weight is exactly half, average that observation
+and the next positive-weight observation. Otherwise, return the observation
+that takes the cumulative weight past half.
+
+For example, values [0, 10] with weights [1, 1] have median 5; with weights
+[1, 3], their weighted median is 10. Use this function for a single measure
+of the center when some observations deserve more weight than others.
+With equal weights it follows the ordinary $(LREF median) convention.
+With whole-number counts it follows the median of the expanded sample:
+[0, 10] with counts [1, 3] represents [0, 10, 10, 10].
+
+Weights are relative masses: multiplying every weight by the same positive
+factor leaves the mathematical result unchanged. This function is equivalent
+to $(D rcWeightedQuantile!(F, WeightedQuantileAlgo.averagedInverseCDF)(data, weights, 0.5)).
+It has one fixed convention, just as $(LREF median) does. To choose another
+convention, use $(LREF weightedQuantile) or $(LREF rcWeightedQuantile) at 0.5.
+For example, inverseCDF selects 0 rather than 5 for [0, 10] with equal weights;
+use that convention when the result must be an observed value.
+
+Inputs are not modified. Sorting uses reference-counted scratch storage.
+Only one-dimensional inputs are supported. Weights must be finite and
+nonnegative, with at least one positive weight; observations with zero weight
+are excluded. Other input requirements and floating-point limits follow
+$(LREF weightedQuantile), including comparisons with represented CDF
+boundaries without a tolerance. Large integral observations can lose precision
+in the floating-point result.
+
+Params:
+    F = floating-point result type; inferred as for averagedInverseCDF when omitted
++/
+template weightedMedian(F)
+    if (isFloatingPoint!F)
+{
+    /++
+    Params:
+        data = observations corresponding to the weights
+        weights = nonnegative finite relative weights
+    +/
+    F weightedMedian(Data, Weights)(
+        scope auto ref Data data, scope auto ref Weights weights)
+    {
+        return rcWeightedQuantile!(F, WeightedQuantileAlgo.averagedInverseCDF)(
+            data, weights, 0.5);
+    }
+}
+
+/// ditto
+auto weightedMedian(Data, Weights)(
+    scope auto ref Data data, scope auto ref Weights weights)
+{
+    alias F = WeightedQuantileResult!(Data, WeightedQuantileAlgo.averagedInverseCDF);
+    return .weightedMedian!F(data, weights);
+}
+
+///
+version(mir_stat_test)
+@safe pure nothrow @nogc unittest
+{
+    const int[2] values = [0, 10];
+    const int[2] equal = [1, 1], counts = [1, 3];
+    assert(weightedMedian(values, equal) == 5);
+    assert(weightedMedian(values, counts) == 10);
+    const double[2] proportions = [0.25, 0.75];
+    assert(weightedMedian(values, proportions) == 10);
+    assert(rcWeightedQuantile!(WeightedQuantileAlgo.inverseCDF)(values, equal, 0.5) == 0);
+}
+
+version(mir_stat_test)
+@safe pure nothrow @nogc unittest
+{
+    import mir.ndslice.slice: sliced;
+    import mir.ndslice.topology: stride;
+
+    import std.meta: AliasSeq;
+    static foreach (T; AliasSeq!(float, double, real, int, long, ulong))
+    {{
+        T[5] values = [9, 1, 5, 3, 7];
+        int[5] equal = [1, 1, 1, 1, 1];
+        foreach (n; 1 .. values.length + 1)
+            assert(weightedMedian(values[0 .. n], equal[0 .. n]) == median(values[0 .. n]));
+        int[5] counts = [1, 2, 1, 3, 1];
+        T[8] expanded = [9, 1, 1, 5, 3, 3, 3, 7];
+        assert(weightedMedian(values, counts) == median(expanded[]));
+        assert(values == [9, 1, 5, 3, 7]);
+        assert(counts == [1, 2, 1, 3, 1]);
+    }}
+    const int[6] values = [0, -1, 1, -1, -1, 1];
+    const int[6] counts = [1, 2, 3, 1, 2, 3];
+    assert(weightedMedian(values, counts) == 0.5);
+    assert(weightedMedian!float(values, counts) == 0.5f);
+    static assert(is(typeof(weightedMedian(values, counts)) == double));
+    static assert(is(typeof(weightedMedian!float(values, counts)) == float));
+    static foreach (T; AliasSeq!(float, double, real))
+    {{
+        T[2] x = [0, 10];
+        static assert(is(typeof(weightedMedian(x, x)) == T));
+        assert(weightedMedian(x, [1, 1]) == 5);
+    }}
+    const double[4] storage = [0, double.nan, 10, double.nan];
+    const int[4] masses = [1, 0, 1, 0];
+    assert(weightedMedian(storage, masses) == 5);
+    assert(weightedMedian(storage[].sliced.stride(2), masses[].sliced.stride(2)) == 5);
+    assert(weightedMedian([double.max, double.max], [1, 1]) == double.max);
+    assert(weightedMedian([-double.max, double.max], [1, 1]) == 0);
+}
+
+version(mir_stat_test)
+@system unittest
+{
+    import core.exception: AssertError;
+    import std.exception: assertThrown;
+    double[2] values = [0, 10];
+    assertThrown!AssertError(weightedMedian(values, [0, 0]));
+    assertThrown!AssertError(weightedMedian(values, [1, -1]));
+    assertThrown!AssertError(weightedMedian(values, [1]));
+    assertThrown!AssertError(weightedMedian(values[0 .. 0], values[0 .. 0]));
+    assertThrown!AssertError(weightedMedian(values, [1, double.infinity]));
+}
+
+/++
 Difference between the weighted 75th and 25th percentiles.
 
 Use this measure of spread when the middle half of the weighted distribution
@@ -5253,6 +5405,165 @@ unittest
                           2.5, 1.8, 2.2, 3.8, 5.2, 9.2, 6.2, 9.2, 9.2, 8.5];
 
     assert(x.sliced.interquartileRange.approxEqual(5.25));
+}
+
+/++
+Weighted median of the absolute distances from the weighted median.
+
+Use this raw measure of spread when extreme observations should have less
+influence than they have on standard deviation. The same
+$(LREF WeightedQuantileAlgo) is used to find the center and to summarize the
+absolute deviations. Each deviation retains its observation's original weight.
+The result has the same units as the observations; no normal-distribution
+consistency factor or sample-variance correction is applied.
+
+The default, $(D averagedInverseCDF), uses the same convention as
+$(LREF weightedMedian) for both stages: average adjacent observations at an
+exact halfway boundary. With equal weights this follows ordinary
+$(LREF medianAbsoluteDeviation); whole-number counts follow the MAD of the
+expanded sample. For values [0, 10] with equal weights, the center is 5,
+both absolute deviations are 5, and MAD is 5.
+
+Choose $(D inverseCDF) when both quantile stages should select an observed
+value instead of averaging at a boundary. For the same example it selects
+center 0, then deviation 0, giving MAD 0. Choose $(D frequencyType7) or
+$(D frequencyType8) to explicitly use expanded-sample quantiles with
+whole-number counts. These also give MAD 5. Fractional relative weights are
+accepted by the default, so no frequency option is needed just to match the
+usual median convention.
+
+Other relative-weight definitions are described in $(LREF WeightedQuantileAlgo).
+Multiplying relative weights by a common positive factor leaves the
+mathematical result unchanged. These choices describe quantile conventions,
+not sample-variance corrections.
+
+Input requirements and algorithm-specific numerical limits follow
+$(LREF weightedQuantile). Observations and weights must be one-dimensional
+and have matching lengths. Weights must be finite and nonnegative, with at
+least one positive weight. Zero-weight observations are excluded, including
+nonfinite observations. Frequency algorithms additionally require whole-number
+counts within the weighted quantile engine's supported range.
+
+Inputs are not modified. Reference-counted scratch storage holds deviations
+and the weighted quantile workspaces; the two quantile stages each sort their
+own workspace. Storage is O(n) and sorting takes O(n log n).
+
+Integral observations are shifted by their smallest positive-weight value
+using exact unsigned differences before interpolation. Inverse-CDF centers
+and deviations remain integral until the final conversion. Other algorithms
+use real intermediates; interpolation and centering can still lose precision
+when the data span a very wide range. Floating-point deviations are halved
+when needed to avoid overflow, and the scale is restored after the second
+quantile. Results are converted to the requested floating type only at the
+end. The precision and range of real depend on the compiler and platform.
+
+Params:
+    F = result type, promoted to floating point as for medianAbsoluteDeviation
+    algorithm = weighted quantile definition, default averagedInverseCDF
++/
+template weightedMedianAbsoluteDeviation(F,
+    WeightedQuantileAlgo algorithm = WeightedQuantileAlgo.averagedInverseCDF)
+{
+    /++
+    Params:
+        data = observations corresponding to the weights
+        weights = relative weights, or occurrence counts for frequency algorithms
+    +/
+    meanType!F weightedMedianAbsoluteDeviation(Data, Weights)(
+        scope auto ref Data data, scope auto ref Weights weights)
+    {
+        import mir.ndslice.allocation: rcslice;
+        import std.traits: Unqual, isNumeric;
+        import std.math: abs, isFinite, ldexp;
+        alias Result = typeof(return);
+        static assert(isFloatingPoint!Result,
+            "weightedMedianAbsoluteDeviation: result must be floating point");
+        scope auto values = quantileSlice(data);
+        scope auto masses = quantileSlice(weights);
+        static assert(typeof(values).N == 1 && typeof(masses).N == 1,
+            "weightedMedianAbsoluteDeviation: inputs must be one-dimensional");
+        alias Element = Unqual!(typeof(values).DeepElement);
+        static assert(isNumeric!Element,
+            "weightedMedianAbsoluteDeviation: observations must be numeric");
+        assert(values.length == masses.length,
+            "weightedMedianAbsoluteDeviation: lengths must match");
+        static if (isIntegral!Element)
+        {
+            Element anchor = Element.max;
+            foreach (i; 0 .. values.length)
+                if (masses[i] > 0 && values[i] < anchor) anchor = values[i];
+            auto offsets = rcslice!ulong([values.length], 0UL);
+            foreach (i; 0 .. values.length)
+                if (masses[i] > 0)
+                    offsets[i] = cast(ulong) values[i] - cast(ulong) anchor;
+            static if (algorithm == WeightedQuantileAlgo.inverseCDF)
+            {
+                const center = rcWeightedQuantile!(ulong, algorithm)(offsets, masses, 0.5);
+                foreach (ref value; offsets)
+                    value = value < center ? center - value : value - center;
+                return cast(Result) rcWeightedQuantile!(ulong, algorithm)(offsets, masses, 0.5);
+            }
+            else
+            {
+                const center = rcWeightedQuantile!(real, algorithm)(offsets, masses, 0.5);
+                auto deviations = rcslice!real([values.length], 0.0L);
+                foreach (i; 0 .. values.length)
+                    if (masses[i] > 0) deviations[i] = abs(cast(real) offsets[i] - center);
+                return cast(Result) rcWeightedQuantile!(real, algorithm)(deviations, masses, 0.5);
+            }
+        }
+        else
+        {
+            const center = rcWeightedQuantile!(real, algorithm)(values, masses, 0.5);
+            bool halve;
+            foreach (i; 0 .. values.length)
+                if (masses[i] > 0 && !isFinite(cast(real) values[i] - center))
+                    halve = true;
+            auto deviations = rcslice!real([values.length], 0.0L);
+            foreach (i; 0 .. values.length)
+                if (masses[i] > 0)
+                {
+                    const value = cast(real) values[i];
+                    const gap = value - center;
+                    // Preserve close differences before scaling; split the
+                    // subtraction only when the unscaled gap overflows.
+                    deviations[i] = halve ? (isFinite(gap) ? abs(gap) / 2 :
+                        abs(value / 2 - center / 2)) : abs(gap);
+                }
+            const result = rcWeightedQuantile!(real, algorithm)(deviations, masses, 0.5);
+            return cast(Result) (halve ? ldexp(result, 1) : result);
+        }
+    }
+}
+
+/// ditto
+template weightedMedianAbsoluteDeviation(
+    WeightedQuantileAlgo algorithm = WeightedQuantileAlgo.averagedInverseCDF)
+{
+    /// ditto
+    auto weightedMedianAbsoluteDeviation(Data, Weights)(
+        scope auto ref Data data, scope auto ref Weights weights)
+    {
+        import mir.primitives: DeepElementType;
+        return .weightedMedianAbsoluteDeviation!(DeepElementType!Data, algorithm)(data, weights);
+    }
+}
+
+/// Choose the convention that matches the meaning of your observations.
+@safe pure nothrow @nogc unittest
+{
+    import mir.stat.descriptive.univariate.quantiles: WeightedQuantileAlgo;
+    double[2] values = [0, 10];
+    int[2] counts = [1, 1];
+    assert(weightedMedianAbsoluteDeviation(values, counts) == 5);
+    assert(weightedMedianAbsoluteDeviation!(WeightedQuantileAlgo.inverseCDF)(values, counts) == 0);
+    assert(weightedMedianAbsoluteDeviation!(WeightedQuantileAlgo.frequencyType7)(values, counts) == 5);
+    assert(weightedMedianAbsoluteDeviation!(WeightedQuantileAlgo.averagedInverseCDF)(values, counts) == 5);
+    double[3] data = [0, 10, 1000];
+    double[3] emphasis = [2, 3, 1];
+    // The weighted median is 10. Distances [10, 0, 990] keep weights [2, 3, 1].
+    // Half the deviation mass is at 0, so average 0 and 10.
+    assert(weightedMedianAbsoluteDeviation(data, emphasis) == 5);
 }
 
 /++
@@ -5941,4 +6252,135 @@ unittest
         double[2] weights = [1, bad];
         assertThrown!AssertError(weightedInterquartileRange(x, weights));
     }
+}
+
+version(mir_stat_test)
+@safe pure nothrow @nogc unittest
+{
+    import mir.math.common: approxEqual;
+    import mir.ndslice.slice: sliced;
+    import mir.ndslice.topology: stride;
+    import std.meta: AliasSeq;
+    alias A = WeightedQuantileAlgo;
+    static foreach (T; AliasSeq!(float, double, real, int, long, ulong))
+    {{
+        T[4] values = [0, 2, 6, 10];
+        int[4] weights = [1, 2, 1, 2], scaledWeights = [4, 8, 4, 8];
+        T[6] expanded = [0, 2, 2, 6, 10, 10];
+        int[4] equalWeights = [1, 1, 1, 1];
+        assert(weightedMedianAbsoluteDeviation(values, equalWeights) ==
+            medianAbsoluteDeviation(values[].sliced));
+        assert(weightedMedianAbsoluteDeviation(values, weights) ==
+            medianAbsoluteDeviation(expanded[].sliced));
+        static foreach (member; __traits(allMembers, A))
+        {{
+            enum algo = __traits(getMember, A, member);
+            const result = weightedMedianAbsoluteDeviation!algo(values, weights);
+            alias R = typeof(result);
+            T[4] constant = [3, 3, 3, 3];
+            assert(weightedMedianAbsoluteDeviation!algo(constant, weights) == 0);
+            static if (algo == A.frequencyType7 || algo == A.frequencyType8)
+                assert(result.approxEqual(medianAbsoluteDeviation(expanded[].sliced), 256 * R.epsilon));
+            else
+                assert(result.approxEqual(weightedMedianAbsoluteDeviation!algo(values, scaledWeights), 256 * R.epsilon));
+            // Translating and scaling observations preserve/scale raw MAD.
+            T[4] transformed = [20, 24, 32, 40];
+            assert((2 * result).approxEqual(weightedMedianAbsoluteDeviation!algo(transformed, weights), 256 * R.epsilon));
+        }}
+    }}
+    double[4] values = [100, 0, 2, 10];
+    int[4] weights = [1, 2, 3, 4];
+    assert(weightedMedianAbsoluteDeviation(values, weights) == 4);
+    assert(values == [100, 0, 2, 10] && weights == [1, 2, 3, 4]);
+    double[8] storage = [100, 99, 0, 99, 2, 99, 10, 99];
+    int[8] masses = [1, 99, 2, 99, 3, 99, 4, 99];
+    assert(weightedMedianAbsoluteDeviation(storage[].sliced.stride(2), masses[].sliced.stride(2)) == 4);
+    const double[3] masked = [double.nan, 0, 10];
+    const int[3] mask = [0, 1, 1];
+    assert(weightedMedianAbsoluteDeviation(masked, mask) == 5);
+    assert(weightedMedianAbsoluteDeviation!(A.frequencyType7)(masked, mask) == 5);
+    double[1] one = [7];
+    int[1] unit = [1];
+    assert(weightedMedianAbsoluteDeviation(one, unit) == 0);
+    static assert(is(typeof(weightedMedianAbsoluteDeviation(values, weights)) == double));
+    static assert(is(typeof(weightedMedianAbsoluteDeviation!float(values, weights)) == float));
+    long[3] nearMax = [long.max - 2, long.max - 1, long.max];
+    int[3] equal = [1, 1, 1];
+    static foreach (algo; [A.inverseCDF, A.averagedInverseCDF, A.frequencyType7, A.frequencyType8])
+    {
+        assert(weightedMedianAbsoluteDeviation!algo(nearMax, equal) == 1);
+        assert(weightedMedianAbsoluteDeviation!(float, algo)(nearMax, equal) == 1);
+    }
+    long[2] adjacent = [long.max - 1, long.max];
+    int[2] pair = [1, 1];
+    assert(weightedMedianAbsoluteDeviation(adjacent, pair) == 0.5);
+    assert(weightedMedianAbsoluteDeviation!(A.frequencyType7)(adjacent, pair) == 0.5);
+    long[2] fullSigned = [long.min, long.max];
+    assert(weightedMedianAbsoluteDeviation!(A.inverseCDF)(fullSigned, pair) == 0);
+    assert(weightedMedianAbsoluteDeviation(fullSigned, pair) == 0x1p63);
+    assert(weightedMedianAbsoluteDeviation!(A.frequencyType7)(fullSigned, pair) == 0x1p63);
+    ulong[3] unsignedHigh = [ulong.max - 2, ulong.max - 1, ulong.max];
+    assert(weightedMedianAbsoluteDeviation!(A.frequencyType7)(unsignedHigh, equal) == 1);
+    real[4] extreme = [-real.max, -real.max / 2, real.max / 2, real.max];
+    int[4] uniform = [1, 1, 1, 1];
+    // The last deviation overflows real, but the selected MAD is finite.
+    assert(weightedMedianAbsoluteDeviation!(A.inverseCDF)(extreme, uniform) == real.max / 2);
+    assert(weightedMedianAbsoluteDeviation(extreme, uniform).approxEqual(real.max * 0.75L));
+}
+
+version(mir_stat_test)
+unittest
+{
+    import std.exception: assertThrown;
+    import core.exception: AssertError;
+    double[2] x = [0, 10], zero = [0, 0], negative = [1, -1], fractional = [1, 0.5];
+    int[2] integers = [0, 10];
+    assertThrown!AssertError(weightedMedianAbsoluteDeviation(x, zero));
+    assertThrown!AssertError(weightedMedianAbsoluteDeviation(integers, zero));
+    assertThrown!AssertError(weightedMedianAbsoluteDeviation(x, negative));
+    assertThrown!AssertError(weightedMedianAbsoluteDeviation(integers, negative));
+    assertThrown!AssertError(weightedMedianAbsoluteDeviation(x, zero[0 .. 1]));
+    assertThrown!AssertError(weightedMedianAbsoluteDeviation(x[0 .. 0], zero[0 .. 0]));
+    assertThrown!AssertError(weightedMedianAbsoluteDeviation!(WeightedQuantileAlgo.frequencyType7)(x, fractional));
+    assertThrown!AssertError(weightedMedianAbsoluteDeviation!(WeightedQuantileAlgo.frequencyType7)(integers, fractional));
+    foreach (bad; [double.nan, double.infinity])
+    {
+        double[2] invalid = [1, bad];
+        assertThrown!AssertError(weightedMedianAbsoluteDeviation(x, invalid));
+        assertThrown!AssertError(weightedMedianAbsoluteDeviation(integers, invalid));
+        double[2] weights = [1, 1];
+        assertThrown!AssertError(weightedMedianAbsoluteDeviation(invalid, weights));
+    }
+}
+
+// Empirical CDF boundaries must not move just because weights such as 1, 2,
+// and 3 were individually divided by 3 before accumulation.
+version(mir_stat_test)
+@safe pure nothrow @nogc unittest
+{
+    import std.math: nextafter, ldexp;
+    alias A = WeightedQuantileAlgo;
+    int[6] values = [0, -1, 1, -1, -1, 1];
+    real[6] weights = [1, 2, 3, 1, 2, 3];
+    int[3] combined = [-1, 0, 1];
+    real[3] totals = [5, 1, 6];
+    static foreach (algorithm; [A.inverseCDF, A.averagedInverseCDF])
+    {{
+        alias q = rcWeightedQuantile!(double, algorithm);
+        enum expected = algorithm == A.inverseCDF ? 0.0 : 0.5;
+        foreach (exponent; [0, real.max_exp - 3, real.min_exp - real.mant_dig])
+        {
+            real[6] scaled;
+            real[3] grouped;
+            foreach (i; 0 .. scaled.length) scaled[i] = ldexp(weights[i], exponent);
+            foreach (i; 0 .. grouped.length) grouped[i] = ldexp(totals[i], exponent);
+            assert(q(values, scaled, 0.5L) == expected);
+            assert(q(combined, grouped, 0.5L) == expected);
+            assert(q(values, scaled, nextafter(0.5L, 0.0L)) == 0);
+            assert(q(values, scaled, nextafter(0.5L, 1.0L)) == 1);
+        }
+        real[7] maskedValues = [real.nan, 0, -1, 1, -1, -1, 1];
+        int[7] mask = [0, 1, 2, 3, 1, 2, 3];
+        assert(q(maskedValues, mask, 0.5L) == expected);
+    }}
 }
