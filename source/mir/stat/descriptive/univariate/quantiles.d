@@ -41,7 +41,9 @@ $(TR $(TH Category) $(TH Declarations))
         $(REF interquartileRange, mir, stat, descriptive, univariate, quantiles)$(NBSP)
         $(REF makeInterquartileRange, mir, stat, descriptive, univariate, quantiles)$(NBSP)
         $(REF weightedMedianAbsoluteDeviation, mir, stat, descriptive, univariate, quantiles)$(NBSP)
+        $(REF makeWeightedMedianAbsoluteDeviation, mir, stat, descriptive, univariate, quantiles)$(NBSP)
         $(REF medianAbsoluteDeviation, mir, stat, descriptive, univariate, quantiles)$(NBSP)
+        $(REF makeMedianAbsoluteDeviation, mir, stat, descriptive, univariate, quantiles)$(NBSP)
     ))
     $(TR $(TD Algorithm selection) $(TD
         $(REF QuantileAlgo, mir, stat, descriptive, univariate, quantiles)$(NBSP)
@@ -5861,6 +5863,314 @@ version(mir_stat_test)
 }
 
 /++
+Compute raw median absolute deviation using caller-selected scratch allocation.
+
+Uses the convention, result types, and numerical safeguards of
+$(LREF medianAbsoluteDeviation). For values [0, 2, 6, 10], the median is 4,
+the absolute deviations are [4, 2, 2, 6], and their median is 3.
+No normal-distribution scaling factor is applied.
+
+Use this function when an application supplies its own allocator for temporary
+storage. All scratch uses allocator and is released before return, including
+on exceptions. The scalar result requires no disposal. Attributes depend on
+the allocator and input operations. Inputs remain unchanged; there is no
+allowModify option, since replacing observations with deviations is different
+from rearranging them and can require a different element type.
+
+Integral observations retain exact differences where supported by the ordinary
+MAD calculation. The output type does not narrow the center before deviations
+are computed. Arrays and Mir slices are accepted, including multidimensional
+slices. Small inputs can need no scratch and therefore make no allocator calls.
+
+Params:
+    F = output type, promoted as for medianAbsoluteDeviation
++/
+template makeMedianAbsoluteDeviation(F)
+{
+    /++
+    Params:
+        allocator = allocator for temporary storage
+        data = observations
+    +/
+    @fmamath meanType!F makeMedianAbsoluteDeviation(Allocator, Data)(
+        ref Allocator allocator, scope auto ref Data data)
+    {
+        scope auto source = quantileSlice(data);
+        return allocatedMAD!(F, QuantileAllocation.custom)(allocator, source.lightScope);
+    }
+}
+
+/// ditto
+@fmamath auto makeMedianAbsoluteDeviation(Allocator, Data)(
+    ref Allocator allocator, scope auto ref Data data)
+{
+    alias F = meanType!(typeof(quantileSlice(data)));
+    return .makeMedianAbsoluteDeviation!F(allocator, data);
+}
+
+/++
+Compute raw weighted median absolute deviation using caller-selected scratch allocation.
+
+Uses the definitions, result types, and numerical limits of
+$(LREF weightedMedianAbsoluteDeviation). Both median stages default to
+averagedInverseCDF, matching $(LREF weightedMedian). Each deviation retains
+its observation's original weight. For [0, 10] with equal weights the default
+MAD is 5; choosing inverseCDF gives 0. Allocator choice does not change this
+statistical convention, and no normal-distribution scaling factor is applied.
+
+All temporary buffers, including both weighted quantile workspaces, use
+allocator and are released before return, including on exceptions. The scalar
+result needs no disposal. Attributes depend on the allocator and input
+operations. Both observations and weights remain unchanged; there is no
+input-modification option. Use this function to control temporary allocation
+while retaining weighted MAD's integral-offset and overflow safeguards.
+
+Params:
+    F = output type, promoted as for weightedMedianAbsoluteDeviation
+    algorithm = weighted quantile convention, default averagedInverseCDF
++/
+template makeWeightedMedianAbsoluteDeviation(F,
+    WeightedQuantileAlgo algorithm = WeightedQuantileAlgo.averagedInverseCDF)
+{
+    /++
+    Params:
+        allocator = allocator for temporary storage
+        data = observations corresponding to the weights
+        weights = relative weights, or occurrence counts for frequency algorithms
+    +/
+    meanType!F makeWeightedMedianAbsoluteDeviation(Allocator, Data, Weights)(
+        ref Allocator allocator, scope auto ref Data data, scope auto ref Weights weights)
+    {
+        return allocatedWeightedMAD!(F, algorithm, QuantileAllocation.custom)(allocator, data, weights);
+    }
+}
+
+/// ditto
+template makeWeightedMedianAbsoluteDeviation(
+    WeightedQuantileAlgo algorithm = WeightedQuantileAlgo.averagedInverseCDF)
+{
+    /// ditto
+    auto makeWeightedMedianAbsoluteDeviation(Allocator, Data, Weights)(
+        ref Allocator allocator, scope auto ref Data data, scope auto ref Weights weights)
+    {
+        import mir.primitives: DeepElementType;
+        return .makeWeightedMedianAbsoluteDeviation!(DeepElementType!Data, algorithm)(allocator, data, weights);
+    }
+}
+
+/// Allocator selection leaves the raw MAD convention unchanged.
+version(mir_stat_test)
+@system pure nothrow @nogc unittest
+{
+    import std.experimental.allocator.mallocator: Mallocator;
+    const double[4] values = [0, 2, 6, 10];
+    const int[4] weights = [1, 1, 1, 1];
+    assert(makeMedianAbsoluteDeviation(Mallocator.instance, values) == 3);
+    assert(makeWeightedMedianAbsoluteDeviation(Mallocator.instance, values, weights) == 3);
+    const int[2] pair = [0, 10], equal = [1, 1];
+    assert(makeWeightedMedianAbsoluteDeviation(Mallocator.instance, pair, equal) == 5);
+    assert(makeWeightedMedianAbsoluteDeviation!(WeightedQuantileAlgo.inverseCDF)(Mallocator.instance, pair, equal) == 0);
+}
+
+// Count every MAD buffer, including both weighted quantile workspaces.
+version(mir_stat_test)
+@system pure nothrow @nogc unittest
+{
+    import std.meta: AliasSeq;
+    import mir.ndslice.slice: sliced;
+    import mir.ndslice.dynamic: transposed;
+    import mir.ndslice.topology: stride;
+    alias A = WeightedQuantileAlgo;
+    static foreach (T; AliasSeq!(float, double, real, int, long, ulong))
+    {{
+        T[4] values = [0, 2, 6, 10];
+        int[4] weights = [1, 2, 1, 2];
+        QuantileTestAllocator!() ordinary;
+        assert(makeMedianAbsoluteDeviation(ordinary, values) == 3);
+        enum count = isIntegral!T && T.sizeof == 8 ? 1 : 2;
+        assert(ordinary.allocations == count && ordinary.releases == count);
+        static foreach (member; __traits(allMembers, A))
+        {{
+            enum algorithm = __traits(getMember, A, member);
+            QuantileTestAllocator!() allocator;
+            const result = makeWeightedMedianAbsoluteDeviation!algorithm(allocator, values, weights);
+            assert(result == weightedMedianAbsoluteDeviation!algorithm(values, weights));
+            enum expected = isIntegral!T && algorithm != A.inverseCDF ? 4 : 3;
+            assert(allocator.allocations == expected && allocator.releases == expected);
+        }}
+        assert(values == [0, 2, 6, 10] && weights == [1, 2, 1, 2]);
+    }}
+    QuantileTestAllocator!() allocator;
+    const long[3] high = [long.max - 2, long.max - 1, long.max];
+    const int[3] equal = [1, 1, 1];
+    assert(makeMedianAbsoluteDeviation!float(allocator, high) == 1);
+    assert(makeWeightedMedianAbsoluteDeviation!float(allocator, high, equal) == 1);
+    const long[2] adjacent = [long.max - 1, long.max];
+    const int[2] pair = [1, 1];
+    assert(makeMedianAbsoluteDeviation(allocator, adjacent) == 0.5);
+    assert(makeWeightedMedianAbsoluteDeviation(allocator, adjacent, pair) == 0.5);
+    const long[2] full = [long.min, long.max];
+    assert(makeMedianAbsoluteDeviation(allocator, full) == 0x1p63);
+    assert(makeWeightedMedianAbsoluteDeviation(allocator, full, pair) == 0x1p63);
+    real[4] extreme = [-real.max, -real.max / 2, real.max / 2, real.max];
+    int[4] uniform = [1, 1, 1, 1];
+    assert(makeWeightedMedianAbsoluteDeviation!(A.inverseCDF)(allocator, extreme, uniform) == real.max / 2);
+    const double[4] values = [0, 2, 6, 10];
+    auto matrix = values[].sliced(2, 2).transposed;
+    assert(makeMedianAbsoluteDeviation(allocator, matrix) == 3);
+    static assert(is(typeof(makeMedianAbsoluteDeviation!float(allocator, matrix)) == float));
+    static assert(is(typeof(makeWeightedMedianAbsoluteDeviation!float(allocator, values, uniform)) == float));
+    const double[8] storage = [0, 99, 2, 99, 6, 99, 10, 99];
+    const int[8] masses = [1, 99, 1, 99, 1, 99, 1, 99];
+    assert(makeMedianAbsoluteDeviation(allocator, storage[].sliced.stride(2)) == 3);
+    assert(makeWeightedMedianAbsoluteDeviation(allocator, storage[].sliced.stride(2), masses[].sliced.stride(2)) == 3);
+    const double[3] masked = [double.nan, 0, 10];
+    assert(makeWeightedMedianAbsoluteDeviation(allocator, masked, [0, 1, 1]) == 5);
+    assert(allocator.allocations == allocator.releases);
+    QuantileTestAllocator!() small;
+    assert(makeMedianAbsoluteDeviation(small, [7.0]) == 0);
+    assert(makeMedianAbsoluteDeviation(small, [0.0, 10.0]) == 5);
+    assert(makeMedianAbsoluteDeviation(small, adjacent) == 0.5);
+    assert(small.allocations == 0 && small.releases == 0);
+}
+
+version(mir_stat_test)
+@safe pure nothrow unittest
+{
+    import std.experimental.allocator.gc_allocator: GCAllocator;
+    struct SafeAllocator
+    {
+        enum alignment = GCAllocator.alignment;
+        size_t allocations, releases;
+        void[] allocate(size_t bytes) @safe pure nothrow
+        {
+            ++allocations;
+            return GCAllocator.instance.allocate(bytes);
+        }
+        bool deallocate(void[] memory) @safe pure nothrow @nogc { ++releases; return true; }
+    }
+    SafeAllocator allocator;
+    double[4] data = [0, 2, 6, 10];
+    int[4] equal = [1, 1, 1, 1];
+    assert(makeMedianAbsoluteDeviation(allocator, data) == 3);
+    assert(makeWeightedMedianAbsoluteDeviation(allocator, data, equal) == 3);
+    assert(allocator.allocations == 5 && allocator.releases == 5);
+}
+
+// Failing at any allocation releases all buffers that were obtained earlier.
+version(mir_stat_test)
+@system unittest
+{
+    import std.exception: assertThrown;
+    import std.meta: AliasSeq;
+    import mir.ndslice.slice: sliced;
+    import mir.ndslice.topology: map;
+    alias A = WeightedQuantileAlgo;
+    static foreach (T; AliasSeq!(double, long))
+    {{
+        T[4] values = [0, 2, 6, 10];
+        int[4] weights = [1, 1, 1, 1];
+        enum count = isIntegral!T ? 1 : 2;
+        foreach (failAt; 1 .. count + 1)
+        {
+            QuantileTestAllocator!true allocator;
+            allocator.failAt = failAt;
+            assertThrown!Exception(makeMedianAbsoluteDeviation(allocator, values));
+            assert(allocator.allocations == failAt && allocator.releases == failAt - 1);
+        }
+        static foreach (algorithm; [A.inverseCDF, A.averagedInverseCDF])
+        {{
+            enum weightedCount = isIntegral!T && algorithm != A.inverseCDF ? 4 : 3;
+            foreach (failAt; 1 .. weightedCount + 1)
+            {
+                QuantileTestAllocator!true allocator;
+                allocator.failAt = failAt;
+                assertThrown!Exception(makeWeightedMedianAbsoluteDeviation!algorithm(allocator, values, weights));
+                assert(allocator.allocations == failAt && allocator.releases == failAt - 1);
+            }
+        }}
+    }}
+    static double failRead(double value) { throw new Exception("MAD input read failed"); }
+    double[4] values = [0, 2, 6, 10];
+    QuantileTestAllocator!() allocator;
+    auto throwing = values[].sliced.map!failRead;
+    assertThrown!Exception(makeMedianAbsoluteDeviation(allocator, throwing));
+    assert(allocator.allocations == 1 && allocator.releases == 1);
+}
+
+private meanType!F allocatedWeightedMAD(F, WeightedQuantileAlgo algorithm,
+    QuantileAllocation allocation, Context, Data, Weights)(ref Context context,
+    scope auto ref Data data, scope auto ref Weights weights)
+{
+    import std.traits: Unqual, isNumeric;
+    import std.math: abs, isFinite, ldexp;
+    alias Result = typeof(return);
+    static assert(isFloatingPoint!Result,
+        "weightedMedianAbsoluteDeviation: result must be floating point");
+    scope auto values = quantileSlice(data);
+    scope auto masses = quantileSlice(weights);
+    static assert(typeof(values).N == 1 && typeof(masses).N == 1,
+        "weightedMedianAbsoluteDeviation: inputs must be one-dimensional");
+    alias Element = Unqual!(typeof(values).DeepElement);
+    static assert(isNumeric!Element,
+        "weightedMedianAbsoluteDeviation: observations must be numeric");
+    assert(values.length == masses.length,
+        "weightedMedianAbsoluteDeviation: lengths must match");
+    static if (isIntegral!Element)
+    {
+        Element anchor = Element.max;
+        foreach (i; 0 .. values.length)
+            if (masses[i] > 0 && values[i] < anchor) anchor = values[i];
+        auto offsets = allocateQuantiles!(ulong, allocation)(context, values.length);
+        static if (allocation == QuantileAllocation.custom)
+            scope(exit) releaseQuantiles(context, offsets);
+        foreach (i; 0 .. values.length)
+            if (masses[i] > 0)
+                offsets[i] = cast(ulong) values[i] - cast(ulong) anchor;
+        static if (algorithm == WeightedQuantileAlgo.inverseCDF)
+        {
+            const center = allocatedWeightedQuantile!(ulong, algorithm, allocation)(context, masses, offsets, 0.5);
+            foreach (ref value; offsets)
+                value = value < center ? center - value : value - center;
+            return cast(Result) allocatedWeightedQuantile!(ulong, algorithm, allocation)(context, masses, offsets, 0.5);
+        }
+        else
+        {
+            const center = allocatedWeightedQuantile!(real, algorithm, allocation)(context, masses, offsets, 0.5);
+            auto deviations = allocateQuantiles!(real, allocation)(context, values.length);
+            static if (allocation == QuantileAllocation.custom)
+                scope(exit) releaseQuantiles(context, deviations);
+            foreach (i; 0 .. values.length)
+                if (masses[i] > 0) deviations[i] = abs(cast(real) offsets[i] - center);
+            return cast(Result) allocatedWeightedQuantile!(real, algorithm, allocation)(context, masses, deviations, 0.5);
+        }
+    }
+    else
+    {
+        const center = allocatedWeightedQuantile!(real, algorithm, allocation)(context, masses, values, 0.5);
+        bool halve;
+        foreach (i; 0 .. values.length)
+            if (masses[i] > 0 && !isFinite(cast(real) values[i] - center))
+                halve = true;
+        auto deviations = allocateQuantiles!(real, allocation)(context, values.length);
+        static if (allocation == QuantileAllocation.custom)
+            scope(exit) releaseQuantiles(context, deviations);
+        foreach (i; 0 .. values.length)
+            if (masses[i] > 0)
+            {
+                const value = cast(real) values[i];
+                const gap = value - center;
+                // Preserve close differences before scaling; split the
+                // subtraction only when the unscaled gap overflows.
+                deviations[i] = halve ? (isFinite(gap) ? abs(gap) / 2 :
+                    abs(value / 2 - center / 2)) : abs(gap);
+            }
+        const result = allocatedWeightedQuantile!(real, algorithm, allocation)(context, masses, deviations, 0.5);
+        return cast(Result) (halve ? ldexp(result, 1) : result);
+    }
+}
+
+/++
 Weighted median of the absolute distances from the weighted median.
 
 Use this raw measure of spread when extreme observations should have less
@@ -5925,67 +6235,8 @@ template weightedMedianAbsoluteDeviation(F,
     meanType!F weightedMedianAbsoluteDeviation(Data, Weights)(
         scope auto ref Data data, scope auto ref Weights weights)
     {
-        import mir.ndslice.allocation: rcslice;
-        import std.traits: Unqual, isNumeric;
-        import std.math: abs, isFinite, ldexp;
-        alias Result = typeof(return);
-        static assert(isFloatingPoint!Result,
-            "weightedMedianAbsoluteDeviation: result must be floating point");
-        scope auto values = quantileSlice(data);
-        scope auto masses = quantileSlice(weights);
-        static assert(typeof(values).N == 1 && typeof(masses).N == 1,
-            "weightedMedianAbsoluteDeviation: inputs must be one-dimensional");
-        alias Element = Unqual!(typeof(values).DeepElement);
-        static assert(isNumeric!Element,
-            "weightedMedianAbsoluteDeviation: observations must be numeric");
-        assert(values.length == masses.length,
-            "weightedMedianAbsoluteDeviation: lengths must match");
-        static if (isIntegral!Element)
-        {
-            Element anchor = Element.max;
-            foreach (i; 0 .. values.length)
-                if (masses[i] > 0 && values[i] < anchor) anchor = values[i];
-            auto offsets = rcslice!ulong([values.length], 0UL);
-            foreach (i; 0 .. values.length)
-                if (masses[i] > 0)
-                    offsets[i] = cast(ulong) values[i] - cast(ulong) anchor;
-            static if (algorithm == WeightedQuantileAlgo.inverseCDF)
-            {
-                const center = rcWeightedQuantile!(ulong, algorithm)(offsets, masses, 0.5);
-                foreach (ref value; offsets)
-                    value = value < center ? center - value : value - center;
-                return cast(Result) rcWeightedQuantile!(ulong, algorithm)(offsets, masses, 0.5);
-            }
-            else
-            {
-                const center = rcWeightedQuantile!(real, algorithm)(offsets, masses, 0.5);
-                auto deviations = rcslice!real([values.length], 0.0L);
-                foreach (i; 0 .. values.length)
-                    if (masses[i] > 0) deviations[i] = abs(cast(real) offsets[i] - center);
-                return cast(Result) rcWeightedQuantile!(real, algorithm)(deviations, masses, 0.5);
-            }
-        }
-        else
-        {
-            const center = rcWeightedQuantile!(real, algorithm)(values, masses, 0.5);
-            bool halve;
-            foreach (i; 0 .. values.length)
-                if (masses[i] > 0 && !isFinite(cast(real) values[i] - center))
-                    halve = true;
-            auto deviations = rcslice!real([values.length], 0.0L);
-            foreach (i; 0 .. values.length)
-                if (masses[i] > 0)
-                {
-                    const value = cast(real) values[i];
-                    const gap = value - center;
-                    // Preserve close differences before scaling; split the
-                    // subtraction only when the unscaled gap overflows.
-                    deviations[i] = halve ? (isFinite(gap) ? abs(gap) / 2 :
-                        abs(value / 2 - center / 2)) : abs(gap);
-                }
-            const result = rcWeightedQuantile!(real, algorithm)(deviations, masses, 0.5);
-            return cast(Result) (halve ? ldexp(result, 1) : result);
-        }
+        QuantileContext context;
+        return allocatedWeightedMAD!(F, algorithm, QuantileAllocation.rc)(context, data, weights);
     }
 }
 
@@ -6019,6 +6270,73 @@ template weightedMedianAbsoluteDeviation(
     assert(weightedMedianAbsoluteDeviation(data, emphasis) == 5);
 }
 
+private @fmamath meanType!F allocatedMAD(F, QuantileAllocation allocation,
+    Context, S)(ref Context context, scope S slice)
+{
+    import mir.math.common: fabs;
+    import mir.ndslice.topology: map;
+    import std.traits: Unqual, isIntegral, CommonType;
+
+    alias G = typeof(return);
+    static assert(isFloatingPoint!G, "medianAbsoluteDeviation: output type must be floating point");
+    alias Element = Unqual!(typeof(slice).DeepElement);
+    static if (isIntegral!Element && Element.sizeof == 8)
+    {
+        import mir.ndslice.topology: flattened;
+        scope auto flat = slice.lightScope.flattened;
+        assert(flat.length > 0, "medianAbsoluteDeviation: slice must have length greater than zero");
+        if (flat.length == 1) return G(0);
+        if (flat.length == 2)
+        {
+            const a = flat[0], b = flat[1];
+            const ulong gap = a < b ? cast(ulong) b - cast(ulong) a :
+                cast(ulong) a - cast(ulong) b;
+            return cast(G) gap / 2;
+        }
+        // Bias signed integers into unsigned sort order. Distances remain
+        // unchanged, and unsigned storage can hold the full-domain gap.
+        enum ulong bias = Element.min < 0 ? 1UL << 63 : 0;
+        auto owner = allocateQuantiles!(ulong, allocation)(context, flat.length);
+        static if (allocation == QuantileAllocation.custom)
+            scope(exit) releaseQuantiles(context, owner);
+        foreach (i; 0 .. flat.length) owner[i] = cast(ulong) flat[i] ^ bias;
+        scope auto workspace = owner.lightScope;
+        const middle = selectQuantile!(QuantileAlgo.type7)(workspace, 0.5);
+        const gap = middle.high - middle.low;
+        const anchor = middle.fraction == 0 ? middle.low : middle.low + gap / 2;
+        const ulong half = middle.fraction == 0 ? 0 : gap & 1;
+        // With a half-integral center every deviation has fractional part
+        // .5. Store just its integer part, then restore that common half.
+        foreach (ref value; workspace)
+            value = value <= anchor ? anchor - value : value - anchor - half;
+        const deviations = selectQuantile!(QuantileAlgo.type7)(workspace, 0.5);
+        // Twice the MAD is integral and no greater than the input range,
+        // so this sum fits in ulong even for the full signed domain.
+        // Combine before conversion, avoiding a second rounding of .5.
+        const ulong twiceMad = deviations.fraction == 0 ?
+            2 * deviations.low + half : deviations.low + deviations.high + half;
+        return cast(G) twiceMad / 2;
+    }
+    else
+    {
+        // Match center's arithmetic without a closure over the allocator.
+        import mir.ndslice.topology: vmap;
+        import mir.ndslice.internal: LeftOp, ImplicitlyUnqual;
+        static if (isIntegral!Element) alias Work = CommonType!(G, double);
+        else static if (isFloatingPoint!Element) alias Work = CommonType!(G, Element);
+        else alias Work = G;
+        static if (allocation == QuantileAllocation.custom)
+            const center = makeMedian!Work(context, slice);
+        else
+            const center = median!Work(slice);
+        scope auto deviations = slice.vmap(LeftOp!("-", ImplicitlyUnqual!(typeof(center)))(center)).map!fabs;
+        static if (allocation == QuantileAllocation.custom)
+            return makeMedian!G(context, deviations);
+        else
+            return median!G(deviations);
+    }
+}
+
 /++
 Calculates the median absolute deviation about the median of the input.
 
@@ -6045,60 +6363,8 @@ template medianAbsoluteDeviation(F)
     @fmamath meanType!F medianAbsoluteDeviation(Iterator, size_t N, SliceKind kind)(
             Slice!(Iterator, N, kind) slice)
     {
-        import core.lifetime: move;
-        import mir.math.common: fabs;
-        import mir.ndslice.topology: map;
-        import mir.stat.transform: center;
-        import std.traits: Unqual, isIntegral, CommonType;
-
-        alias G = typeof(return);
-        static assert(isFloatingPoint!G, "medianAbsoluteDeviation: output type must be floating point");
-        alias Element = Unqual!(typeof(slice).DeepElement);
-        static if (isIntegral!Element && Element.sizeof == 8)
-        {
-            import mir.ndslice.allocation: rcslice;
-            import mir.ndslice.topology: flattened;
-            auto flat = slice.lightScope.flattened;
-            assert(flat.length > 0, "medianAbsoluteDeviation: slice must have length greater than zero");
-            if (flat.length == 1) return G(0);
-            if (flat.length == 2)
-            {
-                const a = flat[0], b = flat[1];
-                const ulong gap = a < b ? cast(ulong) b - cast(ulong) a :
-                    cast(ulong) a - cast(ulong) b;
-                return cast(G) gap / 2;
-            }
-            // Bias signed integers into unsigned sort order. Distances remain
-            // unchanged, and unsigned storage can hold the full-domain gap.
-            enum ulong bias = Element.min < 0 ? 1UL << 63 : 0;
-            auto owner = flat.map!(a => cast(ulong) a ^ bias).rcslice;
-            auto workspace = owner.lightScope;
-            const middle = selectQuantile!(QuantileAlgo.type7)(workspace, 0.5);
-            const gap = middle.high - middle.low;
-            const anchor = middle.fraction == 0 ? middle.low : middle.low + gap / 2;
-            const ulong half = middle.fraction == 0 ? 0 : gap & 1;
-            // With a half-integral center every deviation has fractional part
-            // .5. Store just its integer part, then restore that common half.
-            foreach (ref value; workspace)
-                value = value <= anchor ? anchor - value : value - anchor - half;
-            const deviations = selectQuantile!(QuantileAlgo.type7)(workspace, 0.5);
-            // Twice the MAD is integral and no greater than the input range,
-            // so this sum fits in ulong even for the full signed domain.
-            // Combine before conversion, avoiding a second rounding of .5.
-            const ulong twiceMad = deviations.fraction == 0 ?
-                2 * deviations.low + half : deviations.low + deviations.high + half;
-            return cast(G) twiceMad / 2;
-        }
-        else static if (isFloatingPoint!Element || isIntegral!Element)
-        {
-            // F describes the output, not the precision of the center. In
-            // particular, do not narrow double observations to a float center.
-            static if (isIntegral!Element) alias Work = CommonType!(G, double);
-            else alias Work = CommonType!(G, Element);
-            return slice.move.center!(median!(Work, false)).map!fabs.median!(G, false);
-        }
-        else
-            return slice.move.center!(median!(G, false)).map!fabs.median!(G, false);
+        QuantileContext context;
+        return allocatedMAD!(F, QuantileAllocation.rc)(context, slice.lightScope);
     }
 }
 

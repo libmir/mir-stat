@@ -75,9 +75,11 @@ example `x.byDim!1.map!(group => group.wmean(w))`. Here `w` supplies one
 weight per row and is reused for each column; it is not implicitly broadcast
 over the matrix. The same storage choices apply to the mapped results.
 
-Median and interquartile-range functions use reference-counted scratch storage
-by default. Use `makeMedian`, `makeWeightedMedian`, `makeInterquartileRange`, or
-`makeWeightedInterquartileRange` when your application supplies an allocator,
+Median, interquartile-range, and median-absolute-deviation functions use
+reference-counted scratch storage
+by default. Use `makeMedian`, `makeWeightedMedian`, `makeInterquartileRange`,
+`makeWeightedInterquartileRange`, `makeMedianAbsoluteDeviation`, or
+`makeWeightedMedianAbsoluteDeviation` when your application supplies an allocator,
 for example a pool used across many calculations. These functions return
 scalars and release their scratch before returning; no result disposal is needed.
 
@@ -85,7 +87,9 @@ Allocator choice is separate from permission to change input order. Ordinary
 median and IQR allow input rearrangement through their existing boolean option,
 which avoids the scratch copy. Weighted versions preserve both observations
 and weights and still need a workspace. These choices do not change the
-statistical convention.
+statistical convention. MAD functions always preserve inputs: replacing values
+with deviations is a different operation from rearranging them and may need
+a different element type.
 
 Direct grouped overloads are a separate proposal tracked in
 $(LINK2 https://github.com/libmir/mir-stat/issues/226, issue 226).
@@ -156,7 +160,9 @@ $(TR $(TH Module) $(TH Public declarations))
             $(LEGACY_ANCHOR interquartileRange)$(REF interquartileRange, mir, stat, descriptive, univariate, quantiles)$(NBSP)
             $(REF makeInterquartileRange, mir, stat, descriptive, univariate, quantiles)$(NBSP)
             $(REF weightedMedianAbsoluteDeviation, mir, stat, descriptive, univariate, quantiles)$(NBSP)
+            $(REF makeWeightedMedianAbsoluteDeviation, mir, stat, descriptive, univariate, quantiles)$(NBSP)
             $(LEGACY_ANCHOR medianAbsoluteDeviation)$(REF medianAbsoluteDeviation, mir, stat, descriptive, univariate, quantiles)$(NBSP)
+            $(REF makeMedianAbsoluteDeviation, mir, stat, descriptive, univariate, quantiles)$(NBSP)
             $(BR)
             $(B Algorithms:)
             $(LEGACY_ANCHOR QuantileAlgo)$(REF QuantileAlgo, mir, stat, descriptive, univariate, quantiles)$(NBSP)
