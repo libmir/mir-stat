@@ -28,6 +28,7 @@ $(TR $(TH Category) $(TH Declarations))
         $(REF rcquantile, mir, stat, descriptive, univariate, quantiles)$(NBSP)
         $(REF makeQuantile, mir, stat, descriptive, univariate, quantiles)$(NBSP)
         $(REF quantileInto, mir, stat, descriptive, univariate, quantiles)$(NBSP)
+        $(REF quantileScratchLength, mir, stat, descriptive, univariate, quantiles)$(NBSP)
         $(REF QuantileTable, mir, stat, descriptive, univariate, quantiles)$(NBSP)
         $(REF quantileTable, mir, stat, descriptive, univariate, quantiles)$(NBSP)
         $(REF rcQuantileTable, mir, stat, descriptive, univariate, quantiles)$(NBSP)
@@ -1386,7 +1387,7 @@ private void partitionQuantileRank(bool incremental, S)(S values,
     {
         import core.bitop: bsf, bsr;
         assert(rank < values.length);
-        assert(established.length == values.length / 64 + (values.length % 64 != 0));
+        assert(established.length == quantileScratchLength(values.length));
         const word = rank / 64;
         const ulong mask = 1UL << (rank % 64);
         if (established[word] & mask) return;
@@ -4088,7 +4089,7 @@ private auto allocatedQuantileTable(QuantileAllocation allocation, Context, Data
     static if (allocation == QuantileAllocation.custom)
         scope(failure) releaseQuantiles(context, values);
     auto bitmap = allocateQuantiles!(ulong, allocation)(context,
-        flat.length / 64 + (flat.length % 64 != 0));
+        quantileScratchLength(flat.length));
     static if (allocation == QuantileAllocation.custom)
         scope(failure) releaseQuantiles(context, bitmap);
     foreach (i; 0 .. flat.length) values[i] = flat[i];
@@ -4356,7 +4357,19 @@ private auto allocatedQuantile(F, QuantileAlgo algorithm, bool modify,
         auto result = allocateQuantiles!(Result, allocation)(context, probability.length);
         static if (allocation == QuantileAllocation.custom)
             scope(failure) releaseQuantiles(context, result);
-        quantileInto!algorithm(workspace, probability, result.lightScope);
+        // Keep small batches and tiny inputs on the allocation-free selector.
+        // Larger batches amortize a bitmap allocation across their selections.
+        // This is an internal tuning choice, not part of the public contract.
+        if (probability.length >= 16 && workspace.length >= 16)
+        {
+            auto bitmap = allocateQuantiles!(ulong, allocation)(context,
+                quantileScratchLength(workspace.length));
+            static if (allocation == QuantileAllocation.custom)
+                scope(exit) releaseQuantiles(context, bitmap);
+            quantileInto!algorithm(workspace, probability, result.lightScope, bitmap.lightScope.field);
+        }
+        else
+            quantileInto!algorithm(workspace, probability, result.lightScope);
         return result;
     }
 }
@@ -4393,14 +4406,38 @@ private auto dispatchQuantile(F, QuantileAlgo algorithm, bool modify,
 }
 
 /++
+Number of `ulong` elements needed by the scratch-buffer overload of
+$(LREF quantileInto). The buffer uses one bit per observation: 1 to 64
+observations need one element, 65 to 128 need two, and so on.
+The calculation is valid for every `size_t` observation count.
++/
+size_t quantileScratchLength(size_t observationCount) @safe pure nothrow @nogc
+{
+    return observationCount / 64 + (observationCount % 64 != 0);
+}
+
+/++
 Compute quantiles into caller-provided output without allocating.
 
 The observations in workspace may be rearranged by partitioning; they need not
 end up sorted. Probabilities are read without modification. Output must have one
 element per probability, and its element type determines the result type.
 Workspace, probabilities, and output must not overlap.
+The overload with scratch remembers selected ranks during the batch, allowing
+later queries to partition only unresolved intervals. Use it when requesting
+several quantiles from the same observations. The three-argument overload
+requires no scratch buffer and selects each quantile independently.
+
+Scratch must contain at least `quantileScratchLength(workspace.elementCount)`
+mutable `ulong` elements and must not overlap any other argument. The function
+clears the required prefix before use; any extra elements are untouched. You
+need not initialize or interpret its contents. Reuse the memory for another
+call, including with different observations: selection state is reset each
+time. Use $(LREF QuantileTable) to retain selection state between calls.
+
 Use $(LREF quantile), $(LREF rcquantile), or $(LREF makeQuantile) when a copy of
-the observations or allocated output is desired.
+the observations or allocated output is desired. Those functions may also
+allocate selection scratch for larger batches using their allocation policy.
 
 Params:
     algorithm = quantile algorithm, default type7
@@ -4413,30 +4450,184 @@ template quantileInto(QuantileAlgo algorithm = QuantileAlgo.type7)
     void quantileInto(Data, P, Output)(
         scope auto ref Data workspace, scope auto ref P probabilities, scope auto ref Output output)
     {
-        import mir.ndslice.topology: flattened;
-        import mir.ndslice.slice: IteratorOf;
-        import mir.primitives: DeepElementType;
-        import std.traits: Unqual;
-        scope auto values = quantileSlice(workspace).flattened;
-        scope auto levels = quantileSlice(probabilities);
-        scope auto destination = quantileSlice(output);
-        static assert(typeof(levels).N == 1 && typeof(destination).N == 1,
-            "Probabilities and output must be one-dimensional");
-        alias F = Unqual!(DeepElementType!(typeof(destination)));
-        alias G = Unqual!(DeepElementType!(typeof(levels)));
-        static assert(isFloatingPoint!G, "Probabilities must be floating-point values");
-        static assert(isFloatingPoint!F || algorithm == QuantileAlgo.type1 ||
-            algorithm == QuantileAlgo.type3, "Interpolated quantiles require floating-point output");
-        assert(destination.length == levels.length, "quantileInto: output length must match probabilities");
-        foreach (i; 0 .. levels.length)
-            destination[i] = quantileImpl!(F, algorithm, IteratorOf!(typeof(values)), G)(values, levels[i]);
+        quantileIntoImpl!(algorithm, false)(workspace, probabilities, output, null);
+    }
+
+    /++ Reuse partition boundaries within the batch using caller-provided scratch.
+
+    Params:
+        workspace = mutable observations, as a slice or array
+        probabilities = one-dimensional floating-point probabilities
+        output = one-dimensional mutable result storage
+        scratch = caller-owned selection buffer, sized with $(LREF quantileScratchLength)
+    +/
+    void quantileInto(Data, P, Output)(
+        scope auto ref Data workspace, scope auto ref P probabilities,
+        scope auto ref Output output, scope ulong[] scratch)
+    {
+        quantileIntoImpl!(algorithm, true)(workspace, probabilities, output, scratch);
     }
 }
 
-/// ditto
+private void quantileIntoImpl(QuantileAlgo algorithm, bool incremental, Data, P, Output)(
+    scope auto ref Data workspace, scope auto ref P probabilities,
+    scope auto ref Output output, scope ulong[] scratch)
+{
+    import mir.ndslice.topology: flattened;
+    import mir.primitives: DeepElementType;
+    import std.traits: Unqual;
+    scope auto values = quantileSlice(workspace).flattened;
+    scope auto levels = quantileSlice(probabilities);
+    scope auto destination = quantileSlice(output);
+    static assert(typeof(levels).N == 1 && typeof(destination).N == 1,
+        "Probabilities and output must be one-dimensional");
+    alias F = Unqual!(DeepElementType!(typeof(destination)));
+    alias G = Unqual!(DeepElementType!(typeof(levels)));
+    static assert(isFloatingPoint!G, "Probabilities must be floating-point values");
+    static assert(isFloatingPoint!F || algorithm == QuantileAlgo.type1 ||
+        algorithm == QuantileAlgo.type3, "Interpolated quantiles require floating-point output");
+    assert(destination.length == levels.length, "quantileInto: output length must match probabilities");
+    static if (incremental)
+    {
+        const required = quantileScratchLength(values.length);
+        assert(scratch.length >= required, "quantileInto: scratch buffer is too small");
+        scratch = scratch[0 .. required];
+        scratch[] = 0;
+    }
+    foreach (i; 0 .. levels.length)
+        destination[i] = selectQuantileImpl!(algorithm, F, incremental)(values, levels[i], scratch);
+}
+
+/// Accept an algorithm name such as "type7", with or without selection scratch.
 template quantileInto(string algorithm)
 {
     mixin("alias quantileInto = .quantileInto!(QuantileAlgo." ~ algorithm ~ ");");
+}
+
+/// Supply reusable working memory to share selection work within each batch.
+@safe pure nothrow @nogc unittest
+{
+    double[5] observations = [8, 0, 6, 2, 4];
+    const double[4] probabilities = [0.75, 0.25, 0.5, 0.75];
+    double[4] output;
+    ulong[quantileScratchLength(observations.length)] scratch;
+    quantileInto(observations[], probabilities[], output[], scratch[]);
+    assert(output[] == [6.0, 2.0, 4.0, 6.0]);
+
+    // The same buffer can be reused with different data; no clearing is needed.
+    const double[5] replacement = [18, 10, 16, 12, 14];
+    observations[] = replacement[];
+    quantileInto(observations[], probabilities[], output[], scratch[]);
+    assert(output[] == [16.0, 12.0, 14.0, 16.0]);
+}
+
+version(mir_stat_test)
+@safe pure nothrow @nogc unittest
+{
+    import mir.ndslice.slice: sliced;
+    import mir.ndslice.sorting: sort;
+    static assert(quantileScratchLength(0) == 0);
+    static assert(quantileScratchLength(1) == 1);
+    static assert(quantileScratchLength(64) == 1);
+    static assert(quantileScratchLength(65) == 2);
+    static assert(quantileScratchLength(size_t.max) == size_t.max / 64 + 1);
+    long[129] original, workspace, sorted;
+    foreach (i, ref value; original) value = cast(long)((i * 97 + 31) % 113) - 50;
+    const real[11] probabilities = [1, 0.5L, 0.25L, 0.75L, 0, 0.1L, 0.9L, 0.5L, 0.25L, 0, 1];
+    real[11] output;
+    ulong[4] scratch;
+    foreach (n; [2, 3, 63, 64, 65, 127, 128, 129])
+    {
+        sorted[0 .. n] = original[0 .. n];
+        sorted[0 .. n].sliced.sort;
+        static foreach (member; __traits(allMembers, QuantileAlgo))
+        {{
+            enum algorithm = __traits(getMember, QuantileAlgo, member);
+            workspace[0 .. n] = original[0 .. n];
+            scratch[] = ulong.max;
+            quantileInto!algorithm(workspace[0 .. n], probabilities[], output[], scratch[]);
+            foreach (i, p; probabilities)
+                assert(output[i] == rcquantile!(real, algorithm)(original[0 .. n], p));
+            foreach (rank; 0 .. n)
+                if (scratch[rank / 64] & (1UL << (rank % 64)))
+                    assert(workspace[rank] == sorted[rank]);
+            foreach (word; scratch[quantileScratchLength(n) .. $])
+                assert(word == ulong.max);
+        }}
+    }
+}
+
+// Views and explicit result types keep the same behavior with selection scratch.
+version(mir_stat_test)
+@safe pure nothrow @nogc unittest
+{
+    import mir.ndslice.slice: sliced;
+    import mir.ndslice.dynamic: transposed;
+    import mir.ndslice.topology: stride;
+    int[8] storage = [4, 99, 1, 99, 3, 99, 2, 99];
+    auto observations = storage[].sliced.stride(2);
+    const double[4] levels = [0, -1, 1, -1];
+    auto probabilities = levels[].sliced.stride(2);
+    int[4] backing = [-1, -1, -1, -1];
+    auto output = backing[].sliced(2, 2).transposed[0];
+    ulong[1] scratch;
+    quantileInto!"type1"(observations, probabilities, output, scratch[]);
+    assert(backing[] == [1, -1, 4, -1]);
+    foreach (i; 0 .. 4) assert(storage[2 * i + 1] == 99);
+
+    long[2] extremes = [long.min, long.max];
+    const double[1] middle = [0.5];
+    double[1] result;
+    quantileInto(extremes[], middle[], result[], scratch[]);
+    assert(result[0] == -0.5);
+    const double[2] endpoints = [1, 0];
+    long[2] exact;
+    quantileInto!"type3"(extremes[], endpoints[], exact[], scratch[]);
+    assert(exact[] == [long.max, long.min]);
+    const ulong[1] readOnly;
+    static assert(!__traits(compiles, quantileInto(extremes[], middle[], result[], readOnly[])));
+}
+
+// Validate buffer sizes before modifying any supplied storage, and preserve
+// the existing empty-batch and unsupported-singleton behavior.
+version(mir_stat_test)
+@system pure nothrow @nogc unittest
+{
+    import core.exception: AssertError;
+    int[65] observations;
+    foreach (i, ref value; observations) value = cast(int)(64 - i);
+    const double[1] probabilities = [0.5];
+    double[1] output = [-1];
+    ulong[1] tooSmall = [ulong.max];
+    bool rejected;
+    try quantileInto(observations[], probabilities[], output[], tooSmall[]);
+    catch (AssertError) rejected = true;
+    assert(rejected && output[0] == -1 && tooSmall[0] == ulong.max);
+    foreach (i, value; observations) assert(value == 64 - i);
+
+    double[0] empty;
+    ulong[2] scratch = [ulong.max, ulong.max];
+    rejected = false;
+    try quantileInto(observations[], probabilities[], empty[], scratch[]);
+    catch (AssertError) rejected = true;
+    assert(rejected && scratch[] == [ulong.max, ulong.max]);
+    quantileInto(observations[], empty[], empty[], scratch[]);
+    assert(scratch[] == [0UL, 0UL]);
+    int[0] noObservations;
+    quantileInto(noObservations[], empty[], empty[], scratch[]);
+
+    int[1] singleton = [7];
+    foreach (incremental; [false, true])
+    {
+        rejected = false;
+        try
+        {
+            if (incremental) quantileInto(singleton[], probabilities[], output[], scratch[]);
+            else quantileInto(singleton[], probabilities[], output[]);
+        }
+        catch (AssertError) rejected = true;
+        assert(rejected);
+    }
 }
 
 /// Compute into caller-provided output without allocating.
@@ -4878,7 +5069,7 @@ unittest
     assert(makeQuantile(allocator, observations[], 0.5) == 2.0);
     assert(allocator.allocations == 3 && allocator.releases == 3);
 
-    // Mutable scratch supplied by the caller needs no temporary allocation.
+    // Small batches need no temporary allocation when observations are mutable.
     auto inPlace = makeQuantile!(double, "type7", true)(
         allocator, observations[], probabilities[]);
     assert(allocator.allocations == 4 && allocator.releases == 3);
@@ -4887,6 +5078,93 @@ unittest
     assert(makeQuantile!(QuantileAlgo.type7, true)(
         allocator, observations[], 0.5) == 2.0);
     assert(allocator.allocations == 4 && allocator.releases == 4);
+}
+
+// Larger batches share selection work across all allocation policies, with
+// prompt disposal of custom scratch and unchanged output ordering.
+version(mir_stat_test)
+@system pure nothrow unittest
+{
+    import std.experimental.allocator: dispose;
+    long[16] observations;
+    foreach (i, ref value; observations) value = long.max - cast(long)((i * 7) % 16);
+    double[17] probabilities;
+    foreach (i, ref p; probabilities) p = cast(double)((i * 7) % 17) / 16;
+    static foreach (member; __traits(allMembers, QuantileAlgo))
+    {{
+        enum algorithm = __traits(getMember, QuantileAlgo, member);
+        auto gc = quantile!algorithm(observations[], probabilities[]);
+        auto rc = rcquantile!algorithm(observations[], probabilities[]);
+        QuantileTestAllocator!() allocator;
+        auto custom = makeQuantile!algorithm(allocator, observations[], probabilities[]);
+        assert(allocator.allocations == 3 && allocator.releases == 2);
+        foreach (i, p; probabilities)
+        {
+            const expected = rcquantile!algorithm(observations[], p);
+            assert(gc[i] == expected && rc[i] == expected && custom[i] == expected);
+        }
+        allocator.dispose(custom.field);
+        assert(allocator.releases == 3);
+
+        long[16] workspace = observations;
+        auto inPlace = makeQuantile!(algorithm, true)(allocator, workspace[], probabilities[]);
+        assert(allocator.allocations == 5 && allocator.releases == 4);
+        foreach (i; 0 .. probabilities.length) assert(inPlace[i] == rc[i]);
+        allocator.dispose(inPlace.field);
+        assert(allocator.releases == 5);
+    }}
+}
+
+version(mir_stat_test)
+@system unittest
+{
+    import std.exception: assertThrown;
+    import mir.ndslice.slice: sliced;
+    import mir.ndslice.topology: map;
+    const int[16] observations = [3, 0, 2, 1, 7, 4, 6, 5, 11, 8, 10, 9, 15, 12, 14, 13];
+    double[16] probabilities;
+    probabilities[] = 0.5;
+    QuantileTestAllocator!true failing;
+    failing.failAt = 3;
+    assertThrown!Exception(makeQuantile(failing, observations[], probabilities[]));
+    assert(failing.allocations == 3 && failing.releases == 2);
+
+    static double failRead(double p) { throw new Exception("probability read failure"); }
+    QuantileTestAllocator!() readFailure;
+    assertThrown!Exception(makeQuantile(readFailure, observations[], probabilities[].sliced.map!failRead));
+    assert(readFailure.allocations == 3 && readFailure.releases == 3);
+}
+
+// Both the input and the batch must be large enough to amortize automatic
+// scratch allocation. Explicit scratch remains usable below either cutoff.
+version(mir_stat_test)
+@system pure nothrow @nogc unittest
+{
+    import std.experimental.allocator: dispose;
+    int[16] original;
+    foreach (i, ref value; original) value = cast(int)((i * 7) % 16);
+    double[16] probabilities;
+    foreach (i, ref p; probabilities) p = cast(double)((i * 11) % 16) / 15;
+    foreach (n; [15, 16])
+    foreach (count; [15, 16])
+    {
+        QuantileTestAllocator!() allocator;
+        auto result = makeQuantile(allocator, original[0 .. n], probabilities[0 .. count]);
+        const expectedAllocations = n == 16 && count == 16 ? 3 : 2;
+        assert(allocator.allocations == expectedAllocations);
+        assert(allocator.releases == expectedAllocations - 1);
+        int[16] workspace = original;
+        double[16] output;
+        ulong[1] scratch;
+        quantileInto(workspace[0 .. n], probabilities[0 .. count], output[0 .. count], scratch[]);
+        foreach (i; 0 .. count)
+        {
+            const expected = rcquantile(original[0 .. n], probabilities[i]);
+            assert(result[i] == expected && output[i] == expected);
+        }
+        allocator.dispose(result.field);
+        assert(allocator.releases == expectedAllocations);
+    }
 }
 
 // A safe allocator gives the custom factory an @safe usage path.
