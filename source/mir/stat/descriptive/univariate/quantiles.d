@@ -1811,14 +1811,19 @@ static if (real.mant_dig < 64)
 else
     private enum ulong weightedQuantileMaxFrequency = ulong.max;
 
-private struct WeightedQuantileEntry(T, WeightedQuantileAlgo algorithm)
+// Algorithms with the same workspace layout can share allocation and sorting code.
+private alias WeightedQuantileEntry(T, WeightedQuantileAlgo algorithm) =
+    WeightedQuantileStorage!(T, weightedQuantileUsesFrequencies!algorithm,
+        weightedQuantileUsesEffectiveSize!algorithm);
+
+private struct WeightedQuantileStorage(T, bool frequencies, bool effectiveSize)
 {
     T value;
-    static if (weightedQuantileUsesFrequencies!algorithm)
+    static if (frequencies)
         ulong cumulative;
     else
         real cumulative;
-    static if (weightedQuantileUsesEffectiveSize!algorithm)
+    static if (effectiveSize)
         real upper;
 }
 
@@ -2501,8 +2506,8 @@ private auto allocatedWeightedQuantile(F, WeightedQuantileAlgo algorithm,
 
     // Keep observations in their original type: large integers must not collapse
     // to equal floating-point values. Order tied masses consistently as well.
-    sort!((a, b) => a.value < b.value ||
-        (a.value == b.value && a.cumulative < b.cumulative))(workspace);
+    // Share the sorting instantiation across input and allocation specializations.
+    sort!("a.value < b.value || (a.value == b.value && a.cumulative < b.cumulative)")(workspace);
     static if (weightedQuantileUsesEffectiveSize!algorithm)
     {
         Summator!(real, Summation.kahan) suffix, squares;

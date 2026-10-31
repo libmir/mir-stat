@@ -75,6 +75,25 @@ import mir.stat.descriptive.univariate.dispersions: variance, standardDeviation,
 /// Re-export shape statistics for existing moments imports.
 public import mir.stat.descriptive.univariate.skewness_kurtosis: skewness, kurtosis, SkewnessAccumulator, KurtosisAccumulator, SkewnessAlgo, KurtosisAlgo;
 
+// Share mapping instantiations across accumulator and range specializations.
+private template momentPower(size_t N)
+{
+    auto momentPower(V)(V value)
+    {
+        import mir.math.internal.powi: powi;
+        return value.powi(N);
+    }
+}
+
+private template convertedMomentPower(T, size_t N)
+{
+    auto convertedMomentPower(V)(V value)
+    {
+        import mir.math.internal.powi: powi;
+        return (cast(T) value).powi(N);
+    }
+}
+
 ///
 struct MomentAccumulator(T, size_t N, Summation summation)
     if (N > 0 && isMutable!T)
@@ -103,7 +122,6 @@ struct MomentAccumulator(T, size_t N, Summation summation)
     void put(Range)(Range r)
         if (isIterable!Range)
     {
-        import mir.math.internal.powi: powi;
         import mir.primitives: hasShape;
 
         static if (hasShape!Range)
@@ -114,7 +132,7 @@ struct MomentAccumulator(T, size_t N, Summation summation)
             count += r.elementCount;
             // Match scalar insertion: convert before taking the power, so a
             // narrower input does not overflow or underflow before summation.
-            summator.put(r.map!(a => (cast(T) a).powi(N)));
+            summator.put(r.map!(convertedMomentPower!(T, N)));
         }
         else
         {
@@ -129,7 +147,6 @@ struct MomentAccumulator(T, size_t N, Summation summation)
     void put(Range)(Range r, T m)
         if (isIterable!Range)
     {
-        import mir.math.internal.powi: powi;
         import mir.primitives: hasShape;
 
         static if (hasShape!Range)
@@ -148,7 +165,7 @@ struct MomentAccumulator(T, size_t N, Summation summation)
                     );
             } else {
                 summator.put(r.vmap(LeftOp!("-", T)(m)).
-                               map!(a => a.powi(N))
+                               map!(momentPower!N)
                     );
             }
         }
@@ -165,7 +182,6 @@ struct MomentAccumulator(T, size_t N, Summation summation)
     void put(Range)(Range r, T m, T s)
         if (isIterable!Range)
     {
-        import mir.math.internal.powi: powi;
         import mir.primitives: hasShape;
 
         static if (hasShape!Range)
@@ -188,7 +204,7 @@ struct MomentAccumulator(T, size_t N, Summation summation)
             } else {
                 summator.put(r.vmap(LeftOp!("-", T)(m)).
                                vmap(LeftOp!("*", T)(1 / s)).
-                               map!(a => a.powi(N))
+                               map!(momentPower!N)
                     );
             }
 
