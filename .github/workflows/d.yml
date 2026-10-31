@@ -94,7 +94,7 @@ jobs:
         if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 
     - name: Test benchmark helpers
-      run: dub -q test --config=unittest-benchmark
+      run: dub -q test mir-stat:benchmark-helpers
 
     - name: Test benchmark cases and reporting
       run: dub -q test mir-stat:benchmarks
