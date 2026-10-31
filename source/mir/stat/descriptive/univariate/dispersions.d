@@ -3742,7 +3742,10 @@ unittest
 }
 
 // Equal weights, expanded frequencies, split/merge and batch/stream agreement.
+// Keep each unittest small to reduce DMD release compilation time.
 version(mir_stat_test)
+static foreach (algo; [VarianceAlgo.online, VarianceAlgo.twoPass, VarianceAlgo.hybrid])
+static foreach (mode; [Summation.naive, Summation.pairwise, Summation.kbn, Summation.kb2, Summation.precise])
 @safe pure nothrow @nogc
 unittest
 {
@@ -3753,9 +3756,7 @@ unittest
     int[4] w = [1, 3, 2, 1];
     double[7] expanded = [1, 2, 2, 2, 4, 4, 8];
     double[4] ones = [1, 1, 1, 1];
-    static foreach (algo; [VarianceAlgo.online, VarianceAlgo.twoPass, VarianceAlgo.hybrid])
-    static foreach (mode; [Summation.naive, Summation.pairwise, Summation.kbn, Summation.kb2, Summation.precise])
-    {{
+    {
         assert((weightedVariance!(N.population, algo, mode)(x[], ones[])).approxEqual(variance(x[], true)));
         assert((weightedVariance!(N.relativeSample, algo, mode)(x[], ones[])).approxEqual(variance(x[])));
         assert((weightedVariance!(N.frequencySample, algo, mode)(x[], w[])).approxEqual(variance(expanded[])));
@@ -3777,7 +3778,18 @@ unittest
             empty.put(batch);
             assert(empty.variance == batch.variance);
         }}
-    }}
+    }
+}
+
+version(mir_stat_test)
+@safe pure nothrow @nogc
+unittest
+{
+    import mir.math.common: approxEqual;
+    import std.meta: AliasSeq;
+    alias N = WeightedMomentNormalization;
+    double[4] x = [1, 2, 4, 8];
+    int[4] w = [1, 3, 2, 1];
     static foreach (T; AliasSeq!(float, double, real))
     {{
         T[2] v = [1, 1 + T.epsilon];
@@ -4034,7 +4046,10 @@ unittest
     assert(weightedVariance(nestedValues, nestedWeights) == 18.75);
 }
 
+// Keep each unittest small to reduce DMD release compilation time.
 version(mir_stat_test)
+static foreach (mode; [Summation.naive, Summation.pairwise, Summation.kbn, Summation.kb2, Summation.precise])
+static foreach (algo; [VarianceAlgo.online, VarianceAlgo.twoPass, VarianceAlgo.hybrid])
 @safe pure nothrow @nogc
 unittest
 {
@@ -4044,8 +4059,6 @@ unittest
     import std.meta: AliasSeq;
     alias N = WeightedMomentNormalization;
     static foreach (T; AliasSeq!(float, double, real))
-    static foreach (mode; [Summation.naive, Summation.pairwise, Summation.kbn, Summation.kb2, Summation.precise])
-    static foreach (algo; [VarianceAlgo.online, VarianceAlgo.twoPass, VarianceAlgo.hybrid])
     {{
         T[2] x = [2, 6], w = [1, 3], probabilities = [0.25, 0.75];
         T[4] expanded = [2, 6, 6, 6];
@@ -4077,6 +4090,12 @@ unittest
         T[3] masked = [T.nan, 2, 6], mask = [0, 1, 3];
         assert(weightedCoefficientOfVariation!(N.population, algo, mode)(masked, mask).approxEqual(sqrt(T(3))/5, tol, T(0)));
     }}
+}
+
+version(mir_stat_test)
+@safe pure nothrow @nogc
+unittest
+{
     int[2] x = [2, 6], w = [1, 3];
     static assert(is(typeof(weightedCoefficientOfVariation(x, w)) == double));
     static assert(is(typeof(weightedCoefficientOfVariation!float(x, w)) == float));

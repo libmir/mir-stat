@@ -1,0 +1,18 @@
+name "benchmark-helpers"
+description "Focused tests for mir-stat benchmark helpers"
+license "Apache-2.0"
+targetType "library"
+targetPath "../../build/benchmark-helpers"
+sourcePaths "."
+sourceFiles "../../source/mir/math/internal/benchmark.d"
+importPaths "../../source"
+
+dependency "mir-algorithm" version=">=3.20.1"
+dependency "mir-random" version=">=2.2.19"
+versions "mir_stat_test" "mir_stat_test_benchmark"
+
+buildType "unittest" {
+    buildOptions "unittests" "debugMode" "debugInfo"
+    dflags "-lowmem" platform="dmd"
+    dflags "-lowmem" platform="ldc"
+}

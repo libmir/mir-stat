@@ -5473,7 +5473,9 @@ unittest
         weightedKurtosis!(N.relativeSample)(sample, proportions)));
 }
 
+// Keep each unittest small to reduce DMD release compilation time.
 version(mir_stat_test)
+static foreach (mode; [Summation.naive, Summation.pairwise, Summation.kbn, Summation.kb2, Summation.precise])
 @safe pure nothrow @nogc
 unittest
 {
@@ -5482,7 +5484,6 @@ unittest
     import std.math: sqrt, isNaN;
     import std.meta: AliasSeq;
     static foreach (T; AliasSeq!(float, double, real))
-    static foreach (mode; [Summation.naive, Summation.pairwise, Summation.kbn, Summation.kb2, Summation.precise])
     {{
         const T[2] values = [0, 10], weights = [1, 3], probabilities = [0.25, 0.75];
         T[4] expanded = [0, 10, 10, 10];
@@ -5506,6 +5507,13 @@ unittest
         assert(weightedKurtosis!mode(excluded, mask).isNaN);
         assert(weightedKurtosis!mode(excluded, mask, true).isNaN);
     }}
+}
+
+version(mir_stat_test)
+@safe pure nothrow @nogc
+unittest
+{
+    import mir.math.common: approxEqual;
     int[2] integers = [0, 10], counts = [1, 3];
     static assert(is(typeof(weightedSkewness(integers, counts)) == double));
     static assert(is(typeof(weightedKurtosis!(float)(integers, counts)) == float));
@@ -5720,7 +5728,9 @@ private T[2] weightedShapeCorrection(T, size_t order,
 }
 
 
+// Keep each unittest small to reduce DMD release compilation time.
 version(mir_stat_test)
+static foreach (mode; [Summation.naive, Summation.pairwise, Summation.kbn, Summation.kb2, Summation.precise])
 @safe pure nothrow @nogc
 unittest
 {
@@ -5730,7 +5740,6 @@ unittest
     import std.meta: AliasSeq;
     alias N = WeightedMomentNormalization;
     static foreach (T; AliasSeq!(float, double, real))
-    static foreach (mode; [Summation.naive, Summation.pairwise, Summation.kbn, Summation.kb2, Summation.precise])
     {{
         T[4] x = [-2, 0, 1, 5], w = [1, 2, 3, 4], ones = [1, 1, 1, 1];
         T[10] expanded = [-2, 0, 0, 1, 1, 1, 5, 5, 5, 5];

@@ -5949,7 +5949,9 @@ unittest
 }
 
 // All policies agree with variance on the diagonal and with expanded counts.
+// Keep each unittest small to reduce DMD release compilation time.
 version(mir_stat_test)
+static foreach (mode; [Summation.naive, Summation.pairwise, Summation.kbn, Summation.kb2, Summation.precise])
 @safe pure nothrow @nogc
 unittest
 {
@@ -5962,7 +5964,6 @@ unittest
     double[7] expandedX = [1, 2, 2, 2, 4, 4, 8];
     double[7] expandedY = [9, 3, 3, 3, -1, -1, 6];
     static foreach (algo; [CovarianceAlgo.online, CovarianceAlgo.twoPass, CovarianceAlgo.hybrid])
-    static foreach (mode; [Summation.naive, Summation.pairwise, Summation.kbn, Summation.kb2, Summation.precise])
     {{
         assert((weightedCovariance!(N.frequencySample, algo, mode)(x, y, w))
             .approxEqual(covariance(expandedX[], expandedY[]), 1e-12, 1e-12));
@@ -5995,7 +5996,6 @@ unittest
         }}
     }}
     static foreach (algo; [CorrelationAlgo.online, CorrelationAlgo.twoPass, CorrelationAlgo.hybrid])
-    static foreach (mode; [Summation.naive, Summation.pairwise, Summation.kbn, Summation.kb2, Summation.precise])
     {{
         alias A = WCorrelationAccumulator!(double, algo, mode);
         A left, right, stream;

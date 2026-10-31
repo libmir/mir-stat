@@ -2955,7 +2955,9 @@ unittest
 }
 
 // Every combination of independently enabled ends uses the same storage mapping.
+// Keep each unittest small to reduce DMD release compilation time.
 version(mir_stat_test)
+static foreach (flags; 0 .. 16)
 @safe pure nothrow @nogc
 unittest
 {
@@ -2963,7 +2965,6 @@ unittest
     import mir.ndslice.dynamic: transposed;
     import mir.stat.descriptive.histogram.axis: IntegralAxis, AxisOptions,
         EnableUnderflow, EnableOverflow;
-    static foreach (flags; 0 .. 16)
     {{
         enum ux = (flags & 1) != 0;
         enum ox = (flags & 2) != 0;
