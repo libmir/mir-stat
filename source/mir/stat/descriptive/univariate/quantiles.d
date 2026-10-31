@@ -4435,6 +4435,11 @@ need not initialize or interpret its contents. Reuse the memory for another
 call, including with different observations: selection state is reset each
 time. Use $(LREF QuantileTable) to retain selection state between calls.
 
+For larger batches of ascending probabilities in direct storage, the scratch
+overload may evaluate queries in a different order to reduce partitioning work.
+Each result still occupies the position of its corresponding probability.
+Lazy views retain their original evaluation order.
+
 Use $(LREF quantile), $(LREF rcquantile), or $(LREF makeQuantile) when a copy of
 the observations or allocated output is desired. Those functions may also
 allocate selection scratch for larger batches using their allocation policy.
@@ -4493,9 +4498,78 @@ private void quantileIntoImpl(QuantileAlgo algorithm, bool incremental, Data, P,
         assert(scratch.length >= required, "quantileInto: scratch buffer is too small");
         scratch = scratch[0 .. required];
         scratch[] = 0;
+        import mir.ndslice.slice: IteratorOf;
+        import std.traits: isPointer;
+        // Only direct storage can be read and written out of order without
+        // changing user-defined iterator behavior. Cutoffs are internal tuning.
+        static if (isPointer!(IteratorOf!(typeof(values))) &&
+                   isPointer!(IteratorOf!(typeof(levels))) &&
+                   isPointer!(IteratorOf!(typeof(destination))))
+        {
+            if (values.length >= 1024 && levels.length >= 16)
+            {
+                bool ordered = levels[0] >= 0 && levels[$ - 1] <= 1;
+                foreach (i; 1 .. levels.length)
+                    if (!(levels[i - 1] <= levels[i]))
+                    {
+                        ordered = false;
+                        break;
+                    }
+                if (ordered)
+                {
+                    orderedQuantileBatch!(algorithm, F)(values, levels,
+                        destination, scratch, 0, levels.length, G(0), G(1));
+                    return;
+                }
+            }
+        }
     }
     foreach (i; 0 .. levels.length)
         destination[i] = selectQuantileImpl!(algorithm, F, incremental)(values, levels[i], scratch);
+}
+
+// Select near the midpoint of the remaining probability interval, rather
+// than the middle request: a cluster near one tail should be entered from
+// the side facing the unselected observations. Recurse only into the smaller
+// request range, keeping stack depth logarithmic even for uneven requests.
+private void orderedQuantileBatch(QuantileAlgo algorithm, F, S, P, O, G)(
+    scope S values, scope P levels, scope O destination, scope ulong[] scratch,
+    size_t lo, size_t hi, G lower, G upper)
+{
+    while (lo < hi)
+    {
+        size_t mid = lo + (hi - lo) / 2;
+        if (levels[lo] != levels[hi - 1])
+        {
+            const target = lower + (upper - lower) / 2;
+            size_t left = lo, right = hi;
+            while (left < right)
+            {
+                const candidate = left + (right - left) / 2;
+                if (levels[candidate] < target) left = candidate + 1;
+                else right = candidate;
+            }
+            mid = left == hi ? hi - 1 : left;
+            if (mid > lo && target - levels[mid - 1] < levels[mid] - target)
+                --mid;
+        }
+        const p = levels[mid];
+        destination[mid] = selectQuantileImpl!(algorithm, F, true)(values, p, scratch);
+        if (mid - lo < hi - mid - 1)
+        {
+            orderedQuantileBatch!(algorithm, F)(values, levels, destination,
+                scratch, lo, mid, lower, p);
+            lo = mid + 1;
+            lower = p;
+        }
+        else
+        {
+            orderedQuantileBatch!(algorithm, F)(values, levels, destination,
+                scratch, mid + 1, hi, p, upper);
+            hi = mid;
+            upper = p;
+        }
+    }
 }
 
 /// Accept an algorithm name such as "type7", with or without selection scratch.
@@ -4555,6 +4629,93 @@ version(mir_stat_test)
                 assert(word == ulong.max);
         }}
     }
+}
+
+// Ordered scheduling preserves all conventions, including repeated requests,
+// tail clusters, threshold boundaries, and exact integer order statistics.
+version(mir_stat_test)
+@safe pure nothrow @nogc unittest
+{
+    long[1024] original, workspace;
+    foreach (i, ref value; original)
+        value = long.max - cast(long)((i * 97 + 31) % 1024);
+    real[64] probabilities, expected, output;
+    ulong[17] scratch;
+    foreach (n; [1023, 1024])
+    foreach (count; [15, 16, 64])
+    foreach (pattern; 0 .. 7)
+    {
+        foreach (i; 0 .. count)
+        {
+            const u = cast(real)i / (count - 1);
+            final switch (pattern)
+            {
+                case 0: probabilities[i] = u; break;
+                case 1: probabilities[i] = 0.001L + 0.099L * u; break;
+                case 2: probabilities[i] = 0.9L + 0.099L * u; break;
+                case 3: probabilities[i] = i == count - 1 ? 0.99L : 0.04L * u; break;
+                case 4: probabilities[i] = 0.5L; break;
+                case 5: probabilities[i] = cast(real)(i / 4) / (count / 4); break;
+                case 6: probabilities[i] = 1 - u; break;
+            }
+        }
+        static foreach (member; __traits(allMembers, QuantileAlgo))
+        {{
+            enum algorithm = __traits(getMember, QuantileAlgo, member);
+            workspace[0 .. n] = original[0 .. n];
+            quantileInto!algorithm(workspace[0 .. n], probabilities[0 .. count], expected[0 .. count]);
+            workspace[0 .. n] = original[0 .. n];
+            scratch[] = ulong.max;
+            quantileInto!algorithm(workspace[0 .. n], probabilities[0 .. count], output[0 .. count], scratch[]);
+            assert(output[0 .. count] == expected[0 .. count]);
+            assert(scratch[$ - 1] == ulong.max);
+        }}
+    }
+    long[64] exact;
+    foreach (i; 0 .. 64) probabilities[i] = cast(real)i / 63;
+    quantileInto!"type1"(workspace[], probabilities[], exact[], scratch[]);
+    foreach (i; 0 .. 64)
+        assert(exact[i] == rcquantile!(long, QuantileAlgo.type1)(original[], probabilities[i]));
+}
+
+version(mir_stat_test)
+@safe pure nothrow unittest
+{
+    import mir.ndslice.slice: sliced;
+    import mir.ndslice.topology: map, stride;
+    double[2048] storage;
+    foreach (i; 0 .. 1024)
+    {
+        storage[2 * i] = (i * 97 + 31) % 1024;
+        storage[2 * i + 1] = -1;
+    }
+    double[32] probabilities, output;
+    foreach (i; 0 .. 16)
+    {
+        probabilities[2 * i] = cast(double)i / 15;
+        probabilities[2 * i + 1] = -1;
+        output[2 * i + 1] = -1;
+    }
+    auto values = storage[].sliced.stride(2);
+    auto levels = probabilities[].sliced.stride(2);
+    auto destination = output[].sliced.stride(2);
+    ulong[16] scratch;
+    quantileInto(values, levels, destination, scratch[]);
+    foreach (i; 0 .. 16)
+        assert(destination[i] == 1023 * levels[i]);
+    foreach (i; 0 .. 1024) assert(storage[2 * i + 1] == -1);
+    foreach (i; 0 .. 16) assert(output[2 * i + 1] == -1);
+
+    size_t reads;
+    double readProbability(double p) @safe pure nothrow @nogc
+    {
+        assert(reads < 16 && p == cast(double)reads / 15);
+        ++reads;
+        return p;
+    }
+    auto lazyLevels = levels.map!readProbability;
+    quantileInto(values, lazyLevels, destination, scratch[]);
+    assert(reads == 16);
 }
 
 // Views and explicit result types keep the same behavior with selection scratch.
