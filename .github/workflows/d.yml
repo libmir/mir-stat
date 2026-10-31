@@ -22,6 +22,10 @@ jobs:
     steps:
     - uses: actions/checkout@v7.0.1
 
+    - name: Report Linux runner resources
+      if: runner.os == 'Linux'
+      run: bash .github/scripts/linux-resources.sh report
+
     - name: Install GDC and DUB
       run: |
         sudo apt-get update
@@ -35,66 +39,16 @@ jobs:
     # Optimized GDC tests are blocked by ndslice's narrow-integer
     # safety-check helper: https://github.com/libmir/mir-algorithm/issues/483
     # Revisit unittest-release coverage once the dependency fix is available.
-    - name: Report GDC resource limits
-      run: |
-        free -m
-        swapon --show
-        ulimit -a
-        cat /proc/self/cgroup
-        # Report the job's cgroup and ancestor limits when cgroup v2 is available.
-        group=$(awk -F: '$1 == "0" { print $3 }' /proc/self/cgroup)
-        path="/sys/fs/cgroup${group}"
-        while [[ -n "$group" && "$path" == /sys/fs/cgroup* ]]; do
-          for name in memory.max memory.swap.max memory.events; do
-            if [[ -r "$path/$name" ]]; then
-              echo "$path/$name"
-              cat "$path/$name"
-            fi
-          done
-          [[ "$path" == /sys/fs/cgroup ]] && break
-          path=$(dirname "$path")
-        done
-
     - name: Run standard tests
       run: |
-        # Stream snapshots so evidence survives an abrupt runner termination.
-        monitor_memory() {
-          sleep_pid=
-          trap 'if [[ -n "$sleep_pid" ]]; then kill "$sleep_pid" 2>/dev/null || true; wait "$sleep_pid" 2>/dev/null || true; fi; exit 0' TERM INT
-          while true; do
-            date -u '+Memory snapshot %Y-%m-%dT%H:%M:%SZ'
-            free -m
-            # RSS is in KiB; omit command arguments from process diagnostics.
-            ps -eo pid,ppid,rss,comm --sort=-rss | head -n 11 || true
-            sleep 15 &
-            sleep_pid=$!
-            wait "$sleep_pid" || true
-            sleep_pid=
-          done
-        }
-        monitor_memory &
-        monitor_pid=$!
-        cleanup() {
-          kill "$monitor_pid" 2>/dev/null || true
-          wait "$monitor_pid" 2>/dev/null || true
-        }
-        trap cleanup EXIT
-        status=0
         # DUB sizes its parallel pool from CPU affinity. Limit it to two CPUs,
         # with 6 GiB virtual memory per process to leave room for the runner.
-        (
-          ulimit -v $((6 * 1024 * 1024)) || exit $?
-          exec taskset -c 0,1 /usr/bin/time -v dub test --compiler=gdc-15 --build-mode=singleFile --parallel
-        ) || status=$?
-        echo "GDC test command exit status: $status"
-        exit "$status"
+        ulimit -v $((6 * 1024 * 1024))
+        exec taskset -c 0,1 bash .github/scripts/linux-resources.sh run dub test --compiler=gdc-15 --build-mode=singleFile --parallel
 
     - name: Report GDC kernel memory diagnostics
       if: ${{ always() }}
-      run: |
-        free -m
-        # Best effort: kernel logs may be unavailable, especially after runner loss.
-        sudo -n dmesg --ctime | grep -Ei 'out of memory|oom|killed process|memory cgroup' | tail -n 80 || true
+      run: bash .github/scripts/linux-resources.sh kernel
 
   benchmarks:
     name: Benchmark tests
@@ -106,6 +60,15 @@ jobs:
 
     steps:
     - uses: actions/checkout@v7.0.1
+
+    - name: Report Linux runner resources
+      if: runner.os == 'Linux'
+      run: bash .github/scripts/linux-resources.sh report
+
+    - name: Report Windows runner resources
+      if: runner.os == 'Windows'
+      shell: pwsh
+      run: ./.github/scripts/windows-resources.ps1 Report
 
     - name: D Compiler Installation
       uses: dlang-community/setup-dlang@v2.0.0
@@ -131,7 +94,7 @@ jobs:
         if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 
     - name: Test benchmark helpers
-      run: dub -q test --config=unittest-benchmark
+      run: dub -q test mir-stat:benchmark-helpers
 
     - name: Test benchmark cases and reporting
       run: dub -q test mir-stat:benchmarks
@@ -161,6 +124,15 @@ jobs:
     steps:
     - uses: actions/checkout@v7.0.1
 
+    - name: Report Linux runner resources
+      if: runner.os == 'Linux'
+      run: bash .github/scripts/linux-resources.sh report
+
+    - name: Report Windows runner resources
+      if: runner.os == 'Windows'
+      shell: pwsh
+      run: ./.github/scripts/windows-resources.ps1 Report
+
     - name: D Compiler Installation
       uses: dlang-community/setup-dlang@v2.0.0
       with:
@@ -184,9 +156,108 @@ jobs:
         dub --version
         if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 
-    - name: Run optimized release tests
-      # Keep build/link/run markers so CI log timestamps separate build and test time.
-      run: dub test --build=unittest-release
+    - name: Run optimized release tests (Linux LDC)
+      if: runner.os == 'Linux' && startsWith(matrix.dc, 'ldc-')
+      shell: bash
+      run: |
+        # DUB sizes its parallel pool from CPU affinity. Select up to four CPUs
+        # from the allowed set rather than assuming CPU IDs 0-3 are available.
+        cpus=$(python3 -c 'import os; print(",".join(map(str, sorted(os.sched_getaffinity(0))[:4])))')
+        echo "Linux LDC build CPU affinity: $cpus (at most four compiler workers)"
+        exec taskset -c "$cpus" bash .github/scripts/linux-resources.sh run dub test --build=unittest-release --build-mode=singleFile --parallel
+
+    - name: Run optimized release tests (Linux DMD)
+      if: runner.os == 'Linux' && startsWith(matrix.dc, 'dmd-')
+      shell: bash
+      run: |
+        # Per-file compilation reduces peak memory; bound DUB's worker pool
+        # using up to three CPUs from the runner's allowed affinity set.
+        cpus=$(python3 -c 'import os; print(",".join(map(str, sorted(os.sched_getaffinity(0))[:3])))')
+        echo "Linux DMD build CPU affinity: $cpus (at most three compiler workers)"
+        exec taskset -c "$cpus" bash .github/scripts/linux-resources.sh run dub test --build=unittest-release --build-mode=singleFile --parallel
+
+    - name: Run optimized release tests (Windows DMD)
+      if: runner.os == 'Windows' && startsWith(matrix.dc, 'dmd-')
+      shell: pwsh
+      # DUB uses the system CPU count on Windows, not process affinity.
+      # Use native parallelism only within the validated runner capacity.
+      # Replace this capacity check with an explicit worker limit when supported:
+      # https://github.com/dlang/dub/issues/3177
+      run: |
+        $buildArgs = @('test', '--build=unittest-release', '--build-mode=singleFile')
+        try {
+            $machine = Get-CimInstance Win32_ComputerSystem -OperationTimeoutSec 5 -ErrorAction Stop
+            $cpus = [int]$machine.NumberOfLogicalProcessors
+            if ($cpus -ge 2 -and $cpus -le 4 -and $machine.TotalPhysicalMemory -ge 12GB) {
+                $buildArgs += '--parallel'
+                Write-Output "Windows DMD per-file compilation: up to $cpus workers."
+            } else {
+                Write-Output "Windows DMD per-file compilation: sequential fallback ($cpus CPUs)."
+            }
+        } catch {
+            Write-Warning 'Runner capacity unavailable; using sequential per-file compilation.'
+        }
+        ./.github/scripts/windows-resources.ps1 Run dub @buildArgs
+
+    - name: Run optimized release tests (Windows LDC)
+      if: runner.os == 'Windows' && startsWith(matrix.dc, 'ldc-')
+      shell: pwsh
+      run: ./.github/scripts/windows-resources.ps1 Run dub test --build=unittest-release
+
+    - name: Report Linux release kernel memory diagnostics
+      if: ${{ always() && runner.os == 'Linux' }}
+      run: bash .github/scripts/linux-resources.sh kernel
+
+  # Compile and run the full lifetime suite independently of coverage.
+  lifetime:
+    name: DIP1000 lifetime tests
+    permissions:
+      contents: read
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+        dc: [ldc-latest, ldc-beta, dmd-latest, dmd-beta]
+    runs-on: ${{ matrix.os }}
+
+    steps:
+    - uses: actions/checkout@v7.0.1
+
+    - name: Report Linux runner resources
+      if: runner.os == 'Linux'
+      run: bash .github/scripts/linux-resources.sh report
+
+    - name: Report Windows runner resources
+      if: runner.os == 'Windows'
+      shell: pwsh
+      run: ./.github/scripts/windows-resources.ps1 Report
+
+    - name: D Compiler Installation
+      uses: dlang-community/setup-dlang@v2.0.0
+      with:
+        compiler: ${{ matrix.dc }}
+
+    # setup-dlang v2 sets DC to windows/bin/dmd, bypassing bin64 on PATH.
+    - name: Select 64-bit Windows DMD
+      if: runner.os == 'Windows' && startsWith(matrix.dc, 'dmd-')
+      shell: pwsh
+      run: |
+        $compiler = Join-Path (Split-Path (Split-Path $env:DC -Parent) -Parent) 'bin64/dmd.exe'
+        if (!(Test-Path -LiteralPath $compiler -PathType Leaf)) { throw "Missing 64-bit DMD: $compiler" }
+        "DC=$compiler" >> $env:GITHUB_ENV
+
+    - name: Report toolchain versions
+      shell: pwsh
+      run: |
+        Write-Output "DC=$env:DC"
+        & $env:DC --version
+        if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+        dub --version
+        if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
+    - name: Run DIP1000 lifetime tests
+      # Keep build/link/run markers to distinguish compilation from test execution.
+      run: dub test --build=unittest-dip1000
 
   test:
     name: Dub Tests
@@ -201,6 +272,15 @@ jobs:
 
     steps:
     - uses: actions/checkout@v7.0.1
+
+    - name: Report Linux runner resources
+      if: runner.os == 'Linux'
+      run: bash .github/scripts/linux-resources.sh report
+
+    - name: Report Windows runner resources
+      if: runner.os == 'Windows'
+      shell: pwsh
+      run: ./.github/scripts/windows-resources.ps1 Report
 
     - name: D Compiler Installation
       uses: dlang-community/setup-dlang@v2.0.0
@@ -249,9 +329,6 @@ jobs:
       if: matrix.os == 'ubuntu-latest' && matrix.dc == 'ldc-latest'
       # Keep build/link/run markers to distinguish compilation from test runtime.
       run: dub test mir-stat:slow-numerics --build=unittest-optimized
-
-    - name: Run DIP1000 lifetime tests
-      run: dub -q test --build=unittest-dip1000
 
     - name: Install Lapack
       if: contains( matrix.os, 'ubuntu')

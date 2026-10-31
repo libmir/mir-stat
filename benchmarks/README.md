@@ -116,12 +116,16 @@ normal library configuration.
 ```sh
 dub test mir-stat:benchmarks --compiler=dmd
 dub test mir-stat:benchmarks --compiler=ldc2
-dub test --config=unittest-benchmark --compiler=dmd
+dub test mir-stat:benchmark-helpers --compiler=dmd
+dub test mir-stat:benchmark-helpers --compiler=ldc2
 ```
 
 The subpackage tests run small cases and check results and input validation,
-without asserting timing thresholds. The parent configuration tests the shared
-benchmark helpers alongside the normal library tests.
+without asserting timing thresholds. The focused helper package compiles
+`mir.math.internal.benchmark` with both ordinary and random-input helper tests
+enabled, without rebuilding the full library test suite. The existing
+`dub test --config=unittest-benchmark` command remains available to run helper
+tests alongside the normal library tests.
 
 CI runs these tests with stable DMD and LDC on Linux and Windows. Short release
 runs exercise all functions and applicable algorithms with untransformed,
