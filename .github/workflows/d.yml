@@ -202,7 +202,25 @@ jobs:
     - name: Run optimized release tests (Windows LDC)
       if: runner.os == 'Windows' && startsWith(matrix.dc, 'ldc-')
       shell: pwsh
-      run: ./.github/scripts/windows-resources.ps1 Run dub test --build=unittest-release
+      # DUB uses the system CPU count on Windows, not process affinity.
+      # Bound the per-file trial to the validated runner capacity; otherwise
+      # retain the default build mode until DUB supports an explicit limit:
+      # https://github.com/dlang/dub/issues/3177
+      run: |
+        $buildArgs = @('test', '--build=unittest-release')
+        try {
+            $machine = Get-CimInstance Win32_ComputerSystem -OperationTimeoutSec 5 -ErrorAction Stop
+            $cpus = [int]$machine.NumberOfLogicalProcessors
+            if ($cpus -ge 2 -and $cpus -le 4 -and $machine.TotalPhysicalMemory -ge 12GB) {
+                $buildArgs += @('--build-mode=singleFile', '--parallel')
+                Write-Output "Windows LDC per-file compilation: up to $cpus workers."
+            } else {
+                Write-Output "Windows LDC default compilation: runner outside parallel capacity ($cpus CPUs)."
+            }
+        } catch {
+            Write-Warning 'Runner capacity unavailable; using default compilation.'
+        }
+        ./.github/scripts/windows-resources.ps1 Run dub @buildArgs
 
     - name: Report Linux release kernel memory diagnostics
       if: ${{ always() && runner.os == 'Linux' }}
