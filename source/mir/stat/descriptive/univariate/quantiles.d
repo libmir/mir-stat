@@ -7538,7 +7538,7 @@ version(mir_stat_test)
     }}
 }
 
-/// Allocation families preserve results; only scratch ownership changes.
+// Allocation families preserve results; only scratch ownership changes.
 // Keep each value type in a separate unittest for DMD release compilation.
 version(mir_stat_test)
 {
@@ -7571,6 +7571,7 @@ version(mir_stat_test)
     }
 }
 
+/// Allocation families preserve results for strided inputs.
 version(mir_stat_test)
 @safe pure nothrow unittest
 {
