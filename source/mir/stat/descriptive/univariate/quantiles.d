@@ -7539,16 +7539,15 @@ version(mir_stat_test)
 }
 
 /// Allocation families preserve results; only scratch ownership changes.
+// Keep each value type in a separate unittest for DMD release compilation.
 version(mir_stat_test)
-@safe pure nothrow unittest
 {
-    import mir.ndslice.slice: sliced;
-    import mir.ndslice.dynamic: transposed;
-    import mir.ndslice.topology: stride;
-    import mir.stat.descriptive.aliases: iqr, mad;
-    import std.meta: AliasSeq;
+    private import std.meta: AliasSeq;
     static foreach (T; AliasSeq!(float, double, real, int, long, ulong))
-    {{
+    @safe pure nothrow unittest
+    {
+        import mir.ndslice.slice: sliced;
+        import mir.ndslice.dynamic: transposed;
         const T[6] values = [5, 0, 4, 1, 3, 2];
         const int[6] weights = [1, 1, 2, 1, 2, 1];
         auto matrix = values[].sliced(2, 3).transposed;
@@ -7569,7 +7568,15 @@ version(mir_stat_test)
             assert(weightedMedianAbsoluteDeviation!algorithm(values, weights) == rcWeightedMedianAbsoluteDeviation!algorithm(values, weights));
         }}
         assert(values == [5, 0, 4, 1, 3, 2]);
-    }}
+    }
+}
+
+version(mir_stat_test)
+@safe pure nothrow unittest
+{
+    import mir.ndslice.slice: sliced;
+    import mir.ndslice.topology: stride;
+    import mir.stat.descriptive.aliases: iqr, mad;
     const double[8] storage = [0, 99, 2, 99, 6, 99, 10, 99];
     const int[8] masses = [1, 99, 1, 99, 1, 99, 1, 99];
     auto data = storage[].sliced.stride(2);
