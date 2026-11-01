@@ -71,6 +71,7 @@ symmetricView(S)(S rows) if (isPacked!S)
 version(mir_stat_test_linearAlgebra)
 @safe pure nothrow @nogc unittest
 {
+    import mir.stat.internal.linearAlgebra.types: TrianglePolicy;
     import mir.ndslice.slice: sliced;
     double[4] data = [4, 2, double.nan, 5];
     auto a = symmetricView(data[].sliced(2, 2));
@@ -165,6 +166,7 @@ triangularView(DiagonalPolicy diagonal = DiagonalPolicy.nonUnit, S)(S rows) if (
 version(mir_stat_test_linearAlgebra)
 @safe pure nothrow @nogc unittest
 {
+    import mir.stat.internal.linearAlgebra.types: TrianglePolicy, DiagonalPolicy;
     import mir.ndslice.slice: sliced;
     double[4] data = [double.nan, 3, double.nan, double.nan];
     auto a = triangularView!(TrianglePolicy.upper, DiagonalPolicy.unit)(data[].sliced(2, 2));
@@ -403,6 +405,7 @@ version(mir_stat_test_linearAlgebra)
 version(mir_stat_test_linearAlgebra)
 @safe pure unittest
 {
+    import mir.stat.internal.linearAlgebra.types: TrianglePolicy, DiagonalPolicy;
     import mir.ndslice.slice: sliced, hasAsSlice, toSlice;
     import mir.ndslice.topology: map;
     import mir.ndslice.allocation: slice, rcslice;
@@ -464,6 +467,7 @@ version(mir_stat_test_linearAlgebra)
 version(mir_stat_test_linearAlgebra)
 @system nothrow @nogc unittest
 {
+    import mir.stat.internal.linearAlgebra.types: DiagonalPolicy;
     import mir.ndslice.slice: sliced, toSlice;
     import mir.ndslice.topology: stairs, map;
     import mir.ndslice.allocation: makeSlice;
@@ -482,6 +486,7 @@ version(mir_stat_test_linearAlgebra)
 version(mir_stat_test_linearAlgebra)
 @safe pure nothrow unittest
 {
+    import mir.stat.internal.linearAlgebra.types: TrianglePolicy, DiagonalPolicy;
     import mir.ndslice.slice: sliced;
     import mir.stat.internal.linearAlgebra.products: mtimes;
     import mir.stat.internal.linearAlgebra.types: numericSlice;
@@ -640,4 +645,71 @@ version(mir_stat_test_linearAlgebra)
             return diagonalView(local[].sliced).asSlice;
         }
     }));
+}
+
+/++
+A diagonal view avoids dense covariance storage and factorization.
+Representations keep their existing meaning: a precision Cholesky diagonal
+contains square roots of precision entries, not covariance factor entries.
+Use the same metric for vectors, batches, and explicit row/column selections.
++/
+version(mir_stat_test_linearAlgebra)
+@safe pure unittest
+{
+    import mir.stat.distance: mahalanobisSquared, mahalanobisSquaredWithWorkspace;
+    import mir.ndslice.slice: sliced;
+    import mir.ndslice.topology: byDim;
+    double[2] ds=[4,9], x=[2,3], zero=[0,0], work;
+    auto covariance=diagonalView(ds[].sliced);
+    assert(mahalanobisSquared(x[],zero[],covariance)==2);
+    assert(mahalanobisSquaredWithWorkspace(x[],zero[],covariance,work[])==2);
+    double[4] rows=[2,3,4,6];
+    assert(mahalanobisSquared(rows[].sliced(2,2).byDim!0,zero[],covariance)==[2,8]);
+}
+
+/// A lower-triangle metric works directly, without repeating its triangle.
+version(mir_stat_test_linearAlgebra)
+@safe pure unittest
+{
+    import mir.stat.distance;
+    import mir.ndslice.slice: sliced;
+    import mir.stat.internal.linearAlgebra.views: symmetricView;
+    double[2] x=[1,2], center=[0,0];
+    double[4] data=[4,double.nan,2,5];
+    auto metric=symmetricView!(TrianglePolicy.lower)(data[].sliced(2,2));
+    assert(mahalanobisSquared(x[],center[],metric)==0.8125);
+    assert(rcMahalanobisSquared!(MahalanobisMatrix.inverseCovariance)(x[],center[],metric)==32);
+    assert(mahalanobisSquared(x[],center[],metric.transposed)==0.8125);
+    static assert(!__traits(compiles,mahalanobisSquared!(MahalanobisMatrix.covariance,TrianglePolicy.upper)(x[],center[],metric)));
+    static assert(!__traits(compiles,mahalanobisSquared!(MahalanobisMatrix.covarianceCholesky)(x[],center[],metric)));
+}
+
+/// Structural precision metrics support custom ownership and inferred batch triangles.
+version(mir_stat_test_linearAlgebra)
+@system unittest
+{
+    import mir.stat.distance;
+    import mir.math.sum: Summation;
+    import mir.ndslice.slice: sliced;
+    import mir.ndslice.topology: alongDim, byDim;
+    import mir.ndslice.dynamic: transposed;
+    import std.experimental.allocator.mallocator: Mallocator;
+    import std.experimental.allocator: dispose;
+    double[4] data=[4,double.nan,2,5];
+    auto metric=symmetricView!(TrianglePolicy.lower)(data[].sliced(2,2));
+    double[2] x=[1,2], center=[0,0], work, product;
+    double[4] batch=[1,2,2,4], scratch, products;
+    double[2] result;
+    enum precision=MahalanobisMatrix.inverseCovariance;
+    assert(makeMahalanobisSquared!precision(Mallocator.instance,x[],center[],metric)==32);
+    auto values=makeMahalanobisSquaredBatch!precision(Mallocator.instance,batch[].sliced(2,2).transposed,center[],metric);
+    scope(exit) Mallocator.instance.dispose(values.field);
+    assert(values==[32,128]);
+    assert(mahalanobisSquared!precision(batch[].sliced(2,2).alongDim!1,center[],metric)==values);
+    assert(rcMahalanobisSquaredBatch!precision(batch[].sliced(2,2).transposed,center[],metric)==values);
+    assert(mahalanobisSquaredWithWorkspace!(precision,TrianglePolicy.lower,Summation.fast)(x[],center[],metric,work[],product[])==32);
+    mahalanobisSquaredWithWorkspace!(precision,TrianglePolicy.lower,Summation.fast)(
+        batch[].sliced(2,2).byDim!0,center[],metric,result[],
+        scratch[].sliced(2,2).byDim!0,products[].sliced(2,2).byDim!0);
+    assert(result==[32,128]);
 }

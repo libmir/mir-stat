@@ -244,6 +244,7 @@ version(mir_stat_test_linearAlgebra)
 version(mir_stat_test_linearAlgebra)
 @safe pure nothrow unittest
 {
+    import mir.stat.internal.linearAlgebra.types: TrianglePolicy;
     import mir.ndslice.slice: sliced;
     import mir.stat.internal.linearAlgebra.views: triangularView;
 
@@ -289,6 +290,7 @@ rcMtimes(A, B)(scope auto ref A a, scope auto ref B b)
 version(mir_stat_test_linearAlgebra)
 @safe pure nothrow @nogc unittest
 {
+    import mir.stat.internal.linearAlgebra.types: TrianglePolicy, DiagonalPolicy;
     import mir.ndslice.slice: sliced;
     import mir.stat.internal.linearAlgebra.views: triangularView;
     double[4] data = [2, 3, double.nan, 4];
@@ -997,6 +999,8 @@ mtimesInto(S, B, C)(scope auto ref B b, scope auto ref S a, scope auto ref C c)
 version(mir_stat_test_linearAlgebra)
 @system pure nothrow unittest
 {
+    import mir.stat.internal.linearAlgebra.types: DiagonalPolicy;
+    import mir.stat.internal.linearAlgebra.views: triangularView;
     import mir.ndslice.slice: sliced;
     import mir.ndslice.topology: stairs;
     import mir.stat.internal.linearAlgebra.triangular: mtimesTriangular, mtimesTriangularRight;
@@ -1195,6 +1199,7 @@ mtimes(TrianglePolicy triangle, A, B)(scope auto ref const(SymmetricView!(triang
 version(mir_stat_test_linearAlgebra)
 @safe pure nothrow unittest
 {
+    import mir.stat.internal.linearAlgebra.views: symmetricView;
     import mir.ndslice.slice: sliced;
     double[4] values = [4, 2, double.nan, 5];
     double[6] rhs = [1, 2, 3, 4, 5, 6];
@@ -1612,6 +1617,7 @@ version(mir_stat_test_linearAlgebra)
 version(mir_stat_test_linearAlgebra)
 @safe pure nothrow @nogc unittest
 {
+    import mir.stat.internal.linearAlgebra.views: symmetricView;
     import mir.ndslice.slice: sliced;
     import mir.ndslice.topology: universal;
     import mir.ndslice.dynamic: transposed;
@@ -1684,6 +1690,7 @@ package(mir.stat) void mtimesInto(TrianglePolicy triangle, A, B, C, W)(
 version(mir_stat_test_linearAlgebra)
 @safe pure nothrow @nogc unittest
 {
+    import mir.stat.internal.linearAlgebra.views: symmetricView;
     import mir.ndslice.slice: sliced;
     import mir.ndslice.dynamic: transposed;
     double[4] data = [4,2,double.nan,5], input = [1,2,3,4], output, buffer;
@@ -1829,6 +1836,8 @@ package(mir.stat) void mtimesInto(TrianglePolicy left, TrianglePolicy right, A, 
 version(mir_stat_test_linearAlgebra)
 @safe pure nothrow unittest
 {
+    import mir.stat.internal.linearAlgebra.types: TrianglePolicy;
+    import mir.stat.internal.linearAlgebra.views: symmetricView;
     import mir.ndslice.slice: sliced;
     double[4] aa=[4,2,double.nan,5], bb=[3,double.nan,1,2], cc;
     auto a=symmetricView(aa[].sliced(2,2));
@@ -2047,6 +2056,7 @@ package(mir.stat) void mtimesInto(D,B,C)(scope auto ref B b, scope auto ref cons
 version(mir_stat_test_linearAlgebra)
 @safe pure nothrow unittest
 {
+    import mir.stat.internal.linearAlgebra.views: triangularView, symmetricView, diagonalView;
     import mir.ndslice.slice: sliced;
     double[2] ds = [2,3], xs = [5,7];
     double[4] bs = [1,2,3,4];
