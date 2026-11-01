@@ -7083,7 +7083,6 @@ version(mir_stat_test)
     import mir.ndslice.slice: sliced;
     import mir.ndslice.dynamic: transposed;
     import mir.ndslice.topology: stride;
-    import std.meta: AliasSeq;
     import mir.math.common: approxEqual;
     const double[6] original = [5, 0, 4, 1, 3, 2];
     int[6] weights = [1, 1, 2, 1, 2, 1];
@@ -7120,8 +7119,28 @@ version(mir_stat_test)
     assert(makeWeightedMedian(allocator, strided[].sliced.stride(2), masses[].sliced.stride(2)) == 4);
     assert(makeWeightedInterquartileRange(allocator, strided[].sliced.stride(2), masses[].sliced.stride(2)) == 8);
 
+    long[4] high = [long.max - 6, long.max - 4, long.max - 2, long.max];
+    assert(makeInterquartileRange!float(allocator, high) == 3);
+    assert(makeInterquartileRange!"type7"(allocator, high) == 3);
+    assert(makeInterquartileRange!(float, "type7")(allocator, high, 0.75, 0.25) == -3);
+    int[4] equal = [1, 1, 1, 1];
+    assert(makeWeightedInterquartileRange!float(allocator, high, equal) == 4);
+    double[4] values = [0, 2, 6, 10], tinyMasses = [1e-30, 2, 1, 2];
+    assert(makeWeightedInterquartileRange!(WeightedQuantileAlgo.type7)(allocator, values, tinyMasses) ==
+        rcWeightedInterquartileRange!(WeightedQuantileAlgo.type7)(values, tinyMasses));
+    assert(allocator.allocations == allocator.releases);
+}
+
+// Keep the value-type matrix in separate unittests so optimized builds do
+// not inline every ordinary and weighted convention into one large function.
+version(mir_stat_test)
+{
+    private import std.meta: AliasSeq;
     static foreach (T; AliasSeq!(float, double, real, int, long, ulong))
-    {{
+    @system pure nothrow @nogc unittest
+    {
+        import mir.ndslice.slice: sliced;
+        QuantileTestAllocator!() allocator;
         T[4] data = [0, 2, 6, 10];
         int[4] counts = [1, 2, 1, 2];
         assert(makeMedian(allocator, data) == rcMedian(data[]));
@@ -7139,17 +7158,8 @@ version(mir_stat_test)
             assert(makeWeightedInterquartileRange!algorithm(allocator, data, counts) == rcWeightedInterquartileRange!algorithm(data, counts));
             assert(allocator.allocations == before + 1 && allocator.releases == allocator.allocations);
         }}
-    }}
-    long[4] high = [long.max - 6, long.max - 4, long.max - 2, long.max];
-    assert(makeInterquartileRange!float(allocator, high) == 3);
-    assert(makeInterquartileRange!"type7"(allocator, high) == 3);
-    assert(makeInterquartileRange!(float, "type7")(allocator, high, 0.75, 0.25) == -3);
-    int[4] equal = [1, 1, 1, 1];
-    assert(makeWeightedInterquartileRange!float(allocator, high, equal) == 4);
-    double[4] values = [0, 2, 6, 10], tinyMasses = [1e-30, 2, 1, 2];
-    assert(makeWeightedInterquartileRange!(WeightedQuantileAlgo.type7)(allocator, values, tinyMasses) ==
-        rcWeightedInterquartileRange!(WeightedQuantileAlgo.type7)(values, tinyMasses));
-    assert(allocator.allocations == allocator.releases);
+        assert(allocator.allocations == allocator.releases);
+    }
 }
 
 // Safe allocators retain safe use; a throwing input releases the allocated copy.
