@@ -1078,3 +1078,50 @@ version(mir_stat_test_linearAlgebra)
     roots[0]=0;
     assertThrown!AssertError(choleskySolveInPlace(factor,b));
 }
+
+// Diagonal solves release custom output when a computed factor entry throws.
+version(mir_stat_test_linearAlgebra)
+@system unittest
+{
+    import mir.ndslice.slice: sliced;
+    import mir.ndslice.topology: map;
+    import std.experimental.allocator.mallocator: Mallocator;
+    struct CountingAllocator
+    {
+        size_t allocations, releases;
+        void[] allocated;
+        /// Retain the allocated buffer identity for the cleanup check.
+        void[] allocate(size_t bytes)
+        {
+            allocated = Mallocator.instance.allocate(bytes);
+            assert(allocated.length == bytes);
+            ++allocations;
+            return allocated;
+        }
+        /// Reject duplicate releases or release of a different buffer.
+        bool deallocate(void[] memory)
+        {
+            ++releases;
+            assert(releases == 1);
+            assert(memory.ptr == allocated.ptr && memory.length == allocated.length);
+            return Mallocator.instance.deallocate(memory);
+        }
+    }
+    CountingAllocator allocator;
+    auto failure = new Exception("computed structural input failed");
+    size_t reads;
+    /// Fail after one successful read, after output allocation.
+    double fail(double value)
+    {
+        if (++reads == 2) throw failure;
+        return value;
+    }
+    Exception caught;
+    double[2] diagonal = [2, 3], values = [8, 18];
+    auto factor = diagonalView(diagonal[].sliced.map!fail);
+    try { makeCholeskySolve(allocator, factor, values[].sliced); }
+    catch (Exception error) { caught = error; }
+    assert(caught is failure);
+    assert(reads == 2);
+    assert(allocator.allocations == 1 && allocator.releases == 1);
+}

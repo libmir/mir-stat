@@ -1040,3 +1040,57 @@ version(mir_stat_test_linearAlgebra)
     assert(product[0,0] == Z(0,2) && product[1,1] == Z(3,-4));
     assert(product[0,1] == Z(0));
 }
+
+// Diagonal self-products release custom output when a computed entry throws.
+version(mir_stat_test_linearAlgebra)
+@system unittest
+{
+    import mir.ndslice.slice: sliced;
+    import mir.ndslice.topology: map;
+    import std.experimental.allocator.mallocator: Mallocator;
+    struct CountingAllocator
+    {
+        size_t allocations, releases;
+        void[] allocated;
+        /// Retain the allocated buffer identity for the cleanup check.
+        void[] allocate(size_t bytes)
+        {
+            allocated = Mallocator.instance.allocate(bytes);
+            assert(allocated.length == bytes);
+            ++allocations;
+            return allocated;
+        }
+        /// Reject duplicate releases or release of a different buffer.
+        bool deallocate(void[] memory)
+        {
+            ++releases;
+            assert(releases == 1);
+            assert(memory.ptr == allocated.ptr && memory.length == allocated.length);
+            return Mallocator.instance.deallocate(memory);
+        }
+    }
+    foreach (transpose; [false, true])
+    {
+        CountingAllocator allocator;
+        auto failure = new Exception("computed structural input failed");
+        size_t reads;
+        /// Fail after one successful read, after output allocation.
+        double fail(double value)
+        {
+            if (++reads == 2) throw failure;
+            return value;
+        }
+        Exception caught;
+        double[2] values = [2, 3];
+        auto metric = diagonalView(values[].sliced.map!fail);
+        try
+        {
+            if (transpose) makeTcrossprod(allocator, metric);
+            else makeCrossprod(allocator, metric);
+        }
+        catch (Exception error) { caught = error; }
+        assert(caught is failure);
+        assert(reads == 2);
+        assert(allocator.allocations == 1 && allocator.releases == 1);
+    }
+}

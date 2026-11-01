@@ -2118,3 +2118,59 @@ version(mir_stat_test_linearAlgebra)
     assert(rcMtimes(d,xs[].sliced)==[ds[0]*xs[0],ds[1]*xs[1]]);
     assert(rcMtimes(xs[].sliced,d.transposed)==[xs[0]*ds[0],xs[1]*ds[1]]);
 }
+
+// Structural product overloads release custom output on iterator exceptions.
+version(mir_stat_test_linearAlgebra)
+@system unittest
+{
+    import mir.ndslice.slice: sliced;
+    import mir.ndslice.topology: map;
+    import std.experimental.allocator.mallocator: Mallocator;
+    struct CountingAllocator
+    {
+        size_t allocations, releases;
+        void[] allocated;
+        /// Retain the allocated buffer identity for the cleanup check.
+        void[] allocate(size_t bytes)
+        {
+            allocated = Mallocator.instance.allocate(bytes);
+            assert(allocated.length == bytes);
+            ++allocations;
+            return allocated;
+        }
+        /// Reject duplicate releases or release of a different buffer.
+        bool deallocate(void[] memory)
+        {
+            ++releases;
+            assert(releases == 1);
+            assert(memory.ptr == allocated.ptr && memory.length == allocated.length);
+            return Mallocator.instance.deallocate(memory);
+        }
+    }
+    foreach (symmetric; [true, false])
+    {
+        CountingAllocator allocator;
+        auto failure = new Exception("computed structural input failed");
+        size_t reads;
+        /// Fail after one successful read, after output allocation.
+        double fail(double value)
+        {
+            if (++reads == 2) throw failure;
+            return value;
+        }
+        Exception caught;
+        double[4] matrix = [4, 2, double.nan, 5];
+        double[2] diagonal = [2, 3], values = [1, 2];
+        try
+        {
+            if (symmetric)
+                makeMtimes(allocator, symmetricView(matrix[].sliced(2, 2).map!fail), values[].sliced);
+            else
+                makeMtimes(allocator, values[].sliced, diagonalView(diagonal[].sliced.map!fail));
+        }
+        catch (Exception error) { caught = error; }
+        assert(caught is failure);
+        assert(reads == 2);
+        assert(allocator.allocations == 1 && allocator.releases == 1);
+    }
+}
