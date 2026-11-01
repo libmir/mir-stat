@@ -507,9 +507,9 @@ transpose for right-side products. Packed storage saves input memory but is not
 guaranteed to beat dense TRMM for multiple right-hand sides; benchmark the
 expected sizes and backend.
 
-The transposed triangular matrix paths depend on the corrections in
-[mir-blas PR #12](https://github.com/libmir/mir-blas/pull/12). Resolving that
-dependency is separate from the availability of the built-in implementations.
+The optional BLAS configurations require mir-blas 1.1.18 or later, which includes
+the transposed triangular matrix corrections from
+[mir-blas PR #12](https://github.com/libmir/mir-blas/pull/12).
 Backend selection and summation order can change floating-point rounding.
 
 ## Preconditions and errors
@@ -534,7 +534,7 @@ dub test --build=unittest-linear-algebra --compiler=ldc2
 ```
 
 Add `--config=openblas` to exercise eligible native paths with the required
-native libraries and fixed dependency installed.
+native libraries installed; DUB resolves the required mir-blas release.
 
 The version declarations
 

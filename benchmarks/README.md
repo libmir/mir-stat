@@ -192,11 +192,10 @@ precomputed factors, input generation, and correctness checks are untimed.
 The `native-d` configuration selects the native D implementation and requires no BLAS library. To measure the optional
 native backend, use `--config=openblas` with OpenBLAS installed. The parent
 package selects mir-lapack/mir-blas through that configuration. Transposed
-triangular matrix products and matrix solves need the fixes in
-[mir-blas PR #12](https://github.com/libmir/mir-blas/pull/12); until available in
-the resolved dependency, use a local fixed dependency for those measurements.
-Do not interpret failures against an unfixed dependency as native D fallback
-failures. Unsupported native layouts/types use the library's native D kernels.
+triangular matrix products and matrix solves require mir-blas 1.1.18 or later,
+as enforced by the optional BLAS configurations. This release includes the fixes in
+[mir-blas PR #12](https://github.com/libmir/mir-blas/pull/12).
+Unsupported native layouts/types use the library's native D kernels.
 Record backend/dependency versions, compiler flags, and BLAS thread count
 alongside CSV files; the CSV schema does not identify the linked backend.
 
