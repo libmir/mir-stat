@@ -442,6 +442,10 @@ as R's `nclass.FD` function, which steadily widens the range used in the
 interquartile range to a maximum width of [1/512, 511/512] (with an adjustment
 to the multiplier as well).
 
+For larger inputs requiring several widened ranges, selected quantile ranks
+are reused with temporary reference-counted scratch storage. The usual IQR
+and first widened range do not need this extra storage.
+
 It is less sensitive to the standard deviation of outliers than Scott's rule.
 
 Params:
@@ -501,6 +505,13 @@ template freedmanDiaconis(CountType,
             F q;
             while (iqr == 0 && divisor <= 512)
             {
+                // Amortize bitmap allocation only across larger deep fallbacks.
+                // The cutoff is an internal tuning choice.
+                if (divisor == 16 && temp.length >= 1024)
+                {
+                    iqr = freedmanDiaconisCachedSpread!(F, quantileAlgo)(temp, q);
+                    break;
+                }
                 q = 1.0 / divisor;
                 iqr = temp.interquartileRange!(F, quantileAlgo, true)(q, 1 - q);
                 divisor = cast(ushort) (divisor << 1);
@@ -537,6 +548,24 @@ template freedmanDiaconis(CountType,
     {
         return freedmanDiaconis(withAsSlice.asSlice);
     }
+}
+
+// Keep bitmap allocation and cached selection out of the ordinary path.
+// Only called after both the IQR and first widened range are zero.
+pragma(inline, false)
+private F freedmanDiaconisCachedSpread(F, QuantileAlgo algorithm, S)(S values, ref F q)
+{
+    import mir.ndslice.allocation: rcslice;
+    import mir.stat.descriptive.univariate.quantiles: preparedQuantileSpread,
+        quantileScratchLength;
+    auto bitmap = rcslice!ulong([quantileScratchLength(values.length)], 0UL);
+    F spread = 0;
+    for (ushort divisor = 16; spread == 0 && divisor <= 512; divisor <<= 1)
+    {
+        q = 1.0 / divisor;
+        spread = preparedQuantileSpread!(F, algorithm, true)(values, q, 1 - q, bitmap.lightScope.field);
+    }
+    return spread;
 }
 
 template freedmanDiaconis(QuantileAlgo quantileAlgo = QuantileAlgo.type7,
@@ -609,6 +638,69 @@ unittest
 
     auto k = x.freedmanDiaconis!size_t;
     assert(k == ceil(((1.0 - 0.0) / ((x.rcquantile(1.0 - 1.0 / 512) / (1.0 - 2.0 / 512)) / pow(500.0, 1.0 / 3)))));
+}
+
+// Widened ranges retain the uncached result across the scratch cutoff, all
+// quantile conventions, and large integer offsets. Both ownership modes agree.
+version(mir_stat_test)
+@safe pure nothrow @nogc unittest
+{
+    import mir.ndslice.slice: sliced;
+    import mir.math.common: pow;
+    import mir.stat.descriptive.univariate: rcInterquartileRange;
+    long[2048] values, workspace;
+    foreach (n; [1023, 1024, 2048])
+    foreach (tailDivisor; [8, 64, 256, 512])
+    {
+        values[] = long.max - 4;
+        foreach (i; 0 .. n / tailDivisor + 1)
+        {
+            values[i] = long.max - 8;
+            values[n - 1 - i] = long.max;
+        }
+        static foreach (member; __traits(allMembers, QuantileAlgo))
+        {{
+            enum algorithm = __traits(getMember, QuantileAlgo, member);
+            double spread = 0, q;
+            for (ushort divisor = 8; spread == 0 && divisor <= 512; divisor <<= 1)
+            {
+                q = 1.0 / divisor;
+                spread = rcInterquartileRange!(double, algorithm)(values[0 .. n].sliced, q, 1 - q);
+            }
+            assert(spread > 0);
+            const expected = binsFromWidth!size_t(values[0 .. n].sliced,
+                (spread / (1 - 2 * q)) / pow(n, 1.0 / 3));
+            workspace[] = values[];
+            assert(freedmanDiaconis!algorithm(workspace[0 .. n].sliced) == expected);
+            assert(workspace[] == values[]);
+            assert(freedmanDiaconis!(algorithm, true)(workspace[0 .. n].sliced) == expected);
+        }}
+    }
+}
+
+version(mir_stat_test)
+@safe pure nothrow @nogc unittest
+{
+    import mir.ndslice.slice: sliced;
+    import mir.ndslice.topology: stride;
+    double[2048] backing;
+    double[1024] values = 0;
+    values[0 .. 3] = -1;
+    values[$ - 3 .. $] = 1;
+    foreach (i; 0 .. values.length)
+    {
+        backing[2 * i] = values[i];
+        backing[2 * i + 1] = -99;
+    }
+    auto strided = backing[].sliced.stride(2);
+    const expected = freedmanDiaconis(values[].sliced);
+    assert(freedmanDiaconis!(QuantileAlgo.type7, true)(strided) == expected);
+    foreach (i; 0 .. values.length) assert(backing[2 * i + 1] == -99);
+
+    values[] = 1;
+    double q;
+    assert(freedmanDiaconisCachedSpread!(double, QuantileAlgo.type7)(values[].sliced, q) == 0);
+    assert(q == 1.0 / 512); // The caller retains the existing zero-spread assertion.
 }
 
 // withAsSlice test

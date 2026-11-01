@@ -6167,7 +6167,9 @@ private auto allocatedQuantileSpread(F, QuantileAlgo algorithm, bool modify,
     return preparedQuantileSpread!(F, algorithm, false)(workspace, lo, hi, null);
 }
 
-private auto preparedQuantileSpread(F, QuantileAlgo algorithm, bool incremental,
+// Internal shared selector for tables and repeated histogram fallback queries.
+// Incremental callers supply a zeroed bitmap or retain it with the same workspace.
+package(mir.stat) auto preparedQuantileSpread(F, QuantileAlgo algorithm, bool incremental,
     S, P, Q)(S workspace, P lo, Q hi, scope ulong[] established)
 {
     import std.traits: isIntegral, Unqual, CommonType;
