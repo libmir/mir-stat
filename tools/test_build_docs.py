@@ -5,6 +5,8 @@ import tempfile
 import unittest
 
 from build_docs import copy_build_inputs, validate_test_results
+from extract_doc_examples import place_internal_examples
+from prepare_doc_examples import configure_extraction
 
 
 class TestResultsTest(unittest.TestCase):
@@ -89,6 +91,49 @@ class BuildInputsTest(unittest.TestCase):
                 self.assertFalse((snapshot / "source" / name).exists(), name)
             self.assertTrue((repo / "source/untracked-later.d").is_file())
             self.assertTrue((repo / "source/scratch.d").is_file())
+
+
+class ExampleTemplateTest(unittest.TestCase):
+    def test_wraps_extractor_without_changing_arguments(self):
+        command = "                'dtools_tests_extractor',"
+        original = "command: [\n" + command + "\n                '-i', '@INPUT@'],\n"
+        adapted = configure_extraction(original)
+        self.assertIn("'python3', join_paths(root, 'tools', 'extract_doc_examples.py')", adapted)
+        self.assertIn("'--module', source.replace('/', '.')", adapted)
+        self.assertTrue(adapted.endswith(command + "\n                '-i', '@INPUT@'],\n"))
+
+    def test_rejects_missing_or_multiple_extractor_commands(self):
+        for template in ("", "                'dtools_tests_extractor',\n" * 2):
+            with self.subTest(template=template), self.assertRaisesRegex(ValueError, "expected one"):
+                configure_extraction(template)
+
+
+class ExamplePackageTest(unittest.TestCase):
+    def test_public_examples_remain_external(self):
+        text = "# line 10\nunittest { import mir.stat.distance; }\n"
+        self.assertEqual(place_internal_examples("mir.stat.distance", text), text)
+        self.assertEqual(place_internal_examples("mir.stat.package", text), text)
+
+    def test_internal_package_and_leaf_examples(self):
+        text = "# line 161\nunittest { import mir.stat.internal.linearAlgebra; }\n"
+        for source, generated in [
+            ("mir.stat.internal.linearAlgebra.package", "mir.stat.internal.linearAlgebra.documented_package"),
+            ("mir.stat.internal.linearAlgebra.products", "mir.stat.internal.linearAlgebra.documented_products"),
+            ("mir.math.internal.benchmark", "mir.math.internal.documented_benchmark"),
+        ]:
+            with self.subTest(source=source):
+                self.assertEqual(place_internal_examples(source, text), f"module {generated};\n" + text)
+
+    def test_internal_is_a_package_component(self):
+        self.assertEqual(place_internal_examples("mir.stat.internalized", "unittest {}"), "unittest {}")
+
+    def test_reject_unexpected_extractor_module(self):
+        with self.assertRaisesRegex(ValueError, "unexpectedly"):
+            place_internal_examples("mir.stat.internal.linearAlgebra.package", "module external;\n")
+
+    def test_reject_invalid_module_name(self):
+        with self.assertRaisesRegex(ValueError, "invalid"):
+            place_internal_examples("mir/stat/internal/products", "")
 
 
 if __name__ == "__main__":

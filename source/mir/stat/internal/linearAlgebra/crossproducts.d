@@ -402,6 +402,7 @@ version(mir_stat_test_linearAlgebra)
 version(mir_stat_test_linearAlgebra)
 @system nothrow @nogc unittest
 {
+    import mir.stat.internal.linearAlgebra.views: disposeSymmetric;
     import mir.ndslice.slice: sliced;
     import std.experimental.allocator.mallocator: Mallocator;
     import std.experimental.allocator: dispose;
@@ -630,6 +631,7 @@ version(mir_stat_test_linearAlgebra)
 version(mir_stat_test_linearAlgebra)
 @safe pure nothrow unittest
 {
+    import mir.stat.internal.linearAlgebra.types: TrianglePolicy;
     import mir.ndslice.slice: sliced;
     import mir.ndslice.allocation: slice;
     import mir.stat.internal.linearAlgebra.quadratic: quadraticForm;
@@ -659,6 +661,7 @@ version(mir_stat_test_linearAlgebra)
 version(mir_stat_test_linearAlgebra)
 @safe pure nothrow @nogc unittest
 {
+    import mir.stat.internal.linearAlgebra.types: TrianglePolicy;
     import mir.ndslice.slice: sliced;
     import mir.ndslice.allocation: mininitRcslice;
     /// Local output ownership is transferred through a copied descriptor.
@@ -976,6 +979,8 @@ private void diagonalSelfInto(bool full,TrianglePolicy triangle,D,C)(
 version(mir_stat_test_linearAlgebra)
 @system unittest
 {
+    import mir.stat.internal.linearAlgebra.types: TrianglePolicy;
+    import mir.stat.internal.linearAlgebra.views: diagonalView, disposeSymmetric;
     import mir.ndslice.slice: sliced;
     import std.experimental.allocator.mallocator: Mallocator;
     import std.experimental.allocator: dispose;

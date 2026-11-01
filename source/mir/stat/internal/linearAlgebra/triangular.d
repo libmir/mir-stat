@@ -89,6 +89,7 @@ rcMtimesTriangular(TrianglePolicy triangle = TrianglePolicy.upper,
 version(mir_stat_test_linearAlgebra)
 @safe pure nothrow @nogc unittest
 {
+    import mir.stat.internal.linearAlgebra.types: TrianglePolicy, DiagonalPolicy;
     import mir.ndslice.slice: sliced;
     double[4] values = [double.nan, double.nan, 3, double.nan];
     double[2] vector = [5, 6];
@@ -306,6 +307,7 @@ rcMtimesTriangularRight(TrianglePolicy triangle = TrianglePolicy.upper,
 version(mir_stat_test_linearAlgebra)
 @safe pure nothrow @nogc unittest
 {
+    import mir.stat.internal.linearAlgebra.types: TrianglePolicy, DiagonalPolicy;
     import mir.ndslice.slice: sliced;
     import mir.ndslice.topology: universal;
     import mir.ndslice.dynamic: transposed;

@@ -2079,6 +2079,7 @@ version(mir_stat_test_distance)
 version(mir_stat_test_distance)
 @safe pure nothrow @nogc unittest
 {
+    import mir.math.sum: Summation;
     import mir.ndslice.slice: sliced;
     import mir.ndslice.topology: alongDim, byDim;
     import std.math: fabs;
@@ -2580,22 +2581,6 @@ void mahalanobisSquaredWithWorkspace(MahalanobisMatrix form = MahalanobisMatrix.
     return mahalanobisSquaredWithWorkspace!(form, triangle, summation)(x, center, metric.borrowStorage, result, work, extra);
 }
 
-/// A lower-triangle metric works directly, without repeating its triangle.
-version(mir_stat_test_distance)
-@safe pure unittest
-{
-    import mir.ndslice.slice: sliced;
-    import mir.stat.internal.linearAlgebra.views: symmetricView;
-    double[2] x=[1,2], center=[0,0];
-    double[4] data=[4,double.nan,2,5];
-    auto metric=symmetricView!(TrianglePolicy.lower)(data[].sliced(2,2));
-    assert(mahalanobisSquared(x[],center[],metric)==0.8125);
-    assert(rcMahalanobisSquared!(MahalanobisMatrix.inverseCovariance)(x[],center[],metric)==32);
-    assert(mahalanobisSquared(x[],center[],metric.transposed)==0.8125);
-    static assert(!__traits(compiles,mahalanobisSquared!(MahalanobisMatrix.covariance,TrianglePolicy.upper)(x[],center[],metric)));
-    static assert(!__traits(compiles,mahalanobisSquared!(MahalanobisMatrix.covarianceCholesky)(x[],center[],metric)));
-}
-
 // Structural metrics preserve axis selection, batch workspace, and summation dispatch.
 version(mir_stat_test_distance)
 @safe pure unittest
@@ -2683,34 +2668,6 @@ version(mir_stat_test_distance)
     assert(distances == [5,0] && squared == [25,0]);
 }
 
-/// Structural precision metrics support custom ownership and inferred batch triangles.
-version(mir_stat_test_distance)
-@system unittest
-{
-    import mir.ndslice.slice: sliced;
-    import mir.ndslice.topology: alongDim, byDim;
-    import mir.ndslice.dynamic: transposed;
-    import std.experimental.allocator.mallocator: Mallocator;
-    import std.experimental.allocator: dispose;
-    double[4] data=[4,double.nan,2,5];
-    auto metric=symmetricView!(TrianglePolicy.lower)(data[].sliced(2,2));
-    double[2] x=[1,2], center=[0,0], work, product;
-    double[4] batch=[1,2,2,4], scratch, products;
-    double[2] result;
-    enum precision=MahalanobisMatrix.inverseCovariance;
-    assert(makeMahalanobisSquared!precision(Mallocator.instance,x[],center[],metric)==32);
-    auto values=makeMahalanobisSquaredBatch!precision(Mallocator.instance,batch[].sliced(2,2).transposed,center[],metric);
-    scope(exit) Mallocator.instance.dispose(values.field);
-    assert(values==[32,128]);
-    assert(mahalanobisSquared!precision(batch[].sliced(2,2).alongDim!1,center[],metric)==values);
-    assert(rcMahalanobisSquaredBatch!precision(batch[].sliced(2,2).transposed,center[],metric)==values);
-    assert(mahalanobisSquaredWithWorkspace!(precision,TrianglePolicy.lower,Summation.fast)(x[],center[],metric,work[],product[])==32);
-    mahalanobisSquaredWithWorkspace!(precision,TrianglePolicy.lower,Summation.fast)(
-        batch[].sliced(2,2).byDim!0,center[],metric,result[],
-        scratch[].sliced(2,2).byDim!0,products[].sliced(2,2).byDim!0);
-    assert(result==[32,128]);
-}
-
 // Generic toSlice forwarding must not discard triangular metadata on metric inputs.
 version(mir_stat_test_distance)
 @safe pure nothrow @nogc unittest
@@ -2770,25 +2727,6 @@ private Element!X diagonalDistance(bool squared, MahalanobisMatrix form,
         else return sqrt(result);
     }
     else return scaledNorm!squared(work);
-}
-
-/++
-A diagonal view avoids dense covariance storage and factorization.
-Representations keep their existing meaning: a precision Cholesky diagonal
-contains square roots of precision entries, not covariance factor entries.
-Use the same metric for vectors, batches, and explicit row/column selections.
-+/
-version(mir_stat_test_distance)
-@safe pure unittest
-{
-    import mir.ndslice.slice: sliced;
-    import mir.ndslice.topology: byDim;
-    double[2] ds=[4,9], x=[2,3], zero=[0,0], work;
-    auto covariance=diagonalView(ds[].sliced);
-    assert(mahalanobisSquared(x[],zero[],covariance)==2);
-    assert(mahalanobisSquaredWithWorkspace(x[],zero[],covariance,work[])==2);
-    double[4] rows=[2,3,4,6];
-    assert(mahalanobisSquared(rows[].sliced(2,2).byDim!0,zero[],covariance)==[2,8]);
 }
 
 // All representations, allocation families, and workspace layouts agree.

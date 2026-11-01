@@ -113,6 +113,7 @@ package(mir.stat) Scalar!X quadraticForm(Summation summation = Summation.kbn, X,
 version(mir_stat_test_linearAlgebra)
 @safe pure nothrow @nogc unittest
 {
+    import mir.stat.internal.linearAlgebra.views: symmetricView;
     import mir.ndslice.slice: sliced;
     double[2] values = [1, 2];
     double[4] precision = [0.3125, -0.125, double.nan, 0.25];
@@ -123,6 +124,7 @@ version(mir_stat_test_linearAlgebra)
 version(mir_stat_test_linearAlgebra)
 @safe pure nothrow @nogc unittest
 {
+    import mir.stat.internal.linearAlgebra.types: TrianglePolicy;
     import mir.ndslice.slice: sliced;
     import mir.stat.internal.linearAlgebra.views: symmetricView;
     double[2] values = [1, 2];
@@ -175,6 +177,8 @@ package(mir.stat) Scalar!X quadraticFormWithWorkspace(Summation summation = Summ
 version(mir_stat_test_linearAlgebra)
 @safe pure nothrow @nogc unittest
 {
+    import mir.stat.internal.linearAlgebra.views: symmetricView;
+    import mir.math.sum: Summation;
     import mir.ndslice.slice: sliced;
     double[2] values = [1, 2], buffer;
     double[4] data = [4, 2, double.nan, 5];
@@ -489,6 +493,8 @@ quadraticFormBatch(Summation summation = Summation.kbn, X, A)(
 version(mir_stat_test_linearAlgebra)
 @safe pure nothrow unittest
 {
+    import mir.stat.internal.linearAlgebra.views: symmetricView;
+    import mir.math.sum: Summation;
     import mir.ndslice.slice: sliced;
     double[6] data = [1, 2, 0, 2, 1, 0], buffer;
     double[4] matrix = [4, 2, double.nan, 5];
@@ -704,6 +710,7 @@ package(mir.stat) void quadraticFormWithWorkspace(Summation summation = Summatio
 version(mir_stat_test_linearAlgebra)
 @safe pure nothrow unittest
 {
+    import mir.stat.internal.linearAlgebra.views: symmetricView;
     import mir.ndslice.slice: sliced;
     import mir.ndslice.topology: alongDim, byDim;
     double[6] rowData = [1, 2, 2, 1, 0, 0], columnData = [1, 2, 0, 2, 1, 0];
@@ -730,6 +737,8 @@ version(mir_stat_test_linearAlgebra)
 version(mir_stat_test_linearAlgebra)
 @safe pure nothrow @nogc unittest
 {
+    import mir.stat.internal.linearAlgebra.views: symmetricView;
+    import mir.math.sum: Summation;
     import mir.ndslice.slice: sliced;
     import mir.ndslice.topology: alongDim, byDim;
     double[6] data = [1,2,2,1,0,0], buffer;
@@ -751,6 +760,7 @@ version(mir_stat_test_linearAlgebra)
 version(mir_stat_test_linearAlgebra)
 @system unittest
 {
+    import mir.math.sum: Summation;
     import mir.ndslice.slice: sliced;
     import mir.ndslice.topology: byDim;
     import std.experimental.allocator.mallocator: Mallocator;
@@ -801,6 +811,8 @@ package(mir.stat) Scalar!X quadraticFormWithWorkspace(Summation summation = Summ
 version(mir_stat_test_linearAlgebra)
 @safe pure nothrow unittest
 {
+    import mir.stat.internal.linearAlgebra.views: diagonalView;
+    import mir.math.sum: Summation;
     import mir.ndslice.slice: sliced;
     import mir.ndslice.topology: byDim;
     double[2] ds=[2,3], xs=[4,5], work;

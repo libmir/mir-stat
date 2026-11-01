@@ -112,6 +112,7 @@ rcCholeskyDecompose(TrianglePolicy triangle, A)(scope auto ref const(SymmetricVi
 version(mir_stat_test_linearAlgebra)
 @safe pure @nogc unittest
 {
+    import mir.stat.internal.linearAlgebra.types: TrianglePolicy;
     import mir.ndslice.slice: sliced;
     double[4] data = [4, double.nan, 2, 5];
     static immutable expected = [[2.0, 0], [1.0, 2]];
@@ -703,6 +704,7 @@ package(mir.stat) void choleskySolveInPlace(TrianglePolicy triangle = TrianglePo
 version(mir_stat_test_linearAlgebra)
 @safe pure nothrow @nogc unittest
 {
+    import mir.stat.internal.linearAlgebra.types: TrianglePolicy;
     import mir.ndslice.slice: sliced;
     double[4] data = [2, double.nan, 1, 2];
     double[2] rhs = [8, 12];
@@ -1032,6 +1034,7 @@ package(mir.stat) void choleskySolveInPlace(TrianglePolicy triangle = TrianglePo
 version(mir_stat_test_linearAlgebra)
 @safe pure unittest
 {
+    import mir.stat.internal.linearAlgebra.views: diagonalView;
     import mir.ndslice.slice: sliced;
     double[2] ds=[4,9], roots=[2,3], rhs=[8,18];
     auto covariance=diagonalView(ds[].sliced);
