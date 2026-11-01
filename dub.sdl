@@ -23,6 +23,14 @@ buildType "unittest" {
     dflags "-lowmem" platform="dmd"
     dflags "-lowmem" platform="ldc"
 }
+// Run linear algebra examples and regressions independently.
+// Use --config=openblas to exercise the optional BLAS backend.
+buildType "unittest-linear-algebra" {
+    buildOptions "unittests" "debugMode" "debugInfo"
+    versions "mir_stat_test_linearAlgebra"
+    dflags "-lowmem" platform="dmd"
+    dflags "-lowmem" platform="ldc"
+}
 // Include the slower higher-precision probability tests.
 buildType "unittest-slow-numerics" {
     buildOptions "unittests" "debugMode" "debugInfo"
@@ -92,101 +100,121 @@ buildType "unittest-cov-blas" {
     dflags "-lowmem" platform="ldc"
 }
 configuration "openblas" {
+    dependency "mir-blas" version=">=1.1.18 <2.0.0"
     dependency "mir-lapack" version=">=1.2.9"
     subConfiguration "mir-lapack" "openblas"
 }
 
 configuration "threelib" {
+    dependency "mir-blas" version=">=1.1.18 <2.0.0"
     dependency "mir-lapack" version=">=1.2.9"
     subConfiguration "mir-lapack" "threelib"
 }
 
 configuration "cblas" {
+    dependency "mir-blas" version=">=1.1.18 <2.0.0"
     dependency "mir-lapack" version=">=1.2.9"
     subConfiguration "mir-lapack" "cblas"
 }
 
 configuration "blas" {
+    dependency "mir-blas" version=">=1.1.18 <2.0.0"
     dependency "mir-lapack" version=">=1.2.9"
     subConfiguration "mir-lapack" "blas"
 }
 
 configuration "lapack" {
+    dependency "mir-blas" version=">=1.1.18 <2.0.0"
     dependency "mir-lapack" version=">=1.2.9"
     subConfiguration "mir-lapack" "lapack"
 }
 
 configuration "mkl-sequential" {
+    dependency "mir-blas" version=">=1.1.18 <2.0.0"
     dependency "mir-lapack" version=">=1.2.9"
     subConfiguration "mir-lapack" "mkl-sequential"
 }
 
 configuration "mkl-sequential-ilp" {
+    dependency "mir-blas" version=">=1.1.18 <2.0.0"
     dependency "mir-lapack" version=">=1.2.9"
     subConfiguration "mir-lapack" "mkl-sequential-ilp"
 }
 
 configuration "mkl-tbb-thread" {
+    dependency "mir-blas" version=">=1.1.18 <2.0.0"
     dependency "mir-lapack" version=">=1.2.9"
     subConfiguration "mir-lapack" "mkl-tbb-thread"
 }
 
 configuration "mkl-tbb-thread-ilp" {
+    dependency "mir-blas" version=">=1.1.18 <2.0.0"
     dependency "mir-lapack" version=">=1.2.9"
     subConfiguration "mir-lapack" "mkl-tbb-thread-ilp"
 }
 
 configuration "mkl-sequential-dll" {
+    dependency "mir-blas" version=">=1.1.18 <2.0.0"
     dependency "mir-lapack" version=">=1.2.9"
     subConfiguration "mir-lapack" "mkl-sequential-dll"
 }
 
 configuration "mkl-sequential-ilp-dll" {
+    dependency "mir-blas" version=">=1.1.18 <2.0.0"
     dependency "mir-lapack" version=">=1.2.9"
     subConfiguration "mir-lapack" "mkl-sequential-ilp-dll"
 }
 
 configuration "mkl-tbb-thread-dll" {
+    dependency "mir-blas" version=">=1.1.18 <2.0.0"
     dependency "mir-lapack" version=">=1.2.9"
     subConfiguration "mir-lapack" "mkl-tbb-thread-dll"
 }
 
 configuration "mkl-tbb-thread-ilp-dll" {
+    dependency "mir-blas" version=">=1.1.18 <2.0.0"
     dependency "mir-lapack" version=">=1.2.9"
     subConfiguration "mir-lapack" "mkl-tbb-thread-ilp-dll"
 }
 
 configuration "zerolib" {
+    dependency "mir-blas" version=">=1.1.18 <2.0.0"
     dependency "mir-lapack" version=">=1.2.9"
     subConfiguration "mir-lapack" "zerolib"
 }
 
 configuration "unittest-openblas" {
+    dependency "mir-blas" version=">=1.1.18 <2.0.0"
     dependency "mir-lapack" version=">=1.2.9"
     subConfiguration "mir-lapack" "openblas"
 }
 
 configuration "unittest-threelib" {
+    dependency "mir-blas" version=">=1.1.18 <2.0.0"
     dependency "mir-lapack" version=">=1.2.9"
     subConfiguration "mir-lapack" "threelib"
 }
 
 configuration "unittest-cblas" {
+    dependency "mir-blas" version=">=1.1.18 <2.0.0"
     dependency "mir-lapack" version=">=1.2.9"
     subConfiguration "mir-lapack" "cblas"
 }
 
 configuration "unittest-blas" {
+    dependency "mir-blas" version=">=1.1.18 <2.0.0"
     dependency "mir-lapack" version=">=1.2.9"
     subConfiguration "mir-lapack" "blas"
 }
 
 configuration "unittest-lapack" {
+    dependency "mir-blas" version=">=1.1.18 <2.0.0"
     dependency "mir-lapack" version=">=1.2.9"
     subConfiguration "mir-lapack" "lapack"
 }
 
 configuration "unittest-mkl-sequential" {
+    dependency "mir-blas" version=">=1.1.18 <2.0.0"
     dependency "mir-lapack" version=">=1.2.9"
     subConfiguration "mir-lapack" "mkl-sequential"
 }

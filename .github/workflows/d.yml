@@ -109,6 +109,12 @@ jobs:
     - name: Smoke test release benchmarks with standardized inputs and CSV output
       run: dub -q run mir-stat:benchmarks --build=release -- --function=all --transform=standardize --algorithms=all --iterations=2 --rounds=2 --warmup=1 --size=32 --format=csv
 
+    - name: Smoke test native D linear algebra benchmarks
+      run: dub -q run mir-stat:benchmarks --config=native-d --build=release -- --function=linearAlgebra --iterations=2 --rounds=2 --warmup=1 --size=8 --format=csv
+
+    - name: Smoke test transposed native D linear algebra benchmarks
+      run: dub -q run mir-stat:benchmarks --config=native-d --build=release -- --function=linearAlgebra --layout=transposed --iterations=2 --rounds=2 --warmup=1 --size=8 --format=csv
+
   # Optimized compilation dominates runtime; run it alongside the other suites.
   release:
     name: Release tests
