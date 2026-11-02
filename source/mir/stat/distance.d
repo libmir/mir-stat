@@ -718,19 +718,21 @@ private Element!W scaledNorm(bool squared, W)(W work)
 }
 
 version(mir_stat_test_distance)
-@safe pure @nogc unittest
 {
-    import std.meta: AliasSeq;
-    import std.math: sqrt, fabs;
-    import mir.ndslice.slice: sliced;
-    import mir.ndslice.topology: universal, map;
-    import mir.ndslice.dynamic: transposed, strided, reversed;
-    import mir.ndslice.allocation: mininitRcslice;
+    private import std.meta: AliasSeq;
+    // Generate separate test functions to bound optimization work per combination.
     static foreach (T; AliasSeq!(float,double,real))
     static foreach (triangle; [TrianglePolicy.upper,TrianglePolicy.lower])
     static foreach (form; [MahalanobisMatrix.covariance,MahalanobisMatrix.covarianceCholesky,
         MahalanobisMatrix.inverseCovariance,MahalanobisMatrix.inverseCovarianceCholesky])
-    {{
+    @safe pure @nogc unittest
+    {
+        import std.meta: AliasSeq;
+        import std.math: sqrt, fabs;
+        import mir.ndslice.slice: sliced;
+        import mir.ndslice.topology: universal, map;
+        import mir.ndslice.dynamic: transposed, strided, reversed;
+        import mir.ndslice.allocation: mininitRcslice;
         foreach (transposeStorage; [false,true])
         foreach (reverseWork; [false,true])
         {
@@ -798,7 +800,7 @@ version(mir_stat_test_distance)
             assert(rcMahalanobisSquared!(form,triangle)(empty,empty,emptyMetric) == 0);
             assert(rcMahalanobis!(form,triangle)(empty,empty,emptyMetric) == 0);
         }
-    }}
+    }
 }
 
 version(mir_stat_test_distance)
@@ -1655,51 +1657,55 @@ private AllocatedSlice!(policy, Element!X, 1) batchAllocated(Allocation policy, 
 
 // Compare every representation, triangle, and layout with independent scalar calls.
 version(mir_stat_test_distance)
-@safe pure unittest
 {
-    import mir.ndslice.slice: sliced;
-    import mir.ndslice.topology: universal, map;
-    import mir.ndslice.dynamic: transposed, reversed;
-    import std.meta: AliasSeq;
-    import std.math: sqrt, fabs;
+    private import std.meta: AliasSeq;
+    // Generate separate test functions to bound optimization work per combination.
     static foreach (T; AliasSeq!(float, double, real))
     static foreach (triangle; [TrianglePolicy.upper, TrianglePolicy.lower])
     static foreach (form; [MahalanobisMatrix.covariance, MahalanobisMatrix.covarianceCholesky,
         MahalanobisMatrix.inverseCovariance, MahalanobisMatrix.inverseCovarianceCholesky])
     static foreach (summation; [Summation.kbn, Summation.fast])
-    foreach (tx;[false, true]) foreach (tm;[false, true])
+    @safe pure unittest
     {
-        T[6] xs, ws, ps; T[4] ms, fs; T[3] rs; T[2] cs = [3, 4];
-        auto x = xs[].sliced(tx ? 3 : 2, tx ? 2 : 3).universal;
-        auto work = ws[].sliced(tx ? 3 : 2, tx ? 2 : 3).universal;
-        auto product = ps[].sliced(tx ? 3 : 2, tx ? 2 : 3).universal;
-        if (tx) { x = x.transposed; work = work.transposed; product = product.transposed; }
-        auto metric = ms[].sliced(2, 2).universal;
-        if (tm) metric = metric.transposed;
-        static if (form == MahalanobisMatrix.covariance) { metric[0, 0] = 4; metric[0, 1] = metric[1, 0] = 2; metric[1, 1] = 5; }
-        else static if (form == MahalanobisMatrix.covarianceCholesky) { metric[0, 0] = 2; metric[0, 1] = metric[1, 0] = 1; metric[1, 1] = 2; }
-        else static if (form == MahalanobisMatrix.inverseCovariance) { metric[0, 0] = T(5)/16; metric[0, 1] = metric[1, 0] = T(-1)/8; metric[1, 1] = T(1)/4; }
-        else { metric[0, 0] = sqrt(T(5))/4; metric[0, 1] = metric[1, 0] = -1/(2*sqrt(T(5))); metric[1, 1] = 1/sqrt(T(5)); }
-        metric[triangle == TrianglePolicy.upper ? 1 : 0, triangle == TrianglePolicy.upper ? 0 : 1] = T.nan;
-        foreach (i;0 .. 2) foreach (j;0 .. 3) x[i, j] = cs[i]+T((i+1)*j);
-        auto result = rs[].sliced.universal.reversed;
-        auto factor = fs[].sliced(2, 2);
-        static if (form == MahalanobisMatrix.covariance)
-            mahalanobisSquaredBatchWithWorkspace!(form, triangle, summation)(x, cs[], metric, result, work, factor);
-        else static if (form == MahalanobisMatrix.inverseCovariance && summation == Summation.fast)
-            mahalanobisSquaredBatchWithWorkspace!(form, triangle, summation)(x, cs[], metric, result, work, product);
-        else mahalanobisSquaredBatchWithWorkspace!(form, triangle, summation)(x, cs[], metric, result, work);
-        auto distances = rcMahalanobisBatch!(form, triangle, summation)(x, cs[], metric);
-        auto squared = rcMahalanobisSquaredBatch!(form, triangle, summation)(x, cs[], metric);
-        auto columns = x.transposed;
-        foreach (j;0 .. 3) {
-            auto reference = rcMahalanobisSquared!(form, triangle)(columns[j], cs[], metric);
-            assert(fabs(result[j]-reference)<T(128)*T.epsilon);
-            assert(fabs(squared[j]-reference)<T(128)*T.epsilon);
-            assert(fabs(distances[j]-sqrt(reference))<T(128)*T.epsilon);
+        import mir.ndslice.slice: sliced;
+        import mir.ndslice.topology: universal, map;
+        import mir.ndslice.dynamic: transposed, reversed;
+        import std.meta: AliasSeq;
+        import std.math: sqrt, fabs;
+        foreach (tx;[false, true]) foreach (tm;[false, true])
+        {
+            T[6] xs, ws, ps; T[4] ms, fs; T[3] rs; T[2] cs = [3, 4];
+            auto x = xs[].sliced(tx ? 3 : 2, tx ? 2 : 3).universal;
+            auto work = ws[].sliced(tx ? 3 : 2, tx ? 2 : 3).universal;
+            auto product = ps[].sliced(tx ? 3 : 2, tx ? 2 : 3).universal;
+            if (tx) { x = x.transposed; work = work.transposed; product = product.transposed; }
+            auto metric = ms[].sliced(2, 2).universal;
+            if (tm) metric = metric.transposed;
+            static if (form == MahalanobisMatrix.covariance) { metric[0, 0] = 4; metric[0, 1] = metric[1, 0] = 2; metric[1, 1] = 5; }
+            else static if (form == MahalanobisMatrix.covarianceCholesky) { metric[0, 0] = 2; metric[0, 1] = metric[1, 0] = 1; metric[1, 1] = 2; }
+            else static if (form == MahalanobisMatrix.inverseCovariance) { metric[0, 0] = T(5)/16; metric[0, 1] = metric[1, 0] = T(-1)/8; metric[1, 1] = T(1)/4; }
+            else { metric[0, 0] = sqrt(T(5))/4; metric[0, 1] = metric[1, 0] = -1/(2*sqrt(T(5))); metric[1, 1] = 1/sqrt(T(5)); }
+            metric[triangle == TrianglePolicy.upper ? 1 : 0, triangle == TrianglePolicy.upper ? 0 : 1] = T.nan;
+            foreach (i;0 .. 2) foreach (j;0 .. 3) x[i, j] = cs[i]+T((i+1)*j);
+            auto result = rs[].sliced.universal.reversed;
+            auto factor = fs[].sliced(2, 2);
+            static if (form == MahalanobisMatrix.covariance)
+                mahalanobisSquaredBatchWithWorkspace!(form, triangle, summation)(x, cs[], metric, result, work, factor);
+            else static if (form == MahalanobisMatrix.inverseCovariance && summation == Summation.fast)
+                mahalanobisSquaredBatchWithWorkspace!(form, triangle, summation)(x, cs[], metric, result, work, product);
+            else mahalanobisSquaredBatchWithWorkspace!(form, triangle, summation)(x, cs[], metric, result, work);
+            auto distances = rcMahalanobisBatch!(form, triangle, summation)(x, cs[], metric);
+            auto squared = rcMahalanobisSquaredBatch!(form, triangle, summation)(x, cs[], metric);
+            auto columns = x.transposed;
+            foreach (j;0 .. 3) {
+                auto reference = rcMahalanobisSquared!(form, triangle)(columns[j], cs[], metric);
+                assert(fabs(result[j]-reference)<T(128)*T.epsilon);
+                assert(fabs(squared[j]-reference)<T(128)*T.epsilon);
+                assert(fabs(distances[j]-sqrt(reference))<T(128)*T.epsilon);
+            }
+            auto generic = x.map!(v=>v);
+            assert(rcMahalanobisSquaredBatch!(form, triangle, summation)(generic, cs[], metric).length == 3);
         }
-        auto generic = x.map!(v=>v);
-        assert(rcMahalanobisSquaredBatch!(form, triangle, summation)(generic, cs[], metric).length == 3);
     }
 }
 
@@ -2096,27 +2102,28 @@ version(mir_stat_test_distance)
 
 // Every metric form and summation policy forwards to the existing batch implementation.
 version(mir_stat_test_distance)
-@safe pure unittest
 {
-    import mir.ndslice.slice: sliced;
-    import mir.ndslice.topology: alongDim, byDim, universal;
-    import mir.ndslice.dynamic: reversed, strided;
-    import mir.ndslice.allocation: mininitRcslice;
-    double[24] data;
-    auto rows = data[].sliced(6, 4).universal.strided!(0, 1)(2, 2);
-    rows[0,0] = 1; rows[0,1] = 2;
-    rows[1,0] = 2; rows[1,1] = 4;
-    rows[2,0] = 0; rows[2,1] = 0;
-    const selected = rows.alongDim!(-1);
-    double[4] identity = [1, 0, double.nan, 1];
-    double[2] center = [0, 0];
-    double[6] buffer, product;
-    double[4] factor;
-    double[3] result;
+    // Generate separate test functions to bound optimization work per combination.
     static foreach (form; [MahalanobisMatrix.covariance, MahalanobisMatrix.covarianceCholesky,
         MahalanobisMatrix.inverseCovariance, MahalanobisMatrix.inverseCovarianceCholesky])
     static foreach (summation; [Summation.kbn, Summation.fast])
-    {{
+    @safe pure unittest
+    {
+        import mir.ndslice.slice: sliced;
+        import mir.ndslice.topology: alongDim, byDim, universal;
+        import mir.ndslice.dynamic: reversed, strided;
+        import mir.ndslice.allocation: mininitRcslice;
+        double[24] data;
+        auto rows = data[].sliced(6, 4).universal.strided!(0, 1)(2, 2);
+        rows[0,0] = 1; rows[0,1] = 2;
+        rows[1,0] = 2; rows[1,1] = 4;
+        rows[2,0] = 0; rows[2,1] = 0;
+        const selected = rows.alongDim!(-1);
+        double[4] identity = [1, 0, double.nan, 1];
+        double[2] center = [0, 0];
+        double[6] buffer, product;
+        double[4] factor;
+        double[3] result;
         auto metric = identity[].sliced(2, 2);
         auto expected = mahalanobisSquaredBatch!(form, TrianglePolicy.upper, summation)(
             observationColumns(selected), center[], metric);
@@ -2147,21 +2154,40 @@ version(mir_stat_test_distance)
             mahalanobisWithWorkspace!(form, TrianglePolicy.upper, summation)(selected, center[], metric, output, work);
         }
         assert(output == mahalanobisBatch!(form, TrianglePolicy.upper, summation)(observationColumns(selected), center[], metric));
-    }}
-    auto tail = rows.byDim!0[0 .. 2].universal.reversed;
-    assert(mahalanobisSquared(tail, center[], identity[].sliced(2,2)) == [20,5]);
-    double[0] empty;
-    assert(mahalanobisSquared(empty[].sliced(0,2).alongDim!1, center[], identity[].sliced(2,2)).length == 0);
-    assert(mahalanobisSquared(empty[].sliced(2,0).byDim!1, center[], identity[].sliced(2,2)).length == 0);
-    auto owner = mininitRcslice!double(3, 2);
-    foreach (i; 0 .. 3) foreach (j; 0 .. 2) owner[i,j] = rows[i,j];
-    const retained = owner.byDim!0;
-    owner = typeof(owner).init;
-    assert(rcMahalanobisSquared(retained, center[], identity[].sliced(2,2)) == [5,20,0]);
-    double[][2] jagged;
-    static assert(!__traits(compiles, mahalanobisSquared(jagged[], center[], identity[].sliced(2,2))));
-    static assert(!__traits(compiles, mahalanobisSquaredWithWorkspace!(MahalanobisMatrix.covarianceCholesky)(
-        selected, center[], identity[].sliced(2,2), result[], buffer[].sliced(3,2))));
+    }
+
+    @safe pure unittest
+    {
+        import mir.ndslice.slice: sliced;
+        import mir.ndslice.topology: alongDim, byDim, universal;
+        import mir.ndslice.dynamic: reversed, strided;
+        import mir.ndslice.allocation: mininitRcslice;
+        double[24] data;
+        auto rows = data[].sliced(6, 4).universal.strided!(0, 1)(2, 2);
+        rows[0,0] = 1; rows[0,1] = 2;
+        rows[1,0] = 2; rows[1,1] = 4;
+        rows[2,0] = 0; rows[2,1] = 0;
+        const selected = rows.alongDim!(-1);
+        double[4] identity = [1, 0, double.nan, 1];
+        double[2] center = [0, 0];
+        double[6] buffer, product;
+        double[4] factor;
+        double[3] result;
+        auto tail = rows.byDim!0[0 .. 2].universal.reversed;
+        assert(mahalanobisSquared(tail, center[], identity[].sliced(2,2)) == [20,5]);
+        double[0] empty;
+        assert(mahalanobisSquared(empty[].sliced(0,2).alongDim!1, center[], identity[].sliced(2,2)).length == 0);
+        assert(mahalanobisSquared(empty[].sliced(2,0).byDim!1, center[], identity[].sliced(2,2)).length == 0);
+        auto owner = mininitRcslice!double(3, 2);
+        foreach (i; 0 .. 3) foreach (j; 0 .. 2) owner[i,j] = rows[i,j];
+        const retained = owner.byDim!0;
+        owner = typeof(owner).init;
+        assert(rcMahalanobisSquared(retained, center[], identity[].sliced(2,2)) == [5,20,0]);
+        double[][2] jagged;
+        static assert(!__traits(compiles, mahalanobisSquared(jagged[], center[], identity[].sliced(2,2))));
+        static assert(!__traits(compiles, mahalanobisSquaredWithWorkspace!(MahalanobisMatrix.covarianceCholesky)(
+            selected, center[], identity[].sliced(2,2), result[], buffer[].sliced(3,2))));
+    }
 }
 
 /// Custom-allocation selected overloads retain caller ownership of the result.
@@ -2731,20 +2757,22 @@ private Element!X diagonalDistance(bool squared, MahalanobisMatrix form,
 
 // All representations, allocation families, and workspace layouts agree.
 version(mir_stat_test_distance)
-@system unittest
 {
-    import mir.ndslice.slice: sliced;
-    import mir.ndslice.topology: byDim, alongDim, universal;
-    import mir.ndslice.dynamic: transposed, reversed;
-    import mir.math.common: fabs;
-    import std.experimental.allocator.mallocator: Mallocator;
-    import std.experimental.allocator: dispose;
-    import std.exception: assertThrown;
-    import core.exception: AssertError;
+    // Generate separate test functions to bound optimization work per combination.
     static foreach(form; [MahalanobisMatrix.covariance,MahalanobisMatrix.covarianceCholesky,
         MahalanobisMatrix.inverseCovariance,MahalanobisMatrix.inverseCovarianceCholesky])
     static foreach(triangle; [TrianglePolicy.upper,TrianglePolicy.lower])
-    static foreach(summation; [Summation.kbn,Summation.fast]) {{
+    static foreach(summation; [Summation.kbn,Summation.fast])
+    @system unittest
+    {
+        import mir.ndslice.slice: sliced;
+        import mir.ndslice.topology: byDim, alongDim, universal;
+        import mir.ndslice.dynamic: transposed, reversed;
+        import mir.math.common: fabs;
+        import std.experimental.allocator.mallocator: Mallocator;
+        import std.experimental.allocator: dispose;
+        import std.exception: assertThrown;
+        import core.exception: AssertError;
         double[2] ds,x=[2,3],center=[0,0],ws,ps,rs;
         double[4] xs=[2,4,3,6],work,extra;
         static if(form==MahalanobisMatrix.covariance) ds=[4,9];
@@ -2785,16 +2813,28 @@ version(mir_stat_test_distance)
             assert(fabs(rcMahalanobisSquared!(form,triangle,summation)(x[],center[],metric)-2)<1e-14);
             assert(fabs(makeMahalanobisSquared!(form,triangle,summation)(Mallocator.instance,x[],center[],metric)-2)<1e-14);
         }
-    }}
-    double[1] bad=[0],x=[1],zero=[0];
-    assertThrown!Exception(mahalanobisSquared(x[],zero[],diagonalView(bad[].sliced)));
-    double[0] empty;
-    auto metric=diagonalView(empty[].sliced);
-    assert(mahalanobisSquared(empty[],empty[],metric)==0);
-    assert(mahalanobisSquaredBatch(empty[].sliced(0,2),empty[],metric)==[0,0]);
-    double[1] huge=[double.max/4],one=[1];
-    auto norm=mahalanobis!(MahalanobisMatrix.covarianceCholesky)(huge[],zero[],diagonalView(one[].sliced));
-    assert(norm==huge[0]); // squaring first would overflow
+    }
+
+    @system unittest
+    {
+        import mir.ndslice.slice: sliced;
+        import mir.ndslice.topology: byDim, alongDim, universal;
+        import mir.ndslice.dynamic: transposed, reversed;
+        import mir.math.common: fabs;
+        import std.experimental.allocator.mallocator: Mallocator;
+        import std.experimental.allocator: dispose;
+        import std.exception: assertThrown;
+        import core.exception: AssertError;
+        double[1] bad=[0],x=[1],zero=[0];
+        assertThrown!Exception(mahalanobisSquared(x[],zero[],diagonalView(bad[].sliced)));
+        double[0] empty;
+        auto metric=diagonalView(empty[].sliced);
+        assert(mahalanobisSquared(empty[],empty[],metric)==0);
+        assert(mahalanobisSquaredBatch(empty[].sliced(0,2),empty[],metric)==[0,0]);
+        double[1] huge=[double.max/4],one=[1];
+        auto norm=mahalanobis!(MahalanobisMatrix.covarianceCholesky)(huge[],zero[],diagonalView(one[].sliced));
+        assert(norm==huge[0]); // squaring first would overflow
+    }
 }
 
 // Allocation counts protect the absence of dense scratch and cleanup on iterator failure.
