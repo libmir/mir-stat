@@ -4340,6 +4340,19 @@ probability lies exactly on a cumulative-mass boundary. Choose the former
 when the result should be an observed value, and the latter when an exact
 split should fall halfway between the two observations.
 
+For example, observations 0 and 10 with equal weights put half the mass at
+each value. At probability 0.5, `inverseCDF` returns 0, the first observation
+whose cumulative mass reaches one half. `averagedInverseCDF` returns 5,
+the midpoint of the exact split. Away from such a boundary, the two
+conventions return the same observation. Weights need not sum to one:
+weights [1, 3] describe the same relative masses as [0.25, 0.75].
+
+The algorithm is chosen per query, so the same table can answer queries
+using either convention without rebuilding. Other algorithms in
+$(LREF WeightedQuantileAlgo), including the frequency-weight conventions,
+are available through the standalone weighted quantile functions but are
+not supported by this table.
+
 The defaults match the standalone functions: `quantile` and
 `interquartileRange` use `inverseCDF`, while `median` uses
 `averagedInverseCDF`. Thus `median()` can differ from `quantile(0.5)`.
@@ -4347,7 +4360,9 @@ For one batch of known probabilities, $(LREF weightedQuantile) already shares
 preparation; use a table when queries arrive separately or the data are reused.
 The numerical limits of $(LREF weightedQuantile) also apply here.
 
-Copies share the prepared storage. GC tables retain GC-managed storage;
+Queries are read-only and can be called on a const table. Copying a table
+shares its prepared storage without copying or sorting the observations
+again. GC tables retain GC-managed storage;
 RC copies retain reference-counted storage until the last owner is destroyed.
 Custom-allocated tables require explicit disposal with their allocator.
 An uninitialized or disposed table cannot be queried.
@@ -4370,7 +4385,9 @@ struct WeightedQuantileTable(Iterator, bool customAllocated = false)
         return entries.length;
     }
 
-    /++ Query a scalar probability in [0, 1]. F optionally specifies the
+    /++ Query a scalar floating-point probability in [0, 1]. The endpoints
+    return the smallest and largest positive-weight observations.
+    F optionally specifies the
     result type. Without F, inverseCDF preserves the observation type and
     averagedInverseCDF uses the same floating result type as weightedMedian. +/
     auto quantile(F, WeightedQuantileAlgo algorithm = WeightedQuantileAlgo.inverseCDF, P)(P probability) const
@@ -4429,8 +4446,9 @@ struct WeightedQuantileTable(Iterator, bool customAllocated = false)
     {
         /++ Release custom storage with the allocator used at construction.
         Call exactly once for shared storage, after all copies are no longer
-        needed. Other copies become invalid. The allocator must outlive the
-        storage. GC and RC tables do not expose this operation. +/
+        needed. Other copies become invalid. The allocator's backing state
+        must remain valid until disposal. GC and RC tables do not expose
+        this operation. +/
         void dispose(Allocator)(auto ref Allocator allocator)
         {
             if (entries.length)
@@ -4483,7 +4501,9 @@ auto rcWeightedQuantileTable(Data, Weights)(scope auto ref Data data, scope auto
 /++ Like $(LREF weightedQuantileTable), using a custom allocator.
 Use this variant for an arena, pool, or another allocation policy. The caller
 must release the table with `table.dispose(allocator)` when finished; copies
-share that allocation and must not be used after disposal. +/
+share that allocation and must not be used after disposal. Keep the allocator's
+backing state valid until disposal, and dispose the shared allocation only
+once, after all queries through any copy are finished. +/
 auto makeWeightedQuantileTable(Allocator, Data, Weights)(auto ref Allocator allocator,
     scope auto ref Data data, scope auto ref Weights weights)
 {
