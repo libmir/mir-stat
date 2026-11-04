@@ -30,6 +30,93 @@ jobs:
       id: resolve
       run: python3 .github/scripts/compiler_matrix.py
 
+  # Resolve dependencies once for the comparison, without building them.
+  # Existing compatibility/coverage jobs retain their own DUB behavior.
+  backend-dependencies:
+    name: Resolve backend comparison dependencies
+    # Comparison master switch: set false to skip this job and all backends.
+    if: ${{ true }}
+    needs: compilers
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    outputs:
+      ldc: ${{ steps.compiler.outputs.ldc }}
+    steps:
+    - uses: actions/checkout@v7.0.1
+    - name: Select the resolved stable LDC
+      id: compiler
+      env:
+        COMPILERS: ${{ needs.compilers.outputs.stable_compilers }}
+      run: |
+        python3 - <<'PY' >> "$GITHUB_OUTPUT"
+        import json, os
+        print('ldc=' + next(c['compiler'] for c in json.loads(os.environ['COMPILERS'])
+                            if c['channel'] == 'ldc-latest'))
+        PY
+    - uses: dlang-community/setup-dlang@v2.0.0
+      with:
+        compiler: ${{ steps.compiler.outputs.ldc }}
+    - name: Resolve the ordinary library dependencies
+      run: |
+        dub describe --compiler=ldc2 --config=library --build=unittest > /dev/null
+        cat dub.selections.json
+    - uses: actions/upload-artifact@v4
+      with:
+        name: backend-dependency-selections
+        path: dub.selections.json
+        if-no-files-found: error
+
+  backends:
+    name: Build backend (${{ matrix.backend }}, Linux LDC)
+    # Automatically skipped when the comparison master switch is false.
+    needs: backend-dependencies
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    permissions:
+      contents: read
+    strategy:
+      fail-fast: false
+      matrix:
+        # Edit this list to enable/disable backends. Ninja remains disabled:
+        # see .github/backend-comparison.md for the upstream correctness blockers.
+        backend: [dub]
+    steps:
+    - uses: actions/checkout@v7.0.1
+    - uses: dlang-community/setup-dlang@v2.0.0
+      with:
+        compiler: ${{ needs.backend-dependencies.outputs.ldc }}
+    - uses: actions/download-artifact@v4
+      with:
+        name: backend-dependency-selections
+    - name: Install comparison tools
+      run: |
+        sudo apt-get update
+        sudo apt-get install --yes --no-install-recommends time
+    - name: Fetch selected dependencies (no compilation)
+      run: |
+        cp dub.selections.json "$RUNNER_TEMP/backend-selections.json"
+        dub describe --compiler=ldc2 --config=library --build=unittest > /dev/null
+        cmp dub.selections.json "$RUNNER_TEMP/backend-selections.json"
+        ldc2 --version
+        dub --version
+        cat dub.selections.json
+    - name: Compare builds and run tests
+      env:
+        BACKEND: ${{ matrix.backend }}
+      run: |
+        # Bound per-module compiler workers, as in the existing Linux jobs.
+        cpus=$(python3 -c 'import os; print(",".join(map(str, sorted(os.sched_getaffinity(0))[:2])))')
+        echo "Comparison CPU affinity: $cpus"
+        exec taskset -c "$cpus" bash .github/scripts/compare-backends.sh
+    - name: Preserve comparison diagnostics
+      if: always()
+      uses: actions/upload-artifact@v4
+      with:
+        name: backend-${{ matrix.backend }}-logs
+        path: backend-results/
+        if-no-files-found: ignore
+
   gdc:
     name: GDC 15 tests
     permissions:
