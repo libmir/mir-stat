@@ -1,24 +1,33 @@
 /++
-Shared normalization for weighted statistics.
+Weight interpretation for weighted statistics.
 
-$(LREF WeightedMomentNormalization) is the single policy used by weighted
-variance, standard deviation, coefficient of variation, covariance, skewness, and kurtosis. The policy
-selects the meaning of weights and whether to apply a sample correction;
-each statistic supplies its own formula and minimum sample size.
+WeightInterpretation describes what a weight represents. For weighted variance,
+standard deviation, coefficient of variation, covariance, skewness, and kurtosis,
+the separate runtime argument isPopulation selects whether to apply a sample
+correction. It defaults to false, matching the unweighted functions. Pass true
+to describe the weighted distribution without a sample correction.
 
-Variance and covariance corrections assume fixed weights and independent
-observations with common second moments. Relative sample skewness and kurtosis
-assume a common distribution with the required finite higher moments. Their
-corrected standardized ratios are not generally unbiased. See
-$(REF weightedSkewness, mir, stat, descriptive, univariate, skewness_kurtosis) and
-$(REF weightedKurtosis, mir, stat, descriptive, univariate, skewness_kurtosis)
-for these assumptions and examples. Correlation has no normalization selector
-because the common covariance/variance correction cancels.
+For values [0, 10] and weights [1, 3], population variance is 18.75.
+With frequency interpretation, sample variance is 25: the represented sample
+is [0, 10, 10, 10]. With relative interpretation, sample variance is 50: there
+are two observations, with the second receiving three times the emphasis.
+These answer different questions; the larger answer is not automatically better.
 
-The older WeightedVarianceNormalization name in the dispersions module remains
-an alias to this enum. Existing source imports and template arguments work;
-the defining module and type name in compiled symbols have changed, so rebuild
-consumers when upgrading.
+Migration:
+The former WeightedMomentNormalization and WeightedVarianceNormalization names
+are removed. Replace population with relative interpretation and isPopulation=true;
+frequencySample with frequency interpretation and isPopulation=false; and
+relativeSample with relative interpretation and isPopulation=false.
+Calls without options now select relative sample correction, rather than
+population moments. For example, weightedVariance(x, w) now estimates sample
+variance; weightedVariance(x, w, true) preserves the former descriptive result.
+Weighted kurtosis takes isPopulation before isRaw, matching unweighted kurtosis.
+An old weightedKurtosis(x, w, true) call requesting raw population kurtosis
+therefore becomes weightedKurtosis(x, w, true, true).
+
+Mean and correlation retain their existing APIs. Neither needs a sample
+normalization selector: the mean has no such correction, and the common
+covariance/variance correction cancels in correlation.
 
 License: $(HTTP www.apache.org/licenses/LICENSE-2.0, Apache-2.0)
 Authors: John Michael Hall
@@ -27,87 +36,114 @@ Copyright: 2026 Mir Stat Authors.
 module mir.stat.descriptive.weighting;
 
 /++
-Choose what the weights mean and whether to apply a sample correction.
-
-Use population to describe the weighted distribution you have.
-Use frequencySample when each weight counts actual observations in a sample.
-Use relativeSample when each row is one observation, weights specify relative
-emphasis, and you want a sample correction under the assumptions below.
-
-For example, values [0, 10] with weights [1, 3] have the same weighted mean,
-7.5, in all three modes. Their variances differ: 18.75 for population, 25 for
-frequencySample, and 50 for relativeSample. These answer different questions;
-the larger answer is not automatically more accurate.
-
-Select the meaning explicitly. Integer weights do not automatically mean
-frequencies, and floating-point weights such as [1.0, 3.0] can be frequencies.
-See the examples on $(REF weightedVariance, mir, stat, descriptive, univariate, dispersions) for executable calls, and
-$(REF descriptive, mir, stat) for shared guidance on weight meanings.
+Choose explicitly what weights mean. Integer-valued weights do not automatically
+mean frequencies; floating-point weights such as [1.0, 3.0] can be counts.
+This selection governs validation and, when requested, the sample correction.
 +/
-enum WeightedMomentNormalization
+enum WeightInterpretation
 {
     /++
-    Describe a weighted distribution, without a sample correction.
-    This is the default.
+    Each row is one observation with relative emphasis. This is the default.
+    Weights must be finite and nonnegative; zero weights exclude observations.
+    Multiplying all weights by a positive constant leaves the mathematical
+    result unchanged, so [1, 3] and [0.25, 0.75] express the same relative weights.
 
-    Use this for a probability distribution, a complete weighted dataset, or a
-    descriptive summary when you do not want to estimate a population statistic
-    from a sample. For example, an outcome is 0 with probability 25 percent and
-    10 with probability 75 percent. Its variance is 18.75. Either [0.25, 0.75]
-    or [1, 3] expresses those probabilities; weights need not sum to one.
+    Sample variance and covariance assume fixed weights and independent
+    observations with common second moments. Their denominator is W-Q/W,
+    where W=sum(w) and Q=sum(w*w). At least two positive-weight rows are needed.
+    Sample skewness and kurtosis require at least three and four positive-weight
+    rows respectively, and a common distribution with the required moments.
+    Their corrected standardized ratios are not generally unbiased.
 
-    Multiplying every weight by the same positive constant leaves the result
-    unchanged. One positive-weight observation has variance 0; skewness and
-    kurtosis are undefined for constant observations and return NaN.
-
-    Variance formula: sum(w*(x-mean)*(x-mean)) / sum(w).
+    These corrections are not general corrections for survey designs or
+    measurements with different known variances. For known probabilities or
+    a descriptive distribution, pass isPopulation=true instead.
     +/
-    population,
+    relative,
     /++
-    Apply a sample correction to observations stored as values and occurrence counts.
+    Each weight counts occurrences. Values [0, 10] with counts [1, 3] represent
+    [0, 10, 10, 10] without expanding the input. Use this for compact samples
+    of repeated observations. Sample results match the corresponding unweighted
+    definitions on the expanded sample, up to floating-point rounding.
 
-    Use this to avoid expanding repeated observations. Values [0, 10] and counts
-    [1, 3] represent the four observations [0, 10, 10, 10]. The variance is 25,
-    exactly the sample-variance definition used by ordinary variance on that
-    expanded sample (up to floating-point rounding).
+    Counts must be finite nonnegative whole numbers with a total representable
+    under the statistic's numerical limits. This validation also applies with
+    isPopulation=true. Do not normalize counts: [2, 6] represents eight
+    observations and can give different sample corrections from [1, 3].
 
-    Counts must be nonnegative whole numbers. Variance and covariance require
-    total count above one, skewness at least three, and kurtosis at least four.
-    Fractional counts such as 1.5 are invalid. A single stored row with count 3
-    represents three identical observations and has sample variance 0.
-
-    Do not normalize counts to sum to one. Changing [1, 3] to [2, 6] means an
-    eight-observation sample, so its sample correction changes: the variance
-    becomes 150/7, approximately 21.43. For variance this mode divides by
-    sample size minus one, using total count as the sample size. Skewness and
-    kurtosis use different corrections based on that same total count.
-
-    Variance formula: sum(w*(x-mean)*(x-mean)) / (sum(w)-1).
+    Sample variance and covariance require total count above one; skewness
+    requires at least three and kurtosis at least four. Population results do
+    not require these sample minima. Zero counts exclude observations.
     +/
-    frequencySample,
-    /++
-    Apply a sample correction when weights give observations relative emphasis.
+    frequency
+}
 
-    Use this when each row is one independent observation and weights are fixed
-    independently of the observed values. For example, two observations [0, 10]
-    have preassigned weights [1, 3]: the second receives three times the emphasis,
-    but it is still one observation, not three repeated observations. The
-    corrected variance is 50. Weights [0.25, 0.75] give the same result.
+/// The defaults match unweighted sample statistics; true requests population results.
+@safe pure nothrow @nogc unittest
+{
+    import mir.stat.descriptive.univariate.dispersions:
+        variance, standardDeviation, coefficientOfVariation,
+        weightedVariance, weightedStandardDeviation, weightedCoefficientOfVariation,
+        WVarianceAccumulator;
+    import mir.stat.descriptive.univariate.skewness_kurtosis:
+        skewness, kurtosis, weightedSkewness, weightedKurtosis;
+    import mir.stat.descriptive.multivariate:
+        covariance, weightedCovariance, WCovarianceAccumulator, WCorrelationAccumulator;
+    import mir.math.common: approxEqual;
+    double[4] x = [1, 2, 4, 8], y = [3, 1, 6, 5], ones = [1, 1, 1, 1];
+    assert(weightedVariance(x[], ones[]).approxEqual(variance(x[])));
+    assert(weightedStandardDeviation(x[], ones[]).approxEqual(standardDeviation(x[])));
+    assert(weightedCoefficientOfVariation(x, ones).approxEqual(coefficientOfVariation(x[])));
+    assert(weightedCovariance(x[], y[], ones[]).approxEqual(covariance(x[], y[])));
+    assert(weightedSkewness(x, ones).approxEqual(skewness(x[])));
+    assert(weightedKurtosis(x, ones).approxEqual(kurtosis(x[])));
+    static foreach (interpretation; [WeightInterpretation.relative, WeightInterpretation.frequency])
+    {{
+        WVarianceAccumulator!(double, interpretation) spread;
+        WCovarianceAccumulator!(double, interpretation) paired;
+        spread.put(x[], ones[]);
+        paired.put(x[], y[], ones[]);
+        // One state can answer both queries, in either order, repeatedly.
+        foreach (isPopulation; [true, false, true, false])
+        {
+            assert(spread.variance(isPopulation).approxEqual(variance(x[], isPopulation)));
+            assert(spread.standardDeviation(isPopulation).approxEqual(standardDeviation(x[], isPopulation)));
+            assert(spread.coefficientOfVariation(isPopulation).approxEqual(coefficientOfVariation(x[], isPopulation)));
+            assert(paired.covariance(isPopulation).approxEqual(covariance(x[], y[], isPopulation)));
+            assert(weightedSkewness!interpretation(x, ones, isPopulation).approxEqual(skewness(x[], isPopulation)));
+            foreach (isRaw; [false, true])
+                assert(weightedKurtosis!interpretation(x, ones, isPopulation, isRaw).approxEqual(kurtosis(x[], isPopulation, isRaw)));
+        }
+    }}
+    WCorrelationAccumulator!double correlationState;
+    correlationState.put(x[], y[], ones[]);
+    assert(correlationState.covariance.approxEqual(covariance(x[], y[], true)));
+}
 
-    Variance and covariance require at least two positive-weight rows, skewness
-    at least three, and kurtosis at least four. Fractional weights are allowed,
-    and multiplying all weights by the same positive constant leaves the result
-    unchanged. Equal positive weights recover ordinary sample variance. Unequal
-    weights concentrate the information in fewer observations, which this
-    correction accounts for under its statistical assumptions.
-
-    The variance correction is unbiased when observations are independent, share a common
-    mean and variance, and weights are fixed. It is not a general correction for
-    survey sampling or measurements with different known variances. It estimates
-    the variance of the observations, not the uncertainty of their weighted mean.
-
-    Variance formula: write W = sum(w), Q = sum(w*w), and
-    M2 = sum(w*(x-mean)*(x-mean)); the result is M2/(W-Q/W).
-    +/
-    relativeSample
+version(mir_stat_test)
+@system unittest
+{
+    import mir.stat.descriptive.univariate.dispersions:
+        weightedVariance, weightedStandardDeviation, weightedCoefficientOfVariation;
+    import mir.stat.descriptive.univariate.skewness_kurtosis: weightedSkewness, weightedKurtosis;
+    import mir.stat.descriptive.multivariate: weightedCovariance;
+    import std.exception: assertThrown;
+    import core.exception: AssertError;
+    import std.meta: AliasSeq;
+    import std.math: isNaN;
+    double[1] single = [7], count = [1];
+    assert(weightedVariance!(WeightInterpretation.frequency)(single[], count[], true) == 0);
+    assert(weightedCovariance!(WeightInterpretation.frequency)(single[], single[], count[], true) == 0);
+    assert(weightedSkewness!(WeightInterpretation.frequency)(single, count, true).isNaN);
+    assert(weightedKurtosis!(WeightInterpretation.frequency)(single, count, true).isNaN);
+    assertThrown!AssertError(weightedVariance(single[], count[]));
+    assertThrown!AssertError(weightedCovariance(single[], single[], count[]));
+    double[4] x = [1, 2, 3, 4], fractional = [1, 2, 3, 0.5];
+    static foreach (fun; AliasSeq!(weightedVariance, weightedStandardDeviation,
+        weightedCoefficientOfVariation, weightedSkewness, weightedKurtosis))
+    {
+        // Population mode must still validate the count interpretation.
+        assertThrown!AssertError(fun!(WeightInterpretation.frequency)(x[], fractional[], true));
+    }
+    assertThrown!AssertError(weightedCovariance!(WeightInterpretation.frequency)(x[], x[], fractional[], true));
 }

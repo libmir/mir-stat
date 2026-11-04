@@ -2392,8 +2392,8 @@ mean; its units are the observation units cubed, so it is not standardized skewn
 These are descriptive moments, without a sample correction. Count weights agree
 with centralMoment on expanded observations. Probabilities and relative weights
 use the same formula, and common weight scaling leaves the result unchanged.
-For a sample-corrected second moment, use weightedVariance with frequencySample
-or relativeSample instead; those estimate a different quantity.
+For a sample-corrected second moment, use weightedVariance with frequency
+or relative weight interpretation instead; those estimate a different quantity.
 
 Input, weight, result-type, and rounding contracts follow weightedRawMoment.
 Orders above one require replayable inputs at every nesting level: arrays,
@@ -2441,16 +2441,15 @@ unittest
 {
     import mir.math.common: approxEqual;
     import mir.stat.descriptive.univariate.dispersions: weightedVariance;
-    import mir.stat.descriptive.weighting: WeightedMomentNormalization;
-    alias Policy = WeightedMomentNormalization;
+    import mir.stat.descriptive.weighting: WeightInterpretation;
     double[2] values = [0, 10];
     int[2] counts = [1, 3]; // Represents [0, 10, 10, 10].
     assert(weightedCentralMoment!1(values, counts) == 0);
     assert(weightedCentralMoment!2(values, counts).approxEqual(18.75));
     assert(weightedCentralMoment!3(values, counts).approxEqual(-93.75));
-    assert(weightedCentralMoment!2(values, counts).approxEqual(weightedVariance(values, counts)));
-    assert(weightedVariance!(Policy.frequencySample)(values, counts).approxEqual(25));
-    assert(weightedVariance!(Policy.relativeSample)(values, counts).approxEqual(50));
+    assert(weightedCentralMoment!2(values, counts).approxEqual(weightedVariance(values, counts, true)));
+    assert(weightedVariance!(WeightInterpretation.frequency)(values, counts, false).approxEqual(25));
+    assert(weightedVariance!(WeightInterpretation.relative)(values, counts, false).approxEqual(50));
 }
 
 // Reference identities across output types, moment orders, and summation modes.
@@ -2483,7 +2482,7 @@ unittest
                 .approxEqual(centralMoment!(N, mode)(values[].sliced), T(128) * T.epsilon, T(0)));
         }
         assert(weightedRawMoment!(1, mode)(values, counts).approxEqual(wmean(values[], counts[]), T(32) * T.epsilon));
-        assert(weightedCentralMoment!(2, mode)(values, counts).approxEqual(weightedVariance(values, counts), T(64) * T.epsilon));
+        assert(weightedCentralMoment!(2, mode)(values, counts).approxEqual(weightedVariance(values, counts, true), T(64) * T.epsilon));
         static assert(is(typeof(weightedRawMoment!2(values, counts)) == T));
         static assert(is(typeof(weightedCentralMoment!2(values, counts)) == T));
     }}
