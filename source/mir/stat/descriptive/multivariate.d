@@ -5780,6 +5780,14 @@ template WCovarianceAccumulator(T,
     alias WCovarianceAccumulator = WeightedPairAccumulator!(T, interpretation, covarianceAlgo, summation, false);
 }
 
+/// ditto
+template WCovarianceAccumulator(T, CovarianceAlgo covarianceAlgo,
+    WeightInterpretation interpretation = WeightInterpretation.relative,
+    Summation summation = Summation.kbn)
+{
+    alias WCovarianceAccumulator = .WCovarianceAccumulator!(T, interpretation, covarianceAlgo, summation);
+}
+
 /++
 Mergeable weighted Pearson correlation. Supports the same insertion, merge,
 weight validation and numerical contracts as $(LREF WCovarianceAccumulator).
@@ -5874,6 +5882,23 @@ template weightedCovariance(
     {
         return .weightedCovariance!(WeightedPairType!(X, Y), interpretation, covarianceAlgo, summation)(x, y, weights, isPopulation);
     }
+}
+
+/// ditto
+template weightedCovariance(F, CovarianceAlgo covarianceAlgo,
+    WeightInterpretation interpretation = WeightInterpretation.relative,
+    Summation summation = Summation.appropriate)
+    if (isFloatingPoint!F)
+{
+    alias weightedCovariance = .weightedCovariance!(F, interpretation, covarianceAlgo, summation);
+}
+
+/// ditto
+template weightedCovariance(CovarianceAlgo covarianceAlgo,
+    WeightInterpretation interpretation = WeightInterpretation.relative,
+    Summation summation = Summation.appropriate)
+{
+    alias weightedCovariance = .weightedCovariance!(interpretation, covarianceAlgo, summation);
 }
 
 /// Choose the policy according to what each weight represents.

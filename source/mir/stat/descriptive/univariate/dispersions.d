@@ -3476,6 +3476,14 @@ struct WVarianceAccumulator(T,
             exponent / 2 + scaleExponent - meanExponent);
     }
 }
+
+/// ditto
+template WVarianceAccumulator(T, VarianceAlgo varianceAlgo,
+    WeightInterpretation interpretation = WeightInterpretation.relative,
+    Summation summation = Summation.kbn)
+{
+    alias WVarianceAccumulator = .WVarianceAccumulator!(T, interpretation, varianceAlgo, summation);
+}
 /++
 Weighted variance of paired values and weights, without materializing the inputs.
 
@@ -3559,6 +3567,22 @@ template weightedVariance(
     }
 }
 
+/// ditto
+template weightedVariance(F, VarianceAlgo varianceAlgo,
+    WeightInterpretation interpretation = WeightInterpretation.relative,
+    Summation summation = Summation.appropriate)
+{
+    alias weightedVariance = .weightedVariance!(F, interpretation, varianceAlgo, summation);
+}
+
+/// ditto
+template weightedVariance(VarianceAlgo varianceAlgo,
+    WeightInterpretation interpretation = WeightInterpretation.relative,
+    Summation summation = Summation.appropriate)
+{
+    alias weightedVariance = .weightedVariance!(interpretation, varianceAlgo, summation);
+}
+
 /++
 Weighted spread expressed in the same units as the observations.
 
@@ -3604,6 +3628,22 @@ template weightedStandardDeviation(
     {
         return .weightedStandardDeviation!(stdevType!(DeepElementType!X), interpretation, varianceAlgo, summation)(values, weights, isPopulation);
     }
+}
+
+/// ditto
+template weightedStandardDeviation(F, VarianceAlgo varianceAlgo,
+    WeightInterpretation interpretation = WeightInterpretation.relative,
+    Summation summation = Summation.appropriate)
+{
+    alias weightedStandardDeviation = .weightedStandardDeviation!(F, interpretation, varianceAlgo, summation);
+}
+
+/// ditto
+template weightedStandardDeviation(VarianceAlgo varianceAlgo,
+    WeightInterpretation interpretation = WeightInterpretation.relative,
+    Summation summation = Summation.appropriate)
+{
+    alias weightedStandardDeviation = .weightedStandardDeviation!(interpretation, varianceAlgo, summation);
 }
 
 
@@ -3686,6 +3726,22 @@ template weightedCoefficientOfVariation(
         mixin WeightedMomentCheckArguments!(values, weights);
         return .weightedCoefficientOfVariation!(stdevType!(DeepElementType!X), interpretation, varianceAlgo, summation)(values, weights, isPopulation);
     }
+}
+
+/// ditto
+template weightedCoefficientOfVariation(F, VarianceAlgo varianceAlgo,
+    WeightInterpretation interpretation = WeightInterpretation.relative,
+    Summation summation = Summation.appropriate)
+{
+    alias weightedCoefficientOfVariation = .weightedCoefficientOfVariation!(F, interpretation, varianceAlgo, summation);
+}
+
+/// ditto
+template weightedCoefficientOfVariation(VarianceAlgo varianceAlgo,
+    WeightInterpretation interpretation = WeightInterpretation.relative,
+    Summation summation = Summation.appropriate)
+{
+    alias weightedCoefficientOfVariation = .weightedCoefficientOfVariation!(interpretation, varianceAlgo, summation);
 }
 
 /// The mean is 7.5 in all three modes; the spread correction changes the ratio.
