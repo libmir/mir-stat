@@ -4,6 +4,14 @@ set -euo pipefail
 
 case "${BACKEND:?Select BACKEND in the workflow matrix}" in
   dub) tests=(dub test) ;;
+  redub)
+    redub --version
+    # v1.35.1's per-module test strategy emits multiple generated mains.
+    # Keep the full suite; use its supported single-invocation build strategy.
+    # It also drops this SDL build type's buildOptions. Supply the same LDC
+    # flags explicitly for the root package; retain recipe versions/dependencies.
+    tests=(env 'DFLAGS=-unittest -g -d-debug -lowmem' redub test --build-strategy=full-once)
+    ;;
   ninja)
     echo 'Ninja is disabled: released DUB lacks the generator; development DUB drops unittest/debug build options.' >&2
     echo 'See .github/backend-comparison.md before enabling this backend.' >&2
@@ -47,7 +55,9 @@ measure() {
   echo "| $label | $(tail -n 1 "backend-results/$label.seconds") | $status |" | tee -a "$summary"
   echo "::endgroup::"
   if (( status != 0 )); then return "$status"; fi
-  # Verify selected dependency versions against the shared resolution.
+  # Redub writes only used packages; DUB also resolves other configurations.
+  # Every selected version must match the shared resolution, and both ordinary
+  # library dependencies must remain present. Ignore unused BLAS/benchmark entries.
   python3 - <<'PY'
 import json
 from pathlib import Path
@@ -59,7 +69,7 @@ PY
 }
 
 # Fresh CI jobs have no compiled package artifacts and use no persistent cache.
-# The test command compiles, links AND runs. Also time the already-built test
+# Both test commands compile, link AND run. Also time the already-built test
 # executable so readers can judge execution overhead without subtracting timings.
 # Reject missing test/debug modes before any timing can be mistaken for success.
 cat >> "$module" <<'D'
@@ -90,7 +100,7 @@ cat >> "$summary" <<'EOF'
 Cold/no-change/incremental times include compilation, linking, and test execution.
 The execution-only row reruns the already-built test binary. Dependencies were
 downloaded before timing; no compiled artifacts were restored. DUB uses its
-default package build mode and package-level reuse.
+default package build mode; Redub uses full-once (package-level reuse).
 Shared runners and different scheduling make these exploratory observations,
 not controlled performance benchmarks. See the attached logs for rebuild scope.
 EOF

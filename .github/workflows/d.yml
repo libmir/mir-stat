@@ -80,7 +80,7 @@ jobs:
       matrix:
         # Edit this list to enable/disable backends. Ninja remains disabled:
         # see .github/backend-comparison.md for the upstream correctness blockers.
-        backend: [dub]
+        backend: [dub, redub]
     steps:
     - uses: actions/checkout@v7.0.1
     - uses: dlang-community/setup-dlang@v2.0.0
@@ -90,9 +90,19 @@ jobs:
       with:
         name: backend-dependency-selections
     - name: Install comparison tools
+      env:
+        BACKEND: ${{ matrix.backend }}
       run: |
         sudo apt-get update
         sudo apt-get install --yes --no-install-recommends time
+        if [[ "$BACKEND" == redub ]]; then
+          mkdir -p "$RUNNER_TEMP/backend-tools"
+          curl --fail --location --retry 3 \
+            https://github.com/MrcSnm/redub/releases/download/v1.35.1/redub-v1.35.1-linux-x86_64 \
+            --output "$RUNNER_TEMP/backend-tools/redub"
+          chmod +x "$RUNNER_TEMP/backend-tools/redub"
+          echo "$RUNNER_TEMP/backend-tools" >> "$GITHUB_PATH"
+        fi
     - name: Fetch selected dependencies (no compilation)
       run: |
         cp dub.selections.json "$RUNNER_TEMP/backend-selections.json"

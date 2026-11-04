@@ -1,9 +1,9 @@
 # Build backend comparison
 
 The `backends` job in `workflows/d.yml` runs on Linux with the same resolved
-stable LDC as the existing CI. Edit `matrix.backend: [dub]` to select
+stable LDC as the existing CI. Edit `matrix.backend: [dub, redub]` to select
 backends; there are no manual workflow inputs. Each backend fails independently
-(`fail-fast: false`). The comparison job uses at most two allowed CPUs to bound compiler
+(`fail-fast: false`). Both jobs use at most two allowed CPUs to bound compiler
 workers. No existing job or required-check name was changed.
 
 To disable the entire comparison, change the `backend-dependencies` job's
@@ -24,16 +24,47 @@ uses `--compiler=ldc2 --config=library --build=unittest`, and verifies that its
 selected dependency versions match. The recipe supplies `mir_stat_test`, unittests,
 debug mode, debug information, and LDC's `-lowmem`. `dub.sdl` is unchanged.
 
+Redub resolves from installed package versions and rewrites the selections file;
+it does not use that file as a DUB-style lock. Fresh runners fetch only the DUB
+selection, and the helper compares parsed selection data after every operation,
+failing if Redub chooses different versions. Redub omits unused configurations'
+dependencies from its output; missing BLAS/benchmark entries are allowed, but
+`mir-algorithm` and `mir-core` must both remain present. Do not reuse a populated package
+cache without revisiting this constraint.
+
 The helper script exists to share timing, failure propagation, source restoration,
 and diagnostic capture between local validation and CI:
 
 * DUB: `dub test`. The default package build mode remains the baseline.
+* Redub: `DFLAGS='-unittest -g -d-debug -lowmem' redub test --build-strategy=full-once`.
+  The workflow installs the
+  pinned upstream Linux x86-64 binary from release **v1.35.1**. See the
+  [upstream installation/help documentation](https://github.com/MrcSnm/redub)
+  and [CLI options](https://github.com/MrcSnm/redub/blob/v1.35.1/source/redub/cli/dub.d).
 
 Cold/no-change/incremental measurements include compilation, linking, **and test
-execution**. The real test command runs every time; compilation alone never
-counts as passing. A separate execution-only row reruns
-`./mir-stat-test-library` to expose test overhead. Do not simply subtract this
-warmed execution time from the other rows.
+execution**. Both backends use their real test command; compilation alone never
+counts as passing. Redub's test command has no build-only mode, and local
+validation found that both `redub build` and `redub test` omit this SDL build
+type's `buildOptions`. The Redub-only `DFLAGS` compatibility setting explicitly
+restores the same LDC unittest/debug/debug-info/low-memory flags as DUB, without
+editing the recipe. Keep it in sync with the recipe's ordinary unittest type;
+do not extend it to other configurations without validating their flags.
+A separate execution-only row reruns `./mir-stat-test-library`,
+the test binary produced by both commands, to expose test overhead. Do not simply
+subtract this warmed execution time from the other rows.
+
+Redub v1.35.1's `incremental-parallel` test strategy failed locally with duplicate
+generated `main` and `__ModuleInfo` symbols. The comparison therefore explicitly
+uses `full-once`, retaining the full tests. This measures package-level reuse,
+not Redub's advertised per-module incremental test compilation. Revisit the
+strategy only after upstream fixes and equivalent-test validation.
+
+The validated Redub executable reports 77 tested modules versus DUB's 75.
+Symbol comparison found no DUB unittest symbols missing from Redub, but found
+additional dependency unittest symbols, including `mir.algebraic` and
+`mir.format`. Thus the full project suite is retained, but test scope is not
+strictly identical; include this extra work when interpreting timings.
 
 Cold means a fresh CI checkout/runner with fetched package sources, no restored
 compiled artifacts, and no preceding project build. The immediate no-change
@@ -47,7 +78,7 @@ changes are made.
 
 Logs and wall-clock timings are uploaded as `backend-<backend>-logs` and timings
 are added to the job summary, including failures. Inspect compilation logs to
-identify package reuse and full rebuilds; this baseline does not demonstrate
+inspect package reuse and full rebuilds; neither active path demonstrates
 module-level incremental test compilation. Filesystem caches,
 parallel scheduling, and shared GitHub runners affect measurements; these are
 initial observations, not a controlled performance ranking.
@@ -93,21 +124,22 @@ example tests. No documentation workflow changes are needed.
 The recipe additionally defines slow/extreme numerical, DIP1008, combined DIP,
 benchmark, and multiple BLAS/LAPACK/MKL configurations. These are not all existing
 CI jobs. The new comparison intentionally covers only ordinary unittests; it
-does not establish alternative-backend compatibility with those specialized settings,
+does not establish Redub/Ninja compatibility with those specialized settings,
 coverage output, subpackages, or native linking. Existing DUB coverage remains
 the authority for configurations it already exercises.
 
 ## Validation
 
-Local WSL Ubuntu checks used LDC 1.43.0 and DUB 1.42.0:
+Local WSL Ubuntu checks used LDC 1.43.0, DUB 1.42.0, and Redub 1.35.1:
 
 * YAML parsed successfully; a structural comparison confirmed every original
   job remained unchanged. New Bash blocks and the helper passed syntax checks.
-* DUB passed its full test command, no-change run, separate executable run,
-  and incremental run.
-* The no-change run reported cached targets. The incremental run emitted
+* DUB and Redub (with the compatibility settings above) passed their full test
+  commands, no-change runs, separate executable runs, and incremental runs.
+* Both no-change runs reported cached targets. Both incremental runs emitted
   the required compiler marker and passed the test/debug flag assertions.
-* Source restoration was checked byte-for-byte after the successful run.
+* Source restoration was checked byte-for-byte after successful runs and an
+  earlier failed Redub probe.
 * Development DUB generated and linked a Ninja test target, but omitted required
   flags; the disabled helper branch was verified to fail explicitly.
 
