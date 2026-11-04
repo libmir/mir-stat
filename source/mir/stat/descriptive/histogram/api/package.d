@@ -129,6 +129,8 @@ Copyright: 2026 Mir Stat Authors.
 
 module mir.stat.descriptive.histogram.api;
 
+private import mir.stat.descriptive.weighting: WeightInterpretation;
+
 public import mir.stat.descriptive.histogram.api.rc;
 public import mir.stat.descriptive.histogram.api.gc;
 public import mir.stat.descriptive.histogram.api.custom;
@@ -169,7 +171,7 @@ unittest
     double[9] expanded = [0, 0, 10, 10, 10, 20, 20, 20, 20];
 
     auto compact = rcWeightedPercentogram!(
-        double, WeightedQuantileAlgo.frequencyType7)(
+        double, WeightInterpretation.frequency, WeightedQuantileAlgo.type7)(
             outcomes, frequencies, WeightedBinCountBasis.frequencyTotal);
     auto repeated = rcpercentogram(expanded);
 

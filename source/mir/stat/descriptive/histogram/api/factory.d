@@ -26,6 +26,10 @@ T4=$(TR $(TDNW $(LREF $1)) $(TD $2) $(TD $3) $(TD $4))
 
 module mir.stat.descriptive.histogram.api.factory;
 
+version(mir_stat_test) private import std.typecons: tuple;
+
+private import mir.stat.descriptive.weighting: WeightInterpretation;
+
 // Storage ownership stays with the caller. Validate before writing so a bad
 // extent cannot clear unrelated storage before the constructor rejects it.
 // Borrow lvalue input to avoid an extra owning-range copy. Lifetime inference
@@ -2908,6 +2912,15 @@ package void testQuantileAxes(alias create, alias copy, alias make, alias counts
     import mir.stat.descriptive.histogram.traits: AdaptiveCounts, isAxis;
     import mir.stat.descriptive.univariate: QuantileAlgo, WeightedQuantileAlgo;
     import std.math: nextUp;
+    alias W = WeightInterpretation;
+    alias Q = WeightedQuantileAlgo;
+    static assert(__traits(isSame, weightedCreate!(W.frequency, Q.type7), weightedCreate!(Q.type7, W.frequency)));
+    static assert(__traits(isSame, weightedCreate!(W.frequency), weightedCreate!(W.frequency, Q.type7)));
+    static assert(__traits(isSame, weightedCreate!(Q.type8), weightedCreate!(W.relative, Q.type8)));
+    static assert(__traits(isSame, weightedMake!(double, W.frequency, Q.type7), weightedMake!(double, Q.type7, W.frequency)));
+    static assert(__traits(isSame, weightedMake!(W.frequency), weightedMake!(double, W.frequency, Q.type7)));
+    static assert(__traits(isSame, weightedMake!(Q.type8, W.frequency), weightedMake!(double, W.frequency, Q.type8)));
+    static assert(__traits(isSame, weightedMake!(Q.type8), weightedMake!(double, W.relative, Q.type8)));
     const int[5] values = [0, 0, 1, 2, 2];
     const double[5] levels = [0, 0.25, 0.5, 0.75, 1];
     auto axis = create(values, 4);
@@ -2972,12 +2985,21 @@ package void testQuantileAxes(alias create, alias copy, alias make, alias counts
     assert(alternate.N_bin == 2);
 
     const double[5] weights = [1, 1, 1, 1, 1];
-    static foreach (algo; [WeightedQuantileAlgo.inverseCDF, WeightedQuantileAlgo.type7,
-        WeightedQuantileAlgo.frequencyType8])
+    auto frequencyDefaults = weightedMake!(W.frequency)(values, weights, levels);
+    auto frequencyExplicit = weightedMake!(Q.type7, W.frequency)(values, weights, levels);
+    assert(frequencyDefaults.counts == frequencyExplicit.counts);
+    static assert(!__traits(compiles, weightedCreate!(W.frequency, Q.inverseCDF)(values, weights, levels)));
+    static assert(!__traits(compiles, weightedMake!(W.frequency, Q.harrellDavis)(values, weights, levels)));
+    static foreach (quantileOptions; [
+        tuple(WeightInterpretation.relative, WeightedQuantileAlgo.inverseCDF),
+        tuple(WeightInterpretation.relative, WeightedQuantileAlgo.type7),
+        tuple(WeightInterpretation.frequency, WeightedQuantileAlgo.type8)])
     {{
-        auto wa = weightedCreate!algo(values, weights, levels);
+        enum interpretation = quantileOptions[0];
+        enum algo = quantileOptions[1];
+        auto wa = weightedCreate!(interpretation, algo)(values, weights, levels);
         auto wf = weightedMake(values, weights, wa);
-        auto reference = weightedMake!(double, algo)(values, weights, levels);
+        auto reference = weightedMake!(double, interpretation, algo)(values, weights, levels);
         assert(wf.counts == reference.counts && wf.total == 5);
     }}
     double[2] zero = [0, 0], missing = [double.nan, double.infinity];

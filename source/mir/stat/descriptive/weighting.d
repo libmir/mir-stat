@@ -25,6 +25,16 @@ Weighted kurtosis takes isPopulation before isRaw, matching unweighted kurtosis.
 An old weightedKurtosis(x, w, true) call requesting raw population kurtosis
 therefore becomes weightedKurtosis(x, w, true, true).
 
+Weighted quantiles, interquartile range, and median absolute deviation also use
+WeightInterpretation, separately from their quantile algorithm. Relative weights
+describe emphasis on the supplied rows; frequency weights describe repeated
+observations in an expanded sample. Frequency interpretation defaults to type7
+and also supports type8. See
+$(REF WeightedQuantileAlgo, mir, stat, descriptive, univariate, quantiles)
+for examples and the different defaults for relative weights. These functions
+have no population/sample correction. Dedicated weightedMedian keeps its fixed
+averaged-inverse-CDF convention without an interpretation selector.
+
 Mean and correlation retain their existing APIs. Neither needs a sample
 normalization selector: the mean has no such correction, and the common
 covariance/variance correction cancels in correlation.
@@ -37,6 +47,9 @@ algorithm in either order. An explicit result type stays first; for accumulators
 the required element type stays first. Any trailing summation option on variance
 and covariance stays last. Supplying only an algorithm uses relative weights;
 supplying only an interpretation uses the function's default algorithm.
+Weighted quantile, interquartile range, and median absolute deviation follow the
+same ordering rule for interpretation and quantile algorithm, as do their
+allocation variants and weighted histogram boundary factories.
 
 Prefer interpretation first when explaining what the weights represent. Algorithm
 first is useful when adding a weight interpretation to an existing algorithm choice.
