@@ -1613,7 +1613,8 @@ enum WeightedBinCountBasis
     /++ Sum whole-number occurrence counts. Use for a compact frequency table
     when resolution should match the expanded sample. For weights [2, 3, 4],
     n is 9 rather than 3. Each weight and the total must fit in size_t.
-    Choose a frequency quantile algorithm as well to match expanded boundaries.
+    Choose frequency weight interpretation with type7 or type8 as well to match
+    the corresponding expanded-sample quantile boundaries.
     Scaling counts changes the represented sample size and may change resolution. +/
     frequencyTotal,
     /++ Use Kish effective sample size: square of the weight sum divided by

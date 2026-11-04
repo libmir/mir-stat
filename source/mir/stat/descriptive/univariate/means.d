@@ -1700,17 +1700,22 @@ private void putter2(Slices, T, U, Summation summation1, Summation summation2)
 }
 
 /++
-Assumptions used for weighted moments
+Choose whether weighted mean must calculate the total weight.
+Neither option normalizes the supplied weights.
 +/
 enum AssumeWeights : bool
 {
     /++
-    Primary, does not assume weights sum to one
+    Calculate the total weight and divide the weighted sum by it.
+    Use this for ordinary counts or relative weights, such as [1, 3].
     +/
     primary,
 
     /++
-    Assumes weights sum to one
+    The caller guarantees that weights sum to one, such as [0.25, 0.75].
+    Skip accumulating the total weight and return the weighted sum directly.
+    This does not normalize weights or check their total. Use it when weights
+    are already normalized and calculating their total again is unnecessary.
     +/
     sumToOne
 }
@@ -1726,6 +1731,9 @@ accumulators use the same summation algorithm.
 
 When those corrections matter, pass the observation and weight batches to one
 accumulator instead of merging already accumulated results.
+
+Summation and AssumeWeights may appear in either order after the element type.
+The optional weight type and weight summation algorithm remain last.
 +/
 struct WMeanAccumulator(T, Summation summation, AssumeWeights assumeWeights,
                         U = T, Summation weightsSummation = summation)
@@ -1867,6 +1875,13 @@ struct WMeanAccumulator(T, Summation summation, AssumeWeights assumeWeights,
         weights.put(cast(U) wm.weights);
         wsummator.put(cast(T) wm.wsummator);
     }
+}
+
+/// ditto
+template WMeanAccumulator(T, AssumeWeights assumeWeights, Summation summation,
+                         U = T, Summation weightsSummation = summation)
+{
+    alias WMeanAccumulator = .WMeanAccumulator!(T, summation, assumeWeights, U, weightsSummation);
 }
 
 /// Insert successive batches into one accumulator to retain summation corrections.
@@ -2339,6 +2354,10 @@ Zero-weight observations are still multiplied, so a floating-point NaN or
 infinity multiplied by zero propagates NaN. Unlike weighted quantiles,
 zero weights do not exclude observations.
 
+Summation and AssumeWeights may appear in either order, with an explicit result
+type first when supplied. For example, wmean!(Summation.kbn, AssumeWeights.sumToOne)
+and wmean!(AssumeWeights.sumToOne, Summation.kbn) make the same calculation.
+
 By default, if `F` is not floating point type or complex type, then the result
 will have a `double` type if `F` is implicitly convertible to a floating point
 type or a type for which `isComplex!F` is true.
@@ -2440,6 +2459,13 @@ template wmean(Summation summation = Summation.appropriate,
 }
 
 /// ditto
+template wmean(AssumeWeights assumeWeights, Summation summation,
+               Summation weightsSummation = Summation.appropriate)
+{
+    alias wmean = .wmean!(summation, assumeWeights, weightsSummation);
+}
+
+/// ditto
 template wmean(F, AssumeWeights assumeWeights, Summation summation = Summation.appropriate,
                G = F, Summation weightsSummation = Summation.appropriate)
     if (!is(F : AssumeWeights))
@@ -2524,6 +2550,39 @@ unittest
     wmean!float([0, 1, 2, 3, 4, 5].sliced(3, 2), [1, 2, 3, 4, 5, 6].sliced(3, 2)).shouldApprox == 70.0 / 21;
 
     static assert(is(typeof(wmean!float([1, 2, 3], [1, 2, 3])) == float));
+}
+
+// Reversing enum options must preserve the canonical implementation and types.
+version(mir_stat_test)
+@safe pure nothrow
+unittest
+{
+    auto values = [2.0, 8.0];
+    auto weights = [0.25, 0.75];
+    static foreach (assumption; [AssumeWeights.primary, AssumeWeights.sumToOne])
+    {{
+        alias Canonical = WMeanAccumulator!(float, Summation.kbn, assumption,
+            double, Summation.pairwise);
+        alias Reversed = WMeanAccumulator!(float, assumption, Summation.kbn,
+            double, Summation.pairwise);
+        static assert(is(Canonical == Reversed));
+        static assert(is(WMeanAccumulator!(double, assumption, Summation.kbn) ==
+            WMeanAccumulator!(double, Summation.kbn, assumption)));
+        static assert(__traits(isSame, wmean!(assumption, Summation.kbn),
+            wmean!(Summation.kbn, assumption)));
+        static assert(__traits(isSame, wmean!(assumption, Summation.kbn, Summation.pairwise),
+            wmean!(Summation.kbn, assumption, Summation.pairwise)));
+        assert(wmean!(assumption, Summation.kbn)(values, weights) == 6.5);
+        assert(wmean!assumption(values, weights) == 6.5);
+        assert(wmean!(assumption, "kbn")(values, weights) == 6.5);
+        Reversed accumulator;
+        accumulator.put(values, weights);
+        assert(accumulator.wmean == 6.5f);
+    }}
+    static assert(!__traits(compiles,
+        wmean!(AssumeWeights.sumToOne, AssumeWeights.primary)(values, weights)));
+    static assert(!__traits(compiles,
+        WMeanAccumulator!(double, AssumeWeights.sumToOne, AssumeWeights.primary)));
 }
 
 // The typed assumption shorthand must not also match the legacy bool overload.
