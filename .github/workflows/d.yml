@@ -12,6 +12,24 @@ concurrency:
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
+  # Resolve once, then install exact versions in every DMD/LDC job. Beta jobs
+  # exist only when their channel points to a prerelease newer than stable.
+  compilers:
+    name: Resolve compiler versions
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    outputs:
+      compilers: ${{ steps.resolve.outputs.compilers }}
+      stable_compilers: ${{ steps.resolve.outputs.stable_compilers }}
+    steps:
+    - uses: actions/checkout@v7.0.1
+    - name: Test compiler selection
+      run: python3 .github/scripts/test_compiler_matrix.py
+    - name: Resolve compiler channels
+      id: resolve
+      run: python3 .github/scripts/compiler_matrix.py
+
   gdc:
     name: GDC 15 tests
     permissions:
@@ -51,11 +69,12 @@ jobs:
       run: bash .github/scripts/linux-resources.sh kernel
 
   benchmarks:
-    name: Benchmark tests
+    name: Benchmark tests (${{ matrix.os }}, ${{ matrix.dc.channel }})
+    needs: compilers
     strategy:
       matrix:
         os: [ubuntu-latest, windows-latest]
-        dc: [dmd-latest, ldc-latest]
+        dc: ${{ fromJSON(needs.compilers.outputs.stable_compilers) }}
     runs-on: ${{ matrix.os }}
 
     steps:
@@ -73,11 +92,11 @@ jobs:
     - name: D Compiler Installation
       uses: dlang-community/setup-dlang@v2.0.0
       with:
-        compiler: ${{ matrix.dc }}
+        compiler: ${{ matrix.dc.compiler }}
 
     # setup-dlang v2 sets DC to windows/bin/dmd, bypassing bin64 on PATH.
     - name: Select 64-bit Windows DMD
-      if: runner.os == 'Windows' && startsWith(matrix.dc, 'dmd-')
+      if: runner.os == 'Windows' && startsWith(matrix.dc.channel, 'dmd-')
       shell: pwsh
       run: |
         $compiler = Join-Path (Split-Path (Split-Path $env:DC -Parent) -Parent) 'bin64/dmd.exe'
@@ -111,14 +130,15 @@ jobs:
 
   # Optimized compilation dominates runtime; run it alongside the other suites.
   release:
-    name: Release tests
+    name: Release tests (${{ matrix.os }}, ${{ matrix.dc.channel }})
+    needs: compilers
     permissions:
       contents: read
     strategy:
       fail-fast: false
       matrix:
         os: [ubuntu-latest, windows-latest]
-        dc: [ldc-latest, ldc-beta, dmd-latest, dmd-beta]
+        dc: ${{ fromJSON(needs.compilers.outputs.compilers) }}
     runs-on: ${{ matrix.os }}
 
     steps:
@@ -136,11 +156,11 @@ jobs:
     - name: D Compiler Installation
       uses: dlang-community/setup-dlang@v2.0.0
       with:
-        compiler: ${{ matrix.dc }}
+        compiler: ${{ matrix.dc.compiler }}
 
     # setup-dlang v2 sets DC to windows/bin/dmd, bypassing bin64 on PATH.
     - name: Select 64-bit Windows DMD
-      if: runner.os == 'Windows' && startsWith(matrix.dc, 'dmd-')
+      if: runner.os == 'Windows' && startsWith(matrix.dc.channel, 'dmd-')
       shell: pwsh
       run: |
         $compiler = Join-Path (Split-Path (Split-Path $env:DC -Parent) -Parent) 'bin64/dmd.exe'
@@ -157,7 +177,7 @@ jobs:
         if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 
     - name: Run optimized release tests (Linux LDC)
-      if: runner.os == 'Linux' && startsWith(matrix.dc, 'ldc-')
+      if: runner.os == 'Linux' && startsWith(matrix.dc.channel, 'ldc-')
       shell: bash
       run: |
         # DUB sizes its parallel pool from CPU affinity. Select up to four CPUs
@@ -167,7 +187,7 @@ jobs:
         exec taskset -c "$cpus" bash .github/scripts/linux-resources.sh run dub test --build=unittest-release --build-mode=singleFile --parallel
 
     - name: Run optimized release tests (Linux DMD)
-      if: runner.os == 'Linux' && startsWith(matrix.dc, 'dmd-')
+      if: runner.os == 'Linux' && startsWith(matrix.dc.channel, 'dmd-')
       shell: bash
       run: |
         # Per-file compilation reduces peak memory; bound DUB's worker pool
@@ -177,7 +197,7 @@ jobs:
         exec taskset -c "$cpus" bash .github/scripts/linux-resources.sh run dub test --build=unittest-release --build-mode=singleFile --parallel
 
     - name: Run optimized release tests (Windows DMD)
-      if: runner.os == 'Windows' && startsWith(matrix.dc, 'dmd-')
+      if: runner.os == 'Windows' && startsWith(matrix.dc.channel, 'dmd-')
       shell: pwsh
       # DUB uses the system CPU count on Windows, not process affinity.
       # Use native parallelism only within the validated runner capacity.
@@ -200,7 +220,7 @@ jobs:
         ./.github/scripts/windows-resources.ps1 Run dub @buildArgs
 
     - name: Run optimized release tests (Windows LDC)
-      if: runner.os == 'Windows' && startsWith(matrix.dc, 'ldc-')
+      if: runner.os == 'Windows' && startsWith(matrix.dc.channel, 'ldc-')
       shell: pwsh
       # DUB uses the system CPU count on Windows, not process affinity.
       # Bound the per-file trial to the validated runner capacity; otherwise
@@ -228,14 +248,15 @@ jobs:
 
   # Compile and run the full lifetime suite independently of coverage.
   lifetime:
-    name: DIP1000 lifetime tests
+    name: DIP1000 lifetime tests (${{ matrix.os }}, ${{ matrix.dc.channel }})
+    needs: compilers
     permissions:
       contents: read
     strategy:
       fail-fast: false
       matrix:
         os: [ubuntu-latest, windows-latest]
-        dc: [ldc-latest, ldc-beta, dmd-latest, dmd-beta]
+        dc: ${{ fromJSON(needs.compilers.outputs.compilers) }}
     runs-on: ${{ matrix.os }}
 
     steps:
@@ -253,11 +274,11 @@ jobs:
     - name: D Compiler Installation
       uses: dlang-community/setup-dlang@v2.0.0
       with:
-        compiler: ${{ matrix.dc }}
+        compiler: ${{ matrix.dc.compiler }}
 
     # setup-dlang v2 sets DC to windows/bin/dmd, bypassing bin64 on PATH.
     - name: Select 64-bit Windows DMD
-      if: runner.os == 'Windows' && startsWith(matrix.dc, 'dmd-')
+      if: runner.os == 'Windows' && startsWith(matrix.dc.channel, 'dmd-')
       shell: pwsh
       run: |
         $compiler = Join-Path (Split-Path (Split-Path $env:DC -Parent) -Parent) 'bin64/dmd.exe'
@@ -278,14 +299,15 @@ jobs:
       run: dub test --build=unittest-dip1000
 
   test:
-    name: Dub Tests
+    name: Dub Tests (${{ matrix.os }}, ${{ matrix.dc.channel }})
+    needs: compilers
     permissions:
       contents: read
     strategy:
       fail-fast: false
       matrix:
         os: [ubuntu-latest, windows-latest]
-        dc: [ldc-latest, ldc-beta, dmd-latest, dmd-beta]
+        dc: ${{ fromJSON(needs.compilers.outputs.compilers) }}
     runs-on: ${{ matrix.os }}
 
     steps:
@@ -303,11 +325,11 @@ jobs:
     - name: D Compiler Installation
       uses: dlang-community/setup-dlang@v2.0.0
       with:
-        compiler: ${{ matrix.dc }}
+        compiler: ${{ matrix.dc.compiler }}
 
     # setup-dlang v2 sets DC to windows/bin/dmd, bypassing bin64 on PATH.
     - name: Select 64-bit Windows DMD
-      if: runner.os == 'Windows' && startsWith(matrix.dc, 'dmd-')
+      if: runner.os == 'Windows' && startsWith(matrix.dc.channel, 'dmd-')
       shell: pwsh
       run: |
         $compiler = Join-Path (Split-Path (Split-Path $env:DC -Parent) -Parent) 'bin64/dmd.exe'
@@ -344,7 +366,7 @@ jobs:
     # Run slow numerical sweeps once; ordinary Fp tests stay in the full matrix.
     # The focused suite makes optimized LDC faster overall than DMD.
     - name: Run slow numerical tests
-      if: matrix.os == 'ubuntu-latest' && matrix.dc == 'ldc-latest'
+      if: matrix.os == 'ubuntu-latest' && matrix.dc.channel == 'ldc-latest'
       # Keep build/link/run markers to distinguish compilation from test runtime.
       run: dub test mir-stat:slow-numerics --build=unittest-optimized
 
@@ -408,7 +430,7 @@ jobs:
         disable_search: true
         plugins: noop
         flags: general
-        name: general-${{ matrix.os }}-${{ matrix.dc }}
+        name: general-${{ matrix.os }}-${{ matrix.dc.channel }}
         fail_ci_if_error: true
 
     - name: Remove restored general coverage
@@ -452,7 +474,7 @@ jobs:
         disable_search: true
         plugins: noop
         flags: blas
-        name: blas-${{ matrix.os }}-${{ matrix.dc }}
+        name: blas-${{ matrix.os }}-${{ matrix.dc.channel }}
         fail_ci_if_error: true
 
     - name: Remove restored BLAS coverage
