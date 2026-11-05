@@ -2184,10 +2184,8 @@ Params:
     interpretation = relative weights (default) or occurrence counts
     algorithm = inverseCDF for relative weights by default, type7 for frequency counts
 +/
-template makeWeightedPercentogram(Counts = double,
-    WeightInterpretation interpretation = WeightInterpretation.relative,
-    WeightedQuantileAlgo algorithm = interpretation == WeightInterpretation.frequency
-        ? WeightedQuantileAlgo.type7 : WeightedQuantileAlgo.inverseCDF)
+template makeWeightedPercentogram(Counts, WeightInterpretation interpretation,
+    WeightedQuantileAlgo algorithm)
 {
     /++
     Params:
@@ -2238,6 +2236,15 @@ template makeWeightedPercentogram(Counts = double,
 }
 
 /// ditto
+template makeWeightedPercentogram(Counts = double, WeightInterpretation interpretation = WeightInterpretation.relative)
+{
+    static if (interpretation == WeightInterpretation.frequency)
+        alias makeWeightedPercentogram = .makeWeightedPercentogram!(Counts, interpretation, WeightedQuantileAlgo.type7);
+    else
+        alias makeWeightedPercentogram = .makeWeightedPercentogram!(Counts, interpretation, WeightedQuantileAlgo.inverseCDF);
+}
+
+/// ditto
 template makeWeightedPercentogram(Counts, WeightedQuantileAlgo algorithm,
     WeightInterpretation interpretation = WeightInterpretation.relative)
 {
@@ -2246,10 +2253,15 @@ template makeWeightedPercentogram(Counts, WeightedQuantileAlgo algorithm,
 
 /// ditto
 template makeWeightedPercentogram(WeightInterpretation interpretation,
-    WeightedQuantileAlgo algorithm = interpretation == WeightInterpretation.frequency
-        ? WeightedQuantileAlgo.type7 : WeightedQuantileAlgo.inverseCDF)
+    WeightedQuantileAlgo algorithm)
 {
     alias makeWeightedPercentogram = .makeWeightedPercentogram!(double, interpretation, algorithm);
+}
+
+/// ditto
+template makeWeightedPercentogram(WeightInterpretation interpretation)
+{
+    alias makeWeightedPercentogram = .makeWeightedPercentogram!(double, interpretation);
 }
 
 /// ditto
@@ -2541,9 +2553,8 @@ The axis can subsequently count a different sample with different weights.
 The result exposes axis and requires dispose with the same allocator after
 all borrowed axes, histograms, and views are finished.
 +/
-template makeWeightedQuantileAxis(WeightInterpretation interpretation = WeightInterpretation.relative,
-    WeightedQuantileAlgo algorithm = interpretation == WeightInterpretation.frequency
-        ? WeightedQuantileAlgo.type7 : WeightedQuantileAlgo.inverseCDF)
+template makeWeightedQuantileAxis(WeightInterpretation interpretation,
+    WeightedQuantileAlgo algorithm)
 {
     /// ditto
     auto makeWeightedQuantileAxis(Allocator, Data, Weights, P)(ref Allocator allocator, scope auto ref Data data, scope auto ref Weights weights, scope auto ref P probabilities)
@@ -2554,6 +2565,15 @@ template makeWeightedQuantileAxis(WeightInterpretation interpretation = WeightIn
             allocator, weights, data, probabilities);
         return ownQuantileAxis(allocator, edges);
     }
+}
+
+/// ditto
+template makeWeightedQuantileAxis(WeightInterpretation interpretation = WeightInterpretation.relative)
+{
+    static if (interpretation == WeightInterpretation.frequency)
+        alias makeWeightedQuantileAxis = .makeWeightedQuantileAxis!(interpretation, WeightedQuantileAlgo.type7);
+    else
+        alias makeWeightedQuantileAxis = .makeWeightedQuantileAxis!(interpretation, WeightedQuantileAlgo.inverseCDF);
 }
 
 /// ditto

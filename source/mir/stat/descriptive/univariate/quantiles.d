@@ -240,10 +240,8 @@ Migration: this ordinary name previously used reference-counted scratch.
 Call $(LREF rcWeightedInterquartileRange) to retain that allocation policy and support for
 `@nogc` callers. GC scratch can remain allocated until collection.
 +/
-template weightedInterquartileRange(F,
-    WeightInterpretation interpretation = WeightInterpretation.relative,
-    WeightedQuantileAlgo algorithm = interpretation == WeightInterpretation.frequency
-        ? WeightedQuantileAlgo.type7 : WeightedQuantileAlgo.inverseCDF)
+template weightedInterquartileRange(F, WeightInterpretation interpretation,
+    WeightedQuantileAlgo algorithm)
     if (validWeightedQuantileOptions!(interpretation, algorithm) &&
         (isFloatingPoint!F || (algorithm == WeightedQuantileAlgo.inverseCDF && isIntegral!F)))
 {
@@ -262,10 +260,17 @@ template weightedInterquartileRange(F,
 }
 
 /// ditto
-template weightedInterquartileRange(
-    WeightInterpretation interpretation = WeightInterpretation.relative,
-    WeightedQuantileAlgo algorithm = interpretation == WeightInterpretation.frequency
-        ? WeightedQuantileAlgo.type7 : WeightedQuantileAlgo.inverseCDF)
+template weightedInterquartileRange(F, WeightInterpretation interpretation = WeightInterpretation.relative)
+{
+    static if (interpretation == WeightInterpretation.frequency)
+        alias weightedInterquartileRange = .weightedInterquartileRange!(F, interpretation, WeightedQuantileAlgo.type7);
+    else
+        alias weightedInterquartileRange = .weightedInterquartileRange!(F, interpretation, WeightedQuantileAlgo.inverseCDF);
+}
+
+/// ditto
+template weightedInterquartileRange(WeightInterpretation interpretation,
+    WeightedQuantileAlgo algorithm)
     if (validWeightedQuantileOptions!(interpretation, algorithm))
 {
     /// ditto
@@ -275,6 +280,15 @@ template weightedInterquartileRange(
         alias F = WeightedQuantileResult!(Data, algorithm);
         return .weightedInterquartileRange!(F, interpretation, algorithm)(data, weights);
     }
+}
+
+/// ditto
+template weightedInterquartileRange(WeightInterpretation interpretation = WeightInterpretation.relative)
+{
+    static if (interpretation == WeightInterpretation.frequency)
+        alias weightedInterquartileRange = .weightedInterquartileRange!(interpretation, WeightedQuantileAlgo.type7);
+    else
+        alias weightedInterquartileRange = .weightedInterquartileRange!(interpretation, WeightedQuantileAlgo.inverseCDF);
 }
 
 /// ditto
@@ -467,10 +481,8 @@ Migration: this ordinary name previously used reference-counted scratch.
 Call $(LREF rcWeightedMedianAbsoluteDeviation) to retain that allocation policy and support for
 `@nogc` callers. GC scratch can remain allocated until collection.
 +/
-template weightedMedianAbsoluteDeviation(F,
-    WeightInterpretation interpretation = WeightInterpretation.relative,
-    WeightedQuantileAlgo algorithm = interpretation == WeightInterpretation.frequency
-        ? WeightedQuantileAlgo.type7 : WeightedQuantileAlgo.averagedInverseCDF)
+template weightedMedianAbsoluteDeviation(F, WeightInterpretation interpretation,
+    WeightedQuantileAlgo algorithm)
     if (validWeightedQuantileOptions!(interpretation, algorithm))
 {
     /++
@@ -487,10 +499,17 @@ template weightedMedianAbsoluteDeviation(F,
 }
 
 /// ditto
-template weightedMedianAbsoluteDeviation(
-    WeightInterpretation interpretation = WeightInterpretation.relative,
-    WeightedQuantileAlgo algorithm = interpretation == WeightInterpretation.frequency
-        ? WeightedQuantileAlgo.type7 : WeightedQuantileAlgo.averagedInverseCDF)
+template weightedMedianAbsoluteDeviation(F, WeightInterpretation interpretation = WeightInterpretation.relative)
+{
+    static if (interpretation == WeightInterpretation.frequency)
+        alias weightedMedianAbsoluteDeviation = .weightedMedianAbsoluteDeviation!(F, interpretation, WeightedQuantileAlgo.type7);
+    else
+        alias weightedMedianAbsoluteDeviation = .weightedMedianAbsoluteDeviation!(F, interpretation, WeightedQuantileAlgo.averagedInverseCDF);
+}
+
+/// ditto
+template weightedMedianAbsoluteDeviation(WeightInterpretation interpretation,
+    WeightedQuantileAlgo algorithm)
     if (validWeightedQuantileOptions!(interpretation, algorithm))
 {
     /// ditto
@@ -500,6 +519,15 @@ template weightedMedianAbsoluteDeviation(
         import mir.primitives: DeepElementType;
         return .weightedMedianAbsoluteDeviation!(DeepElementType!Data, interpretation, algorithm)(data, weights);
     }
+}
+
+/// ditto
+template weightedMedianAbsoluteDeviation(WeightInterpretation interpretation = WeightInterpretation.relative)
+{
+    static if (interpretation == WeightInterpretation.frequency)
+        alias weightedMedianAbsoluteDeviation = .weightedMedianAbsoluteDeviation!(interpretation, WeightedQuantileAlgo.type7);
+    else
+        alias weightedMedianAbsoluteDeviation = .weightedMedianAbsoluteDeviation!(interpretation, WeightedQuantileAlgo.averagedInverseCDF);
 }
 
 /// ditto
@@ -2838,9 +2866,8 @@ Params:
 See_also:
     $(LREF WeightedQuantileAlgo), $(LREF rcWeightedQuantile), $(LREF makeWeightedQuantile)
 +/
-template weightedQuantile(F, WeightInterpretation interpretation = WeightInterpretation.relative,
-    WeightedQuantileAlgo algorithm = interpretation == WeightInterpretation.frequency
-        ? WeightedQuantileAlgo.type7 : WeightedQuantileAlgo.inverseCDF)
+template weightedQuantile(F, WeightInterpretation interpretation,
+    WeightedQuantileAlgo algorithm)
     if (validWeightedQuantileOptions!(interpretation, algorithm) && (algorithm == WeightedQuantileAlgo.inverseCDF || isFloatingPoint!F))
 {
     /++
@@ -2861,9 +2888,17 @@ template weightedQuantile(F, WeightInterpretation interpretation = WeightInterpr
 }
 
 /// ditto
-template weightedQuantile(WeightInterpretation interpretation = WeightInterpretation.relative,
-    WeightedQuantileAlgo algorithm = interpretation == WeightInterpretation.frequency
-        ? WeightedQuantileAlgo.type7 : WeightedQuantileAlgo.inverseCDF)
+template weightedQuantile(F, WeightInterpretation interpretation = WeightInterpretation.relative)
+{
+    static if (interpretation == WeightInterpretation.frequency)
+        alias weightedQuantile = .weightedQuantile!(F, interpretation, WeightedQuantileAlgo.type7);
+    else
+        alias weightedQuantile = .weightedQuantile!(F, interpretation, WeightedQuantileAlgo.inverseCDF);
+}
+
+/// ditto
+template weightedQuantile(WeightInterpretation interpretation,
+    WeightedQuantileAlgo algorithm)
     if (validWeightedQuantileOptions!(interpretation, algorithm))
 {
     /++
@@ -2882,6 +2917,15 @@ template weightedQuantile(WeightInterpretation interpretation = WeightInterpreta
         return dispatchWeightedQuantile!(F, interpretation, algorithm, QuantileAllocation.gc)(
             context, weights, data, probabilities);
     }
+}
+
+/// ditto
+template weightedQuantile(WeightInterpretation interpretation = WeightInterpretation.relative)
+{
+    static if (interpretation == WeightInterpretation.frequency)
+        alias weightedQuantile = .weightedQuantile!(interpretation, WeightedQuantileAlgo.type7);
+    else
+        alias weightedQuantile = .weightedQuantile!(interpretation, WeightedQuantileAlgo.inverseCDF);
 }
 
 /// ditto
@@ -3044,9 +3088,8 @@ Params:
     interpretation = relative weights (default) or occurrence counts
     algorithm = inverseCDF by default for relative weights, type7 for frequency counts
 +/
-template rcWeightedQuantile(F, WeightInterpretation interpretation = WeightInterpretation.relative,
-    WeightedQuantileAlgo algorithm = interpretation == WeightInterpretation.frequency
-        ? WeightedQuantileAlgo.type7 : WeightedQuantileAlgo.inverseCDF)
+template rcWeightedQuantile(F, WeightInterpretation interpretation,
+    WeightedQuantileAlgo algorithm)
     if (validWeightedQuantileOptions!(interpretation, algorithm) && (algorithm == WeightedQuantileAlgo.inverseCDF || isFloatingPoint!F))
 {
     /++
@@ -3067,9 +3110,17 @@ template rcWeightedQuantile(F, WeightInterpretation interpretation = WeightInter
 }
 
 /// ditto
-template rcWeightedQuantile(WeightInterpretation interpretation = WeightInterpretation.relative,
-    WeightedQuantileAlgo algorithm = interpretation == WeightInterpretation.frequency
-        ? WeightedQuantileAlgo.type7 : WeightedQuantileAlgo.inverseCDF)
+template rcWeightedQuantile(F, WeightInterpretation interpretation = WeightInterpretation.relative)
+{
+    static if (interpretation == WeightInterpretation.frequency)
+        alias rcWeightedQuantile = .rcWeightedQuantile!(F, interpretation, WeightedQuantileAlgo.type7);
+    else
+        alias rcWeightedQuantile = .rcWeightedQuantile!(F, interpretation, WeightedQuantileAlgo.inverseCDF);
+}
+
+/// ditto
+template rcWeightedQuantile(WeightInterpretation interpretation,
+    WeightedQuantileAlgo algorithm)
     if (validWeightedQuantileOptions!(interpretation, algorithm))
 {
     /++
@@ -3088,6 +3139,15 @@ template rcWeightedQuantile(WeightInterpretation interpretation = WeightInterpre
         return dispatchWeightedQuantile!(F, interpretation, algorithm, QuantileAllocation.rc)(
             context, weights, data, probabilities);
     }
+}
+
+/// ditto
+template rcWeightedQuantile(WeightInterpretation interpretation = WeightInterpretation.relative)
+{
+    static if (interpretation == WeightInterpretation.frequency)
+        alias rcWeightedQuantile = .rcWeightedQuantile!(interpretation, WeightedQuantileAlgo.type7);
+    else
+        alias rcWeightedQuantile = .rcWeightedQuantile!(interpretation, WeightedQuantileAlgo.inverseCDF);
 }
 
 /// ditto
@@ -3123,7 +3183,7 @@ template rcWeightedQuantile(WeightedQuantileAlgo algorithm,
 }
 
 version(mir_stat_test)
-@safe pure nothrow @nogc unittest
+@system pure nothrow unittest
 {
     import std.meta: AliasSeq;
     alias W = WeightInterpretation;
@@ -3132,7 +3192,38 @@ version(mir_stat_test)
     static foreach (fun; AliasSeq!(weightedQuantile, rcWeightedQuantile, makeWeightedQuantile,
         weightedInterquartileRange, rcWeightedInterquartileRange, makeWeightedInterquartileRange,
         weightedMedianAbsoluteDeviation, rcWeightedMedianAbsoluteDeviation, makeWeightedMedianAbsoluteDeviation))
-    {
+    {{
+        import std.experimental.allocator.mallocator: Mallocator;
+        static if (__traits(isSame, fun, makeWeightedQuantile) ||
+            __traits(isSame, fun, makeWeightedInterquartileRange) ||
+            __traits(isSame, fun, makeWeightedMedianAbsoluteDeviation))
+            alias inputs = AliasSeq!(Mallocator.instance, values, counts);
+        else
+            alias inputs = AliasSeq!(values, counts);
+        static if (__traits(isSame, fun, weightedQuantile) ||
+            __traits(isSame, fun, rcWeightedQuantile) || __traits(isSame, fun, makeWeightedQuantile))
+            alias arguments = AliasSeq!(inputs, 0.25);
+        else
+            alias arguments = inputs;
+        // Test actual calls: older compilers can accept a bare template reference
+        // without rejecting an unsupported option pair. Positive controls ensure
+        // that rejection is not caused by an invalid argument list.
+        static assert(__traits(compiles, fun!(W.frequency, Q.type7)(arguments)));
+        static assert(__traits(compiles, fun!(Q.type7, W.frequency)(arguments)));
+        static assert(__traits(compiles, fun!(double, W.frequency, Q.type7)(arguments)));
+        static assert(__traits(compiles, fun!(double, Q.type7, W.frequency)(arguments)));
+        static assert(__traits(compiles, fun(arguments)));
+        static assert(__traits(compiles, fun!double(arguments)));
+        static assert(__traits(compiles, fun!(W.frequency)(arguments)));
+        static assert(__traits(compiles, fun!(double, W.frequency)(arguments)));
+        static if (__traits(isSame, fun, weightedMedianAbsoluteDeviation) ||
+            __traits(isSame, fun, rcWeightedMedianAbsoluteDeviation) ||
+            __traits(isSame, fun, makeWeightedMedianAbsoluteDeviation))
+            enum relativeDefault = Q.averagedInverseCDF;
+        else
+            enum relativeDefault = Q.inverseCDF;
+        static assert(__traits(isSame, fun!(W.relative), fun!(W.relative, relativeDefault)));
+        static assert(__traits(isSame, fun!float, fun!(float, W.relative, relativeDefault)));
         static foreach (w; [W.relative, W.frequency])
         {
             static foreach (q; [Q.type7, Q.type8])
@@ -3147,12 +3238,12 @@ version(mir_stat_test)
         static assert(__traits(isSame, fun!(float, Q.type8), fun!(float, W.relative, Q.type8)));
         static foreach (q; [Q.inverseCDF, Q.averagedInverseCDF, Q.harrellDavis, Q.trimmedHarrellDavis])
         {
-            static assert(!__traits(compiles, fun!(W.frequency, q)));
-            static assert(!__traits(compiles, fun!(q, W.frequency)));
-            static assert(!__traits(compiles, fun!(double, W.frequency, q)));
-            static assert(!__traits(compiles, fun!(double, q, W.frequency)));
+            static assert(!__traits(compiles, fun!(W.frequency, q)(arguments)));
+            static assert(!__traits(compiles, fun!(q, W.frequency)(arguments)));
+            static assert(!__traits(compiles, fun!(double, W.frequency, q)(arguments)));
+            static assert(!__traits(compiles, fun!(double, q, W.frequency)(arguments)));
         }
-    }
+    }}
     static assert(is(typeof(rcWeightedQuantile(values, counts, 0.25)) == int));
     static assert(is(typeof(rcWeightedQuantile!(W.frequency)(values, counts, 0.25)) == double));
     assert(rcWeightedQuantile!(W.frequency)(values, counts, 0.25) == 7.5);
@@ -3197,9 +3288,8 @@ Params:
     interpretation = relative weights (default) or occurrence counts
     algorithm = inverseCDF by default for relative weights, type7 for frequency counts
 +/
-template makeWeightedQuantile(F, WeightInterpretation interpretation = WeightInterpretation.relative,
-    WeightedQuantileAlgo algorithm = interpretation == WeightInterpretation.frequency
-        ? WeightedQuantileAlgo.type7 : WeightedQuantileAlgo.inverseCDF)
+template makeWeightedQuantile(F, WeightInterpretation interpretation,
+    WeightedQuantileAlgo algorithm)
     if (validWeightedQuantileOptions!(interpretation, algorithm) && (algorithm == WeightedQuantileAlgo.inverseCDF || isFloatingPoint!F))
 {
     /++
@@ -3220,9 +3310,17 @@ template makeWeightedQuantile(F, WeightInterpretation interpretation = WeightInt
 }
 
 /// ditto
-template makeWeightedQuantile(WeightInterpretation interpretation = WeightInterpretation.relative,
-    WeightedQuantileAlgo algorithm = interpretation == WeightInterpretation.frequency
-        ? WeightedQuantileAlgo.type7 : WeightedQuantileAlgo.inverseCDF)
+template makeWeightedQuantile(F, WeightInterpretation interpretation = WeightInterpretation.relative)
+{
+    static if (interpretation == WeightInterpretation.frequency)
+        alias makeWeightedQuantile = .makeWeightedQuantile!(F, interpretation, WeightedQuantileAlgo.type7);
+    else
+        alias makeWeightedQuantile = .makeWeightedQuantile!(F, interpretation, WeightedQuantileAlgo.inverseCDF);
+}
+
+/// ditto
+template makeWeightedQuantile(WeightInterpretation interpretation,
+    WeightedQuantileAlgo algorithm)
     if (validWeightedQuantileOptions!(interpretation, algorithm))
 {
     /++
@@ -3241,6 +3339,15 @@ template makeWeightedQuantile(WeightInterpretation interpretation = WeightInterp
         return dispatchWeightedQuantile!(F, interpretation, algorithm, QuantileAllocation.custom)(
             allocator, weights, data, probabilities);
     }
+}
+
+/// ditto
+template makeWeightedQuantile(WeightInterpretation interpretation = WeightInterpretation.relative)
+{
+    static if (interpretation == WeightInterpretation.frequency)
+        alias makeWeightedQuantile = .makeWeightedQuantile!(interpretation, WeightedQuantileAlgo.type7);
+    else
+        alias makeWeightedQuantile = .makeWeightedQuantile!(interpretation, WeightedQuantileAlgo.inverseCDF);
 }
 
 /// ditto
@@ -7025,10 +7132,8 @@ Params:
     interpretation = relative weights (default) or occurrence counts
     algorithm = inverseCDF by default for relative weights, type7 for frequency counts
 +/
-template rcWeightedInterquartileRange(F,
-    WeightInterpretation interpretation = WeightInterpretation.relative,
-    WeightedQuantileAlgo algorithm = interpretation == WeightInterpretation.frequency
-        ? WeightedQuantileAlgo.type7 : WeightedQuantileAlgo.inverseCDF)
+template rcWeightedInterquartileRange(F, WeightInterpretation interpretation,
+    WeightedQuantileAlgo algorithm)
     if (validWeightedQuantileOptions!(interpretation, algorithm) &&
         (isFloatingPoint!F || (algorithm == WeightedQuantileAlgo.inverseCDF && isIntegral!F)))
 {
@@ -7047,10 +7152,17 @@ template rcWeightedInterquartileRange(F,
 }
 
 /// ditto
-template rcWeightedInterquartileRange(
-    WeightInterpretation interpretation = WeightInterpretation.relative,
-    WeightedQuantileAlgo algorithm = interpretation == WeightInterpretation.frequency
-        ? WeightedQuantileAlgo.type7 : WeightedQuantileAlgo.inverseCDF)
+template rcWeightedInterquartileRange(F, WeightInterpretation interpretation = WeightInterpretation.relative)
+{
+    static if (interpretation == WeightInterpretation.frequency)
+        alias rcWeightedInterquartileRange = .rcWeightedInterquartileRange!(F, interpretation, WeightedQuantileAlgo.type7);
+    else
+        alias rcWeightedInterquartileRange = .rcWeightedInterquartileRange!(F, interpretation, WeightedQuantileAlgo.inverseCDF);
+}
+
+/// ditto
+template rcWeightedInterquartileRange(WeightInterpretation interpretation,
+    WeightedQuantileAlgo algorithm)
     if (validWeightedQuantileOptions!(interpretation, algorithm))
 {
     /// ditto
@@ -7060,6 +7172,15 @@ template rcWeightedInterquartileRange(
         alias F = WeightedQuantileResult!(Data, algorithm);
         return .rcWeightedInterquartileRange!(F, interpretation, algorithm)(data, weights);
     }
+}
+
+/// ditto
+template rcWeightedInterquartileRange(WeightInterpretation interpretation = WeightInterpretation.relative)
+{
+    static if (interpretation == WeightInterpretation.frequency)
+        alias rcWeightedInterquartileRange = .rcWeightedInterquartileRange!(interpretation, WeightedQuantileAlgo.type7);
+    else
+        alias rcWeightedInterquartileRange = .rcWeightedInterquartileRange!(interpretation, WeightedQuantileAlgo.inverseCDF);
 }
 
 /// ditto
@@ -7626,12 +7747,11 @@ storage management; there is no input-modification option.
 
 Params:
     F = output type, inferred as for weightedInterquartileRange when omitted
-    algorithm = weighted quantile convention, default inverseCDF
+    interpretation = relative weights (default) or occurrence counts
+    algorithm = inverseCDF by default for relative weights, type7 for frequency counts
 +/
-template makeWeightedInterquartileRange(F,
-    WeightInterpretation interpretation = WeightInterpretation.relative,
-    WeightedQuantileAlgo algorithm = interpretation == WeightInterpretation.frequency
-        ? WeightedQuantileAlgo.type7 : WeightedQuantileAlgo.inverseCDF)
+template makeWeightedInterquartileRange(F, WeightInterpretation interpretation,
+    WeightedQuantileAlgo algorithm)
     if (validWeightedQuantileOptions!(interpretation, algorithm) &&
         (isFloatingPoint!F || (algorithm == WeightedQuantileAlgo.inverseCDF && isIntegral!F)))
 {
@@ -7649,10 +7769,17 @@ template makeWeightedInterquartileRange(F,
 }
 
 /// ditto
-template makeWeightedInterquartileRange(
-    WeightInterpretation interpretation = WeightInterpretation.relative,
-    WeightedQuantileAlgo algorithm = interpretation == WeightInterpretation.frequency
-        ? WeightedQuantileAlgo.type7 : WeightedQuantileAlgo.inverseCDF)
+template makeWeightedInterquartileRange(F, WeightInterpretation interpretation = WeightInterpretation.relative)
+{
+    static if (interpretation == WeightInterpretation.frequency)
+        alias makeWeightedInterquartileRange = .makeWeightedInterquartileRange!(F, interpretation, WeightedQuantileAlgo.type7);
+    else
+        alias makeWeightedInterquartileRange = .makeWeightedInterquartileRange!(F, interpretation, WeightedQuantileAlgo.inverseCDF);
+}
+
+/// ditto
+template makeWeightedInterquartileRange(WeightInterpretation interpretation,
+    WeightedQuantileAlgo algorithm)
     if (validWeightedQuantileOptions!(interpretation, algorithm))
 {
     /// ditto
@@ -7662,6 +7789,15 @@ template makeWeightedInterquartileRange(
         alias F = WeightedQuantileResult!(Data, algorithm);
         return .makeWeightedInterquartileRange!(F, interpretation, algorithm)(allocator, data, weights);
     }
+}
+
+/// ditto
+template makeWeightedInterquartileRange(WeightInterpretation interpretation = WeightInterpretation.relative)
+{
+    static if (interpretation == WeightInterpretation.frequency)
+        alias makeWeightedInterquartileRange = .makeWeightedInterquartileRange!(interpretation, WeightedQuantileAlgo.type7);
+    else
+        alias makeWeightedInterquartileRange = .makeWeightedInterquartileRange!(interpretation, WeightedQuantileAlgo.inverseCDF);
 }
 
 /// ditto
@@ -7901,12 +8037,11 @@ while retaining weighted MAD's integral-offset and overflow safeguards.
 
 Params:
     F = output type, promoted as for weightedMedianAbsoluteDeviation
-    algorithm = weighted quantile convention, default averagedInverseCDF
+    interpretation = relative weights (default) or occurrence counts
+    algorithm = averagedInverseCDF by default for relative weights, type7 for frequency counts
 +/
-template makeWeightedMedianAbsoluteDeviation(F,
-    WeightInterpretation interpretation = WeightInterpretation.relative,
-    WeightedQuantileAlgo algorithm = interpretation == WeightInterpretation.frequency
-        ? WeightedQuantileAlgo.type7 : WeightedQuantileAlgo.averagedInverseCDF)
+template makeWeightedMedianAbsoluteDeviation(F, WeightInterpretation interpretation,
+    WeightedQuantileAlgo algorithm)
     if (validWeightedQuantileOptions!(interpretation, algorithm))
 {
     /++
@@ -7923,10 +8058,17 @@ template makeWeightedMedianAbsoluteDeviation(F,
 }
 
 /// ditto
-template makeWeightedMedianAbsoluteDeviation(
-    WeightInterpretation interpretation = WeightInterpretation.relative,
-    WeightedQuantileAlgo algorithm = interpretation == WeightInterpretation.frequency
-        ? WeightedQuantileAlgo.type7 : WeightedQuantileAlgo.averagedInverseCDF)
+template makeWeightedMedianAbsoluteDeviation(F, WeightInterpretation interpretation = WeightInterpretation.relative)
+{
+    static if (interpretation == WeightInterpretation.frequency)
+        alias makeWeightedMedianAbsoluteDeviation = .makeWeightedMedianAbsoluteDeviation!(F, interpretation, WeightedQuantileAlgo.type7);
+    else
+        alias makeWeightedMedianAbsoluteDeviation = .makeWeightedMedianAbsoluteDeviation!(F, interpretation, WeightedQuantileAlgo.averagedInverseCDF);
+}
+
+/// ditto
+template makeWeightedMedianAbsoluteDeviation(WeightInterpretation interpretation,
+    WeightedQuantileAlgo algorithm)
     if (validWeightedQuantileOptions!(interpretation, algorithm))
 {
     /// ditto
@@ -7936,6 +8078,15 @@ template makeWeightedMedianAbsoluteDeviation(
         import mir.primitives: DeepElementType;
         return .makeWeightedMedianAbsoluteDeviation!(DeepElementType!Data, interpretation, algorithm)(allocator, data, weights);
     }
+}
+
+/// ditto
+template makeWeightedMedianAbsoluteDeviation(WeightInterpretation interpretation = WeightInterpretation.relative)
+{
+    static if (interpretation == WeightInterpretation.frequency)
+        alias makeWeightedMedianAbsoluteDeviation = .makeWeightedMedianAbsoluteDeviation!(interpretation, WeightedQuantileAlgo.type7);
+    else
+        alias makeWeightedMedianAbsoluteDeviation = .makeWeightedMedianAbsoluteDeviation!(interpretation, WeightedQuantileAlgo.averagedInverseCDF);
 }
 
 /// ditto
@@ -8230,10 +8381,8 @@ Params:
     interpretation = relative weights (default) or occurrence counts
     algorithm = averagedInverseCDF by default for relative weights, type7 for frequency counts
 +/
-template rcWeightedMedianAbsoluteDeviation(F,
-    WeightInterpretation interpretation = WeightInterpretation.relative,
-    WeightedQuantileAlgo algorithm = interpretation == WeightInterpretation.frequency
-        ? WeightedQuantileAlgo.type7 : WeightedQuantileAlgo.averagedInverseCDF)
+template rcWeightedMedianAbsoluteDeviation(F, WeightInterpretation interpretation,
+    WeightedQuantileAlgo algorithm)
     if (validWeightedQuantileOptions!(interpretation, algorithm))
 {
     /++
@@ -8250,10 +8399,17 @@ template rcWeightedMedianAbsoluteDeviation(F,
 }
 
 /// ditto
-template rcWeightedMedianAbsoluteDeviation(
-    WeightInterpretation interpretation = WeightInterpretation.relative,
-    WeightedQuantileAlgo algorithm = interpretation == WeightInterpretation.frequency
-        ? WeightedQuantileAlgo.type7 : WeightedQuantileAlgo.averagedInverseCDF)
+template rcWeightedMedianAbsoluteDeviation(F, WeightInterpretation interpretation = WeightInterpretation.relative)
+{
+    static if (interpretation == WeightInterpretation.frequency)
+        alias rcWeightedMedianAbsoluteDeviation = .rcWeightedMedianAbsoluteDeviation!(F, interpretation, WeightedQuantileAlgo.type7);
+    else
+        alias rcWeightedMedianAbsoluteDeviation = .rcWeightedMedianAbsoluteDeviation!(F, interpretation, WeightedQuantileAlgo.averagedInverseCDF);
+}
+
+/// ditto
+template rcWeightedMedianAbsoluteDeviation(WeightInterpretation interpretation,
+    WeightedQuantileAlgo algorithm)
     if (validWeightedQuantileOptions!(interpretation, algorithm))
 {
     /// ditto
@@ -8263,6 +8419,15 @@ template rcWeightedMedianAbsoluteDeviation(
         import mir.primitives: DeepElementType;
         return .rcWeightedMedianAbsoluteDeviation!(DeepElementType!Data, interpretation, algorithm)(data, weights);
     }
+}
+
+/// ditto
+template rcWeightedMedianAbsoluteDeviation(WeightInterpretation interpretation = WeightInterpretation.relative)
+{
+    static if (interpretation == WeightInterpretation.frequency)
+        alias rcWeightedMedianAbsoluteDeviation = .rcWeightedMedianAbsoluteDeviation!(interpretation, WeightedQuantileAlgo.type7);
+    else
+        alias rcWeightedMedianAbsoluteDeviation = .rcWeightedMedianAbsoluteDeviation!(interpretation, WeightedQuantileAlgo.averagedInverseCDF);
 }
 
 /// ditto

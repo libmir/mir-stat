@@ -1102,9 +1102,8 @@ Params:
     interpretation = relative weights (default) or occurrence counts
     algorithm = inverseCDF for relative weights by default, type7 for frequency counts
 +/
-template weightedPercentogram(Counts = double, WeightInterpretation interpretation = WeightInterpretation.relative,
-    WeightedQuantileAlgo algorithm = interpretation == WeightInterpretation.frequency
-        ? WeightedQuantileAlgo.type7 : WeightedQuantileAlgo.inverseCDF)
+template weightedPercentogram(Counts, WeightInterpretation interpretation,
+    WeightedQuantileAlgo algorithm)
 {
     /++
     Params:
@@ -1136,6 +1135,15 @@ template weightedPercentogram(Counts = double, WeightInterpretation interpretati
 }
 
 /// ditto
+template weightedPercentogram(Counts = double, WeightInterpretation interpretation = WeightInterpretation.relative)
+{
+    static if (interpretation == WeightInterpretation.frequency)
+        alias weightedPercentogram = .weightedPercentogram!(Counts, interpretation, WeightedQuantileAlgo.type7);
+    else
+        alias weightedPercentogram = .weightedPercentogram!(Counts, interpretation, WeightedQuantileAlgo.inverseCDF);
+}
+
+/// ditto
 template weightedPercentogram(Counts, WeightedQuantileAlgo algorithm,
     WeightInterpretation interpretation = WeightInterpretation.relative)
 {
@@ -1144,10 +1152,15 @@ template weightedPercentogram(Counts, WeightedQuantileAlgo algorithm,
 
 /// ditto
 template weightedPercentogram(WeightInterpretation interpretation,
-    WeightedQuantileAlgo algorithm = interpretation == WeightInterpretation.frequency
-        ? WeightedQuantileAlgo.type7 : WeightedQuantileAlgo.inverseCDF)
+    WeightedQuantileAlgo algorithm)
 {
     alias weightedPercentogram = .weightedPercentogram!(double, interpretation, algorithm);
+}
+
+/// ditto
+template weightedPercentogram(WeightInterpretation interpretation)
+{
+    alias weightedPercentogram = .weightedPercentogram!(double, interpretation);
 }
 
 /// ditto
@@ -1294,9 +1307,8 @@ Supply probability levels or a positive bin count.
 Zero-weight observations are ignored. Inputs are unchanged.
 The axis can subsequently count a different sample with different weights.
 +/
-template weightedQuantileAxis(WeightInterpretation interpretation = WeightInterpretation.relative,
-    WeightedQuantileAlgo algorithm = interpretation == WeightInterpretation.frequency
-        ? WeightedQuantileAlgo.type7 : WeightedQuantileAlgo.inverseCDF)
+template weightedQuantileAxis(WeightInterpretation interpretation,
+    WeightedQuantileAlgo algorithm)
 {
     /// ditto
     auto weightedQuantileAxis(Data, Weights, P)(scope auto ref Data data, scope auto ref Weights weights, scope auto ref P probabilities)
@@ -1308,6 +1320,15 @@ template weightedQuantileAxis(WeightInterpretation interpretation = WeightInterp
             context, weights, data, probabilities);
         return preparedQuantileAxis(edges);
     }
+}
+
+/// ditto
+template weightedQuantileAxis(WeightInterpretation interpretation = WeightInterpretation.relative)
+{
+    static if (interpretation == WeightInterpretation.frequency)
+        alias weightedQuantileAxis = .weightedQuantileAxis!(interpretation, WeightedQuantileAlgo.type7);
+    else
+        alias weightedQuantileAxis = .weightedQuantileAxis!(interpretation, WeightedQuantileAlgo.inverseCDF);
 }
 
 /// ditto
