@@ -1851,6 +1851,7 @@ version(mir_stat_test)
 unittest
 {
     import mir.stat.descriptive.univariate: WeightedQuantileAlgo;
+    import mir.stat.descriptive.weighting: WeightInterpretation;
     const int[2] values = [0, 10], weights = [2, 2];
     const double[3] levels = [0, 0.25, 1];
     auto probability = rcWeightedPercentogram!(double, WeightedQuantileAlgo.type7)(values, weights, levels);
