@@ -5923,7 +5923,7 @@ product by the square roots of the two weighted centered sums of squares.
 For x=[0,10], y=[0,20], weights=[1,3], correlation is 1: the positive linear
 relationship is perfect even though the two inputs use different scales.
 
-No population/sample selector is needed: a common interpretation factor cancels
+No population/sample selector is needed: a common normalization factor cancels
 from numerator and denominator. Whole-number weights give the correlation of
 the expanded sample; relative weights give the same result after a common
 positive rescaling. Fractional weights are accepted without implying repeated
