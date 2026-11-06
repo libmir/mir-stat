@@ -30,9 +30,9 @@ Their argument order and behavior are unchanged. Mean and correlation retain
 their existing APIs; neither needs a sample normalization selector.
 
 Template option order:
-Weighted variance, standard deviation, and coefficient of variation accept the
-weight interpretation and calculation algorithm in either order. An explicit
-result type stays first; WVarianceAccumulator requires its element type first.
+Weighted variance, standard deviation, coefficient of variation, and covariance
+accept the weight interpretation and calculation algorithm in either order. An
+explicit result type stays first; accumulators require their element type first.
 Any trailing summation option stays last. An algorithm alone uses relative
 weights; an interpretation alone uses the function's default algorithm.
 Both spellings select the same implementation and give the same result.
@@ -194,7 +194,8 @@ version(mir_stat_test)
     import mir.stat.descriptive.univariate.dispersions:
         weightedVariance, weightedStandardDeviation, weightedCoefficientOfVariation,
         WVarianceAccumulator, VarianceAlgo;
-    import mir.stat.descriptive.multivariate: CovarianceAlgo;
+    import mir.stat.descriptive.multivariate:
+        weightedCovariance, WCovarianceAccumulator, CovarianceAlgo;
     import mir.math.sum: Summation;
     import std.meta: AliasSeq;
 
@@ -216,13 +217,31 @@ version(mir_stat_test)
             static assert(is(WVarianceAccumulator!(double, a) ==
                 WVarianceAccumulator!(double, WeightInterpretation.relative, a)));
         }
+        static foreach (a; [CovarianceAlgo.online, CovarianceAlgo.twoPass, CovarianceAlgo.hybrid])
+        {
+            static assert(__traits(isSame, weightedCovariance!(a, w), weightedCovariance!(w, a)));
+            static assert(__traits(isSame, weightedCovariance!(float, a, w, Summation.naive),
+                weightedCovariance!(float, w, a, Summation.naive)));
+            static assert(__traits(isSame, weightedCovariance!a, weightedCovariance!(WeightInterpretation.relative, a)));
+            static assert(__traits(isSame, weightedCovariance!(double, a), weightedCovariance!(double, WeightInterpretation.relative, a)));
+            static assert(is(WCovarianceAccumulator!(double, a, w, Summation.naive) ==
+                WCovarianceAccumulator!(double, w, a, Summation.naive)));
+            static assert(is(WCovarianceAccumulator!(double, a) ==
+                WCovarianceAccumulator!(double, WeightInterpretation.relative, a)));
+        }
     }
     double[4] x = [1, 2, 4, 8], weights = [1, 2, 3, 4];
     alias W = WeightInterpretation;
+    foreach (isPopulation; [false, true])
+        assert(weightedCovariance!(CovarianceAlgo.twoPass, W.frequency)(x[], x[], weights[], isPopulation) ==
+            weightedCovariance!(W.frequency, CovarianceAlgo.twoPass)(x[], x[], weights[], isPopulation));
     // Different enum types are not interchangeable; repeated selectors are invalid.
     static assert(!__traits(compiles, weightedVariance!(CovarianceAlgo.twoPass)(x[], weights[])));
     static assert(!__traits(compiles, weightedVariance!(VarianceAlgo.twoPass, VarianceAlgo.online)(x[], weights[])));
     static assert(!__traits(compiles, weightedVariance!(W.relative, W.frequency)(x[], weights[])));
+    static assert(!__traits(compiles, weightedCovariance!(VarianceAlgo.twoPass)(x[], x[], weights[])));
+    static assert(!__traits(compiles, weightedCovariance!(CovarianceAlgo.twoPass, CovarianceAlgo.online)(x[], x[], weights[])));
+    static assert(!__traits(compiles, weightedCovariance!(W.relative, W.frequency)(x[], x[], weights[])));
 }
 
 /// The defaults match unweighted sample statistics; true requests population results.
