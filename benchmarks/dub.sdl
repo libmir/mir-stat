@@ -6,3 +6,11 @@ mainSourceFile "source/mir/stat/benchmark/runner.d"
 targetPath "../build/benchmarks"
 dependency "mir-stat" path=".."
 dependency "mir-random" version=">=2.2.19"
+
+// Explicitly select the optional BLAS backend; the default uses the native D implementation.
+configuration "native-d" {
+    subConfiguration "mir-stat" "library"
+}
+configuration "openblas" {
+    subConfiguration "mir-stat" "openblas"
+}

@@ -23,8 +23,9 @@ int main(string[] args)
         string outputFormat = "text";
         size_t rounds = 10;
         size_t warmup = 10;
-        size_t iterations = 10_000;
-        size_t size = 1_000;
+        size_t iterations = size_t.max;
+        size_t size = size_t.max;
+        string layout = "rowMajor";
         ulong seed = 5489;
         auto options = getopt(args,
             "rounds", "Measured rounds (default 10)", &rounds,
@@ -33,9 +34,10 @@ int main(string[] args)
             "transform", "none (default), center, or standardize (sample z-scores)", &transformName,
             "algorithms", "Comma-separated algorithm names, or all (default)", &algorithmList,
             "seed", "Random seed (default 5489)", &seed,
-            "function", "all, skewness, kurtosis, covariance, or correlation", &selected,
-            "iterations", "Iterations per algorithm per round (default 10000)", &iterations,
-            "size", "Observations per input (default 1000)", &size);
+            "function", "all (statistics), linearAlgebra, skewness, kurtosis, covariance, correlation, triangularLeft, triangularRight, quadratic, mahalanobis, quadraticBatch, mahalanobisBatch, symmetricVector, symmetricLeft, symmetricRight, symmetricColumn, symmetricRow, crossprod, or tcrossprod", &selected,
+            "layout", "rowMajor (default) or transposed; linear algebra only", &layout,
+            "iterations", "Iterations per algorithm per round (statistics: 10000; algebra: 20)", &iterations,
+            "size", "Observations or matrix order (statistics: 1000; algebra: 32)", &size);
         if (options.helpWanted)
         {
             defaultGetoptPrinter("mir-stat statistical benchmarks", options.options);
@@ -46,20 +48,31 @@ int main(string[] args)
         import std.conv: to;
         auto transform = transformName.to!Transform;
         auto algorithms = parseAlgorithms(algorithmList);
-        auto names = selected == "all" ? functionNames[] : [selected];
+        import mir.stat.benchmark.linear_algebra: algebraNames, validateAlgebra, runAlgebra;
+        import std.algorithm: canFind;
+        bool algebra = selected == "linearAlgebra" || algebraNames.canFind(selected);
+        if (iterations == size_t.max) iterations = algebra ? 20 : 10_000;
+        if (size == size_t.max) size = algebra ? 32 : 1_000;
+        enforce(layout == "rowMajor" || layout == "transposed", "Unknown matrix layout");
+        enforce(algebra || layout == "rowMajor", "Matrix layout applies only to linear algebra");
+        auto names = selected == "all" ? functionNames[] : selected == "linearAlgebra" ? algebraNames[] : [selected];
         // Validate the whole request before starting any benchmark.
         foreach (name; names)
-            validateFunction(name, iterations, size, transform, algorithms, rounds, warmup);
+            if (algebra) validateAlgebra(name, iterations, size, transform, algorithms, rounds);
+            else validateFunction(name, iterations, size, transform, algorithms, rounds, warmup);
         import mir.stat.benchmark.report: csvHeader, csvRow;
         import std.stdio: writeln;
         if (outputFormat == "csv")
             writeln(csvHeader);
         else
-            writefln("Rounds: %s; iterations per round: %s; warm-up: %s; input size: %s; seed: %s; summation: fast",
+            writefln("Rounds: %s; iterations per round: %s; warm-up: %s; input size: %s; seed: %s",
                 rounds, iterations, warmup, size, seed);
         foreach (name; names)
         {
-            foreach (result; runFunction(name, iterations, size, seed, transform, algorithms, rounds, warmup))
+            auto results = algebra
+                ? runAlgebra(name, iterations, size, seed, algorithms, rounds, warmup, layout == "transposed")
+                : runFunction(name, iterations, size, seed, transform, algorithms, rounds, warmup);
+            foreach (result; results)
             {
                 if (outputFormat == "csv")
                     writeln(csvRow(result, iterations, size, seed, warmup));

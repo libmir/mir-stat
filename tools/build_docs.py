@@ -18,6 +18,8 @@ import shutil
 import subprocess
 import sys
 
+from prepare_doc_examples import configure_extraction
+
 
 ASSETS_REV = "83c5fa355ccdbd3b6ab4260f5816367ea299b8d2"
 CORE_REV = "4397b03a804b0368100e99252016c7b32aa562d1"
@@ -125,8 +127,13 @@ def main():
     if not args.tests_only:
         for directory in ("docgen", "web"):
             shutil.copytree(assets / directory, source / directory)
+    template = (assets / "meson.build.1").read_text(encoding="utf-8")
+    # Share the adapter wiring with CircleCI; public examples remain external.
+    template = configure_extraction(template)
+    (source / "tools").mkdir(exist_ok=True)
+    shutil.copy2(repo / "tools/extract_doc_examples.py", source / "tools/extract_doc_examples.py")
     with (source / "meson.build").open("a", encoding="utf-8") as stream:
-        stream.write((assets / "meson.build.1").read_text(encoding="utf-8"))
+        stream.write(template)
     shutil.copy2(assets / "meson_options.txt.1", source / "meson_options.txt")
     # The asset template enables extracted examples together with HTML.
     run(["meson", "setup", "_build_dir_", "--default-library=static",

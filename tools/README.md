@@ -37,6 +37,15 @@ the D library suite and extracted documentation examples with `mir_stat_test` an
 python3 tools/build_docs.py build/meson-tests --tests-with-examples
 ```
 
+Internal documentation examples are compiled in generated modules within their
+source package, so package-restricted APIs remain accessible without making them
+public. The extraction adapter leaves public API examples in external modules,
+preserves the extracted bodies and line directives, and does not skip examples.
+Both CI systems use `prepare_doc_examples.py` to wire this adapter into the Meson
+template. CircleCI defines the build job locally because the published Mir orb
+has no extraction hook; it retains the orb's container and `web` workspace for
+the existing tag-only upload job.
+
 The template builds HTML alongside the extracted example executables.
 Every test configured by Meson must run successfully. The driver requires
 the library test and at least one extracted-example suite, rejects skipped

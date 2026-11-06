@@ -10,7 +10,7 @@ Use `--function=all` (the default) to run skewness, kurtosis, covariance, and
 correlation. Use `--help` to list options. DMD is also supported with
 `--compiler=dmd`. Use a release build for performance measurements.
 
-Each comparison uses `double` and
+Each statistics comparison uses `double` and
 `Summation.fast`. Iterations and size default to 10000 and 1000, respectively.
 `--rounds` defaults to 10 measured rounds; `--warmup` defaults to 10 untimed
 iterations once per function before its first measured round. `--iterations`
@@ -131,3 +131,142 @@ CI runs these tests with stable DMD and LDC on Linux and Windows. Short release
 runs exercise all functions and applicable algorithms with untransformed,
 centered, and standardized inputs, including CSV output. These are correctness
 checks; CI does not compare timings or enforce performance thresholds.
+
+## Linear algebra
+
+Run the separate group with smaller defaults (matrix order 32 and 20 iterations):
+
+```sh
+dub run mir-stat:benchmarks --config=native-d --build=release --compiler=ldc2 -- --function=linearAlgebra --size=64 --iterations=20 --rounds=8 --warmup=3 --format=csv
+```
+
+`--function=all` retains the existing statistics cases. Linear algebra accepts
+`--transform=none` only. Choose `--layout=rowMajor` or `--layout=transposed`;
+the latter stores the same logical matrices through transposed descriptors,
+including output and factor workspaces. CSV function names include the layout.
+`--size` is the square matrix order (1 through 4096), not the element count.
+Buffers and precomputed factors are allocated only for the selected algorithms.
+Large matrix cases require substantial memory and untimed reference work;
+start with the small defaults. `--seed`, rotation, warm-up, algorithm selection,
+and per-round CSV output follow the existing scheduler.
+
+| Function | Algorithms |
+| --- | --- |
+| `triangularLeft` | `dense`, `triangular`, `packed` |
+| `triangularRight` | `dense`, `triangular`, `packed` |
+| `quadratic` | `composed`, `general`, `symmetric`, `singleTriangle`, `generalFast`, `symmetricFast`, `packedSymmetric`, `packedFast` |
+| `mahalanobis` | `covarianceGC`, `factorGC`, `precisionGC`, `precisionFactorGC`, corresponding `Workspace` variants, `precisionFastGC`, `precisionFastWorkspace` |
+
+Triangular comparisons multiply square matrices into preallocated output,
+using explicit zeros in the dense baseline and NaNs in ignored triangular
+entries. Every output element is checked outside timing against an independent
+calculation with `real` accumulation. Only the first output element
+is returned to the timing helper; it is not the sole correctness check.
+
+Quadratic comparisons use a dense SPD matrix. `composed` computes a matrix-vector
+product into reusable storage followed by a dot product. `general` and
+`symmetric` use the library's default compensated row and outer reductions.
+`singleTriangle` is an experimental benchmark-only flattened compensated
+reduction, reading each upper-triangle entry once. It is **not** an alternative
+library API: it can overflow individual terms where row-wise cancellation
+keeps the existing implementation finite. A regression example records that
+tradeoff. Comparisons therefore include differences in summation algorithms,
+not just loop overhead; these are not general accuracy or speed guarantees.
+
+Mahalanobis comparisons return squared distance. GC variants include their
+per-call scratch allocations; workspace variants reuse buffers. `covariance`
+includes factorization each call; `factor`, `precision`, and `precisionFactor`
+start from precomputed matrices, whose preparation is excluded. No inversion
+is timed. RC/custom allocator overhead and distance's final square root are
+not measured by these cases. GC collection is neither disabled nor forced;
+allocation timings can include collection and carryover effects.
+
+The fixed metric is `S = I + u*u'`, with independently constructed precision
+`P = I - u*u'/(1 + u'u)`. Seeded normal vector/right-hand-side inputs change
+once per iteration. Reference calculations use these identities with `real`
+accumulation; checks reject nonfinite results and errors above
+`1e-10 * (1 + abs(reference))`. These are well-conditioned benchmark inputs,
+not a substitute for the library's adversarial numerical tests. Setup,
+precomputed factors, input generation, and correctness checks are untimed.
+
+The `native-d` configuration selects the native D implementation and requires no BLAS library. To measure the optional
+native backend, use `--config=openblas` with OpenBLAS installed. The parent
+package selects mir-lapack/mir-blas through that configuration. Transposed
+triangular matrix products and matrix solves require mir-blas 1.1.18 or later,
+as enforced by the optional BLAS configurations. This release includes the fixes in
+[mir-blas PR #12](https://github.com/libmir/mir-blas/pull/12).
+Unsupported native layouts/types use the library's native D kernels.
+Record backend/dependency versions, compiler flags, and BLAS thread count
+alongside CSV files; the CSV schema does not identify the linked backend.
+
+The benchmark unit tests cover both layouts, selections, invalid requests,
+and the single-triangle numerical counterexample. CI smoke runs verify native D
+CLI integration without asserting timing thresholds.
+
+The `generalFast` and `symmetricFast` quadratic cases use caller workspace and
+explicit `Summation.fast`. `packedSymmetric` uses compensated packed rows;
+`packedFast` permits SPMV and DOT. The triangular `packed` case passes stairs
+directly to `mtimesInto`. Packing happens before timing. All use the same seeded
+inputs and independent reference checks as the corresponding dense cases.
+The layout option changes dense matrix storage; packed rows remain in their
+canonical upper-row order. Packed storage reduces memory use but does not
+necessarily improve speed, especially versus dense TRMM with multiple columns.
+
+`precisionFastGC` includes both temporary vector allocations in its timing;
+`precisionFastWorkspace` reuses both vectors. Both explicitly select
+`Summation.fast` and compare against the same independent precision identity
+as the existing Mahalanobis cases.
+
+
+### Symmetric products and batches
+
+`symmetricVector`, `symmetricLeft`, and `symmetricRight` compare general dense,
+symmetric-view, and packed symmetric multiplication with `general`, `symmetric`,
+and `packed`. Matrix cases use 32 columns (or 32 rows on the left of a right-side
+metric). Their `generalMixed`, `symmetricMixed`, and `packedMixed` variants use
+an output storage orientation opposite to the ordinary input. `--layout` selects
+the input orientation. Output is preallocated, so these isolate computation from
+allocation. Packing and analytic reference generation are outside timing.
+
+```sh
+dub run mir-stat:benchmarks --config=openblas --build=release --compiler=ldc2 -- --function=symmetricLeft --size=256 --iterations=20 --rounds=8 --warmup=3 --format=csv
+```
+
+The `quadraticBatch` algorithms are `repeated`, `batch`, `repeatedFast`, and
+`batchFast`. `mahalanobisBatch` provides `repeatedFactor`/`batchFactor`,
+`repeatedPrecision`/`batchPrecision`, `repeatedPrecisionFast`/`batchPrecisionFast`,
+and `repeatedPrecisionFactor`/`batchPrecisionFactor`. Each invocation evaluates
+32 observation columns against a shared metric with reusable workspace. Times
+are per batch, not per observation. Each pair uses the same summation policy.
+Prepared-factor construction is untimed; these do not measure covariance
+factorization or allocating batch APIs. Every result is checked against the
+independent rank-one identity outside timing.
+
+
+The symmetric matrix families also provide `workspaceInput` and `workspaceOutput`.
+Both use opposite input/output orientations and include the selected layout copy
+inside timing; caller workspace is allocated beforehand. Their workspace strides
+select copying the input or copying the output respectively. On the native D
+backend, workspace can be unused and these retain the normal fallback.
+`symmetricColumn` and `symmetricRow` exercise rank-two one-column and one-row
+operands with the same algorithm choices, including the real vector specialization.
+
+
+`crossprod` and `tcrossprod` compare `general` matrix multiplication with
+`specialized` one-triangle self-products, including output mirroring in timing.
+`--size` is the square output order; contraction length is 32. Input and output
+buffers are reused. Both storage layouts are supported, and every result entry
+is checked against an extended-precision reference outside timing. These cases
+measure caller-output operations, not result allocation costs.
+
+```sh
+dub run mir-stat:benchmarks --config=openblas --build=release --compiler=ldc2 -- --function=crossprod --size=256 --iterations=20 --rounds=8 --warmup=3 --format=csv
+```
+
+The cross-product benchmarks also include `triangleOnly`, which calls the
+explicit-upper-triangle `Into` overload. `specialized` includes mirroring and
+fully initializes caller storage; `triangleOnly` exposes the same logical
+symmetric matrix without mirroring. All cases reuse square output storage,
+exclude allocation, and validate every logical entry against an independent
+extended-precision reference outside timing. This isolates the cost of
+mirroring rather than a reduction in allocated storage.
