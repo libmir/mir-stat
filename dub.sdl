@@ -5,7 +5,7 @@ authors "John Michael Hall" "Ilya Yaroshenko"
 copyright "Copyright © 2026, Mir Stat Authors."
 license "Apache-2.0"
 
-dependency "mir-algorithm" version=">=3.20.1"
+dependency "mir-algorithm" version=">=3.22.5"
 
 toolchainRequirements frontend=">=2.097"
 
