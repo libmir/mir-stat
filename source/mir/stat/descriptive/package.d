@@ -30,12 +30,12 @@ with weights [1, 3] have mean 7.5. Multiplying all weights by ten leaves it unch
 $(TR $(TD Weighted sum) $(TD The same inputs give 30. Multiplying all weights by
 ten gives 300. Counts give the total of the expanded sample; relative weights
 give a weighted total. Normalize weights yourself if you want an average.))
-$(TR $(TD Weighted variance) $(TD Use population to describe the weighted
-distribution: the example gives 18.75. Use frequencySample for a sample stored
-as counts: it gives 25. Use relativeSample for fixed relative weights on
-independent observations with a common mean and variance: it gives 50.
-Population and relativeSample are unchanged by scaling all weights;
-frequencySample changes because the represented sample size changes.))
+$(TR $(TD Weighted variance) $(TD Pass isPopulation=true to describe the weighted
+distribution: the example gives 18.75. The default is sample correction.
+With frequency weights it gives 25; with relative weights (the default) on
+independent observations with a common mean and variance it gives 50.
+Population and relative sample results are unchanged by scaling all weights;
+frequency sample results change because the represented sample size changes.))
 $(TR $(TD Weighted raw and central moments) $(TD Counts, probabilities, and
 relative emphasis use the same descriptive formula. For values [0, 10] with
 weights [1, 3], the second raw moment is 75 and the second central moment is
@@ -58,12 +58,12 @@ to excess; pass isRaw=true to add three. For values [0, 10] and counts [1, 3],
 population excess kurtosis is -2/3, while frequency-sample excess kurtosis is 4.
 Relative sample correction is unavailable for these two rows.))
 $(TR $(TD Weighted coefficient of variation) $(TD Divide weighted standard deviation
-by the positive weighted mean to compare relative spread. Use the same three
-normalization choices as variance. For values [0, 10] and weights [1, 3], the
+by the positive weighted mean to compare relative spread. WeightInterpretation
+and runtime isPopulation have the same meanings as for variance. For values [0, 10] and weights [1, 3], the
 population ratio is about 0.577, frequency-sample ratio 0.667, and relative-sample
 ratio 0.943. Sample correction does not generally make this ratio unbiased.))
-$(TR $(TD Weighted covariance) $(TD Use WeightedMomentNormalization with the same
-three choices as variance. For x=[0,10], y=[0,20], weights=[1,3], covariance is
+$(TR $(TD Weighted covariance) $(TD Use WeightedMomentNormalization with the
+choices: population, frequencySample, and relativeSample. For x=[0,10], y=[0,20], weights=[1,3], covariance is
 37.5 for population, 50 for frequencySample, and 100 for relativeSample.))
 $(TR $(TD Weighted correlation) $(TD The same inputs have correlation 1. A common
 sample correction cancels, so no normalization option is needed. Scaling all
@@ -102,8 +102,8 @@ of uncertainty. See $(MREF mir, stat, descriptive, histogram, api) for examples.
 These choices do not make every kind of weight interchangeable. In particular,
 relativeSample is not a survey-design correction or the uncertainty of a mean
 formed using inverse-variance weights. See
-$(REF WeightedMomentNormalization, mir, stat, descriptive, weighting)
-and $(REF WeightedQuantileAlgo, mir, stat, descriptive, univariate, quantiles)
+$(REF WeightInterpretation, mir, stat, descriptive, weighting),
+$(REF WeightedMomentNormalization, mir, stat, descriptive, weighting), and $(REF WeightedQuantileAlgo, mir, stat, descriptive, univariate, quantiles)
 for each estimator's assumptions.
 
 Weight validity also depends on the function. Weighted means and sums allow

@@ -4,9 +4,10 @@ This module contains algorithms for multivariate descriptive statistics.
 Weighted paired observations use $(LREF weightedCovariance),
 $(LREF weightedCorrelation), $(LREF WCovarianceAccumulator), and
 $(LREF WCorrelationAccumulator). Pass the two observation inputs first, followed
-by their shared weights. WeightedMomentNormalization shares the population,
-frequencySample and relativeSample choices with weighted variance; correlation
-has no normalization selector because the common factor cancels.
+by their shared weights. WeightedMomentNormalization selects population,
+frequencySample, or relativeSample for covariance. Weighted variance instead
+uses WeightInterpretation and runtime isPopulation. Correlation has no
+normalization selector because the common factor cancels.
 
 Accumulator merges preserve stored correction terms when the element type and
 summation algorithm match and use KBN, KB2, or precise summation. Derived moments
@@ -5956,9 +5957,8 @@ static foreach (mode; [Summation.naive, Summation.pairwise, Summation.kbn, Summa
 unittest
 {
     import mir.math.common: approxEqual;
-    import mir.stat.descriptive.univariate: weightedVariance, WeightedVarianceNormalization;
+    import mir.stat.descriptive.univariate: weightedVariance, WeightInterpretation;
     alias N = WeightedMomentNormalization;
-    static assert(is(N == WeightedVarianceNormalization));
     double[4] x = [1, 2, 4, 8], y = [9, 3, -1, 6];
     int[4] w = [1, 3, 2, 1];
     double[7] expandedX = [1, 2, 2, 2, 4, 4, 8];
@@ -5984,7 +5984,8 @@ unittest
             empty.put(batch);
             assert(empty.covariance == batch.covariance);
             assert((weightedCovariance!(norm, algo, mode)(x, x, w))
-                .approxEqual(weightedVariance!norm(x, w), 1e-12, 1e-12));
+                .approxEqual(weightedVariance!(norm == N.frequencySample ? WeightInterpretation.frequency : WeightInterpretation.relative)
+                    (x, w, norm == N.population), 1e-12, 1e-12));
             auto before = batch.covariance;
             batch.put(batch);
             const factor = norm == N.frequencySample ? 12.0 / 13 : 1.0;
