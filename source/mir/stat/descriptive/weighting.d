@@ -2,7 +2,7 @@
 Weight interpretation and normalization for weighted statistics.
 
 WeightInterpretation describes what a weight represents for weighted variance,
-standard deviation, coefficient of variation, and WVarianceAccumulator.
+standard deviation, coefficient of variation, covariance, and their accumulators.
 The separate runtime argument isPopulation selects whether to apply a sample
 correction. It defaults to false, matching the unweighted functions. Pass true
 to describe the weighted distribution without a sample correction.
@@ -14,16 +14,17 @@ are two observations, with the second receiving three times the emphasis.
 These answer different questions; the larger answer is not automatically better.
 
 Migration:
-For these variance APIs, replace WeightedMomentNormalization.population with
+For these variance and covariance APIs, replace WeightedMomentNormalization.population with
 WeightInterpretation.relative and isPopulation=true; frequencySample with
 frequency and isPopulation=false; and relativeSample with relative and
 isPopulation=false. The WeightedVarianceNormalization alias is removed.
 Calls without options now select relative sample correction: weightedVariance(x, w)
 estimates sample variance; weightedVariance(x, w, true) preserves the former
-descriptive result. The same migration applies to standard deviation, CV, and
-the corresponding accumulator getters.
+descriptive result. The same migration applies to standard deviation, CV,
+covariance, and the corresponding accumulator getters. For example,
+weightedCovariance(x, y, w, true) preserves the former population result.
 
-Weighted covariance, skewness, and kurtosis continue to use
+Weighted skewness and kurtosis continue to use
 $(LREF WeightedMomentNormalization), with population normalization by default.
 Their argument order and behavior are unchanged. Mean and correlation retain
 their existing APIs; neither needs a sample normalization selector.
@@ -55,8 +56,8 @@ enum WeightInterpretation
     Multiplying all weights by a positive constant leaves the mathematical
     result unchanged, so [1, 3] and [0.25, 0.75] express the same relative weights.
 
-    Sample variance assumes fixed weights and independent
-    observations with common second moments. Its denominator is W-Q/W,
+    Sample variance and covariance assume fixed weights and independent
+    observations with common second moments. Their denominator is W-Q/W,
     where W=sum(w) and Q=sum(w*w). At least two positive-weight rows are needed.
 
     These corrections are not general corrections for survey designs or
@@ -75,15 +76,15 @@ enum WeightInterpretation
     isPopulation=true. Do not normalize counts: [2, 6] represents eight
     observations and can give different sample corrections from [1, 3].
 
-    Sample variance requires total count above one. Population results do
+    Sample variance and covariance require total count above one. Population results do
     not require this sample minimum. Zero counts exclude observations.
     +/
     frequency
 }
 
 /++
-Choose normalization for weighted covariance, skewness, and kurtosis.
-Weighted variance, standard deviation, and coefficient of variation instead
+Choose normalization for weighted skewness and kurtosis.
+Weighted variance, standard deviation, coefficient of variation, and covariance instead
 use $(LREF WeightInterpretation) and a separate runtime isPopulation argument.
 The variance formulas below illustrate the corresponding statistical definitions.
 
@@ -99,7 +100,9 @@ the larger answer is not automatically more accurate.
 
 Select the meaning explicitly. Integer weights do not automatically mean
 frequencies, and floating-point weights such as [1.0, 3.0] can be frequencies.
-See $(REF weightedCovariance, mir, stat, descriptive, multivariate) for executable calls, and
+See $(REF weightedSkewness, mir, stat, descriptive, univariate, skewness_kurtosis)
+and $(REF weightedKurtosis, mir, stat, descriptive, univariate, skewness_kurtosis)
+for executable calls, and
 $(REF descriptive, mir, stat) for shared guidance on weight meanings.
 +/
 enum WeightedMomentNormalization
@@ -229,23 +232,32 @@ version(mir_stat_test)
         variance, standardDeviation, coefficientOfVariation,
         weightedVariance, weightedStandardDeviation, weightedCoefficientOfVariation,
         WVarianceAccumulator;
+    import mir.stat.descriptive.multivariate:
+        covariance, weightedCovariance, WCovarianceAccumulator, WCorrelationAccumulator;
     import mir.math.common: approxEqual;
-    double[4] x = [1, 2, 4, 8], ones = [1, 1, 1, 1];
+    double[4] x = [1, 2, 4, 8], y = [3, 1, 6, 5], ones = [1, 1, 1, 1];
+    assert(weightedCovariance(x[], y[], ones[]).approxEqual(covariance(x[], y[])));
     assert(weightedVariance(x[], ones[]).approxEqual(variance(x[])));
     assert(weightedStandardDeviation(x[], ones[]).approxEqual(standardDeviation(x[])));
     assert(weightedCoefficientOfVariation(x, ones).approxEqual(coefficientOfVariation(x[])));
     static foreach (interpretation; [WeightInterpretation.relative, WeightInterpretation.frequency])
     {{
         WVarianceAccumulator!(double, interpretation) spread;
+        WCovarianceAccumulator!(double, interpretation) paired;
+        paired.put(x[], y[], ones[]);
         spread.put(x[], ones[]);
         // One state can answer both queries, in either order, repeatedly.
         foreach (isPopulation; [true, false, true, false])
         {
+            assert(paired.covariance(isPopulation).approxEqual(covariance(x[], y[], isPopulation)));
             assert(spread.variance(isPopulation).approxEqual(variance(x[], isPopulation)));
             assert(spread.standardDeviation(isPopulation).approxEqual(standardDeviation(x[], isPopulation)));
             assert(spread.coefficientOfVariation(isPopulation).approxEqual(coefficientOfVariation(x[], isPopulation)));
         }
     }}
+    WCorrelationAccumulator!double correlationState;
+    correlationState.put(x[], y[], ones[]);
+    assert(correlationState.covariance.approxEqual(covariance(x[], y[], true)));
 }
 
 version(mir_stat_test)
@@ -253,12 +265,15 @@ version(mir_stat_test)
 {
     import mir.stat.descriptive.univariate.dispersions:
         weightedVariance, weightedStandardDeviation, weightedCoefficientOfVariation;
+    import mir.stat.descriptive.multivariate: weightedCovariance;
     import std.exception: assertThrown;
     import core.exception: AssertError;
     import std.meta: AliasSeq;
     double[1] single = [7], count = [1];
     assert(weightedVariance!(WeightInterpretation.frequency)(single[], count[], true) == 0);
     assertThrown!AssertError(weightedVariance(single[], count[]));
+    assert(weightedCovariance!(WeightInterpretation.frequency)(single[], single[], count[], true) == 0);
+    assertThrown!AssertError(weightedCovariance(single[], single[], count[]));
     double[4] x = [1, 2, 3, 4], fractional = [1, 2, 3, 0.5];
     static foreach (fun; AliasSeq!(weightedVariance, weightedStandardDeviation,
         weightedCoefficientOfVariation))
@@ -266,4 +281,14 @@ version(mir_stat_test)
         // Population mode must still validate the count interpretation.
         assertThrown!AssertError(fun!(WeightInterpretation.frequency)(x[], fractional[], true));
     }
+}
+
+version(mir_stat_test)
+@system unittest
+{
+    import mir.stat.descriptive.multivariate: weightedCovariance;
+    import std.exception: assertThrown;
+    import core.exception: AssertError;
+    double[4] x = [1, 2, 3, 4], fractional = [1, 2, 3, 0.5];
+    assertThrown!AssertError(weightedCovariance!(WeightInterpretation.frequency)(x[], x[], fractional[], true));
 }
