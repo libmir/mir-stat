@@ -216,8 +216,7 @@ $(TR $(TH Module) $(TH Public declarations))
             $(BR)
             $(B Algorithm:)
             $(REF VarianceAlgo, mir, stat, descriptive, univariate, dispersions)$(NBSP)
-            $(REF WeightedMomentNormalization, mir, stat, descriptive, weighting)$(NBSP)
-            $(REF WeightedVarianceNormalization, mir, stat, descriptive, univariate, dispersions)$(NBSP)
+            $(REF WeightInterpretation, mir, stat, descriptive, weighting)$(NBSP)
         )
     )
     $(TR $(TD $(MREF mir,stat,descriptive,univariate,moments) $(BR)
@@ -329,11 +328,10 @@ public import mir.stat.descriptive.univariate.quantiles;
 
 ///
 public import mir.stat.descriptive.univariate.dispersions: dispersion, variance, standardDeviation, coefficientOfVariation, VarianceAlgo, VarianceAccumulator,
-    weightedVariance, weightedStandardDeviation, weightedCoefficientOfVariation, WVarianceAccumulator,
-    WeightedVarianceNormalization;
+    weightedVariance, weightedStandardDeviation, weightedCoefficientOfVariation, WVarianceAccumulator;
 
 ///
-public import mir.stat.descriptive.weighting: WeightedMomentNormalization;
+public import mir.stat.descriptive.weighting: WeightInterpretation, WeightedMomentNormalization;
 
 ///
 public import mir.stat.descriptive.univariate.moments;
@@ -371,8 +369,8 @@ unittest
     static assert(__traits(isSame, legacy.weightedVariance, dispersions.weightedVariance));
     static assert(__traits(isSame, legacy.weightedStandardDeviation, dispersions.weightedStandardDeviation));
     static assert(__traits(isSame, legacy.WVarianceAccumulator, dispersions.WVarianceAccumulator));
-    static assert(is(legacy.WeightedMomentNormalization == dispersions.WeightedVarianceNormalization));
-    assert(legacy.weightedVariance([0.0, 10.0], [1.0, 3.0]) == 18.75);
+    static assert(is(legacy.WeightInterpretation == dispersions.WeightInterpretation));
+    assert(legacy.weightedVariance([0.0, 10.0], [1.0, 3.0], true) == 18.75);
     static assert(__traits(isSame, legacy.MomentAccumulator, moments.MomentAccumulator));
     static assert(__traits(isSame, moments.skewness, skewnessKurtosis.skewness));
     static assert(__traits(isSame, legacy.skewness, skewnessKurtosis.skewness));
@@ -398,7 +396,7 @@ unittest
     assert(legacy.weightedMedianAbsoluteDeviation([0.0, 10.0], [1, 1]) == 5);
     assert(legacy.weightedMedian([0.0, 10.0], [1, 1]) == 5);
     assert(legacy.weightedInterquartileRange([0.0, 10.0], [1, 3]) == 10);
-    assert(legacy.weightedCoefficientOfVariation([1.0, 3.0], [1.0, 1.0]) == 0.5);
+    assert(legacy.weightedCoefficientOfVariation([1.0, 3.0], [1.0, 1.0], true) == 0.5);
 }
 
 // Keep the grouped-reduction overview example executable.
@@ -451,7 +449,7 @@ unittest
     static assert(__traits(isSame, weightedKurtosis, shape.weightedKurtosis));
 }
 
-// All import paths must expose the same policy type, including the older name.
+// Re-exports preserve variance interpretation and the remaining normalization policy.
 version(mir_stat_test)
 @safe pure nothrow @nogc
 unittest
@@ -459,15 +457,15 @@ unittest
     import policy = mir.stat.descriptive.weighting;
     import spread = mir.stat.descriptive.univariate.dispersions;
     import paired = mir.stat.descriptive.multivariate;
+    static assert(is(WeightInterpretation == policy.WeightInterpretation));
+    static assert(is(spread.WeightInterpretation == policy.WeightInterpretation));
     static assert(is(WeightedMomentNormalization == policy.WeightedMomentNormalization));
-    static assert(is(spread.WeightedMomentNormalization == policy.WeightedMomentNormalization));
-    static assert(is(spread.WeightedVarianceNormalization == policy.WeightedMomentNormalization));
     static assert(is(paired.WeightedMomentNormalization == policy.WeightedMomentNormalization));
-    static assert(is(spread.WVarianceAccumulator!(double, spread.WeightedVarianceNormalization.frequencySample) ==
-        spread.WVarianceAccumulator!(double, policy.WeightedMomentNormalization.frequencySample)));
-    static assert(is(paired.WCovarianceAccumulator!(double, spread.WeightedVarianceNormalization.relativeSample) ==
+    static assert(is(spread.WVarianceAccumulator!(double, spread.WeightInterpretation.frequency) ==
+        spread.WVarianceAccumulator!(double, policy.WeightInterpretation.frequency)));
+    static assert(is(paired.WCovarianceAccumulator!(double, WeightedMomentNormalization.relativeSample) ==
         paired.WCovarianceAccumulator!(double, policy.WeightedMomentNormalization.relativeSample)));
     double[2] x = [0, 10], w = [1, 3];
-    assert(spread.weightedVariance!(spread.WeightedVarianceNormalization.frequencySample)(x, w) ==
-        spread.weightedVariance!(policy.WeightedMomentNormalization.frequencySample)(x, w));
+    assert(spread.weightedVariance!(spread.WeightInterpretation.frequency)(x, w) ==
+        spread.weightedVariance!(policy.WeightInterpretation.frequency)(x, w));
 }
