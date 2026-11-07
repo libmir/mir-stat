@@ -49,6 +49,7 @@ and covariance stays last. Supplying only an algorithm uses relative weights;
 supplying only an interpretation uses the function's default algorithm.
 Weighted quantile, interquartile range, and median absolute deviation follow the
 same ordering rule for interpretation and algorithm across allocation variants.
+Weighted histogram factories use these options when computing new boundaries.
 
 Prefer interpretation first when explaining what the weights represent. Algorithm
 first is useful when adding a weight interpretation to an existing algorithm choice.

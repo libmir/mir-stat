@@ -94,7 +94,8 @@ unchanged. Per-bin accumulators use their own statistical policies.))
 For weighted percentograms, choosing the number of bins is separate from
 choosing their quantile boundaries. The default counts positive-weight rows.
 WeightedBinCountBasis.frequencyTotal uses the represented number of observations;
-combine it with a frequency quantile algorithm to match expanded data.
+combine it with frequency interpretation and type 7 or type 8 to match the
+corresponding boundaries of the expanded data.
 WeightedBinCountBasis.effectiveSampleSize can request coarser bins when a few
 relative weights dominate. It is a resolution heuristic, not a general measure
 of uncertainty. See $(MREF mir, stat, descriptive, histogram, api) for examples.

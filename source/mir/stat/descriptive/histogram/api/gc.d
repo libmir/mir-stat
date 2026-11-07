@@ -18,6 +18,8 @@ Copyright: 2026 Mir Stat Authors.
 +/
 module mir.stat.descriptive.histogram.api.gc;
 
+private import mir.stat.descriptive.weighting: WeightInterpretation;
+
 // Automatic weighted-percentogram resolution policy.
 public import mir.stat.descriptive.histogram.api.factory: WeightedBinCountBasis;
 
@@ -1044,16 +1046,20 @@ For example, reweight simulated outcomes to represent a different scenario:
 the weights move the quantile boundaries as well as changing the bar areas.
 Returns a relative-frequency accumulator with GC-owned boundaries and counts.
 
-The default inverseCDF algorithm selects observed quantiles. Select another
-WeightedQuantileAlgo explicitly; frequencyType7 and frequencyType8 interpret
-weights as occurrence counts. All algorithms use the supplied weights for bin
+The default relative interpretation with inverseCDF selects observed quantiles.
+Choose WeightInterpretation.frequency with type7 (its default) or type8 for
+occurrence counts. WeightInterpretation and WeightedQuantileAlgo may appear in
+either order after the optional Counts type; either option may be supplied alone.
+Algorithm-only calls use relative weights. The same convention applies to the RC
+and custom-allocator variants and their weighted quantile-axis factories.
+All algorithms use the supplied weights for bin
 totals. Counts default to double; integral counters require integral weights.
 Counts and their total must accommodate the sums. AdaptiveCounts is unsupported.
 
 Supply a positive bin count or strictly increasing probabilities in [0,1].
 When neither is supplied, the factory requests ceil(cuberoot(n)) bins,
 where n is selected by binCountBasis. The default positiveRows counts rows
-with positive weight, including for frequency algorithms. Repeated observations
+with positive weight, including with frequency interpretation. Repeated observations
 count as separate rows. Duplicate quantile
 boundaries are combined, so the result may contain fewer bins than requested.
 
@@ -1065,8 +1071,8 @@ Pass WeightedBinCountBasis.frequencyTotal as the final argument to use the
 sum of whole-number counts, or effectiveSampleSize to use Kish effective sample
 size for a coarser view of concentrated relative weights. This argument replaces
 the explicit bin count or probability levels; it cannot be combined with them.
-It does not select the quantile algorithm. You can also supply a bin count when
-a different choice better suits your data.
+It selects neither weight interpretation nor the quantile algorithm. You can
+also supply a bin count when a different choice better suits your data.
 For reweighted simulations, you might prefer fewer bins when a small number
 of outcomes carry most of the probability. For a frequency table, you might
 instead choose the bin count using the total number of observations represented
@@ -1093,29 +1099,75 @@ Later putWeighted calls update bin weights and the total without moving edges.
 
 Params:
     Counts = numeric counter type, double by default
-    algorithm = weighted quantile definition, inverseCDF by default
-    data = one-dimensional observations, as an array or Mir slice
-    weights = probability masses, or occurrence counts for frequency algorithms
-    binCountBasis = sample-size basis for automatic bin selection (default: positiveRows)
-    probabilities = positive bin count or probability array/slice
+    interpretation = relative weights (default) or occurrence counts
+    algorithm = inverseCDF for relative weights by default, type7 for frequency counts
 +/
-auto weightedPercentogram(Counts = double, WeightedQuantileAlgo algorithm = WeightedQuantileAlgo.inverseCDF,
-    Data, Weights, P)(scope auto ref Data data, scope auto ref Weights weights,
-    scope auto ref P probabilities)
-    if (!isQuantileAxis!P && !is(P : WeightedBinCountBasis))
+template weightedPercentogram(Counts, WeightInterpretation interpretation,
+    WeightedQuantileAlgo algorithm)
 {
-    import mir.stat.descriptive.histogram.api.factory: buildWeightedPercentogram;
-    return buildWeightedPercentogram!(allocateCounts, computeWeightedAxisQuantiles!algorithm,
-        relativeFrequencyHistogram, Counts)(weights, data, probabilities);
+    /++
+    Params:
+        data = one-dimensional observations, as an array or Mir slice
+        weights = probability masses, or occurrence counts with frequency interpretation
+        probabilities = positive bin count or probability array/slice
+    +/
+    auto weightedPercentogram(Data, Weights, P)(scope auto ref Data data, scope auto ref Weights weights,
+        scope auto ref P probabilities)
+        if (!isQuantileAxis!P && !is(P : WeightedBinCountBasis))
+    {
+        import mir.stat.descriptive.histogram.api.factory: buildWeightedPercentogram;
+        return buildWeightedPercentogram!(allocateCounts, computeWeightedAxisQuantiles!(interpretation, algorithm),
+            relativeFrequencyHistogram, Counts)(weights, data, probabilities);
+    }
+
+    /++
+    Params:
+        data = one-dimensional observations, as an array or Mir slice
+        weights = probability masses, or occurrence counts with frequency interpretation
+        binCountBasis = sample-size basis for automatic bin selection (default: positiveRows)
+    +/
+    auto weightedPercentogram(Data, Weights)(scope auto ref Data data, scope auto ref Weights weights,
+        WeightedBinCountBasis binCountBasis = WeightedBinCountBasis.positiveRows)
+    {
+        import mir.stat.descriptive.histogram.api.factory: weightedPercentogramBinCount;
+        return .weightedPercentogram!(Counts, interpretation, algorithm)(data, weights, weightedPercentogramBinCount(weights, binCountBasis));
+    }
 }
 
 /// ditto
-auto weightedPercentogram(Counts = double, WeightedQuantileAlgo algorithm = WeightedQuantileAlgo.inverseCDF,
-    Data, Weights)(scope auto ref Data data, scope auto ref Weights weights,
-    WeightedBinCountBasis binCountBasis = WeightedBinCountBasis.positiveRows)
+template weightedPercentogram(Counts = double, WeightInterpretation interpretation = WeightInterpretation.relative)
 {
-    import mir.stat.descriptive.histogram.api.factory: weightedPercentogramBinCount;
-    return weightedPercentogram!(Counts, algorithm)(data, weights, weightedPercentogramBinCount(weights, binCountBasis));
+    static if (interpretation == WeightInterpretation.frequency)
+        alias weightedPercentogram = .weightedPercentogram!(Counts, interpretation, WeightedQuantileAlgo.type7);
+    else
+        alias weightedPercentogram = .weightedPercentogram!(Counts, interpretation, WeightedQuantileAlgo.inverseCDF);
+}
+
+/// ditto
+template weightedPercentogram(Counts, WeightedQuantileAlgo algorithm,
+    WeightInterpretation interpretation = WeightInterpretation.relative)
+{
+    alias weightedPercentogram = .weightedPercentogram!(Counts, interpretation, algorithm);
+}
+
+/// ditto
+template weightedPercentogram(WeightInterpretation interpretation,
+    WeightedQuantileAlgo algorithm)
+{
+    alias weightedPercentogram = .weightedPercentogram!(double, interpretation, algorithm);
+}
+
+/// ditto
+template weightedPercentogram(WeightInterpretation interpretation)
+{
+    alias weightedPercentogram = .weightedPercentogram!(double, interpretation);
+}
+
+/// ditto
+template weightedPercentogram(WeightedQuantileAlgo algorithm,
+    WeightInterpretation interpretation = WeightInterpretation.relative)
+{
+    alias weightedPercentogram = .weightedPercentogram!(double, interpretation, algorithm);
 }
 
 /// Reweighting outcomes changes the median boundary and the observed bin masses.
@@ -1247,21 +1299,43 @@ auto percentogram(Counts = size_t, Data, Axis)(
 }
 
 /++
-Choose fixed quantile boundaries from a weighted reference sample. Weights come
-before observations. Algorithm semantics are those of WeightedQuantileAlgo;
-the default is inverseCDF. Supply probability levels or a positive bin count.
+Choose fixed quantile boundaries from a weighted reference sample. Observations
+come before weights. Algorithm semantics are those of WeightedQuantileAlgo;
+relative weights default to inverseCDF and frequency counts to type7.
+WeightInterpretation and WeightedQuantileAlgo may be supplied in either order.
+Supply probability levels or a positive bin count.
 Zero-weight observations are ignored. Inputs are unchanged.
 The axis can subsequently count a different sample with different weights.
 +/
-auto weightedQuantileAxis(WeightedQuantileAlgo algorithm = WeightedQuantileAlgo.inverseCDF,
-    Data, Weights, P)(scope auto ref Data data, scope auto ref Weights weights, scope auto ref P probabilities)
+template weightedQuantileAxis(WeightInterpretation interpretation,
+    WeightedQuantileAlgo algorithm)
 {
-    import mir.stat.descriptive.histogram.api.factory: computeQuantileAxisEdges;
-    import mir.stat.descriptive.histogram.axis: preparedQuantileAxis;
-    NoAllocationContext context;
-    auto edges = computeQuantileAxisEdges!(allocateCounts, computeWeightedAxisQuantiles!algorithm)(
-        context, weights, data, probabilities);
-    return preparedQuantileAxis(edges);
+    /// ditto
+    auto weightedQuantileAxis(Data, Weights, P)(scope auto ref Data data, scope auto ref Weights weights, scope auto ref P probabilities)
+    {
+        import mir.stat.descriptive.histogram.api.factory: computeQuantileAxisEdges;
+        import mir.stat.descriptive.histogram.axis: preparedQuantileAxis;
+        NoAllocationContext context;
+        auto edges = computeQuantileAxisEdges!(allocateCounts, computeWeightedAxisQuantiles!(interpretation, algorithm))(
+            context, weights, data, probabilities);
+        return preparedQuantileAxis(edges);
+    }
+}
+
+/// ditto
+template weightedQuantileAxis(WeightInterpretation interpretation = WeightInterpretation.relative)
+{
+    static if (interpretation == WeightInterpretation.frequency)
+        alias weightedQuantileAxis = .weightedQuantileAxis!(interpretation, WeightedQuantileAlgo.type7);
+    else
+        alias weightedQuantileAxis = .weightedQuantileAxis!(interpretation, WeightedQuantileAlgo.inverseCDF);
+}
+
+/// ditto
+template weightedQuantileAxis(WeightedQuantileAlgo algorithm,
+    WeightInterpretation interpretation = WeightInterpretation.relative)
+{
+    alias weightedQuantileAxis = .weightedQuantileAxis!(interpretation, algorithm);
 }
 
 /// Reuse a weighted reference median when comparing a later sample.
@@ -1278,15 +1352,14 @@ unittest
     assert(p.relativeFrequency(0) == 0.75);
 }
 
-private template computeWeightedAxisQuantiles(WeightedQuantileAlgo algorithm)
+private template computeWeightedAxisQuantiles(WeightInterpretation interpretation, WeightedQuantileAlgo algorithm)
 {
     auto computeWeightedAxisQuantiles(Weights, Data, P)(
         ref NoAllocationContext context, scope auto ref Weights weights,
         scope auto ref Data data, scope auto ref P probabilities)
     {
         import mir.stat.descriptive.univariate: weightedQuantile;
-        import mir.stat.descriptive.histogram.api.factory: histogramQuantile;
-        return histogramQuantile!(weightedQuantile, algorithm)(
+        return weightedQuantile!(interpretation, algorithm)(
             data, weights, probabilities);
     }
 }

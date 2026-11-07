@@ -31,6 +31,10 @@ T4=$(TR $(TDNW $(LREF $1)) $(TD $2) $(TD $3) $(TD $4))
 
 module mir.stat.descriptive.histogram.api.rc;
 
+private import mir.stat.descriptive.weighting: WeightInterpretation;
+
+version(mir_stat_test) private import std.typecons: tuple;
+
 // Automatic weighted-percentogram resolution policy.
 public import mir.stat.descriptive.histogram.api.factory: WeightedBinCountBasis;
 
@@ -1765,29 +1769,75 @@ The result owns its storage independently of the inputs and supports @nogc use.
 
 Params:
     Counts = numeric counter type, double by default
-    algorithm = weighted quantile definition, inverseCDF by default
-    data = one-dimensional observations, as an array or Mir slice
-    weights = probability masses, or occurrence counts for frequency algorithms
-    binCountBasis = sample-size basis for automatic bin selection (default: positiveRows)
-    probabilities = positive bin count or probability array/slice
+    interpretation = relative weights (default) or occurrence counts
+    algorithm = inverseCDF for relative weights by default, type7 for frequency counts
 +/
-auto rcWeightedPercentogram(Counts = double, WeightedQuantileAlgo algorithm = WeightedQuantileAlgo.inverseCDF,
-    Data, Weights, P)(scope auto ref Data data, scope auto ref Weights weights,
-    scope auto ref P probabilities)
-    if (!isQuantileAxis!P && !is(P : WeightedBinCountBasis))
+template rcWeightedPercentogram(Counts, WeightInterpretation interpretation,
+    WeightedQuantileAlgo algorithm)
 {
-    import mir.stat.descriptive.histogram.api.factory: buildWeightedPercentogram;
-    return buildWeightedPercentogram!(allocateCells, computeWeightedAxisQuantiles!algorithm,
-        rcRelativeFrequencyHistogram, Counts)(weights, data, probabilities);
+    /++
+    Params:
+        data = one-dimensional observations, as an array or Mir slice
+        weights = probability masses, or occurrence counts with frequency interpretation
+        probabilities = positive bin count or probability array/slice
+    +/
+    auto rcWeightedPercentogram(Data, Weights, P)(scope auto ref Data data, scope auto ref Weights weights,
+        scope auto ref P probabilities)
+        if (!isQuantileAxis!P && !is(P : WeightedBinCountBasis))
+    {
+        import mir.stat.descriptive.histogram.api.factory: buildWeightedPercentogram;
+        return buildWeightedPercentogram!(allocateCells, computeWeightedAxisQuantiles!(interpretation, algorithm),
+            rcRelativeFrequencyHistogram, Counts)(weights, data, probabilities);
+    }
+
+    /++
+    Params:
+        data = one-dimensional observations, as an array or Mir slice
+        weights = probability masses, or occurrence counts with frequency interpretation
+        binCountBasis = sample-size basis for automatic bin selection (default: positiveRows)
+    +/
+    auto rcWeightedPercentogram(Data, Weights)(scope auto ref Data data, scope auto ref Weights weights,
+        WeightedBinCountBasis binCountBasis = WeightedBinCountBasis.positiveRows)
+    {
+        import mir.stat.descriptive.histogram.api.factory: weightedPercentogramBinCount;
+        return .rcWeightedPercentogram!(Counts, interpretation, algorithm)(data, weights, weightedPercentogramBinCount(weights, binCountBasis));
+    }
 }
 
 /// ditto
-auto rcWeightedPercentogram(Counts = double, WeightedQuantileAlgo algorithm = WeightedQuantileAlgo.inverseCDF,
-    Data, Weights)(scope auto ref Data data, scope auto ref Weights weights,
-    WeightedBinCountBasis binCountBasis = WeightedBinCountBasis.positiveRows)
+template rcWeightedPercentogram(Counts = double, WeightInterpretation interpretation = WeightInterpretation.relative)
 {
-    import mir.stat.descriptive.histogram.api.factory: weightedPercentogramBinCount;
-    return rcWeightedPercentogram!(Counts, algorithm)(data, weights, weightedPercentogramBinCount(weights, binCountBasis));
+    static if (interpretation == WeightInterpretation.frequency)
+        alias rcWeightedPercentogram = .rcWeightedPercentogram!(Counts, interpretation, WeightedQuantileAlgo.type7);
+    else
+        alias rcWeightedPercentogram = .rcWeightedPercentogram!(Counts, interpretation, WeightedQuantileAlgo.inverseCDF);
+}
+
+/// ditto
+template rcWeightedPercentogram(Counts, WeightedQuantileAlgo algorithm,
+    WeightInterpretation interpretation = WeightInterpretation.relative)
+{
+    alias rcWeightedPercentogram = .rcWeightedPercentogram!(Counts, interpretation, algorithm);
+}
+
+/// ditto
+template rcWeightedPercentogram(WeightInterpretation interpretation,
+    WeightedQuantileAlgo algorithm)
+{
+    alias rcWeightedPercentogram = .rcWeightedPercentogram!(double, interpretation, algorithm);
+}
+
+/// ditto
+template rcWeightedPercentogram(WeightInterpretation interpretation)
+{
+    alias rcWeightedPercentogram = .rcWeightedPercentogram!(double, interpretation);
+}
+
+/// ditto
+template rcWeightedPercentogram(WeightedQuantileAlgo algorithm,
+    WeightInterpretation interpretation = WeightInterpretation.relative)
+{
+    alias rcWeightedPercentogram = .rcWeightedPercentogram!(double, interpretation, algorithm);
 }
 
 /// Reweighting outcomes changes the median boundary and the observed bin masses.
@@ -1808,16 +1858,17 @@ unittest
     assert(reweighted.total == 12 && reweighted.counts[1] == 4);
 }
 
-/// Select the quantile definition explicitly; frequency algorithms treat weights as counts.
+/// Select the quantile definition explicitly; frequency interpretation treats weights as counts.
 version(mir_stat_test)
 @safe pure nothrow @nogc
 unittest
 {
     import mir.stat.descriptive.univariate: WeightedQuantileAlgo;
+    import mir.stat.descriptive.weighting: WeightInterpretation;
     const int[2] values = [0, 10], weights = [2, 2];
     const double[3] levels = [0, 0.25, 1];
     auto probability = rcWeightedPercentogram!(double, WeightedQuantileAlgo.type7)(values, weights, levels);
-    auto frequency = rcWeightedPercentogram!(uint, WeightedQuantileAlgo.frequencyType7)(values, weights, levels);
+    auto frequency = rcWeightedPercentogram!(uint, WeightInterpretation.frequency, WeightedQuantileAlgo.type7)(values, weights, levels);
     assert(probability.bins()[0].bin.high == 2.5);
     assert(probability.axis.N_bin == 2);
     // The repeated sample [0,0,10,10] has first quartile 0; duplicate edges collapse.
@@ -1833,18 +1884,20 @@ unittest
     const double[4] values = [0, 10, 20, 30];
     const int[4] weights = [1, 2, 3, 4];
     const double[3] levels = [0, 0.5, 1];
-    static foreach (algorithm; __traits(allMembers, WeightedQuantileAlgo))
+    static foreach (quantileOptions; [
+        tuple(WeightInterpretation.relative, WeightedQuantileAlgo.inverseCDF),
+        tuple(WeightInterpretation.relative, WeightedQuantileAlgo.harrellDavis),
+        tuple(WeightInterpretation.relative, WeightedQuantileAlgo.trimmedHarrellDavis),
+        tuple(WeightInterpretation.relative, WeightedQuantileAlgo.type7),
+        tuple(WeightInterpretation.relative, WeightedQuantileAlgo.type8),
+        tuple(WeightInterpretation.relative, WeightedQuantileAlgo.averagedInverseCDF),
+        tuple(WeightInterpretation.frequency, WeightedQuantileAlgo.type7),
+        tuple(WeightInterpretation.frequency, WeightedQuantileAlgo.type8)])
     {{
-        enum choice = __traits(getMember, WeightedQuantileAlgo, algorithm);
-        auto p = rcWeightedPercentogram!(double, choice)(values, weights, levels);
-        import mir.stat.descriptive.weighting: W = WeightInterpretation;
-        static if (choice == WeightedQuantileAlgo.frequencyType7 || choice == WeightedQuantileAlgo.frequencyType8)
-        {
-            enum q = choice == WeightedQuantileAlgo.frequencyType7 ? WeightedQuantileAlgo.type7 : WeightedQuantileAlgo.type8;
-            assert(p.bins()[0].bin.high == rcWeightedQuantile!(W.frequency, q)(values, weights, 0.5));
-        }
-        else
-            assert(p.bins()[0].bin.high == rcWeightedQuantile!choice(values, weights, 0.5));
+        enum interpretation = quantileOptions[0];
+        enum choice = quantileOptions[1];
+        auto p = rcWeightedPercentogram!(double, interpretation, choice)(values, weights, levels);
+        assert(p.bins()[0].bin.high == rcWeightedQuantile!(interpretation, choice)(values, weights, 0.5));
         assert(p.total == 10);
     }}
     static auto fromLocal()
@@ -1996,21 +2049,43 @@ auto rcpercentogram(Counts = size_t, Data, Axis)(
 }
 
 /++
-Choose fixed quantile boundaries from a weighted reference sample. Weights come
-before observations. Algorithm semantics are those of WeightedQuantileAlgo;
-the default is inverseCDF. Supply probability levels or a positive bin count.
+Choose fixed quantile boundaries from a weighted reference sample. Observations
+come before weights. Algorithm semantics are those of WeightedQuantileAlgo;
+relative weights default to inverseCDF and frequency counts to type7.
+WeightInterpretation and WeightedQuantileAlgo may be supplied in either order.
+Supply probability levels or a positive bin count.
 Zero-weight observations are ignored. Inputs are unchanged.
 The axis can subsequently count a different sample with different weights.
 +/
-auto rcWeightedQuantileAxis(WeightedQuantileAlgo algorithm = WeightedQuantileAlgo.inverseCDF,
-    Data, Weights, P)(scope auto ref Data data, scope auto ref Weights weights, scope auto ref P probabilities)
+template rcWeightedQuantileAxis(WeightInterpretation interpretation,
+    WeightedQuantileAlgo algorithm)
 {
-    import mir.stat.descriptive.histogram.api.factory: computeQuantileAxisEdges;
-    import mir.stat.descriptive.histogram.axis: preparedQuantileAxis;
-    NoAllocationContext context;
-    auto edges = computeQuantileAxisEdges!(allocateCells, computeWeightedAxisQuantiles!algorithm)(
-        context, weights, data, probabilities);
-    return preparedQuantileAxis(edges);
+    /// ditto
+    auto rcWeightedQuantileAxis(Data, Weights, P)(scope auto ref Data data, scope auto ref Weights weights, scope auto ref P probabilities)
+    {
+        import mir.stat.descriptive.histogram.api.factory: computeQuantileAxisEdges;
+        import mir.stat.descriptive.histogram.axis: preparedQuantileAxis;
+        NoAllocationContext context;
+        auto edges = computeQuantileAxisEdges!(allocateCells, computeWeightedAxisQuantiles!(interpretation, algorithm))(
+            context, weights, data, probabilities);
+        return preparedQuantileAxis(edges);
+    }
+}
+
+/// ditto
+template rcWeightedQuantileAxis(WeightInterpretation interpretation = WeightInterpretation.relative)
+{
+    static if (interpretation == WeightInterpretation.frequency)
+        alias rcWeightedQuantileAxis = .rcWeightedQuantileAxis!(interpretation, WeightedQuantileAlgo.type7);
+    else
+        alias rcWeightedQuantileAxis = .rcWeightedQuantileAxis!(interpretation, WeightedQuantileAlgo.inverseCDF);
+}
+
+/// ditto
+template rcWeightedQuantileAxis(WeightedQuantileAlgo algorithm,
+    WeightInterpretation interpretation = WeightInterpretation.relative)
+{
+    alias rcWeightedQuantileAxis = .rcWeightedQuantileAxis!(interpretation, algorithm);
 }
 
 /// Reuse a weighted reference median when comparing a later sample.
@@ -2027,15 +2102,14 @@ unittest
     assert(p.relativeFrequency(0) == 0.75);
 }
 
-private template computeWeightedAxisQuantiles(WeightedQuantileAlgo algorithm)
+private template computeWeightedAxisQuantiles(WeightInterpretation interpretation, WeightedQuantileAlgo algorithm)
 {
     auto computeWeightedAxisQuantiles(Weights, Data, P)(
         ref NoAllocationContext context, scope auto ref Weights weights,
         scope auto ref Data data, scope auto ref P probabilities)
     {
         import mir.stat.descriptive.univariate: rcWeightedQuantile;
-        import mir.stat.descriptive.histogram.api.factory: histogramQuantile;
-        return histogramQuantile!(rcWeightedQuantile, algorithm)(
+        return rcWeightedQuantile!(interpretation, algorithm)(
             data, weights, probabilities);
     }
 }

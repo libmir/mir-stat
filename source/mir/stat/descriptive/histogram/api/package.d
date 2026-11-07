@@ -68,8 +68,10 @@ counts are released automatically. Allocating counts does not take
 ownership of borrowed axis boundaries.
 
 Weighted percentograms use weights both to choose quantile boundaries and to
-accumulate bin masses. Pass observations before weights; select a WeightedQuantileAlgo
-explicitly to change the default inverseCDF definition. They use fixed numeric
+accumulate bin masses. Pass observations before weights. The default treats
+weights as relative masses and uses inverseCDF, so each boundary is an observed
+value. Use WeightInterpretation.frequency for whole-number occurrence counts.
+It defaults to type7 and also supports type8. They use fixed numeric
 counters and the same GC, RC, or explicit-disposal ownership policies as percentograms.
 
 The default weighted percentogram chooses the number of bins from the number
@@ -88,8 +90,15 @@ distribution. It can also hide detail among outcomes with smaller weights.
 Frequency tables have a different interpretation. A row with weight 100
 represents 100 observations of that value. Using the sum of the frequencies
 in the bin-count rule gives the same requested number of bins as listing all
-those observations separately. Select a frequency quantile algorithm as well
-when you want the quantile boundaries to match that expanded sample.
+those observations separately. Select frequency interpretation as well when
+you want the boundaries to match the expanded sample. For example, values
+[0, 10] with weights [2, 2] give a first quartile of 0 with frequency type7
+and 2.5 with relative type7.
+
+Migration: replace WeightedQuantileAlgo.frequencyType7 with
+WeightInterpretation.frequency. For frequencyType8, pass
+WeightInterpretation.frequency and WeightedQuantileAlgo.type8 in either order.
+An explicit counter type, if supplied, stays first.
 
 In both examples, the policy changes only the requested number of bins. The selected
 quantile algorithm still determines their boundaries, and the original weights
@@ -162,15 +171,14 @@ unittest
 {
     import mir.stat.descriptive.histogram.api.rc:
         rcWeightedPercentogram, rcpercentogram, WeightedBinCountBasis;
-    import mir.stat.descriptive.univariate: WeightedQuantileAlgo;
+    import mir.stat.descriptive.weighting: WeightInterpretation;
 
     double[3] outcomes = [0, 10, 20];
     uint[3] frequencies = [2, 3, 4];
     double[9] expanded = [0, 0, 10, 10, 10, 20, 20, 20, 20];
 
-    auto compact = rcWeightedPercentogram!(
-        double, WeightedQuantileAlgo.frequencyType7)(
-            outcomes, frequencies, WeightedBinCountBasis.frequencyTotal);
+    auto compact = rcWeightedPercentogram!(WeightInterpretation.frequency)(
+        outcomes, frequencies, WeightedBinCountBasis.frequencyTotal);
     auto repeated = rcpercentogram(expanded);
 
     assert(compact.counts == repeated.counts);
