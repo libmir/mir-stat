@@ -31,10 +31,15 @@ covariance/variance correction cancels in correlation.
 
 Template option order:
 Weighted variance, standard deviation, coefficient of variation, and covariance
-accept the weight interpretation and calculation algorithm in either order. An
-explicit result type stays first; accumulators require their element type first.
-Any trailing summation option stays last. An algorithm alone uses relative
-weights; an interpretation alone uses the function's default algorithm.
+accept the weight interpretation and calculation algorithm in either order.
+Weighted skewness and kurtosis likewise accept the interpretation and summation
+algorithm in either order. An explicit result type stays first; for accumulators,
+the required element type stays first. Any trailing summation option on variance
+and covariance stays last. Supplying only an algorithm uses relative weights;
+supplying only an interpretation uses the function's default algorithm.
+
+Prefer interpretation first when explaining what the weights represent. Algorithm
+first is useful when adding a weight interpretation to an existing algorithm choice.
 Both spellings select the same implementation and give the same result.
 
 License: $(HTTP www.apache.org/licenses/LICENSE-2.0, Apache-2.0)
@@ -109,6 +114,7 @@ version(mir_stat_test)
         WVarianceAccumulator, VarianceAlgo;
     import mir.stat.descriptive.multivariate:
         weightedCovariance, WCovarianceAccumulator, CovarianceAlgo;
+    import mir.stat.descriptive.univariate.skewness_kurtosis: weightedSkewness, weightedKurtosis;
     import mir.math.sum: Summation;
     import std.meta: AliasSeq;
 
@@ -142,12 +148,27 @@ version(mir_stat_test)
             static assert(is(WCovarianceAccumulator!(double, a) ==
                 WCovarianceAccumulator!(double, WeightInterpretation.relative, a)));
         }
+        static foreach (fun; AliasSeq!(weightedSkewness, weightedKurtosis))
+        {
+            static assert(__traits(isSame, fun!(Summation.kbn, w), fun!(w, Summation.kbn)));
+            static assert(__traits(isSame, fun!(float, Summation.kbn, w), fun!(float, w, Summation.kbn)));
+            static assert(__traits(isSame, fun!(Summation.kbn), fun!(WeightInterpretation.relative, Summation.kbn)));
+            static assert(__traits(isSame, fun!(double, Summation.kbn), fun!(double, WeightInterpretation.relative, Summation.kbn)));
+        }
     }
     double[4] x = [1, 2, 4, 8], weights = [1, 2, 3, 4];
     alias W = WeightInterpretation;
     foreach (isPopulation; [false, true])
         assert(weightedCovariance!(CovarianceAlgo.twoPass, W.frequency)(x[], x[], weights[], isPopulation) ==
             weightedCovariance!(W.frequency, CovarianceAlgo.twoPass)(x[], x[], weights[], isPopulation));
+    foreach (isPopulation; [false, true])
+    {
+        assert(weightedSkewness!(Summation.kbn, W.frequency)(x, weights, isPopulation) ==
+            weightedSkewness!(W.frequency, Summation.kbn)(x, weights, isPopulation));
+        foreach (isRaw; [false, true])
+            assert(weightedKurtosis!(double, Summation.kbn, W.frequency)(x, weights, isPopulation, isRaw) ==
+                weightedKurtosis!(double, W.frequency, Summation.kbn)(x, weights, isPopulation, isRaw));
+    }
     // Different enum types are not interchangeable; repeated selectors are invalid.
     static assert(!__traits(compiles, weightedVariance!(CovarianceAlgo.twoPass)(x[], weights[])));
     static assert(!__traits(compiles, weightedVariance!(VarianceAlgo.twoPass, VarianceAlgo.online)(x[], weights[])));

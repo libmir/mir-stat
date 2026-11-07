@@ -5307,7 +5307,19 @@ template weightedSkewness(WeightInterpretation interpretation = WeightInterpreta
     }
 }
 
+/// ditto
+template weightedSkewness(F, Summation summation,
+    WeightInterpretation interpretation = WeightInterpretation.relative)
+{
+    alias weightedSkewness = .weightedSkewness!(F, interpretation, summation);
+}
 
+/// ditto
+template weightedSkewness(Summation summation,
+    WeightInterpretation interpretation = WeightInterpretation.relative)
+{
+    alias weightedSkewness = .weightedSkewness!(interpretation, summation);
+}
 
 /// Counts and probabilities describe the same asymmetry.
 @safe pure nothrow @nogc
@@ -5399,7 +5411,19 @@ template weightedKurtosis(WeightInterpretation interpretation = WeightInterpreta
     }
 }
 
+/// ditto
+template weightedKurtosis(F, Summation summation,
+    WeightInterpretation interpretation = WeightInterpretation.relative)
+{
+    alias weightedKurtosis = .weightedKurtosis!(F, interpretation, summation);
+}
 
+/// ditto
+template weightedKurtosis(Summation summation,
+    WeightInterpretation interpretation = WeightInterpretation.relative)
+{
+    alias weightedKurtosis = .weightedKurtosis!(interpretation, summation);
+}
 
 /// Choose excess or raw kurtosis for the quantity you want to report.
 @safe pure nothrow @nogc
