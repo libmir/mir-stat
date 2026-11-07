@@ -1710,9 +1710,8 @@ determines the switch. Rank rounding can still affect fractions close to zero.
 
 Migration: replace $(D WeightedQuantileAlgo.frequencyType7) with
 $(D WeightInterpretation.frequency, WeightedQuantileAlgo.type7), and similarly
-replace frequencyType8 with frequency plus type8. Histogram factories still accept
-the combined frequencyType7 and frequencyType8 selectors. For quantile calls,
-passing one of the six algorithms alone selects relative weights.
+replace frequencyType8 with frequency plus type8. Existing algorithm-only calls
+continue to use relative weights.
 +/
 enum WeightedQuantileAlgo
 {
@@ -1908,10 +1907,6 @@ enum WeightedQuantileAlgo
     types must be floating-point. No effective sample size is used.
     +/
     averagedInverseCDF,
-    /// Histogram factory selector for occurrence counts with type 7 boundaries.
-    frequencyType7,
-    /// Histogram factory selector for occurrence counts with type 8 boundaries.
-    frequencyType8,
 }
 
 private enum validWeightedQuantileOptions(WeightInterpretation interpretation, WeightedQuantileAlgo algorithm) =
@@ -3257,8 +3252,8 @@ version(mir_stat_test)
     static assert(!__traits(compiles, rcWeightedQuantile!(W.frequency, W.relative)(values, counts, 0.5)));
     static assert(!__traits(compiles, rcWeightedQuantile!(Q.type7, Q.type8)(values, counts, 0.5)));
     static assert(!__traits(compiles, rcWeightedQuantile!(int, W.frequency)(values, counts, 0.5)));
-    static assert(!__traits(compiles, rcWeightedQuantile!(Q.frequencyType7)(values, counts, 0.5)));
-    static assert(!__traits(compiles, rcWeightedQuantile!(Q.frequencyType8)(values, counts, 0.5)));
+    static assert(!__traits(hasMember, Q, "frequencyType7"));
+    static assert(!__traits(hasMember, Q, "frequencyType8"));
 }
 
 /// Mir slices can be used to obtain owning results without GC allocation.

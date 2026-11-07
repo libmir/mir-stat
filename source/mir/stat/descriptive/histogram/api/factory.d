@@ -26,18 +26,9 @@ T4=$(TR $(TDNW $(LREF $1)) $(TD $2) $(TD $3) $(TD $4))
 
 module mir.stat.descriptive.histogram.api.factory;
 
-// Histogram factories still expose the combined frequency selectors.
-package template histogramQuantile(alias quantile, alias algorithm)
-{
-    import mir.stat.descriptive.univariate.quantiles: Q = WeightedQuantileAlgo;
-    import mir.stat.descriptive.weighting: W = WeightInterpretation;
-    static if (algorithm == Q.frequencyType7)
-        alias histogramQuantile = quantile!(W.frequency, Q.type7);
-    else static if (algorithm == Q.frequencyType8)
-        alias histogramQuantile = quantile!(W.frequency, Q.type8);
-    else
-        alias histogramQuantile = quantile!algorithm;
-}
+version(mir_stat_test) private import std.typecons: tuple;
+
+private import mir.stat.descriptive.weighting: WeightInterpretation;
 
 // Storage ownership stays with the caller. Validate before writing so a bad
 // extent cannot clear unrelated storage before the constructor rejects it.
@@ -1622,7 +1613,8 @@ enum WeightedBinCountBasis
     /++ Sum whole-number occurrence counts. Use for a compact frequency table
     when resolution should match the expanded sample. For weights [2, 3, 4],
     n is 9 rather than 3. Each weight and the total must fit in size_t.
-    Choose a frequency quantile algorithm as well to match expanded boundaries.
+    Choose frequency weight interpretation with type7 or type8 as well to match
+    the corresponding expanded-sample quantile boundaries.
     Scaling counts changes the represented sample size and may change resolution. +/
     frequencyTotal,
     /++ Use Kish effective sample size: square of the weight sum divided by
@@ -2921,6 +2913,12 @@ package void testQuantileAxes(alias create, alias copy, alias make, alias counts
     import mir.stat.descriptive.histogram.traits: AdaptiveCounts, isAxis;
     import mir.stat.descriptive.univariate: QuantileAlgo, WeightedQuantileAlgo;
     import std.math: nextUp;
+    alias W = WeightInterpretation;
+    alias Q = WeightedQuantileAlgo;
+    static assert(__traits(isSame, weightedCreate!(W.frequency), weightedCreate!(W.frequency, Q.type7)));
+    static assert(__traits(isSame, weightedCreate!(Q.type8), weightedCreate!(W.relative, Q.type8)));
+    static assert(__traits(isSame, weightedMake!(W.frequency), weightedMake!(double, W.frequency, Q.type7)));
+    static assert(__traits(isSame, weightedMake!(Q.type8), weightedMake!(double, W.relative, Q.type8)));
     const int[5] values = [0, 0, 1, 2, 2];
     const double[5] levels = [0, 0.25, 0.5, 0.75, 1];
     auto axis = create(values, 4);
@@ -2985,12 +2983,41 @@ package void testQuantileAxes(alias create, alias copy, alias make, alias counts
     assert(alternate.N_bin == 2);
 
     const double[5] weights = [1, 1, 1, 1, 1];
-    static foreach (algo; [WeightedQuantileAlgo.inverseCDF, WeightedQuantileAlgo.type7,
-        WeightedQuantileAlgo.frequencyType8])
+    // The two frequency algorithms must reproduce their expanded-sample edges
+    // and masses even when repeated edges collapse into a single boundary.
+    const double[3] outcomes = [0, 10, 20];
+    const uint[3] occurrences = [2, 3, 4];
+    const double[9] expanded = [0, 0, 10, 10, 10, 20, 20, 20, 20];
+    static foreach (q; [Q.type7, Q.type8])
     {{
-        auto wa = weightedCreate!algo(values, weights, levels);
+        import mir.math.common: approxEqual;
+        enum ordinary = q == Q.type7 ? QuantileAlgo.type7 : QuantileAlgo.type8;
+        auto axisFromRows = create!ordinary(expanded, levels);
+        auto repeated = make(expanded, axisFromRows);
+        auto compact = weightedMake!(W.frequency, q)(outcomes, occurrences, levels);
+        assert(compact.counts == repeated.counts && compact.total == expanded.length);
+        assert(compact.axis.N_bin == axisFromRows.N_bin);
+        foreach (i; 0 .. axisFromRows.N_bin)
+        {
+            auto actual = compact.axis.bin(i), expected = axisFromRows.bin(i);
+            assert(approxEqual(actual.low, expected.low) && approxEqual(actual.high, expected.high));
+        }
+    }}
+    auto frequencyDefaults = weightedMake!(W.frequency)(values, weights, levels);
+    auto frequencyExplicit = weightedMake!(W.frequency, Q.type7)(values, weights, levels);
+    assert(frequencyDefaults.counts == frequencyExplicit.counts);
+    static assert(!__traits(compiles, weightedCreate!(W.frequency, Q.inverseCDF)(values, weights, levels)));
+    static assert(!__traits(compiles, weightedMake!(W.frequency, Q.harrellDavis)(values, weights, levels)));
+    static foreach (quantileOptions; [
+        tuple(WeightInterpretation.relative, WeightedQuantileAlgo.inverseCDF),
+        tuple(WeightInterpretation.relative, WeightedQuantileAlgo.type7),
+        tuple(WeightInterpretation.frequency, WeightedQuantileAlgo.type8)])
+    {{
+        enum interpretation = quantileOptions[0];
+        enum algo = quantileOptions[1];
+        auto wa = weightedCreate!(interpretation, algo)(values, weights, levels);
         auto wf = weightedMake(values, weights, wa);
-        auto reference = weightedMake!(double, algo)(values, weights, levels);
+        auto reference = weightedMake!(double, interpretation, algo)(values, weights, levels);
         assert(wf.counts == reference.counts && wf.total == 5);
     }}
     double[2] zero = [0, 0], missing = [double.nan, double.infinity];
