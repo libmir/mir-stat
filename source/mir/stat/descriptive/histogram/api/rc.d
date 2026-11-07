@@ -1837,7 +1837,14 @@ unittest
     {{
         enum choice = __traits(getMember, WeightedQuantileAlgo, algorithm);
         auto p = rcWeightedPercentogram!(double, choice)(values, weights, levels);
-        assert(p.bins()[0].bin.high == rcWeightedQuantile!choice(values, weights, 0.5));
+        import mir.stat.descriptive.weighting: W = WeightInterpretation;
+        static if (choice == WeightedQuantileAlgo.frequencyType7 || choice == WeightedQuantileAlgo.frequencyType8)
+        {
+            enum q = choice == WeightedQuantileAlgo.frequencyType7 ? WeightedQuantileAlgo.type7 : WeightedQuantileAlgo.type8;
+            assert(p.bins()[0].bin.high == rcWeightedQuantile!(W.frequency, q)(values, weights, 0.5));
+        }
+        else
+            assert(p.bins()[0].bin.high == rcWeightedQuantile!choice(values, weights, 0.5));
         assert(p.total == 10);
     }}
     static auto fromLocal()
@@ -2027,7 +2034,8 @@ private template computeWeightedAxisQuantiles(WeightedQuantileAlgo algorithm)
         scope auto ref Data data, scope auto ref P probabilities)
     {
         import mir.stat.descriptive.univariate: rcWeightedQuantile;
-        return rcWeightedQuantile!algorithm(
+        import mir.stat.descriptive.histogram.api.factory: histogramQuantile;
+        return histogramQuantile!(rcWeightedQuantile, algorithm)(
             data, weights, probabilities);
     }
 }

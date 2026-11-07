@@ -26,6 +26,19 @@ T4=$(TR $(TDNW $(LREF $1)) $(TD $2) $(TD $3) $(TD $4))
 
 module mir.stat.descriptive.histogram.api.factory;
 
+// Histogram factories still expose the combined frequency selectors.
+package template histogramQuantile(alias quantile, alias algorithm)
+{
+    import mir.stat.descriptive.univariate.quantiles: Q = WeightedQuantileAlgo;
+    import mir.stat.descriptive.weighting: W = WeightInterpretation;
+    static if (algorithm == Q.frequencyType7)
+        alias histogramQuantile = quantile!(W.frequency, Q.type7);
+    else static if (algorithm == Q.frequencyType8)
+        alias histogramQuantile = quantile!(W.frequency, Q.type8);
+    else
+        alias histogramQuantile = quantile!algorithm;
+}
+
 // Storage ownership stays with the caller. Validate before writing so a bad
 // extent cannot clear unrelated storage before the constructor rejects it.
 // Borrow lvalue input to avoid an extra owning-range copy. Lifetime inference

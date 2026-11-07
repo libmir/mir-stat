@@ -72,19 +72,19 @@ $(TR $(TD Weighted median) $(TD Use weightedMedian for the averaged inverse-CDF
 median: [0, 10] with equal weights gives 5, and weights [1, 3] give 10.
 Equal weights follow the ordinary median convention; whole-number counts
 follow the expanded-sample median. No weight-method option is needed.))
-$(TR $(TD Weighted quantiles) $(TD Select frequencyType7 or frequencyType8 to
-match the corresponding quantiles of an expanded sample. Other algorithms
-treat weights as relative masses and are unchanged by scaling all weights.
+$(TR $(TD Weighted quantiles) $(TD Select frequency interpretation with type7 or type8 to
+match the corresponding quantiles of an expanded sample. With relative
+interpretation, all six algorithms are unchanged by scaling all weights.
 For values [0, 10] with weights [2, 2], the first quartile is 0 under
-frequencyType7 and 2.5 under relative-mass type7.))
+frequency type7 and 2.5 under relative-mass type7.))
 $(TR $(TD Weighted interquartile range) $(TD Subtract the weighted 25th percentile
 from the 75th percentile using WeightedQuantileAlgo. For values [0, 10] and
-weights [1, 3], inverseCDF gives 10; frequencyType7 gives 2.5, matching the
+weights [1, 3], inverseCDF gives 10; frequency type7 gives 2.5, matching the
 expanded sample [0, 10, 10, 10]. No variance normalization option is needed.))
 $(TR $(TD Weighted median absolute deviation) $(TD Use the same WeightedQuantileAlgo
 for the center and the absolute deviations, keeping each observation's weight.
-The default averagedInverseCDF matches weightedMedian. For [0, 10] with
-counts [1, 1], it gives 5; inverseCDF gives 0 and frequencyType7 gives 5.
+The relative-weight default averagedInverseCDF matches weightedMedian. For [0, 10] with
+counts [1, 1], it gives 5; inverseCDF gives 0 and frequency type7 gives 5.
 The result is raw MAD, without a normal-distribution scaling factor.))
 $(TR $(TD Weighted histograms) $(TD Bin totals add weights, so scaling all
 weights scales the totals. Relative frequencies divide by the total and stay
