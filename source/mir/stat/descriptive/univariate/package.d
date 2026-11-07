@@ -460,11 +460,11 @@ unittest
     static assert(is(WeightInterpretation == policy.WeightInterpretation));
     static assert(is(spread.WeightInterpretation == policy.WeightInterpretation));
     static assert(is(WeightedMomentNormalization == policy.WeightedMomentNormalization));
-    static assert(is(paired.WeightedMomentNormalization == policy.WeightedMomentNormalization));
+    static assert(is(paired.WeightInterpretation == policy.WeightInterpretation));
     static assert(is(spread.WVarianceAccumulator!(double, spread.WeightInterpretation.frequency) ==
         spread.WVarianceAccumulator!(double, policy.WeightInterpretation.frequency)));
-    static assert(is(paired.WCovarianceAccumulator!(double, WeightedMomentNormalization.relativeSample) ==
-        paired.WCovarianceAccumulator!(double, policy.WeightedMomentNormalization.relativeSample)));
+    static assert(is(paired.WCovarianceAccumulator!(double, WeightInterpretation.relative) ==
+        paired.WCovarianceAccumulator!(double, policy.WeightInterpretation.relative)));
     double[2] x = [0, 10], w = [1, 3];
     assert(spread.weightedVariance!(spread.WeightInterpretation.frequency)(x, w) ==
         spread.weightedVariance!(policy.WeightInterpretation.frequency)(x, w));
