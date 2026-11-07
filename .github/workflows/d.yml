@@ -136,7 +136,7 @@ jobs:
 
   # Optimized compilation dominates runtime; run it alongside the other suites.
   release:
-    name: Release tests (${{ matrix.os }}, ${{ matrix.dc.channel }})
+    name: Optimized release tests (${{ matrix.os }}, ${{ matrix.dc.channel }})
     needs: compilers
     permissions:
       contents: read
@@ -287,7 +287,7 @@ jobs:
       run: dub test --build=unittest-dip1000
 
   test:
-    name: Dub Tests (${{ matrix.os }}, ${{ matrix.dc.channel }})
+    name: Tests with coverage (${{ matrix.os }}, ${{ matrix.dc.channel }})
     needs: compilers
     permissions:
       contents: read
