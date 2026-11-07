@@ -82,7 +82,10 @@ T4=$(TR $(TDNW $(LREF $1)) $(TD $2) $(TD $3) $(TD $4))
 
 module mir.stat.descriptive.univariate.quantiles;
 
+version(mir_stat_test) private import std.typecons: tuple;
+
 public import mir.math.sum: Summation;
+public import mir.stat.descriptive.weighting: WeightInterpretation;
 import mir.internal.utility: isFloatingPoint;
 import mir.math.common: fmamath;
 import mir.math.sum: Summator, ResolveSummationType;
@@ -237,35 +240,71 @@ Migration: this ordinary name previously used reference-counted scratch.
 Call $(LREF rcWeightedInterquartileRange) to retain that allocation policy and support for
 `@nogc` callers. GC scratch can remain allocated until collection.
 +/
-template weightedInterquartileRange(F,
-    WeightedQuantileAlgo algorithm = WeightedQuantileAlgo.inverseCDF)
-    if (isFloatingPoint!F || (algorithm == WeightedQuantileAlgo.inverseCDF && isIntegral!F))
+template weightedInterquartileRange(F, WeightInterpretation interpretation,
+    WeightedQuantileAlgo algorithm)
+    if (validWeightedQuantileOptions!(interpretation, algorithm) &&
+        (isFloatingPoint!F || (algorithm == WeightedQuantileAlgo.inverseCDF && isIntegral!F)))
 {
     /++
     Params:
         data = observations corresponding to the weights
         weights = nonnegative finite relative weights, or whole-number counts
-            for frequencyType7 and frequencyType8
+            for WeightInterpretation.frequency
     +/
     F weightedInterquartileRange(Data, Weights)(
         scope auto ref Data data, scope auto ref Weights weights)
     {
         QuantileContext context;
-        return allocatedWeightedSpread!(F, algorithm, QuantileAllocation.gc)(context, data, weights);
+        return allocatedWeightedSpread!(F, interpretation, algorithm, QuantileAllocation.gc)(context, data, weights);
     }
 }
 
 /// ditto
-template weightedInterquartileRange(
-    WeightedQuantileAlgo algorithm = WeightedQuantileAlgo.inverseCDF)
+template weightedInterquartileRange(F, WeightInterpretation interpretation = WeightInterpretation.relative)
+{
+    static if (interpretation == WeightInterpretation.frequency)
+        alias weightedInterquartileRange = .weightedInterquartileRange!(F, interpretation, WeightedQuantileAlgo.type7);
+    else
+        alias weightedInterquartileRange = .weightedInterquartileRange!(F, interpretation, WeightedQuantileAlgo.inverseCDF);
+}
+
+/// ditto
+template weightedInterquartileRange(WeightInterpretation interpretation,
+    WeightedQuantileAlgo algorithm)
+    if (validWeightedQuantileOptions!(interpretation, algorithm))
 {
     /// ditto
     auto weightedInterquartileRange(Data, Weights)(
         scope auto ref Data data, scope auto ref Weights weights)
     {
         alias F = WeightedQuantileResult!(Data, algorithm);
-        return .weightedInterquartileRange!(F, algorithm)(data, weights);
+        return .weightedInterquartileRange!(F, interpretation, algorithm)(data, weights);
     }
+}
+
+/// ditto
+template weightedInterquartileRange(WeightInterpretation interpretation = WeightInterpretation.relative)
+{
+    static if (interpretation == WeightInterpretation.frequency)
+        alias weightedInterquartileRange = .weightedInterquartileRange!(interpretation, WeightedQuantileAlgo.type7);
+    else
+        alias weightedInterquartileRange = .weightedInterquartileRange!(interpretation, WeightedQuantileAlgo.inverseCDF);
+}
+
+/// ditto
+template weightedInterquartileRange(F, WeightedQuantileAlgo algorithm,
+    WeightInterpretation interpretation = WeightInterpretation.relative)
+    if (validWeightedQuantileOptions!(interpretation, algorithm))
+{
+    alias weightedInterquartileRange = .weightedInterquartileRange!(F, interpretation, algorithm);
+}
+
+/// ditto
+template weightedInterquartileRange(WeightedQuantileAlgo algorithm,
+    WeightInterpretation interpretation = WeightInterpretation.relative)
+    if (validWeightedQuantileOptions!(interpretation, algorithm))
+{
+    alias weightedInterquartileRange = .weightedInterquartileRange!(interpretation, algorithm);
 }
 
 
@@ -442,33 +481,69 @@ Migration: this ordinary name previously used reference-counted scratch.
 Call $(LREF rcWeightedMedianAbsoluteDeviation) to retain that allocation policy and support for
 `@nogc` callers. GC scratch can remain allocated until collection.
 +/
-template weightedMedianAbsoluteDeviation(F,
-    WeightedQuantileAlgo algorithm = WeightedQuantileAlgo.averagedInverseCDF)
+template weightedMedianAbsoluteDeviation(F, WeightInterpretation interpretation,
+    WeightedQuantileAlgo algorithm)
+    if (validWeightedQuantileOptions!(interpretation, algorithm))
 {
     /++
     Params:
         data = observations corresponding to the weights
-        weights = relative weights, or occurrence counts for frequency algorithms
+        weights = relative weights, or occurrence counts with frequency interpretation
     +/
     meanType!F weightedMedianAbsoluteDeviation(Data, Weights)(
         scope auto ref Data data, scope auto ref Weights weights)
     {
         QuantileContext context;
-        return allocatedWeightedMAD!(F, algorithm, QuantileAllocation.gc)(context, data, weights);
+        return allocatedWeightedMAD!(F, interpretation, algorithm, QuantileAllocation.gc)(context, data, weights);
     }
 }
 
 /// ditto
-template weightedMedianAbsoluteDeviation(
-    WeightedQuantileAlgo algorithm = WeightedQuantileAlgo.averagedInverseCDF)
+template weightedMedianAbsoluteDeviation(F, WeightInterpretation interpretation = WeightInterpretation.relative)
+{
+    static if (interpretation == WeightInterpretation.frequency)
+        alias weightedMedianAbsoluteDeviation = .weightedMedianAbsoluteDeviation!(F, interpretation, WeightedQuantileAlgo.type7);
+    else
+        alias weightedMedianAbsoluteDeviation = .weightedMedianAbsoluteDeviation!(F, interpretation, WeightedQuantileAlgo.averagedInverseCDF);
+}
+
+/// ditto
+template weightedMedianAbsoluteDeviation(WeightInterpretation interpretation,
+    WeightedQuantileAlgo algorithm)
+    if (validWeightedQuantileOptions!(interpretation, algorithm))
 {
     /// ditto
     auto weightedMedianAbsoluteDeviation(Data, Weights)(
         scope auto ref Data data, scope auto ref Weights weights)
     {
         import mir.primitives: DeepElementType;
-        return .weightedMedianAbsoluteDeviation!(DeepElementType!Data, algorithm)(data, weights);
+        return .weightedMedianAbsoluteDeviation!(DeepElementType!Data, interpretation, algorithm)(data, weights);
     }
+}
+
+/// ditto
+template weightedMedianAbsoluteDeviation(WeightInterpretation interpretation = WeightInterpretation.relative)
+{
+    static if (interpretation == WeightInterpretation.frequency)
+        alias weightedMedianAbsoluteDeviation = .weightedMedianAbsoluteDeviation!(interpretation, WeightedQuantileAlgo.type7);
+    else
+        alias weightedMedianAbsoluteDeviation = .weightedMedianAbsoluteDeviation!(interpretation, WeightedQuantileAlgo.averagedInverseCDF);
+}
+
+/// ditto
+template weightedMedianAbsoluteDeviation(F, WeightedQuantileAlgo algorithm,
+    WeightInterpretation interpretation = WeightInterpretation.relative)
+    if (validWeightedQuantileOptions!(interpretation, algorithm))
+{
+    alias weightedMedianAbsoluteDeviation = .weightedMedianAbsoluteDeviation!(F, interpretation, algorithm);
+}
+
+/// ditto
+template weightedMedianAbsoluteDeviation(WeightedQuantileAlgo algorithm,
+    WeightInterpretation interpretation = WeightInterpretation.relative)
+    if (validWeightedQuantileOptions!(interpretation, algorithm))
+{
+    alias weightedMedianAbsoluteDeviation = .weightedMedianAbsoluteDeviation!(interpretation, algorithm);
 }
 
 
@@ -1616,10 +1691,28 @@ By default, weights represent relative probability masses and need not sum to
 one. The probability-weight algorithms have their own definitions, documented
 below; they do not simply replicate observations and apply an unweighted type.
 
-$(LREF frequencyType7) and $(LREF frequencyType8) instead interpret weights as
-whole-number occurrence counts. They reproduce the corresponding ordinary
-quantile types for the conceptual expanded sample without allocating it.
-Select the interpretation through the algorithm, not the weights' numeric type.
+Select what weights mean separately through
+$(REF WeightInterpretation, mir, stat, descriptive, weighting). Relative weights
+express emphasis or probability; frequency weights count repeated observations.
+All six algorithms support relative weights. Frequency weights support type7 and
+type8, reproducing the corresponding ordinary quantiles of the expanded sample
+without allocating it. Other frequency/algorithm combinations are rejected at
+compile time. Integer storage alone never selects frequency interpretation.
+
+Frequency counts must be finite nonnegative whole numbers, with a positive total
+N no larger than the smaller of ulong.max and 2^^real.mant_dig. This keeps every
+cumulative count exact in the working precision. Zero counts are ignored. Invalid
+counts and excessive totals are rejected with assertions. Splitting or combining
+identical observations preserves the represented sample; multiplying every count
+can change the quantiles. For larger totals, compensated rank arithmetic preserves
+interpolation fractions ordinary multiplication can lose; the precision of real
+determines the switch. Rank rounding can still affect fractions close to zero.
+
+Migration: replace $(D WeightedQuantileAlgo.frequencyType7) with
+$(D WeightInterpretation.frequency, WeightedQuantileAlgo.type7), and similarly
+replace frequencyType8 with frequency plus type8. Histogram factories still accept
+the combined frequencyType7 and frequencyType8 selectors. For quantile calls,
+passing one of the six algorithms alone selects relative weights.
 +/
 enum WeightedQuantileAlgo
 {
@@ -1714,14 +1807,17 @@ enum WeightedQuantileAlgo
     +/
     trimmedHarrellDavis,
     /++
-    Weighted type 7 using Akinshin's effective-size uniform interval.
+    Type 7 interpolation for relative weights or occurrence counts.
+
+    With relative weights, use Akinshin's effective-size uniform interval as follows.
 
     Use this for probability or importance weights when ordinary type 7 is the
     desired equal-weight convention. For example, simulated outcomes can start
     with equal weights and later be reweighted to represent another scenario.
     This provides interpolation using arithmetic interval overlaps, without the
     beta-function evaluations required by Harrell-Davis. For weights recording
-    how many times each outcome occurred, use $(LREF frequencyType7).
+    how many times each outcome occurred, select WeightInterpretation.frequency
+    with this same algorithm instead.
 
     Compute $(TT nEff = (sum w)^2 / sum(w^2)) from the original positive-weight
     rows. Set $(TT h = (nEff - 1)*p + 1), clamped to [1, nEff]. Each sorted
@@ -1743,19 +1839,29 @@ enum WeightedQuantileAlgo
     Integral observations infer double output; floating observations retain
     their type. Explicit output types must be floating-point.
 
+    With frequency weights, use the ordinary rank $(TT h = (N-1)*p + 1),
+    where N is the total count. Find adjacent order statistics using cumulative
+    counts and interpolate. For values [0, 10] with counts [2, 2], the represented
+    sample is [0, 0, 10, 10] and its first quartile is 0. The relative-weight
+    definition instead gives 2.5. Use frequency interpretation for a compact
+    sample of repeated observations, such as survey ratings with response counts.
+    Frequency type 7 is the default when only frequency interpretation is supplied.
+
     References:
         $(LINK2 https://arxiv.org/abs/2304.07265, Akinshin (2023), Weighted quantile estimators).
     +/
     type7,
     /++
-    Weighted type 8 using Akinshin's effective-size uniform interval.
+    Type 8 interpolation for relative weights or occurrence counts.
+
+    With relative weights, use Akinshin's effective-size uniform interval as follows.
 
     Use this for probability or importance weights when ordinary type 8 is the
     desired equal-weight convention. Like $(LREF type7), it offers arithmetic
     interpolation as weights change, without beta-function evaluations. For
     example, use it when reweighting simulated outcomes whose original quantiles
-    were calculated with type 8. Use $(LREF frequencyType8) when the weights
-    instead count repeated observations.
+    were calculated with type 8. Select WeightInterpretation.frequency when the
+    weights instead count repeated observations.
 
     Uses the same uniform-interval construction as $(LREF type7), with
     $(TT h = (nEff + 1/3)*p + 1/3), clamped to [1, nEff].
@@ -1765,6 +1871,11 @@ enum WeightedQuantileAlgo
     weights. The weight, output-type, and endpoint rules of $(LREF type7)
     apply, including possible jumps at p=0 and p=1. Clamping h can produce
     constant estimates over intervals of interior probabilities.
+
+    With frequency weights, use the ordinary rank $(TT h = (N + 1/3)*p + 1/3),
+    clamped to [1,N], where N is the total count. Use this when the expanded
+    sample should follow ordinary type 8 rather than type 7. The count validation,
+    allocation, endpoint, and output rules described above also apply.
     +/
     type8,
     /++
@@ -1797,69 +1908,24 @@ enum WeightedQuantileAlgo
     types must be floating-point. No effective sample size is used.
     +/
     averagedInverseCDF,
-    /++
-    Compute ordinary type 7 quantiles from observations stored with occurrence counts.
-
-    Use this when repeated observations have been summarized in a frequency
-    table, such as the number of customers giving each survey rating. A value
-    of 4 with frequency 12 represents twelve observations equal to 4. This
-    option gives the quantiles of the original sample without reconstructing it.
-    For example, values [0,10] with frequencies [2,2] represent [0,0,10,10];
-    the type 7 first quartile is 0.
-
-    Choose $(LREF type7) instead when weights describe relative probability or
-    importance rather than occurrence counts. That option gives 2.5 for the
-    same first-quartile example. Increasing every occurrence count changes the
-    sample size, whereas rescaling probability weights leaves their relative
-    contributions unchanged. Select the interpretation explicitly, regardless
-    of whether the weights are stored as integers or floating-point values.
-
-    Each weight must be a finite nonnegative whole number. Integer and
-    floating-point weight types are accepted, but their type never selects
-    this interpretation automatically. Zero counts are ignored. The positive
-    total N must not exceed the smaller of ulong.max and 2^^real.mant_dig,
-    so every cumulative count is exactly representable in the working precision.
-    Invalid counts and excessive totals are rejected with assertions.
-
-    Use the ordinary type 7 rank $(TT h = (N-1)*p + 1). Locate the adjacent
-    order statistics through cumulative integer counts and interpolate; no
-    expanded sample is allocated. Multiplying every frequency can change the
-    answer. Splitting or combining identical observations preserves the
-    conceptual sample. For larger totals, compensated rank arithmetic preserves
-    interpolation fractions that ordinary multiplication can lose. Smaller
-    totals use ordinary arithmetic to avoid that extra cost. The switch depends
-    on the precision of real; it does not change the quantile definition.
-    Floating-point rank arithmetic can still round near boundaries, particularly
-    when the exact interpolation fraction is very close to zero.
-
-    p=0/1 return the positive-count extrema. Integral observations infer double;
-    floating observations retain their type. Explicit F must be floating-point.
-    +/
+    /// Histogram factory selector for occurrence counts with type 7 boundaries.
     frequencyType7,
-    /++
-    Compute ordinary type 8 quantiles from observations stored with occurrence counts.
-
-    Use this for the same frequency-table inputs as $(LREF frequencyType7)
-    when the desired unweighted quantile convention is $(LINK2 #.QuantileAlgo.type8, $(D QuantileAlgo.type8)).
-    For example, if survey ratings are stored with the number of responses for
-    each rating, this produces type 8 quantiles of those responses without
-    allocating one observation per response. Choose $(LREF type8) when the
-    weights instead express relative probability or importance.
-
-    Uses rank $(TT h = (N + 1/3)*p + 1/3), clamped to [1,N], where N is the
-    total number of occurrences. The count validation, allocation, endpoint,
-    and output rules of $(LREF frequencyType7) apply.
-    +/
+    /// Histogram factory selector for occurrence counts with type 8 boundaries.
     frequencyType8,
 }
 
-private enum weightedQuantileUsesEffectiveSize(WeightedQuantileAlgo algorithm) =
-    algorithm == WeightedQuantileAlgo.harrellDavis ||
-    algorithm == WeightedQuantileAlgo.trimmedHarrellDavis ||
-    algorithm == WeightedQuantileAlgo.type7 || algorithm == WeightedQuantileAlgo.type8;
+private enum validWeightedQuantileOptions(WeightInterpretation interpretation, WeightedQuantileAlgo algorithm) =
+    (interpretation == WeightInterpretation.relative &&
+        (algorithm == WeightedQuantileAlgo.inverseCDF || algorithm == WeightedQuantileAlgo.averagedInverseCDF ||
+         algorithm == WeightedQuantileAlgo.type7 || algorithm == WeightedQuantileAlgo.type8 ||
+         algorithm == WeightedQuantileAlgo.harrellDavis || algorithm == WeightedQuantileAlgo.trimmedHarrellDavis)) ||
+    (interpretation == WeightInterpretation.frequency &&
+        (algorithm == WeightedQuantileAlgo.type7 || algorithm == WeightedQuantileAlgo.type8));
 
-private enum weightedQuantileUsesFrequencies(WeightedQuantileAlgo algorithm) =
-    algorithm == WeightedQuantileAlgo.frequencyType7 || algorithm == WeightedQuantileAlgo.frequencyType8;
+private enum weightedQuantileUsesEffectiveSize(WeightInterpretation interpretation, WeightedQuantileAlgo algorithm) =
+    interpretation == WeightInterpretation.relative &&
+    (algorithm == WeightedQuantileAlgo.harrellDavis || algorithm == WeightedQuantileAlgo.trimmedHarrellDavis ||
+     algorithm == WeightedQuantileAlgo.type7 || algorithm == WeightedQuantileAlgo.type8);
 
 // Counts must also be exact in the floating-point rank calculation.
 static if (real.mant_dig < 64)
@@ -1868,9 +1934,9 @@ else
     private enum ulong weightedQuantileMaxFrequency = ulong.max;
 
 // Algorithms with the same workspace layout can share allocation and sorting code.
-private alias WeightedQuantileEntry(T, WeightedQuantileAlgo algorithm) =
-    WeightedQuantileStorage!(T, weightedQuantileUsesFrequencies!algorithm,
-        weightedQuantileUsesEffectiveSize!algorithm);
+private alias WeightedQuantileEntry(T, WeightInterpretation interpretation, WeightedQuantileAlgo algorithm) =
+    WeightedQuantileStorage!(T, interpretation == WeightInterpretation.frequency,
+        weightedQuantileUsesEffectiveSize!(interpretation, algorithm));
 
 private struct WeightedQuantileStorage(T, bool frequencies, bool effectiveSize)
 {
@@ -2264,11 +2330,11 @@ private F compensatedWeightedUniformAt(F, WeightedQuantileAlgo algorithm, Worksp
     return cast(F) (normalized * scale);
 }
 
-private WeightedQuantileState!algorithm prepareCompensatedWeightedUniform(
-    WeightedQuantileAlgo algorithm, Workspace)(scope Workspace workspace, real maximum)
+private WeightedQuantileState!(interpretation, algorithm) prepareCompensatedWeightedUniform(
+    WeightInterpretation interpretation, WeightedQuantileAlgo algorithm, Workspace)(scope Workspace workspace, real maximum)
 {
     alias E = WeightedQuantileExpansion;
-    WeightedQuantileState!algorithm state;
+    WeightedQuantileState!(interpretation, algorithm) state;
     state.compensated = true;
     foreach (ref entry; workspace)
     {
@@ -2294,7 +2360,7 @@ private auto frequencyQuantileAt(F, WeightedQuantileAlgo algorithm, Workspace)(
     const total = workspace[$ - 1].cumulative;
     if (total > ordinaryFrequencyRankLimit)
         return compensatedFrequencyQuantileAt!(F, algorithm)(workspace, probability);
-    static if (algorithm == WeightedQuantileAlgo.frequencyType7)
+    static if (algorithm == WeightedQuantileAlgo.type7)
         const rank = cast(real)(total - 1) * probability;
     else
         // Equivalent to (N+1/3)*p-2/3, with an exact zero correction at p=0.5.
@@ -2327,7 +2393,7 @@ private auto compensatedFrequencyQuantileAt(F, WeightedQuantileAlgo algorithm, W
     const residual = ((ah * bh - rank) + ah * bl + al * bh) + al * bl;
     auto index = cast(ulong) floor(rank);
     auto fraction = (rank - cast(real) index) + residual;
-    static if (algorithm == WeightedQuantileAlgo.frequencyType8)
+    static if (algorithm == WeightedQuantileAlgo.type8)
     {
         // Type 8 adds (4*p-2)/3 to the type 7 rank. Sum three times the
         // fractional part and that numerator with compensation. Subtract any
@@ -2386,7 +2452,7 @@ private auto frequencyQuantileFromRank(F, Workspace)(
     return interpolateQuantile!F(workspace[first].value, workspace[first + 1].value, fraction);
 }
 
-private auto weightedQuantileAt(F, WeightedQuantileAlgo algorithm, Workspace, P)(
+private auto weightedQuantileAt(F, WeightInterpretation interpretation, WeightedQuantileAlgo algorithm, Workspace, P)(
     scope Workspace workspace, P probability, real effectiveSize)
 {
     import std.math: isFinite;
@@ -2397,7 +2463,7 @@ private auto weightedQuantileAt(F, WeightedQuantileAlgo algorithm, Workspace, P)
         return cast(F) workspace[0].value;
     if (probability == 1)
         return cast(F) workspace[$ - 1].value;
-    static if (weightedQuantileUsesFrequencies!algorithm)
+    static if (interpretation == WeightInterpretation.frequency)
         return frequencyQuantileAt!(F, algorithm)(workspace, cast(real) probability);
     else static if (algorithm == WeightedQuantileAlgo.type7 || algorithm == WeightedQuantileAlgo.type8)
         return weightedUniformQuantileAt!(F, algorithm)(workspace, cast(real) probability, effectiveSize);
@@ -2473,7 +2539,7 @@ private struct WeightedQuantileInput
     real maximum;
 }
 
-private WeightedQuantileInput validateWeightedQuantileInput(WeightedQuantileAlgo algorithm,
+private WeightedQuantileInput validateWeightedQuantileInput(WeightInterpretation interpretation, WeightedQuantileAlgo algorithm,
     Values, Masses)(scope Values values, scope Masses masses)
 {
     import mir.primitives: DeepElementType;
@@ -2483,14 +2549,14 @@ private WeightedQuantileInput validateWeightedQuantileInput(WeightedQuantileAlgo
     assert(values.length == masses.length,
         "weightedQuantile: values and weights must have equal lengths");
     size_t count;
-    static if (weightedQuantileUsesFrequencies!algorithm) ulong frequencyTotal;
+    static if (interpretation == WeightInterpretation.frequency) ulong frequencyTotal;
     real maximum = 0;
     foreach (i; 0 .. masses.length)
     {
         const w = cast(real) masses[i];
         assert(isFinite(w) && w >= 0,
             "weightedQuantile: weights must be finite and nonnegative");
-        static if (weightedQuantileUsesFrequencies!algorithm)
+        static if (interpretation == WeightInterpretation.frequency)
         {
             import std.traits: isIntegral;
             import std.math: floor;
@@ -2520,13 +2586,14 @@ private WeightedQuantileInput validateWeightedQuantileInput(WeightedQuantileAlgo
 // Metadata has no ownership or references to the input/workspace. Most
 // algorithms need only an effective sample size (or no runtime metadata).
 // The uniform fallback instead retains expansion totals for normalized masses.
-private struct WeightedQuantileState(WeightedQuantileAlgo algorithm)
+private struct WeightedQuantileState(WeightInterpretation interpretation, WeightedQuantileAlgo algorithm)
 {
-    static if (weightedQuantileUsesEffectiveSize!algorithm)
+    static if (weightedQuantileUsesEffectiveSize!(interpretation, algorithm))
         real effectiveSize = 1;
     else
         enum real effectiveSize = 1;
-    static if (algorithm == WeightedQuantileAlgo.type7 || algorithm == WeightedQuantileAlgo.type8)
+    static if (interpretation == WeightInterpretation.relative &&
+        (algorithm == WeightedQuantileAlgo.type7 || algorithm == WeightedQuantileAlgo.type8))
     {
         bool compensated;
         WeightedQuantileExpansion total, squares;
@@ -2535,8 +2602,8 @@ private struct WeightedQuantileState(WeightedQuantileAlgo algorithm)
 
 // Fill the validated positive-weight workspace, then sort and prepare it once.
 // The caller retains ownership; evaluation never changes these entries.
-private WeightedQuantileState!algorithm prepareWeightedQuantileWorkspace(
-    WeightedQuantileAlgo algorithm, Workspace, Values, Masses)(
+private WeightedQuantileState!(interpretation, algorithm) prepareWeightedQuantileWorkspace(
+    WeightInterpretation interpretation, WeightedQuantileAlgo algorithm, Workspace, Values, Masses)(
     scope Workspace workspace, scope Values values, scope Masses masses, real maximum)
 {
     import mir.ndslice.sorting: sort;
@@ -2552,7 +2619,7 @@ private WeightedQuantileState!algorithm prepareWeightedQuantileWorkspace(
     // to equal floating-point values. Order tied masses consistently as well.
     // Share the sorting instantiation across input and allocation specializations.
     sort!("a.value < b.value || (a.value == b.value && a.cumulative < b.cumulative)")(workspace);
-    static if (weightedQuantileUsesEffectiveSize!algorithm)
+    static if (weightedQuantileUsesEffectiveSize!(interpretation, algorithm))
     {
         Summator!(real, Summation.kahan) suffix, squares;
         foreach_reverse (i; 0 .. workspace.length)
@@ -2566,14 +2633,14 @@ private WeightedQuantileState!algorithm prepareWeightedQuantileWorkspace(
                 // additional allocation or scan of the original inputs.
                 enum threshold = sqrt(real.epsilon);
                 if (mass < threshold)
-                    return prepareCompensatedWeightedUniform!algorithm(workspace, maximum);
+                    return prepareCompensatedWeightedUniform!(interpretation, algorithm)(workspace, maximum);
             }
             suffix.put(mass);
             squares.put(mass * mass);
             workspace[i].upper = suffix.sum;
         }
     }
-    static if (weightedQuantileUsesFrequencies!algorithm)
+    static if (interpretation == WeightInterpretation.frequency)
     {
         ulong cumulativeCount;
         foreach (i; 0 .. workspace.length)
@@ -2610,8 +2677,8 @@ private WeightedQuantileState!algorithm prepareWeightedQuantileWorkspace(
                 workspace[i].cumulative = cumulative.sum;
             }
     }
-    WeightedQuantileState!algorithm state;
-    static if (weightedQuantileUsesEffectiveSize!algorithm)
+    WeightedQuantileState!(interpretation, algorithm) state;
+    static if (weightedQuantileUsesEffectiveSize!(interpretation, algorithm))
     {
         state.effectiveSize = cumulative.sum * cumulative.sum / squares.sum;
         if (state.effectiveSize < 1) state.effectiveSize = 1;
@@ -2625,16 +2692,17 @@ private WeightedQuantileState!algorithm prepareWeightedQuantileWorkspace(
     return state;
 }
 
-private F preparedWeightedQuantileAt(F, WeightedQuantileAlgo algorithm, Workspace, P)(
-    scope Workspace workspace, P probability, const ref WeightedQuantileState!algorithm state)
+private F preparedWeightedQuantileAt(F, WeightInterpretation interpretation, WeightedQuantileAlgo algorithm, Workspace, P)(
+    scope Workspace workspace, P probability, const ref WeightedQuantileState!(interpretation, algorithm) state)
 {
-    static if (algorithm == WeightedQuantileAlgo.type7 || algorithm == WeightedQuantileAlgo.type8)
+    static if (interpretation == WeightInterpretation.relative &&
+        (algorithm == WeightedQuantileAlgo.type7 || algorithm == WeightedQuantileAlgo.type8))
         if (state.compensated)
             return compensatedWeightedUniformAt!(F, algorithm)(workspace, probability, state.total, state.squares);
-    return weightedQuantileAt!(F, algorithm)(workspace, probability, state.effectiveSize);
+    return weightedQuantileAt!(F, interpretation, algorithm)(workspace, probability, state.effectiveSize);
 }
 
-private auto allocatedWeightedQuantile(F, WeightedQuantileAlgo algorithm,
+private auto allocatedWeightedQuantile(F, WeightInterpretation interpretation, WeightedQuantileAlgo algorithm,
     QuantileAllocation allocation, size_t fixedResultLength = 0, Context, Weights, Data, P)(
     ref Context context, scope auto ref Weights weights,
     scope auto ref Data data, scope auto ref P probabilities)
@@ -2642,13 +2710,8 @@ private auto allocatedWeightedQuantile(F, WeightedQuantileAlgo algorithm,
     import mir.primitives: DeepElementType;
     import std.traits: Unqual, isNumeric;
 
-    static assert(algorithm == WeightedQuantileAlgo.inverseCDF ||
-        algorithm == WeightedQuantileAlgo.averagedInverseCDF ||
-        weightedQuantileUsesFrequencies!algorithm ||
-        algorithm == WeightedQuantileAlgo.harrellDavis ||
-        algorithm == WeightedQuantileAlgo.trimmedHarrellDavis ||
-        algorithm == WeightedQuantileAlgo.type7 || algorithm == WeightedQuantileAlgo.type8,
-        "Unsupported weighted quantile algorithm");
+    static assert(validWeightedQuantileOptions!(interpretation, algorithm),
+        "Unsupported weight interpretation and quantile algorithm combination");
     scope auto values = quantileSlice(data);
     scope auto masses = quantileSlice(weights);
     static assert(typeof(values).N == 1 && typeof(masses).N == 1,
@@ -2660,17 +2723,17 @@ private auto allocatedWeightedQuantile(F, WeightedQuantileAlgo algorithm,
         "Convert the input to a Mir slice explicitly before calling.");
     static assert(isNumeric!Element && isNumeric!Weight && isNumeric!F,
         "Weighted quantiles require numeric values, weights, and output");
-    const input = validateWeightedQuantileInput!algorithm(values.lightScope, masses.lightScope);
-    alias Entry = WeightedQuantileEntry!(Element, algorithm);
+    const input = validateWeightedQuantileInput!(interpretation, algorithm)(values.lightScope, masses.lightScope);
+    alias Entry = WeightedQuantileEntry!(Element, interpretation, algorithm);
     auto scratch = allocateQuantiles!(Entry, allocation)(context, input.count);
     static if (allocation == QuantileAllocation.custom)
         scope(exit) releaseQuantiles(context, scratch);
     scope auto workspace = scratch.lightScope;
-    const state = prepareWeightedQuantileWorkspace!algorithm(workspace, values.lightScope, masses.lightScope, input.maximum);
+    const state = prepareWeightedQuantileWorkspace!(interpretation, algorithm)(workspace, values.lightScope, masses.lightScope, input.maximum);
     // Keep custom workspace/result cleanup in the same owning frame, including
     // when a probability assertion fails in a debug build.
     static if (isFloatingPoint!(Unqual!P))
-        return preparedWeightedQuantileAt!(F, algorithm)(workspace, probabilities, state);
+        return preparedWeightedQuantileAt!(F, interpretation, algorithm)(workspace, probabilities, state);
     else
     {
         scope auto levels = quantileSlice(probabilities);
@@ -2688,12 +2751,12 @@ private auto allocatedWeightedQuantile(F, WeightedQuantileAlgo algorithm,
         static if (!fixedResultLength && allocation == QuantileAllocation.custom)
             scope(failure) releaseQuantiles(context, result);
         foreach (i; 0 .. levels.length)
-            result[i] = preparedWeightedQuantileAt!(F, algorithm)(workspace, levels[i], state);
+            result[i] = preparedWeightedQuantileAt!(F, interpretation, algorithm)(workspace, levels[i], state);
         return result;
     }
 }
 
-private auto dispatchWeightedQuantile(F, WeightedQuantileAlgo algorithm,
+private auto dispatchWeightedQuantile(F, WeightInterpretation interpretation, WeightedQuantileAlgo algorithm,
     QuantileAllocation allocation, Context, Weights, Data, P...)(
     ref Context context, scope auto ref Weights weights, scope auto ref Data data,
     scope auto ref P probabilities)
@@ -2702,16 +2765,16 @@ private auto dispatchWeightedQuantile(F, WeightedQuantileAlgo algorithm,
     static if (P.length == 0)
     {
         const double[5] levels = [0, 0.25, 0.5, 0.75, 1];
-        return allocatedWeightedQuantile!(F, algorithm, allocation)(context, weights, data, levels);
+        return allocatedWeightedQuantile!(F, interpretation, algorithm, allocation)(context, weights, data, levels);
     }
     else static if (P.length == 1)
-        return allocatedWeightedQuantile!(F, algorithm, allocation)(context, weights, data, probabilities[0]);
+        return allocatedWeightedQuantile!(F, interpretation, algorithm, allocation)(context, weights, data, probabilities[0]);
     else
     {
         alias G = CommonType!P;
         static assert(isFloatingPoint!(Unqual!G), "Probabilities must be floating-point values");
         G[P.length] levels = [probabilities];
-        return allocatedWeightedQuantile!(F, algorithm, allocation)(context, weights, data, levels);
+        return allocatedWeightedQuantile!(F, interpretation, algorithm, allocation)(context, weights, data, levels);
     }
 }
 
@@ -2724,10 +2787,24 @@ argument order of weighted means and sums.
 
 Use weights to change the probability mass assigned to observations, for example
 when reweighting simulated outcomes. $(LINK2 #.WeightedQuantileAlgo.inverseCDF, $(D WeightedQuantileAlgo.inverseCDF))
-returns observed values without interpolation; it is the default.
+returns observed values without interpolation; it is the relative-weight default.
 With equal weights, this matches ordinary type 1, not the interpolating type 7
 default of $(LREF quantile). Select $(LINK2 #.WeightedQuantileAlgo.type7, $(D WeightedQuantileAlgo.type7))
 explicitly when that equal-weight convention is wanted.
+
+Choose WeightInterpretation.frequency for counts of repeated observations; its
+default algorithm is type7, matching ordinary quantile. For values [0, 10] and
+counts [2, 2], frequency type7 gives a first quartile of 0, as for [0, 0, 10, 10].
+Relative type7 gives 2.5 because the weights describe emphasis on two rows.
+
+An optional result type comes first. WeightInterpretation and WeightedQuantileAlgo
+can follow in either order, or either can be supplied alone. Algorithm-only calls
+use relative weights. The same option order applies to the RC and custom-allocator
+variants, weightedInterquartileRange, and weightedMedianAbsoluteDeviation.
+Relative IQR defaults to inverseCDF; relative MAD defaults to averagedInverseCDF.
+All three default to type7 with frequency interpretation. Frequency interpretation
+supports only type7 and type8; unsupported combinations fail at compile time.
+Dedicated weightedMedian retains its fixed averaged-inverse-CDF convention.
 
 Weights and observations must be one-dimensional arrays or Mir slices of equal
 length. Weights must be finite and nonnegative, with at least one positive weight.
@@ -2743,8 +2820,8 @@ All other algorithms promote integral observations to double and preserve
 floating observation types. An explicit F selects the result type; algorithms
 other than inverseCDF require a floating-point F.
 
-Except for frequencyType7 and frequencyType8, the mathematical result is
-invariant to positive rescaling of all weights. Frequency algorithms instead
+With relative interpretation, the mathematical result is invariant to positive
+rescaling of all weights. Frequency interpretation instead
 use exact cumulative integer counts and the total frequency as sample size.
 For probability-weight algorithms, cumulative masses use compensated summation
 in $(TT real). InverseCDF and averagedInverseCDF scale weights by a common power
@@ -2760,12 +2837,12 @@ bitwise-identical results. Endpoints select the extrema of positive-weight data.
 Signed zeros compare equal; the sign of a selected zero is unspecified.
 
 A paired workspace is sorted once. For n observations and k probabilities,
-inverseCDF, averagedInverseCDF, frequencyType7, and frequencyType8 take
+inverseCDF, averagedInverseCDF, and frequency type7/type8 take
 $(TT O(n log n + k log n)) time. Harrell-Davis takes
 $(TT O(n log n + k*n)) time, including beta CDF evaluations, and reuses effective
 sample size and cumulative masses across probabilities. Trimmed Harrell-Davis
 adds a bounded interval search per probability and skips excluded intervals.
-Weighted type 7 and type 8 also take $(TT O(n log n + k*n)) time, using
+Relative type 7 and type 8 also take $(TT O(n log n + k*n)) time, using
 arithmetic interval overlaps without beta evaluations or a root search.
 All algorithms use $(TT O(n + k)) storage. Scratch storage is needed even for a scalar result.
 
@@ -2789,18 +2866,20 @@ These safeguards do not guarantee uniform accuracy in extreme beta tails.
 
 Params:
     F = explicit result type; inferred from observations when omitted
-    algorithm = weighted quantile definition, default inverseCDF
+    interpretation = relative weights (default) or occurrence counts
+    algorithm = inverseCDF by default for relative weights, type7 for frequency counts
 See_also:
     $(LREF WeightedQuantileAlgo), $(LREF rcWeightedQuantile), $(LREF makeWeightedQuantile)
 +/
-template weightedQuantile(F, WeightedQuantileAlgo algorithm = WeightedQuantileAlgo.inverseCDF)
-    if (algorithm == WeightedQuantileAlgo.inverseCDF || isFloatingPoint!F)
+template weightedQuantile(F, WeightInterpretation interpretation,
+    WeightedQuantileAlgo algorithm)
+    if (validWeightedQuantileOptions!(interpretation, algorithm) && (algorithm == WeightedQuantileAlgo.inverseCDF || isFloatingPoint!F))
 {
     /++
     Params:
         data = observations corresponding to the weights
         weights = relative probability masses, or nonnegative whole-number occurrence counts
-            for $(LINK2 #.WeightedQuantileAlgo.frequencyType7, $(D WeightedQuantileAlgo.frequencyType7)) and $(LINK2 #.WeightedQuantileAlgo.frequencyType8, $(D WeightedQuantileAlgo.frequencyType8))
+            for WeightInterpretation.frequency
         probabilities = scalar, array/slice, or variadic probabilities; omitted for quartiles
     +/
     auto weightedQuantile(Data, Weights, P...)(
@@ -2808,19 +2887,30 @@ template weightedQuantile(F, WeightedQuantileAlgo algorithm = WeightedQuantileAl
         scope auto ref P probabilities)
     {
         QuantileContext context;
-        return dispatchWeightedQuantile!(F, algorithm, QuantileAllocation.gc)(
+        return dispatchWeightedQuantile!(F, interpretation, algorithm, QuantileAllocation.gc)(
             context, weights, data, probabilities);
     }
 }
 
 /// ditto
-template weightedQuantile(WeightedQuantileAlgo algorithm = WeightedQuantileAlgo.inverseCDF)
+template weightedQuantile(F, WeightInterpretation interpretation = WeightInterpretation.relative)
+{
+    static if (interpretation == WeightInterpretation.frequency)
+        alias weightedQuantile = .weightedQuantile!(F, interpretation, WeightedQuantileAlgo.type7);
+    else
+        alias weightedQuantile = .weightedQuantile!(F, interpretation, WeightedQuantileAlgo.inverseCDF);
+}
+
+/// ditto
+template weightedQuantile(WeightInterpretation interpretation,
+    WeightedQuantileAlgo algorithm)
+    if (validWeightedQuantileOptions!(interpretation, algorithm))
 {
     /++
     Params:
         data = observations corresponding to the weights
         weights = relative probability masses, or nonnegative whole-number occurrence counts
-            for $(LINK2 #.WeightedQuantileAlgo.frequencyType7, $(D WeightedQuantileAlgo.frequencyType7)) and $(LINK2 #.WeightedQuantileAlgo.frequencyType8, $(D WeightedQuantileAlgo.frequencyType8))
+            for WeightInterpretation.frequency
         probabilities = scalar, array/slice, or variadic probabilities; omitted for quartiles
     +/
     auto weightedQuantile(Data, Weights, P...)(
@@ -2829,9 +2919,34 @@ template weightedQuantile(WeightedQuantileAlgo algorithm = WeightedQuantileAlgo.
     {
         alias F = WeightedQuantileResult!(Data, algorithm);
         QuantileContext context;
-        return dispatchWeightedQuantile!(F, algorithm, QuantileAllocation.gc)(
+        return dispatchWeightedQuantile!(F, interpretation, algorithm, QuantileAllocation.gc)(
             context, weights, data, probabilities);
     }
+}
+
+/// ditto
+template weightedQuantile(WeightInterpretation interpretation = WeightInterpretation.relative)
+{
+    static if (interpretation == WeightInterpretation.frequency)
+        alias weightedQuantile = .weightedQuantile!(interpretation, WeightedQuantileAlgo.type7);
+    else
+        alias weightedQuantile = .weightedQuantile!(interpretation, WeightedQuantileAlgo.inverseCDF);
+}
+
+/// ditto
+template weightedQuantile(F, WeightedQuantileAlgo algorithm,
+    WeightInterpretation interpretation = WeightInterpretation.relative)
+    if (validWeightedQuantileOptions!(interpretation, algorithm))
+{
+    alias weightedQuantile = .weightedQuantile!(F, interpretation, algorithm);
+}
+
+/// ditto
+template weightedQuantile(WeightedQuantileAlgo algorithm,
+    WeightInterpretation interpretation = WeightInterpretation.relative)
+    if (validWeightedQuantileOptions!(interpretation, algorithm))
+{
+    alias weightedQuantile = .weightedQuantile!(interpretation, algorithm);
 }
 
 // Same-typed inputs must be interpreted as observations first in every API.
@@ -2959,7 +3074,7 @@ version(mir_stat_test)
 unittest
 {
     const int[2] values = [0, 10], counts = [2, 2], once = [1, 1];
-    alias frequency = weightedQuantile!(WeightedQuantileAlgo.frequencyType7);
+    alias frequency = weightedQuantile!(WeightInterpretation.frequency, WeightedQuantileAlgo.type7);
     assert(frequency(values, counts, 0.25) == 0);
     assert(frequency(values, once, 0.25) == 2.5);
     assert(weightedQuantile!(WeightedQuantileAlgo.type7)(values, counts, 0.25) == 2.5);
@@ -2975,16 +3090,18 @@ Pass observations before weights: `rcWeightedQuantile(data, weights, probabiliti
 
 Params:
     F = explicit result type; inferred from observations when omitted
-    algorithm = weighted quantile definition, default inverseCDF
+    interpretation = relative weights (default) or occurrence counts
+    algorithm = inverseCDF by default for relative weights, type7 for frequency counts
 +/
-template rcWeightedQuantile(F, WeightedQuantileAlgo algorithm = WeightedQuantileAlgo.inverseCDF)
-    if (algorithm == WeightedQuantileAlgo.inverseCDF || isFloatingPoint!F)
+template rcWeightedQuantile(F, WeightInterpretation interpretation,
+    WeightedQuantileAlgo algorithm)
+    if (validWeightedQuantileOptions!(interpretation, algorithm) && (algorithm == WeightedQuantileAlgo.inverseCDF || isFloatingPoint!F))
 {
     /++
     Params:
         data = observations corresponding to the weights
         weights = relative probability masses, or nonnegative whole-number occurrence counts
-            for $(LINK2 #.WeightedQuantileAlgo.frequencyType7, $(D WeightedQuantileAlgo.frequencyType7)) and $(LINK2 #.WeightedQuantileAlgo.frequencyType8, $(D WeightedQuantileAlgo.frequencyType8))
+            for WeightInterpretation.frequency
         probabilities = scalar, array/slice, or variadic probabilities; omitted for quartiles
     +/
     auto rcWeightedQuantile(Data, Weights, P...)(
@@ -2992,19 +3109,30 @@ template rcWeightedQuantile(F, WeightedQuantileAlgo algorithm = WeightedQuantile
         scope auto ref P probabilities)
     {
         QuantileContext context;
-        return dispatchWeightedQuantile!(F, algorithm, QuantileAllocation.rc)(
+        return dispatchWeightedQuantile!(F, interpretation, algorithm, QuantileAllocation.rc)(
             context, weights, data, probabilities);
     }
 }
 
 /// ditto
-template rcWeightedQuantile(WeightedQuantileAlgo algorithm = WeightedQuantileAlgo.inverseCDF)
+template rcWeightedQuantile(F, WeightInterpretation interpretation = WeightInterpretation.relative)
+{
+    static if (interpretation == WeightInterpretation.frequency)
+        alias rcWeightedQuantile = .rcWeightedQuantile!(F, interpretation, WeightedQuantileAlgo.type7);
+    else
+        alias rcWeightedQuantile = .rcWeightedQuantile!(F, interpretation, WeightedQuantileAlgo.inverseCDF);
+}
+
+/// ditto
+template rcWeightedQuantile(WeightInterpretation interpretation,
+    WeightedQuantileAlgo algorithm)
+    if (validWeightedQuantileOptions!(interpretation, algorithm))
 {
     /++
     Params:
         data = observations corresponding to the weights
         weights = relative probability masses, or nonnegative whole-number occurrence counts
-            for $(LINK2 #.WeightedQuantileAlgo.frequencyType7, $(D WeightedQuantileAlgo.frequencyType7)) and $(LINK2 #.WeightedQuantileAlgo.frequencyType8, $(D WeightedQuantileAlgo.frequencyType8))
+            for WeightInterpretation.frequency
         probabilities = scalar, array/slice, or variadic probabilities; omitted for quartiles
     +/
     auto rcWeightedQuantile(Data, Weights, P...)(
@@ -3013,9 +3141,124 @@ template rcWeightedQuantile(WeightedQuantileAlgo algorithm = WeightedQuantileAlg
     {
         alias F = WeightedQuantileResult!(Data, algorithm);
         QuantileContext context;
-        return dispatchWeightedQuantile!(F, algorithm, QuantileAllocation.rc)(
+        return dispatchWeightedQuantile!(F, interpretation, algorithm, QuantileAllocation.rc)(
             context, weights, data, probabilities);
     }
+}
+
+/// ditto
+template rcWeightedQuantile(WeightInterpretation interpretation = WeightInterpretation.relative)
+{
+    static if (interpretation == WeightInterpretation.frequency)
+        alias rcWeightedQuantile = .rcWeightedQuantile!(interpretation, WeightedQuantileAlgo.type7);
+    else
+        alias rcWeightedQuantile = .rcWeightedQuantile!(interpretation, WeightedQuantileAlgo.inverseCDF);
+}
+
+/// ditto
+template rcWeightedQuantile(F, WeightedQuantileAlgo algorithm,
+    WeightInterpretation interpretation = WeightInterpretation.relative)
+    if (validWeightedQuantileOptions!(interpretation, algorithm))
+{
+    alias rcWeightedQuantile = .rcWeightedQuantile!(F, interpretation, algorithm);
+}
+
+/// ditto
+template rcWeightedQuantile(WeightedQuantileAlgo algorithm,
+    WeightInterpretation interpretation = WeightInterpretation.relative)
+    if (validWeightedQuantileOptions!(interpretation, algorithm))
+{
+    alias rcWeightedQuantile = .rcWeightedQuantile!(interpretation, algorithm);
+}
+
+/// Select what the weights mean separately from the interpolation convention.
+@safe pure nothrow unittest
+{
+    alias W = WeightInterpretation;
+    alias Q = WeightedQuantileAlgo;
+    int[2] values = [0, 10], counts = [2, 2];
+    // Counts represent [0, 0, 10, 10]. Either option order selects that sample.
+    assert(weightedQuantile!(W.frequency, Q.type7)(values, counts, 0.25) == 0);
+    assert(weightedQuantile!(Q.type7, W.frequency)(values, counts, 0.25) == 0);
+    assert(weightedQuantile!(double, Q.type7, W.frequency)(values, counts, 0.25) == 0);
+    assert(weightedQuantile!(W.frequency)(values, counts, 0.25) == 0);
+    // Relative weights instead give equal emphasis to two observations.
+    assert(weightedQuantile!(W.relative, Q.type7)(values, counts, 0.25) == 2.5);
+    assert(weightedQuantile!(Q.type7)(values, counts, 0.25) == 2.5);
+}
+
+version(mir_stat_test)
+@system pure nothrow unittest
+{
+    import std.meta: AliasSeq;
+    alias W = WeightInterpretation;
+    alias Q = WeightedQuantileAlgo;
+    int[2] values = [0, 10], counts = [1, 3];
+    static foreach (fun; AliasSeq!(weightedQuantile, rcWeightedQuantile, makeWeightedQuantile,
+        weightedInterquartileRange, rcWeightedInterquartileRange, makeWeightedInterquartileRange,
+        weightedMedianAbsoluteDeviation, rcWeightedMedianAbsoluteDeviation, makeWeightedMedianAbsoluteDeviation))
+    {{
+        import std.experimental.allocator.mallocator: Mallocator;
+        static if (__traits(isSame, fun, makeWeightedQuantile) ||
+            __traits(isSame, fun, makeWeightedInterquartileRange) ||
+            __traits(isSame, fun, makeWeightedMedianAbsoluteDeviation))
+            alias inputs = AliasSeq!(Mallocator.instance, values, counts);
+        else
+            alias inputs = AliasSeq!(values, counts);
+        static if (__traits(isSame, fun, weightedQuantile) ||
+            __traits(isSame, fun, rcWeightedQuantile) || __traits(isSame, fun, makeWeightedQuantile))
+            alias arguments = AliasSeq!(inputs, 0.25);
+        else
+            alias arguments = inputs;
+        // Test actual calls: older compilers can accept a bare template reference
+        // without rejecting an unsupported option pair. Positive controls ensure
+        // that rejection is not caused by an invalid argument list.
+        static assert(__traits(compiles, fun!(W.frequency, Q.type7)(arguments)));
+        static assert(__traits(compiles, fun!(Q.type7, W.frequency)(arguments)));
+        static assert(__traits(compiles, fun!(double, W.frequency, Q.type7)(arguments)));
+        static assert(__traits(compiles, fun!(double, Q.type7, W.frequency)(arguments)));
+        static assert(__traits(compiles, fun(arguments)));
+        static assert(__traits(compiles, fun!double(arguments)));
+        static assert(__traits(compiles, fun!(W.frequency)(arguments)));
+        static assert(__traits(compiles, fun!(double, W.frequency)(arguments)));
+        static if (__traits(isSame, fun, weightedMedianAbsoluteDeviation) ||
+            __traits(isSame, fun, rcWeightedMedianAbsoluteDeviation) ||
+            __traits(isSame, fun, makeWeightedMedianAbsoluteDeviation))
+            enum relativeDefault = Q.averagedInverseCDF;
+        else
+            enum relativeDefault = Q.inverseCDF;
+        static assert(__traits(isSame, fun!(W.relative), fun!(W.relative, relativeDefault)));
+        static assert(__traits(isSame, fun!float, fun!(float, W.relative, relativeDefault)));
+        static foreach (w; [W.relative, W.frequency])
+        {
+            static foreach (q; [Q.type7, Q.type8])
+            {
+                static assert(__traits(isSame, fun!(w, q), fun!(q, w)));
+                static assert(__traits(isSame, fun!(float, w, q), fun!(float, q, w)));
+            }
+        }
+        static assert(__traits(isSame, fun!(W.frequency), fun!(W.frequency, Q.type7)));
+        static assert(__traits(isSame, fun!(float, W.frequency), fun!(float, W.frequency, Q.type7)));
+        static assert(__traits(isSame, fun!(Q.type8), fun!(W.relative, Q.type8)));
+        static assert(__traits(isSame, fun!(float, Q.type8), fun!(float, W.relative, Q.type8)));
+        static foreach (q; [Q.inverseCDF, Q.averagedInverseCDF, Q.harrellDavis, Q.trimmedHarrellDavis])
+        {
+            static assert(!__traits(compiles, fun!(W.frequency, q)(arguments)));
+            static assert(!__traits(compiles, fun!(q, W.frequency)(arguments)));
+            static assert(!__traits(compiles, fun!(double, W.frequency, q)(arguments)));
+            static assert(!__traits(compiles, fun!(double, q, W.frequency)(arguments)));
+        }
+    }}
+    static assert(is(typeof(rcWeightedQuantile(values, counts, 0.25)) == int));
+    static assert(is(typeof(rcWeightedQuantile!(W.frequency)(values, counts, 0.25)) == double));
+    assert(rcWeightedQuantile!(W.frequency)(values, counts, 0.25) == 7.5);
+    assert(rcWeightedInterquartileRange!(W.frequency)(values, counts) == 2.5);
+    assert(rcWeightedMedianAbsoluteDeviation!(W.frequency)(values, counts) == 0);
+    static assert(!__traits(compiles, rcWeightedQuantile!(W.frequency, W.relative)(values, counts, 0.5)));
+    static assert(!__traits(compiles, rcWeightedQuantile!(Q.type7, Q.type8)(values, counts, 0.5)));
+    static assert(!__traits(compiles, rcWeightedQuantile!(int, W.frequency)(values, counts, 0.5)));
+    static assert(!__traits(compiles, rcWeightedQuantile!(Q.frequencyType7)(values, counts, 0.5)));
+    static assert(!__traits(compiles, rcWeightedQuantile!(Q.frequencyType8)(values, counts, 0.5)));
 }
 
 /// Mir slices can be used to obtain owning results without GC allocation.
@@ -3047,37 +3290,50 @@ The allocator comes first, then observations and weights:
 
 Params:
     F = explicit result type; inferred from observations when omitted
-    algorithm = weighted quantile definition, default inverseCDF
+    interpretation = relative weights (default) or occurrence counts
+    algorithm = inverseCDF by default for relative weights, type7 for frequency counts
 +/
-template makeWeightedQuantile(F, WeightedQuantileAlgo algorithm = WeightedQuantileAlgo.inverseCDF)
-    if (algorithm == WeightedQuantileAlgo.inverseCDF || isFloatingPoint!F)
+template makeWeightedQuantile(F, WeightInterpretation interpretation,
+    WeightedQuantileAlgo algorithm)
+    if (validWeightedQuantileOptions!(interpretation, algorithm) && (algorithm == WeightedQuantileAlgo.inverseCDF || isFloatingPoint!F))
 {
     /++
     Params:
         allocator = allocator for scratch and result storage
         data = observations corresponding to the weights
         weights = relative probability masses, or nonnegative whole-number occurrence counts
-            for $(LINK2 #.WeightedQuantileAlgo.frequencyType7, $(D WeightedQuantileAlgo.frequencyType7)) and $(LINK2 #.WeightedQuantileAlgo.frequencyType8, $(D WeightedQuantileAlgo.frequencyType8))
+            for WeightInterpretation.frequency
         probabilities = scalar, array/slice, or variadic probabilities; omitted for quartiles
     +/
     auto makeWeightedQuantile(Allocator, Data, Weights, P...)(
         auto ref Allocator allocator, scope auto ref Data data, scope auto ref Weights weights,
         scope auto ref P probabilities)
     {
-        return dispatchWeightedQuantile!(F, algorithm, QuantileAllocation.custom)(
+        return dispatchWeightedQuantile!(F, interpretation, algorithm, QuantileAllocation.custom)(
             allocator, weights, data, probabilities);
     }
 }
 
 /// ditto
-template makeWeightedQuantile(WeightedQuantileAlgo algorithm = WeightedQuantileAlgo.inverseCDF)
+template makeWeightedQuantile(F, WeightInterpretation interpretation = WeightInterpretation.relative)
+{
+    static if (interpretation == WeightInterpretation.frequency)
+        alias makeWeightedQuantile = .makeWeightedQuantile!(F, interpretation, WeightedQuantileAlgo.type7);
+    else
+        alias makeWeightedQuantile = .makeWeightedQuantile!(F, interpretation, WeightedQuantileAlgo.inverseCDF);
+}
+
+/// ditto
+template makeWeightedQuantile(WeightInterpretation interpretation,
+    WeightedQuantileAlgo algorithm)
+    if (validWeightedQuantileOptions!(interpretation, algorithm))
 {
     /++
     Params:
         allocator = allocator for scratch and result storage
         data = observations corresponding to the weights
         weights = relative probability masses, or nonnegative whole-number occurrence counts
-            for $(LINK2 #.WeightedQuantileAlgo.frequencyType7, $(D WeightedQuantileAlgo.frequencyType7)) and $(LINK2 #.WeightedQuantileAlgo.frequencyType8, $(D WeightedQuantileAlgo.frequencyType8))
+            for WeightInterpretation.frequency
         probabilities = scalar, array/slice, or variadic probabilities; omitted for quartiles
     +/
     auto makeWeightedQuantile(Allocator, Data, Weights, P...)(
@@ -3085,9 +3341,34 @@ template makeWeightedQuantile(WeightedQuantileAlgo algorithm = WeightedQuantileA
         scope auto ref P probabilities)
     {
         alias F = WeightedQuantileResult!(Data, algorithm);
-        return dispatchWeightedQuantile!(F, algorithm, QuantileAllocation.custom)(
+        return dispatchWeightedQuantile!(F, interpretation, algorithm, QuantileAllocation.custom)(
             allocator, weights, data, probabilities);
     }
+}
+
+/// ditto
+template makeWeightedQuantile(WeightInterpretation interpretation = WeightInterpretation.relative)
+{
+    static if (interpretation == WeightInterpretation.frequency)
+        alias makeWeightedQuantile = .makeWeightedQuantile!(interpretation, WeightedQuantileAlgo.type7);
+    else
+        alias makeWeightedQuantile = .makeWeightedQuantile!(interpretation, WeightedQuantileAlgo.inverseCDF);
+}
+
+/// ditto
+template makeWeightedQuantile(F, WeightedQuantileAlgo algorithm,
+    WeightInterpretation interpretation = WeightInterpretation.relative)
+    if (validWeightedQuantileOptions!(interpretation, algorithm))
+{
+    alias makeWeightedQuantile = .makeWeightedQuantile!(F, interpretation, algorithm);
+}
+
+/// ditto
+template makeWeightedQuantile(WeightedQuantileAlgo algorithm,
+    WeightInterpretation interpretation = WeightInterpretation.relative)
+    if (validWeightedQuantileOptions!(interpretation, algorithm))
+{
+    alias makeWeightedQuantile = .makeWeightedQuantile!(interpretation, algorithm);
 }
 
 /// The caller disposes custom-allocated results; scratch is released automatically.
@@ -3468,11 +3749,17 @@ version(mir_stat_test)
 @system pure nothrow
 unittest
 {
-    static foreach (algorithm; [WeightedQuantileAlgo.harrellDavis,
-        WeightedQuantileAlgo.trimmedHarrellDavis, WeightedQuantileAlgo.type7,
-        WeightedQuantileAlgo.type8, WeightedQuantileAlgo.averagedInverseCDF,
-        WeightedQuantileAlgo.frequencyType7, WeightedQuantileAlgo.frequencyType8])
+    static foreach (quantileOptions; [
+        tuple(WeightInterpretation.relative, WeightedQuantileAlgo.harrellDavis),
+        tuple(WeightInterpretation.relative, WeightedQuantileAlgo.trimmedHarrellDavis),
+        tuple(WeightInterpretation.relative, WeightedQuantileAlgo.type7),
+        tuple(WeightInterpretation.relative, WeightedQuantileAlgo.type8),
+        tuple(WeightInterpretation.relative, WeightedQuantileAlgo.averagedInverseCDF),
+        tuple(WeightInterpretation.frequency, WeightedQuantileAlgo.type7),
+        tuple(WeightInterpretation.frequency, WeightedQuantileAlgo.type8)])
     {{
+        enum interpretation = quantileOptions[0];
+        enum algorithm = quantileOptions[1];
         import mir.math.common: approxEqual;
         import std.experimental.allocator: dispose;
         import mir.ndslice.slice: sliced;
@@ -3482,16 +3769,16 @@ unittest
         const double[3] levels = [0, 0.5, 1];
         auto values = data[].sliced(3, 2).transposed[0];
         auto masses = weights[].sliced(3, 2).transposed[0];
-        auto gc = weightedQuantile!algorithm(values, masses, levels);
-        auto rc = rcWeightedQuantile!algorithm(values, masses, levels);
+        auto gc = weightedQuantile!(interpretation, algorithm)(values, masses, levels);
+        auto rc = rcWeightedQuantile!(interpretation, algorithm)(values, masses, levels);
         QuantileTestAllocator!() allocator;
-        auto custom = makeWeightedQuantile!(double, algorithm)(allocator, values, masses, levels);
+        auto custom = makeWeightedQuantile!(double, interpretation, algorithm)(allocator, values, masses, levels);
         assert(allocator.allocations == 2 && allocator.releases == 1);
         foreach (i; 0 .. levels.length)
             assert(gc[i].approxEqual(rc[i]) && gc[i].approxEqual(custom[i]));
         allocator.dispose(custom.field);
         assert(allocator.releases == 2);
-        auto scalar = makeWeightedQuantile!algorithm(allocator, values, masses, 0.5);
+        auto scalar = makeWeightedQuantile!(interpretation, algorithm)(allocator, values, masses, 0.5);
         assert(scalar.approxEqual(algorithm == WeightedQuantileAlgo.harrellDavis ?
             11.680673694094532 : algorithm == WeightedQuantileAlgo.trimmedHarrellDavis ?
             10.753130990579251 : 10.0));
@@ -3693,9 +3980,14 @@ unittest
     const real[2] mixedSigns = [-tiny, 2 * tiny];
     assert(q(mixedSigns, equal, 0.5L) == 0);
     assert(rcquantile(mixedSigns, 0.5L) == 0);
-    static foreach (algorithm; [WeightedQuantileAlgo.frequencyType7,
-        WeightedQuantileAlgo.frequencyType8])
-        assert(rcWeightedQuantile!algorithm(mixedSigns, equal, 0.5L) == 0);
+    static foreach (quantileOptions; [
+        tuple(WeightInterpretation.frequency, WeightedQuantileAlgo.type7),
+        tuple(WeightInterpretation.frequency, WeightedQuantileAlgo.type8)])
+    {{
+        enum interpretation = quantileOptions[0];
+        enum algorithm = quantileOptions[1];
+        assert(rcWeightedQuantile!(interpretation, algorithm)(mixedSigns, equal, 0.5L) == 0);
+    }}
 }
 
 // Compare conceptual replication against genuinely expanded samples, including
@@ -3705,10 +3997,14 @@ version(mir_stat_test)
 unittest
 {
     import mir.math.common: approxEqual;
-    static foreach (algorithm; [WeightedQuantileAlgo.frequencyType7, WeightedQuantileAlgo.frequencyType8])
+    static foreach (quantileOptions; [
+        tuple(WeightInterpretation.frequency, WeightedQuantileAlgo.type7),
+        tuple(WeightInterpretation.frequency, WeightedQuantileAlgo.type8)])
     {{
-        alias q = rcWeightedQuantile!algorithm;
-        enum ordinary = algorithm == WeightedQuantileAlgo.frequencyType7 ? QuantileAlgo.type7 : QuantileAlgo.type8;
+        enum interpretation = quantileOptions[0];
+        enum algorithm = quantileOptions[1];
+        alias q = rcWeightedQuantile!(interpretation, algorithm);
+        enum ordinary = (interpretation == WeightInterpretation.frequency && algorithm == WeightedQuantileAlgo.type7) ? QuantileAlgo.type7 : QuantileAlgo.type8;
         const int[4] values = [20, 0, 10, 10];
         foreach (a; 0 .. 4) foreach (b; 0 .. 4) foreach (c; 1 .. 4)
         {
@@ -3737,7 +4033,7 @@ unittest
         assert(q(data, large, 0.5) == 0);
         assert(q(data, large, 1.0) == 10);
         static assert(is(typeof(q(data, ones, 0.5)) == double));
-        static assert(!__traits(compiles, rcWeightedQuantile!(int, algorithm)(data, ones, 0.5)));
+        static assert(!__traits(compiles, rcWeightedQuantile!(int, interpretation, algorithm)(data, ones, 0.5)));
     }}
 }
 
@@ -3763,13 +4059,17 @@ unittest
         Case(9007199254740992UL, 9007199254740991UL, 0x1.fffffffffffffp-1, 0x1.5555555555555p-1, true),
     ];
     const double[2] values = [0, 1];
-    static foreach (algorithm; [WeightedQuantileAlgo.frequencyType7, WeightedQuantileAlgo.frequencyType8])
+    static foreach (quantileOptions; [
+        tuple(WeightInterpretation.frequency, WeightedQuantileAlgo.type7),
+        tuple(WeightInterpretation.frequency, WeightedQuantileAlgo.type8)])
     {{
-        alias q = rcWeightedQuantile!algorithm;
+        enum interpretation = quantileOptions[0];
+        enum algorithm = quantileOptions[1];
+        alias q = rcWeightedQuantile!(interpretation, algorithm);
         foreach (c; cases)
         {
             if (c.total > weightedQuantileMaxFrequency ||
-                c.eight != (algorithm == WeightedQuantileAlgo.frequencyType8)) continue;
+                c.eight != ((interpretation == WeightInterpretation.frequency && algorithm == WeightedQuantileAlgo.type8))) continue;
             const ulong[2] counts = [c.first, c.total - c.first];
             assert(fabs(q(values, counts, c.p) - c.expected) <= 8 * double.epsilon * c.expected);
         }
@@ -3779,8 +4079,8 @@ unittest
         foreach (n; [ordinaryFrequencyRankLimit - 1, ordinaryFrequencyRankLimit,
                      ordinaryFrequencyRankLimit + 1])
         {
-            enum denominator = algorithm == WeightedQuantileAlgo.frequencyType7 ? 8UL : 24UL;
-            const numerator = algorithm == WeightedQuantileAlgo.frequencyType7 ? 3 * (n - 1) : 9 * n - 13;
+            enum denominator = (interpretation == WeightInterpretation.frequency && algorithm == WeightedQuantileAlgo.type7) ? 8UL : 24UL;
+            const numerator = (interpretation == WeightInterpretation.frequency && algorithm == WeightedQuantileAlgo.type7) ? 3 * (n - 1) : 9 * n - 13;
             const first = numerator / denominator + 1;
             const ulong[2] counts = [first, n - first];
             const expected = cast(real)(numerator % denominator) / denominator;
@@ -3806,7 +4106,7 @@ unittest
     {
         const real[2] values = [0, 1];
         const ulong[2] counts = [ordinaryFrequencyRankLimit, 1];
-        alias q = rcWeightedQuantile!(WeightedQuantileAlgo.frequencyType8);
+        alias q = rcWeightedQuantile!(WeightInterpretation.frequency, WeightedQuantileAlgo.type8);
         const below = real.epsilon;
         const above = 1.0L - real.epsilon;
         assert(below > 0 && above < 1);
@@ -3829,9 +4129,9 @@ unittest
         const ulong[2] counts = [(1UL << 63) - 1, 1UL << 63];
         const p = 0x7fffffffffffffffp-64L;
         assert(0.5L - p == 0x1p-64L);
-        assert(rcWeightedQuantile!(WeightedQuantileAlgo.frequencyType7)(values, counts, p) == 0x1p-63L);
+        assert(rcWeightedQuantile!(WeightInterpretation.frequency, WeightedQuantileAlgo.type7)(values, counts, p) == 0x1p-63L);
         const expected = 0x1p-63L / 3;
-        const actual = rcWeightedQuantile!(WeightedQuantileAlgo.frequencyType8)(values, counts, p);
+        const actual = rcWeightedQuantile!(WeightInterpretation.frequency, WeightedQuantileAlgo.type8)(values, counts, p);
         assert(fabs(actual - expected) <= 4 * real.epsilon * expected);
     }
 }
@@ -3850,7 +4150,7 @@ unittest
         enum n7 = 1UL << (real.mant_dig - 1);
         const ulong[2] counts7 = [3 * (n7 / 4) - 1, n7 / 4 + 1];
         const e = real.epsilon / 2;
-        assert(rcWeightedQuantile!(WeightedQuantileAlgo.frequencyType7)(
+        assert(rcWeightedQuantile!(WeightInterpretation.frequency, WeightedQuantileAlgo.type7)(
             values, counts7, 0.75L - e) == 0.75L + e);
 
         // For N=2^(mant_dig-2), p=1/2-2*e, the exact type 8 rank
@@ -3858,7 +4158,7 @@ unittest
         // correction; normalize it before accessing the following row.
         enum n8 = 1UL << (real.mant_dig - 2);
         const ulong[2] counts8 = [n8 / 2 - 1, n8 / 2 + 1];
-        assert(rcWeightedQuantile!(WeightedQuantileAlgo.frequencyType8)(
+        assert(rcWeightedQuantile!(WeightInterpretation.frequency, WeightedQuantileAlgo.type8)(
             values, counts8, 0.5L - 2 * e) == 1);
     }
 }
@@ -3871,20 +4171,24 @@ unittest
 {
     import std.exception: assertThrown;
     import core.exception: AssertError;
-    static foreach (algorithm; [WeightedQuantileAlgo.frequencyType7, WeightedQuantileAlgo.frequencyType8])
+    static foreach (quantileOptions; [
+        tuple(WeightInterpretation.frequency, WeightedQuantileAlgo.type7),
+        tuple(WeightInterpretation.frequency, WeightedQuantileAlgo.type8)])
     {{
+        enum interpretation = quantileOptions[0];
+        enum algorithm = quantileOptions[1];
         const int[2] data = [0, 10];
         foreach (bad; [0.5, -1.0, double.nan, double.infinity, 18446744073709551616.0])
         {
             double[2] counts = [bad, 1];
-            assertThrown!AssertError(rcWeightedQuantile!algorithm(data, counts, 0.5));
+            assertThrown!AssertError(rcWeightedQuantile!(interpretation, algorithm)(data, counts, 0.5));
         }
         const ulong[2] overflow = [weightedQuantileMaxFrequency, 1];
-        assertThrown!AssertError(rcWeightedQuantile!algorithm(data, overflow, 0.5));
+        assertThrown!AssertError(rcWeightedQuantile!(interpretation, algorithm)(data, overflow, 0.5));
         static if (real.mant_dig < 64)
         {
             const ulong[2] tooLarge = [weightedQuantileMaxFrequency + 1, 0];
-            assertThrown!AssertError(rcWeightedQuantile!algorithm(data, tooLarge, 0.5));
+            assertThrown!AssertError(rcWeightedQuantile!(interpretation, algorithm)(data, tooLarge, 0.5));
         }
     }}
 }
@@ -4396,7 +4700,7 @@ struct WeightedQuantileTable(Iterator, bool customAllocated = false)
             (algorithm == WeightedQuantileAlgo.inverseCDF || isFloatingPoint!F) && isNumeric!F && isFloatingPoint!P)
     {
         assert(length > 0, "WeightedQuantileTable: table must not be empty");
-        return weightedQuantileAt!(F, algorithm)(entries.lightScope, probability, 1);
+        return weightedQuantileAt!(F, WeightInterpretation.relative, algorithm)(entries.lightScope, probability, 1);
     }
 
     /// ditto
@@ -4535,12 +4839,12 @@ private auto allocatedWeightedQuantileTable(QuantileAllocation allocation, Conte
     alias Weight = Unqual!(typeof(masses).DeepElement);
     static assert(isNumeric!Element && isNumeric!Weight,
         "Weighted quantiles require numeric observations and weights");
-    alias Entry = WeightedQuantileEntry!(Element, WeightedQuantileAlgo.inverseCDF);
-    const input = validateWeightedQuantileInput!(WeightedQuantileAlgo.inverseCDF)(values.lightScope, masses.lightScope);
+    alias Entry = WeightedQuantileEntry!(Element, WeightInterpretation.relative, WeightedQuantileAlgo.inverseCDF);
+    const input = validateWeightedQuantileInput!(WeightInterpretation.relative, WeightedQuantileAlgo.inverseCDF)(values.lightScope, masses.lightScope);
     auto storage = allocateQuantiles!(Entry, allocation)(context, input.count);
     static if (allocation == QuantileAllocation.custom)
         scope(failure) releaseQuantiles(context, storage);
-    prepareWeightedQuantileWorkspace!(WeightedQuantileAlgo.inverseCDF)(
+    prepareWeightedQuantileWorkspace!(WeightInterpretation.relative, WeightedQuantileAlgo.inverseCDF)(
         storage.lightScope, values.lightScope, masses.lightScope, input.maximum);
     return WeightedQuantileTable!(IteratorOf!(typeof(storage)), allocation == QuantileAllocation.custom)(storage.move);
 }
@@ -5532,23 +5836,32 @@ version(mir_stat_test)
     double[2] probabilities = [0.25, 0.75];
     double[4][2] cases = [[1.0, 2, 1, 2], [1e-30, 2, 1, 2]];
     foreach (weights; cases)
-        static foreach (member; __traits(allMembers, A))
+        static foreach (quantileOptions; [
+            tuple(WeightInterpretation.relative, WeightedQuantileAlgo.inverseCDF),
+            tuple(WeightInterpretation.relative, WeightedQuantileAlgo.harrellDavis),
+            tuple(WeightInterpretation.relative, WeightedQuantileAlgo.trimmedHarrellDavis),
+            tuple(WeightInterpretation.relative, WeightedQuantileAlgo.type7),
+            tuple(WeightInterpretation.relative, WeightedQuantileAlgo.type8),
+            tuple(WeightInterpretation.relative, WeightedQuantileAlgo.averagedInverseCDF),
+            tuple(WeightInterpretation.frequency, WeightedQuantileAlgo.type7),
+            tuple(WeightInterpretation.frequency, WeightedQuantileAlgo.type8)])
         {{
-            enum algorithm = __traits(getMember, A, member);
-            static if (algorithm == A.frequencyType7 || algorithm == A.frequencyType8)
+            enum interpretation = quantileOptions[0];
+            enum algorithm = quantileOptions[1];
+            static if (interpretation == WeightInterpretation.frequency)
                 const supported = weights[0] == 1;
             else
                 enum supported = true;
             if (supported)
             {
                 QuantileTestAllocator!() allocator;
-                auto pair = allocatedWeightedQuantile!(real, algorithm,
+                auto pair = allocatedWeightedQuantile!(real, interpretation, algorithm,
                     QuantileAllocation.custom, 2)(allocator, weights, values, probabilities);
                 static assert(is(typeof(pair) == real[2]));
                 assert(allocator.allocations == 1 && allocator.releases == 1);
-                auto expected = rcWeightedQuantile!(real, algorithm)(values, weights, probabilities);
+                auto expected = rcWeightedQuantile!(real, interpretation, algorithm)(values, weights, probabilities);
                 assert(pair[0] == expected[0] && pair[1] == expected[1]);
-                assert(rcWeightedInterquartileRange!(real, algorithm)(values, weights) == pair[1] - pair[0]);
+                assert(rcWeightedInterquartileRange!(real, interpretation, algorithm)(values, weights) == pair[1] - pair[0]);
             }
         }}
 }
@@ -5573,7 +5886,7 @@ version(mir_stat_test)
         WeightedQuantileAlgo.type7])
     {{
         QuantileTestAllocator!() fixedAllocator, sliceAllocator;
-        assertThrown!Exception((allocatedWeightedQuantile!(double, algorithm,
+        assertThrown!Exception((allocatedWeightedQuantile!(double, WeightInterpretation.relative, algorithm,
             QuantileAllocation.custom, 2)(fixedAllocator, weights, values, probabilities)));
         assert(fixedAllocator.allocations == 1 && fixedAllocator.releases == 1);
         assertThrown!Exception(makeWeightedQuantile!algorithm(sliceAllocator, values, weights, probabilities));
@@ -6382,9 +6695,15 @@ unittest
     long[2] extremes = [long.min, long.max];
     uint[2] weights = [1, 1];
     assert(rcquantile(extremes, 0.5) == -0.5);
-    static foreach (algorithm; [WeightedQuantileAlgo.averagedInverseCDF,
-        WeightedQuantileAlgo.frequencyType7, WeightedQuantileAlgo.frequencyType8])
-        assert(rcWeightedQuantile!algorithm(extremes, weights, 0.5) == -0.5);
+    static foreach (quantileOptions; [
+        tuple(WeightInterpretation.relative, WeightedQuantileAlgo.averagedInverseCDF),
+        tuple(WeightInterpretation.frequency, WeightedQuantileAlgo.type7),
+        tuple(WeightInterpretation.frequency, WeightedQuantileAlgo.type8)])
+    {{
+        enum interpretation = quantileOptions[0];
+        enum algorithm = quantileOptions[1];
+        assert(rcWeightedQuantile!(interpretation, algorithm)(extremes, weights, 0.5) == -0.5);
+    }}
     ulong[2] nearby = [ulong.max - 2, ulong.max];
     assert(rcquantile!(QuantileAlgo.type1)(nearby, 1.0) == ulong.max);
 }
@@ -6751,7 +7070,7 @@ version(mir_stat_test)
     assertThrown!AssertError(rcWeightedMedian(values, [1, double.infinity]));
 }
 
-private F allocatedWeightedSpread(F, WeightedQuantileAlgo algorithm,
+private F allocatedWeightedSpread(F, WeightInterpretation interpretation, WeightedQuantileAlgo algorithm,
     QuantileAllocation allocation, Context, Data, Weights)(ref Context context,
     scope auto ref Data data, scope auto ref Weights weights)
 {
@@ -6761,7 +7080,7 @@ private F allocatedWeightedSpread(F, WeightedQuantileAlgo algorithm,
     double[2] probabilities = [0.25, 0.75];
     static if (algorithm == WeightedQuantileAlgo.inverseCDF && isIntegral!Element)
     {
-        auto quartiles = allocatedWeightedQuantile!(Element, algorithm, allocation, 2)(
+        auto quartiles = allocatedWeightedQuantile!(Element, interpretation, algorithm, allocation, 2)(
             context, weights, data, probabilities);
         const ulong distance = cast(ulong) quartiles[1] - cast(ulong) quartiles[0];
         static if (isIntegral!F)
@@ -6772,7 +7091,7 @@ private F allocatedWeightedSpread(F, WeightedQuantileAlgo algorithm,
     {
         static assert(isFloatingPoint!F,
             "weightedInterquartileRange: nonintegral observations require a floating result");
-        auto quartiles = allocatedWeightedQuantile!(real, algorithm, allocation, 2)(
+        auto quartiles = allocatedWeightedQuantile!(real, interpretation, algorithm, allocation, 2)(
             context, weights, data, probabilities);
         return cast(F)(quartiles[1] - quartiles[0]);
     }
@@ -6785,15 +7104,14 @@ Use this measure of spread when the middle half of the weighted distribution
 is more useful than a standard deviation that is sensitive to extreme values.
 The result has the same units as the observations. Inputs are not modified.
 
-Choose the existing $(LREF WeightedQuantileAlgo), rather than a variance
-normalization policy:
+Choose weight interpretation separately from $(LREF WeightedQuantileAlgo):
 $(UL
-    $(LI $(D inverseCDF), the default, selects observed values at the two
+    $(LI With relative weights, $(D inverseCDF), the default, selects observed values at the two
         cumulative-weight thresholds. Use it to describe a weighted distribution.)
-    $(LI $(D frequencyType7) or $(D frequencyType8) treats whole-number weights
-        as occurrence counts and uses the corresponding expanded-sample
+    $(LI With frequency weights, $(D type7) (the default) or $(D type8) uses
+        whole-number occurrence counts and the corresponding expanded-sample
         quantile convention. Rescaling counts changes the sample.)
-    $(LI The remaining algorithms treat weights as relative emphasis; scaling
+    $(LI All six algorithms support relative emphasis; scaling
         all weights by a common positive factor leaves the mathematical result
         unchanged. See $(LREF WeightedQuantileAlgo) for their definitions.)
 )
@@ -6816,37 +7134,74 @@ real precision depends on the compiler and platform.
 
 Params:
     F = result type; inferred as for weightedQuantile when omitted
-    algorithm = weighted quantile definition, default inverseCDF
+    interpretation = relative weights (default) or occurrence counts
+    algorithm = inverseCDF by default for relative weights, type7 for frequency counts
 +/
-template rcWeightedInterquartileRange(F,
-    WeightedQuantileAlgo algorithm = WeightedQuantileAlgo.inverseCDF)
-    if (isFloatingPoint!F || (algorithm == WeightedQuantileAlgo.inverseCDF && isIntegral!F))
+template rcWeightedInterquartileRange(F, WeightInterpretation interpretation,
+    WeightedQuantileAlgo algorithm)
+    if (validWeightedQuantileOptions!(interpretation, algorithm) &&
+        (isFloatingPoint!F || (algorithm == WeightedQuantileAlgo.inverseCDF && isIntegral!F)))
 {
     /++
     Params:
         data = observations corresponding to the weights
         weights = nonnegative finite relative weights, or whole-number counts
-            for frequencyType7 and frequencyType8
+            for WeightInterpretation.frequency
     +/
     F rcWeightedInterquartileRange(Data, Weights)(
         scope auto ref Data data, scope auto ref Weights weights)
     {
         QuantileContext context;
-        return allocatedWeightedSpread!(F, algorithm, QuantileAllocation.rc)(context, data, weights);
+        return allocatedWeightedSpread!(F, interpretation, algorithm, QuantileAllocation.rc)(context, data, weights);
     }
 }
 
 /// ditto
-template rcWeightedInterquartileRange(
-    WeightedQuantileAlgo algorithm = WeightedQuantileAlgo.inverseCDF)
+template rcWeightedInterquartileRange(F, WeightInterpretation interpretation = WeightInterpretation.relative)
+{
+    static if (interpretation == WeightInterpretation.frequency)
+        alias rcWeightedInterquartileRange = .rcWeightedInterquartileRange!(F, interpretation, WeightedQuantileAlgo.type7);
+    else
+        alias rcWeightedInterquartileRange = .rcWeightedInterquartileRange!(F, interpretation, WeightedQuantileAlgo.inverseCDF);
+}
+
+/// ditto
+template rcWeightedInterquartileRange(WeightInterpretation interpretation,
+    WeightedQuantileAlgo algorithm)
+    if (validWeightedQuantileOptions!(interpretation, algorithm))
 {
     /// ditto
     auto rcWeightedInterquartileRange(Data, Weights)(
         scope auto ref Data data, scope auto ref Weights weights)
     {
         alias F = WeightedQuantileResult!(Data, algorithm);
-        return .rcWeightedInterquartileRange!(F, algorithm)(data, weights);
+        return .rcWeightedInterquartileRange!(F, interpretation, algorithm)(data, weights);
     }
+}
+
+/// ditto
+template rcWeightedInterquartileRange(WeightInterpretation interpretation = WeightInterpretation.relative)
+{
+    static if (interpretation == WeightInterpretation.frequency)
+        alias rcWeightedInterquartileRange = .rcWeightedInterquartileRange!(interpretation, WeightedQuantileAlgo.type7);
+    else
+        alias rcWeightedInterquartileRange = .rcWeightedInterquartileRange!(interpretation, WeightedQuantileAlgo.inverseCDF);
+}
+
+/// ditto
+template rcWeightedInterquartileRange(F, WeightedQuantileAlgo algorithm,
+    WeightInterpretation interpretation = WeightInterpretation.relative)
+    if (validWeightedQuantileOptions!(interpretation, algorithm))
+{
+    alias rcWeightedInterquartileRange = .rcWeightedInterquartileRange!(F, interpretation, algorithm);
+}
+
+/// ditto
+template rcWeightedInterquartileRange(WeightedQuantileAlgo algorithm,
+    WeightInterpretation interpretation = WeightInterpretation.relative)
+    if (validWeightedQuantileOptions!(interpretation, algorithm))
+{
+    alias rcWeightedInterquartileRange = .rcWeightedInterquartileRange!(interpretation, algorithm);
 }
 
 /// The quantile convention determines the spread of the same weighted data.
@@ -6859,7 +7214,7 @@ template rcWeightedInterquartileRange(
     double[2] probabilities = [0.25, 0.75];
     assert(rcWeightedInterquartileRange(values, counts) == 10);
     assert(rcWeightedInterquartileRange(values, probabilities) == 10);
-    assert(rcWeightedInterquartileRange!(WeightedQuantileAlgo.frequencyType7)(values, counts).approxEqual(2.5));
+    assert(rcWeightedInterquartileRange!(WeightInterpretation.frequency, WeightedQuantileAlgo.type7)(values, counts).approxEqual(2.5));
 }
 
 /++
@@ -7397,36 +7752,73 @@ storage management; there is no input-modification option.
 
 Params:
     F = output type, inferred as for weightedInterquartileRange when omitted
-    algorithm = weighted quantile convention, default inverseCDF
+    interpretation = relative weights (default) or occurrence counts
+    algorithm = inverseCDF by default for relative weights, type7 for frequency counts
 +/
-template makeWeightedInterquartileRange(F,
-    WeightedQuantileAlgo algorithm = WeightedQuantileAlgo.inverseCDF)
-    if (isFloatingPoint!F || (algorithm == WeightedQuantileAlgo.inverseCDF && isIntegral!F))
+template makeWeightedInterquartileRange(F, WeightInterpretation interpretation,
+    WeightedQuantileAlgo algorithm)
+    if (validWeightedQuantileOptions!(interpretation, algorithm) &&
+        (isFloatingPoint!F || (algorithm == WeightedQuantileAlgo.inverseCDF && isIntegral!F)))
 {
     /++
     Params:
         allocator = allocator for temporary storage
         data = observations corresponding to the weights
-        weights = relative weights, or counts for frequency algorithms
+        weights = relative weights, or counts with frequency interpretation
     +/
     F makeWeightedInterquartileRange(Allocator, Data, Weights)(auto ref Allocator allocator,
         scope auto ref Data data, scope auto ref Weights weights)
     {
-        return allocatedWeightedSpread!(F, algorithm, QuantileAllocation.custom)(allocator, data, weights);
+        return allocatedWeightedSpread!(F, interpretation, algorithm, QuantileAllocation.custom)(allocator, data, weights);
     }
 }
 
 /// ditto
-template makeWeightedInterquartileRange(
-    WeightedQuantileAlgo algorithm = WeightedQuantileAlgo.inverseCDF)
+template makeWeightedInterquartileRange(F, WeightInterpretation interpretation = WeightInterpretation.relative)
+{
+    static if (interpretation == WeightInterpretation.frequency)
+        alias makeWeightedInterquartileRange = .makeWeightedInterquartileRange!(F, interpretation, WeightedQuantileAlgo.type7);
+    else
+        alias makeWeightedInterquartileRange = .makeWeightedInterquartileRange!(F, interpretation, WeightedQuantileAlgo.inverseCDF);
+}
+
+/// ditto
+template makeWeightedInterquartileRange(WeightInterpretation interpretation,
+    WeightedQuantileAlgo algorithm)
+    if (validWeightedQuantileOptions!(interpretation, algorithm))
 {
     /// ditto
     auto makeWeightedInterquartileRange(Allocator, Data, Weights)(auto ref Allocator allocator,
         scope auto ref Data data, scope auto ref Weights weights)
     {
         alias F = WeightedQuantileResult!(Data, algorithm);
-        return .makeWeightedInterquartileRange!(F, algorithm)(allocator, data, weights);
+        return .makeWeightedInterquartileRange!(F, interpretation, algorithm)(allocator, data, weights);
     }
+}
+
+/// ditto
+template makeWeightedInterquartileRange(WeightInterpretation interpretation = WeightInterpretation.relative)
+{
+    static if (interpretation == WeightInterpretation.frequency)
+        alias makeWeightedInterquartileRange = .makeWeightedInterquartileRange!(interpretation, WeightedQuantileAlgo.type7);
+    else
+        alias makeWeightedInterquartileRange = .makeWeightedInterquartileRange!(interpretation, WeightedQuantileAlgo.inverseCDF);
+}
+
+/// ditto
+template makeWeightedInterquartileRange(F, WeightedQuantileAlgo algorithm,
+    WeightInterpretation interpretation = WeightInterpretation.relative)
+    if (validWeightedQuantileOptions!(interpretation, algorithm))
+{
+    alias makeWeightedInterquartileRange = .makeWeightedInterquartileRange!(F, interpretation, algorithm);
+}
+
+/// ditto
+template makeWeightedInterquartileRange(WeightedQuantileAlgo algorithm,
+    WeightInterpretation interpretation = WeightInterpretation.relative)
+    if (validWeightedQuantileOptions!(interpretation, algorithm))
+{
+    alias makeWeightedInterquartileRange = .makeWeightedInterquartileRange!(interpretation, algorithm);
 }
 
 /// A custom allocator controls scratch; all four results are scalars.
@@ -7520,11 +7912,20 @@ version(mir_stat_test)
             assert(makeInterquartileRange!algorithm(allocator, data, 0.125) == rcInterquartileRange!algorithm(data[].sliced, 0.125));
             assert(makeInterquartileRange!algorithm(allocator, data, 0.25, 0.875) == rcInterquartileRange!algorithm(data[].sliced, 0.25, 0.875));
         }}
-        static foreach (member; __traits(allMembers, WeightedQuantileAlgo))
+        static foreach (quantileOptions; [
+            tuple(WeightInterpretation.relative, WeightedQuantileAlgo.inverseCDF),
+            tuple(WeightInterpretation.relative, WeightedQuantileAlgo.harrellDavis),
+            tuple(WeightInterpretation.relative, WeightedQuantileAlgo.trimmedHarrellDavis),
+            tuple(WeightInterpretation.relative, WeightedQuantileAlgo.type7),
+            tuple(WeightInterpretation.relative, WeightedQuantileAlgo.type8),
+            tuple(WeightInterpretation.relative, WeightedQuantileAlgo.averagedInverseCDF),
+            tuple(WeightInterpretation.frequency, WeightedQuantileAlgo.type7),
+            tuple(WeightInterpretation.frequency, WeightedQuantileAlgo.type8)])
         {{
-            enum algorithm = __traits(getMember, WeightedQuantileAlgo, member);
+            enum interpretation = quantileOptions[0];
+            enum algorithm = quantileOptions[1];
             auto before = allocator.allocations;
-            assert(makeWeightedInterquartileRange!algorithm(allocator, data, counts) == rcWeightedInterquartileRange!algorithm(data, counts));
+            assert(makeWeightedInterquartileRange!(interpretation, algorithm)(allocator, data, counts) == rcWeightedInterquartileRange!(interpretation, algorithm)(data, counts));
             assert(allocator.allocations == before + 1 && allocator.releases == allocator.allocations);
         }}
         assert(allocator.allocations == allocator.releases);
@@ -7641,35 +8042,72 @@ while retaining weighted MAD's integral-offset and overflow safeguards.
 
 Params:
     F = output type, promoted as for weightedMedianAbsoluteDeviation
-    algorithm = weighted quantile convention, default averagedInverseCDF
+    interpretation = relative weights (default) or occurrence counts
+    algorithm = averagedInverseCDF by default for relative weights, type7 for frequency counts
 +/
-template makeWeightedMedianAbsoluteDeviation(F,
-    WeightedQuantileAlgo algorithm = WeightedQuantileAlgo.averagedInverseCDF)
+template makeWeightedMedianAbsoluteDeviation(F, WeightInterpretation interpretation,
+    WeightedQuantileAlgo algorithm)
+    if (validWeightedQuantileOptions!(interpretation, algorithm))
 {
     /++
     Params:
         allocator = allocator for temporary storage
         data = observations corresponding to the weights
-        weights = relative weights, or occurrence counts for frequency algorithms
+        weights = relative weights, or occurrence counts with frequency interpretation
     +/
     meanType!F makeWeightedMedianAbsoluteDeviation(Allocator, Data, Weights)(
         auto ref Allocator allocator, scope auto ref Data data, scope auto ref Weights weights)
     {
-        return allocatedWeightedMAD!(F, algorithm, QuantileAllocation.custom)(allocator, data, weights);
+        return allocatedWeightedMAD!(F, interpretation, algorithm, QuantileAllocation.custom)(allocator, data, weights);
     }
 }
 
 /// ditto
-template makeWeightedMedianAbsoluteDeviation(
-    WeightedQuantileAlgo algorithm = WeightedQuantileAlgo.averagedInverseCDF)
+template makeWeightedMedianAbsoluteDeviation(F, WeightInterpretation interpretation = WeightInterpretation.relative)
+{
+    static if (interpretation == WeightInterpretation.frequency)
+        alias makeWeightedMedianAbsoluteDeviation = .makeWeightedMedianAbsoluteDeviation!(F, interpretation, WeightedQuantileAlgo.type7);
+    else
+        alias makeWeightedMedianAbsoluteDeviation = .makeWeightedMedianAbsoluteDeviation!(F, interpretation, WeightedQuantileAlgo.averagedInverseCDF);
+}
+
+/// ditto
+template makeWeightedMedianAbsoluteDeviation(WeightInterpretation interpretation,
+    WeightedQuantileAlgo algorithm)
+    if (validWeightedQuantileOptions!(interpretation, algorithm))
 {
     /// ditto
     auto makeWeightedMedianAbsoluteDeviation(Allocator, Data, Weights)(
         auto ref Allocator allocator, scope auto ref Data data, scope auto ref Weights weights)
     {
         import mir.primitives: DeepElementType;
-        return .makeWeightedMedianAbsoluteDeviation!(DeepElementType!Data, algorithm)(allocator, data, weights);
+        return .makeWeightedMedianAbsoluteDeviation!(DeepElementType!Data, interpretation, algorithm)(allocator, data, weights);
     }
+}
+
+/// ditto
+template makeWeightedMedianAbsoluteDeviation(WeightInterpretation interpretation = WeightInterpretation.relative)
+{
+    static if (interpretation == WeightInterpretation.frequency)
+        alias makeWeightedMedianAbsoluteDeviation = .makeWeightedMedianAbsoluteDeviation!(interpretation, WeightedQuantileAlgo.type7);
+    else
+        alias makeWeightedMedianAbsoluteDeviation = .makeWeightedMedianAbsoluteDeviation!(interpretation, WeightedQuantileAlgo.averagedInverseCDF);
+}
+
+/// ditto
+template makeWeightedMedianAbsoluteDeviation(F, WeightedQuantileAlgo algorithm,
+    WeightInterpretation interpretation = WeightInterpretation.relative)
+    if (validWeightedQuantileOptions!(interpretation, algorithm))
+{
+    alias makeWeightedMedianAbsoluteDeviation = .makeWeightedMedianAbsoluteDeviation!(F, interpretation, algorithm);
+}
+
+/// ditto
+template makeWeightedMedianAbsoluteDeviation(WeightedQuantileAlgo algorithm,
+    WeightInterpretation interpretation = WeightInterpretation.relative)
+    if (validWeightedQuantileOptions!(interpretation, algorithm))
+{
+    alias makeWeightedMedianAbsoluteDeviation = .makeWeightedMedianAbsoluteDeviation!(interpretation, algorithm);
 }
 
 /// Allocator selection leaves the raw MAD convention unchanged.
@@ -7703,12 +8141,21 @@ version(mir_stat_test)
         assert(makeMedianAbsoluteDeviation(ordinary, values) == 3);
         enum count = isIntegral!T && T.sizeof == 8 ? 1 : 2;
         assert(ordinary.allocations == count && ordinary.releases == count);
-        static foreach (member; __traits(allMembers, A))
+        static foreach (quantileOptions; [
+            tuple(WeightInterpretation.relative, WeightedQuantileAlgo.inverseCDF),
+            tuple(WeightInterpretation.relative, WeightedQuantileAlgo.harrellDavis),
+            tuple(WeightInterpretation.relative, WeightedQuantileAlgo.trimmedHarrellDavis),
+            tuple(WeightInterpretation.relative, WeightedQuantileAlgo.type7),
+            tuple(WeightInterpretation.relative, WeightedQuantileAlgo.type8),
+            tuple(WeightInterpretation.relative, WeightedQuantileAlgo.averagedInverseCDF),
+            tuple(WeightInterpretation.frequency, WeightedQuantileAlgo.type7),
+            tuple(WeightInterpretation.frequency, WeightedQuantileAlgo.type8)])
         {{
-            enum algorithm = __traits(getMember, A, member);
+            enum interpretation = quantileOptions[0];
+            enum algorithm = quantileOptions[1];
             QuantileTestAllocator!() allocator;
-            const result = makeWeightedMedianAbsoluteDeviation!algorithm(allocator, values, weights);
-            assert(result == rcWeightedMedianAbsoluteDeviation!algorithm(values, weights));
+            const result = makeWeightedMedianAbsoluteDeviation!(interpretation, algorithm)(allocator, values, weights);
+            assert(result == rcWeightedMedianAbsoluteDeviation!(interpretation, algorithm)(values, weights));
             enum expected = isIntegral!T && algorithm != A.inverseCDF ? 4 : 3;
             assert(allocator.allocations == expected && allocator.releases == expected);
         }}
@@ -7812,7 +8259,7 @@ version(mir_stat_test)
     assert(allocator.allocations == 1 && allocator.releases == 1);
 }
 
-private meanType!F allocatedWeightedMAD(F, WeightedQuantileAlgo algorithm,
+private meanType!F allocatedWeightedMAD(F, WeightInterpretation interpretation, WeightedQuantileAlgo algorithm,
     QuantileAllocation allocation, Context, Data, Weights)(ref Context context,
     scope auto ref Data data, scope auto ref Weights weights)
 {
@@ -7843,25 +8290,25 @@ private meanType!F allocatedWeightedMAD(F, WeightedQuantileAlgo algorithm,
                 offsets[i] = cast(ulong) values[i] - cast(ulong) anchor;
         static if (algorithm == WeightedQuantileAlgo.inverseCDF)
         {
-            const center = allocatedWeightedQuantile!(ulong, algorithm, allocation)(context, masses, offsets, 0.5);
+            const center = allocatedWeightedQuantile!(ulong, interpretation, algorithm, allocation)(context, masses, offsets, 0.5);
             foreach (ref value; offsets)
                 value = value < center ? center - value : value - center;
-            return cast(Result) allocatedWeightedQuantile!(ulong, algorithm, allocation)(context, masses, offsets, 0.5);
+            return cast(Result) allocatedWeightedQuantile!(ulong, interpretation, algorithm, allocation)(context, masses, offsets, 0.5);
         }
         else
         {
-            const center = allocatedWeightedQuantile!(real, algorithm, allocation)(context, masses, offsets, 0.5);
+            const center = allocatedWeightedQuantile!(real, interpretation, algorithm, allocation)(context, masses, offsets, 0.5);
             auto deviations = allocateQuantiles!(real, allocation)(context, values.length);
             static if (allocation == QuantileAllocation.custom)
                 scope(exit) releaseQuantiles(context, deviations);
             foreach (i; 0 .. values.length)
                 if (masses[i] > 0) deviations[i] = abs(cast(real) offsets[i] - center);
-            return cast(Result) allocatedWeightedQuantile!(real, algorithm, allocation)(context, masses, deviations, 0.5);
+            return cast(Result) allocatedWeightedQuantile!(real, interpretation, algorithm, allocation)(context, masses, deviations, 0.5);
         }
     }
     else
     {
-        const center = allocatedWeightedQuantile!(real, algorithm, allocation)(context, masses, values, 0.5);
+        const center = allocatedWeightedQuantile!(real, interpretation, algorithm, allocation)(context, masses, values, 0.5);
         bool halve;
         foreach (i; 0 .. values.length)
             if (masses[i] > 0 && !isFinite(cast(real) values[i] - center))
@@ -7879,7 +8326,7 @@ private meanType!F allocatedWeightedMAD(F, WeightedQuantileAlgo algorithm,
                 deviations[i] = halve ? (isFinite(gap) ? abs(gap) / 2 :
                     abs(value / 2 - center / 2)) : abs(gap);
             }
-        const result = allocatedWeightedQuantile!(real, algorithm, allocation)(context, masses, deviations, 0.5);
+        const result = allocatedWeightedQuantile!(real, interpretation, algorithm, allocation)(context, masses, deviations, 0.5);
         return cast(Result) (halve ? ldexp(result, 1) : result);
     }
 }
@@ -7894,7 +8341,7 @@ absolute deviations. Each deviation retains its observation's original weight.
 The result has the same units as the observations; no normal-distribution
 consistency factor or sample-variance correction is applied.
 
-The default, $(D averagedInverseCDF), uses the same convention as
+The relative-weight default, $(D averagedInverseCDF), uses the same convention as
 $(LREF weightedMedian) for both stages: average adjacent observations at an
 exact halfway boundary. With equal weights this follows ordinary
 $(LREF medianAbsoluteDeviation); whole-number counts follow the MAD of the
@@ -7903,8 +8350,8 @@ both absolute deviations are 5, and MAD is 5.
 
 Choose $(D inverseCDF) when both quantile stages should select an observed
 value instead of averaging at a boundary. For the same example it selects
-center 0, then deviation 0, giving MAD 0. Choose $(D frequencyType7) or
-$(D frequencyType8) to explicitly use expanded-sample quantiles with
+center 0, then deviation 0, giving MAD 0. Choose frequency interpretation with
+$(D type7) (its default) or $(D type8) to use expanded-sample quantiles with
 whole-number counts. These also give MAD 5. Fractional relative weights are
 accepted by the default, so no frequency option is needed just to match the
 usual median convention.
@@ -7918,7 +8365,7 @@ Input requirements and algorithm-specific numerical limits follow
 $(LREF weightedQuantile). Observations and weights must be one-dimensional
 and have matching lengths. Weights must be finite and nonnegative, with at
 least one positive weight. Zero-weight observations are excluded, including
-nonfinite observations. Frequency algorithms additionally require whole-number
+nonfinite observations. Frequency interpretation additionally require whole-number
 counts within the weighted quantile engine's supported range.
 
 Inputs are not modified. Reference-counted scratch storage holds deviations
@@ -7936,35 +8383,72 @@ end. The precision and range of real depend on the compiler and platform.
 
 Params:
     F = result type, promoted to floating point as for medianAbsoluteDeviation
-    algorithm = weighted quantile definition, default averagedInverseCDF
+    interpretation = relative weights (default) or occurrence counts
+    algorithm = averagedInverseCDF by default for relative weights, type7 for frequency counts
 +/
-template rcWeightedMedianAbsoluteDeviation(F,
-    WeightedQuantileAlgo algorithm = WeightedQuantileAlgo.averagedInverseCDF)
+template rcWeightedMedianAbsoluteDeviation(F, WeightInterpretation interpretation,
+    WeightedQuantileAlgo algorithm)
+    if (validWeightedQuantileOptions!(interpretation, algorithm))
 {
     /++
     Params:
         data = observations corresponding to the weights
-        weights = relative weights, or occurrence counts for frequency algorithms
+        weights = relative weights, or occurrence counts with frequency interpretation
     +/
     meanType!F rcWeightedMedianAbsoluteDeviation(Data, Weights)(
         scope auto ref Data data, scope auto ref Weights weights)
     {
         QuantileContext context;
-        return allocatedWeightedMAD!(F, algorithm, QuantileAllocation.rc)(context, data, weights);
+        return allocatedWeightedMAD!(F, interpretation, algorithm, QuantileAllocation.rc)(context, data, weights);
     }
 }
 
 /// ditto
-template rcWeightedMedianAbsoluteDeviation(
-    WeightedQuantileAlgo algorithm = WeightedQuantileAlgo.averagedInverseCDF)
+template rcWeightedMedianAbsoluteDeviation(F, WeightInterpretation interpretation = WeightInterpretation.relative)
+{
+    static if (interpretation == WeightInterpretation.frequency)
+        alias rcWeightedMedianAbsoluteDeviation = .rcWeightedMedianAbsoluteDeviation!(F, interpretation, WeightedQuantileAlgo.type7);
+    else
+        alias rcWeightedMedianAbsoluteDeviation = .rcWeightedMedianAbsoluteDeviation!(F, interpretation, WeightedQuantileAlgo.averagedInverseCDF);
+}
+
+/// ditto
+template rcWeightedMedianAbsoluteDeviation(WeightInterpretation interpretation,
+    WeightedQuantileAlgo algorithm)
+    if (validWeightedQuantileOptions!(interpretation, algorithm))
 {
     /// ditto
     auto rcWeightedMedianAbsoluteDeviation(Data, Weights)(
         scope auto ref Data data, scope auto ref Weights weights)
     {
         import mir.primitives: DeepElementType;
-        return .rcWeightedMedianAbsoluteDeviation!(DeepElementType!Data, algorithm)(data, weights);
+        return .rcWeightedMedianAbsoluteDeviation!(DeepElementType!Data, interpretation, algorithm)(data, weights);
     }
+}
+
+/// ditto
+template rcWeightedMedianAbsoluteDeviation(WeightInterpretation interpretation = WeightInterpretation.relative)
+{
+    static if (interpretation == WeightInterpretation.frequency)
+        alias rcWeightedMedianAbsoluteDeviation = .rcWeightedMedianAbsoluteDeviation!(interpretation, WeightedQuantileAlgo.type7);
+    else
+        alias rcWeightedMedianAbsoluteDeviation = .rcWeightedMedianAbsoluteDeviation!(interpretation, WeightedQuantileAlgo.averagedInverseCDF);
+}
+
+/// ditto
+template rcWeightedMedianAbsoluteDeviation(F, WeightedQuantileAlgo algorithm,
+    WeightInterpretation interpretation = WeightInterpretation.relative)
+    if (validWeightedQuantileOptions!(interpretation, algorithm))
+{
+    alias rcWeightedMedianAbsoluteDeviation = .rcWeightedMedianAbsoluteDeviation!(F, interpretation, algorithm);
+}
+
+/// ditto
+template rcWeightedMedianAbsoluteDeviation(WeightedQuantileAlgo algorithm,
+    WeightInterpretation interpretation = WeightInterpretation.relative)
+    if (validWeightedQuantileOptions!(interpretation, algorithm))
+{
+    alias rcWeightedMedianAbsoluteDeviation = .rcWeightedMedianAbsoluteDeviation!(interpretation, algorithm);
 }
 
 /// Choose the convention that matches the meaning of your observations.
@@ -7975,7 +8459,7 @@ template rcWeightedMedianAbsoluteDeviation(
     int[2] counts = [1, 1];
     assert(rcWeightedMedianAbsoluteDeviation(values, counts) == 5);
     assert(rcWeightedMedianAbsoluteDeviation!(WeightedQuantileAlgo.inverseCDF)(values, counts) == 0);
-    assert(rcWeightedMedianAbsoluteDeviation!(WeightedQuantileAlgo.frequencyType7)(values, counts) == 5);
+    assert(rcWeightedMedianAbsoluteDeviation!(WeightInterpretation.frequency, WeightedQuantileAlgo.type7)(values, counts) == 5);
     assert(rcWeightedMedianAbsoluteDeviation!(WeightedQuantileAlgo.averagedInverseCDF)(values, counts) == 5);
     double[3] data = [0, 10, 1000];
     double[3] emphasis = [2, 3, 1];
@@ -8424,9 +8908,10 @@ version(mir_stat_test)
 private void testWeightedInverseBoundaries(P, bool averaged)()
 {
     import std.math: nextafter;
+    enum interpretation = WeightInterpretation.relative;
     enum algorithm = averaged ? WeightedQuantileAlgo.averagedInverseCDF
                               : WeightedQuantileAlgo.inverseCDF;
-    WeightedQuantileEntry!(double, algorithm)[32] entries;
+    WeightedQuantileEntry!(double, interpretation, algorithm)[32] entries;
     foreach (n; 2 .. entries.length + 1)
     foreach (kind; 0 .. 4)
     foreach (duplicates; [false, true])
@@ -8463,7 +8948,7 @@ private void testWeightedInverseBoundaries(P, bool averaged)()
                         entries[next - 1].cumulative / cumulative == cast(real)p)
                         expected = (expected + entries[next].value) / 2;
                 }
-                assert((weightedQuantileAt!(double, algorithm)(entries[0 .. n], p, 1)) == expected);
+                assert((weightedQuantileAt!(double, interpretation, algorithm)(entries[0 .. n], p, 1)) == expected);
             }
         }
     }
@@ -8625,22 +9110,31 @@ version(mir_stat_test)
     {{
         T[4] values = [0, 2, 6, 10], weights = [1, 2, 1, 2];
         T[6] expanded = [0, 2, 2, 6, 10, 10];
-        static foreach (algorithm; __traits(allMembers, A))
+        static foreach (quantileOptions; [
+            tuple(WeightInterpretation.relative, WeightedQuantileAlgo.inverseCDF),
+            tuple(WeightInterpretation.relative, WeightedQuantileAlgo.harrellDavis),
+            tuple(WeightInterpretation.relative, WeightedQuantileAlgo.trimmedHarrellDavis),
+            tuple(WeightInterpretation.relative, WeightedQuantileAlgo.type7),
+            tuple(WeightInterpretation.relative, WeightedQuantileAlgo.type8),
+            tuple(WeightInterpretation.relative, WeightedQuantileAlgo.averagedInverseCDF),
+            tuple(WeightInterpretation.frequency, WeightedQuantileAlgo.type7),
+            tuple(WeightInterpretation.frequency, WeightedQuantileAlgo.type8)])
         {{
-            enum algo = __traits(getMember, A, algorithm);
-            const spread = rcWeightedInterquartileRange!(algo)(values, weights);
+            enum interpretation = quantileOptions[0];
+            enum algo = quantileOptions[1];
+            const spread = rcWeightedInterquartileRange!(interpretation, algo)(values, weights);
             assert(spread >= 0);
             T[4] constant = [3, 3, 3, 3];
-            assert(rcWeightedInterquartileRange!(algo)(constant, weights) == 0);
-            static if (algo == A.frequencyType7 || algo == A.frequencyType8)
+            assert(rcWeightedInterquartileRange!(interpretation, algo)(constant, weights) == 0);
+            static if (interpretation == WeightInterpretation.frequency)
             {
-                enum ordinary = algo == A.frequencyType7 ? QuantileAlgo.type7 : QuantileAlgo.type8;
+                enum ordinary = (interpretation == WeightInterpretation.frequency && algo == WeightedQuantileAlgo.type7) ? QuantileAlgo.type7 : QuantileAlgo.type8;
                 assert(spread.approxEqual(rcInterquartileRange!ordinary(expanded[].sliced), 128 * T.epsilon));
             }
             else
             {
                 T[4] scaledWeights = [4, 8, 4, 8];
-                assert(spread.approxEqual(rcWeightedInterquartileRange!algo(values, scaledWeights), 128 * T.epsilon));
+                assert(spread.approxEqual(rcWeightedInterquartileRange!(interpretation, algo)(values, scaledWeights), 128 * T.epsilon));
             }
         }}
         static assert(is(typeof(rcWeightedInterquartileRange(values, weights)) == T));
@@ -8683,7 +9177,7 @@ unittest
     assertThrown!AssertError(rcWeightedInterquartileRange(x, negative));
     assertThrown!AssertError(rcWeightedInterquartileRange(x, equal[0 .. 1]));
     assertThrown!AssertError(rcWeightedInterquartileRange(x[0 .. 0], equal[0 .. 0]));
-    assertThrown!AssertError(rcWeightedInterquartileRange!(WeightedQuantileAlgo.frequencyType7)(x, fractional));
+    assertThrown!AssertError(rcWeightedInterquartileRange!(WeightInterpretation.frequency, WeightedQuantileAlgo.type7)(x, fractional));
     foreach (bad; [double.nan, double.infinity])
     {
         double[2] weights = [1, bad];
@@ -8709,20 +9203,29 @@ version(mir_stat_test)
             rcMedianAbsoluteDeviation(values[].sliced));
         assert(rcWeightedMedianAbsoluteDeviation(values, weights) ==
             rcMedianAbsoluteDeviation(expanded[].sliced));
-        static foreach (member; __traits(allMembers, A))
+        static foreach (quantileOptions; [
+            tuple(WeightInterpretation.relative, WeightedQuantileAlgo.inverseCDF),
+            tuple(WeightInterpretation.relative, WeightedQuantileAlgo.harrellDavis),
+            tuple(WeightInterpretation.relative, WeightedQuantileAlgo.trimmedHarrellDavis),
+            tuple(WeightInterpretation.relative, WeightedQuantileAlgo.type7),
+            tuple(WeightInterpretation.relative, WeightedQuantileAlgo.type8),
+            tuple(WeightInterpretation.relative, WeightedQuantileAlgo.averagedInverseCDF),
+            tuple(WeightInterpretation.frequency, WeightedQuantileAlgo.type7),
+            tuple(WeightInterpretation.frequency, WeightedQuantileAlgo.type8)])
         {{
-            enum algo = __traits(getMember, A, member);
-            const result = rcWeightedMedianAbsoluteDeviation!algo(values, weights);
+            enum interpretation = quantileOptions[0];
+            enum algo = quantileOptions[1];
+            const result = rcWeightedMedianAbsoluteDeviation!(interpretation, algo)(values, weights);
             alias R = typeof(result);
             T[4] constant = [3, 3, 3, 3];
-            assert(rcWeightedMedianAbsoluteDeviation!algo(constant, weights) == 0);
-            static if (algo == A.frequencyType7 || algo == A.frequencyType8)
+            assert(rcWeightedMedianAbsoluteDeviation!(interpretation, algo)(constant, weights) == 0);
+            static if (interpretation == WeightInterpretation.frequency)
                 assert(result.approxEqual(rcMedianAbsoluteDeviation(expanded[].sliced), 256 * R.epsilon));
             else
-                assert(result.approxEqual(rcWeightedMedianAbsoluteDeviation!algo(values, scaledWeights), 256 * R.epsilon));
+                assert(result.approxEqual(rcWeightedMedianAbsoluteDeviation!(interpretation, algo)(values, scaledWeights), 256 * R.epsilon));
             // Translating and scaling observations preserve/scale raw MAD.
             T[4] transformed = [20, 24, 32, 40];
-            assert((2 * result).approxEqual(rcWeightedMedianAbsoluteDeviation!algo(transformed, weights), 256 * R.epsilon));
+            assert((2 * result).approxEqual(rcWeightedMedianAbsoluteDeviation!(interpretation, algo)(transformed, weights), 256 * R.epsilon));
         }}
     }}
     double[4] values = [100, 0, 2, 10];
@@ -8735,7 +9238,7 @@ version(mir_stat_test)
     const double[3] masked = [double.nan, 0, 10];
     const int[3] mask = [0, 1, 1];
     assert(rcWeightedMedianAbsoluteDeviation(masked, mask) == 5);
-    assert(rcWeightedMedianAbsoluteDeviation!(A.frequencyType7)(masked, mask) == 5);
+    assert(rcWeightedMedianAbsoluteDeviation!(WeightInterpretation.frequency, WeightedQuantileAlgo.type7)(masked, mask) == 5);
     double[1] one = [7];
     int[1] unit = [1];
     assert(rcWeightedMedianAbsoluteDeviation(one, unit) == 0);
@@ -8743,21 +9246,27 @@ version(mir_stat_test)
     static assert(is(typeof(rcWeightedMedianAbsoluteDeviation!float(values, weights)) == float));
     long[3] nearMax = [long.max - 2, long.max - 1, long.max];
     int[3] equal = [1, 1, 1];
-    static foreach (algo; [A.inverseCDF, A.averagedInverseCDF, A.frequencyType7, A.frequencyType8])
-    {
-        assert(rcWeightedMedianAbsoluteDeviation!algo(nearMax, equal) == 1);
-        assert(rcWeightedMedianAbsoluteDeviation!(float, algo)(nearMax, equal) == 1);
-    }
+    static foreach (quantileOptions; [
+        tuple(WeightInterpretation.relative, WeightedQuantileAlgo.inverseCDF),
+        tuple(WeightInterpretation.relative, WeightedQuantileAlgo.averagedInverseCDF),
+        tuple(WeightInterpretation.frequency, WeightedQuantileAlgo.type7),
+        tuple(WeightInterpretation.frequency, WeightedQuantileAlgo.type8)])
+    {{
+        enum interpretation = quantileOptions[0];
+        enum algo = quantileOptions[1];
+        assert(rcWeightedMedianAbsoluteDeviation!(interpretation, algo)(nearMax, equal) == 1);
+        assert(rcWeightedMedianAbsoluteDeviation!(float, interpretation, algo)(nearMax, equal) == 1);
+    }}
     long[2] adjacent = [long.max - 1, long.max];
     int[2] pair = [1, 1];
     assert(rcWeightedMedianAbsoluteDeviation(adjacent, pair) == 0.5);
-    assert(rcWeightedMedianAbsoluteDeviation!(A.frequencyType7)(adjacent, pair) == 0.5);
+    assert(rcWeightedMedianAbsoluteDeviation!(WeightInterpretation.frequency, WeightedQuantileAlgo.type7)(adjacent, pair) == 0.5);
     long[2] fullSigned = [long.min, long.max];
     assert(rcWeightedMedianAbsoluteDeviation!(A.inverseCDF)(fullSigned, pair) == 0);
     assert(rcWeightedMedianAbsoluteDeviation(fullSigned, pair) == 0x1p63);
-    assert(rcWeightedMedianAbsoluteDeviation!(A.frequencyType7)(fullSigned, pair) == 0x1p63);
+    assert(rcWeightedMedianAbsoluteDeviation!(WeightInterpretation.frequency, WeightedQuantileAlgo.type7)(fullSigned, pair) == 0x1p63);
     ulong[3] unsignedHigh = [ulong.max - 2, ulong.max - 1, ulong.max];
-    assert(rcWeightedMedianAbsoluteDeviation!(A.frequencyType7)(unsignedHigh, equal) == 1);
+    assert(rcWeightedMedianAbsoluteDeviation!(WeightInterpretation.frequency, WeightedQuantileAlgo.type7)(unsignedHigh, equal) == 1);
     real[4] extreme = [-real.max, -real.max / 2, real.max / 2, real.max];
     int[4] uniform = [1, 1, 1, 1];
     // The last deviation overflows real, but the selected MAD is finite.
@@ -8778,8 +9287,8 @@ unittest
     assertThrown!AssertError(rcWeightedMedianAbsoluteDeviation(integers, negative));
     assertThrown!AssertError(rcWeightedMedianAbsoluteDeviation(x, zero[0 .. 1]));
     assertThrown!AssertError(rcWeightedMedianAbsoluteDeviation(x[0 .. 0], zero[0 .. 0]));
-    assertThrown!AssertError(rcWeightedMedianAbsoluteDeviation!(WeightedQuantileAlgo.frequencyType7)(x, fractional));
-    assertThrown!AssertError(rcWeightedMedianAbsoluteDeviation!(WeightedQuantileAlgo.frequencyType7)(integers, fractional));
+    assertThrown!AssertError(rcWeightedMedianAbsoluteDeviation!(WeightInterpretation.frequency, WeightedQuantileAlgo.type7)(x, fractional));
+    assertThrown!AssertError(rcWeightedMedianAbsoluteDeviation!(WeightInterpretation.frequency, WeightedQuantileAlgo.type7)(integers, fractional));
     foreach (bad; [double.nan, double.infinity])
     {
         double[2] invalid = [1, bad];
@@ -8845,11 +9354,20 @@ version(mir_stat_test)
             assert(interquartileRange!algorithm(matrix, 0.125) == rcInterquartileRange!algorithm(matrix, 0.125));
             assert(interquartileRange!algorithm(matrix, 0.25, 0.875) == rcInterquartileRange!algorithm(matrix, 0.25, 0.875));
         }}
-        static foreach (member; __traits(allMembers, WeightedQuantileAlgo))
+        static foreach (quantileOptions; [
+            tuple(WeightInterpretation.relative, WeightedQuantileAlgo.inverseCDF),
+            tuple(WeightInterpretation.relative, WeightedQuantileAlgo.harrellDavis),
+            tuple(WeightInterpretation.relative, WeightedQuantileAlgo.trimmedHarrellDavis),
+            tuple(WeightInterpretation.relative, WeightedQuantileAlgo.type7),
+            tuple(WeightInterpretation.relative, WeightedQuantileAlgo.type8),
+            tuple(WeightInterpretation.relative, WeightedQuantileAlgo.averagedInverseCDF),
+            tuple(WeightInterpretation.frequency, WeightedQuantileAlgo.type7),
+            tuple(WeightInterpretation.frequency, WeightedQuantileAlgo.type8)])
         {{
-            enum algorithm = __traits(getMember, WeightedQuantileAlgo, member);
-            assert(weightedInterquartileRange!algorithm(values, weights) == rcWeightedInterquartileRange!algorithm(values, weights));
-            assert(weightedMedianAbsoluteDeviation!algorithm(values, weights) == rcWeightedMedianAbsoluteDeviation!algorithm(values, weights));
+            enum interpretation = quantileOptions[0];
+            enum algorithm = quantileOptions[1];
+            assert(weightedInterquartileRange!(interpretation, algorithm)(values, weights) == rcWeightedInterquartileRange!(interpretation, algorithm)(values, weights));
+            assert(weightedMedianAbsoluteDeviation!(interpretation, algorithm)(values, weights) == rcWeightedMedianAbsoluteDeviation!(interpretation, algorithm)(values, weights));
         }}
         assert(values == [5, 0, 4, 1, 3, 2]);
     }
@@ -8965,27 +9483,38 @@ version(mir_stat_test)
 {
     import mir.ndslice.slice: sliced;
     alias A = WeightedQuantileAlgo;
-    static foreach (member; __traits(allMembers, A))
+    static foreach (quantileOptions; [
+        tuple(WeightInterpretation.relative, WeightedQuantileAlgo.inverseCDF),
+        tuple(WeightInterpretation.relative, WeightedQuantileAlgo.harrellDavis),
+        tuple(WeightInterpretation.relative, WeightedQuantileAlgo.trimmedHarrellDavis),
+        tuple(WeightInterpretation.relative, WeightedQuantileAlgo.type7),
+        tuple(WeightInterpretation.relative, WeightedQuantileAlgo.type8),
+        tuple(WeightInterpretation.relative, WeightedQuantileAlgo.averagedInverseCDF),
+        tuple(WeightInterpretation.frequency, WeightedQuantileAlgo.type7),
+        tuple(WeightInterpretation.frequency, WeightedQuantileAlgo.type8)])
     {{
-        enum algorithm = __traits(getMember, A, member);
+        enum interpretation = quantileOptions[0];
+        enum algorithm = quantileOptions[1];
         static foreach (tiny; [false, true])
         {{
-            static if (!tiny || algorithm == A.type7 || algorithm == A.type8)
+            static if (!tiny || (interpretation == WeightInterpretation.relative &&
+                (algorithm == A.type7 || algorithm == A.type8)))
             {
                 double[5] values = [double.nan, 0, 2, 6, 10];
                 double[5] masses = [0, tiny ? 1e-30 : 1, 2, 1, 2];
                 const double[7] levels = [0, 0.1, 0.25, 0.5, 0.75, 0.9, 1];
                 double[7] expected;
                 foreach (i, p; levels)
-                    expected[i] = rcWeightedQuantile!(double, algorithm)(values, masses, p);
-                const input = validateWeightedQuantileInput!algorithm(values[].sliced, masses[].sliced);
+                    expected[i] = rcWeightedQuantile!(double, interpretation, algorithm)(values, masses, p);
+                const input = validateWeightedQuantileInput!(interpretation, algorithm)(values[].sliced, masses[].sliced);
                 assert(input.count == 4 && input.maximum == 2);
-                alias Entry = WeightedQuantileEntry!(double, algorithm);
+                alias Entry = WeightedQuantileEntry!(double, interpretation, algorithm);
                 Entry[4] storage;
                 auto workspace = storage[].sliced;
-                const state = prepareWeightedQuantileWorkspace!algorithm(
+                const state = prepareWeightedQuantileWorkspace!(interpretation, algorithm)(
                     workspace, values[].sliced, masses[].sliced, input.maximum);
-                static if (algorithm == A.type7 || algorithm == A.type8)
+                static if (interpretation == WeightInterpretation.relative &&
+                    (algorithm == A.type7 || algorithm == A.type8))
                     assert(state.compensated == tiny);
                 const(Entry)[] readOnly = storage[];
                 values[] = 123;
@@ -8993,7 +9522,7 @@ version(mir_stat_test)
                 // Reverse the query order and repeat to catch accidental state mutation.
                 foreach (repeat; 0 .. 2)
                     foreach_reverse (i; 0 .. levels.length)
-                        assert(preparedWeightedQuantileAt!(double, algorithm)(
+                        assert(preparedWeightedQuantileAt!(double, interpretation, algorithm)(
                             readOnly.sliced, levels[i], state) == expected[i]);
             }
         }}
@@ -9005,15 +9534,16 @@ version(mir_stat_test)
 @safe pure nothrow @nogc unittest
 {
     import mir.ndslice.slice: sliced;
+    enum interpretation = WeightInterpretation.relative;
     enum algorithm = WeightedQuantileAlgo.inverseCDF;
     long[4] values = [long.max, long.max - 1, long.max - 2, long.max - 3];
     int[4] masses = [1, 1, 1, 1];
-    alias Entry = WeightedQuantileEntry!(long, algorithm);
+    alias Entry = WeightedQuantileEntry!(long, interpretation, algorithm);
     Entry[4] storage;
-    const input = validateWeightedQuantileInput!algorithm(values[].sliced, masses[].sliced);
-    const state = prepareWeightedQuantileWorkspace!algorithm(
+    const input = validateWeightedQuantileInput!(interpretation, algorithm)(values[].sliced, masses[].sliced);
+    const state = prepareWeightedQuantileWorkspace!(interpretation, algorithm)(
         storage[].sliced, values[].sliced, masses[].sliced, input.maximum);
-    assert(preparedWeightedQuantileAt!(long, algorithm)(storage[].sliced, 0.5, state) == long.max - 2);
-    assert(preparedWeightedQuantileAt!(long, algorithm)(storage[].sliced, 0.75, state) == long.max - 1);
+    assert(preparedWeightedQuantileAt!(long, interpretation, algorithm)(storage[].sliced, 0.5, state) == long.max - 2);
+    assert(preparedWeightedQuantileAt!(long, interpretation, algorithm)(storage[].sliced, 0.75, state) == long.max - 1);
     assert(values == [long.max, long.max - 1, long.max - 2, long.max - 3]);
 }

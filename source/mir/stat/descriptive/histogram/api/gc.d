@@ -1285,7 +1285,8 @@ private template computeWeightedAxisQuantiles(WeightedQuantileAlgo algorithm)
         scope auto ref Data data, scope auto ref P probabilities)
     {
         import mir.stat.descriptive.univariate: weightedQuantile;
-        return weightedQuantile!algorithm(
+        import mir.stat.descriptive.histogram.api.factory: histogramQuantile;
+        return histogramQuantile!(weightedQuantile, algorithm)(
             data, weights, probabilities);
     }
 }
