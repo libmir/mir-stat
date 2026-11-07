@@ -1701,8 +1701,8 @@ compile time. Integer storage alone never selects frequency interpretation.
 
 $(H4 Ordinary equivalent with equal positive weights)
 
-When every observation has the same positive relative weight, the weighted
-algorithms correspond to the following ordinary estimators:
+When every observation has the same positive relative weight, these weighted
+and ordinary algorithms have the same mathematical definition:
 
 $(TABLE
 $(TR $(TH WeightedQuantileAlgo) $(TH Ordinary equivalent))
@@ -1713,12 +1713,14 @@ $(TR $(TD `type8`) $(TD `QuantileAlgo.type8`))
 )
 
 The Harrell-Davis estimators (`harrellDavis` and `trimmedHarrellDavis`) have
-no corresponding member in $(LREF QuantileAlgo).
+no corresponding member in `QuantileAlgo`.
 
 The defaults differ. For values [0, 10] at probability 0.5, `quantile` uses
 type7 and returns 5. With equal weights [1, 1], `weightedQuantile` uses
-inverseCDF and returns 0. Select weighted type7 to recover the ordinary
-default with equal relative weights.
+inverseCDF and returns 0. Select weighted type7 to use the ordinary
+type 7 definition with equal relative weights. At a cumulative probability
+boundary, rounding can cause the two implementations to select different
+observations.
 
 Frequency counts must be finite nonnegative whole numbers, with a positive total
 N no larger than the smaller of ulong.max and 2^^real.mant_dig. This keeps every
@@ -5692,8 +5694,9 @@ Omitting probabilities returns the minimum, quartiles, and maximum using
 
 $(H4 Choosing a weighted counterpart)
 
-To reproduce an ordinary quantile with $(LREF weightedQuantile) when every
-observation has the same positive relative weight, use this mapping:
+When every observation has the same positive relative weight, the following
+choices in `quantile` and `weightedQuantile` have the same mathematical
+definition:
 
 $(TABLE
 $(TR $(TH QuantileAlgo) $(TH WeightedQuantileAlgo))
@@ -5705,10 +5708,13 @@ $(TR $(TD `type3`, `type4`, `type5`, `type6`, `type9`) $(TD No corresponding wei
 )
 
 Weighted quantiles with relative weights default to `inverseCDF`. Select
-weighted `type7` explicitly to match the ordinary default with equal weights.
+weighted `type7` to use the ordinary default definition with equal weights.
+At a cumulative probability boundary, rounding can cause the two
+implementations to select different observations.
 If the weights count repeated observations, frequency interpretation supports
 `type7` and `type8` and matches the corresponding quantile of the expanded
-sample. See $(LREF WeightedQuantileAlgo) for the weighted definitions.
+sample. The `WeightedQuantileAlgo` documentation describes each weighted
+definition.
 
 Params:
     F = explicit output type; inferred from observations when omitted
