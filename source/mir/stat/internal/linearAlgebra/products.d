@@ -1545,55 +1545,59 @@ private void symmetricMultiplyMixed(TrianglePolicy triangle, A, B, C)(A a, B b, 
 // Cross block boundaries with unequal input/output orientations, padding,
 // both stored triangles, and nonconjugating complex arithmetic.
 version(mir_stat_test_linearAlgebra)
-@safe pure unittest
 {
-    import mir.ndslice.allocation: uninitSlice;
-    import mir.ndslice.topology: universal;
-    import mir.ndslice.dynamic: transposed;
-    import mir.complex: Complex;
-    import std.meta: AliasSeq;
+    private import mir.complex: Complex;
+    private import std.meta: AliasSeq;
+
     static foreach (T; AliasSeq!(float, double, Complex!double))
     static foreach (triangle; [TrianglePolicy.upper, TrianglePolicy.lower])
-    foreach (n; [1, 17, 33, 65]) foreach (flip; [false, true])
+    @safe pure unittest
     {
-        auto a = uninitSlice!T(n, n + 2)[0 .. n, 0 .. n].universal;
-        if (flip) a = a.transposed;
-        auto b = uninitSlice!T(flip ? n : 5, flip ? 5 : n).universal;
-        auto c = uninitSlice!T(flip ? 5 : n, flip ? n : 5).universal;
-        if (!flip) b = b.transposed;
-        if (flip) c = c.transposed;
-        foreach (i; 0 .. n) foreach (j; 0 .. n)
+        import mir.ndslice.allocation: uninitSlice;
+        import mir.ndslice.topology: universal;
+        import mir.ndslice.dynamic: transposed;
+
+        foreach (n; [1, 17, 33, 65]) foreach (flip; [false, true])
         {
-            auto value = T((i + j) % 7 + 1);
-            static if (is(T == Complex!double)) value += T(0, 1);
-            a[i, j] = (triangle == TrianglePolicy.upper ? j >= i : j <= i) ? value : T(double.nan);
-        }
-        foreach (i; 0 .. n) foreach (j; 0 .. 5) b[i, j] = T((i + j) % 5 + 1);
-        mtimesInto(symmetricView!triangle(a), b, c);
-        foreach (i; 0 .. n) foreach (j; 0 .. 5)
-        {
-            T expected = T(0);
-            foreach (k; 0 .. n)
+            auto a = uninitSlice!T(n, n + 2)[0 .. n, 0 .. n].universal;
+            if (flip) a = a.transposed;
+            auto b = uninitSlice!T(flip ? n : 5, flip ? 5 : n).universal;
+            auto c = uninitSlice!T(flip ? 5 : n, flip ? n : 5).universal;
+            if (!flip) b = b.transposed;
+            if (flip) c = c.transposed;
+            foreach (i; 0 .. n) foreach (j; 0 .. n)
             {
-                auto value = T((i + k) % 7 + 1);
+                auto value = T((i + j) % 7 + 1);
                 static if (is(T == Complex!double)) value += T(0, 1);
-                expected += value * b[k, j];
+                a[i, j] = (triangle == TrianglePolicy.upper ? j >= i : j <= i) ? value : T(double.nan);
             }
-            assert(c[i, j] == expected);
+            foreach (i; 0 .. n) foreach (j; 0 .. 5) b[i, j] = T((i + j) % 5 + 1);
+            mtimesInto(symmetricView!triangle(a), b, c);
+            foreach (i; 0 .. n) foreach (j; 0 .. 5)
+            {
+                T expected = T(0);
+                foreach (k; 0 .. n)
+                {
+                    auto value = T((i + k) % 7 + 1);
+                    static if (is(T == Complex!double)) value += T(0, 1);
+                    expected += value * b[k, j];
+                }
+                assert(c[i, j] == expected);
+            }
+            auto left = mtimes(symmetricView!triangle(a), b);
+            mtimesInto(b.transposed, symmetricView!triangle(a), c.transposed);
+            assert(left == c);
+            auto rowWork = uninitSlice!T(n, 5);
+            auto columnWork = uninitSlice!T(5, n).universal.transposed;
+            mtimesInto(symmetricView!triangle(a), b, c, rowWork);
+            assert(left == c);
+            mtimesInto(symmetricView!triangle(a), b, c, columnWork);
+            assert(left == c);
+            mtimesInto(b.transposed, symmetricView!triangle(a), c.transposed, rowWork.transposed);
+            assert(left == c);
+            mtimesInto(b.transposed, symmetricView!triangle(a), c.transposed, columnWork.transposed);
+            assert(left == c);
         }
-        auto left = mtimes(symmetricView!triangle(a), b);
-        mtimesInto(b.transposed, symmetricView!triangle(a), c.transposed);
-        assert(left == c);
-        auto rowWork = uninitSlice!T(n, 5);
-        auto columnWork = uninitSlice!T(5, n).universal.transposed;
-        mtimesInto(symmetricView!triangle(a), b, c, rowWork);
-        assert(left == c);
-        mtimesInto(symmetricView!triangle(a), b, c, columnWork);
-        assert(left == c);
-        mtimesInto(b.transposed, symmetricView!triangle(a), c.transposed, rowWork.transposed);
-        assert(left == c);
-        mtimesInto(b.transposed, symmetricView!triangle(a), c.transposed, columnWork.transposed);
-        assert(left == c);
     }
 }
 
