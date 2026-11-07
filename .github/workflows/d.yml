@@ -352,7 +352,7 @@ jobs:
         if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 
     - name: Run tests with coverage
-      run: dub -q test --build=unittest-cov
+      run: dub test --build=unittest-cov
 
     # The BLAS build writes the same filenames; move the general reports first.
     - name: Preserve general coverage
