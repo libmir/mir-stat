@@ -347,18 +347,20 @@ version(mir_stat_test_linearAlgebra)
 }
 
 version(mir_stat_test_linearAlgebra)
-@safe pure @nogc unittest
 {
-    import std.meta: AliasSeq;
-    import std.math: fabs;
-    import mir.ndslice.slice: sliced;
-    import mir.ndslice.topology: universal, map;
-    import mir.ndslice.dynamic: transposed, strided, reversed;
-    import mir.ndslice.allocation: mininitRcslice;
-    import mir.stat.internal.linearAlgebra.products: rcMtimes;
+    private import std.meta: AliasSeq;
+
     static foreach (T; AliasSeq!(float, double, real))
     static foreach (triangle; [TrianglePolicy.upper, TrianglePolicy.lower])
-    {{
+    @safe pure @nogc unittest
+    {
+        import std.math: fabs;
+        import mir.ndslice.slice: sliced;
+        import mir.ndslice.topology: universal, map;
+        import mir.ndslice.dynamic: transposed, strided, reversed;
+        import mir.ndslice.allocation: mininitRcslice;
+        import mir.stat.internal.linearAlgebra.products: rcMtimes;
+
         T[9] data = [4, 2, 2, 2, 10, 4, 2, 4, 6];
         auto a = data[].sliced(3, 3);
         foreach (i; 0 .. 3) foreach (j; 0 .. 3)
@@ -422,7 +424,7 @@ version(mir_stat_test_linearAlgebra)
             assert(tryCholeskyDecomposeInPlace!triangle(one) == 0);
             assert(fabs(singleton[0] * singleton[0] / scale - 1) < 16 * T.epsilon);
         }
-    }}
+    }
 }
 
 version(mir_stat_test_linearAlgebra)
@@ -735,17 +737,19 @@ private void solveVector(TrianglePolicy triangle, A, X)(scope auto ref A factor,
 }
 
 version(mir_stat_test_linearAlgebra)
-@safe pure nothrow @nogc unittest
 {
-    import std.meta: AliasSeq;
-    import std.math: fabs;
-    import mir.ndslice.slice: sliced;
-    import mir.ndslice.topology: universal, map;
-    import mir.ndslice.dynamic: transposed, strided, reversed;
-    import mir.ndslice.allocation: mininitRcslice;
+    private import std.meta: AliasSeq;
+
     static foreach (T; AliasSeq!(float, double, real))
     static foreach (triangle; [TrianglePolicy.upper, TrianglePolicy.lower])
-    {{
+    @safe pure nothrow @nogc unittest
+    {
+        import std.math: fabs;
+        import mir.ndslice.slice: sliced;
+        import mir.ndslice.topology: universal, map;
+        import mir.ndslice.dynamic: transposed, strided, reversed;
+        import mir.ndslice.allocation: mininitRcslice;
+
         foreach (transposedFactor; [false, true])
         foreach (transposedOutput; [false, true])
         {
@@ -824,7 +828,7 @@ version(mir_stat_test_linearAlgebra)
         auto emptyVector = mininitRcslice!T(0);
         assert(rcCholeskySolve!triangle(empty, noRows).shape == [0,2]);
         assert(rcCholeskySolve!triangle(empty, emptyVector).length == 0);
-    }}
+    }
 }
 
 version(mir_stat_test_linearAlgebra)
