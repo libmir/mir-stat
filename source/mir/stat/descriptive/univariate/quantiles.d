@@ -1699,6 +1699,29 @@ type8, reproducing the corresponding ordinary quantiles of the expanded sample
 without allocating it. Other frequency/algorithm combinations are rejected at
 compile time. Integer storage alone never selects frequency interpretation.
 
+$(H4 Ordinary equivalent with equal positive weights)
+
+When every observation has the same positive relative weight, these weighted
+and ordinary algorithms have the same mathematical definition:
+
+$(TABLE
+$(TR $(TH WeightedQuantileAlgo) $(TH Ordinary equivalent))
+$(TR $(TD `inverseCDF`) $(TD `QuantileAlgo.type1`))
+$(TR $(TD `averagedInverseCDF`) $(TD `QuantileAlgo.type2`))
+$(TR $(TD `type7`) $(TD `QuantileAlgo.type7`))
+$(TR $(TD `type8`) $(TD `QuantileAlgo.type8`))
+)
+
+The Harrell-Davis estimators (`harrellDavis` and `trimmedHarrellDavis`) have
+no corresponding member in `QuantileAlgo`.
+
+The defaults differ. For values [0, 10] at probability 0.5, `quantile` uses
+type7 and returns 5. With equal weights [1, 1], `weightedQuantile` uses
+inverseCDF and returns 0. Select weighted type7 to use the ordinary
+type 7 definition with equal relative weights. At a cumulative probability
+boundary, rounding can cause the two implementations to select different
+observations.
+
 Frequency counts must be finite nonnegative whole numbers, with a positive total
 N no larger than the smaller of ulong.max and 2^^real.mant_dig. This keeps every
 cumulative count exact in the working precision. Zero counts are ignored. Invalid
@@ -5668,6 +5691,30 @@ Use $(LREF quantileInto) for caller-provided output.
 Quantile algorithms and inferred result types follow $(LREF QuantileAlgo).
 Omitting probabilities returns the minimum, quartiles, and maximum using
 `[0, 0.25, 0.5, 0.75, 1]`.
+
+$(H4 Choosing a weighted counterpart)
+
+When every observation has the same positive relative weight, the following
+choices in `quantile` and `weightedQuantile` have the same mathematical
+definition:
+
+$(TABLE
+$(TR $(TH QuantileAlgo) $(TH WeightedQuantileAlgo))
+$(TR $(TD `type1`) $(TD `inverseCDF`))
+$(TR $(TD `type2`) $(TD `averagedInverseCDF`))
+$(TR $(TD `type7` (default)) $(TD `type7`))
+$(TR $(TD `type8`) $(TD `type8`))
+$(TR $(TD `type3`, `type4`, `type5`, `type6`, `type9`) $(TD No corresponding weighted algorithm))
+)
+
+Weighted quantiles with relative weights default to `inverseCDF`. Select
+weighted `type7` to use the ordinary default definition with equal weights.
+At a cumulative probability boundary, rounding can cause the two
+implementations to select different observations.
+If the weights count repeated observations, frequency interpretation supports
+`type7` and `type8` and matches the corresponding quantile of the expanded
+sample. The `WeightedQuantileAlgo` documentation describes each weighted
+definition.
 
 Params:
     F = explicit output type; inferred from observations when omitted
