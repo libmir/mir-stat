@@ -331,7 +331,7 @@ public import mir.stat.descriptive.univariate.dispersions: dispersion, variance,
     weightedVariance, weightedStandardDeviation, weightedCoefficientOfVariation, WVarianceAccumulator;
 
 ///
-public import mir.stat.descriptive.weighting: WeightInterpretation, WeightedMomentNormalization;
+public import mir.stat.descriptive.weighting: WeightInterpretation;
 
 ///
 public import mir.stat.descriptive.univariate.moments;
@@ -449,7 +449,7 @@ unittest
     static assert(__traits(isSame, weightedKurtosis, shape.weightedKurtosis));
 }
 
-// Re-exports preserve variance interpretation and the remaining normalization policy.
+// Re-exports preserve the shared weight interpretation.
 version(mir_stat_test)
 @safe pure nothrow @nogc
 unittest
@@ -459,7 +459,6 @@ unittest
     import paired = mir.stat.descriptive.multivariate;
     static assert(is(WeightInterpretation == policy.WeightInterpretation));
     static assert(is(spread.WeightInterpretation == policy.WeightInterpretation));
-    static assert(is(WeightedMomentNormalization == policy.WeightedMomentNormalization));
     static assert(is(paired.WeightInterpretation == policy.WeightInterpretation));
     static assert(is(spread.WVarianceAccumulator!(double, spread.WeightInterpretation.frequency) ==
         spread.WVarianceAccumulator!(double, policy.WeightInterpretation.frequency)));

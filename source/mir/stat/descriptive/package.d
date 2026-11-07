@@ -47,10 +47,10 @@ kurtosis. Counts, probabilities, and relative weights share the same formula.
 There is no sample bias correction. Subtract three from order four for excess
 kurtosis, which is zero for a normal distribution.))
 $(TR $(TD Weighted skewness and kurtosis) $(TD Use weightedSkewness for
-asymmetry and weightedKurtosis for tail-sensitive shape. Population is the
-default. WeightedMomentNormalization also selects frequencySample for repeated
-sample observations or relativeSample for independent rows with fixed relative
-emphasis. Sample corrections need at least three observations for skewness and
+asymmetry and weightedKurtosis for tail-sensitive shape. Relative-weight sample
+correction is the default. WeightInterpretation selects frequency for repeated
+sample observations or relative for independent rows with fixed relative
+emphasis. Pass isPopulation=true to describe the weighted distribution. Sample corrections need at least three observations for skewness and
 four for kurtosis, counting
 expanded occurrences in frequency mode or positive-weight rows in relative mode.
 These corrected standardized ratios are not generally unbiased. Kurtosis defaults
@@ -100,10 +100,10 @@ relative weights dominate. It is a resolution heuristic, not a general measure
 of uncertainty. See $(MREF mir, stat, descriptive, histogram, api) for examples.
 
 These choices do not make every kind of weight interchangeable. In particular,
-relativeSample is not a survey-design correction or the uncertainty of a mean
+Relative sample correction is not a survey-design correction or the uncertainty of a mean
 formed using inverse-variance weights. See
-$(REF WeightInterpretation, mir, stat, descriptive, weighting),
-$(REF WeightedMomentNormalization, mir, stat, descriptive, weighting), and $(REF WeightedQuantileAlgo, mir, stat, descriptive, univariate, quantiles)
+$(REF WeightInterpretation, mir, stat, descriptive, weighting)
+and $(REF WeightedQuantileAlgo, mir, stat, descriptive, univariate, quantiles)
 for each estimator's assumptions.
 
 Weight validity also depends on the function. Weighted means and sums allow
