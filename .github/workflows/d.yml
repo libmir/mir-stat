@@ -352,7 +352,11 @@ jobs:
         if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 
     - name: Run tests with coverage
-      run: dub test --build=unittest-cov
+      # Limit peak compiler memory on Windows DMD by compiling one module at a time.
+      # DMD can undercount template hits in this mode: https://github.com/dlang/dmd/issues/18723
+      run: >-
+        dub test --build=unittest-cov
+        ${{ runner.os == 'Windows' && startsWith(matrix.dc.channel, 'dmd-') && '--build-mode=singleFile' || '' }}
 
     # The BLAS build writes the same filenames; move the general reports first.
     - name: Preserve general coverage
