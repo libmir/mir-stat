@@ -417,52 +417,56 @@ version(mir_stat_test_linearAlgebra)
 
 // Exercise every input/output orientation, padding, fallback strides, and numeric type.
 version(mir_stat_test_linearAlgebra)
-@safe pure nothrow @nogc unittest
 {
-    import mir.ndslice.slice: sliced;
-    import mir.ndslice.dynamic: reversed;
-    import mir.ndslice.topology: map;
-    import mir.complex: Complex;
-    import std.meta: AliasSeq;
-    static foreach (T; AliasSeq!(float, double, real, Complex!double))
-    foreach (ta; [false,true]) foreach (tc; [false,true]) foreach (reverse; [false,true])
-    {
-        T[25] aa, bb, cc, rr;
-        auto a=aa[].sliced(5,5)[0 .. (ta ? 3 : 2),0 .. (ta ? 2 : 3)].universal;
-        if(ta) a=a.transposed;
-        if(reverse) a=a.reversed!0;
-        foreach(i;0..2) foreach(j;0..3) a[i,j]=T(i*3+j+1);
-        auto b=bb[].sliced(5,5)[0..2,0..2].universal;
-        b[0,0]=T(2); b[0,1]=T(1); b[1,0]=T(0); b[1,1]=T(3);
-        auto c=cc[].sliced(5,5)[0..3,0..3].universal;
-        auto r=rr[].sliced(5,5)[0..3,0..3].universal;
-        if(tc) c=c.transposed;
-        if(reverse) c=c.reversed!1;
-        crossprodInto(a,c);
-        mtimesInto(a.transposed,a,r);
-        assert(c==r);
-        static foreach (triangle; [TrianglePolicy.upper, TrianglePolicy.lower])
-        {{
-            foreach(i;0..3) foreach(j;0..3) c[i,j]=T(-99);
-            auto logical=crossprodInto!triangle(a,c);
-            assert(logical.asSlice==r);
-            foreach(i;0..3) foreach(j;0..3)
-                if (triangle == TrianglePolicy.upper ? j<i : j>i)
-                    assert(c[i,j]==T(-99));
-            auto computed=crossprodInto!triangle(a.map!"a",c);
-            assert(computed.asSlice==r);
-        }}
+    private import mir.complex: Complex;
+    private import std.meta: AliasSeq;
 
-        crossprodInto(a.map!"a",c);
-        assert(c==r);
-        crossprodInto(a,b,c[0..3,0..2]);
-        mtimesInto(a.transposed,b,r[0..3,0..2]);
-        assert(c[0..3,0..2]==r[0..3,0..2]);
-        tcrossprodInto(a,c[0..2,0..2]);
-        mtimesInto(a,a.transposed,r[0..2,0..2]);
-        assert(c[0..2,0..2]==r[0..2,0..2]);
-        tcrossprodInto(a,a.map!"a",c[0..2,0..2]);
-        assert(c[0..2,0..2]==r[0..2,0..2]);
+    static foreach (T; AliasSeq!(float, double, real, Complex!double))
+    @safe pure nothrow @nogc unittest
+    {
+        import mir.ndslice.slice: sliced;
+        import mir.ndslice.dynamic: reversed;
+        import mir.ndslice.topology: map;
+
+        foreach (ta; [false,true]) foreach (tc; [false,true]) foreach (reverse; [false,true])
+        {
+            T[25] aa, bb, cc, rr;
+            auto a=aa[].sliced(5,5)[0 .. (ta ? 3 : 2),0 .. (ta ? 2 : 3)].universal;
+            if(ta) a=a.transposed;
+            if(reverse) a=a.reversed!0;
+            foreach(i;0..2) foreach(j;0..3) a[i,j]=T(i*3+j+1);
+            auto b=bb[].sliced(5,5)[0..2,0..2].universal;
+            b[0,0]=T(2); b[0,1]=T(1); b[1,0]=T(0); b[1,1]=T(3);
+            auto c=cc[].sliced(5,5)[0..3,0..3].universal;
+            auto r=rr[].sliced(5,5)[0..3,0..3].universal;
+            if(tc) c=c.transposed;
+            if(reverse) c=c.reversed!1;
+            crossprodInto(a,c);
+            mtimesInto(a.transposed,a,r);
+            assert(c==r);
+            static foreach (triangle; [TrianglePolicy.upper, TrianglePolicy.lower])
+            {{
+                foreach(i;0..3) foreach(j;0..3) c[i,j]=T(-99);
+                auto logical=crossprodInto!triangle(a,c);
+                assert(logical.asSlice==r);
+                foreach(i;0..3) foreach(j;0..3)
+                    if (triangle == TrianglePolicy.upper ? j<i : j>i)
+                        assert(c[i,j]==T(-99));
+                auto computed=crossprodInto!triangle(a.map!"a",c);
+                assert(computed.asSlice==r);
+            }}
+
+            crossprodInto(a.map!"a",c);
+            assert(c==r);
+            crossprodInto(a,b,c[0..3,0..2]);
+            mtimesInto(a.transposed,b,r[0..3,0..2]);
+            assert(c[0..3,0..2]==r[0..3,0..2]);
+            tcrossprodInto(a,c[0..2,0..2]);
+            mtimesInto(a,a.transposed,r[0..2,0..2]);
+            assert(c[0..2,0..2]==r[0..2,0..2]);
+            tcrossprodInto(a,a.map!"a",c[0..2,0..2]);
+            assert(c[0..2,0..2]==r[0..2,0..2]);
+        }
     }
 }
 

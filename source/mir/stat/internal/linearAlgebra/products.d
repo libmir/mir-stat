@@ -1025,28 +1025,24 @@ version(mir_stat_test_linearAlgebra)
 }
 
 version(mir_stat_test_linearAlgebra)
-@system unittest
 {
-    import std.meta: AliasSeq;
-    import mir.ndslice.slice: sliced;
-    import mir.ndslice.topology: stairs, universal, map;
-    import mir.ndslice.dynamic: transposed, reversed;
-    import mir.ndslice.allocation: rcslice;
-    import mir.stat.internal.linearAlgebra.triangular;
-    import mir.stat.internal.linearAlgebra.quadratic: quadraticForm, quadraticFormWithWorkspace;
-    import mir.stat.internal.linearAlgebra.views: symmetricView;
-    import mir.stat.internal.linearAlgebra.cholesky: rcCholeskyDecompose;
-    import mir.stat.internal.linearAlgebra.packed: packedMatrix, tryPackedTriangular, tryPackedSymmetric;
-    import mir.stat.internal.linearAlgebra.backend: hasBlas;
-    import mir.math.sum: Summation;
-    import std.experimental.allocator.mallocator: Mallocator;
-    import std.experimental.allocator: dispose;
-    import std.exception: assertThrown;
-    import core.exception: AssertError;
+    private import std.meta: AliasSeq;
+    // Generate one test per combination so DMD can optimize them independently.
     static foreach (T; AliasSeq!(float, double, real))
     static foreach (direction; ["+", "-"])
     static foreach (diagonal; [DiagonalPolicy.nonUnit, DiagonalPolicy.unit])
-    {{
+    @system unittest
+    {
+        import mir.ndslice.slice: sliced;
+        import mir.ndslice.topology: stairs, universal;
+        import mir.ndslice.dynamic: transposed;
+        import mir.ndslice.allocation: rcslice;
+        import mir.stat.internal.linearAlgebra.triangular;
+        import mir.stat.internal.linearAlgebra.packed: packedMatrix, tryPackedTriangular;
+        import mir.stat.internal.linearAlgebra.backend: hasBlas;
+        import std.experimental.allocator.mallocator: Mallocator;
+        import std.experimental.allocator: dispose;
+
         enum triangle = direction == "+" ? TrianglePolicy.lower : TrianglePolicy.upper;
         T[6] data = [2,3,4,5,6,7];
         auto rows = data[].stairs!direction(3);
@@ -1116,7 +1112,25 @@ version(mir_stat_test_linearAlgebra)
             assert((tryPackedTriangular!(triangle,diagonal)(a,rhs,outLeft)));
             assert(outLeft == expectedLeft);
         }
-    }}
+    }
+}
+
+version(mir_stat_test_linearAlgebra)
+@system unittest
+{
+    import mir.ndslice.slice: sliced;
+    import mir.ndslice.topology: stairs, map;
+    import mir.ndslice.dynamic: reversed;
+    import mir.ndslice.allocation: rcslice;
+    import mir.stat.internal.linearAlgebra.quadratic: quadraticForm, quadraticFormWithWorkspace;
+    import mir.stat.internal.linearAlgebra.views: symmetricView;
+    import mir.stat.internal.linearAlgebra.cholesky: rcCholeskyDecompose;
+    import mir.stat.internal.linearAlgebra.packed: packedMatrix, tryPackedSymmetric;
+    import mir.stat.internal.linearAlgebra.backend: hasBlas;
+    import mir.math.sum: Summation;
+    import std.exception: assertThrown;
+    import core.exception: AssertError;
+
     // Packed symmetric views retain owners across factory returns and transpose.
     /// Return an owning packed symmetric view after the local owner is destroyed.
     auto retained()
@@ -1531,55 +1545,59 @@ private void symmetricMultiplyMixed(TrianglePolicy triangle, A, B, C)(A a, B b, 
 // Cross block boundaries with unequal input/output orientations, padding,
 // both stored triangles, and nonconjugating complex arithmetic.
 version(mir_stat_test_linearAlgebra)
-@safe pure unittest
 {
-    import mir.ndslice.allocation: uninitSlice;
-    import mir.ndslice.topology: universal;
-    import mir.ndslice.dynamic: transposed;
-    import mir.complex: Complex;
-    import std.meta: AliasSeq;
+    private import mir.complex: Complex;
+    private import std.meta: AliasSeq;
+
     static foreach (T; AliasSeq!(float, double, Complex!double))
     static foreach (triangle; [TrianglePolicy.upper, TrianglePolicy.lower])
-    foreach (n; [1, 17, 33, 65]) foreach (flip; [false, true])
+    @safe pure unittest
     {
-        auto a = uninitSlice!T(n, n + 2)[0 .. n, 0 .. n].universal;
-        if (flip) a = a.transposed;
-        auto b = uninitSlice!T(flip ? n : 5, flip ? 5 : n).universal;
-        auto c = uninitSlice!T(flip ? 5 : n, flip ? n : 5).universal;
-        if (!flip) b = b.transposed;
-        if (flip) c = c.transposed;
-        foreach (i; 0 .. n) foreach (j; 0 .. n)
+        import mir.ndslice.allocation: uninitSlice;
+        import mir.ndslice.topology: universal;
+        import mir.ndslice.dynamic: transposed;
+
+        foreach (n; [1, 17, 33, 65]) foreach (flip; [false, true])
         {
-            auto value = T((i + j) % 7 + 1);
-            static if (is(T == Complex!double)) value += T(0, 1);
-            a[i, j] = (triangle == TrianglePolicy.upper ? j >= i : j <= i) ? value : T(double.nan);
-        }
-        foreach (i; 0 .. n) foreach (j; 0 .. 5) b[i, j] = T((i + j) % 5 + 1);
-        mtimesInto(symmetricView!triangle(a), b, c);
-        foreach (i; 0 .. n) foreach (j; 0 .. 5)
-        {
-            T expected = T(0);
-            foreach (k; 0 .. n)
+            auto a = uninitSlice!T(n, n + 2)[0 .. n, 0 .. n].universal;
+            if (flip) a = a.transposed;
+            auto b = uninitSlice!T(flip ? n : 5, flip ? 5 : n).universal;
+            auto c = uninitSlice!T(flip ? 5 : n, flip ? n : 5).universal;
+            if (!flip) b = b.transposed;
+            if (flip) c = c.transposed;
+            foreach (i; 0 .. n) foreach (j; 0 .. n)
             {
-                auto value = T((i + k) % 7 + 1);
+                auto value = T((i + j) % 7 + 1);
                 static if (is(T == Complex!double)) value += T(0, 1);
-                expected += value * b[k, j];
+                a[i, j] = (triangle == TrianglePolicy.upper ? j >= i : j <= i) ? value : T(double.nan);
             }
-            assert(c[i, j] == expected);
+            foreach (i; 0 .. n) foreach (j; 0 .. 5) b[i, j] = T((i + j) % 5 + 1);
+            mtimesInto(symmetricView!triangle(a), b, c);
+            foreach (i; 0 .. n) foreach (j; 0 .. 5)
+            {
+                T expected = T(0);
+                foreach (k; 0 .. n)
+                {
+                    auto value = T((i + k) % 7 + 1);
+                    static if (is(T == Complex!double)) value += T(0, 1);
+                    expected += value * b[k, j];
+                }
+                assert(c[i, j] == expected);
+            }
+            auto left = mtimes(symmetricView!triangle(a), b);
+            mtimesInto(b.transposed, symmetricView!triangle(a), c.transposed);
+            assert(left == c);
+            auto rowWork = uninitSlice!T(n, 5);
+            auto columnWork = uninitSlice!T(5, n).universal.transposed;
+            mtimesInto(symmetricView!triangle(a), b, c, rowWork);
+            assert(left == c);
+            mtimesInto(symmetricView!triangle(a), b, c, columnWork);
+            assert(left == c);
+            mtimesInto(b.transposed, symmetricView!triangle(a), c.transposed, rowWork.transposed);
+            assert(left == c);
+            mtimesInto(b.transposed, symmetricView!triangle(a), c.transposed, columnWork.transposed);
+            assert(left == c);
         }
-        auto left = mtimes(symmetricView!triangle(a), b);
-        mtimesInto(b.transposed, symmetricView!triangle(a), c.transposed);
-        assert(left == c);
-        auto rowWork = uninitSlice!T(n, 5);
-        auto columnWork = uninitSlice!T(5, n).universal.transposed;
-        mtimesInto(symmetricView!triangle(a), b, c, rowWork);
-        assert(left == c);
-        mtimesInto(symmetricView!triangle(a), b, c, columnWork);
-        assert(left == c);
-        mtimesInto(b.transposed, symmetricView!triangle(a), c.transposed, rowWork.transposed);
-        assert(left == c);
-        mtimesInto(b.transposed, symmetricView!triangle(a), c.transposed, columnWork.transposed);
-        assert(left == c);
     }
 }
 
