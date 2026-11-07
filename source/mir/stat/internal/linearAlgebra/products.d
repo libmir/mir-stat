@@ -1025,28 +1025,24 @@ version(mir_stat_test_linearAlgebra)
 }
 
 version(mir_stat_test_linearAlgebra)
-@system unittest
 {
-    import std.meta: AliasSeq;
-    import mir.ndslice.slice: sliced;
-    import mir.ndslice.topology: stairs, universal, map;
-    import mir.ndslice.dynamic: transposed, reversed;
-    import mir.ndslice.allocation: rcslice;
-    import mir.stat.internal.linearAlgebra.triangular;
-    import mir.stat.internal.linearAlgebra.quadratic: quadraticForm, quadraticFormWithWorkspace;
-    import mir.stat.internal.linearAlgebra.views: symmetricView;
-    import mir.stat.internal.linearAlgebra.cholesky: rcCholeskyDecompose;
-    import mir.stat.internal.linearAlgebra.packed: packedMatrix, tryPackedTriangular, tryPackedSymmetric;
-    import mir.stat.internal.linearAlgebra.backend: hasBlas;
-    import mir.math.sum: Summation;
-    import std.experimental.allocator.mallocator: Mallocator;
-    import std.experimental.allocator: dispose;
-    import std.exception: assertThrown;
-    import core.exception: AssertError;
+    private import std.meta: AliasSeq;
+    // Generate one test per combination so DMD can optimize them independently.
     static foreach (T; AliasSeq!(float, double, real))
     static foreach (direction; ["+", "-"])
     static foreach (diagonal; [DiagonalPolicy.nonUnit, DiagonalPolicy.unit])
-    {{
+    @system unittest
+    {
+        import mir.ndslice.slice: sliced;
+        import mir.ndslice.topology: stairs, universal;
+        import mir.ndslice.dynamic: transposed;
+        import mir.ndslice.allocation: rcslice;
+        import mir.stat.internal.linearAlgebra.triangular;
+        import mir.stat.internal.linearAlgebra.packed: packedMatrix, tryPackedTriangular;
+        import mir.stat.internal.linearAlgebra.backend: hasBlas;
+        import std.experimental.allocator.mallocator: Mallocator;
+        import std.experimental.allocator: dispose;
+
         enum triangle = direction == "+" ? TrianglePolicy.lower : TrianglePolicy.upper;
         T[6] data = [2,3,4,5,6,7];
         auto rows = data[].stairs!direction(3);
@@ -1116,7 +1112,25 @@ version(mir_stat_test_linearAlgebra)
             assert((tryPackedTriangular!(triangle,diagonal)(a,rhs,outLeft)));
             assert(outLeft == expectedLeft);
         }
-    }}
+    }
+}
+
+version(mir_stat_test_linearAlgebra)
+@system unittest
+{
+    import mir.ndslice.slice: sliced;
+    import mir.ndslice.topology: stairs, map;
+    import mir.ndslice.dynamic: reversed;
+    import mir.ndslice.allocation: rcslice;
+    import mir.stat.internal.linearAlgebra.quadratic: quadraticForm, quadraticFormWithWorkspace;
+    import mir.stat.internal.linearAlgebra.views: symmetricView;
+    import mir.stat.internal.linearAlgebra.cholesky: rcCholeskyDecompose;
+    import mir.stat.internal.linearAlgebra.packed: packedMatrix, tryPackedSymmetric;
+    import mir.stat.internal.linearAlgebra.backend: hasBlas;
+    import mir.math.sum: Summation;
+    import std.exception: assertThrown;
+    import core.exception: AssertError;
+
     // Packed symmetric views retain owners across factory returns and transpose.
     /// Return an owning packed symmetric view after the local owner is destroyed.
     auto retained()
