@@ -47,6 +47,8 @@ algorithm in either order. An explicit result type stays first; for accumulators
 the required element type stays first. Any trailing summation option on variance
 and covariance stays last. Supplying only an algorithm uses relative weights;
 supplying only an interpretation uses the function's default algorithm.
+Weighted quantile, interquartile range, and median absolute deviation follow the
+same ordering rule for interpretation and algorithm across allocation variants.
 
 Prefer interpretation first when explaining what the weights represent. Algorithm
 first is useful when adding a weight interpretation to an existing algorithm choice.

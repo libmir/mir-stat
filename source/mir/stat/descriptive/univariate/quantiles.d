@@ -292,17 +292,19 @@ template weightedInterquartileRange(WeightInterpretation interpretation = Weight
 }
 
 /// ditto
-template weightedInterquartileRange(F, WeightedQuantileAlgo algorithm)
-    if (validWeightedQuantileOptions!(WeightInterpretation.relative, algorithm))
+template weightedInterquartileRange(F, WeightedQuantileAlgo algorithm,
+    WeightInterpretation interpretation = WeightInterpretation.relative)
+    if (validWeightedQuantileOptions!(interpretation, algorithm))
 {
-    alias weightedInterquartileRange = .weightedInterquartileRange!(F, WeightInterpretation.relative, algorithm);
+    alias weightedInterquartileRange = .weightedInterquartileRange!(F, interpretation, algorithm);
 }
 
 /// ditto
-template weightedInterquartileRange(WeightedQuantileAlgo algorithm)
-    if (validWeightedQuantileOptions!(WeightInterpretation.relative, algorithm))
+template weightedInterquartileRange(WeightedQuantileAlgo algorithm,
+    WeightInterpretation interpretation = WeightInterpretation.relative)
+    if (validWeightedQuantileOptions!(interpretation, algorithm))
 {
-    alias weightedInterquartileRange = .weightedInterquartileRange!(WeightInterpretation.relative, algorithm);
+    alias weightedInterquartileRange = .weightedInterquartileRange!(interpretation, algorithm);
 }
 
 
@@ -529,17 +531,19 @@ template weightedMedianAbsoluteDeviation(WeightInterpretation interpretation = W
 }
 
 /// ditto
-template weightedMedianAbsoluteDeviation(F, WeightedQuantileAlgo algorithm)
-    if (validWeightedQuantileOptions!(WeightInterpretation.relative, algorithm))
+template weightedMedianAbsoluteDeviation(F, WeightedQuantileAlgo algorithm,
+    WeightInterpretation interpretation = WeightInterpretation.relative)
+    if (validWeightedQuantileOptions!(interpretation, algorithm))
 {
-    alias weightedMedianAbsoluteDeviation = .weightedMedianAbsoluteDeviation!(F, WeightInterpretation.relative, algorithm);
+    alias weightedMedianAbsoluteDeviation = .weightedMedianAbsoluteDeviation!(F, interpretation, algorithm);
 }
 
 /// ditto
-template weightedMedianAbsoluteDeviation(WeightedQuantileAlgo algorithm)
-    if (validWeightedQuantileOptions!(WeightInterpretation.relative, algorithm))
+template weightedMedianAbsoluteDeviation(WeightedQuantileAlgo algorithm,
+    WeightInterpretation interpretation = WeightInterpretation.relative)
+    if (validWeightedQuantileOptions!(interpretation, algorithm))
 {
-    alias weightedMedianAbsoluteDeviation = .weightedMedianAbsoluteDeviation!(WeightInterpretation.relative, algorithm);
+    alias weightedMedianAbsoluteDeviation = .weightedMedianAbsoluteDeviation!(interpretation, algorithm);
 }
 
 
@@ -2793,9 +2797,9 @@ default algorithm is type7, matching ordinary quantile. For values [0, 10] and
 counts [2, 2], frequency type7 gives a first quartile of 0, as for [0, 0, 10, 10].
 Relative type7 gives 2.5 because the weights describe emphasis on two rows.
 
-An optional result type comes first, followed by WeightInterpretation and
-WeightedQuantileAlgo. Either option can be supplied alone. Algorithm-only calls
-use relative weights. The same options apply to the RC and custom-allocator
+An optional result type comes first. WeightInterpretation and WeightedQuantileAlgo
+can follow in either order, or either can be supplied alone. Algorithm-only calls
+use relative weights. The same option order applies to the RC and custom-allocator
 variants, weightedInterquartileRange, and weightedMedianAbsoluteDeviation.
 Relative IQR defaults to inverseCDF; relative MAD defaults to averagedInverseCDF.
 All three default to type7 with frequency interpretation. Frequency interpretation
@@ -2930,17 +2934,19 @@ template weightedQuantile(WeightInterpretation interpretation = WeightInterpreta
 }
 
 /// ditto
-template weightedQuantile(F, WeightedQuantileAlgo algorithm)
-    if (validWeightedQuantileOptions!(WeightInterpretation.relative, algorithm))
+template weightedQuantile(F, WeightedQuantileAlgo algorithm,
+    WeightInterpretation interpretation = WeightInterpretation.relative)
+    if (validWeightedQuantileOptions!(interpretation, algorithm))
 {
-    alias weightedQuantile = .weightedQuantile!(F, WeightInterpretation.relative, algorithm);
+    alias weightedQuantile = .weightedQuantile!(F, interpretation, algorithm);
 }
 
 /// ditto
-template weightedQuantile(WeightedQuantileAlgo algorithm)
-    if (validWeightedQuantileOptions!(WeightInterpretation.relative, algorithm))
+template weightedQuantile(WeightedQuantileAlgo algorithm,
+    WeightInterpretation interpretation = WeightInterpretation.relative)
+    if (validWeightedQuantileOptions!(interpretation, algorithm))
 {
-    alias weightedQuantile = .weightedQuantile!(WeightInterpretation.relative, algorithm);
+    alias weightedQuantile = .weightedQuantile!(interpretation, algorithm);
 }
 
 // Same-typed inputs must be interpreted as observations first in every API.
@@ -3150,17 +3156,19 @@ template rcWeightedQuantile(WeightInterpretation interpretation = WeightInterpre
 }
 
 /// ditto
-template rcWeightedQuantile(F, WeightedQuantileAlgo algorithm)
-    if (validWeightedQuantileOptions!(WeightInterpretation.relative, algorithm))
+template rcWeightedQuantile(F, WeightedQuantileAlgo algorithm,
+    WeightInterpretation interpretation = WeightInterpretation.relative)
+    if (validWeightedQuantileOptions!(interpretation, algorithm))
 {
-    alias rcWeightedQuantile = .rcWeightedQuantile!(F, WeightInterpretation.relative, algorithm);
+    alias rcWeightedQuantile = .rcWeightedQuantile!(F, interpretation, algorithm);
 }
 
 /// ditto
-template rcWeightedQuantile(WeightedQuantileAlgo algorithm)
-    if (validWeightedQuantileOptions!(WeightInterpretation.relative, algorithm))
+template rcWeightedQuantile(WeightedQuantileAlgo algorithm,
+    WeightInterpretation interpretation = WeightInterpretation.relative)
+    if (validWeightedQuantileOptions!(interpretation, algorithm))
 {
-    alias rcWeightedQuantile = .rcWeightedQuantile!(WeightInterpretation.relative, algorithm);
+    alias rcWeightedQuantile = .rcWeightedQuantile!(interpretation, algorithm);
 }
 
 /// Select what the weights mean separately from the interpolation convention.
@@ -3169,8 +3177,10 @@ template rcWeightedQuantile(WeightedQuantileAlgo algorithm)
     alias W = WeightInterpretation;
     alias Q = WeightedQuantileAlgo;
     int[2] values = [0, 10], counts = [2, 2];
-    // Counts represent [0, 0, 10, 10].
+    // Counts represent [0, 0, 10, 10]. Either option order selects that sample.
     assert(weightedQuantile!(W.frequency, Q.type7)(values, counts, 0.25) == 0);
+    assert(weightedQuantile!(Q.type7, W.frequency)(values, counts, 0.25) == 0);
+    assert(weightedQuantile!(double, Q.type7, W.frequency)(values, counts, 0.25) == 0);
     assert(weightedQuantile!(W.frequency)(values, counts, 0.25) == 0);
     // Relative weights instead give equal emphasis to two observations.
     assert(weightedQuantile!(W.relative, Q.type7)(values, counts, 0.25) == 2.5);
@@ -3204,7 +3214,9 @@ version(mir_stat_test)
         // without rejecting an unsupported option pair. Positive controls ensure
         // that rejection is not caused by an invalid argument list.
         static assert(__traits(compiles, fun!(W.frequency, Q.type7)(arguments)));
+        static assert(__traits(compiles, fun!(Q.type7, W.frequency)(arguments)));
         static assert(__traits(compiles, fun!(double, W.frequency, Q.type7)(arguments)));
+        static assert(__traits(compiles, fun!(double, Q.type7, W.frequency)(arguments)));
         static assert(__traits(compiles, fun(arguments)));
         static assert(__traits(compiles, fun!double(arguments)));
         static assert(__traits(compiles, fun!(W.frequency)(arguments)));
@@ -3217,6 +3229,14 @@ version(mir_stat_test)
             enum relativeDefault = Q.inverseCDF;
         static assert(__traits(isSame, fun!(W.relative), fun!(W.relative, relativeDefault)));
         static assert(__traits(isSame, fun!float, fun!(float, W.relative, relativeDefault)));
+        static foreach (w; [W.relative, W.frequency])
+        {
+            static foreach (q; [Q.type7, Q.type8])
+            {
+                static assert(__traits(isSame, fun!(w, q), fun!(q, w)));
+                static assert(__traits(isSame, fun!(float, w, q), fun!(float, q, w)));
+            }
+        }
         static assert(__traits(isSame, fun!(W.frequency), fun!(W.frequency, Q.type7)));
         static assert(__traits(isSame, fun!(float, W.frequency), fun!(float, W.frequency, Q.type7)));
         static assert(__traits(isSame, fun!(Q.type8), fun!(W.relative, Q.type8)));
@@ -3224,7 +3244,9 @@ version(mir_stat_test)
         static foreach (q; [Q.inverseCDF, Q.averagedInverseCDF, Q.harrellDavis, Q.trimmedHarrellDavis])
         {
             static assert(!__traits(compiles, fun!(W.frequency, q)(arguments)));
+            static assert(!__traits(compiles, fun!(q, W.frequency)(arguments)));
             static assert(!__traits(compiles, fun!(double, W.frequency, q)(arguments)));
+            static assert(!__traits(compiles, fun!(double, q, W.frequency)(arguments)));
         }
     }}
     static assert(is(typeof(rcWeightedQuantile(values, counts, 0.25)) == int));
@@ -3334,17 +3356,19 @@ template makeWeightedQuantile(WeightInterpretation interpretation = WeightInterp
 }
 
 /// ditto
-template makeWeightedQuantile(F, WeightedQuantileAlgo algorithm)
-    if (validWeightedQuantileOptions!(WeightInterpretation.relative, algorithm))
+template makeWeightedQuantile(F, WeightedQuantileAlgo algorithm,
+    WeightInterpretation interpretation = WeightInterpretation.relative)
+    if (validWeightedQuantileOptions!(interpretation, algorithm))
 {
-    alias makeWeightedQuantile = .makeWeightedQuantile!(F, WeightInterpretation.relative, algorithm);
+    alias makeWeightedQuantile = .makeWeightedQuantile!(F, interpretation, algorithm);
 }
 
 /// ditto
-template makeWeightedQuantile(WeightedQuantileAlgo algorithm)
-    if (validWeightedQuantileOptions!(WeightInterpretation.relative, algorithm))
+template makeWeightedQuantile(WeightedQuantileAlgo algorithm,
+    WeightInterpretation interpretation = WeightInterpretation.relative)
+    if (validWeightedQuantileOptions!(interpretation, algorithm))
 {
-    alias makeWeightedQuantile = .makeWeightedQuantile!(WeightInterpretation.relative, algorithm);
+    alias makeWeightedQuantile = .makeWeightedQuantile!(interpretation, algorithm);
 }
 
 /// The caller disposes custom-allocated results; scratch is released automatically.
@@ -7165,17 +7189,19 @@ template rcWeightedInterquartileRange(WeightInterpretation interpretation = Weig
 }
 
 /// ditto
-template rcWeightedInterquartileRange(F, WeightedQuantileAlgo algorithm)
-    if (validWeightedQuantileOptions!(WeightInterpretation.relative, algorithm))
+template rcWeightedInterquartileRange(F, WeightedQuantileAlgo algorithm,
+    WeightInterpretation interpretation = WeightInterpretation.relative)
+    if (validWeightedQuantileOptions!(interpretation, algorithm))
 {
-    alias rcWeightedInterquartileRange = .rcWeightedInterquartileRange!(F, WeightInterpretation.relative, algorithm);
+    alias rcWeightedInterquartileRange = .rcWeightedInterquartileRange!(F, interpretation, algorithm);
 }
 
 /// ditto
-template rcWeightedInterquartileRange(WeightedQuantileAlgo algorithm)
-    if (validWeightedQuantileOptions!(WeightInterpretation.relative, algorithm))
+template rcWeightedInterquartileRange(WeightedQuantileAlgo algorithm,
+    WeightInterpretation interpretation = WeightInterpretation.relative)
+    if (validWeightedQuantileOptions!(interpretation, algorithm))
 {
-    alias rcWeightedInterquartileRange = .rcWeightedInterquartileRange!(WeightInterpretation.relative, algorithm);
+    alias rcWeightedInterquartileRange = .rcWeightedInterquartileRange!(interpretation, algorithm);
 }
 
 /// The quantile convention determines the spread of the same weighted data.
@@ -7780,17 +7806,19 @@ template makeWeightedInterquartileRange(WeightInterpretation interpretation = We
 }
 
 /// ditto
-template makeWeightedInterquartileRange(F, WeightedQuantileAlgo algorithm)
-    if (validWeightedQuantileOptions!(WeightInterpretation.relative, algorithm))
+template makeWeightedInterquartileRange(F, WeightedQuantileAlgo algorithm,
+    WeightInterpretation interpretation = WeightInterpretation.relative)
+    if (validWeightedQuantileOptions!(interpretation, algorithm))
 {
-    alias makeWeightedInterquartileRange = .makeWeightedInterquartileRange!(F, WeightInterpretation.relative, algorithm);
+    alias makeWeightedInterquartileRange = .makeWeightedInterquartileRange!(F, interpretation, algorithm);
 }
 
 /// ditto
-template makeWeightedInterquartileRange(WeightedQuantileAlgo algorithm)
-    if (validWeightedQuantileOptions!(WeightInterpretation.relative, algorithm))
+template makeWeightedInterquartileRange(WeightedQuantileAlgo algorithm,
+    WeightInterpretation interpretation = WeightInterpretation.relative)
+    if (validWeightedQuantileOptions!(interpretation, algorithm))
 {
-    alias makeWeightedInterquartileRange = .makeWeightedInterquartileRange!(WeightInterpretation.relative, algorithm);
+    alias makeWeightedInterquartileRange = .makeWeightedInterquartileRange!(interpretation, algorithm);
 }
 
 /// A custom allocator controls scratch; all four results are scalars.
@@ -8067,17 +8095,19 @@ template makeWeightedMedianAbsoluteDeviation(WeightInterpretation interpretation
 }
 
 /// ditto
-template makeWeightedMedianAbsoluteDeviation(F, WeightedQuantileAlgo algorithm)
-    if (validWeightedQuantileOptions!(WeightInterpretation.relative, algorithm))
+template makeWeightedMedianAbsoluteDeviation(F, WeightedQuantileAlgo algorithm,
+    WeightInterpretation interpretation = WeightInterpretation.relative)
+    if (validWeightedQuantileOptions!(interpretation, algorithm))
 {
-    alias makeWeightedMedianAbsoluteDeviation = .makeWeightedMedianAbsoluteDeviation!(F, WeightInterpretation.relative, algorithm);
+    alias makeWeightedMedianAbsoluteDeviation = .makeWeightedMedianAbsoluteDeviation!(F, interpretation, algorithm);
 }
 
 /// ditto
-template makeWeightedMedianAbsoluteDeviation(WeightedQuantileAlgo algorithm)
-    if (validWeightedQuantileOptions!(WeightInterpretation.relative, algorithm))
+template makeWeightedMedianAbsoluteDeviation(WeightedQuantileAlgo algorithm,
+    WeightInterpretation interpretation = WeightInterpretation.relative)
+    if (validWeightedQuantileOptions!(interpretation, algorithm))
 {
-    alias makeWeightedMedianAbsoluteDeviation = .makeWeightedMedianAbsoluteDeviation!(WeightInterpretation.relative, algorithm);
+    alias makeWeightedMedianAbsoluteDeviation = .makeWeightedMedianAbsoluteDeviation!(interpretation, algorithm);
 }
 
 /// Allocator selection leaves the raw MAD convention unchanged.
@@ -8406,17 +8436,19 @@ template rcWeightedMedianAbsoluteDeviation(WeightInterpretation interpretation =
 }
 
 /// ditto
-template rcWeightedMedianAbsoluteDeviation(F, WeightedQuantileAlgo algorithm)
-    if (validWeightedQuantileOptions!(WeightInterpretation.relative, algorithm))
+template rcWeightedMedianAbsoluteDeviation(F, WeightedQuantileAlgo algorithm,
+    WeightInterpretation interpretation = WeightInterpretation.relative)
+    if (validWeightedQuantileOptions!(interpretation, algorithm))
 {
-    alias rcWeightedMedianAbsoluteDeviation = .rcWeightedMedianAbsoluteDeviation!(F, WeightInterpretation.relative, algorithm);
+    alias rcWeightedMedianAbsoluteDeviation = .rcWeightedMedianAbsoluteDeviation!(F, interpretation, algorithm);
 }
 
 /// ditto
-template rcWeightedMedianAbsoluteDeviation(WeightedQuantileAlgo algorithm)
-    if (validWeightedQuantileOptions!(WeightInterpretation.relative, algorithm))
+template rcWeightedMedianAbsoluteDeviation(WeightedQuantileAlgo algorithm,
+    WeightInterpretation interpretation = WeightInterpretation.relative)
+    if (validWeightedQuantileOptions!(interpretation, algorithm))
 {
-    alias rcWeightedMedianAbsoluteDeviation = .rcWeightedMedianAbsoluteDeviation!(WeightInterpretation.relative, algorithm);
+    alias rcWeightedMedianAbsoluteDeviation = .rcWeightedMedianAbsoluteDeviation!(interpretation, algorithm);
 }
 
 /// Choose the convention that matches the meaning of your observations.
