@@ -1814,9 +1814,10 @@ template rcWeightedPercentogram(Counts = double, WeightInterpretation interpreta
 }
 
 /// ditto
-template rcWeightedPercentogram(Counts, WeightedQuantileAlgo algorithm)
+template rcWeightedPercentogram(Counts, WeightedQuantileAlgo algorithm,
+    WeightInterpretation interpretation = WeightInterpretation.relative)
 {
-    alias rcWeightedPercentogram = .rcWeightedPercentogram!(Counts, WeightInterpretation.relative, algorithm);
+    alias rcWeightedPercentogram = .rcWeightedPercentogram!(Counts, interpretation, algorithm);
 }
 
 /// ditto
@@ -1833,9 +1834,10 @@ template rcWeightedPercentogram(WeightInterpretation interpretation)
 }
 
 /// ditto
-template rcWeightedPercentogram(WeightedQuantileAlgo algorithm)
+template rcWeightedPercentogram(WeightedQuantileAlgo algorithm,
+    WeightInterpretation interpretation = WeightInterpretation.relative)
 {
-    alias rcWeightedPercentogram = .rcWeightedPercentogram!(double, WeightInterpretation.relative, algorithm);
+    alias rcWeightedPercentogram = .rcWeightedPercentogram!(double, interpretation, algorithm);
 }
 
 /// Reweighting outcomes changes the median boundary and the observed bin masses.
@@ -2050,6 +2052,7 @@ auto rcpercentogram(Counts = size_t, Data, Axis)(
 Choose fixed quantile boundaries from a weighted reference sample. Observations
 come before weights. Algorithm semantics are those of WeightedQuantileAlgo;
 relative weights default to inverseCDF and frequency counts to type7.
+WeightInterpretation and WeightedQuantileAlgo may be supplied in either order.
 Supply probability levels or a positive bin count.
 Zero-weight observations are ignored. Inputs are unchanged.
 The axis can subsequently count a different sample with different weights.
@@ -2079,9 +2082,10 @@ template rcWeightedQuantileAxis(WeightInterpretation interpretation = WeightInte
 }
 
 /// ditto
-template rcWeightedQuantileAxis(WeightedQuantileAlgo algorithm)
+template rcWeightedQuantileAxis(WeightedQuantileAlgo algorithm,
+    WeightInterpretation interpretation = WeightInterpretation.relative)
 {
-    alias rcWeightedQuantileAxis = .rcWeightedQuantileAxis!(WeightInterpretation.relative, algorithm);
+    alias rcWeightedQuantileAxis = .rcWeightedQuantileAxis!(interpretation, algorithm);
 }
 
 /// Reuse a weighted reference median when comparing a later sample.

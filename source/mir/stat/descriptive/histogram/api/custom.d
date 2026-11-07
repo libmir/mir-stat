@@ -2245,9 +2245,10 @@ template makeWeightedPercentogram(Counts = double, WeightInterpretation interpre
 }
 
 /// ditto
-template makeWeightedPercentogram(Counts, WeightedQuantileAlgo algorithm)
+template makeWeightedPercentogram(Counts, WeightedQuantileAlgo algorithm,
+    WeightInterpretation interpretation = WeightInterpretation.relative)
 {
-    alias makeWeightedPercentogram = .makeWeightedPercentogram!(Counts, WeightInterpretation.relative, algorithm);
+    alias makeWeightedPercentogram = .makeWeightedPercentogram!(Counts, interpretation, algorithm);
 }
 
 /// ditto
@@ -2264,9 +2265,10 @@ template makeWeightedPercentogram(WeightInterpretation interpretation)
 }
 
 /// ditto
-template makeWeightedPercentogram(WeightedQuantileAlgo algorithm)
+template makeWeightedPercentogram(WeightedQuantileAlgo algorithm,
+    WeightInterpretation interpretation = WeightInterpretation.relative)
 {
-    alias makeWeightedPercentogram = .makeWeightedPercentogram!(double, WeightInterpretation.relative, algorithm);
+    alias makeWeightedPercentogram = .makeWeightedPercentogram!(double, interpretation, algorithm);
 }
 
 /// Build weighted bins without the GC and release their counts and boundaries together.
@@ -2331,24 +2333,27 @@ unittest
     }
 }
 
-// Custom allocation preserves the frequency-only default.
+// Custom allocation preserves both option orders and frequency-only defaults.
 version(mir_stat_test)
 @system pure nothrow @nogc unittest
 {
     import std.experimental.allocator.mallocator: Mallocator;
     alias W = WeightInterpretation;
     alias Q = WeightedQuantileAlgo;
+    static assert(__traits(isSame, makeWeightedQuantileAxis!(W.frequency), makeWeightedQuantileAxis!(Q.type7, W.frequency)));
     static assert(__traits(isSame, makeWeightedQuantileAxis!(Q.type8), makeWeightedQuantileAxis!(W.relative, Q.type8)));
+    static assert(__traits(isSame, makeWeightedPercentogram!(uint, W.frequency, Q.type7), makeWeightedPercentogram!(uint, Q.type7, W.frequency)));
+    static assert(__traits(isSame, makeWeightedPercentogram!(W.frequency), makeWeightedPercentogram!(double, Q.type7, W.frequency)));
     static assert(__traits(isSame, makeWeightedPercentogram!(Q.type8), makeWeightedPercentogram!(double, W.relative, Q.type8)));
     const int[3] values = [0, 10, 20], counts = [1, 2, 1];
-    auto axis = makeWeightedQuantileAxis!(W.frequency, Q.type7)(Mallocator.instance, values, counts, 2);
+    auto axis = makeWeightedQuantileAxis!(Q.type7, W.frequency)(Mallocator.instance, values, counts, 2);
     scope(exit) axis.dispose(Mallocator.instance);
     assert(axis.axis.bin(0).high == 10);
     auto histogram = makeWeightedPercentogram!(W.frequency)(Mallocator.instance, values, counts, 2);
     scope(exit) histogram.dispose(Mallocator.instance);
     assert(histogram.histogram.total == 4);
     assert(histogram.histogram.bins()[0].bin.high == 10);
-    auto automatic = makeWeightedPercentogram!(W.frequency, Q.type7)(Mallocator.instance, values, counts);
+    auto automatic = makeWeightedPercentogram!(Q.type7, W.frequency)(Mallocator.instance, values, counts);
     scope(exit) automatic.dispose(Mallocator.instance);
     assert(automatic.histogram.total == 4);
     static assert(!__traits(compiles, makeWeightedQuantileAxis!(W.frequency, Q.inverseCDF)(Mallocator.instance, values, counts, 2)));
@@ -2541,6 +2546,7 @@ auto makePercentogram(Counts = size_t, Allocator, Data, Axis)(
 Choose fixed quantile boundaries from a weighted reference sample. Observations
 come before weights. Algorithm semantics are those of WeightedQuantileAlgo;
 relative weights default to inverseCDF and frequency counts to type7.
+WeightInterpretation and WeightedQuantileAlgo may be supplied in either order.
 Supply probability levels or a positive bin count.
 Zero-weight observations are ignored. Inputs are unchanged.
 The axis can subsequently count a different sample with different weights.
@@ -2571,9 +2577,10 @@ template makeWeightedQuantileAxis(WeightInterpretation interpretation = WeightIn
 }
 
 /// ditto
-template makeWeightedQuantileAxis(WeightedQuantileAlgo algorithm)
+template makeWeightedQuantileAxis(WeightedQuantileAlgo algorithm,
+    WeightInterpretation interpretation = WeightInterpretation.relative)
 {
-    alias makeWeightedQuantileAxis = .makeWeightedQuantileAxis!(WeightInterpretation.relative, algorithm);
+    alias makeWeightedQuantileAxis = .makeWeightedQuantileAxis!(interpretation, algorithm);
 }
 
 /// Reuse a weighted reference median when comparing a later sample.

@@ -2915,9 +2915,12 @@ package void testQuantileAxes(alias create, alias copy, alias make, alias counts
     import std.math: nextUp;
     alias W = WeightInterpretation;
     alias Q = WeightedQuantileAlgo;
+    static assert(__traits(isSame, weightedCreate!(W.frequency, Q.type7), weightedCreate!(Q.type7, W.frequency)));
     static assert(__traits(isSame, weightedCreate!(W.frequency), weightedCreate!(W.frequency, Q.type7)));
     static assert(__traits(isSame, weightedCreate!(Q.type8), weightedCreate!(W.relative, Q.type8)));
+    static assert(__traits(isSame, weightedMake!(double, W.frequency, Q.type7), weightedMake!(double, Q.type7, W.frequency)));
     static assert(__traits(isSame, weightedMake!(W.frequency), weightedMake!(double, W.frequency, Q.type7)));
+    static assert(__traits(isSame, weightedMake!(Q.type8, W.frequency), weightedMake!(double, W.frequency, Q.type8)));
     static assert(__traits(isSame, weightedMake!(Q.type8), weightedMake!(double, W.relative, Q.type8)));
     const int[5] values = [0, 0, 1, 2, 2];
     const double[5] levels = [0, 0.25, 0.5, 0.75, 1];
@@ -3004,7 +3007,7 @@ package void testQuantileAxes(alias create, alias copy, alias make, alias counts
         }
     }}
     auto frequencyDefaults = weightedMake!(W.frequency)(values, weights, levels);
-    auto frequencyExplicit = weightedMake!(W.frequency, Q.type7)(values, weights, levels);
+    auto frequencyExplicit = weightedMake!(Q.type7, W.frequency)(values, weights, levels);
     assert(frequencyDefaults.counts == frequencyExplicit.counts);
     static assert(!__traits(compiles, weightedCreate!(W.frequency, Q.inverseCDF)(values, weights, levels)));
     static assert(!__traits(compiles, weightedMake!(W.frequency, Q.harrellDavis)(values, weights, levels)));

@@ -1048,8 +1048,8 @@ Returns a relative-frequency accumulator with GC-owned boundaries and counts.
 
 The default relative interpretation with inverseCDF selects observed quantiles.
 Choose WeightInterpretation.frequency with type7 (its default) or type8 for
-occurrence counts. Supply WeightInterpretation before WeightedQuantileAlgo after the optional
-Counts type. Either option may be supplied alone.
+occurrence counts. WeightInterpretation and WeightedQuantileAlgo may appear in
+either order after the optional Counts type; either option may be supplied alone.
 Algorithm-only calls use relative weights. The same convention applies to the RC
 and custom-allocator variants and their weighted quantile-axis factories.
 All algorithms use the supplied weights for bin
@@ -1144,9 +1144,10 @@ template weightedPercentogram(Counts = double, WeightInterpretation interpretati
 }
 
 /// ditto
-template weightedPercentogram(Counts, WeightedQuantileAlgo algorithm)
+template weightedPercentogram(Counts, WeightedQuantileAlgo algorithm,
+    WeightInterpretation interpretation = WeightInterpretation.relative)
 {
-    alias weightedPercentogram = .weightedPercentogram!(Counts, WeightInterpretation.relative, algorithm);
+    alias weightedPercentogram = .weightedPercentogram!(Counts, interpretation, algorithm);
 }
 
 /// ditto
@@ -1163,9 +1164,10 @@ template weightedPercentogram(WeightInterpretation interpretation)
 }
 
 /// ditto
-template weightedPercentogram(WeightedQuantileAlgo algorithm)
+template weightedPercentogram(WeightedQuantileAlgo algorithm,
+    WeightInterpretation interpretation = WeightInterpretation.relative)
 {
-    alias weightedPercentogram = .weightedPercentogram!(double, WeightInterpretation.relative, algorithm);
+    alias weightedPercentogram = .weightedPercentogram!(double, interpretation, algorithm);
 }
 
 /// Reweighting outcomes changes the median boundary and the observed bin masses.
@@ -1300,6 +1302,7 @@ auto percentogram(Counts = size_t, Data, Axis)(
 Choose fixed quantile boundaries from a weighted reference sample. Observations
 come before weights. Algorithm semantics are those of WeightedQuantileAlgo;
 relative weights default to inverseCDF and frequency counts to type7.
+WeightInterpretation and WeightedQuantileAlgo may be supplied in either order.
 Supply probability levels or a positive bin count.
 Zero-weight observations are ignored. Inputs are unchanged.
 The axis can subsequently count a different sample with different weights.
@@ -1329,9 +1332,10 @@ template weightedQuantileAxis(WeightInterpretation interpretation = WeightInterp
 }
 
 /// ditto
-template weightedQuantileAxis(WeightedQuantileAlgo algorithm)
+template weightedQuantileAxis(WeightedQuantileAlgo algorithm,
+    WeightInterpretation interpretation = WeightInterpretation.relative)
 {
-    alias weightedQuantileAxis = .weightedQuantileAxis!(WeightInterpretation.relative, algorithm);
+    alias weightedQuantileAxis = .weightedQuantileAxis!(interpretation, algorithm);
 }
 
 /// Reuse a weighted reference median when comparing a later sample.

@@ -97,7 +97,7 @@ and 2.5 with relative type7.
 
 Migration: replace WeightedQuantileAlgo.frequencyType7 with
 WeightInterpretation.frequency. For frequencyType8, pass
-WeightInterpretation.frequency followed by WeightedQuantileAlgo.type8.
+WeightInterpretation.frequency and WeightedQuantileAlgo.type8 in either order.
 An explicit counter type, if supplied, stays first.
 
 In both examples, the policy changes only the requested number of bins. The selected
