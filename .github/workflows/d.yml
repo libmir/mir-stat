@@ -264,13 +264,13 @@ jobs:
         dub --version
         if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 
-    - name: Run DIP1000 lifetime tests (Windows DMD)
-      if: runner.os == 'Windows' && startsWith(matrix.dc.channel, 'dmd-')
+    - name: Run DIP1000 lifetime tests (Windows)
+      if: runner.os == 'Windows'
       shell: pwsh
       run: ./.github/scripts/windows-test.ps1 unittest-dip1000
 
     - name: Run DIP1000 lifetime tests
-      if: runner.os != 'Windows' || !startsWith(matrix.dc.channel, 'dmd-')
+      if: runner.os != 'Windows'
       # Keep build/link/run markers to distinguish compilation from test execution.
       run: dub test --build=unittest-dip1000
 
