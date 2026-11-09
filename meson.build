@@ -38,6 +38,7 @@ sources_list = [
     'mir/stat/descriptive/multivariate',
     'mir/stat/descriptive/weighting',
     'mir/stat/descriptive/univariate/package',
+    'mir/stat/descriptive/univariate/internal/partition',
     'mir/stat/descriptive/univariate/internal/types',
     'mir/stat/descriptive/univariate/means',
     'mir/stat/descriptive/univariate/sums',
