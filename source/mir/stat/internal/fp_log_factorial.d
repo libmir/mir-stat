@@ -152,15 +152,20 @@ package(mir.stat) struct CountLog(uint bits)
 
     // log(n!), including zero and one. Small counts cost O(n); the large
     // path uses a bounded number of integer powers and logarithm series.
-    static W factorial(ulong n)
+    static I factorialFixed(ulong n)
     {
-        if (n < 2) return W(0);
-        if (!usesStirling(n)) return finish(factorialSmall(n));
+        if (n < 2) return I(0);
+        if (!usesStirling(n)) return factorialSmall(n);
         auto result = leading(n);
         result -= I(n) << fractionBits;
         result += halfLogTwoPi();
         result += correctionLarge(n);
-        return finish(result);
+        return result;
+    }
+
+    static W factorial(ulong n)
+    {
+        return finish(factorialFixed(n));
     }
 
     // log(n!) - (n+1/2)*log(n) + n - log(2*pi)/2, n>=1.

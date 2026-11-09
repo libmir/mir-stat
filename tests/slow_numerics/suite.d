@@ -7,6 +7,7 @@ module mir.stat.tests.slow_numerics;
 
 // Import the modules with slow tests; the compiler follows implementation imports.
 import mir.stat.distribution.binomial;
+import mir.stat.distribution.hypergeometric;
 import mir.stat.distribution.negative_binomial;
 import mir.stat.internal.fp_binomial_log;
 import mir.stat.internal.fp_log_factorial;

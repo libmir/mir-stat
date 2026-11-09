@@ -19,9 +19,9 @@ $(D lower <= k && k <= upper); they reject observations outside the support
 rather than extending the tails there.
 
 The default result type is $(D double); built-in floating-point result types
-can be selected explicitly. Only the direct PMF supports an $(D Fp) result,
-via $(D hypergeometricPMF!(Fp!128)), or the compatibility name
-$(D fp_hypergeometricPMF). Inverse CDF returns $(D size_t).
+can be selected explicitly. The direct PMF and the LPMF support explicit $(D Fp) results,
+for example $(D hypergeometricLPMF!(Fp!128)). The PMF also retains the
+compatibility name $(D fp_hypergeometricPMF). Inverse CDF returns $(D size_t).
 Approximations retain the explicitly handled support boundaries and
 deterministic outcomes, but their interior probabilities need not equal
 the direct algorithm's results.
@@ -1395,9 +1395,15 @@ T hypergeometricLogNoSuccess(T)(size_t N, size_t K, size_t n)
 /++
 Computes the hypergeometric log probability mass function (LPMF).
 
-Counts retain their full `size_t` width. Large populations use binomial log
-probabilities to avoid subtracting large log-factorials. Outcomes with probability
+Counts retain their full `size_t` width. For large populations the hardware
+overloads use binomial log probabilities to avoid subtracting large log-factorials. Outcomes with probability
 close to one have a separate calculation that preserves their small negative log.
+
+Use $(D hypergeometricLPMF!(Fp!bits)) to evaluate the logarithm directly
+at extended precision. Factorial terms are combined with 320 extra fractional
+bits before rounding the result. This retains small negative logarithms when
+a mass rounds to one and finite logarithms when a mass underflows. The guarded
+calculation does not guarantee universal correct rounding.
 
 Returns the natural logarithm of $(D P(X == k)).
 
@@ -1483,6 +1489,215 @@ T hypergeometricLPMF(T = double)(const size_t k, const size_t N, const size_t K,
         binomialLPMF(draws - observed, N - successes, p) -
         binomialLPMF(draws, N, p);
 }
+
+/// ditto
+@safe pure nothrow @nogc
+T hypergeometricLPMF(T)(const size_t k, const size_t N, const size_t K, const size_t n)
+    if (is(T == Fp!bits, uint bits))
+    in (K <= N, "K must be less than or equal to N")
+    in (n <= N, "n must be less than or equal to N")
+    in (k <= n, "n - k must be greater than or equal to zero")
+    in (k <= K, "K must be greater than or equal to k")
+    in (n - k <= N - K, "n - k must be less than or equal to N - K")
+{
+    if (n == 0 || K == 0 || n == N || K == N)
+        return T(0);
+
+    import mir.stat.internal.fp_log_factorial: CountLog;
+    enum bits = typeof(T.init.coefficient).sizeof * 8;
+    alias C = CountLog!bits;
+    alias f = C.factorialFixed;
+
+    // -log(P) = log(N!) + sum(log(cell!)) - sum(log(margin!)).
+    // Each nondegenerate outcome has a neighbor whose mass is at least
+    // 1/N^2 times its own (by the adjacent-mass ratio). Thus even a mass
+    // close to one has -log(P) >= log(1 + 1/N^2). Keep the factorials on
+    // the same grid through subtraction, including at full-width counts.
+    // Form the last cell by subtracting from N-K to avoid count overflow.
+    auto populationAndCells = f(N) + f(k) + f(K-k) + f(n-k) + f((N-K)-(n-k));
+    auto margins = f(K) + f(N-K) + f(n) + f(N-n);
+    assert(populationAndCells > margins);
+    auto result = T(populationAndCells - margins);
+    result.exponent -= C.fractionBits;
+    result.sign = true;
+    return result;
+}
+
+/// Request an extended-precision log mass directly.
+version(mir_stat_test)
+@safe pure nothrow @nogc unittest
+{
+    import mir.bignum.fp: Fp;
+    auto value = hypergeometricLPMF!(Fp!128)(0, size_t.max, 1, 1);
+    assert(value.sign && value.coefficient != 0);
+}
+
+version(mir_stat_test)
+@safe pure nothrow @nogc unittest
+{
+    alias T = Fp!128;
+    const size_t[4][5] deterministic = [[0,0,0,0], [0,7,3,0], [0,7,0,4], [3,7,3,7], [4,7,7,4]];
+    foreach (params; deterministic) {
+        auto value = hypergeometricLPMF!T(params[0],params[1],params[2],params[3]);
+        assert(!value.sign && value == T(0));
+    }
+    debug {
+        import core.exception: AssertError;
+        import std.exception: assertThrown;
+        const size_t[4][5] invalid = [[0,3,4,2], [0,3,2,4], [3,4,3,2], [3,4,2,3], [0,4,3,3]];
+        foreach (params; invalid)
+            assertThrown!AssertError(hypergeometricLPMF!T(params[0],params[1],params[2],params[3]));
+    }
+}
+
+// BEGIN Fp hypergeometric log references
+version(mir_stat_test)
+@safe pure nothrow @nogc unittest
+{
+    import mir.bignum.fixed: UInt;
+    alias T = Fp!64;
+    struct Reference { ulong k, N, K, n; T value; }
+    enum references = [
+        Reference(0UL, 18446744073709551615UL, 1UL, 1UL, T(true, -127, UInt!64.fromHexString("8000000000000001"))),
+        Reference(1UL, 18446744073709551615UL, 1UL, 1UL, T(true, -58, UInt!64.fromHexString("b17217f7d1cf79ac"))),
+        Reference(0UL, 18446744073709551615UL, 67UL, 65UL, T(true, -115, UInt!64.fromHexString("8818000000000023"))),
+        Reference(0UL, 18446744073709551615UL, 1UL, 18446744073709551614UL, T(true, -58, UInt!64.fromHexString("b17217f7d1cf79ac"))),
+        Reference(18446744073709551613UL, 18446744073709551615UL, 18446744073709551614UL, 18446744073709551614UL, T(true, -127, UInt!64.fromHexString("8000000000000001"))),
+        Reference(4611686018427387903UL, 18446744073709551615UL, 9223372036854775807UL, 9223372036854775807UL, T(true, -59, UInt!64.fromHexString("adb4f2ea6de22f3b"))),
+        Reference(0UL, 18446744073709551615UL, 9223372036854775807UL, 9223372036854775807UL, T(true, 0, UInt!64.fromHexString("b17217f7d1cf7969"))),
+        Reference(2UL, 12UL, 5UL, 6UL, T(true, -64, UInt!64.fromHexString("f884f794d7432cba"))),
+        Reference(3UL, 7UL, 5UL, 5UL, T(true, -64, UInt!64.fromHexString("bdef9b174b336e62"))),
+        Reference(4UL, 10UL, 4UL, 7UL, T(true, -63, UInt!64.fromHexString("e5585fd151001191"))),
+        Reference(0UL, 4294967295UL, 1UL, 1UL, T(true, -95, UInt!64.fromHexString("80000000c0000001"))),
+        Reference(1073741823UL, 4294967295UL, 2147483647UL, 2147483647UL, T(true, -60, UInt!64.fromHexString("a9f7cddd15f4e4ca"))),
+    ];
+    foreach (r; references) {
+        if (r.N > size_t.max) continue;
+        assert(hypergeometricLPMF!T(cast(size_t)r.k, cast(size_t)r.N,
+            cast(size_t)r.K, cast(size_t)r.n) == r.value);
+    }
+}
+version(mir_stat_test)
+@safe pure nothrow @nogc unittest
+{
+    import mir.bignum.fixed: UInt;
+    alias T = Fp!128;
+    struct Reference { ulong k, N, K, n; T value; }
+    enum references = [
+        Reference(0UL, 18446744073709551615UL, 1UL, 1UL, T(true, -191, UInt!128.fromHexString("8000000000000000c000000000000001"))),
+        Reference(4611686018427387903UL, 18446744073709551615UL, 9223372036854775807UL, 9223372036854775807UL, T(true, -123, UInt!128.fromHexString("adb4f2ea6de22f3ab7eb5cde8dd49045"))),
+        Reference(2UL, 12UL, 5UL, 6UL, T(true, -128, UInt!128.fromHexString("f884f794d7432cba3aa5f055f82203e2"))),
+        Reference(0UL, 4294967295UL, 1UL, 1UL, T(true, -159, UInt!128.fromHexString("80000000c00000012aaaaaac8aaaaaae"))),
+        Reference(1073741823UL, 4294967295UL, 2147483647UL, 2147483647UL, T(true, -124, UInt!128.fromHexString("a9f7cddd15f4e4c999f306250db629dc"))),
+    ];
+    foreach (r; references) {
+        if (r.N > size_t.max) continue;
+        assert(hypergeometricLPMF!T(cast(size_t)r.k, cast(size_t)r.N,
+            cast(size_t)r.K, cast(size_t)r.n) == r.value);
+    }
+}
+version(mir_stat_test_slow_numerics)
+@safe pure nothrow @nogc unittest
+{
+    import mir.bignum.fixed: UInt;
+    alias T = Fp!128;
+    struct Reference { ulong k, N, K, n; T value; }
+    enum references = [
+        Reference(1UL, 18446744073709551615UL, 1UL, 1UL, T(true, -122, UInt!128.fromHexString("b17217f7d1cf79abc5e3b39803f2f6af"))),
+        Reference(0UL, 18446744073709551615UL, 67UL, 65UL, T(true, -179, UInt!128.fromHexString("88180000000000235a3c000000000ab1"))),
+        Reference(0UL, 18446744073709551615UL, 1UL, 18446744073709551614UL, T(true, -122, UInt!128.fromHexString("b17217f7d1cf79abc5e3b39803f2f6af"))),
+        Reference(18446744073709551613UL, 18446744073709551615UL, 18446744073709551614UL, 18446744073709551614UL, T(true, -191, UInt!128.fromHexString("8000000000000000c000000000000001"))),
+        Reference(0UL, 18446744073709551615UL, 9223372036854775807UL, 9223372036854775807UL, T(true, -64, UInt!128.fromHexString("b17217f7d1cf7969054d405e01ff2abb"))),
+        Reference(3UL, 7UL, 5UL, 5UL, T(true, -128, UInt!128.fromHexString("bdef9b174b336e61f152cb76200b3459"))),
+        Reference(4UL, 10UL, 4UL, 7UL, T(true, -127, UInt!128.fromHexString("e5585fd15100119136fea076849739b2"))),
+    ];
+    foreach (r; references) {
+        if (r.N > size_t.max) continue;
+        assert(hypergeometricLPMF!T(cast(size_t)r.k, cast(size_t)r.N,
+            cast(size_t)r.K, cast(size_t)r.n) == r.value);
+    }
+}
+version(mir_stat_test)
+@safe pure nothrow @nogc unittest
+{
+    import mir.bignum.fixed: UInt;
+    alias T = Fp!256;
+    struct Reference { ulong k, N, K, n; T value; }
+    enum references = [
+        Reference(0UL, 18446744073709551615UL, 1UL, 1UL, T(true, -319, UInt!256.fromHexString("8000000000000000c0000000000000012aaaaaaaaaaaaaac8aaaaaaaaaaaaaae"))),
+        Reference(4611686018427387903UL, 18446744073709551615UL, 9223372036854775807UL, 9223372036854775807UL, T(true, -251, UInt!256.fromHexString("adb4f2ea6de22f3ab7eb5cde8dd490456b619370740957251b627afe6cdd9b34"))),
+        Reference(2UL, 12UL, 5UL, 6UL, T(true, -256, UInt!256.fromHexString("f884f794d7432cba3aa5f055f82203e1a21592b19fc943ca11a43c5c313da398"))),
+        Reference(0UL, 4294967295UL, 1UL, 1UL, T(true, -287, UInt!256.fromHexString("80000000c00000012aaaaaac8aaaaaadc44444498444444d568d68e67d68d6aa"))),
+        Reference(1073741823UL, 4294967295UL, 2147483647UL, 2147483647UL, T(true, -252, UInt!256.fromHexString("a9f7cddd15f4e4c999f306250db629db95cfe3baa7e05e831d1e4505492d7e10"))),
+    ];
+    foreach (r; references) {
+        if (r.N > size_t.max) continue;
+        assert(hypergeometricLPMF!T(cast(size_t)r.k, cast(size_t)r.N,
+            cast(size_t)r.K, cast(size_t)r.n) == r.value);
+    }
+}
+version(mir_stat_test_slow_numerics)
+@safe pure nothrow @nogc unittest
+{
+    import mir.bignum.fixed: UInt;
+    alias T = Fp!256;
+    struct Reference { ulong k, N, K, n; T value; }
+    enum references = [
+        Reference(1UL, 18446744073709551615UL, 1UL, 1UL, T(true, -250, UInt!256.fromHexString("b17217f7d1cf79abc5e3b39803f2f6af3ef343267298b62d88b7c2063655a4d7"))),
+        Reference(0UL, 18446744073709551615UL, 67UL, 65UL, T(true, -307, UInt!256.fromHexString("88180000000000235a3c000000000ab0effd55555558e4d55d535555569a827d"))),
+        Reference(0UL, 18446744073709551615UL, 1UL, 18446744073709551614UL, T(true, -250, UInt!256.fromHexString("b17217f7d1cf79abc5e3b39803f2f6af3ef343267298b62d88b7c2063655a4d7"))),
+        Reference(18446744073709551613UL, 18446744073709551615UL, 18446744073709551614UL, 18446744073709551614UL, T(true, -319, UInt!256.fromHexString("8000000000000000c0000000000000012aaaaaaaaaaaaaac8aaaaaaaaaaaaaae"))),
+        Reference(0UL, 18446744073709551615UL, 9223372036854775807UL, 9223372036854775807UL, T(true, -192, UInt!256.fromHexString("b17217f7d1cf7969054d405e01ff2aba80b70dbbb7560b00a0169c89f1b9d3f8"))),
+        Reference(3UL, 7UL, 5UL, 5UL, T(true, -256, UInt!256.fromHexString("bdef9b174b336e61f152cb76200b3458800a5d569d04e9b0dce4bf9fbc7f41fd"))),
+        Reference(4UL, 10UL, 4UL, 7UL, T(true, -255, UInt!256.fromHexString("e5585fd15100119136fea076849739b27f83c300153ca20ee3d28322ee7a17dc"))),
+    ];
+    foreach (r; references) {
+        if (r.N > size_t.max) continue;
+        assert(hypergeometricLPMF!T(cast(size_t)r.k, cast(size_t)r.N,
+            cast(size_t)r.K, cast(size_t)r.n) == r.value);
+    }
+}
+version(mir_stat_test)
+@safe pure nothrow @nogc unittest
+{
+    import mir.bignum.fixed: UInt;
+    alias T = Fp!512;
+    struct Reference { ulong k, N, K, n; T value; }
+    enum references = [
+        Reference(0UL, 18446744073709551615UL, 1UL, 1UL, T(true, -575, UInt!512.fromHexString("8000000000000000c0000000000000012aaaaaaaaaaaaaac8aaaaaaaaaaaaaadc444444444444449844444444444444d568d68d68d68d69d58d68d68d68d68f3"))),
+        Reference(4611686018427387903UL, 18446744073709551615UL, 9223372036854775807UL, 9223372036854775807UL, T(true, -507, UInt!512.fromHexString("adb4f2ea6de22f3ab7eb5cde8dd490456b619370740957251b627afe6cdd9b3412466baa660d6604e60e86fb4c6057e0ef11dbe051323934c0eb9fc79aad6421"))),
+        Reference(2UL, 12UL, 5UL, 6UL, T(true, -512, UInt!512.fromHexString("f884f794d7432cba3aa5f055f82203e1a21592b19fc943ca11a43c5c313da39816843e45ceb480799efde193d57e4029a347951d10d02d826050941cf0d79ce8"))),
+        Reference(0UL, 4294967295UL, 1UL, 1UL, T(true, -543, UInt!512.fromHexString("80000000c00000012aaaaaac8aaaaaadc44444498444444d568d68e67d68d6a9cc64c67f8b2cb3283855b4918156d0d68f33de4109783eb09cb05ea84b3f7191"))),
+        Reference(1073741823UL, 4294967295UL, 2147483647UL, 2147483647UL, T(true, -508, UInt!512.fromHexString("a9f7cddd15f4e4c999f306250db629db95cfe3baa7e05e831d1e4505492d7e105a163588aeade75dc2e93939fe63f2e3eb6c2663ebee831c58f6717a40b8c1b0"))),
+    ];
+    foreach (r; references) {
+        if (r.N > size_t.max) continue;
+        assert(hypergeometricLPMF!T(cast(size_t)r.k, cast(size_t)r.N,
+            cast(size_t)r.K, cast(size_t)r.n) == r.value);
+    }
+}
+version(mir_stat_test_slow_numerics)
+@safe pure nothrow @nogc unittest
+{
+    import mir.bignum.fixed: UInt;
+    alias T = Fp!512;
+    struct Reference { ulong k, N, K, n; T value; }
+    enum references = [
+        Reference(1UL, 18446744073709551615UL, 1UL, 1UL, T(true, -506, UInt!512.fromHexString("b17217f7d1cf79abc5e3b39803f2f6af3ef343267298b62d88b7c2063655a4d6916320cb18965742ff7330d928d7f8eeca61e168f46b547759f82537b253c6c6"))),
+        Reference(0UL, 18446744073709551615UL, 67UL, 65UL, T(true, -563, UInt!512.fromHexString("88180000000000235a3c000000000ab0effd55555558e4d55d535555569a827c90ed5555cf8743107b54002fd1a408c5169137e61c9a85f2fa994dedb98b5af2"))),
+        Reference(0UL, 18446744073709551615UL, 1UL, 18446744073709551614UL, T(true, -506, UInt!512.fromHexString("b17217f7d1cf79abc5e3b39803f2f6af3ef343267298b62d88b7c2063655a4d6916320cb18965742ff7330d928d7f8eeca61e168f46b547759f82537b253c6c6"))),
+        Reference(18446744073709551613UL, 18446744073709551615UL, 18446744073709551614UL, 18446744073709551614UL, T(true, -575, UInt!512.fromHexString("8000000000000000c0000000000000012aaaaaaaaaaaaaac8aaaaaaaaaaaaaadc444444444444449844444444444444d568d68d68d68d69d58d68d68d68d68f3"))),
+        Reference(0UL, 18446744073709551615UL, 9223372036854775807UL, 9223372036854775807UL, T(true, -448, UInt!512.fromHexString("b17217f7d1cf7969054d405e01ff2aba80b70dbbb7560b00a0169c89f1b9d3f7d8c0d2bf06796b9ae19c8a1d4b21327434b801426ff08a1e5085c7bd2026635d"))),
+        Reference(3UL, 7UL, 5UL, 5UL, T(true, -512, UInt!512.fromHexString("bdef9b174b336e61f152cb76200b3458800a5d569d04e9b0dce4bf9fbc7f41fc8fbcf4d5cd56861db0523387c6becfe788ef775e79f46b8d7f0e8de4504b28d4"))),
+        Reference(4UL, 10UL, 4UL, 7UL, T(true, -511, UInt!512.fromHexString("e5585fd15100119136fea076849739b27f83c300153ca20ee3d28322ee7a17dc4927fc793d5922745303a517274a54f327c5619e6fefeef2fb478a0d10c73f45"))),
+    ];
+    foreach (r; references) {
+        if (r.N > size_t.max) continue;
+        assert(hypergeometricLPMF!T(cast(size_t)r.k, cast(size_t)r.N,
+            cast(size_t)r.K, cast(size_t)r.n) == r.value);
+    }
+}
+// END Fp hypergeometric log references
 
 ///
 version(mir_stat_test)
