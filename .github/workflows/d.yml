@@ -332,8 +332,10 @@ jobs:
       run: dub test --build=unittest-cov
 
     # The BLAS build writes the same filenames; move the general reports first.
+    # Forks run the tests; coverage is published by the upstream repository.
     - name: Preserve general coverage
       id: general-coverage
+      if: ${{ !github.event.repository.fork }}
       shell: pwsh
       run: |
         $reports = @(Get-ChildItem -LiteralPath . -Filter 'source-*.lst' -File)
@@ -366,7 +368,7 @@ jobs:
 
     - name: Preserve BLAS coverage
       id: blas-coverage
-      if: contains(matrix.os, 'ubuntu')
+      if: ${{ !github.event.repository.fork && contains(matrix.os, 'ubuntu') }}
       shell: pwsh
       run: |
         $reports = @(Get-ChildItem -LiteralPath . -Filter 'source-*.lst' -File)
