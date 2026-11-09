@@ -1,0 +1,6 @@
+# Publish covered-line results after the CI workflow finishes all uploads.
+codecov:
+  require_ci_to_pass: false
+  notify:
+    manual_trigger: true
+    wait_for_ci: false

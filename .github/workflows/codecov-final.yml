@@ -1,0 +1,27 @@
+name: Finalize Codecov report
+
+on:
+  workflow_run:
+    workflows: [Run all D Tests and Codecov]
+    types: [completed]
+
+permissions: {}
+
+jobs:
+  notify:
+    # A successful run includes every expected coverage upload. Cancelled
+    # or failed runs can leave only a partial report.
+    if: github.event.workflow_run.conclusion == 'success'
+    runs-on: ubuntu-latest
+    steps:
+    # Fork PR jobs upload without a token. Send the authenticated completion
+    # signal here without checking out PR code or consuming PR artifacts.
+    - name: Publish coverage for the tested commit
+      uses: codecov/codecov-action@v7
+      with:
+        run_command: send-notifications
+        token: ${{ secrets.CODECOV_TOKEN }}
+        slug: ${{ github.repository }}
+        override_commit: ${{ github.event.workflow_run.head_sha }}
+        version: v11.3.1
+        fail_ci_if_error: true
