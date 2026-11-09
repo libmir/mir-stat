@@ -69,7 +69,7 @@ An HTML build does not verify every link or the external online example runner.
 ## Slow numerical references
 
 Run `dub test mir-stat:slow-numerics --build=unittest-optimized` for only the
-slow numerical tests with DMD or LDC. The focused package imports the five
+slow numerical tests with DMD or LDC. The focused package imports the
 modules containing these tests and compiles their required mir-stat implementation,
 without building or running
 unrelated ordinary tests. Add `--compiler=ldc2` to select LDC. Optimization and
@@ -77,7 +77,8 @@ inlining retain assertions, contracts, and bounds checks. Omit the build option
 for an unoptimized run.
 
 The slow suite includes the 256- and 512-bit centered binomial log-mass sweeps,
-512-bit log-factorial and Poisson log-mass sweeps, and the existing large-count
+512-bit log-factorial and Poisson log-mass sweeps, the wider hypergeometric
+log-mass reference sweeps, and the existing large-count
 binomial and negative-binomial tests. These use `mir_stat_test_slow_numerics`
 independently of `mir_stat_test`; their reference generators preserve the guards.
 Ordinary tests retain the smaller internal sweeps, public API references at all
