@@ -4654,30 +4654,21 @@ positive-weight observations once, taking O(n log n) time and O(n) storage.
 Later changes to the inputs do not affect the table. Each scalar query takes
 O(log n) time and allocates no memory.
 
-Only `inverseCDF` and `averagedInverseCDF` are supported. Both treat weights
-as relative probability masses: multiplying every weight by the same positive
-number leaves the definition unchanged. `inverseCDF` selects an observation;
-`averagedInverseCDF` averages adjacent observations when the requested
-probability lies exactly on a cumulative-mass boundary. Choose the former
-when the result should be an observed value, and the latter when an exact
-split should fall halfway between the two observations.
+Choose the weight interpretation at construction and the quantile algorithm at
+each query. The default interpretation is relative. Use it for probabilities or
+relative emphasis: scaling all weights by the same positive factor leaves the
+mathematical definition unchanged. Relative tables support `inverseCDF` and
+`averagedInverseCDF`. With observations [0, 10] and equal weights, the first
+selects 0 at probability 0.5. The second averages at the exact split and gives
+5. Relative tables use inverseCDF for quantiles and IQR, and averagedInverseCDF
+for the median.
 
-For example, observations 0 and 10 with equal weights put half the mass at
-each value. At probability 0.5, `inverseCDF` returns 0, the first observation
-whose cumulative mass reaches one half. `averagedInverseCDF` returns 5,
-the midpoint of the exact split. Away from such a boundary, the two
-conventions return the same observation. Weights need not sum to one:
-weights [1, 3] describe the same relative masses as [0.25, 0.75].
+Use frequency interpretation for counts of repeated observations. With values
+[0, 10] and counts [1, 3], the represented sample is [0, 10, 10, 10].
+Frequency tables store exact cumulative counts so that type 7 and type 8
+queries can locate ranks without expanding that sample. Quantiles and IQR
+default to type 7. The median is the median of the expanded sample.
 
-The algorithm is chosen per query, so the same table can answer queries
-using either convention without rebuilding. Other algorithms in
-$(LREF WeightedQuantileAlgo), including the frequency-weight conventions,
-are available through the standalone weighted quantile functions but are
-not supported by this table.
-
-The defaults match the standalone functions: `quantile` and
-`interquartileRange` use `inverseCDF`, while `median` uses
-`averagedInverseCDF`. Thus `median()` can differ from `quantile(0.5)`.
 For one batch of known probabilities, $(LREF weightedQuantile) already shares
 preparation; use a table when queries arrive separately or the data are reused.
 The numerical limits of $(LREF weightedQuantile) also apply here.
@@ -4689,11 +4680,18 @@ RC copies retain reference-counted storage until the last owner is destroyed.
 Custom-allocated tables require explicit disposal with their allocator.
 An uninitialized or disposed table cannot be queried.
 +/
-struct WeightedQuantileTable(Iterator, bool customAllocated = false)
+struct WeightedQuantileTable(Iterator, bool customAllocated = false,
+    WeightInterpretation interpretation = WeightInterpretation.relative)
 {
     private import std.traits: isNumeric;
     private Slice!Iterator entries;
     private alias Element = typeof(typeof(entries).DeepElement.init.value);
+
+    private enum defaultAlgorithm = weightedTableDefault!interpretation;
+    private enum supports(WeightedQuantileAlgo algorithm) =
+        interpretation == WeightInterpretation.frequency
+            ? validWeightedQuantileOptions!(interpretation, algorithm)
+            : algorithm == WeightedQuantileAlgo.inverseCDF || algorithm == WeightedQuantileAlgo.averagedInverseCDF;
 
     private this(Slice!Iterator storage)
     {
@@ -4701,7 +4699,7 @@ struct WeightedQuantileTable(Iterator, bool customAllocated = false)
         entries = storage.move;
     }
 
-    /// Number of positive-weight observations, including repeated values.
+    /// Number of positive-weight input rows, including ties. A row with count 3 contributes one to length.
     @property size_t length() const @safe pure nothrow @nogc
     {
         return entries.length;
@@ -4711,36 +4709,36 @@ struct WeightedQuantileTable(Iterator, bool customAllocated = false)
     return the smallest and largest positive-weight observations.
     F optionally specifies the
     result type. Without F, inverseCDF preserves the observation type and
-    averagedInverseCDF uses the same floating result type as weightedMedian. +/
-    auto quantile(F, WeightedQuantileAlgo algorithm = WeightedQuantileAlgo.inverseCDF, P)(P probability) const
-        if ((algorithm == WeightedQuantileAlgo.inverseCDF ||
-             algorithm == WeightedQuantileAlgo.averagedInverseCDF) &&
+    interpolating algorithms use the same floating result type as weightedMedian. +/
+    auto quantile(F, WeightedQuantileAlgo algorithm = defaultAlgorithm, P)(P probability) const
+        if (supports!algorithm &&
             (algorithm == WeightedQuantileAlgo.inverseCDF || isFloatingPoint!F) && isNumeric!F && isFloatingPoint!P)
     {
         assert(length > 0, "WeightedQuantileTable: table must not be empty");
-        return weightedQuantileAt!(F, WeightInterpretation.relative, algorithm)(entries.lightScope, probability, 1);
+        return weightedQuantileAt!(F, interpretation, algorithm)(entries.lightScope, probability, 1);
     }
 
     /// ditto
-    auto quantile(WeightedQuantileAlgo algorithm = WeightedQuantileAlgo.inverseCDF, P)(P probability) const
-        if ((algorithm == WeightedQuantileAlgo.inverseCDF ||
-             algorithm == WeightedQuantileAlgo.averagedInverseCDF) && isFloatingPoint!P)
+    auto quantile(WeightedQuantileAlgo algorithm = defaultAlgorithm, P)(P probability) const
+        if (supports!algorithm && isFloatingPoint!P)
     {
         alias F = WeightedQuantileResult!(Element[], algorithm);
         return quantile!(F, algorithm)(probability);
     }
 
-    /// Median using averagedInverseCDF, matching weightedMedian.
+    /// Median using averagedInverseCDF for relative weights or the expanded-sample median for counts.
     auto median(F = quantileType!(Element, QuantileAlgo.type7))() const
         if (isFloatingPoint!F)
     {
-        return quantile!(F, WeightedQuantileAlgo.averagedInverseCDF)(0.5);
+        static if (interpretation == WeightInterpretation.frequency)
+            return quantile!(F, WeightedQuantileAlgo.type7)(0.5);
+        else
+            return quantile!(F, WeightedQuantileAlgo.averagedInverseCDF)(0.5);
     }
 
     /// Difference between the 75th and 25th percentiles, matching weightedInterquartileRange.
-    F interquartileRange(F, WeightedQuantileAlgo algorithm = WeightedQuantileAlgo.inverseCDF)() const
-        if ((algorithm == WeightedQuantileAlgo.inverseCDF ||
-             algorithm == WeightedQuantileAlgo.averagedInverseCDF) &&
+    F interquartileRange(F, WeightedQuantileAlgo algorithm = defaultAlgorithm)() const
+        if (supports!algorithm &&
             (isFloatingPoint!F || (algorithm == WeightedQuantileAlgo.inverseCDF && isIntegral!Element && isIntegral!F)))
     {
         static if (algorithm == WeightedQuantileAlgo.inverseCDF && isIntegral!Element)
@@ -4757,8 +4755,8 @@ struct WeightedQuantileTable(Iterator, bool customAllocated = false)
     }
 
     /// ditto
-    auto interquartileRange(WeightedQuantileAlgo algorithm = WeightedQuantileAlgo.inverseCDF)() const
-        if (algorithm == WeightedQuantileAlgo.inverseCDF || algorithm == WeightedQuantileAlgo.averagedInverseCDF)
+    auto interquartileRange(WeightedQuantileAlgo algorithm = defaultAlgorithm)() const
+        if (supports!algorithm)
     {
         alias F = WeightedQuantileResult!(Element[], algorithm);
         return interquartileRange!(F, algorithm)();
@@ -4795,29 +4793,47 @@ unittest
     assert(equal.median == 5);
 }
 
+/// Counts describe repeated observations without allocating an expanded sample.
+@safe pure nothrow
+unittest
+{
+    import mir.math.common: approxEqual;
+    alias A = WeightedQuantileAlgo;
+    const table = weightedQuantileTable!(WeightInterpretation.frequency)([0, 10], [1, 3]);
+    // The represented sample is [0, 10, 10, 10], but only two rows are stored.
+    assert(table.length == 2);
+    assert(table.quantile(0.25) == 7.5);
+    assert(table.quantile!(A.type8)(0.25).approxEqual(25.0 / 6));
+    assert(table.median == 10);
+    assert(table.interquartileRange == 2.5);
+}
+
 /++
-Copy observations and relative weights into a GC-managed $(LREF WeightedQuantileTable).
+Copy observations and weights into a GC-managed $(LREF WeightedQuantileTable).
 Inputs must satisfy the same requirements as $(LREF weightedQuantile): equal
 one-dimensional lengths, finite nonnegative weights, at least one positive
 weight, and finite observations wherever the weight is positive. Zero-weight
 observations are ignored. Inputs are not modified.
 
 Params:
+    interpretation = relative (default) or frequency
     data = observations
-    weights = relative probability masses
+    weights = relative masses or whole-number occurrence counts, subject to the total-count limit of weightedQuantile
 +/
-auto weightedQuantileTable(Data, Weights)(scope auto ref Data data, scope auto ref Weights weights)
+auto weightedQuantileTable(WeightInterpretation interpretation = WeightInterpretation.relative,
+    Data, Weights)(scope auto ref Data data, scope auto ref Weights weights)
 {
     QuantileContext context;
-    return allocatedWeightedQuantileTable!(QuantileAllocation.gc)(context, data, weights);
+    return allocatedWeightedQuantileTable!(QuantileAllocation.gc, interpretation)(context, data, weights);
 }
 
 /++ Like $(LREF weightedQuantileTable), using reference-counted storage.
 Use this variant for deterministic release without the garbage collector. +/
-auto rcWeightedQuantileTable(Data, Weights)(scope auto ref Data data, scope auto ref Weights weights)
+auto rcWeightedQuantileTable(WeightInterpretation interpretation = WeightInterpretation.relative,
+    Data, Weights)(scope auto ref Data data, scope auto ref Weights weights)
 {
     QuantileContext context;
-    return allocatedWeightedQuantileTable!(QuantileAllocation.rc)(context, data, weights);
+    return allocatedWeightedQuantileTable!(QuantileAllocation.rc, interpretation)(context, data, weights);
 }
 
 /++ Like $(LREF weightedQuantileTable), using a custom allocator.
@@ -4826,10 +4842,11 @@ must release the table with `table.dispose(allocator)` when finished; copies
 share that allocation and must not be used after disposal. Keep the allocator's
 backing state valid until disposal, and dispose the shared allocation only
 once, after all queries through any copy are finished. +/
-auto makeWeightedQuantileTable(Allocator, Data, Weights)(auto ref Allocator allocator,
+auto makeWeightedQuantileTable(WeightInterpretation interpretation = WeightInterpretation.relative,
+    Allocator, Data, Weights)(auto ref Allocator allocator,
     scope auto ref Data data, scope auto ref Weights weights)
 {
-    return allocatedWeightedQuantileTable!(QuantileAllocation.custom)(allocator, data, weights);
+    return allocatedWeightedQuantileTable!(QuantileAllocation.custom, interpretation)(allocator, data, weights);
 }
 
 ///
@@ -4843,7 +4860,96 @@ unittest
     assert(table.median == 10);
 }
 
-private auto allocatedWeightedQuantileTable(QuantileAllocation allocation, Context, Data, Weights)(
+version(mir_stat_test)
+@safe pure nothrow @nogc unittest
+{
+    import mir.math.common: approxEqual;
+    import mir.ndslice.slice: sliced;
+    import mir.ndslice.topology: stride;
+    alias A = WeightedQuantileAlgo;
+    double[8] values = [10, 99, double.nan, 99, 0, 99, 10, 99];
+    double[8] counts = [2, 99, 0, 99, 1, 99, 1, 99];
+    const int[4] expanded = [0, 10, 10, 10];
+    auto owner = rcWeightedQuantileTable!(WeightInterpretation.frequency)(
+        values[].sliced.stride(2), counts[].sliced.stride(2));
+    const table = owner;
+    owner = typeof(owner).init;
+    assert(table.length == 3);
+    static foreach (algorithm; [A.type7, A.type8])
+    {{
+        enum ordinary = algorithm == A.type7 ? QuantileAlgo.type7 : QuantileAlgo.type8;
+        foreach (p; [0.0, 0.1, 0.25, 0.5, 0.75, 0.9, 1.0])
+        {
+            const actual = table.quantile!algorithm(p);
+            assert(actual.approxEqual(rcquantile!ordinary(expanded, p)));
+            assert(actual == rcWeightedQuantile!(WeightInterpretation.frequency, algorithm)(
+                values[].sliced.stride(2), counts[].sliced.stride(2), p));
+        }
+        assert(table.interquartileRange!algorithm == rcWeightedInterquartileRange!(WeightInterpretation.frequency, algorithm)(
+            values[].sliced.stride(2), counts[].sliced.stride(2)));
+    }}
+    assert(table.quantile(0.25) == table.quantile!(A.type7)(0.25));
+    assert(table.interquartileRange == table.interquartileRange!(A.type7));
+    assert(table.median == 10);
+    values[] = 42;
+    counts[] = 0;
+    assert(table.quantile(0.0) == 0 && table.quantile(1.0) == 10);
+    static assert(!__traits(compiles, table.quantile!(A.inverseCDF)(0.5)));
+    static assert(!__traits(compiles, table.interquartileRange!(A.averagedInverseCDF)));
+    static assert(!__traits(compiles, table.quantile!int(0.5)));
+    static assert(!__traits(compiles, table.interquartileRange!int));
+    static assert(!__traits(compiles, table.quantile(1)));
+    static assert(!__traits(compiles, rcWeightedQuantileTable!(A.type7)(values, counts)));
+
+    const long[2] close = [long.max - 2, long.max - 1];
+    const ulong[2] huge = [weightedQuantileMaxFrequency / 2, weightedQuantileMaxFrequency / 2];
+    const large = rcWeightedQuantileTable!(WeightInterpretation.frequency)(close, huge);
+    assert(large.length == 2);
+    static foreach (algorithm; [A.type7, A.type8])
+        foreach (p; [0.0L, 0.25L, 0.5L, 0.75L, 1.0L])
+            assert(large.quantile!(real, algorithm)(p) == rcWeightedQuantile!(real, WeightInterpretation.frequency, algorithm)(close, huge, p));
+
+    const int[2] endpoints = [0, 10], equal = [1, 1];
+    const pair = rcWeightedQuantileTable!(WeightInterpretation.frequency)(endpoints, equal);
+    assert(pair.median == 5);
+    assert(pair.quantile!(A.type8)(0.5) == 5);
+}
+
+version(mir_stat_test)
+@system unittest
+{
+    import std.exception: assertThrown;
+    import core.exception: AssertError;
+    alias A = WeightedQuantileAlgo;
+    const int[2] data = [0, 10], counts = [1, 3];
+    QuantileTestAllocator!() allocator;
+    auto table = makeWeightedQuantileTable!(WeightInterpretation.frequency)(allocator, data, counts);
+    assert(allocator.allocations == 1 && allocator.releases == 0);
+    const copy = table;
+    assert(copy.median == 10);
+    assert(copy.quantile!(A.type7)(0.25) == 7.5);
+    assert(copy.interquartileRange!(A.type7) == 2.5);
+    assert(allocator.allocations == 1 && allocator.releases == 0);
+    table.dispose(allocator);
+    assert(allocator.releases == 1 && table.length == 0);
+    assertThrown!AssertError(table.median);
+    table.dispose(allocator);
+    assert(allocator.releases == 1);
+
+    foreach (bad; [0.5, -1.0, double.nan, double.infinity])
+        assertThrown!AssertError(makeWeightedQuantileTable!(WeightInterpretation.frequency)(allocator, data, [bad, 1.0]));
+    assertThrown!AssertError(makeWeightedQuantileTable!(WeightInterpretation.frequency)(allocator, data, [0, 0]));
+    assertThrown!AssertError(makeWeightedQuantileTable!(WeightInterpretation.frequency)(allocator, data,
+        [weightedQuantileMaxFrequency, 1UL]));
+    // Invalid counts are rejected before allocating storage.
+    assert(allocator.allocations == 1 && allocator.releases == 1);
+}
+
+private enum weightedTableDefault(WeightInterpretation interpretation) =
+    interpretation == WeightInterpretation.frequency ? WeightedQuantileAlgo.type7 : WeightedQuantileAlgo.inverseCDF;
+
+private auto allocatedWeightedQuantileTable(QuantileAllocation allocation, WeightInterpretation interpretation,
+    Context, Data, Weights)(
     ref Context context, scope auto ref Data data, scope auto ref Weights weights)
 {
     import std.traits: Unqual, isNumeric;
@@ -4857,14 +4963,15 @@ private auto allocatedWeightedQuantileTable(QuantileAllocation allocation, Conte
     alias Weight = Unqual!(typeof(masses).DeepElement);
     static assert(isNumeric!Element && isNumeric!Weight,
         "Weighted quantiles require numeric observations and weights");
-    alias Entry = WeightedQuantileEntry!(Element, WeightInterpretation.relative, WeightedQuantileAlgo.inverseCDF);
-    const input = validateWeightedQuantileInput!(WeightInterpretation.relative, WeightedQuantileAlgo.inverseCDF)(values.lightScope, masses.lightScope);
+    enum algorithm = weightedTableDefault!interpretation;
+    alias Entry = WeightedQuantileEntry!(Element, interpretation, algorithm);
+    const input = validateWeightedQuantileInput!(interpretation, algorithm)(values.lightScope, masses.lightScope);
     auto storage = allocateQuantiles!(Entry, allocation)(context, input.count);
     static if (allocation == QuantileAllocation.custom)
         scope(failure) releaseQuantiles(context, storage);
-    prepareWeightedQuantileWorkspace!(WeightInterpretation.relative, WeightedQuantileAlgo.inverseCDF)(
+    prepareWeightedQuantileWorkspace!(interpretation, algorithm)(
         storage.lightScope, values.lightScope, masses.lightScope, input.maximum);
-    return WeightedQuantileTable!(IteratorOf!(typeof(storage)), allocation == QuantileAllocation.custom)(storage.move);
+    return WeightedQuantileTable!(IteratorOf!(typeof(storage)), allocation == QuantileAllocation.custom, interpretation)(storage.move);
 }
 
 version(mir_stat_test)
