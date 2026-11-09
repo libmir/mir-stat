@@ -18,7 +18,7 @@ package(mir.stat) struct CountLog(uint bits)
     alias W = Fp!(bits + 192);
     enum fractionBits = bits + 320;
     alias I = UInt!(fractionBits + 192);
-    // n^129 for a 64-bit n, coefficient denominators, and shifted numerators.
+    // n^129 for totals of up to 65 bits, coefficient denominators, and shifted numerators.
     alias Wide = UInt!(fractionBits + 8448);
     alias Logs = ProbabilityLog!(bits + 128);
 
@@ -78,28 +78,44 @@ package(mir.stat) struct CountLog(uint bits)
         return (numerator / power).toSize!(fractionBits + 192);
     }
 
+    // A total can be the sum of two ulong counts. The Stirling powers and
+    // squared count below are sized for at most 65 significant bits.
+    private static bool validCount(N)(const N n)
+    {
+        static if (is(N == UInt!128))
+            return n != 0 && n < (UInt!128(1) << 65);
+        else
+        {
+            import std.traits: isIntegral;
+            static assert(isIntegral!N && N.sizeof <= ulong.sizeof);
+            return n > 0;
+        }
+    }
+
     // For positive n, the remainder has the sign of the first omitted
     // Stirling term and magnitude bounded by that term (DLMF 5.11(ii)).
     // Use 64 terms only when the exact 65th term is below one grid unit.
     // The crossover therefore grows with the requested precision.
-    static bool usesStirling(ulong n)
-        in (n != 0, "count must be positive")
+    static bool usesStirling(N)(const N n)
+        in (validCount(n), "count must be positive and fit in 65 bits")
     {
         Wide power = Wide(n);
-        foreach (i; 0 .. 128) power *= UInt!64(n);
+        foreach (i; 0 .. 128) power *= n;
         auto numerator = coefficients[64].numerator.toSize!(fractionBits + 8448);
         numerator <<= fractionBits;
         power *= coefficients[64].denominator;
         return numerator < power;
     }
 
-    private static I correctionLarge(ulong n)
+    private static I correctionLarge(N)(const N n)
     {
         Wide power = Wide(n);
-        // n is a 64-bit count, so its square needs only 128 bits. Keeping
-        // the multiplier narrow avoids a huge unrolled Wide-by-Wide product.
-        UInt!128 square = UInt!128(n);
-        square *= UInt!64(n);
+        // Individual counts fit 64 bits; a sum of two counts can need 65.
+        static if (is(N == UInt!128))
+            auto square = UInt!192(n);
+        else
+            auto square = UInt!128(n);
+        square *= n;
         I sum;
         foreach (i; 0 .. 64) {
             const term = coefficientTerm(i,power);
@@ -111,20 +127,20 @@ package(mir.stat) struct CountLog(uint bits)
         return sum;
     }
 
-    private static I factorialSmall(ulong n)
+    private static I factorialSmall(N)(const N n)
     {
         I sum;
         if (n < 2) return sum;
         // Reuse log(2) without changing the rounding of individual terms.
         Logs.Context context;
-        for (ulong i = 2; ; ++i) {
+        for (N i = N(2); ; ++i) {
             sum += fixed(Logs.logCount(UInt!128(i), context));
             if (i == n) break;
         }
         return sum;
     }
 
-    private static I leading(ulong n)
+    private static I leading(N)(const N n)
     {
         auto result = fixed(Logs.logCount(UInt!128(n)));
         auto twiceCountPlusOne = UInt!128(n);
@@ -150,8 +166,8 @@ package(mir.stat) struct CountLog(uint bits)
     // log(n!) - (n+1/2)*log(n) + n - log(2*pi)/2, n>=1.
     // Expose the correction separately so callers can combine the leading
     // terms analytically instead of subtracting large log-factorials.
-    static W correction(ulong n)
-        in (n != 0, "count must be positive")
+    static W correction(N)(const N n)
+        in (validCount(n), "count must be positive and fit in 65 bits")
     {
         if (usesStirling(n)) return finish(correctionLarge(n));
         auto result = factorialSmall(n);
@@ -368,6 +384,11 @@ version(mir_stat_test)
             import std.exception: assertThrown;
             assertThrown!AssertError(L.correction(0));
             assertThrown!AssertError(L.usesStirling(0));
+            const firstOversized = UInt!128(1) << 65;
+            assert(L.usesStirling(firstOversized - 1));
+            assert(L.correction(firstOversized - 1).coefficient != 0);
+            assertThrown!AssertError(L.usesStirling(firstOversized));
+            assertThrown!AssertError(L.correction(firstOversized));
         }
     }
 }

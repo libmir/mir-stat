@@ -70,14 +70,27 @@ package(mir.stat) struct BinomialLog(uint bits)
         in (!p.sign && !!p.coefficient && fpProbabilityLess(p,T(1)),
             "probability must be strictly between zero and one")
     {
-        const m = n-k;
+        return fromCounts(k,n-k,UInt!128(n),p,false);
+    }
+
+    // NB(k,r,p) = Binomial(r; k+r,p) * r/(k+r).
+    static T negativeMass(ulong k, ulong r, T p)
+        in (k && r && !!p.coefficient && !p.sign && fpProbabilityLess(p,T(1)))
+    {
+        auto total = UInt!128(r);
+        total += k;
+        return fromCounts(r,k,total,p,true);
+    }
+
+    private static T fromCounts(ulong k, ulong m, UInt!128 n, T p, bool negativeBinomial)
+    {
         const logK = fixed(Logs.logCount(UInt!128(k)));
         const logM = fixed(Logs.logCount(UInt!128(m)));
-        const logN = fixed(Logs.logCount(UInt!128(n)));
+        const logN = fixed(Logs.logCount(n));
         // Retain the complement on the integer grid instead of rounding
         // 1-p to the input Fp width. Mean error is below n*2^-fractionBits.
         auto mean = fixed(p);
-        mean *= UInt!64(n);
+        mean *= n;
         const complementMean = (I(n) << fractionBits) - mean;
         const logP = fixed(Logs.probability(p).finish!(bits + 128));
         const logQ = fixed(Logs.complement(p).finish!(bits + 128));
@@ -85,7 +98,7 @@ package(mir.stat) struct BinomialLog(uint bits)
         magnitude += deviance(m,complementMean,logM,logN,logQ);
         // 1-correction(1) = log(2*pi)/2. Reuse the guarded constant
         // calculation without introducing a hardware-precision constant.
-        auto normalization = (I(1) << fractionBits) - fixed(Counts.correction(1));
+        auto normalization = (I(1) << fractionBits) - fixed(Counts.correction(1UL));
         normalization <<= 1;
         normalization += logK;
         normalization += logM;
@@ -93,7 +106,14 @@ package(mir.stat) struct BinomialLog(uint bits)
         magnitude += normalization >> 1;
         magnitude += fixed(Counts.correction(k));
         magnitude += fixed(Counts.correction(m));
-        magnitude -= fixed(Counts.correction(n));
+        magnitude -= fixed(n <= ulong.max ? Counts.correction(cast(ulong)n)
+                                         : Counts.correction(n));
+        if (negativeBinomial)
+        {
+            // log(n/k) is nonnegative. Subtract guarded logs while still on
+            // the fixed-point grid, before rounding the combined magnitude.
+            magnitude += logN - logK;
+        }
         // Every interior binomial mass is <=1/2, so its log magnitude is
         // bounded away from zero. Round only after combining the terms.
         auto result = T(magnitude);

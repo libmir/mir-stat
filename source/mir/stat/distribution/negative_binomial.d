@@ -11,7 +11,7 @@ in $(D [0, 1]). At $(D p == 1), there are no failures. At $(D p == 0), success
 never occurs: the API uses zero mass and zero CDF at every finite count, with
 CCDF equal to one.
 
-Only PMF has an $(D Fp) overload. CDF, CCDF, LPMF, and inverse CDF use built-in
+PMF and LPMF accept $(D Fp) probabilities. CDF, CCDF, and inverse CDF use built-in
 floating-point probabilities. The inverse returns $(D size_t), using
 $(D size_t.max) for an unbounded quantile or one outside the count range.
 Its endpoint conventions differ from $(D geometricInvCDF), even for $(D r == 1).
@@ -825,6 +825,13 @@ Computes the negative binomial log probability mass function (LPMF).
 
 Returns the natural logarithm of $(D P(K == k)).
 
+The $(D Fp) overload evaluates the log mass directly with guarded count and
+probability logarithms. Both counts may span the full $(D size_t) domain
+(subject to $(D r > 0)), including when their sum exceeds $(D size_t.max).
+The centered calculation preserves accuracy near the mode and can return a
+finite log mass when the PMF underflows. Universal correct rounding is not
+guaranteed.
+
 Special values:
 $(TABLE
     $(TR $(TH Input) $(TH Result))
@@ -859,6 +866,137 @@ T negativeBinomialLPMF(T)(const size_t k, const size_t r, const T p)
             + xlog1py(k, -p) + xlogy(r, p);
     return cast(T)negativeBinomialLogMass(k, r, cast(real)p);
 }
+
+/// ditto
+@safe pure nothrow @nogc
+T negativeBinomialLPMF(T)(const size_t k, const size_t r, const T p)
+    if (is(T == Fp!bits, uint bits))
+    in (r > 0, "number of successes must be larger than zero")
+    in (fpProbabilityValid(p), "p must be finite and between zero and one")
+{
+    import mir.stat.distribution.geometric: geometricLPMF;
+    import mir.stat.distribution.binomial: binomialLPMF;
+    import mir.stat.internal.fp_binomial_log: BinomialLog;
+    import mir.stat.internal.fp_probability: fpProbabilityLess;
+
+    if (r == 1) return geometricLPMF(k,p);
+    if (k == 0) return binomialLPMF(r,r,p); // All r trials succeed.
+    if (!p.coefficient || !fpProbabilityLess(p,T(1))) return T(-double.infinity);
+    enum bits = typeof(T.init.coefficient).sizeof * 8;
+    return BinomialLog!bits.negativeMass(k,r,p);
+}
+
+/// With one required success, the log mass agrees with the geometric distribution.
+version(mir_stat_test)
+@safe pure nothrow @nogc unittest
+{
+    import mir.bignum.fp: Fp;
+    import mir.stat.distribution.geometric: geometricLPMF;
+    auto p = Fp!128(0.25);
+    assert(negativeBinomialLPMF(7,1,p) == geometricLPMF(7,p));
+}
+
+version(mir_stat_test)
+@safe pure nothrow @nogc unittest
+{
+    alias T = Fp!128;
+    assert(negativeBinomialLPMF(0,3,T(1)) == T(0));
+    assert(negativeBinomialLPMF(2,3,T(1)) == T(-double.infinity));
+    assert(negativeBinomialLPMF(0,3,T(0)) == T(-double.infinity));
+    assert(negativeBinomialLPMF(2,3,T(0)) == T(-double.infinity));
+    debug
+    {
+        import core.exception: AssertError;
+        import std.exception: assertThrown;
+        assertThrown!AssertError(negativeBinomialLPMF(0,0,T(1)));
+        foreach (invalid; [T(-0.25),T(2),T(double.infinity),T(double.nan)])
+            assertThrown!AssertError(negativeBinomialLPMF(0,1,invalid));
+    }
+}
+
+// BEGIN public negative binomial log references
+version(mir_stat_test)
+@safe pure nothrow @nogc unittest
+{
+    import mir.bignum.fixed: UInt;
+    {
+        alias T = Fp!64;
+        struct Reference { ulong k; ulong successes; T p; T value; }
+        enum references = [
+            Reference(0UL,3UL,T(false,long.min,UInt!64.fromHexString("1")),T(true,1,UInt!64.fromHexString("851591f9dd5b9b41"))),
+            Reference(0UL,18446744073709551615UL,T(false,-64,UInt!64.fromHexString("ffffffffffffffff")),T(true,-64,UInt!64.fromHexString("ffffffffffffffff"))),
+            Reference(1UL,18446744073709551615UL,T(false,-64,UInt!64.fromHexString("ffffffffffffffff")),T(true,-63,UInt!64.fromHexString("8000000000000000"))),
+            Reference(2UL,3UL,T(false,long.min,UInt!64.fromHexString("1")),T(true,1,UInt!64.fromHexString("851591f9dd5b9b40"))),
+            Reference(7UL,12UL,T(false,-64,UInt!64.fromHexString("ffffffffffffffff")),T(true,-55,UInt!64.fromHexString("9614bb226a60fe2d"))),
+            Reference(57UL,19UL,T(false,-4,UInt!64.fromHexString("3")),T(true,-61,UInt!64.fromHexString("91572451b6b80573"))),
+            Reference(18446744073709551614UL,18446744073709551615UL,T(false,-1,UInt!64.fromHexString("1")),T(true,-59,UInt!64.fromHexString("bb91dcc9ca4664bc"))),
+            Reference(18446744073709551615UL,2UL,T(false,-64,UInt!64.fromHexString("1")),T(true,-58,UInt!64.fromHexString("b57217f7d1cf79ac"))),
+            Reference(18446744073709551615UL,18446744073709551615UL,T(false,-1,UInt!64.fromHexString("1")),T(true,-59,UInt!64.fromHexString("bb91dcc9ca4664bc"))),
+        ];
+        foreach (r; references) {
+            if (r.k > size_t.max || r.successes > size_t.max) continue;
+            assert(negativeBinomialLPMF(cast(size_t)r.k,cast(size_t)r.successes,r.p) == r.value);
+        }
+    }
+    {
+        alias T = Fp!128;
+        struct Reference { ulong k; ulong successes; T p; T value; }
+        enum references = [
+            Reference(0UL,3UL,T(false,long.min,UInt!128.fromHexString("1")),T(true,-63,UInt!128.fromHexString("851591f9dd5b9b40d76ac6b202f63903"))),
+            Reference(0UL,18446744073709551615UL,T(false,-128,UInt!128.fromHexString("ffffffffffffffffffffffffffffffff")),T(true,-192,UInt!128.fromHexString("ffffffffffffffff0000000000000000"))),
+            Reference(1UL,18446744073709551615UL,T(false,-64,UInt!128.fromHexString("ffffffffffffffff")),T(true,-127,UInt!128.fromHexString("80000000000000004000000000000000"))),
+            Reference(2UL,3UL,T(false,long.min,UInt!128.fromHexString("1")),T(true,-63,UInt!128.fromHexString("851591f9dd5b9b3ff21266e0b1f62772"))),
+            Reference(7UL,12UL,T(false,-128,UInt!128.fromHexString("ffffffffffffffffffffffffffffffff")),T(true,-118,UInt!128.fromHexString("98ac480da0fb44517d5de15135ecc1bf"))),
+            Reference(57UL,19UL,T(false,-4,UInt!128.fromHexString("3")),T(true,-125,UInt!128.fromHexString("91572451b6b80572f96dede89956efeb"))),
+            Reference(18446744073709551614UL,18446744073709551615UL,T(false,-1,UInt!128.fromHexString("1")),T(true,-123,UInt!128.fromHexString("bb91dcc9ca4664bc16b126e66e238b8b"))),
+            Reference(18446744073709551615UL,2UL,T(false,-64,UInt!128.fromHexString("1")),T(true,-122,UInt!128.fromHexString("b57217f7d1cf79abc7e3b39803f2f6af"))),
+            Reference(18446744073709551615UL,18446744073709551615UL,T(false,-1,UInt!128.fromHexString("1")),T(true,-123,UInt!128.fromHexString("bb91dcc9ca4664bc1ab126e66e238b8b"))),
+        ];
+        foreach (r; references) {
+            if (r.k > size_t.max || r.successes > size_t.max) continue;
+            assert(negativeBinomialLPMF(cast(size_t)r.k,cast(size_t)r.successes,r.p) == r.value);
+        }
+    }
+    {
+        alias T = Fp!256;
+        struct Reference { ulong k; ulong successes; T p; T value; }
+        enum references = [
+            Reference(0UL,3UL,T(false,long.min,UInt!256.fromHexString("1")),T(true,-191,UInt!256.fromHexString("851591f9dd5b9b40d76ac6b202f6390370b6725cd5f288a22789d184a8c03ba1"))),
+            Reference(0UL,18446744073709551615UL,T(false,-256,UInt!256.fromHexString("ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff")),T(true,-448,UInt!256.fromHexString("ffffffffffffffff000000000000000000000000000000000000000000000000"))),
+            Reference(1UL,18446744073709551615UL,T(false,-64,UInt!256.fromHexString("ffffffffffffffff")),T(true,-255,UInt!256.fromHexString("800000000000000040000000000000002aaaaaaaaaaaaaaacaaaaaaaaaaaaaab"))),
+            Reference(2UL,3UL,T(false,long.min,UInt!256.fromHexString("1")),T(true,-191,UInt!256.fromHexString("851591f9dd5b9b3ff21266e0b1f6277239b7d1e6515b4eefa8060e8493839992"))),
+            Reference(7UL,12UL,T(false,-256,UInt!256.fromHexString("ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff")),T(true,-245,UInt!256.fromHexString("99f80e833c486763e7028f3b1cb0accc48a50c280a3785bc3512c03432fa9f02"))),
+            Reference(57UL,19UL,T(false,-4,UInt!256.fromHexString("3")),T(true,-253,UInt!256.fromHexString("91572451b6b80572f96dede89956efeb5f60e2980e256227a708056045ed31a8"))),
+            Reference(18446744073709551614UL,18446744073709551615UL,T(false,-1,UInt!256.fromHexString("1")),T(true,-251,UInt!256.fromHexString("bb91dcc9ca4664bc16b126e66e238b8b167494af74fd4560a8762b7c3e71a16a"))),
+            Reference(18446744073709551615UL,2UL,T(false,-64,UInt!256.fromHexString("1")),T(true,-250,UInt!256.fromHexString("b57217f7d1cf79abc7e3b39803f2f6af4048987bc7ee0b82df0d175b8baafa2c"))),
+            Reference(18446744073709551615UL,18446744073709551615UL,T(false,-1,UInt!256.fromHexString("1")),T(true,-251,UInt!256.fromHexString("bb91dcc9ca4664bc1ab126e66e238b8b1b7494af74fd4560aecb80d193c6f6c0"))),
+        ];
+        foreach (r; references) {
+            if (r.k > size_t.max || r.successes > size_t.max) continue;
+            assert(negativeBinomialLPMF(cast(size_t)r.k,cast(size_t)r.successes,r.p) == r.value);
+        }
+    }
+    {
+        alias T = Fp!512;
+        struct Reference { ulong k; ulong successes; T p; T value; }
+        enum references = [
+            Reference(0UL,3UL,T(false,long.min,UInt!512.fromHexString("1")),T(true,-447,UInt!512.fromHexString("851591f9dd5b9b40d76ac6b202f6390370b6725cd5f288a22789d184a8c03ba0edca58985270c172402ffe3c783b944cb1e302a850ea18f31d816c5ecd0f4a1c"))),
+            Reference(0UL,18446744073709551615UL,T(false,-512,UInt!512.fromHexString("ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff")),T(true,-960,UInt!512.fromHexString("ffffffffffffffff0000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000"))),
+            Reference(1UL,18446744073709551615UL,T(false,-64,UInt!512.fromHexString("ffffffffffffffff")),T(true,-511,UInt!512.fromHexString("800000000000000040000000000000002aaaaaaaaaaaaaaacaaaaaaaaaaaaaaac4444444444444445999999999999999abe2be2be2be2be2ce2be2be2be2be2c"))),
+            Reference(2UL,3UL,T(false,long.min,UInt!512.fromHexString("1")),T(true,-447,UInt!512.fromHexString("851591f9dd5b9b3ff21266e0b1f6277239b7d1e6515b4eefa8060e849383999209f7d57563f6a995f70801c33ae271d85edf5d91299fc3fff5bc0ac05d1f5b29"))),
+            Reference(7UL,12UL,T(false,-512,UInt!512.fromHexString("ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff")),T(true,-500,UInt!512.fromHexString("9a9df1be09eef8ed1bd4e6301012a252d0bcf374d73e929206ef1a5226981cf40fdaa6750dacba06b81aee05052ddc02059403544f6636fb54f4321bedd1750b"))),
+            Reference(57UL,19UL,T(false,-4,UInt!512.fromHexString("3")),T(true,-509,UInt!512.fromHexString("91572451b6b80572f96dede89956efeb5f60e2980e256227a708056045ed31a83e8a1bf2f6d706df8ab0a7457bff898e50f950119c696a7a1c29b0c145c570d5"))),
+            Reference(18446744073709551614UL,18446744073709551615UL,T(false,-1,UInt!512.fromHexString("1")),T(true,-507,UInt!512.fromHexString("bb91dcc9ca4664bc16b126e66e238b8b167494af74fd4560a8762b7c3e71a16a22cb7f8f994e7a2b539f4287ff4cf30f44ca928d955bace0484d13c105ad00ba"))),
+            Reference(18446744073709551615UL,2UL,T(false,-64,UInt!512.fromHexString("1")),T(true,-506,UInt!512.fromHexString("b57217f7d1cf79abc7e3b39803f2f6af4048987bc7ee0b82df0d175b8baafa2be78542ed3ab87965223ffda5f5a4c5bb97c0f75a538145d67069844da3b2dcb8"))),
+            Reference(18446744073709551615UL,18446744073709551615UL,T(false,-1,UInt!512.fromHexString("1")),T(true,-507,UInt!512.fromHexString("bb91dcc9ca4664bc1ab126e66e238b8b1b7494af74fd4560aecb80d193c6f6bf8040d4e4eea3cf80b38164aa216f153174c75f5a622879ad277c29b264c2f219"))),
+        ];
+        foreach (r; references) {
+            if (r.k > size_t.max || r.successes > size_t.max) continue;
+            assert(negativeBinomialLPMF(cast(size_t)r.k,cast(size_t)r.successes,r.p) == r.value);
+        }
+    }
+}
+// END public negative binomial log references
 
 // Independent high-precision references and full-width count boundaries.
 version(mir_stat_test)
