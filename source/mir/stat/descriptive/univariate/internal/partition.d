@@ -18,7 +18,7 @@ storage must not overlap the slice elements. Reuse the bitmap only with the
 same workspace, flattened order, and comparison. Clear it after independently
 modifying the data.
 +/
-package(mir.stat) void partitionAtCache(alias less = "a < b", S)(S workspace, size_t rank,
+package(mir.stat) void partitionAtWithCache(alias less = "a < b", S)(S workspace, size_t rank,
     scope ulong[] established) @safe pure nothrow @nogc
 {
     import core.bitop: bsf, bsr;
@@ -98,11 +98,11 @@ version(mir_stat_test)
     import mir.ndslice.slice: sliced;
     int[5] x = [10, 0, 30, 20, 40];
     ulong[1] marks;
-    partitionAtCache(x[].sliced, 2, marks[]);
+    partitionAtWithCache(x[].sliced, 2, marks[]);
     assert(x[2] == 20 && x[3] == 30);
     assert((marks[0] & 0b1100) == 0b1100);
     auto before = x;
-    partitionAtCache(x[].sliced, 3, marks[]);
+    partitionAtWithCache(x[].sliced, 3, marks[]);
     assert(x == before && marks[0] == 0b1100);
 }
 
@@ -122,7 +122,7 @@ version(mir_stat_test)
         foreach (i; 0 .. x.length)
         {
             const rank = (i*17+64)%x.length;
-            partitionAtCache!("a > b")(x[].sliced, rank, bits[0 .. words]);
+            partitionAtWithCache!("a > b")(x[].sliced, rank, bits[0 .. words]);
             assert(x[rank] == expected[rank]);
             foreach (j; 0 .. x.length)
                 if (j/64 < words && (bits[j/64] & (1UL << (j%64))))
@@ -139,10 +139,10 @@ version(mir_stat_test)
     int[10] data = [10, -1, 0, -1, 30, -1, 20, -1, 40, -1];
     auto values = data[].sliced.stride(2);
     ulong[1] established;
-    partitionAtCache(values, 2, established[]);
+    partitionAtWithCache(values, 2, established[]);
     assert(values[2] == 20 && values[3] == 30);
-    partitionAtCache(values, 0, established[]);
-    partitionAtCache(values, 4, established[]);
+    partitionAtWithCache(values, 0, established[]);
+    partitionAtWithCache(values, 4, established[]);
     foreach (i; 0 .. 5)
         assert(data[2*i+1] == -1);
 }
@@ -155,9 +155,9 @@ version(mir_stat_test)
     int[12] data = [12, 11, 10, 9, 8, 7, 6, 5, 4, 3, 2, 1];
     auto matrix = data[].sliced(4, 3).transposed; // 3 rows of 4; strided
     ulong[1] marks;
-    partitionAtCache(matrix, 7, marks[]);
+    partitionAtWithCache(matrix, 7, marks[]);
     assert(matrix[1, 3] == 8 && (marks[0] & (1UL << 7)));
-    partitionAtCache(matrix, 2, marks[]);
+    partitionAtWithCache(matrix, 2, marks[]);
     assert(matrix[0, 2] == 3 && matrix[1, 3] == 8);
     bool[12] seen;
     foreach (v; data)
