@@ -8,7 +8,8 @@ outside this interval rather than extending their tails beyond the support.
 
 PMF and LPMF accept $(D Fp) probabilities. The Fp PMF is also available
 as $(LREF fp_binomialPMF). CDF, CCDF, and inverse CDF accept built-in
-floating-point probabilities.
+floating-point probabilities. $(LREF binomialTailsChecked) computes both
+Fp tails with explicit work limits.
 LPMF has no algorithm selector. Normal and Poisson approximations trade
 accuracy for speed and do not promise the direct algorithm's interior
 probabilities, although their point masses and boundary returns are handled
@@ -467,31 +468,8 @@ T fp_binomialPMF(T)(const size_t k, const size_t n, const T p)
             return T(1);
         if (k > 1)
             return T(0);
-        import mir.bignum.fixed: UInt;
-        // The k=1 mass is n*p minus a positive correction smaller than that
-        // quantum. Round the exact product, choosing the lower neighbor at
-        // a midpoint because (1-p)^(n-1) is strictly less than one for n>1.
-        auto product = p.coefficient.toSize!(bits + 64);
-        product *= UInt!(bits + 64)(n);
-        const usedBits = bits + 64 - product.ctlz;
-        if (usedBits > bits) {
-            const discarded = usedBits - bits;
-            auto remainder = product;
-            remainder <<= bits + 64 - discarded;
-            auto halfway = UInt!(bits + 64)(1);
-            halfway <<= bits + 63;
-            if (remainder == halfway)
-                product -= 1;
-        }
-        T result = T(product);
-        if (result.exponent < 0 && p.exponent < long.min - result.exponent) {
-            // Normalization would cross the exponent floor. The exact product
-            // fits the output coefficient here; retain it as a subnormal.
-            product <<= cast(size_t)(p.exponent - long.min);
-            return T(false, long.min, product.toSize!bits);
-        }
-        result.exponent += p.exponent;
-        return result;
+        import mir.stat.internal.fp_binomial_tails: roundedBinomialProductBelow;
+        return roundedBinomialProductBelow(n, p);
     }
     // Keep the extra precision through the entire expression, including the
     // complement: rounding 1-p at the output width can lose count-amplified bits.
@@ -870,6 +848,113 @@ T binomialDirectTail(bool upper, T)(size_t k, size_t n, T p)
     }
     return cast(T)(upper == lower ? 1 - sum : sum);
 }
+
+/// Outcome of $(LREF binomialTailsChecked).
+enum BinomialTailStatus
+{
+    /// The general calculation exceeds a work limit. The tail fields are unused.
+    workLimit,
+    /// Both tail fields contain their rounded probabilities.
+    found,
+}
+
+/// Checked Fp probabilities. Read the tails when status is found.
+struct BinomialTailResult(T)
+    if (is(T == Fp!bits, uint bits))
+{
+    /// Default initialization denotes an unresolved result.
+    BinomialTailStatus status = BinomialTailStatus.workLimit;
+    /// Probability of observing at most k successes.
+    T cdf;
+    /// Probability of observing strictly more than k successes.
+    T ccdf;
+}
+
+/++
+Computes the binomial CDF and strict CCDF for the represented $(D Fp)
+probability, independently rounded to nearest with ties to even.
+
+Params:
+    k = observed number of successes, at most n
+    n = number of trials
+    p = finite success probability in [0, 1]
+    maxTerms = maximum number of masses to sum (default 256, ceiling 1024)
+    maxScale = maximum exponent of the common power-of-two denominator
+        (default 16384, ceiling 65536)
+
+Returns:
+    The general calculation sums $(D min(k + 1, n - k)) integer weights.
+    For $(D p = a / 2^^s) in lowest terms, the common denominator is
+    $(D 2^^(n*s)). When either budget is exceeded it returns $(D workLimit).
+    Endpoints and certain extreme tails can be resolved even with zero
+    budgets. Workspace is allocated on the stack according to the scale.
++/
+@safe pure nothrow @nogc
+BinomialTailResult!T binomialTailsChecked(T)(size_t k, size_t n, T p,
+    size_t maxTerms = 256, size_t maxScale = 16384)
+    if (is(T == Fp!bits, uint bits))
+    in (k <= n, "k must be less than or equal to n")
+    in (fpProbabilityValid(p), "p must be finite and between zero and one")
+{
+    import mir.stat.internal.fp_binomial_tails: exactBinomialTails;
+    return exactBinomialTails(k, n, p, maxTerms, maxScale);
+}
+
+/// Recover a small strict upper tail even when the rounded CDF is one.
+version(mir_stat_test)
+@safe pure nothrow @nogc unittest
+{
+    import mir.bignum.fixed: UInt;
+    import mir.bignum.fp: Fp;
+    alias T = Fp!64;
+    const result = binomialTailsChecked(99, 100, T(0.5));
+    assert(result.status == BinomialTailStatus.found && result.cdf == T(1));
+    assert(result.ccdf == T(false, -163, UInt!64(1UL << 63)));
+}
+
+version(mir_stat_test)
+@safe pure nothrow @nogc unittest
+{
+    import mir.bignum.fixed: UInt;
+    alias T = Fp!64;
+    alias evaluate = binomialTailsChecked!T;
+    alias S = BinomialTailStatus;
+    const certain = BinomialTailResult!T(S.found, T(1), T(0));
+    const impossible = BinomialTailResult!T(S.found, T(0), T(1));
+    assert(evaluate(4, 4, T(0.75), 0, 0) == certain);
+    assert(evaluate(1, 4, T(0), 0, 0) == certain);
+    assert(evaluate(1, 4, T(1), 0, 0) == impossible);
+    assert(evaluate(0, 1, T(0.25), 0, 0) == BinomialTailResult!T(S.found, T(0.75), T(0.25)));
+    assert(evaluate(1, 3, T(false, long.min, UInt!64(1)), 0, 0) == certain);
+
+    // For fair trials P(X = 0) is exactly 2^-n. Cross each workspace
+    // boundary with just one mass and round the strict complement to one.
+    foreach (n; [4097, 16385]) {
+        assert(evaluate(0, n, T(0.5), 1, n - 1).status == S.workLimit);
+        const tails = evaluate(0, n, T(0.5), 1, n);
+        assert(tails == BinomialTailResult!T(S.found,
+            T(false, -cast(long)n - 63, UInt!64(1UL << 63)), T(1)));
+    }
+
+    // P(X <= 1) = (3^4 + 4*3^3)/4^4. The opposite endpoint gives P(X > 2).
+    const lower = evaluate(1, 4, T(0.25), 2, 8);
+    assert(lower.status == S.found && lower.cdf == T(189.0 / 256) && lower.ccdf == T(67.0 / 256));
+    const upper = evaluate(2, 4, T(0.25));
+    assert(upper.status == S.found && upper.ccdf == T(13.0 / 256));
+    assert(evaluate(1, 4, T(0.25), 1, 8).status == S.workLimit);
+    assert(evaluate(1, 4, T(false, -8, UInt!64(64)), 2, 7).status == S.workLimit);
+    // 1 - 2^-65 is exactly halfway between one and its Fp!64 predecessor.
+    const midpoint = evaluate(0, 65, T(0.5));
+    assert(midpoint.status == S.found && midpoint.cdf == T(false, -128, UInt!64(1UL << 63)));
+    assert(midpoint.ccdf == T(1));
+    const tiny = T(false, -40000, UInt!64(1));
+    assert(evaluate(0, 2, tiny, 0, 0).ccdf == T(false, -40062, UInt!64(1UL << 63)));
+    assert(evaluate(1, 3, tiny, size_t.max, size_t.max).status == S.workLimit);
+    const quantum = T(false, long.min, UInt!64(1));
+    assert(evaluate(1, 2, T(false, long.min / 2, UInt!64(1))).ccdf == quantum);
+    assert(evaluate(1, 2, T(false, long.min / 2 - 1, UInt!64(1))).ccdf == T(0));
+}
+
 
 private
 @safe pure nothrow @nogc
