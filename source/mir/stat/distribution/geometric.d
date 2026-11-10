@@ -1000,7 +1000,12 @@ version(mir_stat_test)
         assert(geometricCDF(1,tiny) == T(false,long.min,UInt!bits(2)));
         assert(geometricCCDF(size_t.max,tiny) == T(1));
         assert(geometricCDF(size_t.max,T(0.5)) == T(1));
-        assert(geometricCCDF(size_t.max,T(0.5)) == T(0));
+        // The tail is 2^(-(size_t.max+1)); it fits Fp's exponent on 32-bit.
+        static if (size_t.sizeof == 4)
+            assert(geometricCCDF(size_t.max,T(0.5)) ==
+                T(false, -4294967296L - (bits-1), UInt!bits(1) << (bits-1)));
+        else
+            assert(geometricCCDF(size_t.max,T(0.5)) == T(0));
         auto count = UInt!128(size_t.max); count += 1;
         T expected;
         static if (bits == size_t.sizeof * 8)
