@@ -5113,6 +5113,48 @@ private void releaseQuantiles(Context, Storage)(ref Context context, Storage sto
     context.dispose(storage.field);
 }
 
+// Tied integer extrema have the same value regardless of partition order.
+private template canScanEndpoints(Values, Levels, Result)
+{
+    import mir.ndslice.slice: IteratorOf;
+    import std.traits: isPointer;
+    enum canScanEndpoints = isIntegral!(Values.DeepElement) &&
+        (isIntegral!Result || isFloatingPoint!Result) &&
+        isPointer!(IteratorOf!Values) && isPointer!(IteratorOf!Levels);
+}
+
+private enum QuantileEndpoints { none, minimum, maximum, both }
+
+private QuantileEndpoints quantileEndpoints(P)(scope P levels)
+{
+    if (levels.length < 2) return QuantileEndpoints.none;
+    bool minimum, maximum;
+    foreach (i; 0 .. levels.length)
+    {
+        const p = levels[i];
+        if (p == 0) minimum = true;
+        else if (p == 1) maximum = true;
+        else return QuantileEndpoints.none;
+    }
+    if (!minimum) return QuantileEndpoints.maximum;
+    return maximum ? QuantileEndpoints.both : QuantileEndpoints.minimum;
+}
+
+private void writeQuantileEndpoints(V, P, O)(scope V values, scope P levels,
+    scope O output, QuantileEndpoints endpoints)
+{
+    import std.traits: Unqual;
+    Unqual!(V.DeepElement) low = values[0], high = values[0];
+    foreach (i; 1 .. values.length)
+    {
+        const value = values[i];
+        if (endpoints != QuantileEndpoints.maximum && value < low) low = value;
+        if (endpoints != QuantileEndpoints.minimum && value > high) high = value;
+    }
+    foreach (i; 0 .. levels.length)
+        output[i] = cast(O.DeepElement)(levels[i] == 0 ? low : high);
+}
+
 // Keep scratch ownership alive until all partitioning and output writes finish.
 private auto allocatedQuantile(F, QuantileAlgo algorithm, bool modify,
     QuantileAllocation allocation, Context, Data, Probability)(
@@ -5125,6 +5167,20 @@ private auto allocatedQuantile(F, QuantileAlgo algorithm, bool modify,
 
     alias Result = Unqual!(quantileType!(F, algorithm));
     scope auto source = quantileSlice(data);
+    static if (!isFloatingPoint!(Unqual!Probability) &&
+               canScanEndpoints!(typeof(source.flattened), Probability, Result))
+    {
+        if (source.elementCount > 1)
+        {
+            const endpoints = quantileEndpoints(probability);
+            if (endpoints != QuantileEndpoints.none)
+            {
+                auto result = allocateQuantiles!(Result, allocation)(context, probability.length);
+                writeQuantileEndpoints(source.flattened, probability, result.lightScope, endpoints);
+                return result;
+            }
+        }
+    }
     static if (modify)
         scope auto workspace = source.flattened;
     else
@@ -5157,10 +5213,10 @@ private auto allocatedQuantile(F, QuantileAlgo algorithm, bool modify,
                 quantileScratchLength(workspace.length));
             static if (allocation == QuantileAllocation.custom)
                 scope(exit) releaseQuantiles(context, bitmap);
-            quantileInto!algorithm(workspace, probability, result.lightScope, bitmap.lightScope.field);
+            quantileIntoImpl!(algorithm, true, false)(workspace, probability, result.lightScope, bitmap.lightScope.field);
         }
         else
-            quantileInto!algorithm(workspace, probability, result.lightScope);
+            quantileIntoImpl!(algorithm, false, false)(workspace, probability, result.lightScope, null);
         return result;
     }
 }
@@ -5217,7 +5273,9 @@ Workspace, probabilities, and output must not overlap.
 The overload with scratch remembers requested ranks and intermediate pivots
 during the batch, so later queries partition only unresolved intervals. Use it when requesting
 several quantiles from the same observations. The three-argument overload
-requires no scratch buffer and selects each quantile independently.
+requires no scratch buffer. For directly stored integer observations, either
+overload can answer a batch containing only 0 and 1 probabilities by scanning
+the observations once when probabilities and output are also in direct storage.
 
 Scratch must contain at least `quantileScratchLength(workspace.elementCount)`
 mutable `ulong` elements and must not overlap any other argument. The function
@@ -5265,7 +5323,7 @@ template quantileInto(QuantileAlgo algorithm = QuantileAlgo.type7)
     }
 }
 
-private void quantileIntoImpl(QuantileAlgo algorithm, bool incremental, Data, P, Output)(
+private void quantileIntoImpl(QuantileAlgo algorithm, bool incremental, bool checkEndpoints = true, Data, P, Output)(
     scope auto ref Data workspace, scope auto ref P probabilities,
     scope auto ref Output output, scope ulong[] scratch)
 {
@@ -5289,8 +5347,26 @@ private void quantileIntoImpl(QuantileAlgo algorithm, bool incremental, Data, P,
         assert(scratch.length >= required, "quantileInto: scratch buffer is too small");
         scratch = scratch[0 .. required];
         scratch[] = 0;
-        import mir.ndslice.slice: IteratorOf;
-        import std.traits: isPointer;
+    }
+
+    import mir.ndslice.slice: IteratorOf;
+    import std.traits: isPointer;
+    static if (checkEndpoints && canScanEndpoints!(typeof(values), typeof(levels), F) &&
+               isPointer!(IteratorOf!(typeof(destination))))
+    {
+        if (values.length > 1)
+        {
+            const endpoints = quantileEndpoints(levels);
+            if (endpoints != QuantileEndpoints.none)
+            {
+                writeQuantileEndpoints(values, levels, destination, endpoints);
+                return;
+            }
+        }
+    }
+
+    static if (incremental)
+    {
         // Only direct storage can be read and written out of order without
         // changing user-defined iterator behavior. Cutoffs are internal tuning.
         static if (isPointer!(IteratorOf!(typeof(values))) &&
@@ -6118,6 +6194,60 @@ version(mir_stat_test)
     QuantileTestAllocator!() readFailure;
     assertThrown!Exception(makeQuantile(readFailure, observations[], probabilities[].sliced.map!failRead));
     assert(readFailure.allocations == 3 && readFailure.releases == 3);
+}
+
+// Endpoint-only integral batches need only result storage.
+version(mir_stat_test)
+@system pure nothrow @nogc unittest
+{
+    import std.experimental.allocator: dispose;
+    const long[4] values = [1, long.max, 0, long.min];
+    const double[3][3] batches = [[1.0, 0, 1], [0.0, 0, 0], [1.0, 1, 1]];
+    foreach (ref levels; batches)
+    {
+        QuantileTestAllocator!() allocator;
+        auto result = makeQuantile!(QuantileAlgo.type1)(allocator, values[], levels[]);
+        assert(allocator.allocations == 1);
+        foreach (i, p; levels)
+            assert(result[i] == (p == 0 ? long.min : long.max));
+        allocator.dispose(result.field);
+        assert(allocator.releases == 1);
+    }
+    long[4] mutableValues = values;
+    auto endpoints = rcquantile!(QuantileAlgo.type7, true)(mutableValues[], 1.0, 0.0);
+    assert(endpoints[0] == cast(double)long.max && endpoints[1] == cast(double)long.min);
+}
+
+// Direct endpoint queries preserve the workspace and honor the scratch contract.
+version(mir_stat_test)
+@system pure nothrow @nogc unittest
+{
+    import core.exception: AssertError;
+    int[5] values = [8, 2, 5, 1, 9];
+    const original = values;
+    const double[3] levels = [1, 0, 1];
+    double[3] output = [-1, -1, -1];
+    ulong[2] scratch = [ulong.max, ulong.max];
+    bool rejected;
+    try quantileInto(values[], levels[], output[], scratch[0 .. 0]);
+    catch (AssertError) rejected = true;
+    assert(rejected && output[] == [-1.0, -1.0, -1.0] && values == original);
+    quantileInto(values[], levels[], output[], scratch[]);
+    assert(output[] == [9.0, 1.0, 9.0] && values == original);
+    assert(scratch[0] == 0 && scratch[1] == ulong.max);
+    output[] = 0;
+    quantileInto(values[], levels[], output[]);
+    assert(output[] == [9.0, 1.0, 9.0] && values == original);
+}
+
+// Partition order can affect which signed zero is returned for tied extrema.
+version(mir_stat_test)
+@system unittest
+{
+    import std.math: signbit;
+    double[3] values = [-0.0, -0.0, 0.0];
+    auto result = quantile(values[], 1.0, 0.0);
+    assert(signbit(result[0]) && !signbit(result[1]));
 }
 
 // Both the input and the batch must be large enough to amortize automatic
