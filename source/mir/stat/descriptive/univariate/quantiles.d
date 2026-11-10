@@ -5118,7 +5118,7 @@ private template canScanEndpoints(Values, Levels, Result)
     import mir.ndslice.slice: IteratorOf;
     import std.traits: isPointer, Unqual;
     alias T = Unqual!(Values.DeepElement);
-    enum canScanEndpoints = (isIntegral!T || is(T == float) || is(T == double)) &&
+    enum canScanEndpoints = (isIntegral!T || isFloatingPoint!T) &&
         (isIntegral!Result || isFloatingPoint!Result) &&
         isPointer!(IteratorOf!Values) && isPointer!(IteratorOf!Levels);
 }
@@ -5153,6 +5153,25 @@ private bool tryScanQuantileEndpoints(V, P, T)(scope V values, scope P levels,
             const value = values[i];
             if (endpoints != QuantileEndpoints.maximum && value < low) low = value;
             if (endpoints != QuantileEndpoints.minimum && value > high) high = value;
+        }
+    }
+    else static if (is(T == real))
+    {
+        // real need not use the IEEE binary32/binary64 representation.
+        // Resolve zero ties consistently with the float/double key scan.
+        import std.math: isNaN, signbit;
+        if (__ctfe) return false;
+        low = high = values[0];
+        foreach (i; 0 .. values.length)
+        {
+            const value = values[i];
+            if (isNaN(value)) return false;
+            if (endpoints != QuantileEndpoints.maximum &&
+                (value < low || (value == 0 && low == 0 && signbit(value))))
+                low = value;
+            if (endpoints != QuantileEndpoints.minimum &&
+                (value > high || (value == 0 && high == 0 && !signbit(value))))
+                high = value;
         }
     }
     else
@@ -5368,7 +5387,7 @@ during the batch, so later queries partition only unresolved intervals. Use it w
 several quantiles from the same observations. The three-argument overload
 requires no scratch buffer. With directly stored observations, probabilities,
 and output, either overload can answer endpoint-only batches with a single
-scan of integer, $(D float), or $(D double) observations. The floating-point
+scan of integer, $(D float), $(D double), or $(D real) observations. The floating-point
 scan orders negative zero before positive zero and falls back to ordinary
 selection if any observation is NaN.
 
@@ -6381,7 +6400,7 @@ version(mir_stat_test)
     assert(values == reordered && scratch == referenceScratch);
 }
 
-// IEEE extrema include subnormals and infinities. Exceptional inputs use the
+// Floating extrema include subnormals and infinities. Exceptional inputs use the
 // original selector before allocating output or changing the workspace.
 version(mir_stat_test)
 @system pure nothrow @nogc unittest
@@ -6389,7 +6408,7 @@ version(mir_stat_test)
     import std.experimental.allocator: dispose;
     const double[3] levels = [1, 0, 1];
     import std.meta: AliasSeq;
-    static foreach (T; AliasSeq!(float, double))
+    static foreach (T; AliasSeq!(float, double, real))
     {{
         T[4] values = [T.min_normal / 2, -T.min_normal / 2, 0, T.infinity];
         QuantileTestAllocator!() allocator;
@@ -6426,6 +6445,33 @@ version(mir_stat_test)
             allocator.dispose(result.field);
         }
     }}
+}
+
+// Keep real extrema in their original precision and leave direct storage intact.
+version(mir_stat_test)
+@system pure nothrow @nogc unittest
+{
+    import std.experimental.allocator: dispose;
+    const real[4] original = [1 + real.epsilon, 1, 1 - real.epsilon, 1];
+    const real[3][3] batches = [[0.0L, 1, 0], [0.0L, 0, 0], [1.0L, 1, 1]];
+    foreach (ref levels; batches)
+    {
+        real[4] values = original;
+        real[3] output;
+        quantileInto(values[], levels[], output[]);
+        assert(values == original);
+        QuantileTestAllocator!() allocator;
+        auto allocated = makeQuantile!real(allocator, values[], levels[]);
+        auto counted = rcquantile!(real, QuantileAlgo.type7, true)(values[], levels[]);
+        assert(allocator.allocations == 1 && values == original);
+        foreach (i, p; levels)
+        {
+            const expected = p == 0 ? 1 - real.epsilon : 1 + real.epsilon;
+            assert(output[i] == expected && allocated[i] == expected && counted[i] == expected);
+        }
+        allocator.dispose(allocated.field);
+        assert(allocator.releases == 1);
+    }
 }
 
 // Two endpoints and one interior quantile use only the ordinary copy and
