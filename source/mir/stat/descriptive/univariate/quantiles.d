@@ -5286,6 +5286,8 @@ time. Use $(LREF QuantileTable) to retain selection state between calls.
 
 For larger batches of ascending probabilities in direct storage, the scratch
 overload may evaluate queries in a different order to reduce partitioning work.
+For directly stored integer observations, the scratch overload may also select
+interior quantiles before endpoints to narrow the minimum and maximum searches.
 Each result still occupies the position of its corresponding probability.
 Lazy views retain their original evaluation order.
 
@@ -5386,6 +5388,32 @@ private void quantileIntoImpl(QuantileAlgo algorithm, bool incremental, bool che
                 {
                     orderedQuantileBatch!(algorithm, F)(values, levels,
                         destination, scratch, 0, levels.length, G(0), G(1));
+                    return;
+                }
+            }
+            // Interior ranks bound the intervals scanned for the minimum and maximum.
+            static if (isIntegral!(DeepElementType!(typeof(values))) &&
+                       (isIntegral!F || isFloatingPoint!F))
+            {
+                if (values.length >= 64 && levels.length >= 2)
+                {
+                    size_t firstEndpoint = levels.length;
+                    foreach (i; 0 .. levels.length)
+                    {
+                        const p = levels[i];
+                        if (p == 0 || p == 1)
+                        {
+                            if (i < firstEndpoint) firstEndpoint = i;
+                        }
+                        else
+                            destination[i] = selectQuantileImpl!(algorithm, F, true)(values, p, scratch);
+                    }
+                    foreach (i; firstEndpoint .. levels.length)
+                    {
+                        const p = levels[i];
+                        if (p == 0 || p == 1)
+                            destination[i] = selectQuantileImpl!(algorithm, F, true)(values, p, scratch);
+                    }
                     return;
                 }
             }
@@ -6238,6 +6266,24 @@ version(mir_stat_test)
     output[] = 0;
     quantileInto(values[], levels[], output[]);
     assert(output[] == [9.0, 1.0, 9.0] && values == original);
+}
+
+// Interleaved extrema use the same cached partitions as explicit endpoints-last order.
+version(mir_stat_test)
+@safe pure nothrow @nogc unittest
+{
+    int[97] values;
+    foreach (i, ref value; values) value = cast(int)((37 * i) % values.length);
+    auto reordered = values;
+    const double[6] mixed = [1, 0.25, 0, 0.75, 1, 0.5];
+    const double[6] interiorFirst = [0.25, 0.75, 0.5, 1, 0, 1];
+    double[6] output, reference;
+    ulong[2] scratch, referenceScratch;
+    quantileInto(values[], mixed[], output[], scratch[]);
+    quantileInto(reordered[], interiorFirst[], reference[], referenceScratch[]);
+    assert(output[] == [96.0, 24.0, 0.0, 72.0, 96.0, 48.0]);
+    assert(reference[] == [24.0, 72.0, 48.0, 96.0, 0.0, 96.0]);
+    assert(values == reordered && scratch == referenceScratch);
 }
 
 // Partition order can affect which signed zero is returned for tied extrema.
