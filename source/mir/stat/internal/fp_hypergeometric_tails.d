@@ -8,7 +8,9 @@ module mir.stat.internal.fp_hypergeometric_tails;
 import mir.bignum.fixed: UInt;
 import mir.bignum.fp: Fp;
 import mir.bignum.integer: BigInt;
-import mir.stat.distribution.hypergeometric: HypergeometricTailResult, HypergeometricTailStatus;
+import mir.stat.distribution.hypergeometric: HypergeometricTailResult, HypergeometricTailStatus,
+    HypergeometricInverseResult, HypergeometricInverseStatus;
+import mir.stat.internal.fp_probability: fpProbabilityLess;
 
 // n <= capacity - 1 after complementing and exchanging the margins.
 // C(N,n) <= N^n; an adjacent numerator may temporarily acquire two
@@ -72,6 +74,71 @@ private struct ExactTails(uint bits, uint capacity)
         return result;
     }
 
+    private static void advance(ref Integer term, size_t i, size_t N, size_t K, size_t n)
+    {
+        multiply(term, K - i);
+        multiply(term, n - i);
+        divideExactly(term, i + 1);
+        divideExactly(term, (N - K) - (n - i) + 1);
+    }
+
+    private static void retreat(ref Integer term, size_t i, size_t N, size_t K, size_t n)
+    {
+        multiply(term, i);
+        multiply(term, (N - K) - (n - i));
+        divideExactly(term, K - i + 1);
+        divideExactly(term, n - i + 1);
+    }
+
+    // The smallest cumulative integer numerator meeting q is ceil(q*D).
+    // For positive products, ceil(x / 2^s) = 1 + ((x-1) >> s).
+    private static void targetRank(ref Integer target, ref const Integer denominator, T q)
+    {
+        BigInt!(capacity + 1) count;
+        count = denominator;
+        auto coefficient = BigInt!((bits + 63)/64)(q.coefficient);
+        target.multiply(count, coefficient);
+        Integer one = Integer(1);
+        target -= one;
+        const shift = 0UL - cast(ulong)q.exponent;
+        if (shift >= target.bitLength) {
+            target = 1;
+            return;
+        }
+        target >>= cast(size_t)shift;
+        target += one;
+    }
+
+    static size_t quantile(T q, size_t N, size_t K, size_t n, bool flipped,
+        size_t lower, size_t upper)
+    {
+        Integer denominator, rank, term, sum;
+        choose(denominator,N,n);
+        targetRank(rank,denominator,q);
+        enum half = T(false,-1,UInt!bits(1));
+        const fromUpper = fpProbabilityLess(half,q);
+        if (fromUpper) {
+            // Count rank from the opposite end with the same inclusive test.
+            denominator -= rank;
+            Integer one = Integer(1);
+            denominator += one;
+            rank = denominator;
+        }
+        const descend = flipped != fromUpper;
+        choose(term,descend ? K : N-K,n);
+        sum = term;
+        size_t offset;
+        while (sum < rank) {
+            assert(offset < n);
+            if (descend) retreat(term,n-offset,N,K,n);
+            else advance(term,offset,N,K,n);
+            const overflow = sum.opOpAssign!"+"(term);
+            assert(!overflow);
+            ++offset;
+        }
+        return fromUpper ? upper-offset : lower+offset;
+    }
+
     static HypergeometricTailResult!T evaluate(size_t k, size_t N, size_t K, size_t n, bool flipped)
     {
         Integer denominator, term, sum;
@@ -83,10 +150,7 @@ private struct ExactTails(uint bits, uint capacity)
             choose(term, N - K, n);
             sum = term;
             foreach (i; 0 .. k) {
-                multiply(term, K - i);
-                multiply(term, n - i);
-                divideExactly(term, i + 1);
-                divideExactly(term, (N - K) - (n - i) + 1);
+                advance(term,i,N,K,n);
                 const overflow = sum.opOpAssign!"+"(term);
                 assert(!overflow);
             }
@@ -94,10 +158,7 @@ private struct ExactTails(uint bits, uint capacity)
             choose(term, K, n);
             sum = term;
             for (size_t i = n; i > k + 1; --i) {
-                multiply(term, i);
-                multiply(term, (N - K) - (n - i));
-                divideExactly(term, K - i + 1);
-                divideExactly(term, n - i + 1);
+                retreat(term,i,N,K,n);
                 const overflow = sum.opOpAssign!"+"(term);
                 assert(!overflow);
             }
@@ -126,24 +187,10 @@ HypergeometricTailResult!(Fp!bits) exactHypergeometricTails(uint bits)(
     if (k == (K < n ? K : n))
         return Result(HypergeometricTailStatus.found, T(1), T(0));
 
-    // Reflecting either margin exchanges <= k and > k. Since both tails
-    // are nonempty, the reflected threshold and its predecessor exist.
-    bool flipped;
-    if (n > N - n) {
-        n = N - n;
-        k = K - k - 1;
-        flipped = !flipped;
-    }
-    if (K > N - K) {
-        K = N - K;
-        k = n - k - 1;
-        flipped = !flipped;
-    }
-    if (n > K) {
-        const temp = n;
-        n = K;
-        K = temp;
-    }
+    const lower = n > N-K ? n-(N-K) : 0;
+    const upper = K < n ? K : n;
+    const flipped = canonicalize(N,K,n);
+    k = flipped ? upper-k-1 : k-lower;
     if (n >= maxSupport) return Result.init;
     if (n < 64) return ExactTails!(bits,64).evaluate(k,N,K,n,flipped);
     if (n < 256) return ExactTails!(bits,256).evaluate(k,N,K,n,flipped);
@@ -152,10 +199,47 @@ HypergeometricTailResult!(Fp!bits) exactHypergeometricTails(uint bits)(
     return Result.init;
 }
 
+// After these symmetries the support is [0,n]. An odd number of
+// reflections reverses its ordering; transposition preserves it.
+private @safe pure nothrow @nogc
+bool canonicalize(size_t N, ref size_t K, ref size_t n)
+{
+    bool flipped;
+    if (n > N-n) { n = N-n; flipped = !flipped; }
+    if (K > N-K) { K = N-K; flipped = !flipped; }
+    if (n > K) {
+        const temp = n;
+        n = K;
+        K = temp;
+    }
+    return flipped;
+}
+
+package(mir.stat) @safe pure nothrow @nogc
+HypergeometricInverseResult exactHypergeometricInverse(uint bits)(
+    Fp!bits q, size_t N, size_t K, size_t n, size_t maxSupport)
+{
+    alias S = HypergeometricInverseStatus;
+    if (!q.coefficient) return HypergeometricInverseResult(S.found,0);
+    const lower = n > N-K ? n-(N-K) : 0;
+    const upper = K < n ? K : n;
+    if (lower == upper || !fpProbabilityLess(q,Fp!bits(1)))
+        return HypergeometricInverseResult(S.found,upper);
+    const flipped = canonicalize(N,K,n);
+    if (n >= maxSupport || n >= 1024) return HypergeometricInverseResult.init;
+    size_t count;
+    if (n < 64) count = ExactTails!(bits,64).quantile(q,N,K,n,flipped,lower,upper);
+    else if (n < 256) count = ExactTails!(bits,256).quantile(q,N,K,n,flipped,lower,upper);
+    else count = ExactTails!(bits,1024).quantile(q,N,K,n,flipped,lower,upper);
+    return HypergeometricInverseResult(S.found,count);
+}
+
 // Bypass the public budget precondition to exercise the dispatcher's own limit.
 version(mir_stat_test)
 @safe pure nothrow @nogc unittest
 {
+    assert(exactHypergeometricInverse(Fp!64(0.5),2048,1024,1024,1025).status
+        == HypergeometricInverseStatus.supportLimit);
     alias evaluate = exactHypergeometricTails!64;
     assert(evaluate(0, 2048, 1024, 1024, 1025).status == HypergeometricTailStatus.supportLimit);
     assert(evaluate(0, size_t.max, 1280, 1280, size_t.max).status == HypergeometricTailStatus.supportLimit);
