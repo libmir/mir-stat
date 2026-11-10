@@ -11,6 +11,7 @@ $(BOOKTABLE ,
     $(TR $(TDNW $(SUBREF binomial, binomialCDF)) $(TD Binomial CDF ))
     $(TR $(TDNW $(SUBREF geometric, geometricCDF)) $(TD Geometric CDF ))
     $(TR $(TDNW $(SUBREF hypergeometric, hypergeometricCDF)) $(TD Hypergeometric CDF ))
+    $(TR $(TDNW $(SUBREF hypergeometric, hypergeometricTailsChecked)) $(TD Checked Fp hypergeometric CDF and CCDF ))
     $(TR $(TDNW $(SUBREF negative_binomial, negativeBinomialCDF)) $(TD Negative Binomial CDF ))
     $(TR $(TDNW $(SUBREF poisson, poissonCDF)) $(TD Poisson CDF ))
     $(TR $(TDNW $(SUBREF uniform_discrete, uniformDiscreteCDF)) $(TD Discrete Uniform CDF ))
@@ -77,7 +78,8 @@ public import mir.stat.distribution.geometric: geometricCDF;
 ///
 public import mir.stat.distribution.gev: gevCDF;
 ///
-public import mir.stat.distribution.hypergeometric: hypergeometricCDF;
+public import mir.stat.distribution.hypergeometric: hypergeometricCDF, hypergeometricTailsChecked,
+    HypergeometricTailResult, HypergeometricTailStatus;
 ///
 public import mir.stat.distribution.laplace: laplaceCDF;
 ///

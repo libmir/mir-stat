@@ -22,6 +22,7 @@ The default result type is $(D double); built-in floating-point result types
 can be selected explicitly. The direct PMF and the LPMF support explicit $(D Fp) results,
 for example $(D hypergeometricLPMF!(Fp!128)). The PMF also retains the
 compatibility name $(D fp_hypergeometricPMF). Inverse CDF returns $(D size_t).
+$(LREF hypergeometricTailsChecked) returns both Fp tails for bounded support.
 Approximations retain the explicitly handled support boundaries and
 deterministic outcomes, but their interior probabilities need not equal
 the direct algorithm's results.
@@ -608,6 +609,197 @@ T hypergeometricCDFImpl(T, HypergeometricAlgo hypergeometricAlgo)
         l += 0.5;
     }
     return normalCDF(l, (cast(T) n * K) / N, sqrt(n * (cast(T) K / N) * (cast(T) (N - K) / N) * (cast(T) (N - n) / (N - 1))));
+}
+
+/// Outcome of $(LREF hypergeometricTailsChecked).
+enum HypergeometricTailStatus
+{
+    /// The support exceeds the requested budget. The tail fields are unused.
+    supportLimit,
+    /// Both tail fields contain their independently rounded probabilities.
+    found
+}
+
+/// Checked Fp probabilities. Read the tail fields only when status is found.
+struct HypergeometricTailResult(T)
+    if (is(T == Fp!bits, uint bits))
+{
+    /// Default initialization denotes an unresolved result.
+    HypergeometricTailStatus status = HypergeometricTailStatus.supportLimit;
+    /// Probability of observing at most k successes.
+    T cdf;
+    /// Probability of observing strictly more than k successes.
+    T ccdf;
+}
+
+/++
+Computes both hypergeometric tails for an explicit $(D Fp) result type.
+Counts and support bounds follow $(LREF hypergeometricCDF). On success, each
+tail is rounded from its exact rational probability to nearest, ties to even.
+
+Params:
+    k = observed number of successes, within the support
+    N = population size
+    K = successes in the population
+    n = number of draws without replacement
+    maxSupport = inclusive budget for the number of possible outcomes, from
+        zero through 1024 (default 256)
+
+Returns:
+    At the upper support endpoint, returns $(D found) with tails one and zero
+    for any budget. Otherwise the support contains
+    $(D 1 + min(n, N-n, K, N-K)) outcomes. If this exceeds $(D maxSupport),
+    returns $(D supportLimit). Increasing the budget may resolve the request.
+
+    The calculation uses stack storage and integer weights. At most one half
+    of the support is summed, and the other tail numerator is obtained by
+    exact subtraction. Larger budgets allow larger integer workspaces.
++/
+@safe pure nothrow @nogc
+HypergeometricTailResult!T hypergeometricTailsChecked(T)(
+    size_t k, size_t N, size_t K, size_t n, size_t maxSupport = 256)
+    if (is(T == Fp!bits, uint bits))
+    in (K <= N && n <= N, "population margins must fit N")
+    in (k <= K && k <= n && n-k <= N-K, "k must lie within the support")
+    in (maxSupport <= 1024, "maxSupport must be at most 1024")
+{
+    import mir.stat.internal.fp_hypergeometric_tails: exactHypergeometricTails;
+    enum bits = typeof(T.init.coefficient).sizeof * 8;
+    return exactHypergeometricTails!bits(k,N,K,n,maxSupport);
+}
+
+/// Obtain both tails even when the rounded CDF is one.
+version(mir_stat_test)
+@safe pure nothrow @nogc unittest
+{
+    import mir.bignum.fp: Fp;
+    alias T = Fp!64;
+    const result = hypergeometricTailsChecked!T(15, size_t.max, 16, 16);
+    assert(result.status == HypergeometricTailStatus.found);
+    assert(result.cdf == T(1) && result.ccdf.coefficient != 0);
+}
+
+version(mir_stat_test)
+@safe pure nothrow @nogc unittest
+{
+    alias T = Fp!128;
+    alias evaluate = hypergeometricTailsChecked!T;
+    alias S = HypergeometricTailStatus;
+    assert(HypergeometricTailResult!T.init.status == S.supportLimit);
+
+    // A population margin may equal size_t.max; the budget counts outcomes.
+    auto result = evaluate(size_t.max, size_t.max, size_t.max, size_t.max, 0);
+    assert(result.status == S.found && result.cdf == T(1) && result.ccdf == T(0));
+    assert(evaluate(0, size_t.max, 1, 1, 1).status == S.supportLimit);
+    assert(evaluate(0, size_t.max, 1, 1, 2).status == S.found);
+    assert(evaluate(0, size_t.max, size_t.max/2, size_t.max/2).status == S.supportLimit);
+    assert(evaluate(0, 512, 256, 256).status == S.supportLimit);
+    assert(evaluate(0, 2048, 1024, 1024, 1024).status == S.supportLimit);
+
+    // Balanced populations and odd draw counts split the mass exactly in half.
+    foreach (n; [63, 255, 1023]) {
+        result = evaluate(n/2, 2*n, n, n, n+1);
+        assert(result.status == S.found && result.cdf == T(0.5) && result.ccdf == T(0.5));
+        assert(evaluate(n/2, 2*n, n, n, n).status == S.supportLimit);
+    }
+    // Reflection and transposition preserve the strict upper-tail convention.
+    foreach (params; [cast(size_t[3])[1,2,7], cast(size_t[3])[1,7,2]]) {
+        result = evaluate(params[0], 8, params[1], params[2]);
+        assert(result.cdf == T(0.25) && result.ccdf == T(0.75));
+    }
+    result = evaluate(5, 8, 6, 7);
+    assert(result.cdf == T(0.75) && result.ccdf == T(0.25));
+    debug {
+        import core.exception: AssertError;
+        import std.exception: assertThrown;
+        assertThrown!AssertError(evaluate(0, 0, 0, 0, 1025));
+        assertThrown!AssertError(evaluate(0, 3, 4, 2));
+        assertThrown!AssertError(evaluate(0, 3, 2, 4));
+        assertThrown!AssertError(evaluate(3, 4, 3, 2));
+        assertThrown!AssertError(evaluate(3, 4, 2, 3));
+        assertThrown!AssertError(evaluate(0, 4, 3, 3));
+    }
+}
+
+// A two-term lower tail and a two-term upper tail with a large population.
+// References use sum(C(K,i)*C(N-K,n-i))/C(N,n), rounded from integers.
+version(mir_stat_test)
+@safe pure nothrow @nogc unittest
+{
+    import mir.bignum.fixed: UInt;
+    alias T = Fp!128;
+    {
+        const p = hypergeometricTailsChecked!T(1, cast(size_t)4294967295UL, cast(size_t)1431655765UL, 4);
+        enum cdf = T(false, -128, UInt!128.fromHexString("97b425ed097b425ef684bda1ed097b45"));
+        enum ccdf = T(false, -129, UInt!128.fromHexString("d097b425ed097b4212f684bc25ed0976"));
+        assert(p.status == HypergeometricTailStatus.found && p.cdf == cdf && p.ccdf == ccdf);
+    }
+    {
+        const p = hypergeometricTailsChecked!T(2, cast(size_t)4294967295UL, cast(size_t)1431655765UL, 4);
+        enum cdf = T(false, -128, UInt!128.fromHexString("e38e38e4000000015555555955555561"));
+        enum ccdf = T(false, -131, UInt!128.fromHexString("e38e38dffffffff555555535555554f5"));
+        assert(p.status == HypergeometricTailStatus.found && p.cdf == cdf && p.ccdf == ccdf);
+    }
+    {
+        static if (size_t.sizeof == 8) {
+            const p = hypergeometricTailsChecked!T(1, cast(size_t)18446744073709551615UL, cast(size_t)6148914691236517205UL, 4);
+            enum cdf = T(false, -128, UInt!128.fromHexString("97b425ed097b425ed097b425ed097b43"));
+            enum ccdf = T(false, -129, UInt!128.fromHexString("d097b425ed097b425ed097b425ed097b"));
+            assert(p.status == HypergeometricTailStatus.found && p.cdf == cdf && p.ccdf == ccdf);
+        }
+    }
+    {
+        static if (size_t.sizeof == 8) {
+            const p = hypergeometricTailsChecked!T(2, cast(size_t)18446744073709551615UL, cast(size_t)6148914691236517205UL, 4);
+            enum cdf = T(false, -128, UInt!128.fromHexString("e38e38e38e38e38eaaaaaaaaaaaaaaac"));
+            enum ccdf = T(false, -131, UInt!128.fromHexString("e38e38e38e38e38aaaaaaaaaaaaaaaa0"));
+            assert(p.status == HypergeometricTailStatus.found && p.cdf == cdf && p.ccdf == ccdf);
+        }
+    }
+}
+
+// At k=15 the strict upper tail is exactly 1/C(N,16). Both sides are
+// rounded independently; the CDF is one for the tested widths below.
+version(mir_stat_test)
+@safe pure nothrow @nogc unittest
+{
+    import mir.bignum.fixed: UInt;
+    {
+        alias T = Fp!64;
+        const p = hypergeometricTailsChecked!T(15, cast(size_t)4294967295UL, 16, 16);
+        assert(p.status == HypergeometricTailStatus.found && p.cdf == T(1));
+        enum expected = T(false, -531, UInt!64.fromHexString("983bbbfcdfbbca98"));
+        assert(p.ccdf == expected);
+    }
+    {
+        alias T = Fp!128;
+        const p = hypergeometricTailsChecked!T(15, cast(size_t)4294967295UL, 16, 16);
+        assert(p.status == HypergeometricTailStatus.found && p.cdf == T(1));
+        enum expected = T(false, -595, UInt!128.fromHexString("983bbbfcdfbbca983c68c88b76b2a873"));
+        assert(p.ccdf == expected);
+    }
+    {
+        alias T = Fp!256;
+        const p = hypergeometricTailsChecked!T(15, cast(size_t)4294967295UL, 16, 16);
+        assert(p.status == HypergeometricTailStatus.found && p.cdf == T(1));
+        enum expected = T(false, -723, UInt!256.fromHexString("983bbbfcdfbbca983c68c88b76b2a872ee590e3cc542afbbf1e41379a398340d"));
+        assert(p.ccdf == expected);
+    }
+    {
+        // At 512 bits use 20 draws so this 32-bit population also rounds the CDF to one.
+        alias T = Fp!512;
+        const p = hypergeometricTailsChecked!T(19, uint.max, 20, 20);
+        assert(p.status == HypergeometricTailStatus.found && p.cdf == T(1));
+        enum expected = T(false, -1090, UInt!512.fromHexString("870d9e60d3fbc0f26ae19d9a61229419afeea6fe90444d8f32563e14d6e5275bb076efba8db4ab95351700f7fd7fc342b52e2fa16ba786e283e728259bad7da8"));
+        assert(p.ccdf == expected);
+    }
+    static if (size_t.sizeof == 8) {
+        alias T = Fp!512;
+        const p = hypergeometricTailsChecked!T(15, cast(size_t)18446744073709551615UL, 16, 16);
+        assert(p.status == HypergeometricTailStatus.found && p.cdf == T(1));
+        enum expected = T(false, -1491, UInt!512.fromHexString("983bbbac00000050dfbbb360000017383c6400100004c87b75e7d98000cacef2d1a3c5381cb549012a0cecc39b35c292645131598d92d75ac57197aede258ab7"));
+        assert(p.ccdf == expected);
+    }
 }
 
 /++

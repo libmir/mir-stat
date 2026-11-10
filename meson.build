@@ -66,6 +66,7 @@ sources_list = [
     'mir/stat/internal/fp_count_deviance',
     'mir/stat/internal/fp_poisson_log',
     'mir/stat/internal/fp_geometric_inverse',
+    'mir/stat/internal/fp_hypergeometric_tails',
     'mir/stat/internal/fp_poisson',
     'mir/stat/internal/fp_scaled_probability',
     'mir/stat/internal/gamma',
