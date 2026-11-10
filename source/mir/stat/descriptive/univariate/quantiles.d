@@ -5150,7 +5150,7 @@ private auto allocatedQuantile(F, QuantileAlgo algorithm, bool modify,
         // Keep small batches and tiny inputs on the allocation-free selector.
         // Larger batches amortize a bitmap allocation across their selections.
         // This is an internal tuning choice, not part of the public contract.
-        if (probability.length >= 16 && workspace.length >= 16)
+        if (probability.length >= 5 && workspace.length >= 16)
         {
             auto bitmap = allocateQuantiles!(ulong, allocation)(context,
                 quantileScratchLength(workspace.length));
@@ -6130,13 +6130,21 @@ version(mir_stat_test)
     double[16] probabilities;
     foreach (i, ref p; probabilities) p = cast(double)((i * 11) % 16) / 15;
     foreach (n; [15, 16])
-    foreach (count; [15, 16])
+    foreach (count; [4, 5])
     {
         QuantileTestAllocator!() allocator;
         auto result = makeQuantile(allocator, original[0 .. n], probabilities[0 .. count]);
-        const expectedAllocations = n == 16 && count == 16 ? 3 : 2;
+        const expectedAllocations = n == 16 && count == 5 ? 3 : 2;
         assert(allocator.allocations == expectedAllocations);
         assert(allocator.releases == expectedAllocations - 1);
+        int[16] inPlaceWorkspace = original;
+        QuantileTestAllocator!() inPlaceAllocator;
+        auto inPlace = makeQuantile!(QuantileAlgo.type7, true)(
+            inPlaceAllocator, inPlaceWorkspace[0 .. n], probabilities[0 .. count]);
+        assert(inPlace == result);
+        assert(inPlaceAllocator.allocations == expectedAllocations - 1);
+        inPlaceAllocator.dispose(inPlace.field);
+        assert(inPlaceAllocator.releases == inPlaceAllocator.allocations);
         int[16] workspace = original;
         double[16] output;
         ulong[1] scratch;
