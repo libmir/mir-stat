@@ -282,7 +282,11 @@ unittest
             assert(approxEqual(logBinomialCoefficient!T(n, 1), T(log(T(n))),
                 4 * T.epsilon, T(0)));
         }
-        assert(logBinomialCoefficient!T(2048, 32) == logBinomialCoefficient!T(2048, 2016));
+        // Store both results at T's precision before comparing symmetry.
+        // x87 can retain extra precision in a scalar call expression.
+        const T[1] forward = [logBinomialCoefficient!T(2048, 32)];
+        const T[1] reverse = [logBinomialCoefficient!T(2048, 2016)];
+        assert(forward == reverse);
         assert(approxEqual(logBinomialCoefficient!T(2048, 32),
             T(162.1864092813636915658867887771846208L), 64 * T.epsilon, T(0)));
         assert(approxEqual(logBinomialCoefficient!T(ulong.max, uint.max),

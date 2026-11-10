@@ -1305,6 +1305,7 @@ package(mir.stat) @safe pure nothrow @nogc
 bool binomialExactQuantileReached(T)(size_t k, size_t n, T p, T q,
     out bool supported, bool complement = false)
 {
+    import mir.bignum.fixed: UInt;
     import mir.bignum.integer: BigInt;
     import std.math: frexp, ldexp;
 
@@ -1323,14 +1324,6 @@ bool binomialExactQuantileReached(T)(size_t k, size_t n, T p, T q,
                 numerator >>= 1;
                 --exponent;
             }
-        }
-        static void shift(ref Integer value, int bits) {
-            while (bits >= 32) {
-                value *= 1UL << 32;
-                bits -= 32;
-            }
-            if (bits)
-                value *= 1UL << bits;
         }
         static Integer power(Integer value, size_t exponent) {
             Integer result = Integer(1);
@@ -1353,8 +1346,8 @@ bool binomialExactQuantileReached(T)(size_t k, size_t n, T p, T q,
         supported = true;
 
         Integer failureNumerator = Integer(1);
-        shift(failureNumerator, b);
-        Integer numerator = Integer(a);
+        failureNumerator <<= b;
+        auto numerator = BigInt!1(a);
         failureNumerator -= numerator; // 1-p = (2^b-a) / 2^b.
         Integer term = power(failureNumerator, n);
         Integer sum = Integer(0);
@@ -1364,7 +1357,7 @@ bool binomialExactQuantileReached(T)(size_t k, size_t n, T p, T q,
                 // Adjacent binomial numerators: C(n,j) * a^j * (2^b-a)^(n-j).
                 // Both divisions are exact, including division by j+1 first.
                 term *= n - j;
-                term *= a;
+                term *= UInt!64(a);
                 term /= cast(uint)(j + 1);
                 // Scalar division leaves leading zero limbs in the buffer.
                 term.normalize;
@@ -1376,15 +1369,15 @@ bool binomialExactQuantileReached(T)(size_t k, size_t n, T p, T q,
         // integer arithmetic rather than rounding away a tiny query.
         if (complement) {
             Integer one = Integer(1);
-            shift(one, qExponent);
+            one <<= qExponent;
             one -= target;
             target = one;
         }
         const int exponent = cast(int)n * b;
         if (qExponent > exponent)
-            shift(sum, qExponent - exponent);
+            sum <<= qExponent - exponent;
         else
-            shift(target, exponent - qExponent);
+            target <<= exponent - qExponent;
         return complement ? sum <= target : sum >= target;
     }
 }
@@ -1767,7 +1760,17 @@ version(mir_stat_test)
 @safe pure nothrow @nogc
 unittest
 {
+    import std.math: nextDown, nextUp;
+
     bool supported;
+    // For p = 1/2 + 2^-53, P(X <= 1) in two trials is
+    // 3/4 - 2^-53 - 2^-106, just below the first double below 3/4.
+    const p = nextUp(0.5);
+    const q = nextDown(0.75);
+    assert(!binomialExactQuantileReached(1, 2, p, q, supported));
+    assert(supported);
+    assert(binomialExactQuantileReached(1, 2, p, nextDown(q), supported));
+    assert(supported);
     assert(!binomialExactQuantileReached(0, 8192, 0.5, 0.5, supported));
     assert(supported);
     assert(!binomialExactQuantileReached(0, 8193, 0.5, 0.5, supported));

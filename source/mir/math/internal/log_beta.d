@@ -101,7 +101,11 @@ unittest
         {
             const actual = logBeta(T(row[0]), T(row[1]));
             assert(approxEqual(actual, T(row[2]), 64 * T.epsilon, T(0)));
-            assert(actual == logBeta(T(row[1]), T(row[0])));
+            // Store both results at T's precision before comparing symmetry.
+            // x87 can retain extra precision in a scalar call expression.
+            const T[1] forward = [actual];
+            const T[1] reverse = [logBeta(T(row[1]), T(row[0]))];
+            assert(forward == reverse);
         }
     }}
 }
