@@ -5272,7 +5272,7 @@ private auto allocatedQuantile(F, QuantileAlgo algorithm, bool modify,
         scope auto flat = source.lightScope.flattened;
         scope auto workspace = scratch.lightScope;
         static if (!isFloatingPoint!(Unqual!Probability) &&
-                   (is(Element == float) || is(Element == double)) &&
+                   (isIntegral!Element || is(Element == float) || is(Element == double)) &&
                    canScanEndpoints!(typeof(flat), Probability, Result))
         {
             // With one interior request, the existing copy can supply both
@@ -5286,7 +5286,20 @@ private auto allocatedQuantile(F, QuantileAlgo algorithm, bool modify,
                 if (probability[3 - interior] == other && p > 0 && p < 1)
                 {
                     Element low, high;
-                    const usable = scanFloatingExtrema(flat, low, high, workspace);
+                    static if (isIntegral!Element)
+                    {
+                        low = high = flat[0];
+                        foreach (i; 0 .. flat.length)
+                        {
+                            const value = flat[i];
+                            workspace[i] = value;
+                            if (value < low) low = value;
+                            if (value > high) high = value;
+                        }
+                        enum usable = true;
+                    }
+                    else
+                        const usable = scanFloatingExtrema(flat, low, high, workspace);
                     auto result = allocateQuantiles!(Result, allocation)(context, 3);
                     // Numeric selection and direct writes cannot throw after allocation.
                     if (usable)
@@ -6504,6 +6517,51 @@ version(mir_stat_test)
         quantileInto(reference[], levels[], expected[]);
         auto result = rcquantile(values[], levels[]);
         foreach (i; 0 .. 3) assert(result[i] is expected[i]);
+    }}
+}
+
+// Integral mixed batches collect extrema during copying without changing
+// interpolation, allocation ownership, or caller ordering.
+version(mir_stat_test)
+@system unittest
+{
+    import std.experimental.allocator: dispose;
+    import std.meta: AliasSeq;
+    static foreach (T; AliasSeq!(int, long, ulong))
+    {{
+        T[65] original;
+        foreach (i, ref value; original) value = cast(T)((i * 37) % 65);
+        original[0] = T.min;
+        original[1] = T.max;
+        const double[3][6] batches = [
+            [0.0, 0.25, 1], [1.0, 0.25, 0], [0.0, 1, 0.25],
+            [1.0, 0, 0.25], [0.25, 0, 1], [0.25, 1, 0]];
+        foreach (n; [63, 64, 65])
+        foreach (ref levels; batches)
+        static foreach (algorithm; AliasSeq!(QuantileAlgo.type1, QuantileAlgo.type2,
+            QuantileAlgo.type3, QuantileAlgo.type4, QuantileAlgo.type5,
+            QuantileAlgo.type6, QuantileAlgo.type7, QuantileAlgo.type8, QuantileAlgo.type9))
+        {{
+            auto values = original;
+            double[3] expected;
+            quantileIntoImpl!(algorithm, false, false)(values[0 .. n], levels[], expected[], null);
+            QuantileTestAllocator!() allocator;
+            auto result = makeQuantile!(double, algorithm)(allocator, original[0 .. n], levels[]);
+            assert(result.field == expected[]);
+            assert(allocator.allocations == 2 && allocator.releases == 1);
+            allocator.dispose(result.field);
+            assert(allocator.releases == 2);
+            assert(rcquantile!(double, algorithm)(original[0 .. n], levels[]).field == expected[]);
+            assert(quantile!(double, algorithm)(original[0 .. n], levels[]).field == expected[]);
+        }}
+        auto saved = original;
+        auto exact = rcquantile!(T, QuantileAlgo.type1)(original[], batches[0][]);
+        assert(exact[0] == T.min && exact[2] == T.max && original == saved);
+        QuantileTestAllocator!() inPlace;
+        auto result = makeQuantile!(double, QuantileAlgo.type7, true)(inPlace, original[], batches[0][]);
+        assert(inPlace.allocations == 1);
+        inPlace.dispose(result.field);
+        assert(inPlace.releases == 1);
     }}
 }
 
