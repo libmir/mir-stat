@@ -22,6 +22,7 @@ The default result type is $(D double); built-in floating-point result types
 can be selected explicitly. The direct PMF and the LPMF support explicit $(D Fp) results,
 for example $(D hypergeometricLPMF!(Fp!128)). The PMF also retains the
 compatibility name $(D fp_hypergeometricPMF). Inverse CDF returns $(D size_t).
+$(LREF hypergeometricInvCDFChecked) accepts an Fp probability for bounded support.
 $(LREF hypergeometricTailsChecked) returns both Fp tails for bounded support.
 Approximations retain the explicitly handled support boundaries and
 deterministic outcomes, but their interior probabilities need not equal
@@ -44,6 +45,7 @@ module mir.stat.distribution.hypergeometric;
 
 import mir.bignum.fp: Fp;
 import mir.internal.utility: isFloatingPoint;
+import mir.stat.internal.fp_probability: fpProbabilityValid;
 
 /++
 Algorithms used to calculate hypergeometric distribution.
@@ -1290,6 +1292,178 @@ size_t hypergeometricInvCDFImpl(T, HypergeometricAlgo hypergeometricAlgo)
         result = result - 0.5;
     }
     return cast(size_t) floor(result);
+}
+
+/// Outcome of $(LREF hypergeometricInvCDFChecked).
+enum HypergeometricInverseStatus
+{
+    /// The support exceeds the evaluation budget.
+    supportLimit,
+    /// The count satisfies the quantile or endpoint convention.
+    found
+}
+
+/// Read count when status is found. Default initialization denotes an unresolved query.
+struct HypergeometricInverseResult
+{
+    /// Outcome of the query.
+    HypergeometricInverseStatus status = HypergeometricInverseStatus.supportLimit;
+    /// Quantile or endpoint value when found.
+    size_t count;
+}
+
+/++
+Computes a checked hypergeometric inverse CDF for a represented Fp probability.
+For an interior probability the result is the least supported count whose exact
+CDF reaches $(D q). The comparison uses integer weights before rounding.
+
+Params:
+    q = finite cumulative probability in [0,1]
+    N = population size
+    K = number of successes in the population
+    n = number of draws without replacement
+    maxSupport = inclusive budget for possible outcomes, from zero through 1024 (default 256)
+
+Returns:
+    At zero, returns zero even if the lower support bound is positive. At one,
+    returns the upper support bound. A deterministic distribution returns its
+    sole count for positive probabilities. These cases are independent of the
+    budget. Other queries return $(D supportLimit) if the support exceeds it.
++/
+@safe pure nothrow @nogc
+HypergeometricInverseResult hypergeometricInvCDFChecked(uint bits)(
+    Fp!bits q, size_t N, size_t K, size_t n, size_t maxSupport = 256)
+    in (K <= N && n <= N, "population margins must fit N")
+    in (fpProbabilityValid(q), "q must be a finite probability in [0,1]")
+    in (maxSupport <= 1024, "maxSupport must be at most 1024")
+{
+    import mir.stat.internal.fp_hypergeometric_tails: exactHypergeometricInverse;
+    return exactHypergeometricInverse(q,N,K,n,maxSupport);
+}
+
+/// The CDF at zero is exactly 2/3. Adjacent represented inputs straddle the jump.
+version(mir_stat_test)
+@safe pure nothrow @nogc unittest
+{
+    import mir.bignum.fp: Fp;
+    import mir.bignum.fixed: UInt;
+    alias T = Fp!64;
+    const below = T(false,-64,UInt!64(0xaaaa_aaaa_aaaa_aaaaUL));
+    const above = T(false,-64,UInt!64(0xaaaa_aaaa_aaaa_aaabUL));
+    const left = hypergeometricInvCDFChecked(below,3,1,1);
+    const right = hypergeometricInvCDFChecked(above,3,1,1);
+    assert(left.status == HypergeometricInverseStatus.found && left.count == 0);
+    assert(right.status == HypergeometricInverseStatus.found && right.count == 1);
+}
+
+version(mir_stat_test)
+@safe pure nothrow @nogc unittest
+{
+    import mir.bignum.fixed: UInt;
+    alias S = HypergeometricInverseStatus;
+    static foreach (bits; [64u,128u,256u,512u]) {{
+        alias T = Fp!bits;
+        // 2^bits-1 is divisible by three. These are the two consecutive
+        // represented values around the non-dyadic jump at 2/3.
+        UInt!bits coefficient;
+        coefficient.data[] = size_t.max;
+        coefficient /= UInt!64(3);
+        coefficient <<= 1;
+        auto left = hypergeometricInvCDFChecked(T(false,-cast(long)bits,coefficient),3,1,1);
+        coefficient += 1;
+        auto right = hypergeometricInvCDFChecked(T(false,-cast(long)bits,coefficient),3,1,1);
+        assert(left.status == S.found && left.count == 0);
+        assert(right.status == S.found && right.count == 1);
+
+        // The reversed scan must include equality at the exact 3/4 jump.
+        const tie = hypergeometricInvCDFChecked(T(0.75),8,1,2);
+        assert(tie.status == S.found && tie.count == 0);
+        const tiny = T(false,long.min,UInt!bits(1));
+        const reflected = hypergeometricInvCDFChecked(tiny,size_t.max,size_t.max-1,size_t.max-1);
+        assert(reflected.status == S.found && reflected.count == size_t.max-2);
+    }}
+}
+
+// Fp!32 is available on 32-bit targets. Check both scan directions using
+// adjacent represented probabilities around the exact 1/3 and 2/3 jumps.
+version(mir_stat_test)
+static if (size_t.sizeof == 4)
+@safe pure nothrow @nogc unittest
+{
+    import mir.bignum.fixed: UInt;
+    alias T = Fp!32;
+    foreach (K; 1 .. 3) {
+        const exponent = K == 1 ? -32 : -33;
+        const below = T(false,exponent,UInt!32(0xaaaa_aaaaU));
+        const above = T(false,exponent,UInt!32(0xaaaa_aaabU));
+        const left = hypergeometricInvCDFChecked(below,3,K,1);
+        const right = hypergeometricInvCDFChecked(above,3,K,1);
+        assert(left.status == HypergeometricInverseStatus.found && left.count == 0);
+        assert(right.status == HypergeometricInverseStatus.found && right.count == 1);
+    }
+}
+
+// Removing 63 draws reflects the support. Straddle a nontrivial jump using
+// the exact numerator sum(C(K,i)*C(N-K,n-i)) and denominator C(N,n).
+version(mir_stat_test)
+@safe pure nothrow @nogc unittest
+{
+    import mir.bignum.fixed: UInt;
+    alias T = Fp!128;
+    {
+        static if (size_t.sizeof >= 4) {
+            enum N = cast(size_t)4294967295UL;
+            enum K = N/3;
+            enum below = T(false, -151, UInt!128.fromHexString("8ed238afbb320ac10f1145cd66459eaa"));
+            enum above = T(false, -151, UInt!128.fromHexString("8ed238afbb320ac10f1145cd66459eab"));
+            const left = hypergeometricInvCDFChecked(below,N,K,N-63);
+            const right = hypergeometricInvCDFChecked(above,N,K,N-63);
+            assert(left.status == HypergeometricInverseStatus.found && left.count == K-42);
+            assert(right.status == HypergeometricInverseStatus.found && right.count == K-41);
+        }
+    }
+    {
+        static if (size_t.sizeof >= 8) {
+            enum N = cast(size_t)18446744073709551615UL;
+            enum K = N/3;
+            enum below = T(false, -151, UInt!128.fromHexString("8ed23acf89bd7cd8ec0506f0779c2131"));
+            enum above = T(false, -151, UInt!128.fromHexString("8ed23acf89bd7cd8ec0506f0779c2132"));
+            const left = hypergeometricInvCDFChecked(below,N,K,N-63);
+            const right = hypergeometricInvCDFChecked(above,N,K,N-63);
+            assert(left.status == HypergeometricInverseStatus.found && left.count == K-42);
+            assert(right.status == HypergeometricInverseStatus.found && right.count == K-41);
+        }
+    }
+}
+
+version(mir_stat_test)
+@safe pure nothrow @nogc unittest
+{
+    import mir.bignum.fixed: UInt;
+    alias T = Fp!128;
+    alias S = HypergeometricInverseStatus;
+    assert(HypergeometricInverseResult.init.status == S.supportLimit);
+    auto r = hypergeometricInvCDFChecked(T(0),5,3,4,0);
+    assert(r.status == S.found && r.count == 0); // Lower support bound is two.
+    r = hypergeometricInvCDFChecked(T(false,0,UInt!128(1)),5,3,4,0);
+    assert(r.status == S.found && r.count == 3);
+    r = hypergeometricInvCDFChecked(T(0.25),size_t.max,size_t.max,size_t.max,0);
+    assert(r.status == S.found && r.count == size_t.max);
+    assert(hypergeometricInvCDFChecked(T(0.5),512,256,256).status == S.supportLimit);
+    foreach (n; [63,255,1023]) {
+        r = hypergeometricInvCDFChecked(T(0.5),2*n,n,n,n+1);
+        assert(r.status == S.found && r.count == n/2);
+        assert(hypergeometricInvCDFChecked(T(0.5),2*n,n,n,n).status == S.supportLimit);
+    }
+    debug {
+        import core.exception: AssertError;
+        import std.exception: assertThrown;
+        foreach (invalid; [T(-0.25),T(2),T(double.infinity),T(double.nan)])
+            assertThrown!AssertError(hypergeometricInvCDFChecked(invalid,0,0,0));
+        assertThrown!AssertError(hypergeometricInvCDFChecked(T(0),2,3,1));
+        assertThrown!AssertError(hypergeometricInvCDFChecked(T(0),2,1,3));
+        assertThrown!AssertError(hypergeometricInvCDFChecked(T(0),0,0,0,1025));
+    }
 }
 
 /++
