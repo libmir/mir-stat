@@ -1459,41 +1459,16 @@ auto quantileImpl(F, QuantileAlgo quantileAlgo, Iterator, G)(Slice!Iterator slic
 private void partitionQuantileRank(bool incremental, S)(S values,
     scope ulong[] established, size_t rank, size_t end) @safe pure nothrow @nogc
 {
-    import mir.ndslice.sorting: partitionAt;
-    static if (!incremental)
-        partitionAt(values[0 .. end], rank);
+    static if (incremental)
+    {
+        import mir.stat.descriptive.univariate.internal.partition: partitionAtWithCache;
+        assert(established.length == quantileScratchLength(values.length));
+        partitionAtWithCache(values, rank, established);
+    }
     else
     {
-        import core.bitop: bsf, bsr;
-        assert(rank < values.length);
-        assert(established.length == quantileScratchLength(values.length));
-        const word = rank / 64;
-        const ulong mask = 1UL << (rank % 64);
-        if (established[word] & mask) return;
-
-        // Only search across the unresolved interval. The bitmap walk is at
-        // most linear in that interval, like the selection it precedes.
-        size_t lower = 0, upper = values.length;
-        size_t i = word;
-        ulong bits = established[i] & (mask - 1);
-        for (;;)
-        {
-            if (bits) { lower = i * 64 + bsr(bits) + 1; break; }
-            if (i == 0) break;
-            bits = established[--i];
-        }
-        i = word;
-        bits = established[i] & ~(mask | (mask - 1));
-        for (;;)
-        {
-            if (bits) { upper = i * 64 + bsf(bits); break; }
-            if (++i == established.length) break;
-            bits = established[i];
-        }
-        assert(lower <= rank && rank < upper);
-        if (upper - lower > 1)
-            partitionAt(values[lower .. upper], rank - lower);
-        established[word] |= mask;
+        import mir.ndslice.sorting: partitionAt;
+        partitionAt(values[0 .. end], rank);
     }
 }
 
@@ -4250,8 +4225,8 @@ An owning snapshot for repeated unweighted quantiles, medians, and IQRs.
 
 Construct with $(LREF quantileTable), $(LREF rcQuantileTable), or
 $(LREF makeQuantileTable). Construction copies the observations without
-sorting them. A query selects only the required ranked observations and
-remembers their partition boundaries. Later queries search only unresolved
+sorting them. A query selects the required ranks and remembers intermediate
+pivots established along the way. Later queries search only unresolved
 intervals; querying an established rank again requires no selection.
 Interpolation may require two ranks. Quantile algorithms and result types
 follow $(LREF quantile); the default is type7.
@@ -4455,6 +4430,23 @@ private auto allocatedQuantileTable(QuantileAllocation allocation, Context, Data
     foreach (i; 0 .. flat.length) values[i] = flat[i];
     return QuantileTable!(IteratorOf!(typeof(values)), IteratorOf!(typeof(bitmap)),
         allocation == QuantileAllocation.custom)(values.move, bitmap.move);
+}
+
+// Selecting the median also fixes the next quartile's rank in this workspace.
+version(mir_stat_test)
+@safe pure nothrow @nogc unittest
+{
+    int[5] data = [10, 0, 30, 20, 40];
+    auto table = rcQuantileTable(data);
+    assert(table.quantile(0.5) == 20);
+    assert(table.established[0] & (1UL << 3));
+    const cached = table.established[0];
+    assert(table.quantile(0.75) == 30 && table.established[0] == cached);
+
+    double[1] levels = [0.5], output;
+    ulong[1] scratch;
+    quantileInto(data, levels, output, scratch[]);
+    assert(output[0] == 20 && (scratch[0] & (1UL << 3)));
 }
 
 version(mir_stat_test)
@@ -5221,8 +5213,8 @@ The observations in workspace may be rearranged by partitioning; they need not
 end up sorted. Probabilities are read without modification. Output must have one
 element per probability, and its element type determines the result type.
 Workspace, probabilities, and output must not overlap.
-The overload with scratch remembers selected ranks during the batch, allowing
-later queries to partition only unresolved intervals. Use it when requesting
+The overload with scratch remembers requested ranks and intermediate pivots
+during the batch, so later queries partition only unresolved intervals. Use it when requesting
 several quantiles from the same observations. The three-argument overload
 requires no scratch buffer and selects each quantile independently.
 
