@@ -5157,39 +5157,56 @@ private bool tryScanQuantileEndpoints(V, P, T)(scope V values, scope P levels,
     }
     else
     {
-        // CTFE cannot reinterpret a floating-point union member as an integer.
         if (__ctfe) return false;
-        static assert(is(T == float) || is(T == double));
-        static if (is(T == float)) alias Word = uint;
-        else alias Word = ulong;
-        union Representation { T value; Word bits; }
-        enum signShift = Word.sizeof * 8 - 1;
-        enum Word sign = Word(1) << signShift;
-
-        // Flipping the sign bit of positives and all bits of negatives maps
-        // IEEE values to unsigned keys in ascending order, with -0 before +0.
-        Word lowest = Word.max, highest = 0;
-        foreach (i; 0 .. values.length)
-        {
-            Representation repr;
-            repr.value = values[i];
-            const key = repr.bits ^ (sign | (0 - (repr.bits >> signShift)));
-            if (key < lowest) lowest = key;
-            if (key > highest) highest = key;
-        }
-
-        Representation infinity;
-        infinity.value = T.infinity;
-        // NaNs lie outside the infinity keys. The key order already resolves zero ties.
-        if (lowest < ~(sign | infinity.bits) || highest > (sign | infinity.bits))
-            return false;
-
-        Representation minimum, maximum;
-        minimum.bits = lowest ^ (lowest & sign ? sign : Word.max);
-        maximum.bits = highest ^ (highest & sign ? sign : Word.max);
-        low = minimum.value;
-        high = maximum.value;
+        return scanFloatingExtrema(values, low, high, null);
     }
+    return true;
+}
+
+// When a copy is requested, fill it completely even if selection must fall back.
+private bool scanFloatingExtrema(V, T, Copy)(scope V values, out T low, out T high, scope Copy copy)
+{
+    static assert(is(T == float) || is(T == double));
+    static if (is(T == float)) alias Word = uint;
+    else alias Word = ulong;
+    union Representation { T value; Word bits; }
+    enum signShift = Word.sizeof * 8 - 1;
+    enum Word sign = Word(1) << signShift;
+
+    // Flipping the sign bit of positives and all bits of negatives maps
+    // IEEE values to unsigned keys in ascending order, with -0 before +0.
+    static if (!is(Copy == typeof(null))) bool negativeZero;
+    Word lowest = Word.max, highest = 0;
+    foreach (i; 0 .. values.length)
+    {
+        Representation repr;
+        repr.value = values[i];
+        static if (!is(Copy == typeof(null)))
+        {
+            copy[i] = repr.value;
+            negativeZero |= repr.bits == sign;
+        }
+        const key = repr.bits ^ (sign | (0 - (repr.bits >> signShift)));
+        if (key < lowest) lowest = key;
+        if (key > highest) highest = key;
+    }
+
+    // Skipping an endpoint partition can change which zero an interior rank
+    // selects, even when both extrema are nonzero.
+    static if (!is(Copy == typeof(null)))
+        if (negativeZero) return false;
+
+    Representation infinity;
+    infinity.value = T.infinity;
+    // NaNs lie outside the infinity keys. The key order already resolves zero ties.
+    if (lowest < ~(sign | infinity.bits) || highest > (sign | infinity.bits))
+        return false;
+
+    Representation minimum, maximum;
+    minimum.bits = lowest ^ (lowest & sign ? sign : Word.max);
+    maximum.bits = highest ^ (highest & sign ? sign : Word.max);
+    low = minimum.value;
+    high = maximum.value;
     return true;
 }
 
@@ -5234,9 +5251,41 @@ private auto allocatedQuantile(F, QuantileAlgo algorithm, bool modify,
         static if (allocation == QuantileAllocation.custom)
             scope(exit) releaseQuantiles(context, scratch);
         scope auto flat = source.lightScope.flattened;
-        foreach (i; 0 .. flat.length)
-            scratch[i] = flat[i];
         scope auto workspace = scratch.lightScope;
+        static if (!isFloatingPoint!(Unqual!Probability) &&
+                   (is(Element == float) || is(Element == double)) &&
+                   canScanEndpoints!(typeof(flat), Probability, Result))
+        {
+            // With one interior request, the existing copy can supply both
+            // extrema before selection. Retain caller order for exceptional data.
+            if (!__ctfe && flat.length >= 64 && probability.length == 3 &&
+                (probability[0] == 0 || probability[0] == 1))
+            {
+                const other = 1 - probability[0];
+                const interior = probability[1] == other ? 2 : 1;
+                const p = probability[interior];
+                if (probability[3 - interior] == other && p > 0 && p < 1)
+                {
+                    Element low, high;
+                    const usable = scanFloatingExtrema(flat, low, high, workspace);
+                    auto result = allocateQuantiles!(Result, allocation)(context, 3);
+                    // Numeric selection and direct writes cannot throw after allocation.
+                    if (usable)
+                    {
+                        foreach (i; 0 .. 3)
+                            if (i == interior)
+                                result[i] = selectQuantileImpl!(algorithm, Result, false)(workspace, p, null);
+                            else
+                                result[i] = cast(Result)(probability[i] == 0 ? low : high);
+                    }
+                    else
+                        quantileIntoImpl!(algorithm, false, false)(workspace, probability, result.lightScope, null);
+                    return result;
+                }
+            }
+        }
+        foreach (i; 0 .. flat.length)
+            workspace[i] = flat[i];
     }
 
     static if (isFloatingPoint!(Unqual!Probability))
@@ -6376,6 +6425,39 @@ version(mir_stat_test)
             foreach (i; 0 .. levels.length) assert(result[i] is output[i]);
             allocator.dispose(result.field);
         }
+    }}
+}
+
+// Two endpoints and one interior quantile use only the ordinary copy and
+// result allocations. A negative zero at an interior rank requires fallback.
+version(mir_stat_test)
+@system pure nothrow @nogc unittest
+{
+    import std.experimental.allocator: dispose;
+    import std.meta: AliasSeq;
+    static foreach (T; AliasSeq!(float, double))
+    {{
+        T[65] values;
+        foreach (i, ref value; values) value = cast(T)(cast(int)((i * 37) % 65) - 32);
+        const double[3][2] batches = [[1.0, 0.25, 0], [0.0, 1, 0.25]];
+        foreach (ref levels; batches)
+        {
+            QuantileTestAllocator!() allocator;
+            auto result = makeQuantile(allocator, values[], levels[]);
+            foreach (i, p; levels) assert(result[i] == (p == 0 ? -32 : p == 1 ? 32 : -16));
+            assert(allocator.allocations == 2 && allocator.releases == 1);
+            allocator.dispose(result.field);
+        }
+        values[] = 0;
+        values[0] = -1;
+        values[1] = 1;
+        values[2] = -T(0);
+        const double[3] levels = [1, 0.5, 0];
+        auto reference = values;
+        T[3] expected;
+        quantileInto(reference[], levels[], expected[]);
+        auto result = rcquantile(values[], levels[]);
+        foreach (i; 0 .. 3) assert(result[i] is expected[i]);
     }}
 }
 
