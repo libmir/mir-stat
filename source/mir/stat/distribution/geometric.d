@@ -594,10 +594,6 @@ bool geometricQuantileReached(T, F)(F k, T p, T q, F lp, F lq)
                 b = T.mant_dig - e;
                 while (a && !(a & 1)) { a >>= 1; --b; }
             }
-            static void shift(ref Integer x, int bits) {
-                while (bits >= 32) { x *= 1UL << 32; bits -= 32; }
-                if (bits) x *= 1UL << bits;
-            }
             ulong a, c;
             int b, d;
             split(p, a, b);
@@ -605,7 +601,7 @@ bool geometricQuantileReached(T, F)(F k, T p, T q, F lp, F lq)
             const size_t m = cast(size_t)k + 1;
             if (b > 0 && b <= 8192 && d > 0 && d <= 8192 && m <= 8192 / b) {
                 Integer base = Integer(1);
-                shift(base, b);
+                base <<= b;
                 Integer probabilityNumerator = Integer(a);
                 base -= probabilityNumerator;
                 Integer tail = Integer(1);
@@ -616,12 +612,12 @@ bool geometricQuantileReached(T, F)(F k, T p, T q, F lp, F lq)
                     if (exponent) base *= base;
                 }
                 Integer target = Integer(1);
-                shift(target, d);
+                target <<= d;
                 Integer queryNumerator = Integer(c);
                 target -= queryNumerator;
                 const int tailExponent = cast(int)m * b;
-                if (d > tailExponent) shift(tail, d - tailExponent);
-                else shift(target, tailExponent - d);
+                if (d > tailExponent) tail <<= d - tailExponent;
+                else target <<= tailExponent - d;
                 return tail <= target;
             }
         }
