@@ -6,6 +6,11 @@ The `rc` and `make` variants provide allocation choices; $(REF quantileInto, mir
 writes into caller-provided output. The algorithm enums describe the available
 quantile definitions.
 
+For implementation flowcharts covering allocation, endpoint shortcuts, and
+cached selection, see the
+$(LINK2 https://github.com/libmir/mir-stat/blob/master/design/quantile-selection.md, ordinary quantile implementation notes).
+These describe internal choices rather than API guarantees.
+
 For weighted means and sums, see
 $(REF wmean, mir, stat, descriptive, univariate, means) and
 $(REF wsum, mir, stat, descriptive, univariate, sums). These functions and weighted quantiles
