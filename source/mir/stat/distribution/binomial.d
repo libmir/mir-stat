@@ -875,6 +875,17 @@ struct BinomialTailResult(T)
 Computes the binomial CDF and strict CCDF for the represented $(D Fp)
 probability, independently rounded to nearest with ties to even.
 
+Use this function when extended-precision tails with a correct-rounding guarantee
+are required. The checked calculation reports $(D found) only when both tails
+are resolved; read neither probability field otherwise. Each tail is rounded
+independently, preserving a small tail even when the other rounds to one.
+
+For built-in floating-point types, use $(LREF binomialCDF) and
+$(LREF binomialCCDF) separately. Calling the CCDF avoids subtracting an
+already-rounded CDF from one. Those functions retain their documented numerical
+and approximation behavior; simply returning their results as a pair would not
+provide this checked function's rounding guarantee.
+
 Params:
     k = observed number of successes, at most n
     n = number of trials

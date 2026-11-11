@@ -376,6 +376,17 @@ in the first k+r trials. The calculation therefore exchanges the checked binomia
 tails at count r-1, using the original success probability without rounding its
 complement.
 
+Use this function when extended-precision tails with a correct-rounding guarantee
+are required. The checked calculation reports $(D found) only when both tails
+are resolved; read neither probability field otherwise. Each tail is rounded
+independently, preserving a small tail even when the other rounds to one.
+
+For built-in floating-point types, use $(LREF negativeBinomialCDF) and
+$(LREF negativeBinomialCCDF) separately. Calling the CCDF avoids subtracting an
+already-rounded CDF from one. Those functions retain their documented numerical
+and approximation behavior; simply returning their results as a pair would not
+provide this checked function's rounding guarantee.
+
 Params:
     k = number of failures before stopping
     r = positive number of successes required before stopping
