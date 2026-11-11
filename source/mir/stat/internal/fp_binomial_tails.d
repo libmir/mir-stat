@@ -10,6 +10,7 @@ import mir.bignum.fp: Fp;
 import mir.bignum.integer: BigInt;
 import mir.stat.distribution.binomial: BinomialTailResult, BinomialTailStatus,
     BinomialInverseResult, BinomialInverseStatus;
+import mir.stat.distribution.negative_binomial: NegativeBinomialInverseResult, NegativeBinomialInverseStatus;
 import mir.stat.internal.fp_probability: fpProbabilityComplement, fpProbabilityLess;
 
 // Round n*p approached strictly from below. Callers establish that the
@@ -173,6 +174,40 @@ private struct ExactTails(uint bits, uint capacity)
         }
     }
 
+    static NegativeBinomialInverseResult negativeInverse(T q, size_t r, UInt!bits odd,
+        size_t s, size_t maxTerms, size_t maxScale)
+    {
+        Integer a, b, term;
+        // The first mass is p^r. Reuse the success endpoint and the exact
+        // dyadic numerator/complement construction from the binomial tails.
+        initialize(a, b, term, r, odd, s, false);
+        Integer sum = term;
+        size_t scale = s*r;
+        foreach (k; 0 .. maxTerms) {
+            Integer rank;
+            targetRank(rank, q, scale);
+            if (sum >= rank)
+                return NegativeBinomialInverseResult(NegativeBinomialInverseStatus.found, k);
+            if (k + 1 == maxTerms || s > maxScale - scale)
+                break;
+
+            // Raise the denominator from 2^(s*(r+k)) to 2^(s*(r+k+1)).
+            // The adjacent mass numerator gains b*(r+k)/(k+1), where
+            // b/2^s is the exact failure probability.
+            scale += s;
+            sum <<= s;
+            term *= b;
+            const carry = term.opOpAssign!"*"(r + k);
+            assert(!carry);
+            const remainder = term.opOpAssign!"/"(cast(uint)(k + 1));
+            assert(!remainder);
+            term.normalize();
+            const overflow = sum.opOpAssign!"+"(term);
+            assert(!overflow);
+        }
+        return NegativeBinomialInverseResult.init;
+    }
+
     static BinomialInverseResult inverse(T q, size_t n, UInt!bits odd,
         size_t s, size_t maxTerms)
     {
@@ -283,4 +318,35 @@ package(mir.stat) BinomialInverseResult exactBinomialInverse(uint bits)(
     if (scale <= 16384)
         return ExactTails!(bits, 16384).inverse(q, n, odd, cast(size_t)s, budget);
     return ExactTails!(bits, 65536).inverse(q, n, odd, cast(size_t)s, budget);
+}
+
+package(mir.stat) NegativeBinomialInverseResult exactNegativeBinomialInverse(uint bits)(
+    Fp!bits q, size_t r, Fp!bits p, size_t maxTerms, size_t maxScale)
+    @safe pure nothrow @nogc
+{
+    alias T = Fp!bits;
+    alias Result = NegativeBinomialInverseResult;
+    enum found = NegativeBinomialInverseStatus.found;
+    if (!q.coefficient || !fpProbabilityLess(p, T(1)))
+        return Result(found, 0);
+    if (!p.coefficient || !fpProbabilityLess(q, T(1)))
+        return Result(found, size_t.max);
+
+    const trailing = p.coefficient.cttz;
+    const s = (0UL - cast(ulong)p.exponent) - trailing;
+    const scaleLimit = maxScale < 65536 ? maxScale : 65536;
+    if (!maxTerms || s > scaleLimit / r)
+        return Result.init;
+    const terms = maxTerms < 1024 ? maxTerms : 1024;
+    // Select storage for the largest denominator the bounded scan can use.
+    // r and the added count are bounded before either addition or multiplication.
+    const available = scaleLimit / cast(size_t)s - r;
+    const last = terms - 1 < available ? terms - 1 : available;
+    const scale = (r + last)*cast(size_t)s;
+    const odd = p.coefficient >> trailing;
+    if (scale <= 4096)
+        return ExactTails!(bits, 4096).negativeInverse(q, r, odd, cast(size_t)s, terms, scaleLimit);
+    if (scale <= 16384)
+        return ExactTails!(bits, 16384).negativeInverse(q, r, odd, cast(size_t)s, terms, scaleLimit);
+    return ExactTails!(bits, 65536).negativeInverse(q, r, odd, cast(size_t)s, terms, scaleLimit);
 }
