@@ -1,11 +1,11 @@
 /++
-Cached rank selection on a caller-owned Mir slice.
+Rank selection with optional pivot reuse on a caller-owned Mir slice.
 
 License: $(HTTP www.apache.org/licenses/LICENSE-2.0, Apache-2.0)
 +/
 module mir.stat.descriptive.univariate.internal.partition;
 
-/++ Selection policy for the internal cached rank selector. +/
+/++ Selection policy for the internal rank selectors. +/
 package(mir.stat) enum PartitionPivotStrategy
 {
     /// Partition around middle-slot values and retain intermediate pivots.
@@ -29,21 +29,49 @@ recorded from that call. Later calls leave every marked position untouched.
 
 Provide a zeroed bitmap with one bit per element (round up to whole ulong
 words) to remember every rank. A shorter bitmap remembers only the ranks it
-can represent; an empty bitmap uses the selected strategy without recording or
-reusing pivots. Bitmap storage must not overlap the slice elements. Reuse the
-bitmap only with the same workspace, flattened order, and comparison. Clear it after independently
-modifying the data.
+can represent. The bitmap must be nonempty; use partitionAt for selection without
+pivot storage. Bitmap storage must not overlap the slice elements. Reuse the
+bitmap only with the same workspace, flattened order, and comparison. Clear it
+after independently modifying the data.
 +/
 package(mir.stat) void partitionAtWithCache(alias less = "a < b",
     PartitionPivotStrategy strategy = PartitionPivotStrategy.midpoint, S)(
     S workspace, size_t rank, scope ulong[] established) @safe pure nothrow @nogc
     if (!is(typeof(less) == PartitionPivotStrategy))
 {
+    assert(established.length, "partitionAtWithCache requires a nonempty bitmap");
+    partitionAtImpl!(less, strategy, true)(workspace, rank, established);
+}
+
+/++
+Select a zero-based rank without recording or reusing pivots. No storage is
+allocated. The default rankGuided strategy delegates to mir-algorithm's
+partitionAt; midpoint and adaptive share the cached selector's selection logic.
+Unlike partitionAtWithCache, this function defaults to rank guidance because
+there are no remembered pivots to reuse across requests.
++/
+package(mir.stat) void partitionAt(alias less = "a < b",
+    PartitionPivotStrategy strategy = PartitionPivotStrategy.rankGuided, S)(
+    S workspace, size_t rank) @safe pure nothrow @nogc
+    if (!is(typeof(less) == PartitionPivotStrategy))
+{
+    partitionAtImpl!(less, strategy, false)(workspace, rank, null);
+}
+
+/// Strategy-first spelling; comparator-first calls remain supported.
+package(mir.stat) void partitionAt(PartitionPivotStrategy strategy,
+    alias less = "a < b", S)(S workspace, size_t rank) @safe pure nothrow @nogc
+{
+    partitionAt!(less, strategy)(workspace, rank);
+}
+
+private void partitionAtImpl(alias less, PartitionPivotStrategy strategy, bool cached, S)(
+    S workspace, size_t rank, scope ulong[] established) @safe pure nothrow @nogc
+{
     static assert(strategy == PartitionPivotStrategy.midpoint ||
         strategy == PartitionPivotStrategy.rankGuided ||
         strategy == PartitionPivotStrategy.adaptive, "Unknown partition pivot strategy");
-    import core.bitop: bsf, bsr;
-    import mir.ndslice.sorting: partitionAt, pivotPartition;
+    import mir.ndslice.sorting: nativePartitionAt = partitionAt, pivotPartition;
     import mir.ndslice.topology: flattened;
     import mir.qualifier: lightScope;
     scope auto flat = workspace.lightScope.flattened;
@@ -58,12 +86,21 @@ package(mir.stat) void partitionAtWithCache(alias less = "a < b",
     }
     else alias values = flat;
     assert(rank < values.length);
-    const word = rank / 64;
-    const mask = 1UL << (rank % 64);
-    if (word < established.length && (established[word] & mask)) return;
-    size_t lo = 0, hi = values.length;
-    if (established.length)
+    static if (!cached && strategy == PartitionPivotStrategy.rankGuided)
     {
+        nativePartitionAt!less(values, rank);
+        return;
+    }
+    static if (cached)
+    {
+        const word = rank / 64;
+        const mask = 1UL << (rank % 64);
+        if (word < established.length && (established[word] & mask)) return;
+    }
+    size_t lo = 0, hi = values.length;
+    static if (cached)
+    {
+        import core.bitop: bsf, bsr;
         // Nearest fixed rank below the target, including the end of a short bitmap.
         size_t i = word < established.length ? word : established.length - 1;
         ulong bits = established[i];
@@ -88,7 +125,7 @@ package(mir.stat) void partitionAtWithCache(alias less = "a < b",
     }
     assert(lo <= rank && rank < hi && hi <= values.length);
 
-    static if (strategy == PartitionPivotStrategy.rankGuided)
+    static if (cached && strategy == PartitionPivotStrategy.rankGuided)
     {
         import mir.stat.descriptive.univariate.internal.rank_partition: partitionAtRecorded;
         if (hi - lo > 1)
@@ -105,8 +142,12 @@ package(mir.stat) void partitionAtWithCache(alias less = "a < b",
                 (rank - lo < initialWidth / 16 || hi - 1 - rank < initialWidth / 16))
             {
                 import mir.stat.descriptive.univariate.internal.rank_partition: partitionAtRecorded;
-                partitionAtRecorded!less(values[lo .. hi], rank - lo, established, lo);
-                if (word < established.length) established[word] |= mask;
+                static if (cached)
+                    partitionAtRecorded!less(values[lo .. hi], rank - lo, established, lo);
+                else
+                    nativePartitionAt!less(values[lo .. hi], rank - lo);
+                static if (cached)
+                    if (word < established.length) established[word] |= mask;
                 return;
             }
         }
@@ -118,8 +159,9 @@ package(mir.stat) void partitionAtWithCache(alias less = "a < b",
             const width = hi - lo;
             if (width > budget) break;
             const pivot = lo + pivotPartition!less(values[lo .. hi], width / 2);
-            if (pivot / 64 < established.length)
-                established[pivot / 64] |= 1UL << (pivot % 64);
+            static if (cached)
+                if (pivot / 64 < established.length)
+                    established[pivot / 64] |= 1UL << (pivot % 64);
             if (rank == pivot) return;
             if (rank < pivot) hi = pivot;
             else lo = pivot + 1;
@@ -128,9 +170,10 @@ package(mir.stat) void partitionAtWithCache(alias less = "a < b",
             if (hi - lo > width - width / 4) budget -= width;
         }
         if (hi - lo > 1)
-            partitionAt!less(values[lo .. hi], rank - lo);
+            nativePartitionAt!less(values[lo .. hi], rank - lo);
     }
-    if (word < established.length) established[word] |= mask;
+    static if (cached)
+        if (word < established.length) established[word] |= mask;
 }
 
 /// Strategy-first spelling; comparator-first calls remain supported.
@@ -164,7 +207,7 @@ version(mir_stat_test)
     foreach (i, ref v; input) v = cast(int)((19*i+13)%29);
     auto expected = input;
     sort!("a > b")(expected[].sliced);
-    foreach (words; 0 .. 4)
+    foreach (words; 1 .. 4)
     {
         auto x = input;
         ulong[3] bits;
@@ -241,8 +284,11 @@ version(mir_stat_test)
         {
             // Visit every rank in a nonsequential order to exercise intermediate pivots.
             const rank = (j * 73 + n / 2) % n;
-            partitionAtWithCache!("a > b", strategy)(data[0 .. n].sliced,
-                rank, cache[0 .. words]);
+            if (words)
+                partitionAtWithCache!("a > b", strategy)(data[0 .. n].sliced,
+                    rank, cache[0 .. words]);
+            else
+                partitionAt!("a > b", strategy)(data[0 .. n].sliced, rank);
             assert(data[rank] == expected[rank]);
             foreach (i; 0 .. n)
                 if (i / 64 < words && (cache[i / 64] & (1UL << (i % 64))))
@@ -326,8 +372,8 @@ version(mir_stat_test)
     }}
 }
 
-// An empty bitmap changes storage only: the first search must perform the same
-// selection as a fresh full bitmap, including adaptive choices near the ends.
+// Uncached selection agrees with a fresh cached search for the same strategy,
+// including adaptive choices near the ends.
 version(mir_stat_test)
 @safe pure nothrow @nogc unittest
 {
@@ -341,18 +387,68 @@ version(mir_stat_test)
         foreach (i, ref value; uncached) value = cast(int)((i * 173 + 19) % 257);
         cached = uncached;
         ulong[5] cache;
-        ulong[1] sentinel = [ulong.max];
-        partitionAtWithCache!(strategy, less)(uncached[].sliced, rank, sentinel[0 .. 0]);
+        partitionAt!(strategy, less)(uncached[].sliced, rank);
         partitionAtWithCache!(less, strategy)(cached[].sliced, rank, cache[]);
         assert(uncached == cached);
         assert(uncached[rank] == (less == "a < b" ? rank : 256 - rank));
-        assert(sentinel[0] == ulong.max);
     }
 
-    // Omitting the strategy and explicitly requesting midpoint agree without storage.
+    // The uncached default matches mir-algorithm, including comparator-only calls.
     int[5] implicit = [10, 0, 30, 20, 40];
     auto explicit = implicit;
-    partitionAtWithCache(implicit[].sliced, 2, null);
-    partitionAtWithCache!(P.midpoint)(explicit[].sliced, 2, null);
+    import mir.ndslice.sorting: nativePartitionAt = partitionAt;
+    partitionAt(implicit[].sliced, 2);
+    nativePartitionAt(explicit[].sliced, 2);
     assert(implicit == explicit);
+    partitionAt!("a > b")(implicit[].sliced, 1);
+    nativePartitionAt!("a > b")(explicit[].sliced, 1);
+    assert(implicit == explicit);
+}
+
+version(mir_stat_test)
+unittest
+{
+    import core.exception: AssertError;
+    import std.exception: assertThrown;
+    import mir.ndslice.slice: sliced;
+    int[3] values = [2, 0, 1];
+    assertThrown!AssertError(partitionAtWithCache(values[].sliced, 1, null));
+    assertThrown!AssertError(partitionAtWithCache!(PartitionPivotStrategy.adaptive)(
+        values[].sliced, 1, null));
+}
+
+version(mir_stat_test)
+@safe pure nothrow @nogc unittest
+{
+    import mir.ndslice.slice: sliced;
+    import mir.ndslice.topology: stride;
+    import mir.ndslice.dynamic: transposed;
+    alias P = PartitionPivotStrategy;
+    static foreach (strategy; [P.midpoint, P.rankGuided, P.adaptive])
+    {{
+        int[512] data;
+        foreach (i; 0 .. 256)
+        {
+            data[2 * i] = cast(int)((i * 173) % 256);
+            data[2 * i + 1] = -1;
+        }
+        auto values = data[].sliced.stride(2);
+        foreach (rank; [5, 128, 250])
+        {
+            partitionAt!(strategy, (int a, int b) => a < b)(values, rank);
+            assert(values[rank] == rank);
+            foreach (i; 0 .. rank) assert(values[i] <= values[rank]);
+            foreach (i; rank + 1 .. 256) assert(values[i] >= values[rank]);
+        }
+        foreach (i; 0 .. 256) assert(data[2 * i + 1] == -1);
+
+        int[256] data2;
+        foreach (i, ref v; data2) v = cast(int)((i * 173) % 256);
+        auto matrix = data2[].sliced(16, 16).transposed;
+        foreach (rank; [5, 128, 250])
+        {
+            partitionAt!("a > b", strategy)(matrix, rank);
+            assert(matrix[rank / 16, rank % 16] == 255 - rank);
+        }
+    }}
 }
