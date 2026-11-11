@@ -127,9 +127,12 @@ partitionAtWithCache!(P.adaptive, "a > b")(values, rank, cache);
 
 All strategies share cache lookup and storage. A zeroed caller-owned bitmap records
 established positions without allocating. A shorter bitmap records only positions
-it covers. An empty bitmap always delegates to ordinary `partitionAt`, regardless
-of the selected strategy. Reuse requires the same workspace, flattened order and
-comparison; independently modifying the workspace requires clearing the bitmap.
+it covers. An empty bitmap uses the selected strategy without recording or reusing
+pivots; omitting the strategy still selects `midpoint`. Each call then searches
+the full workspace because there are no remembered boundaries. Reuse requires the
+same workspace, flattened order and comparison; independently modifying the workspace requires clearing the bitmap.
+This empty-cache behavior applies to the internal helper. Uncached quantile calls
+continue to use ordinary `partitionAt` through `partitionQuantileRank`.
 
 The adaptive decision is made after locating the nearest cached boundaries. For
 example, a request for rank 5 in an unresolved interval `[0, 256)` uses rank
