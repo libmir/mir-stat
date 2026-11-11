@@ -8,7 +8,8 @@ module mir.stat.internal.fp_poisson_tails;
 import mir.bignum.fixed: UInt;
 import mir.bignum.integer: BigInt;
 import mir.bignum.fp: Fp;
-import mir.stat.distribution.poisson: PoissonTailResult, PoissonTailStatus;
+import mir.stat.distribution.poisson: PoissonTailResult, PoissonTailStatus,
+    PoissonInverseResult, PoissonInverseStatus;
 import mir.stat.internal.fp_probability: fpProbabilityLess;
 
 // Directed fixed-point bounds for the unnormalized masses lambda^j/j!.
@@ -108,6 +109,69 @@ private struct PoissonIntervals(uint bits)
         value = product;
     }
 
+    // Integer n reaches q*d exactly when n >= ceil(q*d). Keeping the
+    // target as an integer avoids rounding a CDF before the comparison.
+    private static Integer targetRank(ref const Integer denominator, T q)
+    {
+        BigInt!((precision + 2048 + 63) / 64) weight;
+        weight = denominator;
+        auto coefficient = BigInt!((bits + 63) / 64)(q.coefficient);
+        Integer rank;
+        rank.multiply(weight, coefficient);
+        Integer one = Integer(1);
+        rank -= one;
+        const shift = 0UL - cast(ulong)q.exponent;
+        if (shift >= rank.bitLength)
+            return one;
+        rank >>= cast(size_t)shift;
+        add(rank, one);
+        return rank;
+    }
+
+    static PoissonInverseResult quantile(T q, T lambda, uint ceiling, size_t limit)
+    {
+        alias R = PoissonInverseResult;
+        assert(limit && limit <= 1024 && ceiling <= limit);
+        auto coefficient = BigInt!((bits + 63) / 64)(lambda.coefficient);
+        Integer lo = Integer(1);
+        lo <<= precision;
+        Integer hi = lo;
+        Integer totalLo, totalHi;
+        foreach (m; 0 .. limit) {
+            add(totalLo, lo);
+            add(totalHi, hi);
+            advance(lo, coefficient, lambda.exponent, cast(uint)m + 1, false);
+            advance(hi, coefficient, lambda.exponent, cast(uint)m + 1, true);
+        }
+        // hi bounds the first omitted mass. All later successive ratios
+        // are at most ceil(lambda)/(limit+1).
+        multiply(hi, limit + 1);
+        if (divide(hi, cast(uint)(limit + 1 - ceiling))) {
+            Integer one = Integer(1);
+            add(hi, one);
+        }
+        add(totalHi, hi);
+        const reachedRank = targetRank(totalHi, q);
+        const belowRank = targetRank(totalLo, q);
+
+        // A second pass avoids storing a table of interval weights. Before
+        // advancing k, prove CDF(k)<q; return only once CDF(k)>=q is proven.
+        lo = 1;
+        lo <<= precision;
+        hi = lo;
+        Integer sumLo, sumHi;
+        for (size_t k = 0; ; ++k) {
+            add(sumLo, lo);
+            add(sumHi, hi);
+            if (sumLo >= reachedRank)
+                return R(PoissonInverseStatus.found, k);
+            if (sumHi >= belowRank || k + 1 == limit)
+                return R.init;
+            advance(lo, coefficient, lambda.exponent, cast(uint)k + 1, false);
+            advance(hi, coefficient, lambda.exponent, cast(uint)k + 1, true);
+        }
+    }
+
     static Result evaluate(size_t k, T lambda, uint ceiling, size_t limit)
     {
         assert(ceiling > 0 && ceiling <= 1024 && limit <= 1024 && k < limit);
@@ -168,6 +232,14 @@ PoissonTailResult!(Fp!bits) boundedPoissonTails(uint bits)(size_t k, Fp!bits lam
     if (k >= limit || !fpProbabilityLess(lambda, T(limit)))
         return Result.init;
 
+    const ceiling = poissonRateCeiling(lambda);
+    return PoissonIntervals!bits.evaluate(k, lambda, ceiling, limit);
+}
+
+// Called only for positive finite rates below 1024.
+private @safe pure nothrow @nogc
+uint poissonRateCeiling(uint bits)(Fp!bits lambda)
+{
     // Compute ceil(lambda) from the represented value, including unnormalized
     // inputs and exponents too small to negate or narrow to size_t.
     auto coefficient = lambda.coefficient;
@@ -185,5 +257,21 @@ PoissonTailResult!(Fp!bits) boundedPoissonTails(uint bits)(size_t k, Fp!bits lam
             ceiling = cast(uint)coefficient + remainder;
         }
     }
-    return PoissonIntervals!bits.evaluate(k, lambda, ceiling, limit);
+    return ceiling;
+}
+
+package(mir.stat) @safe pure nothrow @nogc
+PoissonInverseResult boundedPoissonInverse(uint bits)(Fp!bits q, Fp!bits lambda, size_t maxTerms)
+{
+    alias T = Fp!bits;
+    alias Result = PoissonInverseResult;
+    alias Status = PoissonInverseStatus;
+    if (!q.coefficient)
+        return Result(Status.found, 0);
+    if (!fpProbabilityLess(q, T(1)) || lambda.exponent == long.max)
+        return Result(Status.found, size_t.max);
+    const limit = maxTerms < 1024 ? maxTerms : 1024;
+    if (!limit || !fpProbabilityLess(lambda, T(limit)))
+        return Result.init;
+    return PoissonIntervals!bits.quantile(q, lambda, poissonRateCeiling(lambda), limit);
 }
