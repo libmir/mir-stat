@@ -6,6 +6,11 @@ The `rc` and `make` variants provide allocation choices; $(REF quantileInto, mir
 writes into caller-provided output. The algorithm enums describe the available
 quantile definitions.
 
+For implementation flowcharts covering allocation, endpoint shortcuts, and
+cached selection, see the
+$(LINK2 https://github.com/libmir/mir-stat/blob/master/design/quantile-selection.md, ordinary quantile implementation notes).
+These describe internal choices rather than API guarantees.
+
 For weighted means and sums, see
 $(REF wmean, mir, stat, descriptive, univariate, means) and
 $(REF wsum, mir, stat, descriptive, univariate, sums). These functions and weighted quantiles
@@ -1459,41 +1464,16 @@ auto quantileImpl(F, QuantileAlgo quantileAlgo, Iterator, G)(Slice!Iterator slic
 private void partitionQuantileRank(bool incremental, S)(S values,
     scope ulong[] established, size_t rank, size_t end) @safe pure nothrow @nogc
 {
-    import mir.ndslice.sorting: partitionAt;
-    static if (!incremental)
-        partitionAt(values[0 .. end], rank);
+    static if (incremental)
+    {
+        import mir.stat.descriptive.univariate.internal.partition: partitionAtWithCache;
+        assert(established.length == quantileScratchLength(values.length));
+        partitionAtWithCache(values, rank, established);
+    }
     else
     {
-        import core.bitop: bsf, bsr;
-        assert(rank < values.length);
-        assert(established.length == quantileScratchLength(values.length));
-        const word = rank / 64;
-        const ulong mask = 1UL << (rank % 64);
-        if (established[word] & mask) return;
-
-        // Only search across the unresolved interval. The bitmap walk is at
-        // most linear in that interval, like the selection it precedes.
-        size_t lower = 0, upper = values.length;
-        size_t i = word;
-        ulong bits = established[i] & (mask - 1);
-        for (;;)
-        {
-            if (bits) { lower = i * 64 + bsr(bits) + 1; break; }
-            if (i == 0) break;
-            bits = established[--i];
-        }
-        i = word;
-        bits = established[i] & ~(mask | (mask - 1));
-        for (;;)
-        {
-            if (bits) { upper = i * 64 + bsf(bits); break; }
-            if (++i == established.length) break;
-            bits = established[i];
-        }
-        assert(lower <= rank && rank < upper);
-        if (upper - lower > 1)
-            partitionAt(values[lower .. upper], rank - lower);
-        established[word] |= mask;
+        import mir.ndslice.sorting: partitionAt;
+        partitionAt(values[0 .. end], rank);
     }
 }
 
@@ -4250,8 +4230,8 @@ An owning snapshot for repeated unweighted quantiles, medians, and IQRs.
 
 Construct with $(LREF quantileTable), $(LREF rcQuantileTable), or
 $(LREF makeQuantileTable). Construction copies the observations without
-sorting them. A query selects only the required ranked observations and
-remembers their partition boundaries. Later queries search only unresolved
+sorting them. A query selects the required ranks and remembers intermediate
+pivots established along the way. Later queries search only unresolved
 intervals; querying an established rank again requires no selection.
 Interpolation may require two ranks. Quantile algorithms and result types
 follow $(LREF quantile); the default is type7.
@@ -4455,6 +4435,23 @@ private auto allocatedQuantileTable(QuantileAllocation allocation, Context, Data
     foreach (i; 0 .. flat.length) values[i] = flat[i];
     return QuantileTable!(IteratorOf!(typeof(values)), IteratorOf!(typeof(bitmap)),
         allocation == QuantileAllocation.custom)(values.move, bitmap.move);
+}
+
+// Selecting the median also fixes the next quartile's rank in this workspace.
+version(mir_stat_test)
+@safe pure nothrow @nogc unittest
+{
+    int[5] data = [10, 0, 30, 20, 40];
+    auto table = rcQuantileTable(data);
+    assert(table.quantile(0.5) == 20);
+    assert(table.established[0] & (1UL << 3));
+    const cached = table.established[0];
+    assert(table.quantile(0.75) == 30 && table.established[0] == cached);
+
+    double[1] levels = [0.5], output;
+    ulong[1] scratch;
+    quantileInto(data, levels, output, scratch[]);
+    assert(output[0] == 20 && (scratch[0] & (1UL << 3)));
 }
 
 version(mir_stat_test)
@@ -5121,6 +5118,164 @@ private void releaseQuantiles(Context, Storage)(ref Context context, Storage sto
     context.dispose(storage.field);
 }
 
+private template canScanEndpoints(Values, Levels, Result)
+{
+    import mir.ndslice.slice: IteratorOf;
+    import std.traits: isPointer, Unqual;
+    alias T = Unqual!(Values.DeepElement);
+    enum canScanEndpoints = (isIntegral!T || isFloatingPoint!T) &&
+        (isIntegral!Result || isFloatingPoint!Result) &&
+        isPointer!(IteratorOf!Values) && isPointer!(IteratorOf!Levels);
+}
+
+private enum QuantileEndpoints { none, minimum, maximum, both }
+
+private QuantileEndpoints quantileEndpoints(P)(scope P levels)
+{
+    if (levels.length < 2) return QuantileEndpoints.none;
+    bool minimum, maximum;
+    foreach (i; 0 .. levels.length)
+    {
+        const p = levels[i];
+        if (p == 0) minimum = true;
+        else if (p == 1) maximum = true;
+        else return QuantileEndpoints.none;
+    }
+    if (!minimum) return QuantileEndpoints.maximum;
+    return maximum ? QuantileEndpoints.both : QuantileEndpoints.minimum;
+}
+
+private bool tryScanQuantileEndpoints(V, P, T)(scope V values, scope P levels,
+    out T low, out T high)
+{
+    const endpoints = quantileEndpoints(levels);
+    if (endpoints == QuantileEndpoints.none) return false;
+    static if (isIntegral!T)
+    {
+        low = high = values[0];
+        foreach (i; 1 .. values.length)
+        {
+            const value = values[i];
+            if (endpoints != QuantileEndpoints.maximum && value < low) low = value;
+            if (endpoints != QuantileEndpoints.minimum && value > high) high = value;
+        }
+    }
+    else static if (is(T == real))
+    {
+        // real need not use the IEEE binary32/binary64 representation.
+        // Resolve zero ties consistently with the float/double key scan.
+        import std.math: isNaN, signbit;
+        if (__ctfe) return false;
+        low = high = values[0];
+        foreach (i; 0 .. values.length)
+        {
+            const value = values[i];
+            if (isNaN(value)) return false;
+            if (endpoints != QuantileEndpoints.maximum &&
+                (value < low || (value == 0 && low == 0 && signbit(value))))
+                low = value;
+            if (endpoints != QuantileEndpoints.minimum &&
+                (value > high || (value == 0 && high == 0 && !signbit(value))))
+                high = value;
+        }
+    }
+    else
+    {
+        if (__ctfe) return false;
+        return scanFloatingExtrema(values, low, high, null);
+    }
+    return true;
+}
+
+// When a copy is requested, fill it completely even if selection must fall back.
+private bool scanFloatingExtrema(V, T, Copy)(scope V values, out T low, out T high, scope Copy copy)
+{
+    static assert(is(T == float) || is(T == double));
+    static if (is(T == float)) alias Word = uint;
+    else alias Word = ulong;
+    union Representation { T value; Word bits; }
+    enum signShift = Word.sizeof * 8 - 1;
+    enum Word sign = Word(1) << signShift;
+
+    // Flipping the sign bit of positives and all bits of negatives maps
+    // IEEE values to unsigned keys in ascending order, with -0 before +0.
+    static if (!is(Copy == typeof(null))) bool negativeZero;
+    Word lowest = Word.max, highest = 0;
+    foreach (i; 0 .. values.length)
+    {
+        Representation repr;
+        repr.value = values[i];
+        static if (!is(Copy == typeof(null)))
+        {
+            copy[i] = repr.value;
+            negativeZero |= repr.bits == sign;
+        }
+        const key = repr.bits ^ (sign | (0 - (repr.bits >> signShift)));
+        if (key < lowest) lowest = key;
+        if (key > highest) highest = key;
+    }
+
+    // Skipping an endpoint partition can change which zero an interior rank
+    // selects, even when both extrema are nonzero.
+    static if (!is(Copy == typeof(null)))
+        if (negativeZero) return false;
+
+    Representation infinity;
+    infinity.value = T.infinity;
+    // NaNs lie outside the infinity keys. The key order already resolves zero ties.
+    if (lowest < ~(sign | infinity.bits) || highest > (sign | infinity.bits))
+        return false;
+
+    Representation minimum, maximum;
+    minimum.bits = lowest ^ (lowest & sign ? sign : Word.max);
+    maximum.bits = highest ^ (highest & sign ? sign : Word.max);
+    low = minimum.value;
+    high = maximum.value;
+    return true;
+}
+
+private void writeQuantileEndpoints(P, O, T)(scope P levels, scope O output, T low, T high)
+{
+    foreach (i; 0 .. levels.length)
+        output[i] = cast(O.DeepElement)(levels[i] == 0 ? low : high);
+}
+
+// Return the interior index of an eligible endpoint-first mixed batch.
+// Zero means ordinary selection: eligible interior indices are always 1 or 2.
+private size_t mixedQuantileInterior(P)(size_t observationCount, scope P levels)
+{
+    if (__ctfe || observationCount < 64 || levels.length != 3 ||
+        (levels[0] != 0 && levels[0] != 1))
+        return 0;
+    const other = 1 - levels[0];
+    const interior = levels[1] == other ? 2 : 1;
+    const p = levels[interior];
+    return levels[3 - interior] == other && p > 0 && p < 1 ? interior : 0;
+}
+
+// Complete the observation copy even when floating data require ordinary
+// selection. False means the copied workspace is ready, but extrema are unusable.
+private bool copyQuantileExtrema(V, W, T)(scope V values, scope W workspace,
+    out T low, out T high)
+{
+    static if (isIntegral!T)
+    {
+        T minimum = values[0], maximum = minimum;
+        foreach (i; 0 .. values.length)
+        {
+            const value = values[i];
+            workspace[i] = value;
+            if (value < minimum) minimum = value;
+            if (value > maximum) maximum = value;
+        }
+        low = minimum;
+        high = maximum;
+        return true;
+    }
+    else
+        return scanFloatingExtrema(values, low, high, workspace);
+}
+
 // Keep scratch ownership alive until all partitioning and output writes finish.
 private auto allocatedQuantile(F, QuantileAlgo algorithm, bool modify,
     QuantileAllocation allocation, Context, Data, Probability)(
@@ -5133,6 +5288,20 @@ private auto allocatedQuantile(F, QuantileAlgo algorithm, bool modify,
 
     alias Result = Unqual!(quantileType!(F, algorithm));
     scope auto source = quantileSlice(data);
+    static if (!isFloatingPoint!(Unqual!Probability) &&
+               canScanEndpoints!(typeof(source.flattened), Probability, Result))
+    {
+        if (source.elementCount > 1)
+        {
+            Unqual!(typeof(source).DeepElement) low, high;
+            if (tryScanQuantileEndpoints(source.flattened, probability, low, high))
+            {
+                auto result = allocateQuantiles!(Result, allocation)(context, probability.length);
+                writeQuantileEndpoints(probability, result.lightScope, low, high);
+                return result;
+            }
+        }
+    }
     static if (modify)
         scope auto workspace = source.flattened;
     else
@@ -5142,9 +5311,40 @@ private auto allocatedQuantile(F, QuantileAlgo algorithm, bool modify,
         static if (allocation == QuantileAllocation.custom)
             scope(exit) releaseQuantiles(context, scratch);
         scope auto flat = source.lightScope.flattened;
-        foreach (i; 0 .. flat.length)
-            scratch[i] = flat[i];
         scope auto workspace = scratch.lightScope;
+        static if (!isFloatingPoint!(Unqual!Probability) &&
+                   (isIntegral!Element || is(Element == float) || is(Element == double)) &&
+                   canScanEndpoints!(typeof(flat), Probability, Result))
+        {
+            const interior = mixedQuantileInterior(flat.length, probability);
+            if (interior != 0)
+            {
+                const p = probability[interior];
+                Element low, high;
+                static if (isIntegral!Element)
+                {
+                    copyQuantileExtrema(flat, workspace, low, high);
+                    enum usable = true;
+                }
+                else
+                    const usable = copyQuantileExtrema(flat, workspace, low, high);
+                auto result = allocateQuantiles!(Result, allocation)(context, 3);
+                // Numeric selection and direct writes cannot throw after allocation.
+                if (usable)
+                {
+                    foreach (i; 0 .. 3)
+                        if (i == interior)
+                            result[i] = selectQuantileImpl!(algorithm, Result, false)(workspace, p, null);
+                        else
+                            result[i] = cast(Result)(probability[i] == 0 ? low : high);
+                }
+                else
+                    quantileIntoImpl!(algorithm, false, false)(workspace, probability, result.lightScope, null);
+                return result;
+            }
+        }
+        foreach (i; 0 .. flat.length)
+            workspace[i] = flat[i];
     }
 
     static if (isFloatingPoint!(Unqual!Probability))
@@ -5158,16 +5358,17 @@ private auto allocatedQuantile(F, QuantileAlgo algorithm, bool modify,
         // Keep small batches and tiny inputs on the allocation-free selector.
         // Larger batches amortize a bitmap allocation across their selections.
         // This is an internal tuning choice, not part of the public contract.
-        if (probability.length >= 16 && workspace.length >= 16)
+        if ((probability.length >= 5 && workspace.length >= 16) ||
+            (probability.length == 4 && workspace.length >= 32))
         {
             auto bitmap = allocateQuantiles!(ulong, allocation)(context,
                 quantileScratchLength(workspace.length));
             static if (allocation == QuantileAllocation.custom)
                 scope(exit) releaseQuantiles(context, bitmap);
-            quantileInto!algorithm(workspace, probability, result.lightScope, bitmap.lightScope.field);
+            quantileIntoImpl!(algorithm, true, false)(workspace, probability, result.lightScope, bitmap.lightScope.field);
         }
         else
-            quantileInto!algorithm(workspace, probability, result.lightScope);
+            quantileIntoImpl!(algorithm, false, false)(workspace, probability, result.lightScope, null);
         return result;
     }
 }
@@ -5221,10 +5422,14 @@ The observations in workspace may be rearranged by partitioning; they need not
 end up sorted. Probabilities are read without modification. Output must have one
 element per probability, and its element type determines the result type.
 Workspace, probabilities, and output must not overlap.
-The overload with scratch remembers selected ranks during the batch, allowing
-later queries to partition only unresolved intervals. Use it when requesting
+The overload with scratch remembers requested ranks and intermediate pivots
+during the batch, so later queries partition only unresolved intervals. Use it when requesting
 several quantiles from the same observations. The three-argument overload
-requires no scratch buffer and selects each quantile independently.
+requires no scratch buffer. With directly stored observations, probabilities,
+and output, either overload can answer endpoint-only batches with a single
+scan of integer, $(D float), $(D double), or $(D real) observations. The floating-point
+scan orders negative zero before positive zero and falls back to ordinary
+selection if any observation is NaN.
 
 Scratch must contain at least `quantileScratchLength(workspace.elementCount)`
 mutable `ulong` elements and must not overlap any other argument. The function
@@ -5235,6 +5440,8 @@ time. Use $(LREF QuantileTable) to retain selection state between calls.
 
 For larger batches of ascending probabilities in direct storage, the scratch
 overload may evaluate queries in a different order to reduce partitioning work.
+For directly stored integer observations, the scratch overload may also select
+interior quantiles before endpoints to narrow the minimum and maximum searches.
 Each result still occupies the position of its corresponding probability.
 Lazy views retain their original evaluation order.
 
@@ -5272,7 +5479,7 @@ template quantileInto(QuantileAlgo algorithm = QuantileAlgo.type7)
     }
 }
 
-private void quantileIntoImpl(QuantileAlgo algorithm, bool incremental, Data, P, Output)(
+private void quantileIntoImpl(QuantileAlgo algorithm, bool incremental, bool checkEndpoints = true, Data, P, Output)(
     scope auto ref Data workspace, scope auto ref P probabilities,
     scope auto ref Output output, scope ulong[] scratch)
 {
@@ -5296,8 +5503,26 @@ private void quantileIntoImpl(QuantileAlgo algorithm, bool incremental, Data, P,
         assert(scratch.length >= required, "quantileInto: scratch buffer is too small");
         scratch = scratch[0 .. required];
         scratch[] = 0;
-        import mir.ndslice.slice: IteratorOf;
-        import std.traits: isPointer;
+    }
+
+    import mir.ndslice.slice: IteratorOf;
+    import std.traits: isPointer;
+    static if (checkEndpoints && canScanEndpoints!(typeof(values), typeof(levels), F) &&
+               isPointer!(IteratorOf!(typeof(destination))))
+    {
+        if (values.length > 1)
+        {
+            Unqual!(typeof(values).DeepElement) low, high;
+            if (tryScanQuantileEndpoints(values, levels, low, high))
+            {
+                writeQuantileEndpoints(levels, destination, low, high);
+                return;
+            }
+        }
+    }
+
+    static if (incremental)
+    {
         // Only direct storage can be read and written out of order without
         // changing user-defined iterator behavior. Cutoffs are internal tuning.
         static if (isPointer!(IteratorOf!(typeof(values))) &&
@@ -5317,6 +5542,32 @@ private void quantileIntoImpl(QuantileAlgo algorithm, bool incremental, Data, P,
                 {
                     orderedQuantileBatch!(algorithm, F)(values, levels,
                         destination, scratch, 0, levels.length, G(0), G(1));
+                    return;
+                }
+            }
+            // Interior ranks bound the intervals scanned for the minimum and maximum.
+            static if (isIntegral!(DeepElementType!(typeof(values))) &&
+                       (isIntegral!F || isFloatingPoint!F))
+            {
+                if (values.length >= 64 && levels.length >= 2)
+                {
+                    size_t firstEndpoint = levels.length;
+                    foreach (i; 0 .. levels.length)
+                    {
+                        const p = levels[i];
+                        if (p == 0 || p == 1)
+                        {
+                            if (i < firstEndpoint) firstEndpoint = i;
+                        }
+                        else
+                            destination[i] = selectQuantileImpl!(algorithm, F, true)(values, p, scratch);
+                    }
+                    foreach (i; firstEndpoint .. levels.length)
+                    {
+                        const p = levels[i];
+                        if (p == 0 || p == 1)
+                            destination[i] = selectQuantileImpl!(algorithm, F, true)(values, p, scratch);
+                    }
                     return;
                 }
             }
@@ -6127,25 +6378,247 @@ version(mir_stat_test)
     assert(readFailure.allocations == 3 && readFailure.releases == 3);
 }
 
+// Endpoint-only integral batches need only result storage.
+version(mir_stat_test)
+@system pure nothrow @nogc unittest
+{
+    import std.experimental.allocator: dispose;
+    const long[4] values = [1, long.max, 0, long.min];
+    const double[3][3] batches = [[1.0, 0, 1], [0.0, 0, 0], [1.0, 1, 1]];
+    foreach (ref levels; batches)
+    {
+        QuantileTestAllocator!() allocator;
+        auto result = makeQuantile!(QuantileAlgo.type1)(allocator, values[], levels[]);
+        assert(allocator.allocations == 1);
+        foreach (i, p; levels)
+            assert(result[i] == (p == 0 ? long.min : long.max));
+        allocator.dispose(result.field);
+        assert(allocator.releases == 1);
+    }
+    long[4] mutableValues = values;
+    auto endpoints = rcquantile!(QuantileAlgo.type7, true)(mutableValues[], 1.0, 0.0);
+    assert(endpoints[0] == cast(double)long.max && endpoints[1] == cast(double)long.min);
+}
+
+// Direct endpoint queries preserve the workspace and honor the scratch contract.
+version(mir_stat_test)
+@system pure nothrow @nogc unittest
+{
+    import core.exception: AssertError;
+    int[5] values = [8, 2, 5, 1, 9];
+    const original = values;
+    const double[3] levels = [1, 0, 1];
+    double[3] output = [-1, -1, -1];
+    ulong[2] scratch = [ulong.max, ulong.max];
+    bool rejected;
+    try quantileInto(values[], levels[], output[], scratch[0 .. 0]);
+    catch (AssertError) rejected = true;
+    assert(rejected && output[] == [-1.0, -1.0, -1.0] && values == original);
+    quantileInto(values[], levels[], output[], scratch[]);
+    assert(output[] == [9.0, 1.0, 9.0] && values == original);
+    assert(scratch[0] == 0 && scratch[1] == ulong.max);
+    output[] = 0;
+    quantileInto(values[], levels[], output[]);
+    assert(output[] == [9.0, 1.0, 9.0] && values == original);
+}
+
+// Interleaved extrema use the same cached partitions as explicit endpoints-last order.
+version(mir_stat_test)
+@safe pure nothrow @nogc unittest
+{
+    int[97] values;
+    foreach (i, ref value; values) value = cast(int)((37 * i) % values.length);
+    auto reordered = values;
+    const double[6] mixed = [1, 0.25, 0, 0.75, 1, 0.5];
+    const double[6] interiorFirst = [0.25, 0.75, 0.5, 1, 0, 1];
+    double[6] output, reference;
+    ulong[2] scratch, referenceScratch;
+    quantileInto(values[], mixed[], output[], scratch[]);
+    quantileInto(reordered[], interiorFirst[], reference[], referenceScratch[]);
+    assert(output[] == [96.0, 24.0, 0.0, 72.0, 96.0, 48.0]);
+    assert(reference[] == [24.0, 72.0, 48.0, 96.0, 0.0, 96.0]);
+    assert(values == reordered && scratch == referenceScratch);
+}
+
+// Floating extrema include subnormals and infinities. Exceptional inputs use the
+// original selector before allocating output or changing the workspace.
+version(mir_stat_test)
+@system pure nothrow @nogc unittest
+{
+    import std.experimental.allocator: dispose;
+    const double[3] levels = [1, 0, 1];
+    import std.meta: AliasSeq;
+    static foreach (T; AliasSeq!(float, double, real))
+    {{
+        T[4] values = [T.min_normal / 2, -T.min_normal / 2, 0, T.infinity];
+        QuantileTestAllocator!() allocator;
+        auto result = makeQuantile(allocator, values[], levels[]);
+        assert(allocator.allocations == 1 && result[0] == T.infinity &&
+            result[1] == -T.min_normal / 2 && result[2] == result[0]);
+        allocator.dispose(result.field);
+        T[3] output;
+        ulong[1] scratch = [ulong.max];
+        quantileInto(values[], levels[], output[], scratch[]);
+        assert(output[0] == T.infinity && output[1] == -T.min_normal / 2 && scratch[0] == 0);
+
+        values = [T.nan, 2, 1, 3];
+        auto reference = values;
+        T[3] expected;
+        quantileIntoImpl!(QuantileAlgo.type7, false, false)(reference[], levels[], expected[], null);
+        result = makeQuantile(allocator, values[], levels[]);
+        assert(allocator.allocations == 3);
+        foreach (i; 0 .. levels.length) assert(result[i] is expected[i]);
+        allocator.dispose(result.field);
+        assert(allocator.releases == allocator.allocations);
+
+        // Repeated requests, either input order, and single-sign zero inputs.
+        foreach (first; [-T(0), T(0)])
+        foreach (last; [-T(0), T(0)])
+        {
+            values = [first, last, first, last];
+            const minZero = first is -T(0) || last is -T(0) ? -T(0) : T(0);
+            const maxZero = first is T(0) || last is T(0) ? T(0) : -T(0);
+            quantileInto(values[], levels[], output[], scratch[]);
+            assert(output[0] is maxZero && output[1] is minZero && output[2] is maxZero);
+            result = makeQuantile(allocator, values[], levels[]);
+            foreach (i; 0 .. levels.length) assert(result[i] is output[i]);
+            allocator.dispose(result.field);
+        }
+    }}
+}
+
+// Keep real extrema in their original precision and leave direct storage intact.
+version(mir_stat_test)
+@system pure nothrow @nogc unittest
+{
+    import std.experimental.allocator: dispose;
+    const real[4] original = [1 + real.epsilon, 1, 1 - real.epsilon, 1];
+    const real[3][3] batches = [[0.0L, 1, 0], [0.0L, 0, 0], [1.0L, 1, 1]];
+    foreach (ref levels; batches)
+    {
+        real[4] values = original;
+        real[3] output;
+        quantileInto(values[], levels[], output[]);
+        assert(values == original);
+        QuantileTestAllocator!() allocator;
+        auto allocated = makeQuantile!real(allocator, values[], levels[]);
+        auto counted = rcquantile!(real, QuantileAlgo.type7, true)(values[], levels[]);
+        assert(allocator.allocations == 1 && values == original);
+        foreach (i, p; levels)
+        {
+            const expected = p == 0 ? 1 - real.epsilon : 1 + real.epsilon;
+            assert(output[i] == expected && allocated[i] == expected && counted[i] == expected);
+        }
+        allocator.dispose(allocated.field);
+        assert(allocator.releases == 1);
+    }
+}
+
+// Two endpoints and one interior quantile use only the ordinary copy and
+// result allocations. A negative zero at an interior rank requires fallback.
+version(mir_stat_test)
+@system pure nothrow @nogc unittest
+{
+    import std.experimental.allocator: dispose;
+    import std.meta: AliasSeq;
+    static foreach (T; AliasSeq!(float, double))
+    {{
+        T[65] values;
+        foreach (i, ref value; values) value = cast(T)(cast(int)((i * 37) % 65) - 32);
+        const double[3][2] batches = [[1.0, 0.25, 0], [0.0, 1, 0.25]];
+        foreach (ref levels; batches)
+        {
+            QuantileTestAllocator!() allocator;
+            auto result = makeQuantile(allocator, values[], levels[]);
+            foreach (i, p; levels) assert(result[i] == (p == 0 ? -32 : p == 1 ? 32 : -16));
+            assert(allocator.allocations == 2 && allocator.releases == 1);
+            allocator.dispose(result.field);
+        }
+        values[] = 0;
+        values[0] = -1;
+        values[1] = 1;
+        values[2] = -T(0);
+        const double[3] levels = [1, 0.5, 0];
+        auto reference = values;
+        T[3] expected;
+        quantileInto(reference[], levels[], expected[]);
+        auto result = rcquantile(values[], levels[]);
+        foreach (i; 0 .. 3) assert(result[i] is expected[i]);
+    }}
+}
+
+// Integral mixed batches collect extrema during copying without changing
+// interpolation, allocation ownership, or caller ordering.
+version(mir_stat_test)
+@system unittest
+{
+    import std.experimental.allocator: dispose;
+    import std.meta: AliasSeq;
+    static foreach (T; AliasSeq!(int, long, ulong))
+    {{
+        T[65] original;
+        foreach (i, ref value; original) value = cast(T)((i * 37) % 65);
+        original[0] = T.min;
+        original[1] = T.max;
+        const double[3][6] batches = [
+            [0.0, 0.25, 1], [1.0, 0.25, 0], [0.0, 1, 0.25],
+            [1.0, 0, 0.25], [0.25, 0, 1], [0.25, 1, 0]];
+        foreach (n; [63, 64, 65])
+        foreach (ref levels; batches)
+        static foreach (algorithm; AliasSeq!(QuantileAlgo.type1, QuantileAlgo.type2,
+            QuantileAlgo.type3, QuantileAlgo.type4, QuantileAlgo.type5,
+            QuantileAlgo.type6, QuantileAlgo.type7, QuantileAlgo.type8, QuantileAlgo.type9))
+        {{
+            auto values = original;
+            double[3] expected;
+            quantileIntoImpl!(algorithm, false, false)(values[0 .. n], levels[], expected[], null);
+            QuantileTestAllocator!() allocator;
+            auto result = makeQuantile!(double, algorithm)(allocator, original[0 .. n], levels[]);
+            assert(result.field == expected[]);
+            assert(allocator.allocations == 2 && allocator.releases == 1);
+            allocator.dispose(result.field);
+            assert(allocator.releases == 2);
+            assert(rcquantile!(double, algorithm)(original[0 .. n], levels[]).field == expected[]);
+            assert(quantile!(double, algorithm)(original[0 .. n], levels[]).field == expected[]);
+        }}
+        auto saved = original;
+        auto exact = rcquantile!(T, QuantileAlgo.type1)(original[], batches[0][]);
+        assert(exact[0] == T.min && exact[2] == T.max && original == saved);
+        QuantileTestAllocator!() inPlace;
+        auto result = makeQuantile!(double, QuantileAlgo.type7, true)(inPlace, original[], batches[0][]);
+        assert(inPlace.allocations == 1);
+        inPlace.dispose(result.field);
+        assert(inPlace.releases == 1);
+    }}
+}
+
 // Both the input and the batch must be large enough to amortize automatic
 // scratch allocation. Explicit scratch remains usable below either cutoff.
 version(mir_stat_test)
 @system pure nothrow @nogc unittest
 {
     import std.experimental.allocator: dispose;
-    int[16] original;
-    foreach (i, ref value; original) value = cast(int)((i * 7) % 16);
+    int[32] original;
+    foreach (i, ref value; original) value = cast(int)((i * 7) % 32);
     double[16] probabilities;
     foreach (i, ref p; probabilities) p = cast(double)((i * 11) % 16) / 15;
-    foreach (n; [15, 16])
-    foreach (count; [15, 16])
+    foreach (n; [15, 16, 31, 32])
+    foreach (count; [3, 4, 5])
     {
         QuantileTestAllocator!() allocator;
         auto result = makeQuantile(allocator, original[0 .. n], probabilities[0 .. count]);
-        const expectedAllocations = n == 16 && count == 16 ? 3 : 2;
+        const expectedAllocations = (count == 5 && n >= 16) || (count == 4 && n == 32) ? 3 : 2;
         assert(allocator.allocations == expectedAllocations);
         assert(allocator.releases == expectedAllocations - 1);
-        int[16] workspace = original;
+        auto inPlaceWorkspace = original;
+        QuantileTestAllocator!() inPlaceAllocator;
+        auto inPlace = makeQuantile!(QuantileAlgo.type7, true)(
+            inPlaceAllocator, inPlaceWorkspace[0 .. n], probabilities[0 .. count]);
+        assert(inPlace == result);
+        assert(inPlaceAllocator.allocations == expectedAllocations - 1);
+        inPlaceAllocator.dispose(inPlace.field);
+        assert(inPlaceAllocator.releases == inPlaceAllocator.allocations);
+        auto workspace = original;
         double[16] output;
         ulong[1] scratch;
         quantileInto(workspace[0 .. n], probabilities[0 .. count], output[0 .. count], scratch[]);
