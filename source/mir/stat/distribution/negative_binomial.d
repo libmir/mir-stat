@@ -11,8 +11,9 @@ in $(D [0, 1]). At $(D p == 1), there are no failures. At $(D p == 0), success
 never occurs: the API uses zero mass and zero CDF at every finite count, with
 CCDF equal to one.
 
-PMF and LPMF accept $(D Fp) probabilities. CDF, CCDF, and inverse CDF use built-in
-floating-point probabilities. The inverse returns $(D size_t), using
+PMF and LPMF accept $(D Fp) probabilities. $(LREF negativeBinomialTailsChecked)
+computes independently rounded Fp tails with explicit work limits. The separate
+CDF, CCDF, and inverse CDF use built-in floating-point probabilities. The inverse returns $(D size_t), using
 $(D size_t.max) for an unbounded quantile or one outside the count range.
 Its endpoint conventions differ from $(D geometricInvCDF), even for $(D r == 1).
 
@@ -341,6 +342,201 @@ unittest
     for (size_t i; i <= 5; i++) {
         i.fp_negativeBinomialPMF(5, Fp!128(0.50)).to!double.shouldApprox == negativeBinomialPMF(i, 5, 0.50);
         i.fp_negativeBinomialPMF(5, Fp!128(0.75)).to!double.shouldApprox == negativeBinomialPMF(i, 5, 0.75);
+    }
+}
+
+/// Outcome of $(LREF negativeBinomialTailsChecked).
+enum NegativeBinomialTailStatus
+{
+    /// The calculation exceeds a work limit. The tail fields are unused.
+    workLimit,
+    /// Both tail fields contain their independently rounded probabilities.
+    found,
+}
+
+/// Checked Fp probabilities. Read the tails only when status is found.
+struct NegativeBinomialTailResult(T)
+    if (is(T == Fp!bits, uint bits))
+{
+    /// Default initialization denotes an unresolved result.
+    NegativeBinomialTailStatus status = NegativeBinomialTailStatus.workLimit;
+    /// Probability of at most k failures before the rth success.
+    T cdf;
+    /// Probability of strictly more than k failures before the rth success.
+    T ccdf;
+}
+
+/++
+Computes the negative binomial CDF and strict CCDF for the represented $(D Fp)
+probability, independently rounded to nearest with ties to even.
+
+At most k failures before the rth success is equivalent to at least r successes
+in the first k+r trials. The calculation therefore exchanges the checked binomial
+tails at count r-1, using the original success probability without rounding its
+complement.
+
+Params:
+    k = number of failures before stopping
+    r = positive number of successes required before stopping
+    p = finite success probability in [0,1]
+    maxTerms = maximum number of integer weights to sum (default 256, ceiling 1024)
+    maxScale = maximum exponent of the common power-of-two denominator
+        (default 16384, ceiling 65536)
+
+Returns:
+    At p equal to zero, returns zero CDF and unit CCDF. At p equal to one,
+    returns unit CDF and zero CCDF. These endpoints ignore the work budgets.
+
+    Other queries require k+r to fit size_t. The general calculation sums
+    min(r,k+1) binomial weights. For p=a/2^^s in lowest terms, the common
+    denominator is 2^^((k+r)*s). Returns $(D workLimit) when the count sum
+    overflows or either budget is exceeded. Certain extreme tails can be
+    resolved even with zero budgets. Workspace is fixed-capacity stack storage,
+    as in $(REF binomialTailsChecked, mir,stat,distribution,binomial).
++/
+@safe pure nothrow @nogc
+NegativeBinomialTailResult!T negativeBinomialTailsChecked(T)(size_t k, size_t r, T p,
+    size_t maxTerms = 256, size_t maxScale = 16384)
+    if (is(T == Fp!bits, uint bits))
+    in (r > 0, "number of successes must be larger than zero")
+    in (fpProbabilityValid(p), "p must be finite and between zero and one")
+{
+    import mir.stat.internal.fp_probability: fpProbabilityLess;
+    import mir.stat.distribution.binomial: binomialTailsChecked, BinomialTailStatus;
+    alias Result = NegativeBinomialTailResult!T;
+    enum found = NegativeBinomialTailStatus.found;
+    if (!p.coefficient)
+        return Result(found, T(0), T(1));
+    if (!fpProbabilityLess(p, T(1)))
+        return Result(found, T(1), T(0));
+    // Guard before addition, including when contracts are disabled.
+    if (k > size_t.max - r)
+        return Result.init;
+    const tails = binomialTailsChecked(r - 1, k + r, p, maxTerms, maxScale);
+    if (tails.status != BinomialTailStatus.found)
+        return Result.init;
+    return Result(found, tails.ccdf, tails.cdf);
+}
+
+/// Retain a small strict upper tail even when the rounded CDF is one.
+version(mir_stat_test)
+@safe pure nothrow @nogc unittest
+{
+    import mir.bignum.fp: Fp;
+    import mir.bignum.fixed: UInt;
+    alias T = Fp!64;
+    const result = negativeBinomialTailsChecked(99, 1, T(0.5));
+    assert(result.status == NegativeBinomialTailStatus.found && result.cdf == T(1));
+    assert(result.ccdf == T(false, -163, UInt!64(1UL << 63)));
+}
+
+version(mir_stat_test)
+@safe pure nothrow @nogc unittest
+{
+    import mir.bignum.fixed: UInt;
+    alias T = Fp!64;
+    alias R = NegativeBinomialTailResult!T;
+    alias S = NegativeBinomialTailStatus;
+    alias evaluate = negativeBinomialTailsChecked!T;
+    assert(R.init.status == S.workLimit);
+    const reference = evaluate(4, 5, T(0.1));
+    assert(reference == R(S.found,
+        T(false, -74, UInt!64(16829002987672901589UL)), T(false, -64, UInt!64(18430309500479402298UL))));
+
+    assert(evaluate(size_t.max, size_t.max, T(0), 0, 0) == R(S.found, T(0), T(1)));
+    assert(evaluate(size_t.max, size_t.max, T(1), 0, 0) == R(S.found, T(1), T(0)));
+    assert(evaluate(0, 1, T(false, -3, UInt!64(8)), 0, 0) == R(S.found, T(1), T(0)));
+    assert(evaluate(size_t.max, 1, T(0.5)).status == S.workLimit);
+    assert(evaluate(1, size_t.max, T(0.5)).status == S.workLimit);
+    assert(evaluate(0, size_t.max, T(false, long.min, UInt!64(1)), 0, 0)
+        == R(S.found, T(0), T(1)));
+    assert(evaluate(2, 3, T(0.5)) == R(S.found, T(0.5), T(0.5)));
+    assert(evaluate(1, 3, T(0.25), 2, 8) == R(S.found, T(13.0/256), T(243.0/256)));
+    assert(evaluate(1, 3, T(0.25), 1, 8).status == S.workLimit);
+    assert(evaluate(1, 3, T(0.25), 2, 7).status == S.workLimit);
+    assert(evaluate(1, 3, T(false, -8, UInt!64(64)), 2, 8) == evaluate(1, 3, T(0.25)));
+    assert(evaluate(0, 3, T(0.25)) == R(S.found, T(1.0/64), T(63.0/64)));
+    assert(evaluate(3, 1, T(0.25)) == R(S.found, T(175.0/256), T(81.0/256)));
+    assert(evaluate(0, 1, T(0.25), 0, 0) == R(S.found, T(0.25), T(0.75)));
+    const quantum = T(false, long.min, UInt!64(1));
+    assert(evaluate(0, 1, quantum, 0, 0) == R(S.found, quantum, T(1)));
+    assert(evaluate(0, 2, quantum, 0, 0) == R(S.found, T(0), T(1)));
+    // The complement of 2^-65 is exactly halfway below one at64 bits.
+    assert(evaluate(0, 65, T(0.5), 0, 0) ==
+        R(S.found, T(false, -128, UInt!64(1UL << 63)), T(1)));
+    const smallLower = evaluate(0, 100, T(0.5));
+    assert(smallLower == R(S.found, T(false, -163, UInt!64(1UL << 63)), T(1)));
+    assert(evaluate(1, 3, T(false, -40000, UInt!64(3)), size_t.max, size_t.max).status == S.workLimit);
+    assert(evaluate(1024, 1025, T(0.5), size_t.max, size_t.max).status == S.workLimit);
+}
+
+version(mir_stat_test)
+unittest
+{
+    bool contractsEnabled;
+    void probe() in { contractsEnabled = true; } do {}
+    probe();
+    if (contractsEnabled) {
+        import core.exception: AssertError;
+        import std.exception: assertThrown;
+        alias T = Fp!64;
+        assertThrown!AssertError(negativeBinomialTailsChecked(0, 0, T(0.5)));
+        foreach (p; [-1.0, 2.0, double.infinity, double.nan])
+            assertThrown!AssertError(negativeBinomialTailsChecked(0, 1, T(p)));
+    }
+}
+
+version(mir_stat_test)
+version(X86)
+@safe pure nothrow @nogc unittest
+{
+    import mir.bignum.fixed: UInt;
+    static foreach (bits; [32, 96]) {{
+        alias T = Fp!bits;
+        T p = T(UInt!bits(1));
+        p.exponent -= 2;
+        T lower = T(UInt!bits(13));
+        lower.exponent -= 8;
+        T upper = T(UInt!bits(243));
+        upper.exponent -= 8;
+        const result = negativeBinomialTailsChecked(1, 3, p);
+        assert(result.status == NegativeBinomialTailStatus.found);
+        assert(result.cdf == lower && result.ccdf == upper);
+    }}
+}
+
+// Direct negative-binomial PMF sums evaluated as exact rational numbers.
+version(mir_stat_test_slow_numerics)
+@safe pure nothrow @nogc unittest
+{
+    import mir.bignum.fp: Fp;
+    import mir.bignum.fixed: UInt;
+    {
+        alias T = Fp!128;
+        enum p = T(false, -128, UInt!128.fromHexString("80000000000000000000000000000001"));
+        enum lower = T(false, -128, UInt!128.fromHexString("80000000000000000000000000000002"));
+        enum upper = T(false, -129, UInt!128.fromHexString("fffffffffffffffffffffffffffffffb"));
+        const result = negativeBinomialTailsChecked(4, 5, p);
+        assert(result.status == NegativeBinomialTailStatus.found);
+        assert(result.cdf == lower && result.ccdf == upper);
+    }
+    {
+        alias T = Fp!256;
+        enum p = T(false, -256, UInt!256.fromHexString("8000000000000000000000000000000000000000000000000000000000000001"));
+        enum lower = T(false, -256, UInt!256.fromHexString("8000000000000000000000000000000000000000000000000000000000000002"));
+        enum upper = T(false, -257, UInt!256.fromHexString("fffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffb"));
+        const result = negativeBinomialTailsChecked(4, 5, p);
+        assert(result.status == NegativeBinomialTailStatus.found);
+        assert(result.cdf == lower && result.ccdf == upper);
+    }
+    {
+        alias T = Fp!512;
+        enum p = T(false, -512, UInt!512.fromHexString("80000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000001"));
+        enum lower = T(false, -512, UInt!512.fromHexString("80000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000002"));
+        enum upper = T(false, -513, UInt!512.fromHexString("fffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffb"));
+        const result = negativeBinomialTailsChecked(4, 5, p);
+        assert(result.status == NegativeBinomialTailStatus.found);
+        assert(result.cdf == lower && result.ccdf == upper);
     }
 }
 
