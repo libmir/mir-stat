@@ -61,8 +61,8 @@ flowchart TD
         USABLE -- No --> FALLBACK["Call quantileIntoImpl without caching<br/>Use completed copy and caller order<br/>Return"]
         COPY --> CACHE
         REUSE --> CACHE
-        CACHE{"Automatic cache threshold?<br/>K = 4 and N >= 32<br/>or K >= 5 and N >= 16"}
-        CACHE -- Yes --> BITMAP["Allocate partition bitmap"]
+        CACHE{"Automatic cache threshold?<br/>K = 3, N >= 256, and integer observations<br/>or K = 4 and N >= 32<br/>or K >= 5 and N >= 16"}
+        CACHE -- Yes --> BITMAP["Allocate partition bitmap<br/>K = 3, integer observations: adaptive strategy<br/>Otherwise: midpoint strategy"]
         CACHE -- No --> UNCACHED["Use no cache"]
     end
     BITMAP --> NEXT["quantileIntoImpl<br/>See request scheduling below"]
@@ -72,6 +72,9 @@ flowchart TD
 Type and storage eligibility is checked by `allocatedQuantile` before it calls the helpers. `mixedQuantileInterior` recognizes a batch of exactly three probabilities with N >= 64, beginning with an endpoint and containing both endpoints and one strictly interior probability. It returns index 1 or 2; zero means ordinary selection. This shortcut applies to integers, `float`, and `double` when copying is required.
 
 For example, 100 integer observations and probabilities `[0, 0.5, 1]` use the copy to record the minimum and maximum, then select only the median. `[0.5, 0, 1]` retains ordinary caller-order selection. The shortcut does not apply to `real` mixed batches or to `allowModifySlice=true`.
+At 256 or more integer observations, `[0.5, 0, 1]` instead uses adaptive caching
+and the interior-first, endpoints-last schedule; `[0, 0.5, 1]` still takes the
+earlier copy-and-extrema shortcut when copying is required.
 
 ## Request scheduling
 
@@ -107,15 +110,17 @@ The internal `partitionAt` and `partitionAtWithCache` functions both accept a
 compile-time `PartitionPivotStrategy` parameter. `partitionAt` defaults to
 `rankGuided` for selection without pivot reuse. `partitionAtWithCache` defaults to
 `midpoint` and requires a nonempty caller-owned bitmap for reuse across requests.
-Existing cached quantile calls use its `midpoint` default; this change does not
-alter automatic cache thresholds or request scheduling. The strategy is internal and is not a new
-argument on the quantile API.
+Allocating quantile calls with integer observations, three probabilities, and
+N >= 256 select `adaptive`; other cached calls retain `midpoint`. Existing endpoint
+shortcuts run before this choice. Newly cached batches follow the existing
+interior-first, endpoints-last schedule when storage is eligible. The strategy
+is internal and is not a new argument on the quantile API.
 
 | Strategy | Selection within the unresolved interval | When it can help |
 |---|---|---|
 | `midpoint` (cached default) | Partition around the middle-slot value and use the existing poor-pivot budget | Reusing partitions across several later requests |
 | `rankGuided` (uncached default) | Use mir-algorithm's Phobos-derived rank-guided sampling | Selecting ranks near an interval's ends |
-| `adaptive` | Choose once per requested rank: rank guidance in the outer 1/16 of an interval of at least 128 elements; otherwise midpoint selection | Balancing the two approaches for small batches; not yet selected automatically |
+| `adaptive` | Choose once per requested rank: rank guidance in the outer 1/16 of an interval of at least 128 elements; otherwise midpoint selection | Balancing the two approaches for three-probability integer batches |
 
 With a cache, all strategies retain intermediate full-interval pivots.
 A middle-slot value is not necessarily the median. Rank-guided sampling uses the
@@ -167,7 +172,7 @@ sorts the entire workspace or changes the quantile definition.
 - Mixed float/double scans finish the copy but require ordinary selection if any NaN or negative zero occurs. Integer scans cannot require this fallback.
 - Floating endpoint scans and mixed-batch copy shortcuts are bypassed during compile-time evaluation.
 - Scheduling changes require directly stored workspace, probabilities, and output. Generic views retain the applicable general path, preserving observable iterator behavior. Copying a view can produce a directly stored workspace for subsequent selection.
-- Two- and three-probability batches do not automatically allocate a cache. Callers of the scratch overload of `quantileInto` opt into caching explicitly.
+- Three-probability batches automatically allocate a cache only for integer observations with N >= 256, using adaptive pivot selection. This includes `allowModifySlice=true` and all allocation policies. Two-probability batches and smaller or floating-point three-probability batches remain uncached. Direct callers of the scratch overload of `quantileInto` continue to use midpoint selection.
 - No shortcut sorts the entire observation workspace eagerly. Rank selection partitions observations as needed.
 
 ## Implementation and maintenance
