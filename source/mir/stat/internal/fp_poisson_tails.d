@@ -228,6 +228,24 @@ PoissonTailResult!(Fp!bits) boundedPoissonTails(uint bits)(size_t k, Fp!bits lam
     alias Result = PoissonTailResult!T;
     if (lambda.exponent == long.max)
         return Result(PoissonTailStatus.found, T(0), T(1));
+    // For 0 < lambda <= 2^(-bits-1), exp(-lambda) rounds to one:
+    // 0 < 1-exp(-lambda) < lambda <= half the spacing below one.
+    // Also 0 < lambda-(1-exp(-lambda)) < lambda^2/2. The spacing
+    // immediately below a represented lambda is at least lambda*2^-bits
+    // (including powers of two and exponent-floor values). Thus the strict
+    // upper tail rounds to lambda. No series terms or fixed-point grid are
+    // needed, even when lambda is close to the Fp exponent floor.
+    enum smallRate = T(false, -cast(long)bits - 1, UInt!bits(1));
+    if (!k && !fpProbabilityLess(smallRate, lambda)) {
+        // Normalize without shifting the exponent below its floor. Raw Fp
+        // constructors can supply equivalent, unnormalized coefficients.
+        const room = cast(ulong)lambda.exponent - cast(ulong)long.min;
+        const leading = lambda.coefficient.ctlz;
+        const shift = room < leading ? cast(size_t)room : leading;
+        lambda.coefficient <<= shift;
+        lambda.exponent -= cast(long)shift;
+        return Result(PoissonTailStatus.found, T(1), lambda);
+    }
     const limit = maxTerms < 1024 ? maxTerms : 1024;
     if (k >= limit || !fpProbabilityLess(lambda, T(limit)))
         return Result.init;
