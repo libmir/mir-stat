@@ -9,7 +9,8 @@ limiting case. Tables use a finite positive rate unless stated otherwise.
 
 The direct PMF and LPMF accept $(D Fp) rates. The Fp PMF is also available
 as $(LREF fp_poissonPMF). $(LREF poissonTailsChecked) computes certified
-paired tails for Fp rates within explicit work limits. The separate CDF,
+paired tails for Fp rates within explicit work limits.
+$(LREF poissonInvCDFChecked) provides a checked Fp count inverse. The separate CDF,
 CCDF, and inverse functions use built-in floating-point values. Normal approximations need not match the direct or
 gamma algorithms at finite counts.
 
@@ -34,6 +35,7 @@ module mir.stat.distribution.poisson;
 
 import mir.bignum.fp: Fp;
 import mir.internal.utility: isFloatingPoint;
+import mir.stat.internal.fp_probability: fpProbabilityValid;
 
 /++
 Algorithms used to calculate poisson distribution.
@@ -1178,6 +1180,168 @@ version(mir_stat_test)
                 T(1), 32 * T.epsilon));
         }
     }}
+}
+
+/// Outcome of $(LREF poissonInvCDFChecked).
+enum PoissonInverseStatus
+{
+    /// The work budget or working precision did not certify a count.
+    workLimit,
+    /// The count satisfies the quantile or endpoint convention.
+    found,
+}
+
+/// Read count when status is found. Default initialization is unresolved.
+struct PoissonInverseResult
+{
+    /// Outcome of the query.
+    PoissonInverseStatus status = PoissonInverseStatus.workLimit;
+    /// Quantile or endpoint value when found; unused otherwise.
+    size_t count;
+}
+
+/++
+Computes a checked Poisson inverse CDF for represented Fp probabilities.
+For an interior query and finite rate, returns the least count whose exact
+CDF reaches $(D q). Comparisons use interval bounds before rounding probabilities.
+
+Params:
+    q = finite cumulative probability in [0,1]
+    lambda = positive rate, including positive infinity, with the same Fp width as q
+    maxTerms = masses used to bound the total and maximum counts searched
+        (default 256, ceiling 1024)
+
+Returns:
+    Zero when q is zero. Otherwise q equal to one or an infinite rate returns
+    $(D size_t.max), preserving the existing count-inverse endpoint convention.
+    These cases ignore the work budget.
+
+    Other queries require lambda below the effective term budget. A first pass
+    bounds the total mass and a second pass searches counts from zero, using
+    fixed-capacity stack storage. Each pass visits at most maxTerms masses.
+    The fixed-point precision has 128 extra fractional bits beyond the input
+    width. If the bounds cannot prove a comparison or the search exceeds its
+    budget, returns $(D workLimit), without an approximate count. Increasing
+    maxTerms need not resolve a working-precision limitation.
++/
+@safe pure nothrow @nogc
+PoissonInverseResult poissonInvCDFChecked(uint bits)(Fp!bits q, Fp!bits lambda,
+    size_t maxTerms = 256)
+    in (fpProbabilityValid(q), "q must be a finite probability in [0,1]")
+    in (!lambda.sign && (lambda.exponent == long.max ? !lambda.coefficient : !!lambda.coefficient),
+        "lambda must be positive and not NaN")
+{
+    import mir.stat.internal.fp_poisson_tails: boundedPoissonInverse;
+    return boundedPoissonInverse(q, lambda, maxTerms);
+}
+
+/// Queries on opposite sides of the exact first CDF jump select different counts.
+version(mir_stat_test)
+@safe pure nothrow @nogc unittest
+{
+    import mir.bignum.fp: Fp;
+    import mir.bignum.fixed: UInt;
+    alias T = Fp!64;
+    // exp(-1) lies between these adjacent represented probabilities.
+    const below = T(false, -65, UInt!64(13572355802537770549UL));
+    const above = T(false, -65, UInt!64(13572355802537770550UL));
+    const first = poissonInvCDFChecked(below, T(1));
+    const next = poissonInvCDFChecked(above, T(1));
+    assert(first.status == PoissonInverseStatus.found && first.count == 0);
+    assert(next.status == PoissonInverseStatus.found && next.count == 1);
+}
+
+version(mir_stat_test)
+@safe pure nothrow @nogc unittest
+{
+    import mir.bignum.fp: Fp;
+    import mir.bignum.fixed: UInt;
+    alias T = Fp!64;
+    alias S = PoissonInverseStatus;
+    alias R = PoissonInverseResult;
+    alias evaluate = poissonInvCDFChecked!64;
+    assert(evaluate(T(0), T(1), 0) == R(S.found, 0));
+    assert(evaluate(T(0), T(double.infinity), 0) == R(S.found, 0));
+    assert(evaluate(T(1), T(1), 0) == R(S.found, size_t.max));
+    assert(evaluate(T(0.5), T(double.infinity), 0) == R(S.found, size_t.max));
+    assert(evaluate(T(false, -3, UInt!64(8)), T(1), 0) == R(S.found, size_t.max));
+    assert(evaluate(T(0.5), T(1), 0).status == S.workLimit);
+    assert(evaluate(T(0.5), T(1024), size_t.max).status == S.workLimit);
+    assert(evaluate(T(0.5), T(256)).status == S.workLimit);
+    assert(evaluate(T(0.4), T(1), 2).status == S.workLimit);
+    assert(evaluate(T(0.4), T(1), 32) == R(S.found, 1));
+    assert(evaluate(T(0.99), T(1), 2).status == S.workLimit);
+    assert(evaluate(T(0.5), T(1)) == R(S.found, 1));
+    assert(evaluate(T(0.5), T(1), size_t.max) == R(S.found, 1));
+    assert(evaluate(T(0.5), T(false, -3, UInt!64(8))) == R(S.found, 1));
+    assert(evaluate(T(false, -2, UInt!64(2)), T(1)) == R(S.found, 1));
+    assert(evaluate(T(false, long.min, UInt!64(1)), T(1)) == R(S.found, 0));
+    assert(evaluate(T(0.5), T(false, long.min, UInt!64(1))) == R(S.found, 0));
+    // The nearest Fp!64 CDF at k=2 rounds UP. Comparing that rounded
+    // probability with itself would incorrectly choose2 instead of3.
+    const roundedUp = T(false, -64, UInt!64(16965444753172213187UL));
+    assert(evaluate(roundedUp, T(1)) == R(S.found, 3));
+}
+
+version(mir_stat_test)
+unittest
+{
+    bool contractsEnabled;
+    void probe() in { contractsEnabled = true; } do {}
+    probe();
+    if (contractsEnabled) {
+        import core.exception: AssertError;
+        import std.exception: assertThrown;
+        alias T = Fp!64;
+        foreach (q; [-1.0, 2.0, double.infinity, double.nan])
+            assertThrown!AssertError(poissonInvCDFChecked(T(q), T(1)));
+        foreach (rate; [0.0, -0.0, -1.0, -double.infinity, double.nan])
+            assertThrown!AssertError(poissonInvCDFChecked(T(0.5), T(rate)));
+    }
+}
+
+// Adjacent queries around CDF(16;16), independently evaluated at300/400 digits.
+version(mir_stat_test_slow_numerics)
+@safe pure nothrow @nogc unittest
+{
+    import mir.bignum.fp: Fp;
+    import mir.bignum.fixed: UInt;
+    {
+        alias T = Fp!128;
+        enum q = T(false, -128, UInt!128.fromHexString("90e2e9d197a37265f1fd162002faea47"));
+        const result = poissonInvCDFChecked(q, T(16), 1024);
+        assert(result.status == PoissonInverseStatus.found && result.count == 16);
+    }
+    {
+        alias T = Fp!128;
+        enum q = T(false, -128, UInt!128.fromHexString("90e2e9d197a37265f1fd162002faea48"));
+        const result = poissonInvCDFChecked(q, T(16), 1024);
+        assert(result.status == PoissonInverseStatus.found && result.count == 17);
+    }
+    {
+        alias T = Fp!256;
+        enum q = T(false, -256, UInt!256.fromHexString("90e2e9d197a37265f1fd162002faea47d30c24d9e38d62cd501dfb7fbca6af50"));
+        const result = poissonInvCDFChecked(q, T(16), 1024);
+        assert(result.status == PoissonInverseStatus.found && result.count == 16);
+    }
+    {
+        alias T = Fp!256;
+        enum q = T(false, -256, UInt!256.fromHexString("90e2e9d197a37265f1fd162002faea47d30c24d9e38d62cd501dfb7fbca6af51"));
+        const result = poissonInvCDFChecked(q, T(16), 1024);
+        assert(result.status == PoissonInverseStatus.found && result.count == 17);
+    }
+    {
+        alias T = Fp!512;
+        enum q = T(false, -512, UInt!512.fromHexString("90e2e9d197a37265f1fd162002faea47d30c24d9e38d62cd501dfb7fbca6af50453f609214c554ff992064a9f2e3cace1d8475f711706f978a3d74aadf39156f"));
+        const result = poissonInvCDFChecked(q, T(16), 1024);
+        assert(result.status == PoissonInverseStatus.found && result.count == 16);
+    }
+    {
+        alias T = Fp!512;
+        enum q = T(false, -512, UInt!512.fromHexString("90e2e9d197a37265f1fd162002faea47d30c24d9e38d62cd501dfb7fbca6af50453f609214c554ff992064a9f2e3cace1d8475f711706f978a3d74aadf391570"));
+        const result = poissonInvCDFChecked(q, T(16), 1024);
+        assert(result.status == PoissonInverseStatus.found && result.count == 17);
+    }
 }
 
 private
