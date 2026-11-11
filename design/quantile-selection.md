@@ -101,6 +101,42 @@ The large ascending-batch schedule takes precedence over integer endpoint deferr
 
 `selectQuantileImpl` determines the ranks required by the chosen quantile definition. `partitionQuantileRank` delegates cached selection to `partitionAtWithCache` and uncached selection to ordinary `partitionAt`. The cache records established ranks, including intermediate pivots, for reuse within the batch.
 
+## Cached pivot strategies
+
+`partitionAtWithCache` has a compile-time `PartitionPivotStrategy` parameter. Existing
+quantile calls use its `midpoint` default; this change does not alter automatic
+cache thresholds or request scheduling. The strategy is internal and is not a new
+argument on the quantile API.
+
+| Strategy | Selection within the unresolved interval | When it can help |
+|---|---|---|
+| `midpoint` (default) | Partition around the middle-slot value, retain pivots, and use the existing poor-pivot budget | Reusing partitions across several later requests |
+| `rankGuided` | Use mir-algorithm's Phobos-derived rank-guided sampling and retain intermediate full-interval pivots | Selecting ranks near an interval's ends |
+| `adaptive` | Choose once per requested rank: rank guidance in the outer 1/16 of an interval of at least 128 elements; otherwise midpoint selection | Balancing the two approaches for small batches; not yet selected automatically |
+
+A middle-slot value is not necessarily the median. Rank-guided sampling uses the
+target rank to choose a sample pivot. Recursive pivots within a sample are not
+recorded: they are not fixed positions in the full interval until expansion.
+
+```d
+alias P = PartitionPivotStrategy;
+partitionAtWithCache(values, rank, cache); // Existing midpoint strategy.
+partitionAtWithCache!(P.rankGuided)(values, rank, cache);
+partitionAtWithCache!(P.adaptive, "a > b")(values, rank, cache);
+```
+
+All strategies share cache lookup and storage. A zeroed caller-owned bitmap records
+established positions without allocating. A shorter bitmap records only positions
+it covers. An empty bitmap always delegates to ordinary `partitionAt`, regardless
+of the selected strategy. Reuse requires the same workspace, flattened order and
+comparison; independently modifying the workspace requires clearing the bitmap.
+
+The adaptive decision is made after locating the nearest cached boundaries. For
+example, a request for rank 5 in an unresolved interval `[0, 256)` uses rank
+guidance, while rank 128 uses midpoint selection. Interpolating quantiles can
+request two ranks, and each rank has its own search. Neither strategy eagerly
+sorts the entire workspace or changes the quantile definition.
+
 ## Type differences and fallbacks
 
 | Behavior | Integers | float/double | real |
@@ -121,6 +157,6 @@ The large ascending-batch schedule takes precedence over integer endpoint deferr
 
 Relevant functions are in [quantiles.d](../source/mir/stat/descriptive/univariate/quantiles.d): `dispatchQuantile`, `allocatedQuantile`, `tryScanQuantileEndpoints`, `mixedQuantileInterior`, `copyQuantileExtrema`, `quantileIntoImpl`, `orderedQuantileBatch`, `selectQuantileImpl`, and `partitionQuantileRank`.
 
-Cached rank selection is implemented in [internal/partition.d](../source/mir/stat/descriptive/univariate/internal/partition.d).
+Cached rank selection and strategy dispatch are implemented in [internal/partition.d](../source/mir/stat/descriptive/univariate/internal/partition.d). The selector adapted from mir-algorithm's Phobos-derived rank-guided implementation lives in [internal/rank_partition.d](../source/mir/stat/descriptive/univariate/internal/rank_partition.d).
 
 Update this page when changing eligibility rules, thresholds, scheduling, allocation behavior, or helper boundaries. Keep numerical definitions and public contracts in the API documentation. Mermaid diagrams render directly on GitHub; edit their source here rather than maintaining separate image copies.
