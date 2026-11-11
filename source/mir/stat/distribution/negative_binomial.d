@@ -12,7 +12,8 @@ never occurs: the API uses zero mass and zero CDF at every finite count, with
 CCDF equal to one.
 
 PMF and LPMF accept $(D Fp) probabilities. $(LREF negativeBinomialTailsChecked)
-computes independently rounded Fp tails with explicit work limits. The separate
+computes independently rounded Fp tails with explicit work limits.
+$(LREF negativeBinomialInvCDFChecked) provides an exact checked Fp count inverse. The separate
 CDF, CCDF, and inverse CDF use built-in floating-point probabilities. The inverse returns $(D size_t), using
 $(D size_t.max) for an unbounded quantile or one outside the count range.
 Its endpoint conventions differ from $(D geometricInvCDF), even for $(D r == 1).
@@ -764,6 +765,182 @@ unittest
         i.negativeBinomialCCDF(6, 0.25).shouldApprox == 1 - negativeBinomialCDF(i, 6, 0.25);
         i.negativeBinomialCCDF(6, 0.5).shouldApprox == 1 - negativeBinomialCDF(i, 6, 0.5);
         i.negativeBinomialCCDF(6, 0.75).shouldApprox == 1 - negativeBinomialCDF(i, 6, 0.75);
+    }
+}
+
+/// Outcome of $(LREF negativeBinomialInvCDFChecked).
+enum NegativeBinomialInverseStatus
+{
+    /// The exact calculation exceeds a work limit. The count field is unused.
+    workLimit,
+    /// The count satisfies the quantile or endpoint convention.
+    found,
+}
+
+/// Read count when status is found. Default initialization is unresolved.
+struct NegativeBinomialInverseResult
+{
+    /// Outcome of the query.
+    NegativeBinomialInverseStatus status = NegativeBinomialInverseStatus.workLimit;
+    /// Quantile or endpoint value when found; unused otherwise.
+    size_t count;
+}
+
+/++
+Computes a checked negative binomial inverse CDF for represented Fp probabilities.
+For interior probabilities, returns the least failure count whose exact CDF
+reaches q. Cumulative integer weights are compared before probabilities are rounded.
+
+Params:
+    q = finite cumulative probability in [0,1]
+    r = positive number of successes required before stopping
+    p = finite success probability in [0,1], with the same Fp width as q
+    maxTerms = maximum number of failure counts visited from zero (default 256, ceiling 1024)
+    maxScale = maximum exponent of the common power-of-two denominator
+        (default 16384, ceiling 65536)
+
+Returns:
+    Zero when q is zero or p is one. Otherwise q equal to one or p equal to
+    zero returns size_t.max. These endpoint conventions match the existing
+    count inverse and ignore the work budgets.
+
+    For p=a/2^^s in lowest terms, the cumulative probability at k failures
+    has denominator 2^^((r+k)*s). The scan starts at zero and updates exact
+    integer weights and the denominator until the query is reached. Returns
+    $(D workLimit) when either budget is exhausted, without an approximate
+    count. Fixed-capacity workspace is allocated on the stack.
++/
+@safe pure nothrow @nogc
+NegativeBinomialInverseResult negativeBinomialInvCDFChecked(uint bits)(
+    Fp!bits q, size_t r, Fp!bits p, size_t maxTerms = 256, size_t maxScale = 16384)
+    in (r > 0, "number of successes must be larger than zero")
+    in (fpProbabilityValid(q), "q must be a finite probability in [0,1]")
+    in (fpProbabilityValid(p), "p must be a finite probability in [0,1]")
+{
+    import mir.stat.internal.fp_binomial_tails: exactNegativeBinomialInverse;
+    return exactNegativeBinomialInverse(q, r, p, maxTerms, maxScale);
+}
+
+/// An exact CDF jump and its next represented query select different counts.
+version(mir_stat_test)
+@safe pure nothrow @nogc unittest
+{
+    import mir.bignum.fp: Fp;
+    import mir.bignum.fixed: UInt;
+    alias T = Fp!64;
+    const q = T(0.5);
+    T above = q;
+    above.coefficient += 1;
+    const tie = negativeBinomialInvCDFChecked(q, 3, T(0.5));
+    const next = negativeBinomialInvCDFChecked(above, 3, T(0.5));
+    assert(tie.status == NegativeBinomialInverseStatus.found && tie.count == 2);
+    assert(next.status == NegativeBinomialInverseStatus.found && next.count == 3);
+}
+
+version(mir_stat_test)
+@safe pure nothrow @nogc unittest
+{
+    import mir.bignum.fixed: UInt;
+    alias T = Fp!64;
+    alias R = NegativeBinomialInverseResult;
+    alias S = NegativeBinomialInverseStatus;
+    alias evaluate = negativeBinomialInvCDFChecked!64;
+    assert(R.init.status == S.workLimit);
+    assert(evaluate(T(0), size_t.max, T(0), 0, 0) == R(S.found, 0));
+    assert(evaluate(T(1), size_t.max, T(1), 0, 0) == R(S.found, 0));
+    assert(evaluate(T(0.5), 3, T(0), 0, 0) == R(S.found, size_t.max));
+    assert(evaluate(T(1), 3, T(0.5), 0, 0) == R(S.found, size_t.max));
+    assert(evaluate(T(0.5), 3, T(false, -3, UInt!64(8)), 0, 0) == R(S.found, 0));
+    assert(evaluate(T(false, -3, UInt!64(8)), 3, T(0.5), 0, 0) == R(S.found, size_t.max));
+    assert(evaluate(T(0.5), 3, T(0.5), 0).status == S.workLimit);
+    assert(evaluate(T(0.5), 3, T(0.5), 3, 5) == R(S.found, 2));
+    assert(evaluate(T(0.5), 3, T(0.5), 2, 5).status == S.workLimit);
+    assert(evaluate(T(0.5), 3, T(0.5), 3, 4).status == S.workLimit);
+    assert(evaluate(T(0.5), 3, T(0.5), 3, 2).status == S.workLimit);
+    assert(evaluate(T(0.5), 3, T(false, -3, UInt!64(4)), 3, 5) == R(S.found, 2));
+    assert(evaluate(T(false, -3, UInt!64(4)), 3, T(0.5)) == R(S.found, 2));
+    assert(evaluate(T(0.5), size_t.max, T(0.5), size_t.max, size_t.max).status == S.workLimit);
+    assert(evaluate(T(0.5), 3, T(false, long.min, UInt!64(1))).status == S.workLimit);
+    assert(evaluate(T(false, long.min, UInt!64(1)), 3, T(0.5)) == R(S.found, 0));
+    // q has many more fractional bits than the exact denominator.
+    T tiny = T(1); tiny.exponent -= 100;
+    assert(evaluate(tiny, 3, T(0.5)) == R(S.found, 0));
+    T nearOne = T(false, -64, UInt!64(ulong.max));
+    assert(evaluate(nearOne, 1, T(0.5), 64) == R(S.found, 63));
+    assert(evaluate(nearOne, 1, T(0.5), 63).status == S.workLimit);
+    assert(evaluate(T(0.5), 1, T(1.0/2048), size_t.max, size_t.max).status == S.workLimit);
+    foreach (r; [4097, 16385, 65536]) {
+        const q = T(false, -r, UInt!64(1));
+        assert(evaluate(q, r, T(0.5), 1, r) == R(S.found, 0));
+        assert(evaluate(q, r, T(0.5), 1, r - 1).status == S.workLimit);
+    }
+    assert(evaluate(T(false, -65537, UInt!64(1)), 65537, T(0.5), size_t.max, size_t.max).status == S.workLimit);
+}
+
+version(mir_stat_test)
+unittest
+{
+    bool contractsEnabled;
+    void probe() in { contractsEnabled = true; } do {}
+    probe();
+    if (contractsEnabled) {
+        import core.exception: AssertError;
+        import std.exception: assertThrown;
+        alias T = Fp!64;
+        assertThrown!AssertError(negativeBinomialInvCDFChecked(T(0.5), 0, T(0.5)));
+        foreach (value; [-1.0, 2.0, double.infinity, double.nan]) {
+            assertThrown!AssertError(negativeBinomialInvCDFChecked(T(value), 1, T(0.5)));
+            assertThrown!AssertError(negativeBinomialInvCDFChecked(T(0.5), 1, T(value)));
+        }
+    }
+}
+
+// Adjacent queries bracketing an exact rational CDF for a full-width input.
+version(mir_stat_test_slow_numerics)
+@safe pure nothrow @nogc unittest
+{
+    import mir.bignum.fixed: UInt;
+    {
+        alias T = Fp!128;
+        enum p = T(false, -128, UInt!128.fromHexString("80000000000000000000000000000001"));
+        enum q = T(false, -128, UInt!128.fromHexString("c6000000000000000000000000000001"));
+        const result = negativeBinomialInvCDFChecked(q, 3, p);
+        assert(result.status == NegativeBinomialInverseStatus.found && result.count == 4);
+    }
+    {
+        alias T = Fp!128;
+        enum p = T(false, -128, UInt!128.fromHexString("80000000000000000000000000000001"));
+        enum q = T(false, -128, UInt!128.fromHexString("c6000000000000000000000000000002"));
+        const result = negativeBinomialInvCDFChecked(q, 3, p);
+        assert(result.status == NegativeBinomialInverseStatus.found && result.count == 5);
+    }
+    {
+        alias T = Fp!256;
+        enum p = T(false, -256, UInt!256.fromHexString("8000000000000000000000000000000000000000000000000000000000000001"));
+        enum q = T(false, -256, UInt!256.fromHexString("c600000000000000000000000000000000000000000000000000000000000001"));
+        const result = negativeBinomialInvCDFChecked(q, 3, p);
+        assert(result.status == NegativeBinomialInverseStatus.found && result.count == 4);
+    }
+    {
+        alias T = Fp!256;
+        enum p = T(false, -256, UInt!256.fromHexString("8000000000000000000000000000000000000000000000000000000000000001"));
+        enum q = T(false, -256, UInt!256.fromHexString("c600000000000000000000000000000000000000000000000000000000000002"));
+        const result = negativeBinomialInvCDFChecked(q, 3, p);
+        assert(result.status == NegativeBinomialInverseStatus.found && result.count == 5);
+    }
+    {
+        alias T = Fp!512;
+        enum p = T(false, -512, UInt!512.fromHexString("80000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000001"));
+        enum q = T(false, -512, UInt!512.fromHexString("c6000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000001"));
+        const result = negativeBinomialInvCDFChecked(q, 3, p);
+        assert(result.status == NegativeBinomialInverseStatus.found && result.count == 4);
+    }
+    {
+        alias T = Fp!512;
+        enum p = T(false, -512, UInt!512.fromHexString("80000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000001"));
+        enum q = T(false, -512, UInt!512.fromHexString("c6000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000002"));
+        const result = negativeBinomialInvCDFChecked(q, 3, p);
+        assert(result.status == NegativeBinomialInverseStatus.found && result.count == 5);
     }
 }
 
