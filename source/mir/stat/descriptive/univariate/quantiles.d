@@ -5235,6 +5235,42 @@ private void writeQuantileEndpoints(P, O, T)(scope P levels, scope O output, T l
         output[i] = cast(O.DeepElement)(levels[i] == 0 ? low : high);
 }
 
+// Return the interior index of an eligible endpoint-first mixed batch.
+// Zero means ordinary selection: eligible interior indices are always 1 or 2.
+private size_t mixedQuantileInterior(P)(size_t observationCount, scope P levels)
+{
+    if (__ctfe || observationCount < 64 || levels.length != 3 ||
+        (levels[0] != 0 && levels[0] != 1))
+        return 0;
+    const other = 1 - levels[0];
+    const interior = levels[1] == other ? 2 : 1;
+    const p = levels[interior];
+    return levels[3 - interior] == other && p > 0 && p < 1 ? interior : 0;
+}
+
+// Complete the observation copy even when floating data require ordinary
+// selection. False means the copied workspace is ready, but extrema are unusable.
+private bool copyQuantileExtrema(V, W, T)(scope V values, scope W workspace,
+    out T low, out T high)
+{
+    static if (isIntegral!T)
+    {
+        T minimum = values[0], maximum = minimum;
+        foreach (i; 0 .. values.length)
+        {
+            const value = values[i];
+            workspace[i] = value;
+            if (value < minimum) minimum = value;
+            if (value > maximum) maximum = value;
+        }
+        low = minimum;
+        high = maximum;
+        return true;
+    }
+    else
+        return scanFloatingExtrema(values, low, high, workspace);
+}
+
 // Keep scratch ownership alive until all partitioning and output writes finish.
 private auto allocatedQuantile(F, QuantileAlgo algorithm, bool modify,
     QuantileAllocation allocation, Context, Data, Probability)(
@@ -5275,45 +5311,31 @@ private auto allocatedQuantile(F, QuantileAlgo algorithm, bool modify,
                    (isIntegral!Element || is(Element == float) || is(Element == double)) &&
                    canScanEndpoints!(typeof(flat), Probability, Result))
         {
-            // With one interior request, the existing copy can supply both
-            // extrema before selection. Retain caller order for exceptional data.
-            if (!__ctfe && flat.length >= 64 && probability.length == 3 &&
-                (probability[0] == 0 || probability[0] == 1))
+            const interior = mixedQuantileInterior(flat.length, probability);
+            if (interior != 0)
             {
-                const other = 1 - probability[0];
-                const interior = probability[1] == other ? 2 : 1;
                 const p = probability[interior];
-                if (probability[3 - interior] == other && p > 0 && p < 1)
+                Element low, high;
+                static if (isIntegral!Element)
                 {
-                    Element low, high;
-                    static if (isIntegral!Element)
-                    {
-                        low = high = flat[0];
-                        foreach (i; 0 .. flat.length)
-                        {
-                            const value = flat[i];
-                            workspace[i] = value;
-                            if (value < low) low = value;
-                            if (value > high) high = value;
-                        }
-                        enum usable = true;
-                    }
-                    else
-                        const usable = scanFloatingExtrema(flat, low, high, workspace);
-                    auto result = allocateQuantiles!(Result, allocation)(context, 3);
-                    // Numeric selection and direct writes cannot throw after allocation.
-                    if (usable)
-                    {
-                        foreach (i; 0 .. 3)
-                            if (i == interior)
-                                result[i] = selectQuantileImpl!(algorithm, Result, false)(workspace, p, null);
-                            else
-                                result[i] = cast(Result)(probability[i] == 0 ? low : high);
-                    }
-                    else
-                        quantileIntoImpl!(algorithm, false, false)(workspace, probability, result.lightScope, null);
-                    return result;
+                    copyQuantileExtrema(flat, workspace, low, high);
+                    enum usable = true;
                 }
+                else
+                    const usable = copyQuantileExtrema(flat, workspace, low, high);
+                auto result = allocateQuantiles!(Result, allocation)(context, 3);
+                // Numeric selection and direct writes cannot throw after allocation.
+                if (usable)
+                {
+                    foreach (i; 0 .. 3)
+                        if (i == interior)
+                            result[i] = selectQuantileImpl!(algorithm, Result, false)(workspace, p, null);
+                        else
+                            result[i] = cast(Result)(probability[i] == 0 ? low : high);
+                }
+                else
+                    quantileIntoImpl!(algorithm, false, false)(workspace, probability, result.lightScope, null);
+                return result;
             }
         }
         foreach (i; 0 .. flat.length)
