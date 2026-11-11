@@ -697,9 +697,12 @@ Params:
     maxTerms = maximum number of masses to sum from zero (default 256, ceiling 1024)
 
 Returns:
-    $(D found) only when directed interval bounds certify both rounded tails.
-    Positive infinity gives zero CDF and unit CCDF, including with a zero budget.
-    Finite rates and counts must be below the effective term budget. The method
+    $(D found) only when both rounded tails are certified. Positive infinity
+    gives zero CDF and unit CCDF. For $(D k == 0) and a positive rate at most
+    $(D 2^^(-bits-1)), where $(D bits) is the Fp coefficient width, elementary
+    bounds certify unit CDF and a CCDF equal to the represented rate. These
+    cases also work with a zero term budget.
+    Other finite rates and counts must be below the effective term budget. The method
     uses fixed-point weights with 128 extra fractional bits beyond the output
     precision and bounds the remaining infinite series. It returns $(D workLimit)
     if the term budget or this working precision cannot resolve both tails;
@@ -748,8 +751,8 @@ version(mir_stat_test)
     assert(evaluate(0, T(1), 21).status == S.workLimit);
     assert(evaluate(0, T(1), 22).status == S.found);
     assert(evaluate(0, T(1), size_t.max) == evaluate(0, T(1)));
-    assert(evaluate(0, T(false, -40000, UInt!64(1)), 1024).status == S.workLimit);
-    assert(evaluate(0, T(false, long.min, UInt!64(1)), 32).status == S.workLimit);
+    assert(evaluate(1, T(false, -40000, UInt!64(1)), 1024).status == S.workLimit);
+    assert(evaluate(1, T(false, long.min, UInt!64(1)), 32).status == S.workLimit);
     assert(evaluate(0, T(false, long.max - 1, UInt!64(1))).status == S.workLimit);
     assert(evaluate(size_t.max, T(double.infinity), 0) ==
         PoissonTailResult!T(S.found, T(0), T(1)));
@@ -757,6 +760,49 @@ version(mir_stat_test)
     assert(evaluate(1, T(false, -3, UInt!64(8))) == evaluate(1, T(1)));
     assert(evaluate(1, T(false, 1, UInt!64(1))) == evaluate(1, T(2)));
     assert(evaluate(1, T(false, -8, UInt!64(129))) == evaluate(1, T(129.0 / 256)));
+}
+
+// The zero-count shortcut covers tiny rates without losing their upper tail.
+version(mir_stat_test)
+@safe pure nothrow @nogc unittest
+{
+    import mir.bignum.fixed: UInt;
+    import std.meta: AliasSeq;
+    static foreach (bits; AliasSeq!(64, 128))
+    {{
+        alias T = Fp!bits;
+        enum unit = UInt!bits(1) << (bits - 1);
+        foreach (exponent; [-2L * bits, -40000L, long.min + bits - 1, long.min]) {
+            const rate = T(false, exponent, unit);
+            const result = poissonTailsChecked!T(0, rate, 0);
+            assert(result.status == PoissonTailStatus.found);
+            assert(result.cdf == T(1) && result.ccdf == rate);
+        }
+        // Equivalent raw coefficients, and normalization at the exponent floor.
+        const raw = T(false, -40000, UInt!bits(3));
+        const normalized = T(false, -40000 - bits + 2, UInt!bits(3) << (bits - 2));
+        assert(poissonTailsChecked!T(0, raw, 0) == poissonTailsChecked!T(0, normalized, 0));
+        const floorRate = T(false, long.min, UInt!bits(1));
+        assert(poissonTailsChecked!T(0, floorRate, 0).ccdf == floorRate);
+        assert(poissonTailsChecked!T(0, T(false, long.min + 1, UInt!bits(1)), 0).ccdf
+            == T(false, long.min, UInt!bits(2)));
+
+        // Boundary and its immediate neighbors at the requested precision.
+        const boundary = T(false, -2L * bits, unit);
+        const below = T(false, -2L * bits - 1, UInt!bits.max);
+        const above = T(false, -2L * bits, unit + UInt!bits(1));
+        assert(poissonTailsChecked!T(0, boundary, 0).ccdf == boundary);
+        assert(poissonTailsChecked!T(0, below, 0).ccdf == below);
+        assert(poissonTailsChecked!T(0, above, 0).status == PoissonTailStatus.workLimit);
+        static if (bits == 64) {
+            const next = poissonTailsChecked!T(0, above);
+            assert(next.status == PoissonTailStatus.found);
+            assert(next.cdf == T(false, -cast(long)bits, UInt!bits.max));
+            assert(next.ccdf == above);
+        }
+        // The shortcut is specific to zero events.
+        assert(poissonTailsChecked!T(1, boundary, 0).status == PoissonTailStatus.workLimit);
+    }}
 }
 
 // Rounded coefficients independently checked with 300- and 400-digit decimal
