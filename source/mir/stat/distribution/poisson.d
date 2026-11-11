@@ -8,8 +8,9 @@ $(D lambda > 0): a zero rate is rejected even though it is a mathematical
 limiting case. Tables use a finite positive rate unless stated otherwise.
 
 The direct PMF and LPMF accept $(D Fp) rates. The Fp PMF is also available
-as $(LREF fp_poissonPMF). CDF, CCDF, and inverse functions use built-in
-floating-point values. Normal approximations need not match the direct or
+as $(LREF fp_poissonPMF). $(LREF poissonTailsChecked) computes certified
+paired tails for Fp rates within explicit work limits. The separate CDF,
+CCDF, and inverse functions use built-in floating-point values. Normal approximations need not match the direct or
 gamma algorithms at finite counts.
 
 $(D poissonInvCDF!(PoissonAlgo.gamma)) has a different purpose from the other
@@ -479,6 +480,7 @@ version(mir_stat_test)
         {
             assertThrown!AssertError(poissonPMF(1, Fp!128(rate)));
             assertThrown!AssertError(fp_poissonPMF(1, Fp!128(rate)));
+            assertThrown!AssertError(poissonTailsChecked(1, Fp!64(rate)));
         }
     }
 }
@@ -648,6 +650,208 @@ version(mir_stat_test)
         const zero = fp_poissonPMF(0, Fp!128(rate));
         const one = fp_poissonPMF(1, Fp!128(rate));
         assert(approxEqual(cast(double)(one / zero), rate, 1e-14, 0.0));
+    }
+}
+
+/// Outcome of $(LREF poissonTailsChecked).
+enum PoissonTailStatus
+{
+    /// The bounds did not certify both rounded tails. The tail fields are unused.
+    workLimit,
+    /// Both tail fields contain their independently rounded probabilities.
+    found,
+}
+
+/// Checked Fp probabilities. Read the tails only when status is found.
+struct PoissonTailResult(T)
+    if (is(T == Fp!bits, uint bits))
+{
+    /// Default initialization denotes an unresolved result.
+    PoissonTailStatus status = PoissonTailStatus.workLimit;
+    /// Probability of observing at most k events.
+    T cdf;
+    /// Probability of observing strictly more than k events.
+    T ccdf;
+}
+
+/++
+Computes the Poisson CDF and strict CCDF for the represented $(D Fp) rate,
+independently rounded to nearest with ties to even.
+
+Params:
+    k = observed event count
+    lambda = positive rate, including positive infinity; zero and NaN are rejected
+    maxTerms = maximum number of masses to sum from zero (default 256, ceiling 1024)
+
+Returns:
+    $(D found) only when directed interval bounds certify both rounded tails.
+    Positive infinity gives zero CDF and unit CCDF, including with a zero budget.
+    Finite rates and counts must be below the effective term budget. The method
+    uses fixed-point weights with 128 extra fractional bits beyond the output
+    precision and bounds the remaining infinite series. It returns $(D workLimit)
+    if the term budget or this working precision cannot resolve both tails;
+    increasing $(D maxTerms) need not resolve a precision limitation. Extremely
+    small rates or tails may exceed the fixed-point range. No approximate
+    probability is returned on failure. Workspace is fixed-capacity stack storage.
++/
+@safe pure nothrow @nogc
+PoissonTailResult!T poissonTailsChecked(T)(size_t k, T lambda, size_t maxTerms = 256)
+    if (is(T == Fp!bits, uint bits))
+    in (!lambda.sign && (lambda.exponent == long.max ? !lambda.coefficient : !!lambda.coefficient),
+        "lambda must be positive and not NaN")
+{
+    import mir.stat.internal.fp_poisson_tails: boundedPoissonTails;
+    return boundedPoissonTails(k, lambda, maxTerms);
+}
+
+/// Compute both tails without subtracting a rounded probability from one.
+version(mir_stat_test)
+@safe pure nothrow @nogc unittest
+{
+    import mir.bignum.fixed: UInt;
+    import mir.bignum.fp: Fp;
+    alias T = Fp!64;
+    const tails = poissonTailsChecked(0, T(1));
+    assert(tails.status == PoissonTailStatus.found);
+    assert(tails.cdf == T(false, -65, UInt!64(13572355802537770549UL)));
+    assert(tails.ccdf == T(false, -64, UInt!64(11660566172440666341UL)));
+    const smallUpper = poissonTailsChecked(30, T(1));
+    assert(smallUpper.status == PoissonTailStatus.found && smallUpper.cdf == T(1));
+    assert(smallUpper.ccdf == T(false, -178, UInt!64(17692842853828029725UL)));
+
+}
+
+version(mir_stat_test)
+@safe pure nothrow @nogc unittest
+{
+    import mir.bignum.fixed: UInt;
+    alias T = Fp!64;
+    alias S = PoissonTailStatus;
+    alias evaluate = poissonTailsChecked!T;
+    assert(evaluate(0, T(1), 0).status == S.workLimit);
+    assert(evaluate(size_t.max, T(1), size_t.max).status == S.workLimit);
+    assert(evaluate(0, T(1024), size_t.max).status == S.workLimit);
+    assert(evaluate(0, T(256)).status == S.workLimit);
+    assert(evaluate(0, T(1), 21).status == S.workLimit);
+    assert(evaluate(0, T(1), 22).status == S.found);
+    assert(evaluate(0, T(1), size_t.max) == evaluate(0, T(1)));
+    assert(evaluate(0, T(false, -40000, UInt!64(1)), 1024).status == S.workLimit);
+    assert(evaluate(0, T(false, long.min, UInt!64(1)), 32).status == S.workLimit);
+    assert(evaluate(0, T(false, long.max - 1, UInt!64(1))).status == S.workLimit);
+    assert(evaluate(size_t.max, T(double.infinity), 0) ==
+        PoissonTailResult!T(S.found, T(0), T(1)));
+    // Equivalent unnormalized rates must have the same result.
+    assert(evaluate(1, T(false, -3, UInt!64(8))) == evaluate(1, T(1)));
+    assert(evaluate(1, T(false, 1, UInt!64(1))) == evaluate(1, T(2)));
+    assert(evaluate(1, T(false, -8, UInt!64(129))) == evaluate(1, T(129.0 / 256)));
+}
+
+// Rounded coefficients independently checked with 300- and 400-digit decimal
+// evaluation of exp(-lambda) and the two directly summed tails.
+version(mir_stat_test)
+@safe pure nothrow @nogc unittest
+{
+    import mir.bignum.fixed: UInt;
+    alias T = Fp!64;
+    {
+        const result = poissonTailsChecked(2, T(0.125));
+        assert(result.status == PoissonTailStatus.found);
+        assert(result.cdf == T(false, -64, UInt!64(18441275028389187548UL)));
+        assert(result.ccdf == T(false, -75, UInt!64(11200604816105610760UL)));
+    }
+    {
+        const result = poissonTailsChecked(2, T(1));
+        assert(result.status == PoissonTailStatus.found);
+        assert(result.cdf == T(false, -64, UInt!64(16965444753172213187UL)));
+        assert(result.ccdf == T(false, -67, UInt!64(11850394564298707433UL)));
+    }
+    {
+        const result = poissonTailsChecked(0, T(64));
+        assert(result.status == PoissonTailStatus.found);
+        assert(result.cdf == T(false, -156, UInt!64(14649826515662298464UL)));
+        assert(result.ccdf == T(false, -63, UInt!64(9223372036854775808UL)));
+    }
+    {
+        const result = poissonTailsChecked(0, T(0.1));
+        assert(result.status == PoissonTailStatus.found);
+        assert(result.cdf == T(false, -64, UInt!64(16691304278825489317UL)));
+        assert(result.ccdf == T(false, -67, UInt!64(14043518359072498395UL)));
+    }
+}
+
+version(mir_stat_test_slow_numerics)
+@safe pure nothrow @nogc unittest
+{
+    import mir.bignum.fixed: UInt;
+    {
+        alias T = Fp!64;
+        UInt!64 coefficient = UInt!64(1);
+        coefficient <<= 63;
+        coefficient += 1;
+        const result = poissonTailsChecked(256, T(false, -55, coefficient), 1024);
+        assert(result.status == PoissonTailStatus.found);
+        UInt!64 lower = UInt!64(9529851796236327655UL);
+        UInt!64 upper = UInt!64(17833784554946447922UL);
+        assert(result.cdf == T(false, -64, lower));
+        assert(result.ccdf == T(false, -65, upper));
+    }
+    {
+        alias T = Fp!128;
+        UInt!128 coefficient = UInt!128(1);
+        coefficient <<= 127;
+        coefficient += 1;
+        const result = poissonTailsChecked(256, T(false, -119, coefficient), 1024);
+        assert(result.status == PoissonTailStatus.found);
+        UInt!128 lower = UInt!128(9529851796236327667UL);
+        lower <<= 64; lower += 16186306760386456855UL;
+        UInt!128 upper = UInt!128(17833784554946447896UL);
+        upper <<= 64; upper += 4520874626646189521UL;
+        assert(result.cdf == T(false, -128, lower));
+        assert(result.ccdf == T(false, -129, upper));
+    }
+    {
+        alias T = Fp!256;
+        UInt!256 coefficient = UInt!256(1);
+        coefficient <<= 255;
+        coefficient += 1;
+        const result = poissonTailsChecked(256, T(false, -247, coefficient), 1024);
+        assert(result.status == PoissonTailStatus.found);
+        UInt!256 lower = UInt!256(9529851796236327667UL);
+        lower <<= 64; lower += 16186306760386456868UL;
+        lower <<= 64; lower += 1190567059975828445UL;
+        lower <<= 64; lower += 3206519675103615144UL;
+        UInt!256 upper = UInt!256(17833784554946447896UL);
+        upper <<= 64; upper += 4520874626646189495UL;
+        upper <<= 64; upper += 16065609953757894725UL;
+        upper <<= 64; upper += 12033704723502321328UL;
+        assert(result.cdf == T(false, -256, lower));
+        assert(result.ccdf == T(false, -257, upper));
+    }
+    {
+        alias T = Fp!512;
+        UInt!512 coefficient = UInt!512(1);
+        coefficient <<= 511;
+        coefficient += 1;
+        const result = poissonTailsChecked(256, T(false, -503, coefficient), 1024);
+        assert(result.status == PoissonTailStatus.found);
+        UInt!512 lower = UInt!512(9529851796236327667UL);
+        lower <<= 64; lower += 16186306760386456868UL;
+        lower <<= 64; lower += 1190567059975828445UL;
+        lower <<= 64; lower += 3206519675103615156UL;
+        lower <<= 64; lower += 13735304372013518645UL;
+        lower <<= 64; lower += 7711627967597212364UL;
+        lower <<= 64; lower += 9313882732625742322UL;
+        lower <<= 64; lower += 1919002489012142953UL;
+        UInt!512 upper = UInt!512(17833784554946447896UL);
+        upper <<= 64; upper += 4520874626646189495UL;
+        upper <<= 64; upper += 16065609953757894725UL;
+        upper <<= 64; upper += 12033704723502321302UL;
+        upper <<= 64; upper += 9422879403392065941UL;
+        upper <<= 64; upper += 3023488138515126886UL;
+        upper <<= 64; upper += 18265722682167618587UL;
+        upper <<= 64; upper += 14608739095685265710UL;
+        assert(result.cdf == T(false, -512, lower));
+        assert(result.ccdf == T(false, -513, upper));
     }
 }
 

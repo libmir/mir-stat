@@ -69,6 +69,7 @@ sources_list = [
     'mir/stat/internal/fp_geometric_inverse',
     'mir/stat/internal/fp_hypergeometric_tails',
     'mir/stat/internal/fp_poisson',
+    'mir/stat/internal/fp_poisson_tails',
     'mir/stat/internal/fp_scaled_probability',
     'mir/stat/internal/gamma',
     'mir/stat/internal/neg_log1m',
