@@ -8,7 +8,8 @@ module mir.stat.internal.fp_binomial_tails;
 import mir.bignum.fixed: UInt;
 import mir.bignum.fp: Fp;
 import mir.bignum.integer: BigInt;
-import mir.stat.distribution.binomial: BinomialTailResult, BinomialTailStatus;
+import mir.stat.distribution.binomial: BinomialTailResult, BinomialTailStatus,
+    BinomialInverseResult, BinomialInverseStatus;
 import mir.stat.internal.fp_probability: fpProbabilityComplement, fpProbabilityLess;
 
 // Round n*p approached strictly from below. Callers establish that the
@@ -76,26 +77,28 @@ private struct ExactTails(uint bits, uint capacity)
         return result;
     }
 
-    static BinomialTailResult!T evaluate(size_t k, size_t n, UInt!bits odd, size_t s)
+    // Copy only significant words, even when the input width exceeds capacity.
+    private static void fromFixed(ref Integer value, UInt!bits coefficient)
     {
-        Integer a;
-        // The reduced numerator is smaller than 2^s, even if the input
-        // coefficient has more words than the selected workspace.
         enum wordBits = size_t.sizeof * 8;
-        const words = (s + wordBits - 1) / wordBits;
-        a.length = cast(uint)(words < odd.data.length ? words : odd.data.length);
+        value.length = cast(uint)((bits - coefficient.ctlz + wordBits - 1) / wordBits);
+        assert(value.length <= value.data.length);
         version (LittleEndian)
-            a.data[0 .. a.length] = odd.data[0 .. a.length];
+            value.data[0 .. value.length] = coefficient.data[0 .. value.length];
         else
-            foreach (i; 0 .. a.length)
-                a.data[i] = odd.data[$ - 1 - i];
-        a.normalize();
-        Integer b = Integer(1);
+            foreach (i; 0 .. value.length)
+                value.data[i] = coefficient.data[$ - 1 - i];
+    }
+
+    private static void initialize(ref Integer a, ref Integer b, ref Integer term,
+        size_t n, UInt!bits odd, size_t s, bool lower)
+    {
+        fromFixed(a, odd);
+        b = 1;
         b <<= s;
         b -= a;
-        const lower = k + 1 <= n - k;
         Integer factor = lower ? b : a;
-        Integer term = Integer(1);
+        term = 1;
         for (size_t power = n; power; ) {
             if (power & 1)
                 term *= factor;
@@ -104,22 +107,35 @@ private struct ExactTails(uint bits, uint capacity)
                 factor *= factor;
         }
 
+    }
+
+    private static void advance(ref Integer term, ref const Integer a,
+        ref const Integer b, size_t n, size_t j, bool lower)
+    {
+        // Remove one endpoint factor before advancing C(n,j-1) to C(n,j).
+        if (lower) {
+            term /= b;
+            term *= a;
+        } else {
+            term /= a;
+            term *= b;
+        }
+        const carry = term.opOpAssign!"*"(n - j + 1);
+        assert(!carry);
+        const remainder = term.opOpAssign!"/"(cast(uint)j);
+        assert(!remainder);
+        term.normalize();
+    }
+
+    static BinomialTailResult!T evaluate(size_t k, size_t n, UInt!bits odd, size_t s)
+    {
+        const lower = k + 1 <= n - k;
+        Integer a, b, term;
+        initialize(a, b, term, n, odd, s, lower);
         Integer sum = term;
         const terms = lower ? k + 1 : n - k;
         foreach (j; 1 .. terms) {
-            // Remove one endpoint factor before advancing C(n,j-1) to C(n,j).
-            if (lower) {
-                term /= b;
-                term *= a;
-            } else {
-                term /= a;
-                term *= b;
-            }
-            const carry = term.opOpAssign!"*"(n - j + 1);
-            assert(!carry);
-            const remainder = term.opOpAssign!"/"(cast(uint)j);
-            assert(!remainder);
-            term.normalize();
+            advance(term, a, b, n, j, lower);
             const overflow = sum.opOpAssign!"+"(term);
             assert(!overflow);
         }
@@ -132,6 +148,63 @@ private struct ExactTails(uint bits, uint capacity)
         return BinomialTailResult!T(BinomialTailStatus.found,
             lower ? direct : complement, lower ? complement : direct);
     }
+    // The lower-tail threshold is ceil(q*2^scale). Compute it by shifting
+    // the represented coefficient, retaining whether any discarded bit is set.
+    private static void targetRank(ref Integer rank, T q, size_t scale)
+    {
+        const queryScale = 0UL - cast(ulong)q.exponent;
+        auto coefficient = q.coefficient;
+        if (queryScale > scale) {
+            const shift = queryScale - scale;
+            if (shift >= bits) {
+                rank = 1;
+                return;
+            }
+            const remainder = coefficient.cttz < shift;
+            coefficient >>= cast(size_t)shift;
+            fromFixed(rank, coefficient);
+            if (remainder) {
+                auto one = BigInt!1(1);
+                rank += one;
+            }
+        } else {
+            fromFixed(rank, coefficient);
+            rank <<= scale - cast(size_t)queryScale;
+        }
+    }
+
+    static BinomialInverseResult inverse(T q, size_t n, UInt!bits odd,
+        size_t s, size_t maxTerms)
+    {
+        enum half = T(false, -1, UInt!bits(1));
+        const lower = !fpProbabilityLess(half, q);
+        Integer rank;
+        targetRank(rank, q, s*n);
+        if (!lower) {
+            Integer denominator = Integer(1);
+            denominator <<= s*n;
+            denominator -= rank;
+            rank = denominator;
+        }
+        Integer a, b, term;
+        initialize(a, b, term, n, odd, s, lower);
+        Integer sum = term;
+        foreach (j; 0 .. maxTerms) {
+            // For descending search, CDF(n-j-1) < q exactly when the
+            // accumulated upper-tail numerator exceeds D-ceil(q*D).
+            if (lower ? sum >= rank : sum > rank)
+                return BinomialInverseResult(BinomialInverseStatus.found,
+                    lower ? j : n-j);
+            if (j+1 == maxTerms)
+                break;
+            assert(j < n);
+            advance(term, a, b, n, j+1, lower);
+            const overflow = sum.opOpAssign!"+"(term);
+            assert(!overflow);
+        }
+        return BinomialInverseResult.init;
+    }
+
 }
 
 package(mir.stat) BinomialTailResult!(Fp!bits) exactBinomialTails(uint bits)(
@@ -182,4 +255,32 @@ package(mir.stat) BinomialTailResult!(Fp!bits) exactBinomialTails(uint bits)(
     if (scale <= 16384)
         return ExactTails!(bits, 16384).evaluate(k, n, odd, cast(size_t)s);
     return ExactTails!(bits, 65536).evaluate(k, n, odd, cast(size_t)s);
+}
+
+
+package(mir.stat) BinomialInverseResult exactBinomialInverse(uint bits)(
+    Fp!bits q, size_t n, Fp!bits p, size_t maxTerms, size_t maxScale)
+    @safe pure nothrow @nogc
+{
+    alias T = Fp!bits;
+    enum found = BinomialInverseStatus.found;
+    if (!q.coefficient || !p.coefficient || !n)
+        return BinomialInverseResult(found, 0);
+    if (!fpProbabilityLess(q, T(1)) || !fpProbabilityLess(p, T(1)))
+        return BinomialInverseResult(found, n);
+
+    const trailing = p.coefficient.cttz;
+    const s = (0UL - cast(ulong)p.exponent) - trailing;
+    if (!maxTerms || s > maxScale / n || s > 65536 / n)
+        return BinomialInverseResult.init;
+    // Reaching either end of the support must resolve every interior query.
+    const terms = maxTerms < 1024 ? maxTerms : 1024;
+    const budget = n < terms ? n+1 : terms;
+    const scale = cast(size_t)s*n;
+    const odd = p.coefficient >> trailing;
+    if (scale <= 4096)
+        return ExactTails!(bits, 4096).inverse(q, n, odd, cast(size_t)s, budget);
+    if (scale <= 16384)
+        return ExactTails!(bits, 16384).inverse(q, n, odd, cast(size_t)s, budget);
+    return ExactTails!(bits, 65536).inverse(q, n, odd, cast(size_t)s, budget);
 }

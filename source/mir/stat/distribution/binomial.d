@@ -9,7 +9,8 @@ outside this interval rather than extending their tails beyond the support.
 PMF and LPMF accept $(D Fp) probabilities. The Fp PMF is also available
 as $(LREF fp_binomialPMF). CDF, CCDF, and inverse CDF accept built-in
 floating-point probabilities. $(LREF binomialTailsChecked) computes both
-Fp tails with explicit work limits.
+Fp tails with explicit work limits. $(LREF binomialInvCDFChecked) provides
+a bounded exact inverse for Fp probabilities.
 LPMF has no algorithm selector. Normal and Poisson approximations trade
 accuracy for speed and do not promise the direct algorithm's interior
 probabilities, although their point masses and boundary returns are handled
@@ -1405,6 +1406,117 @@ bool binomialQuantileReached(T)(size_t k, size_t n, T p, T q, bool upper, T valu
     }
     return upper ? value <= target : value >= target;
 }
+
+/// Outcome of $(LREF binomialInvCDFChecked).
+enum BinomialInverseStatus
+{
+    /// The exact comparison exceeds a work limit. The count field is unused.
+    workLimit,
+    /// The count satisfies the quantile or endpoint convention.
+    found,
+}
+
+/// Read count when status is found. Default initialization denotes an unresolved query.
+struct BinomialInverseResult
+{
+    /// Outcome of the query.
+    BinomialInverseStatus status = BinomialInverseStatus.workLimit;
+    /// Quantile or endpoint value when found.
+    size_t count;
+}
+
+/++
+Computes a checked binomial inverse CDF for represented Fp probabilities.
+For an interior query, returns the least count whose exact CDF reaches $(D q).
+Cumulative integer weights are compared before any probability is rounded.
+
+Params:
+    q = finite cumulative probability in [0,1]
+    n = number of trials
+    p = finite success probability in [0,1], with the same Fp width as q
+    maxTerms = maximum number of masses visited (default 256, ceiling 1024)
+    maxScale = maximum exponent of the common power-of-two denominator
+        (default 16384, ceiling 65536)
+
+Returns:
+    Returns zero when q is zero, p is zero, or n is zero. Otherwise q equal to
+    one or p equal to one returns n. These cases ignore the work budgets.
+
+    Other queries use the same denominator budget as $(LREF binomialTailsChecked).
+    The search starts at zero for q at most one half, and at n otherwise.
+    If the denominator exceeds its limit, or the selected search cannot resolve
+    the count within the term budget, returns $(D workLimit). Increasing either
+    budget up to its ceiling may resolve the query. The integer workspace is
+    allocated on the stack.
++/
+@safe pure nothrow @nogc
+BinomialInverseResult binomialInvCDFChecked(uint bits)(
+    Fp!bits q, size_t n, Fp!bits p, size_t maxTerms = 256, size_t maxScale = 16384)
+    in (fpProbabilityValid(q), "q must be a finite probability in [0,1]")
+    in (fpProbabilityValid(p), "p must be a finite probability in [0,1]")
+{
+    import mir.stat.internal.fp_binomial_tails: exactBinomialInverse;
+    return exactBinomialInverse(q, n, p, maxTerms, maxScale);
+}
+
+/// An exact CDF jump and the next represented probability select different counts.
+version(mir_stat_test)
+@safe pure nothrow @nogc unittest
+{
+    import mir.bignum.fp: Fp;
+    import mir.bignum.fixed: UInt;
+    alias T = Fp!64;
+    const q = T(0.75);
+    T above = q;
+    above.coefficient += UInt!64(1);
+    const tie = binomialInvCDFChecked(q, 2, T(0.5));
+    const next = binomialInvCDFChecked(above, 2, T(0.5));
+    assert(tie.status == BinomialInverseStatus.found && tie.count == 1);
+    assert(next.status == BinomialInverseStatus.found && next.count == 2);
+}
+
+version(mir_stat_test)
+@safe pure nothrow @nogc unittest
+{
+    import mir.bignum.fixed: UInt;
+    alias T = Fp!64;
+    alias S = BinomialInverseStatus;
+    alias R = BinomialInverseResult;
+    alias evaluate = binomialInvCDFChecked!64;
+    assert(R.init.status == S.workLimit);
+    assert(evaluate(T(0), size_t.max, T(1), 0, 0) == R(S.found, 0));
+    assert(evaluate(T(1), size_t.max, T(0), 0, 0) == R(S.found, 0));
+    assert(evaluate(T(1), 0, T(1), 0, 0) == R(S.found, 0));
+    assert(evaluate(T(1), size_t.max, T(0.5), 0, 0) == R(S.found, size_t.max));
+    assert(evaluate(T(0.25), size_t.max, T(1), 0, 0) == R(S.found, size_t.max));
+    assert(evaluate(T(0.5), 4, T(0.5), 2).status == S.workLimit);
+    assert(evaluate(T(0.5), 4, T(0.5), 3) == R(S.found, 2));
+    assert(evaluate(T(0.75), 4, T(0.5), 1).status == S.workLimit);
+    assert(evaluate(T(0.75), 4, T(0.5), 2) == R(S.found, 3));
+    assert(evaluate(T(0.5), 2, T(0.5), 0).status == S.workLimit);
+    assert(evaluate(T(0.5), 2, T(0.5), 2, 1).status == S.workLimit);
+    assert(evaluate(T(0.5), 2, T(false, -8, UInt!64(128)), 2, 2) == R(S.found, 1));
+    const tiny = T(false, long.min, UInt!64(1));
+    assert(evaluate(tiny, 2, T(0.5), 1) == R(S.found, 0));
+    assert(evaluate(T(0.5), 2, tiny, size_t.max, size_t.max).status == S.workLimit);
+    // The term ceiling still applies when the caller supplies size_t.max.
+    assert(evaluate(T(0.5), 2048, T(0.5), size_t.max, size_t.max).status == S.workLimit);
+    assert(evaluate(T(0.5), 2047, T(0.5), 1024) == R(S.found, 1023));
+    // The rounded CDF equals q, but the exact CDF lies just below it.
+    T p = T(0.5);
+    p.coefficient += UInt!64(1);
+    T q = T(0.75);
+    q.coefficient -= UInt!64(1);
+    assert(binomialTailsChecked(1, 2, p).cdf == q);
+    assert(evaluate(q, 2, p) == R(S.found, 2));
+    // Exercise each larger workspace with one exact endpoint mass.
+    foreach (n; [4097, 16385]) {
+        const endpointQuery = T(false, -cast(long)n, UInt!64(1));
+        assert(evaluate(endpointQuery, n, T(0.5), 1, n) == R(S.found, 0));
+        assert(evaluate(endpointQuery, n, T(0.5), 1, n-1).status == S.workLimit);
+    }
+}
+
 
 private
 @safe pure nothrow @nogc
