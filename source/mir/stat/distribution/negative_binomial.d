@@ -407,7 +407,7 @@ Returns:
     as in $(REF binomialTailsChecked, mir,stat,distribution,binomial).
 +/
 @safe pure nothrow @nogc
-NegativeBinomialTailResult!T negativeBinomialTailsChecked(T)(size_t k, size_t r, T p,
+NegativeBinomialTailResult!T negativeBinomialTailsChecked(T)(size_t k, size_t r, const T p,
     size_t maxTerms = 256, size_t maxScale = 16384)
     if (is(T == Fp!bits, uint bits))
     in (r > 0, "number of successes must be larger than zero")
@@ -1554,5 +1554,28 @@ version(mir_stat_test)
         assert(negativeBinomialPMF(2,2,smaller) == T(false,long.min,UInt!bits(1)));
         assert(negativeBinomialPMF(5,2,smaller) == T(false,long.min,UInt!bits(1)));
         assert(negativeBinomialPMF(size_t.max,2,T(false,long.min,UInt!bits(1))) == T(0));
+    }}
+}
+
+// Qualified probabilities infer the same value result as mutable probabilities.
+version(mir_stat_test)
+@safe pure nothrow @nogc unittest
+{
+    import std.meta: AliasSeq;
+    static foreach (T; AliasSeq!(Fp!64, Fp!128))
+    {{
+        T p = T(0.5);
+        const T constP = p;
+        immutable T immutableP = T(0.5);
+        static assert(is(typeof(negativeBinomialTailsChecked(1, 4, p)) == NegativeBinomialTailResult!T));
+        static assert(is(typeof(negativeBinomialTailsChecked(1, 4, constP)) == NegativeBinomialTailResult!T));
+        static assert(is(typeof(negativeBinomialTailsChecked(1, 4, immutableP)) == NegativeBinomialTailResult!T));
+        const expected = NegativeBinomialTailResult!T(NegativeBinomialTailStatus.found, T(0.1875), T(0.8125));
+        assert(negativeBinomialTailsChecked(1, 4, p) == expected);
+        assert(negativeBinomialTailsChecked(1, 4, constP) == expected);
+        assert(negativeBinomialTailsChecked(1, 4, immutableP) == expected);
+        assert(negativeBinomialTailsChecked!T(1, 4, constP) == expected);
+        assert(negativeBinomialTailsChecked(1, 4, T(0.5)) == expected);
+        assert(negativeBinomialTailsChecked(1, 4, constP, 0, 0).status == NegativeBinomialTailStatus.workLimit);
     }}
 }
