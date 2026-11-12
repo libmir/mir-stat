@@ -708,7 +708,7 @@ Returns:
     probability is returned on failure. Workspace is fixed-capacity stack storage.
 +/
 @safe pure nothrow @nogc
-PoissonTailResult!T poissonTailsChecked(T)(size_t k, T lambda, size_t maxTerms = 256)
+PoissonTailResult!T poissonTailsChecked(T)(size_t k, const T lambda, size_t maxTerms = 256)
     if (is(T == Fp!bits, uint bits))
     in (!lambda.sign && (lambda.exponent == long.max ? !lambda.coefficient : !!lambda.coefficient),
         "lambda must be positive and not NaN")
@@ -1943,4 +1943,52 @@ version(mir_stat_test)
     }
     foreach (T; AliasSeq!(float,double,real))
         static assert(is(typeof(poissonLPMF(1,T(1))) == T));
+}
+
+// Const and immutable rates should infer the same value result as mutable rates.
+version(mir_stat_test)
+@safe pure nothrow @nogc unittest
+{
+    import std.meta: AliasSeq;
+    static foreach (T; AliasSeq!(Fp!64, Fp!128))
+    {{
+        T rate = T(1);
+        const T constRate = rate;
+        immutable T immutableRate = T(1);
+        static assert(is(typeof(poissonTailsChecked(0, rate)) == PoissonTailResult!T));
+        static assert(is(typeof(poissonTailsChecked(0, constRate)) == PoissonTailResult!T));
+        static assert(is(typeof(poissonTailsChecked(0, immutableRate)) == PoissonTailResult!T));
+        const expected = poissonTailsChecked(0, rate);
+        assert(expected.status == PoissonTailStatus.found);
+        assert(poissonTailsChecked(0, constRate) == expected);
+        assert(poissonTailsChecked(0, immutableRate) == expected);
+        assert(poissonTailsChecked!T(0, constRate) == expected);
+        assert(poissonTailsChecked(0, T(1)) == expected);
+    }}
+}
+
+// A 32-bit coefficient occupies one 64-bit BigInt limb. The product workspace
+// must account for that whole limb in both tails and inverse calculations.
+version(mir_stat_test)
+@safe pure nothrow @nogc unittest
+{
+    version(D_LP64) {} else {
+        import mir.bignum.fixed: UInt;
+        alias T = Fp!32;
+        enum one = T(false, -31, UInt!32(0x80000000U));
+        enum half = T(false, -32, UInt!32(0x80000000U));
+        const tails = poissonTailsChecked(0, one);
+        assert(tails.status == PoissonTailStatus.found);
+        // Independently rounded exp(-1) and 1-exp(-1).
+        assert(tails.cdf == T(false, -33, UInt!32(0xbc5ab1b1U)));
+        assert(tails.ccdf == T(false, -32, UInt!32(0xa1d2a727U)));
+        assert(poissonTailsChecked(0, one, 0).status == PoissonTailStatus.workLimit);
+        // Adjacent represented queries bracket the exact exp(-1) CDF jump.
+        const below = T(false, -33, UInt!32(0xbc5ab1b1U));
+        const above = T(false, -33, UInt!32(0xbc5ab1b2U));
+        assert(poissonInvCDFChecked(below, one) == PoissonInverseResult(PoissonInverseStatus.found, 0));
+        assert(poissonInvCDFChecked(above, one) == PoissonInverseResult(PoissonInverseStatus.found, 1));
+        assert(poissonInvCDFChecked(half, one) == PoissonInverseResult(PoissonInverseStatus.found, 1));
+        assert(poissonInvCDFChecked(half, one, 0).status == PoissonInverseStatus.workLimit);
+    }
 }
