@@ -902,7 +902,7 @@ Returns:
     budgets. Workspace is allocated on the stack according to the scale.
 +/
 @safe pure nothrow @nogc
-BinomialTailResult!T binomialTailsChecked(T)(size_t k, size_t n, T p,
+BinomialTailResult!T binomialTailsChecked(T)(size_t k, size_t n, const T p,
     size_t maxTerms = 256, size_t maxScale = 16384)
     if (is(T == Fp!bits, uint bits))
     in (k <= n, "k must be less than or equal to n")
@@ -2570,4 +2570,27 @@ version(mir_stat_test)
             }
         }
     }
+}
+
+// Qualified probabilities infer the same value result as mutable probabilities.
+version(mir_stat_test)
+@safe pure nothrow @nogc unittest
+{
+    import std.meta: AliasSeq;
+    static foreach (T; AliasSeq!(Fp!64, Fp!128))
+    {{
+        T p = T(0.5);
+        const T constP = p;
+        immutable T immutableP = T(0.5);
+        static assert(is(typeof(binomialTailsChecked(1, 4, p)) == BinomialTailResult!T));
+        static assert(is(typeof(binomialTailsChecked(1, 4, constP)) == BinomialTailResult!T));
+        static assert(is(typeof(binomialTailsChecked(1, 4, immutableP)) == BinomialTailResult!T));
+        const expected = BinomialTailResult!T(BinomialTailStatus.found, T(0.3125), T(0.6875));
+        assert(binomialTailsChecked(1, 4, p) == expected);
+        assert(binomialTailsChecked(1, 4, constP) == expected);
+        assert(binomialTailsChecked(1, 4, immutableP) == expected);
+        assert(binomialTailsChecked!T(1, 4, constP) == expected);
+        assert(binomialTailsChecked(1, 4, T(0.5)) == expected);
+        assert(binomialTailsChecked(1, 4, constP, 0, 0).status == BinomialTailStatus.workLimit);
+    }}
 }
