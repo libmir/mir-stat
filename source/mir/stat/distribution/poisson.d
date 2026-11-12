@@ -708,7 +708,7 @@ Returns:
     probability is returned on failure. Workspace is fixed-capacity stack storage.
 +/
 @safe pure nothrow @nogc
-PoissonTailResult!T poissonTailsChecked(T)(size_t k, T lambda, size_t maxTerms = 256)
+PoissonTailResult!T poissonTailsChecked(T)(size_t k, const T lambda, size_t maxTerms = 256)
     if (is(T == Fp!bits, uint bits))
     in (!lambda.sign && (lambda.exponent == long.max ? !lambda.coefficient : !!lambda.coefficient),
         "lambda must be positive and not NaN")
@@ -1943,4 +1943,26 @@ version(mir_stat_test)
     }
     foreach (T; AliasSeq!(float,double,real))
         static assert(is(typeof(poissonLPMF(1,T(1))) == T));
+}
+
+// Const and immutable rates should infer the same value result as mutable rates.
+version(mir_stat_test)
+@safe pure nothrow @nogc unittest
+{
+    import std.meta: AliasSeq;
+    static foreach (T; AliasSeq!(Fp!64, Fp!128))
+    {{
+        T rate = T(1);
+        const T constRate = rate;
+        immutable T immutableRate = T(1);
+        static assert(is(typeof(poissonTailsChecked(0, rate)) == PoissonTailResult!T));
+        static assert(is(typeof(poissonTailsChecked(0, constRate)) == PoissonTailResult!T));
+        static assert(is(typeof(poissonTailsChecked(0, immutableRate)) == PoissonTailResult!T));
+        const expected = poissonTailsChecked(0, rate);
+        assert(expected.status == PoissonTailStatus.found);
+        assert(poissonTailsChecked(0, constRate) == expected);
+        assert(poissonTailsChecked(0, immutableRate) == expected);
+        assert(poissonTailsChecked!T(0, constRate) == expected);
+        assert(poissonTailsChecked(0, T(1)) == expected);
+    }}
 }
