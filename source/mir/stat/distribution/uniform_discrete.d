@@ -8,7 +8,8 @@ observation inside the interval rather than extending the tails outside it.
 
 PMF, CDF, and CCDF accept $(D lower == upper). LPMF and inverse CDF instead
 require $(D lower < upper). Forward functions return $(D double) by default.
-PMF, CDF, CCDF, and LPMF additionally accept an explicit $(D Fp) result type, such as
+PMF, CDF, CCDF, and LPMF additionally accept an explicit $(D float), $(D double),
+$(D real), or $(D Fp) result type, such as
 $(D uniformDiscreteCDF!(Fp!128)(x, lower, upper)). The inverse CDF accepts a
 built-in floating-point or $(D Fp) probability and returns $(D size_t).
 For $(D Fp), its integer rank is exact for the represented probability.
@@ -65,11 +66,19 @@ See_also:
 +/
 @safe pure nothrow @nogc
 double uniformDiscretePMF(const size_t x, const size_t lower = 0, const size_t upper = 1)
+{
+    return uniformDiscretePMF!double(x, lower, upper);
+}
+
+/// ditto
+@safe pure nothrow @nogc
+T uniformDiscretePMF(T)(const size_t x, const size_t lower = 0, const size_t upper = 1)
+    if (isFloatingPoint!T)
     in (x >= lower, "x must be greater than or equal to lower bound")
     in (x <= upper, "x must be less than or equal to upper bound")
     in (lower <= upper, "lower must be less than or equal to upper")
 {
-    return 1.0 / (cast(double)(upper - lower) + 1);
+    return T(1) / (cast(T)(upper - lower) + 1);
 }
 
 /// ditto
@@ -120,11 +129,19 @@ See_also:
 +/
 @safe pure nothrow @nogc
 double uniformDiscreteCDF(const size_t x, const size_t lower = 0, const size_t upper = 1)
+{
+    return uniformDiscreteCDF!double(x, lower, upper);
+}
+
+/// ditto
+@safe pure nothrow @nogc
+T uniformDiscreteCDF(T)(const size_t x, const size_t lower = 0, const size_t upper = 1)
+    if (isFloatingPoint!T)
     in (x >= lower, "x must be greater than or equal to lower bound")
     in (x <= upper, "x must be less than or equal to upper bound")
     in (lower <= upper, "lower must be less than or equal to upper")
 {
-    return (cast(double)(x - lower) + 1) / (cast(double)(upper - lower) + 1);
+    return (cast(T)(x - lower) + 1) / (cast(T)(upper - lower) + 1);
 }
 
 /// ditto
@@ -180,11 +197,19 @@ See_also:
 +/
 @safe pure nothrow @nogc
 double uniformDiscreteCCDF(const size_t x, const size_t lower = 0, const size_t upper = 1)
+{
+    return uniformDiscreteCCDF!double(x, lower, upper);
+}
+
+/// ditto
+@safe pure nothrow @nogc
+T uniformDiscreteCCDF(T)(const size_t x, const size_t lower = 0, const size_t upper = 1)
+    if (isFloatingPoint!T)
     in (x >= lower, "x must be greater than or equal to lower bound")
     in (x <= upper, "x must be less than or equal to upper bound")
     in (lower <= upper, "lower must be less than or equal to upper")
 {
-    return cast(double)(upper - x) / (cast(double)(upper - lower) + 1);
+    return cast(T)(upper - x) / (cast(T)(upper - lower) + 1);
 }
 
 /// ditto
@@ -380,13 +405,21 @@ See_also:
 +/
 @safe pure nothrow @nogc
 double uniformDiscreteLPMF(const size_t x, const size_t lower = 0, const size_t upper = 1)
+{
+    return uniformDiscreteLPMF!double(x, lower, upper);
+}
+
+/// ditto
+@safe pure nothrow @nogc
+T uniformDiscreteLPMF(T)(const size_t x, const size_t lower = 0, const size_t upper = 1)
+    if (isFloatingPoint!T)
     in (x >= lower, "x must be greater than or equal to lower bound")
     in (x <= upper, "x must be less than or equal to upper bound")
     in (lower < upper, "lower must be less than upper")
 {
     import mir.math.common: log;
 
-    return -log(cast(double)(upper - lower) + 1);
+    return -log(cast(T)(upper - lower) + 1);
 }
 
 /// ditto
@@ -1056,3 +1089,48 @@ version(mir_stat_test)
     }
 }
 // END discrete-uniform log references
+
+// Shared exact inputs exercise selectable result widths and legacy calls.
+version(mir_stat_test)
+@safe pure nothrow @nogc unittest
+{
+    import std.meta: AliasSeq;
+    import mir.math.common: fabs, log;
+    static foreach (T; AliasSeq!(float, double, real, Fp!64, Fp!128)) {{
+        static assert(is(typeof(uniformDiscretePMF!T(0)) == T));
+        static assert(is(typeof(uniformDiscreteCDF!T(0)) == T));
+        static assert(is(typeof(uniformDiscreteCCDF!T(0)) == T));
+        static assert(is(typeof(uniformDiscreteLPMF!T(0)) == T));
+        foreach (x; size_t(1) .. 5) {
+            assert(uniformDiscretePMF!T(x, 1, 4) == T(0.25));
+            assert(uniformDiscreteCDF!T(x, 1, 4) == T(cast(double)x / 4));
+            assert(uniformDiscreteCCDF!T(x, 1, 4) == T(cast(double)(4-x) / 4));
+        }
+        assert(uniformDiscretePMF!T(size_t.max, size_t.max, size_t.max) == T(1));
+        assert(uniformDiscreteCDF!T(size_t.max, size_t.max, size_t.max) == T(1));
+        assert(uniformDiscreteCCDF!T(size_t.max, size_t.max, size_t.max) == T(0));
+        static if (isFloatingPoint!T) {
+            // A direct upper tail survives when the lower tail rounds to one.
+            const quantum = T(1) / (cast(T)size_t.max + 1);
+            assert(uniformDiscretePMF!T(0, 0, size_t.max) == quantum);
+            assert(uniformDiscreteCCDF!T(size_t.max-1, 0, size_t.max) == quantum);
+            assert(uniformDiscreteCDF!T(size_t.max, 0, size_t.max) == T(1));
+            assert(fabs(uniformDiscreteLPMF!T(2, 1, 4) + 2*log(T(2))) <= 4*T.epsilon);
+        } else {
+            assert(fabs(cast(double)uniformDiscreteLPMF!T(2, 1, 4) + 2*log(2.0)) <= 4*double.epsilon);
+        }
+    }}
+    static foreach (name; ["PMF", "CDF", "CCDF", "LPMF"]) {{
+        mixin("alias evaluate = uniformDiscrete" ~ name ~ ";");
+        static assert(is(typeof(evaluate(0)) == double));
+        static assert(!__traits(compiles, evaluate!int(0)));
+        assert(evaluate(1, 1, 4) == evaluate!double(1, 1, 4));
+    }}
+    // A real result must not be rounded through double first.
+    static if (size_t.sizeof == 8 && real.mant_dig > double.mant_dig) {
+        enum size_t upper = (size_t(1) << 53) + 1;
+        const result = uniformDiscreteCDF!real(upper - 1, 0, upper);
+        assert(result < 1);
+        assert(uniformDiscreteCDF(upper - 1, 0, upper) == 1);
+    }
+}
