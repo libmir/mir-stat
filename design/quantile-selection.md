@@ -149,9 +149,12 @@ Both entry points share slice normalization and selection logic. Compile-time
 branches exclude bitmap lookup, bit-mask calculations, and pivot recording from
 uncached instantiations; this does not depend on inlining or constant propagation.
 Uncached rank-guided selection delegates directly to mir-algorithm's `partitionAt`; its
-import is explicitly aliased inside the helper to avoid name collisions. Existing
-uncached quantile calls still use mir-algorithm's `partitionAt` through
-`partitionQuantileRank`; they do not switch to the new internal entry point.
+import is explicitly aliased inside the helper to avoid name collisions.
+`partitionQuantileRank` routes uncached quantile calls through the internal
+`partitionAt` entry point, retaining its rank-guided default independently of
+the cached strategy. This includes scalar quantiles, uncached batches, and
+uncached quantile spreads such as IQR. No bitmap is allocated or maintained.
+Standalone median selection continues to call mir-algorithm directly.
 
 The adaptive decision uses the nearest cached boundaries when available, or the
 full workspace for an uncached call. For example, a request for rank 5 in an unresolved interval `[0, 256)` uses rank
