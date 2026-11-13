@@ -399,6 +399,9 @@ Returns:
     At p equal to zero, returns zero CDF and unit CCDF. At p equal to one,
     returns unit CDF and zero CCDF. These endpoints ignore the work budgets.
 
+    At p=1/2 and k=r-1, both tails are exactly 1/2, even when k+r
+    would overflow. This symmetry case also ignores the work budgets.
+
     Other queries require k+r to fit size_t. The general calculation sums
     min(r,k+1) binomial weights. For p=a/2^^s in lowest terms, the common
     denominator is 2^^((k+r)*s). Returns $(D workLimit) when the count sum
@@ -421,6 +424,11 @@ NegativeBinomialTailResult!T negativeBinomialTailsChecked(T)(size_t k, size_t r,
         return Result(found, T(0), T(1));
     if (!fpProbabilityLess(p, T(1)))
         return Result(found, T(1), T(0));
+    // The equivalent binomial has 2*r-1 trials and an exact central split.
+    // Check before forming k+r, which need not fit size_t in this case.
+    enum half = () { auto value = T(1); --value.exponent; return value; }();
+    if (k == r - 1 && !fpProbabilityLess(p, half) && !fpProbabilityLess(half, p))
+        return Result(found, half, half);
     // Guard before addition, including when contracts are disabled.
     if (k > size_t.max - r)
         return Result.init;
@@ -479,7 +487,7 @@ version(mir_stat_test)
     const smallLower = evaluate(0, 100, T(0.5));
     assert(smallLower == R(S.found, T(false, -163, UInt!64(1UL << 63)), T(1)));
     assert(evaluate(1, 3, T(false, -40000, UInt!64(3)), size_t.max, size_t.max).status == S.workLimit);
-    assert(evaluate(1024, 1025, T(0.5), size_t.max, size_t.max).status == S.workLimit);
+    assert(evaluate(1025, 1025, T(0.5), size_t.max, size_t.max).status == S.workLimit);
 }
 
 version(mir_stat_test)
@@ -815,6 +823,8 @@ Returns:
     zero returns size_t.max. These endpoint conventions match the existing
     count inverse and ignore the work budgets.
 
+    At p=q=1/2, returns r-1 by symmetry, ignoring the work budgets.
+
     For p=a/2^^s in lowest terms, the cumulative probability at k failures
     has denominator 2^^((r+k)*s). The scan starts at zero and updates exact
     integer weights and the denominator until the query is reached. Returns
@@ -863,14 +873,14 @@ version(mir_stat_test)
     assert(evaluate(T(1), 3, T(0.5), 0, 0) == R(S.found, size_t.max));
     assert(evaluate(T(0.5), 3, T(false, -3, UInt!64(8)), 0, 0) == R(S.found, 0));
     assert(evaluate(T(false, -3, UInt!64(8)), 3, T(0.5), 0, 0) == R(S.found, size_t.max));
-    assert(evaluate(T(0.5), 3, T(0.5), 0).status == S.workLimit);
-    assert(evaluate(T(0.5), 3, T(0.5), 3, 5) == R(S.found, 2));
-    assert(evaluate(T(0.5), 3, T(0.5), 2, 5).status == S.workLimit);
-    assert(evaluate(T(0.5), 3, T(0.5), 3, 4).status == S.workLimit);
-    assert(evaluate(T(0.5), 3, T(0.5), 3, 2).status == S.workLimit);
+    assert(evaluate(T(0.375), 3, T(0.5), 0).status == S.workLimit);
+    assert(evaluate(T(0.375), 3, T(0.5), 3, 5) == R(S.found, 2));
+    assert(evaluate(T(0.375), 3, T(0.5), 2, 5).status == S.workLimit);
+    assert(evaluate(T(0.375), 3, T(0.5), 3, 4).status == S.workLimit);
+    assert(evaluate(T(0.375), 3, T(0.5), 3, 2).status == S.workLimit);
     assert(evaluate(T(0.5), 3, T(false, -3, UInt!64(4)), 3, 5) == R(S.found, 2));
     assert(evaluate(T(false, -3, UInt!64(4)), 3, T(0.5)) == R(S.found, 2));
-    assert(evaluate(T(0.5), size_t.max, T(0.5), size_t.max, size_t.max).status == S.workLimit);
+    assert(evaluate(T(0.375), size_t.max, T(0.5), size_t.max, size_t.max).status == S.workLimit);
     assert(evaluate(T(0.5), 3, T(false, long.min, UInt!64(1))).status == S.workLimit);
     assert(evaluate(T(false, long.min, UInt!64(1)), 3, T(0.5)) == R(S.found, 0));
     // q has many more fractional bits than the exact denominator.
@@ -1554,5 +1564,41 @@ version(mir_stat_test)
         assert(negativeBinomialPMF(2,2,smaller) == T(false,long.min,UInt!bits(1)));
         assert(negativeBinomialPMF(5,2,smaller) == T(false,long.min,UInt!bits(1)));
         assert(negativeBinomialPMF(size_t.max,2,T(false,long.min,UInt!bits(1))) == T(0));
+    }}
+}
+
+// Symmetry does not require constructing the possibly overflowing k+r.
+version(mir_stat_test)
+@safe pure nothrow @nogc unittest
+{
+    import mir.bignum.fixed: UInt;
+    static foreach (bits; [64, 128]) {{
+        alias T = Fp!bits;
+        enum half = T(false, -cast(long)bits, UInt!bits(1) << (bits - 1));
+        enum rawHalf = T(false, -3, UInt!bits(4));
+        auto coefficient = half.coefficient;
+        coefficient += 1;
+        auto above = T(false, half.exponent, coefficient);
+        auto below = T(false, half.exponent - 1, UInt!bits.max);
+        foreach (r; [size_t(1), size_t(2049), size_t.max / 2 + 1, size_t.max]) {
+            const tails = negativeBinomialTailsChecked(r - 1, r, rawHalf, 0, 0);
+            assert(tails.status == NegativeBinomialTailStatus.found);
+            assert(tails.cdf == half && tails.ccdf == half);
+            const result = negativeBinomialInvCDFChecked(rawHalf, r, rawHalf, 0, 0);
+            assert(result.status == NegativeBinomialInverseStatus.found && result.count == r - 1);
+        }
+        foreach (p; [below, above]) {
+            assert(negativeBinomialTailsChecked(2048, 2049, p, 0, 0).status == NegativeBinomialTailStatus.workLimit);
+            assert(negativeBinomialInvCDFChecked(half, 2049, p, 0, 0).status == NegativeBinomialInverseStatus.workLimit);
+            assert(negativeBinomialInvCDFChecked(p, 2049, half, 0, 0).status == NegativeBinomialInverseStatus.workLimit);
+        }
+        assert(negativeBinomialTailsChecked(2047, 2049, half, 0, 0).status == NegativeBinomialTailStatus.workLimit);
+        assert(negativeBinomialTailsChecked(size_t.max, size_t.max, half, 0, 0).status == NegativeBinomialTailStatus.workLimit);
+        // For r=2 the preceding CDF is exactly 1/4, below the half at k=1.
+        const prior = negativeBinomialTailsChecked(0, 2, half);
+        assert(prior.status == NegativeBinomialTailStatus.found);
+        auto quarter = half;
+        --quarter.exponent;
+        assert(prior.cdf == quarter);
     }}
 }

@@ -267,6 +267,11 @@ package(mir.stat) BinomialTailResult!(Fp!bits) exactBinomialTails(uint bits)(
     const trailing = p.coefficient.cttz;
     const odd = p.coefficient >> trailing;
     const s = (0UL - cast(ulong)p.exponent) - trailing;
+    // Pair j with n-j: for odd n the central split has equal exact tails.
+    if ((n & 1) && k == n / 2 && s == 1 && odd == UInt!bits(1)) {
+        enum half = T(false, -cast(long)bits, UInt!bits(1) << (bits - 1));
+        return Result(found, half, half);
+    }
     if (k == n - 1 && odd == UInt!bits(1)) {
         // The strict tail is 2^(-s*n). At half the smallest quantum, zero wins.
         enum floorScale = 1UL << 63;
@@ -306,6 +311,12 @@ package(mir.stat) BinomialInverseResult exactBinomialInverse(uint bits)(
 
     const trailing = p.coefficient.cttz;
     const s = (0UL - cast(ulong)p.exponent) - trailing;
+    enum half = T(false, -1, UInt!bits(1));
+    // Positive masses and reflection symmetry make floor(n/2) the least
+    // count reaching one half, for both even and odd n.
+    if (s == 1 && (p.coefficient >> trailing) == UInt!bits(1) &&
+        !fpProbabilityLess(q, half) && !fpProbabilityLess(half, q))
+        return BinomialInverseResult(found, n / 2);
     if (!maxTerms || s > maxScale / n || s > 65536 / n)
         return BinomialInverseResult.init;
     // Reaching either end of the support must resolve every interior query.
@@ -334,6 +345,12 @@ package(mir.stat) NegativeBinomialInverseResult exactNegativeBinomialInverse(uin
 
     const trailing = p.coefficient.cttz;
     const s = (0UL - cast(ulong)p.exponent) - trailing;
+    enum half = T(false, -1, UInt!bits(1));
+    // At k=r-1 the binomial identity has 2*r-1 symmetric trials.
+    // All masses are positive, so this is the least count reaching half.
+    if (s == 1 && (p.coefficient >> trailing) == UInt!bits(1) &&
+        !fpProbabilityLess(q, half) && !fpProbabilityLess(half, q))
+        return Result(found, r - 1);
     const scaleLimit = maxScale < 65536 ? maxScale : 65536;
     if (!maxTerms || s > scaleLimit / r)
         return Result.init;

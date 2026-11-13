@@ -899,7 +899,9 @@ Returns:
     For $(D p = a / 2^^s) in lowest terms, the common denominator is
     $(D 2^^(n*s)). When either budget is exceeded it returns $(D workLimit).
     Endpoints and certain extreme tails can be resolved even with zero
-    budgets. Workspace is allocated on the stack according to the scale.
+    budgets. For odd n, p=1/2 and k=n/2 give exactly equal tails of 1/2,
+    also ignoring the budgets. Workspace is allocated on the stack according
+    to the scale.
 +/
 @safe pure nothrow @nogc
 BinomialTailResult!T binomialTailsChecked(T)(size_t k, size_t n, T p,
@@ -1453,6 +1455,8 @@ Returns:
     Returns zero when q is zero, p is zero, or n is zero. Otherwise q equal to
     one or p equal to one returns n. These cases ignore the work budgets.
 
+    At p=q=1/2, returns n/2 (rounded down) by symmetry, ignoring the budgets.
+
     Other queries use the same denominator budget as $(LREF binomialTailsChecked).
     The search starts at zero for q at most one half, and at n otherwise.
     If the denominator exceeds its limit, or the selected search cannot resolve
@@ -1500,18 +1504,18 @@ version(mir_stat_test)
     assert(evaluate(T(1), 0, T(1), 0, 0) == R(S.found, 0));
     assert(evaluate(T(1), size_t.max, T(0.5), 0, 0) == R(S.found, size_t.max));
     assert(evaluate(T(0.25), size_t.max, T(1), 0, 0) == R(S.found, size_t.max));
-    assert(evaluate(T(0.5), 4, T(0.5), 2).status == S.workLimit);
-    assert(evaluate(T(0.5), 4, T(0.5), 3) == R(S.found, 2));
+    assert(evaluate(T(0.375), 4, T(0.5), 2).status == S.workLimit);
+    assert(evaluate(T(0.375), 4, T(0.5), 3) == R(S.found, 2));
     assert(evaluate(T(0.75), 4, T(0.5), 1).status == S.workLimit);
     assert(evaluate(T(0.75), 4, T(0.5), 2) == R(S.found, 3));
-    assert(evaluate(T(0.5), 2, T(0.5), 0).status == S.workLimit);
-    assert(evaluate(T(0.5), 2, T(0.5), 2, 1).status == S.workLimit);
+    assert(evaluate(T(0.375), 2, T(0.5), 0).status == S.workLimit);
+    assert(evaluate(T(0.375), 2, T(0.5), 2, 1).status == S.workLimit);
     assert(evaluate(T(0.5), 2, T(false, -8, UInt!64(128)), 2, 2) == R(S.found, 1));
     const tiny = T(false, long.min, UInt!64(1));
     assert(evaluate(tiny, 2, T(0.5), 1) == R(S.found, 0));
     assert(evaluate(T(0.5), 2, tiny, size_t.max, size_t.max).status == S.workLimit);
     // The term ceiling still applies when the caller supplies size_t.max.
-    assert(evaluate(T(0.5), 2048, T(0.5), size_t.max, size_t.max).status == S.workLimit);
+    assert(evaluate(T(false, -64, UInt!64((1UL << 63) + 1)), 2048, T(0.5), size_t.max, size_t.max).status == S.workLimit);
     assert(evaluate(T(0.5), 2047, T(0.5), 1024) == R(S.found, 1023));
     // The rounded CDF equals q, but the exact CDF lies just below it.
     T p = T(0.5);
@@ -2570,4 +2574,45 @@ version(mir_stat_test)
             }
         }
     }
+}
+
+// Exact symmetry remains available beyond the integer workspace budgets.
+version(mir_stat_test)
+@safe pure nothrow @nogc unittest
+{
+    import mir.bignum.fixed: UInt;
+    static foreach (bits; [64, 128]) {{
+        alias T = Fp!bits;
+        enum half = T(false, -cast(long)bits, UInt!bits(1) << (bits - 1));
+        enum rawHalf = T(false, -3, UInt!bits(4));
+        auto coefficient = half.coefficient;
+        coefficient += 1;
+        auto above = T(false, half.exponent, coefficient);
+        coefficient = UInt!bits.max;
+        auto below = T(false, half.exponent - 1, coefficient);
+        foreach (n; [size_t(3), size_t(4097), size_t.max]) {
+            const tails = binomialTailsChecked(n / 2, n, rawHalf, 0, 0);
+            assert(tails.status == BinomialTailStatus.found);
+            assert(tails.cdf == half && tails.ccdf == half);
+        }
+        foreach (n; [size_t(1), size_t(2), size_t(4096), size_t(4097), size_t.max - 1, size_t.max]) {
+            const result = binomialInvCDFChecked(rawHalf, n, rawHalf, 0, 0);
+            assert(result.status == BinomialInverseStatus.found && result.count == n / 2);
+        }
+        foreach (p; [below, above]) {
+            assert(binomialTailsChecked(2048, 4097, p, 0, 0).status == BinomialTailStatus.workLimit);
+            assert(binomialInvCDFChecked(half, 4097, p, 0, 0).status == BinomialInverseStatus.workLimit);
+            assert(binomialInvCDFChecked(p, 4097, half, 0, 0).status == BinomialInverseStatus.workLimit);
+        }
+        assert(binomialTailsChecked(2047, 4097, half, 0, 0).status == BinomialTailStatus.workLimit);
+        assert(binomialTailsChecked(2048, 4096, half, 0, 0).status == BinomialTailStatus.workLimit);
+        // At even n the median CDF exceeds half; the previous CDF is below it.
+        foreach (n; [size_t(2), size_t(3)]) {
+            import mir.stat.internal.fp_probability: fpProbabilityLess;
+            const prior = binomialTailsChecked(n / 2 - 1, n, half);
+            const current = binomialTailsChecked(n / 2, n, half);
+            assert(prior.status == BinomialTailStatus.found && current.status == BinomialTailStatus.found);
+            assert(fpProbabilityLess(prior.cdf, half) && !fpProbabilityLess(current.cdf, half));
+        }
+    }}
 }
