@@ -2,6 +2,8 @@
 
 These diagrams describe how ordinary quantile calls prepare storage and select observations. They document internal implementation choices, including performance thresholds, rather than API guarantees. Weighted quantiles, scalar median functions, and persistent quantile tables are outside these diagrams' scope.
 
+Later sections describe weighted selection and cumulative-weight preparation for sorted workspaces.
+
 ## Entry points and shared implementation
 
 GC, RC, and custom-allocation quantile functions share the selection logic. Their allocation policy determines how temporary and result storage is owned and released. Boxes group work by function; a node naming another function represents a call to it.
@@ -301,3 +303,21 @@ weights. Sorted lookup casts when both ranks fall within a single row and
 interpolates when they span two rows. For integer observations, selection records
 whether a selected value occurs in multiple rows. Only when such a tie makes
 the two operations round differently does it defer to sorted lookup. Smaller workspaces and larger batches use sorted cumulative counts.
+
+## Related weighted workspace preparation
+
+`prepareWeightedQuantileWorkspace` prepares the sorted entries used by weighted
+quantile calls and weighted tables. Its forward prefix pass uses
+`cumulativeSumInto` over a writable view of the existing cumulative-weight field:
+
+- Frequency counts use `ulong` and `Summation.naive`, preserving exact integer
+  addition after the existing frequency validation.
+- Relative inverse-CDF definitions apply the existing power-of-two normalization
+  lazily, then insert each mass into the existing Kahan accumulator.
+- Effective-size definitions lazily divide each mass by the existing maximum,
+  using that same Kahan accumulation order and retaining its final state.
+
+These views allocate no temporary arrays and add no traversal. Each raw weight
+is read and normalized before its field is replaced by the inclusive prefix.
+The reverse suffix/squared-weight pass, precision fallback, sorting order, and
+query algorithms are unchanged.

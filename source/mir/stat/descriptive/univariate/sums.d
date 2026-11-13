@@ -1105,3 +1105,29 @@ version(mir_stat_test)
     weightedCumulativeSumInto(values[0 .. 0], weights[0 .. 0], output[0 .. 0], weightedState);
     assert(weightedState.wsum == 7);
 }
+
+
+// A mapped input can read and normalize the same field receiving each prefix.
+version(mir_stat_test)
+@safe pure nothrow @nogc unittest
+{
+    import mir.ndslice.slice: sliced;
+    import mir.ndslice.topology: map, vmap;
+    struct Entry { real mass; int sentinel; }
+    struct Normalize
+    {
+        real divisor;
+        this(real divisor) @safe pure nothrow @nogc { this.divisor = divisor; }
+        real opCall(real value) const @safe pure nothrow @nogc
+        {
+            return value / divisor;
+        }
+    }
+    Entry[3] entries = [Entry(1, 10), Entry(2, 20), Entry(3, 30)];
+    auto masses = entries[].sliced.map!"a.mass";
+    auto normalized = masses.vmap(Normalize(2));
+    Summator!(real, Summation.kahan) state;
+    cumulativeSumInto(normalized, masses, state);
+    assert(entries == [Entry(0.5, 10), Entry(1.5, 20), Entry(3, 30)]);
+    assert(state.sum == 3);
+}
