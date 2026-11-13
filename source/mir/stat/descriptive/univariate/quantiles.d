@@ -1474,7 +1474,8 @@ private void partitionQuantileRank(bool incremental,
     }
     else
     {
-        import mir.ndslice.sorting: partitionAt;
+        import mir.stat.descriptive.univariate.internal.partition: partitionAt;
+        // Preserve rank guidance independently of the cached strategy default.
         partitionAt(values[0 .. end], rank);
     }
 }
