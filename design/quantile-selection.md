@@ -162,6 +162,33 @@ guidance, while rank 128 uses midpoint selection. Interpolating quantiles can
 request two ranks, and each rank has its own search. No strategy eagerly
 sorts the entire workspace or changes the quantile definition.
 
+## Symmetric quantile spreads (IQR)
+
+`interquartileRange`, `rcInterquartileRange`, and `makeInterquartileRange`
+share `allocatedQuantileSpread`. After preparing the observation workspace,
+this helper uses a four-entry stack buffer when N >= 1024, the workspace has
+pointer-backed numeric storage, and the probabilities form a symmetric pair
+within [0.25, 0.75]. The same internal spread helper is used by `robustScale`.
+
+Eligibility compares the larger probability with `1 - smaller` in the common
+argument precision. It uses no tolerance and does not change either probability.
+For example, [0.25, 0.75], [0.4, 0.6], and [0.5, 0.5] can qualify, including
+reversed pairs. Rounding of mixed-precision arguments may conservatively bypass
+this optimization. Non-symmetric pairs, wider pairs, and smaller inputs use the
+existing uncached path. Generic in-place views also retain that path; copying a
+view can produce an eligible workspace.
+
+The queries retain caller order. `preparedQuantileSpread` uses
+`selectQuantileImpl` with sparse requested-rank state, and `partitionQuantileRank`
+restricts each subsequent rank selection to its nearest established boundaries.
+Each quantile needs at most two ranks, so four entries suffice. Unlike the bitmap,
+this buffer records only requested ranks, not intermediate pivots. Selection
+remains rank-guided and the interpolation and spread arithmetic are unchanged.
+
+The buffer allocates no GC, RC, or custom-allocator storage. Existing observation
+copy ownership and `allowModifySlice` behavior are preserved. Quantile tables
+and repeated histogram queries continue to use their persistent bitmaps.
+
 ## Type differences and fallbacks
 
 | Behavior | Integers | float/double | real |
