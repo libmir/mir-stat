@@ -1,6 +1,6 @@
 # Ordinary quantile selection
 
-These diagrams describe how ordinary quantile calls prepare storage and select observations. They document internal implementation choices, including performance thresholds, rather than API guarantees. Weighted quantiles, scalar median functions, and persistent quantile tables are outside this page's scope.
+These diagrams describe how ordinary quantile calls prepare storage and select observations. They document internal implementation choices, including performance thresholds, rather than API guarantees. Weighted quantiles, scalar median functions, and persistent quantile tables are outside these diagrams' scope.
 
 ## Entry points and shared implementation
 
@@ -124,3 +124,16 @@ Relevant functions are in [quantiles.d](../source/mir/stat/descriptive/univariat
 Cached rank selection is implemented in [internal/partition.d](../source/mir/stat/descriptive/univariate/internal/partition.d).
 
 Update this page when changing eligibility rules, thresholds, scheduling, allocation behavior, or helper boundaries. Keep numerical definitions and public contracts in the API documentation. Mermaid diagrams render directly on GitHub; edit their source here rather than maintaining separate image copies.
+
+## Ordering weighted observations
+
+Weighted quantiles and weighted tables share `prepareWeightedQuantileWorkspace`.
+While copying positive-weight rows, it checks whether adjacent entries are in
+ascending or descending order by value, using the raw weight to break ties.
+Zero-weight rows are skipped. Ascending entries can be used immediately;
+descending entries are reversed in the workspace. Once both directions are
+ruled out, the remaining rows are copied and the usual sort orders the entries.
+
+Equal-weight entries with opposite signed zeros use the usual sort as well,
+so queries preserve the zero sign selected by that sort. Recognizing order
+uses constant extra storage and takes at most linear time.
