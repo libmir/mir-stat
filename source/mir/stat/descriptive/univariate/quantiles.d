@@ -2598,7 +2598,13 @@ private struct WeightedQuantileState(WeightInterpretation interpretation, Weight
     }
 }
 
-// Fill the validated positive-weight workspace, then sort and prepare it once.
+// Compare values in their original type, then use raw weights to order ties.
+private bool weightedEntryLess(Entry)(const ref Entry a, const ref Entry b)
+{
+    return a.value < b.value || (a.value == b.value && a.cumulative < b.cumulative);
+}
+
+// Copy the validated positive-weight observations in preparation for queries.
 // The caller retains ownership; evaluation never changes these entries.
 private WeightedQuantileState!(interpretation, algorithm) prepareWeightedQuantileWorkspace(
     WeightInterpretation interpretation, WeightedQuantileAlgo algorithm, Workspace, Values, Masses)(
@@ -2608,15 +2614,44 @@ private WeightedQuantileState!(interpretation, algorithm) prepareWeightedQuantil
     import mir.primitives: DeepElementType;
     alias Entry = DeepElementType!Workspace;
     enum uniform = algorithm == WeightedQuantileAlgo.type7 || algorithm == WeightedQuantileAlgo.type8;
+    bool ascending = true, descending = true;
+    void observe(const ref Entry previous, const ref Entry current)
+    {
+        if (weightedEntryLess(current, previous))
+            ascending = false;
+        else if (weightedEntryLess(previous, current))
+            descending = false;
+        else static if (isFloatingPoint!(typeof(current.value)))
+        {
+            // The sort may exchange equivalent entries. For opposite signed
+            // zeros with equal weights this changes an observable result.
+            import std.math : signbit;
+            if (current.value == 0 && signbit(current.value) != signbit(previous.value))
+                ascending = descending = false;
+        }
+    }
+
     size_t j;
     foreach (i; 0 .. masses.length)
         if (masses[i] > 0)
-            workspace[j++] = Entry(values[i], cast(typeof(Entry.init.cumulative)) masses[i]);
+        {
+            workspace[j] = Entry(values[i], cast(typeof(Entry.init.cumulative)) masses[i]);
+            if (j && (ascending || descending))
+                observe(workspace[j - 1], workspace[j]);
+            ++j;
+        }
 
-    // Keep observations in their original type: large integers must not collapse
-    // to equal floating-point values. Order tied masses consistently as well.
-    // Share the sorting instantiation across input and allocation specializations.
-    sort!("a.value < b.value || (a.value == b.value && a.cumulative < b.cumulative)")(workspace);
+    if (!ascending)
+    {
+        if (descending)
+        {
+            import mir.utility : swap;
+            foreach (i; 0 .. workspace.length / 2)
+                swap(workspace[i], workspace[workspace.length - 1 - i]);
+        }
+        else
+            sort!(weightedEntryLess!Entry)(workspace);
+    }
     static if (weightedQuantileUsesEffectiveSize!(interpretation, algorithm))
     {
         Summator!(real, Summation.kahan) suffix, squares;
@@ -2834,7 +2869,11 @@ probabilities close to a boundary; arbitrary rescaling is not promised to give
 bitwise-identical results. Endpoints select the extrema of positive-weight data.
 Signed zeros compare equal; the sign of a selected zero is unspecified.
 
-A paired workspace is sorted once. For n observations and k probabilities,
+All requested probabilities share one workspace ordered by value, then by weight.
+Preparation takes linear time when the positive-weight entries can be used
+directly or reversed. Other inputs use the usual sort, including equal-weight
+ties between opposite signed zeros. For n observations and k probabilities,
+the following bounds include the cost of sorting.
 inverseCDF, averagedInverseCDF, and frequency type7/type8 take
 $(TT O(n log n + k log n)) time. Harrell-Davis takes
 $(TT O(n log n + k*n)) time, including beta CDF evaluations, and reuses effective
@@ -4646,8 +4685,10 @@ version(mir_stat_test)
 An owning snapshot for repeated weighted quantiles, medians, and IQRs.
 
 Construct with $(LREF weightedQuantileTable), $(LREF rcWeightedQuantileTable),
-or $(LREF makeWeightedQuantileTable). Construction copies and sorts the
-positive-weight observations once, taking O(n log n) time and O(n) storage.
+or $(LREF makeWeightedQuantileTable). Construction copies positive-weight
+observations into O(n) storage. Entries already ordered by value and then by
+weight take O(n) time to prepare, including reverse-ordered entries. Other
+inputs use the usual sort, as do equal-weight ties between opposite signed zeros.
 Later changes to the inputs do not affect the table. Each scalar query takes
 O(log n) time and allocates no memory.
 
@@ -8991,8 +9032,9 @@ nonfinite observations. Frequency interpretation additionally require whole-numb
 counts within the weighted quantile engine's supported range.
 
 Inputs are not modified. Reference-counted scratch storage holds deviations
-and the weighted quantile workspaces; the two quantile stages each sort their
-own workspace. Storage is O(n) and sorting takes O(n log n).
+and the weighted quantile workspaces. Each quantile stage orders its own
+workspace by value and weight. Storage is O(n), and a stage that requires
+sorting takes O(n log n) time.
 
 Integral observations are shifted by their smallest positive-weight value
 using exact unsigned differences before interpolation. Inverse-CDF centers
@@ -10096,6 +10138,57 @@ version(mir_stat_test)
     assert(releases == allocations - 1);
     allocator.dispose(weighted.field);
     assert(allocations == releases);
+}
+
+// Compare the prepared values (including zero signs) and counts with a full
+// sort across ordered, reversed, and out-of-order ties.
+version(mir_stat_test)
+@safe pure nothrow @nogc unittest
+{
+    import mir.ndslice.slice : sliced;
+    import mir.ndslice.sorting : sort;
+    import std.math : signbit;
+    enum meaning = WeightInterpretation.frequency;
+    enum algorithm = WeightedQuantileAlgo.type7;
+    alias Entry = WeightedQuantileEntry!(double, meaning, algorithm);
+    foreach (layout; 0 .. 4)
+    {
+        double[81] values;
+        int[81] weights;
+        Entry[80] actual, expected;
+        size_t count;
+        foreach (i; 0 .. values.length)
+        {
+            if (i == 30)
+            {
+                values[i] = double.nan;
+                weights[i] = 0;
+                continue;
+            }
+            const j = layout == 1 ? 79 - count : count;
+            values[i] = j / 16;
+            weights[i] = 1 + cast(int)(j % 16);
+            if (layout == 2 && j == 14)
+                weights[i] = 1;
+            if (layout == 3 && j < 16)
+            {
+                values[i] = j % 2 ? -0.0 : 0.0;
+                weights[i] = 1;
+            }
+            expected[count++] = Entry(values[i], cast(ulong) weights[i]);
+        }
+        sort!("a.value < b.value || (a.value == b.value && a.cumulative < b.cumulative)")(
+            expected[].sliced);
+        prepareWeightedQuantileWorkspace!(meaning, algorithm)(
+            actual[].sliced, values[].sliced, weights[].sliced, 16);
+        ulong total;
+        foreach (i, entry; expected)
+        {
+            total += entry.cumulative;
+            assert(actual[i].cumulative == total && actual[i].value == entry.value);
+            assert(signbit(actual[i].value) == signbit(entry.value));
+        }
+    }
 }
 
 // Prepared entries are independent of the original inputs and support repeated
