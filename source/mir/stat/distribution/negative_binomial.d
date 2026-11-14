@@ -802,6 +802,11 @@ Computes a checked negative binomial inverse CDF for represented Fp probabilitie
 For interior probabilities, returns the least failure count whose exact CDF
 reaches q. Cumulative integer weights are compared before probabilities are rounded.
 
+When $(D r == 1), the failure count has a geometric distribution. For p and q
+strictly between zero and one, $(REF geometricInvCDFChecked, mir,stat,distribution,geometric)
+can certify the same quantile beyond the scan budget. Its count and precision
+limits still apply. The two inverses have different endpoint conventions.
+
 Params:
     q = finite cumulative probability in [0,1]
     r = positive number of successes required before stopping
@@ -846,6 +851,22 @@ version(mir_stat_test)
     const next = negativeBinomialInvCDFChecked(above, 3, T(0.5));
     assert(tie.status == NegativeBinomialInverseStatus.found && tie.count == 2);
     assert(next.status == NegativeBinomialInverseStatus.found && next.count == 3);
+}
+
+/// Find the median failure count before the first success when p = 1/2048.
+version(mir_stat_test)
+@safe pure nothrow @nogc unittest
+{
+    import mir.bignum.fp: Fp;
+    import mir.stat.distribution.geometric: geometricInvCDFChecked, GeometricInverseStatus;
+    alias T = Fp!64;
+    const p = T(1.0 / 2048);
+    const q = T(0.5);
+    const scan = negativeBinomialInvCDFChecked(q, 1, p);
+    assert(scan.status == NegativeBinomialInverseStatus.workLimit);
+
+    const median = geometricInvCDFChecked(q, p);
+    assert(median.status == GeometricInverseStatus.found && median.count == 1419);
 }
 
 version(mir_stat_test)
