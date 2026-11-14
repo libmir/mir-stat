@@ -694,12 +694,16 @@ provide this checked function's rounding guarantee.
 Params:
     k = observed event count
     lambda = positive rate, including positive infinity; zero and NaN are rejected
-    maxTerms = maximum number of masses to sum from zero (default 256, ceiling 1024)
+    maxTerms = maximum number of masses to visit (default 256, ceiling 1024)
 
 Returns:
     $(D found) only when directed interval bounds certify both rounded tails.
     Positive infinity gives zero CDF and unit CCDF, including with a zero budget.
-    Finite rates and counts must be below the effective term budget. The method
+    For rates below 1024, summation starts at zero and requires both lambda
+    and k below the effective term budget. For rates of 1024 or greater,
+    sum outward from floor(lambda)
+    and bound both omitted tails. The count must lie within the visited window
+    and its indices must fit size_t. The method
     uses fixed-point weights with 128 extra fractional bits beyond the output
     precision and bounds the remaining infinite series. It returns $(D workLimit)
     if the term budget or this working precision cannot resolve both tails;
@@ -732,6 +736,45 @@ version(mir_stat_test)
     assert(smallUpper.status == PoissonTailStatus.found && smallUpper.cdf == T(1));
     assert(smallUpper.ccdf == T(false, -178, UInt!64(17692842853828029725UL)));
 
+}
+
+version(mir_stat_test)
+@safe pure nothrow @nogc unittest
+{
+    import mir.bignum.fixed: UInt;
+    alias T = Fp!64;
+    // Independent exp(-2000) series at 160 and 240 decimal digits.
+    enum rate = T(false, 4, UInt!64(125));
+    const lower = T(false, -64, UInt!64(0x8185b913f5a310f8UL));
+    const upper = T(false, -65, UInt!64(0xfcf48dd814b9de10UL));
+    const tails = poissonTailsChecked(2000, rate, 1024);
+    assert(tails.status == PoissonTailStatus.found);
+    assert(tails.cdf == lower && tails.ccdf == upper);
+
+    // The rounded CDF is just above the exact jump. Its predecessor
+    // reaches 2000, while the rounded value itself first reaches 2001.
+    const predecessor = T(false, -64, UInt!64(0x8185b913f5a310f7UL));
+    alias R = PoissonInverseResult;
+    enum found = PoissonInverseStatus.found;
+    assert(poissonInvCDFChecked(predecessor, rate, 1024) == R(found, 2000));
+    assert(poissonInvCDFChecked(lower, rate, 1024) == R(found, 2001));
+    assert(poissonTailsChecked(2000, rate, 1).status == PoissonTailStatus.workLimit);
+    assert(poissonInvCDFChecked(lower, rate, 1).status == PoissonInverseStatus.workLimit);
+    // Adjacent budgets below the rate threshold retain the from-zero method.
+    foreach (budget; [512, 513])
+        assert(poissonTailsChecked(512, T(512), budget).status == PoissonTailStatus.workLimit);
+    foreach (budget; [256, 257])
+        assert(poissonInvCDFChecked(T(0.5), T(256), budget).status == PoissonInverseStatus.workLimit);
+
+    // Adjacent Fp!64 representations on either side of the fixed rate cutoff.
+    enum before = T(false, -54, UInt!64(ulong.max));
+    enum after = T(false, -53, UInt!64(0x8000000000000001UL));
+    assert(poissonInvCDFChecked(T(0.5), before, 256).status == PoissonInverseStatus.workLimit);
+    assert(poissonTailsChecked(1024, before, 1024).status == PoissonTailStatus.workLimit);
+    foreach (lambda; [T(1024), after]) {
+        assert(poissonInvCDFChecked(T(0.5), lambda, 256) == R(found, 1024));
+        assert(poissonTailsChecked(1024, lambda, 1024).status == PoissonTailStatus.found);
+    }
 }
 
 version(mir_stat_test)
@@ -1219,7 +1262,7 @@ CDF reaches $(D q). Comparisons use interval bounds before rounding probabilitie
 Params:
     q = finite cumulative probability in [0,1]
     lambda = positive rate, including positive infinity, with the same Fp width as q
-    maxTerms = masses used to bound the total and maximum counts searched
+    maxTerms = maximum number of masses visited per pass
         (default 256, ceiling 1024)
 
 Returns:
@@ -1227,9 +1270,12 @@ Returns:
     $(D size_t.max), preserving the existing count-inverse endpoint convention.
     These cases ignore the work budget.
 
-    Other queries require lambda below the effective term budget. A first pass
-    bounds the total mass and a second pass searches counts from zero, using
-    fixed-capacity stack storage. Each pass visits at most maxTerms masses.
+    For rates below 1024, the search starts at zero and requires lambda below
+    the effective term budget. For rates of 1024 or greater,
+    a first pass sums a window around floor(lambda) and bounds both omitted
+    tails. A second pass searches from the mode for the first CDF reaching q.
+    The window indices must fit size_t. Both methods use fixed-capacity stack storage.
+    Each pass visits at most maxTerms masses.
     The fixed-point precision has 128 extra fractional bits beyond the input
     width. If the bounds cannot prove a comparison or the search exceeds its
     budget, returns $(D workLimit), without an approximate count. Increasing
@@ -1277,7 +1323,8 @@ version(mir_stat_test)
     assert(evaluate(T(0.5), T(double.infinity), 0) == R(S.found, size_t.max));
     assert(evaluate(T(false, -3, UInt!64(8)), T(1), 0) == R(S.found, size_t.max));
     assert(evaluate(T(0.5), T(1), 0).status == S.workLimit);
-    assert(evaluate(T(0.5), T(1024), size_t.max).status == S.workLimit);
+    assert(evaluate(T(0.5), T(1024), size_t.max) == R(S.found, 1024));
+    assert(evaluate(T(0.5), T(false, 0, UInt!64(1024)), 1024) == R(S.found, 1024));
     assert(evaluate(T(0.5), T(256)).status == S.workLimit);
     assert(evaluate(T(0.4), T(1), 2).status == S.workLimit);
     assert(evaluate(T(0.4), T(1), 32) == R(S.found, 1));
