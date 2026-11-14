@@ -2571,3 +2571,34 @@ version(mir_stat_test)
         }
     }
 }
+
+// Shared dyadic reference cases exercise scalar and checked APIs together.
+version(mir_stat_test)
+@safe pure nothrow @nogc unittest
+{
+    import std.meta: AliasSeq;
+    import mir.math.common: fabs, log;
+    enum uint[3][5] references = [[1,1,15],[4,5,11],[6,11,5],[4,15,1],[1,16,0]];
+    static foreach (T; AliasSeq!(float, double, real, Fp!64)) {{
+        foreach (k, row; references) {
+            const expectedMass = row[0] / 16.0;
+            const expectedCDF = row[1] / 16.0;
+            const expectedCCDF = row[2] / 16.0;
+            const q = T(expectedCDF);
+            enum tolerance = is(T == float) ? 2e-6 : 2e-14;
+            assert(fabs(cast(double)binomialPMF(k, 4, T(0.5)) - expectedMass) <= tolerance);
+            assert(fabs(cast(double)binomialLPMF(k, 4, T(0.5)) - log(expectedMass)) <= tolerance);
+            static if (isFloatingPoint!T) {
+                assert(fabs(cast(double)binomialCDF(k, 4, T(0.5)) - expectedCDF) <= tolerance);
+                assert(fabs(cast(double)binomialCCDF(k, 4, T(0.5)) - expectedCCDF) <= tolerance);
+                assert(binomialInvCDF(q, 4, T(0.5)) == k);
+            } else {
+                const tails = binomialTailsChecked(k, 4, T(0.5));
+                assert(tails.status == BinomialTailStatus.found);
+                assert(tails.cdf == T(expectedCDF) && tails.ccdf == T(expectedCCDF));
+                const inverse = binomialInvCDFChecked(q, 4, T(0.5));
+                assert(inverse.status == BinomialInverseStatus.found && inverse.count == k);
+            }
+        }
+    }}
+}
