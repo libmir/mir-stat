@@ -2638,14 +2638,14 @@ private WeightedQuantileState!(interpretation, algorithm) prepareWeightedQuantil
             workspace[i].upper = suffix.sum;
         }
     }
+    import mir.ndslice.topology: map, vmap;
+    import mir.stat.descriptive.univariate.sums: cumulativeSumInto;
+    // Borrow the existing mass field; normalization is evaluated lazily before
+    // each prefix overwrites that same element. No temporary array is needed.
+    scope auto cumulativeWeights = workspace.map!"a.cumulative";
     static if (interpretation == WeightInterpretation.frequency)
     {
-        ulong cumulativeCount;
-        foreach (i; 0 .. workspace.length)
-        {
-            cumulativeCount += workspace[i].cumulative;
-            workspace[i].cumulative = cumulativeCount;
-        }
+        cumulativeSumInto!(ulong, Summation.naive)(cumulativeWeights, cumulativeWeights);
     }
     else
     {
@@ -2660,20 +2660,35 @@ private WeightedQuantileState!(interpretation, algorithm) prepareWeightedQuantil
             // arbitrary divisor, which can move an exact CDF boundary.
             // Keep the largest scaled weight in [1, 2), retaining at least
             // as much subnormal range as division by the largest weight.
-            foreach (i; 0 .. workspace.length)
+            struct ScaleMass
             {
-                cumulative.put(ldexp(workspace[i].cumulative, 1 - exponent));
-                workspace[i].cumulative = cumulative.sum;
+                int shift;
+                // Older frontends resolve constructor-less calls through opCall.
+                this(int shift) @safe pure nothrow @nogc { this.shift = shift; }
+                real opCall(real mass) const @safe pure nothrow @nogc
+                {
+                    return ldexp(mass, shift);
+                }
             }
+            scope auto normalized = cumulativeWeights.vmap(ScaleMass(1 - exponent));
+            cumulativeSumInto(normalized, cumulativeWeights, cumulative);
         }
         else
-            foreach (i; 0 .. workspace.length)
+        {
+            // Effective-size algorithms use the same scale in their
+            // prefix, suffix, and squared-weight sums.
+            struct ScaleMass
             {
-                // Effective-size algorithms use the same scale in their
-                // prefix, suffix, and squared-weight sums.
-                cumulative.put(workspace[i].cumulative / maximum);
-                workspace[i].cumulative = cumulative.sum;
+                real maximum;
+                this(real maximum) @safe pure nothrow @nogc { this.maximum = maximum; }
+                real opCall(real mass) const @safe pure nothrow @nogc
+                {
+                    return mass / maximum;
+                }
             }
+            scope auto normalized = cumulativeWeights.vmap(ScaleMass(maximum));
+            cumulativeSumInto(normalized, cumulativeWeights, cumulative);
+        }
     }
     WeightedQuantileState!(interpretation, algorithm) state;
     static if (weightedQuantileUsesEffectiveSize!(interpretation, algorithm))

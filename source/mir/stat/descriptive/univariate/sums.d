@@ -1,5 +1,5 @@
 /++
-Weighted sums and their accumulator.
+Weighted sums, cumulative sums, and their accumulators.
 
 Use `wsum(values, weights)` to sum observation-weight products without
 normalization, or $(LREF WSummator) to accumulate them through `put`.
@@ -12,6 +12,8 @@ $(MREF mir,stat,descriptive,univariate) for the complete univariate API.
 $(BOOKTABLE,
 $(TR $(TH Task) $(TH Declaration))
 $(TR $(TD Weighted sum) $(TD $(LREF wsum)))
+$(TR $(TD Cumulative sum into caller storage) $(TD $(LREF cumulativeSumInto)))
+$(TR $(TD Cumulative weighted sum into caller storage) $(TD $(LREF weightedCumulativeSumInto)))
 $(TR $(TD Accumulator) $(TD $(LREF WSummator)))
 )
 
@@ -29,6 +31,8 @@ module mir.stat.descriptive.univariate.sums;
 
 public import mir.math.sum: Summation;
 import mir.math.sum: ResolveSummationType, Summator;
+import mir.ndslice.slice: isConvertibleToSlice;
+import std.traits: isStaticArray;
 
 /++
 Output range for $(LREF wsum).
@@ -825,4 +829,305 @@ unittest
         assertThrown!AssertError(wsum(values[], weights[].sliced));
         assertThrown!AssertError(wsum(values[].sliced, weights[]));
     }
+}
+
+
+/++
+Writes inclusive cumulative sums into caller-provided storage.
+
+For values `[2, 3, 1]`, writes `[2, 5, 6]`. Each output includes the current
+input. Empty input writes nothing. Input and destination must be one-dimensional
+arrays or Mir slices with equal lengths; strided slices are supported. Traversal
+follows logical index order. No output storage is allocated.
+
+By default the accumulator type follows `mir.math.sum.sumType` for the input;
+`F` selects that type explicitly using the same promotion rules. Each prefix is
+converted to the destination element type only when written. The summation
+option is resolved as for ordinary sums, but observations are inserted one at
+a time. Results need not match repeatedly invoking a bulk sum on each prefix,
+whose grouping may differ.
+
+The overload taking `ref Summator` continues the supplied state, including its
+compensation. Use it to process successive chunks without discarding low-order
+corrections. An empty chunk leaves the state unchanged. Do not resume from only
+the rounded final prefix when compensation matters.
+
+The destination may be disjoint from the input or refer to exactly the same
+logical elements in the same order. Other overlapping layouts are unsupported.
+Input elements must not change independently during the call.
+
+Params:
+    F = accumulator element type before ordinary sum promotion
+    summation = summation algorithm; defaults to `Summation.appropriate`
+    values = observations in accumulation order
+    destination = writable output with one element per input
+    accumulator = persistent summation state for chunked processing
++/
+void cumulativeSumInto(F, Summation summation = Summation.appropriate, Values, Destination)(
+    scope auto ref Values values, scope auto ref Destination destination)
+    if ((isConvertibleToSlice!Destination || isStaticArray!Destination) &&
+        (isConvertibleToSlice!Values || isStaticArray!Values))
+{
+    import mir.math.sum: sumType;
+    alias T = sumType!F;
+    Summator!(T, ResolveSummationType!(summation, Values, T)) accumulator;
+    cumulativeSumInto(values, destination, accumulator);
+}
+
+/// ditto
+void cumulativeSumInto(Summation summation = Summation.appropriate, Values, Destination)(
+    scope auto ref Values values, scope auto ref Destination destination)
+    if ((isConvertibleToSlice!Destination || isStaticArray!Destination) &&
+        (isConvertibleToSlice!Values || isStaticArray!Values))
+{
+    import mir.math.sum: sumType;
+    cumulativeSumInto!(sumType!Values, summation)(values, destination);
+}
+
+/// ditto
+void cumulativeSumInto(Values, Destination, T, Summation summation)(
+    scope auto ref Values values, scope auto ref Destination destination,
+    ref Summator!(T, summation) accumulator)
+    if ((isConvertibleToSlice!Destination || isStaticArray!Destination) &&
+        (isConvertibleToSlice!Values || isStaticArray!Values))
+{
+    import mir.ndslice.slice: toSlice;
+    scope auto output = destination.toSlice;
+    scope auto input = values.toSlice;
+    static assert(typeof(output).N == 1 && typeof(input).N == 1,
+        "cumulativeSumInto requires one-dimensional input and output");
+    assert(output.length == input.length, "cumulativeSumInto: lengths must match");
+    foreach (i; 0 .. input.length)
+    {
+        accumulator.put(cast(T) input[i]);
+        output[i] = accumulator.sum;
+    }
+}
+
+/// Inclusive sums use the caller's output storage, including in-place output.
+version(mir_stat_test)
+@safe pure nothrow @nogc unittest
+{
+    int[3] values = [2, 3, 1], output;
+    cumulativeSumInto(values, output);
+    assert(output == [2, 5, 6]);
+    assert(values == [2, 3, 1]);
+    cumulativeSumInto(values, values);
+    assert(values == [2, 5, 6]);
+}
+
+/++
+Writes inclusive cumulative observation-weight products into caller storage.
+
+For values `[2, 3, 1]` and weights `[1, 2, 4]`, writes `[2, 8, 12]`.
+There is no division by total weight. For cumulative weights themselves,
+use `cumulativeSumInto(weights, destination)` instead.
+
+Weights have the same meaning as for $(LREF wsum): signed weights are allowed,
+and no finite/nonnegative validation is performed. Zero weights do not exclude
+observations: NaN or infinity multiplied by zero contributes NaN.
+
+Input, weights, and destination must be one-dimensional arrays or Mir slices
+with equal lengths. Strided slices are supported. Each product is inserted into
+$(LREF WSummator) in logical index order, then its current weighted sum is written.
+The destination element type does not determine accumulator precision.
+
+The inferred overload uses ordinary sum promotion separately for observations
+and weights. With explicit `F`, the weight type `G` defaults to `F`, as in
+$(LREF wsum). The overload taking a caller-owned accumulator retains all state
+between chunks. Empty input writes nothing and leaves supplied state unchanged.
+
+No output storage is allocated. The destination may be disjoint from either
+input or coincide with its exact logical elements in the same order. Shifted or
+otherwise differing overlapping layouts are unsupported. Both operands are
+read before writing each result. Output conversion follows normal assignment
+rules; no overflow checking is added.
+
+Params:
+    F = accumulator type before ordinary sum promotion
+    summation = summation algorithm; defaults to `Summation.appropriate`
+    G = weight conversion type; defaults to `F` with explicit type arguments
+    values = observations
+    weights = algebraic multipliers
+    destination = writable output with one element per observation
+    accumulator = persistent weighted-sum state for chunked processing
++/
+void weightedCumulativeSumInto(F, Summation summation = Summation.appropriate, G = F,
+    Values, Weights, Destination)(scope auto ref Values values,
+    scope auto ref Weights weights, scope auto ref Destination destination)
+    if ((isConvertibleToSlice!Destination || isStaticArray!Destination) &&
+        (isConvertibleToSlice!Values || isStaticArray!Values) &&
+        (isConvertibleToSlice!Weights || isStaticArray!Weights))
+{
+    import mir.math.sum: sumType;
+    alias T = sumType!F;
+    WSummator!(T, ResolveSummationType!(summation, Values, T), G) accumulator;
+    weightedCumulativeSumInto(values, weights, destination, accumulator);
+}
+
+/// ditto
+void weightedCumulativeSumInto(Summation summation = Summation.appropriate,
+    Values, Weights, Destination)(scope auto ref Values values,
+    scope auto ref Weights weights, scope auto ref Destination destination)
+    if ((isConvertibleToSlice!Destination || isStaticArray!Destination) &&
+        (isConvertibleToSlice!Values || isStaticArray!Values) &&
+        (isConvertibleToSlice!Weights || isStaticArray!Weights))
+{
+    import mir.math.sum: sumType;
+    weightedCumulativeSumInto!(sumType!Values, summation, sumType!Weights)(
+        values, weights, destination);
+}
+
+/// ditto
+void weightedCumulativeSumInto(Values, Weights, Destination, T, Summation summation, U)(
+    scope auto ref Values values, scope auto ref Weights weights,
+    scope auto ref Destination destination, ref WSummator!(T, summation, U) accumulator)
+    if ((isConvertibleToSlice!Destination || isStaticArray!Destination) &&
+        (isConvertibleToSlice!Values || isStaticArray!Values) &&
+        (isConvertibleToSlice!Weights || isStaticArray!Weights))
+{
+    import mir.ndslice.slice: toSlice;
+    scope auto output = destination.toSlice;
+    scope auto input = values.toSlice;
+    scope auto mass = weights.toSlice;
+    static assert(typeof(output).N == 1 && typeof(input).N == 1 && typeof(mass).N == 1,
+        "weightedCumulativeSumInto requires one-dimensional input and output");
+    assert(output.length == input.length && input.length == mass.length,
+        "weightedCumulativeSumInto: lengths must match");
+    foreach (i; 0 .. input.length)
+    {
+        accumulator.put(cast(T) input[i], cast(U) mass[i]);
+        output[i] = accumulator.wsum;
+    }
+}
+
+/// Inclusive weighted sums accumulate products without normalization.
+version(mir_stat_test)
+@safe pure nothrow @nogc unittest
+{
+    int[3] values = [2, 3, 1], weights = [1, 2, 4], output;
+    weightedCumulativeSumInto(values, weights, output);
+    assert(output == [2, 8, 12]);
+    assert(values == [2, 3, 1] && weights == [1, 2, 4]);
+}
+
+// Shared regression: continue compensated state across chunks, including empty chunks.
+version(mir_stat_test)
+@safe pure nothrow @nogc unittest
+{
+    double[3] values = [0x1p54, 1.0, -0x1p54], weights = [1.0, 1, 1];
+    double[3] whole, chunks, weighted;
+    cumulativeSumInto!(double, Summation.kbn)(values, whole);
+    Summator!(double, Summation.kbn) accumulator;
+    cumulativeSumInto(values[0 .. 2], chunks[0 .. 2], accumulator);
+    cumulativeSumInto(values[2 .. 2], chunks[2 .. 2], accumulator);
+    cumulativeSumInto(values[2 .. $], chunks[2 .. $], accumulator);
+    assert(chunks == whole && chunks[2] == 1);
+    WSummator!(double, Summation.kbn) weightedState;
+    weightedCumulativeSumInto(values[0 .. 2], weights[0 .. 2], weighted[0 .. 2], weightedState);
+    weightedCumulativeSumInto(values[2 .. $], weights[2 .. $], weighted[2 .. $], weightedState);
+    assert(weighted == whole && weightedState.wsum == 1);
+}
+
+version(mir_stat_test)
+@safe pure nothrow @nogc unittest
+{
+    import mir.ndslice.slice: sliced;
+    import mir.ndslice.topology: stride;
+    import std.math: isNaN;
+    double[6] values = [2, -99, 3, -99, 1, -99];
+    double[6] weights = [1, -99, -2, -99, 4, -99];
+    double[6] output;
+    output[] = -99;
+    weightedCumulativeSumInto(values[].sliced.stride(2),
+        weights[].sliced.stride(2), output[].sliced.stride(2));
+    assert(output == [2, -99, -4, -99, 0, -99]);
+    weightedCumulativeSumInto(values[].sliced.stride(2),
+        weights[].sliced.stride(2), weights[].sliced.stride(2));
+    assert(weights == output);
+    const double[2] special = [double.infinity, 1], zero = [0.0, 1];
+    double[2] nonfinite;
+    weightedCumulativeSumInto(special, zero, nonfinite);
+    assert(isNaN(nonfinite[0]) && isNaN(nonfinite[1]));
+    long[2] large = [int.max, 1], total;
+    cumulativeSumInto(large, total);
+    assert(total[1] == cast(long) int.max + 1);
+}
+
+
+// Check all concrete summation modes against scalar insertion, not bulk sums.
+version(mir_stat_test)
+@safe pure nothrow @nogc unittest
+{
+    const double[4] values = [0x1p54, 1.0, -0x1p54, 3.0];
+    const float[4] weights = [1, 2, -1, 0];
+    static foreach (algorithm; [Summation.naive, Summation.fast, Summation.pairwise,
+        Summation.kahan, Summation.kbn, Summation.kb2, Summation.precise,
+        Summation.decimal])
+    {{
+        double[4] ordinary, weighted;
+        cumulativeSumInto!algorithm(values, ordinary);
+        weightedCumulativeSumInto!(double, algorithm, float)(values, weights, weighted);
+        Summator!(double, algorithm) reference;
+        WSummator!(double, algorithm, float) weightedReference;
+        foreach (i; 0 .. values.length)
+        {
+            reference.put(values[i]);
+            weightedReference.put(values[i], weights[i]);
+            assert(ordinary[i] == reference.sum && weighted[i] == weightedReference.wsum);
+        }
+    }}
+    // Explicitly retain fractional products when observations are integral.
+    int[2] integers = [3, 4];
+    double[2] fractions = [0.5, 0.25], output;
+    weightedCumulativeSumInto!double(integers, fractions, output);
+    assert(output == [1.5, 2.5]);
+    float[4] rounded;
+    cumulativeSumInto!(double, Summation.kbn)(values, rounded);
+    assert(rounded[2] == 1 && rounded[3] == 4);
+}
+
+// Length errors must be detected before modifying output or persistent state.
+version(mir_stat_test)
+@system unittest
+{
+    import core.exception: AssertError;
+    import std.exception: assertThrown;
+    double[2] values = [2, 3], weights = [1, 1], output = [-1, -1];
+    Summator!(double, Summation.kbn) state;
+    state.put(7);
+    assertThrown!AssertError(cumulativeSumInto(values, output[0 .. 1], state));
+    assert(output == [-1, -1] && state.sum == 7);
+    WSummator!(double, Summation.kbn) weightedState;
+    weightedState.put(7);
+    assertThrown!AssertError(weightedCumulativeSumInto(values, weights[0 .. 1], output, weightedState));
+    assert(output == [-1, -1] && weightedState.wsum == 7);
+    weightedCumulativeSumInto(values[0 .. 0], weights[0 .. 0], output[0 .. 0], weightedState);
+    assert(weightedState.wsum == 7);
+}
+
+
+// A mapped input can read and normalize the same field receiving each prefix.
+version(mir_stat_test)
+@safe pure nothrow @nogc unittest
+{
+    import mir.ndslice.slice: sliced;
+    import mir.ndslice.topology: map, vmap;
+    struct Entry { real mass; int sentinel; }
+    struct Normalize
+    {
+        real divisor;
+        this(real divisor) @safe pure nothrow @nogc { this.divisor = divisor; }
+        real opCall(real value) const @safe pure nothrow @nogc
+        {
+            return value / divisor;
+        }
+    }
+    Entry[3] entries = [Entry(1, 10), Entry(2, 20), Entry(3, 30)];
+    auto masses = entries[].sliced.map!"a.mass";
+    auto normalized = masses.vmap(Normalize(2));
+    Summator!(real, Summation.kahan) state;
+    cumulativeSumInto(normalized, masses, state);
+    assert(entries == [Entry(0.5, 10), Entry(1.5, 20), Entry(3, 30)]);
+    assert(state.sum == 3);
 }

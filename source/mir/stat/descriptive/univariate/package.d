@@ -144,9 +144,11 @@ $(TR $(TH Module) $(TH Public declarations))
         )
     )
     $(TR $(TD $(MREF mir,stat,descriptive,univariate,sums) $(BR)
-        $(SMALL Weighted sums.)) $(TD
+        $(SMALL Weighted and cumulative sums.)) $(TD
         $(B Function:)
         $(REF wsum, mir, stat, descriptive, univariate, sums)$(NBSP)
+        $(REF cumulativeSumInto, mir, stat, descriptive, univariate, sums)$(NBSP)
+        $(REF weightedCumulativeSumInto, mir, stat, descriptive, univariate, sums)$(NBSP)
         $(BR)
         $(B Accumulator:)
         $(REF WSummator, mir, stat, descriptive, univariate, sums)$(NBSP)))
