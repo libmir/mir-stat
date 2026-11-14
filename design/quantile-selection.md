@@ -1,6 +1,6 @@
 # Ordinary quantile selection
 
-These diagrams describe how ordinary quantile calls prepare storage and select observations. They document internal implementation choices, including performance thresholds, rather than API guarantees. Weighted quantiles, scalar median functions, and persistent quantile tables are outside this page's scope.
+These diagrams describe how ordinary quantile calls prepare storage and select observations. They document internal implementation choices, including performance thresholds, rather than API guarantees. Weighted quantile selection, scalar median functions, and persistent quantile tables are outside these diagrams' scope. The note below describes shared cumulative-weight preparation for sorted weighted workspaces.
 
 ## Entry points and shared implementation
 
@@ -124,3 +124,39 @@ Relevant functions are in [quantiles.d](../source/mir/stat/descriptive/univariat
 Cached rank selection is implemented in [internal/partition.d](../source/mir/stat/descriptive/univariate/internal/partition.d).
 
 Update this page when changing eligibility rules, thresholds, scheduling, allocation behavior, or helper boundaries. Keep numerical definitions and public contracts in the API documentation. Mermaid diagrams render directly on GitHub; edit their source here rather than maintaining separate image copies.
+
+## Related weighted workspace preparation
+
+`prepareWeightedQuantileWorkspace` prepares the sorted entries used by weighted
+quantile calls and weighted tables. Its forward prefix pass uses
+`cumulativeSumInto` over a writable view of the existing cumulative-weight field:
+
+- Frequency counts use `ulong` and `Summation.naive`, preserving exact integer
+  addition after the existing frequency validation.
+- Relative inverse-CDF definitions apply the existing power-of-two normalization
+  lazily, then insert each mass into the existing Kahan accumulator.
+- Effective-size definitions lazily divide each mass by the existing maximum,
+  using that same Kahan accumulation order and retaining its final state.
+
+These views allocate no temporary arrays and add no traversal. Each raw weight
+is read and normalized before its field is replaced by the inclusive prefix.
+The reverse suffix/squared-weight pass, precision fallback, sorting order, and
+query algorithms are unchanged.
+
+## Relative type 7 and type 8 query intervals
+
+For at most four positive-weight observations, `weightedUniformQuantileAt` keeps
+the full scan to avoid binary-search overhead. For larger inputs, it searches
+the prepared cumulative weights for the first and last observations overlapping
+its probability window.
+Upper-half queries search the suffix weights in reverse index order. Shifted
+first-window type 7 queries compare boundaries after subtracting the same origin
+used by their overlap calculation.
+
+Both the value-scale scan and the coefficient/estimate scan visit only the
+resulting observation interval. They retain ascending observation order, the
+existing overlap expressions, Kahan accumulation, and final clamping. Boundary
+searches add no storage. Query cost is O(log n + k), where k is the number of
+observations in the selected interval; broad windows can still require O(n).
+The separate compensated tiny-weight fallback retains its full scan. Frequency
+quantiles, inverse-CDF queries, and Harrell-Davis calculations are unchanged.

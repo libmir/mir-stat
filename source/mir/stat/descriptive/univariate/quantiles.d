@@ -2178,8 +2178,47 @@ private auto weightedUniformQuantileAt(F, WeightedQuantileAlgo algorithm, Worksp
         const lower = (h - 1) / effectiveSize, upper = h / effectiveSize;
     }
     const total = workspace[$ - 1].cumulative;
+    size_t first = 0, last = workspace.length;
+    // For tiny inputs, scanning costs less than locating the interval.
+    if (workspace.length > 4)
+    {
+        // Search in increasing CDF order, using the same division and optional
+        // shift as the overlap calculation. Preserve ascending observation order
+        // when accumulating, including for reflected windows.
+        static foreach (findEnd; [false, true])
+        {{
+            size_t lo = 0, hi = workspace.length;
+            while (lo < hi)
+            {
+                const mid = lo + (hi - lo) / 2;
+                const i = reflected ? workspace.length - 1 - mid : mid;
+                const right = reflected ? workspace[i].upper / total :
+                    (i + 1 == workspace.length ? 1.0L : workspace[i].cumulative / total);
+                static if (shifted)
+                    const boundary = right - origin;
+                else
+                    const boundary = right;
+                static if (findEnd)
+                    const before = boundary < upper;
+                else
+                    const before = boundary <= lower;
+                if (before) lo = mid + 1;
+                else hi = mid;
+            }
+            static if (findEnd)
+                last = lo == workspace.length ? lo : lo + 1;
+            else
+                first = lo;
+        }}
+        if (reflected)
+        {
+            const begin = workspace.length - last;
+            last = workspace.length - first;
+            first = begin;
+        }
+    }
     real scale = 0;
-    foreach (i; 0 .. workspace.length)
+    foreach (i; first .. last)
     {
         static if (shifted)
             const overlap = weightedUniformShiftedOverlap(
@@ -2191,7 +2230,7 @@ private auto weightedUniformQuantileAt(F, WeightedQuantileAlgo algorithm, Worksp
     }
     if (scale == 0) return cast(F) 0;
     Summator!(real, Summation.kahan) coefficients, estimate;
-    foreach (i; 0 .. workspace.length)
+    foreach (i; first .. last)
     {
         static if (shifted)
             const overlap = weightedUniformShiftedOverlap(
@@ -2638,14 +2677,14 @@ private WeightedQuantileState!(interpretation, algorithm) prepareWeightedQuantil
             workspace[i].upper = suffix.sum;
         }
     }
+    import mir.ndslice.topology: map, vmap;
+    import mir.stat.descriptive.univariate.sums: cumulativeSumInto;
+    // Borrow the existing mass field; normalization is evaluated lazily before
+    // each prefix overwrites that same element. No temporary array is needed.
+    scope auto cumulativeWeights = workspace.map!"a.cumulative";
     static if (interpretation == WeightInterpretation.frequency)
     {
-        ulong cumulativeCount;
-        foreach (i; 0 .. workspace.length)
-        {
-            cumulativeCount += workspace[i].cumulative;
-            workspace[i].cumulative = cumulativeCount;
-        }
+        cumulativeSumInto!(ulong, Summation.naive)(cumulativeWeights, cumulativeWeights);
     }
     else
     {
@@ -2660,20 +2699,35 @@ private WeightedQuantileState!(interpretation, algorithm) prepareWeightedQuantil
             // arbitrary divisor, which can move an exact CDF boundary.
             // Keep the largest scaled weight in [1, 2), retaining at least
             // as much subnormal range as division by the largest weight.
-            foreach (i; 0 .. workspace.length)
+            struct ScaleMass
             {
-                cumulative.put(ldexp(workspace[i].cumulative, 1 - exponent));
-                workspace[i].cumulative = cumulative.sum;
+                int shift;
+                // Older frontends resolve constructor-less calls through opCall.
+                this(int shift) @safe pure nothrow @nogc { this.shift = shift; }
+                real opCall(real mass) const @safe pure nothrow @nogc
+                {
+                    return ldexp(mass, shift);
+                }
             }
+            scope auto normalized = cumulativeWeights.vmap(ScaleMass(1 - exponent));
+            cumulativeSumInto(normalized, cumulativeWeights, cumulative);
         }
         else
-            foreach (i; 0 .. workspace.length)
+        {
+            // Effective-size algorithms use the same scale in their
+            // prefix, suffix, and squared-weight sums.
+            struct ScaleMass
             {
-                // Effective-size algorithms use the same scale in their
-                // prefix, suffix, and squared-weight sums.
-                cumulative.put(workspace[i].cumulative / maximum);
-                workspace[i].cumulative = cumulative.sum;
+                real maximum;
+                this(real maximum) @safe pure nothrow @nogc { this.maximum = maximum; }
+                real opCall(real mass) const @safe pure nothrow @nogc
+                {
+                    return mass / maximum;
+                }
             }
+            scope auto normalized = cumulativeWeights.vmap(ScaleMass(maximum));
+            cumulativeSumInto(normalized, cumulativeWeights, cumulative);
+        }
     }
     WeightedQuantileState!(interpretation, algorithm) state;
     static if (weightedQuantileUsesEffectiveSize!(interpretation, algorithm))
@@ -3871,7 +3925,7 @@ version(mir_stat_test)
     alias q = rcWeightedQuantile!(WeightedQuantileAlgo.type7);
     double[64] values, weights;
     foreach (i; 0 .. values.length) { values[i] = cast(double) i; weights[i] = 1; }
-    foreach (n; [3, 4, 8, 64])
+    foreach (n; [3, 4, 5, 8, 64])
     {
         const p = 1.0 / (n - 1);
         const double[6] probabilities = [nextafter(p, 0.0), p, nextafter(p, 1.0),
@@ -3908,6 +3962,29 @@ unittest
                     rcquantile!(double, ordinary)(values[0 .. n], p);
                 assert(actual.approxEqual(expected, 1e-12, 1e-12));
             }
+    }}
+}
+
+// A bounded window must exclude extreme observations from both the scaling
+// and accumulation passes. Unequal weights exercise partial boundary masses.
+version(mir_stat_test)
+@safe pure nothrow @nogc unittest
+{
+    import mir.math.common: approxEqual;
+    import std.math: nextafter;
+    const real[5] values = [-real.max / 2, 0, 10, 20, real.max / 2];
+    const real[5] weights = [1, 2, 2, 2, 1];
+    alias q7 = rcWeightedQuantile!(real, WeightedQuantileAlgo.type7);
+    // Effective size is 32/7. At p=1/4, overlaps with 0 and 10 are
+    // 23/128 and 5/128; the common width is 28/128.
+    assert(q7(values, weights, 0.25L).approxEqual(25.0L / 14, 1e-14L, 1e-14L));
+    assert(q7(values, weights, 0.75L).approxEqual(255.0L / 14, 1e-14L, 1e-14L));
+    static foreach (algorithm; [WeightedQuantileAlgo.type7, WeightedQuantileAlgo.type8])
+    {{
+        // The entire window lies inside the central observation, on either
+        // side of the switch from cumulative weights to suffix weights.
+        foreach (p; [nextafter(0.5L, 0.0L), 0.5L, nextafter(0.5L, 1.0L)])
+            assert(rcWeightedQuantile!(real, algorithm)(values, weights, p) == 10);
     }}
 }
 
