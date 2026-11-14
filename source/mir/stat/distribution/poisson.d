@@ -1944,3 +1944,39 @@ version(mir_stat_test)
     foreach (T; AliasSeq!(float,double,real))
         static assert(is(typeof(poissonLPMF(1,T(1))) == T));
 }
+
+// At rate one, masses are exp(-1)/k! and CDFs are exp(-1),
+// 2*exp(-1), and 5*exp(-1)/2. Fp tail references agree at 120/180 decimal digits.
+version(mir_stat_test)
+@safe pure nothrow @nogc unittest
+{
+    import std.meta: AliasSeq;
+    import mir.bignum.fixed: UInt;
+    import mir.math.common: fabs;
+    enum double[3] masses = [0.3678794411714423216,0.3678794411714423216,0.1839397205857211608];
+    enum double[3] cdfs = [0.3678794411714423216,0.7357588823428846432,0.9196986029286058040];
+    enum double[3] logs = [-1,-1,-1.6931471805599453094];
+    enum double[3] queries = [0.25,0.5,0.875];
+    static foreach (T; AliasSeq!(float, double, real, Fp!64)) {{
+        static if (is(T == Fp!64)) {
+            enum T[3] lower = [T(false,-65,UInt!64(13572355802537770549UL)),T(false,-64,UInt!64(13572355802537770549UL)),T(false,-64,UInt!64(16965444753172213187UL))];
+            enum T[3] upper = [T(false,-64,UInt!64(11660566172440666341UL)),T(false,-65,UInt!64(9748776542343562133UL)),T(false,-67,UInt!64(11850394564298707433UL))];
+        }
+        foreach (k; 0 .. 3) {
+            enum tolerance = is(T == float) ? 2e-6 : 2e-14;
+            assert(fabs(cast(double)poissonPMF(k,T(1)) - masses[k]) <= tolerance);
+            assert(fabs(cast(double)poissonLPMF(k,T(1)) - logs[k]) <= tolerance);
+            static if (isFloatingPoint!T) {
+                assert(fabs(cast(double)poissonCDF(k,T(1)) - cdfs[k]) <= tolerance);
+                assert(fabs(cast(double)poissonCCDF(k,T(1)) - (1-cdfs[k])) <= tolerance);
+                assert(poissonInvCDF(T(queries[k]),T(1)) == k);
+            } else {
+                const tails = poissonTailsChecked(k,T(1));
+                assert(tails.status == PoissonTailStatus.found);
+                assert(tails.cdf == lower[k] && tails.ccdf == upper[k]);
+                const inverse = poissonInvCDFChecked(T(queries[k]),T(1));
+                assert(inverse.status == PoissonInverseStatus.found && inverse.count == k);
+            }
+        }
+    }}
+}

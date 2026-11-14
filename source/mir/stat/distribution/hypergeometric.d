@@ -2174,3 +2174,37 @@ version(mir_stat_test)
         }
     }}
 }
+
+// C(4,k)*C(4,2-k)/C(8,2), with exactly represented inverse queries.
+version(mir_stat_test)
+@safe pure nothrow @nogc unittest
+{
+    import std.meta: AliasSeq;
+    import mir.bignum.fixed: UInt;
+    import mir.math.common: fabs, log;
+    enum uint[3][3] references = [[3,3,11],[8,11,3],[3,14,0]];
+    enum double[3] queries = [0.125,0.5,0.875];
+    static foreach (T; AliasSeq!(float, double, real, Fp!64)) {{
+        static if (is(T == Fp!64)) {
+            enum T[3] lower = [T(false,-66,UInt!64(15811494920322472814UL)),T(false,-64,UInt!64(14493870343628933413UL)),T(false,-63,UInt!64(9223372036854775808UL))];
+            enum T[3] upper = [T(false,-64,UInt!64(14493870343628933413UL)),T(false,-66,UInt!64(15811494920322472814UL)),T(0)];
+        }
+        foreach (k, row; references) {
+            const expectedMass = row[0] / 14.0;
+            enum tolerance = is(T == float) ? 2e-6 : 2e-14;
+            assert(fabs(cast(double)hypergeometricPMF!T(k,8,4,2) - expectedMass) <= tolerance);
+            assert(fabs(cast(double)hypergeometricLPMF!T(k,8,4,2) - log(expectedMass)) <= tolerance);
+            static if (isFloatingPoint!T) {
+                assert(fabs(cast(double)hypergeometricCDF!T(k,8,4,2) - row[1]/14.0) <= tolerance);
+                assert(fabs(cast(double)hypergeometricCCDF!T(k,8,4,2) - row[2]/14.0) <= tolerance);
+                assert(hypergeometricInvCDF(T(queries[k]),8,4,2) == k);
+            } else {
+                const tails = hypergeometricTailsChecked!T(k,8,4,2);
+                assert(tails.status == HypergeometricTailStatus.found);
+                assert(tails.cdf == lower[k] && tails.ccdf == upper[k]);
+                const inverse = hypergeometricInvCDFChecked(T(queries[k]),8,4,2);
+                assert(inverse.status == HypergeometricInverseStatus.found && inverse.count == k);
+            }
+        }
+    }}
+}

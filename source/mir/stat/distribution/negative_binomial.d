@@ -1556,3 +1556,34 @@ version(mir_stat_test)
         assert(negativeBinomialPMF(size_t.max,2,T(false,long.min,UInt!bits(1))) == T(0));
     }}
 }
+
+// Shared dyadic reference cases exercise scalar and checked APIs together.
+version(mir_stat_test)
+@safe pure nothrow @nogc unittest
+{
+    import std.meta: AliasSeq;
+    import mir.math.common: fabs, log;
+    enum uint[3][4] references = [[4,4,12],[4,8,8],[3,11,5],[2,13,3]];
+    static foreach (T; AliasSeq!(float, double, real, Fp!64)) {{
+        foreach (k, row; references) {
+            const expectedMass = row[0] / 16.0;
+            const expectedCDF = row[1] / 16.0;
+            const expectedCCDF = row[2] / 16.0;
+            const q = T(expectedCDF);
+            enum tolerance = is(T == float) ? 2e-6 : 2e-14;
+            assert(fabs(cast(double)negativeBinomialPMF(k, 2, T(0.5)) - expectedMass) <= tolerance);
+            assert(fabs(cast(double)negativeBinomialLPMF(k, 2, T(0.5)) - log(expectedMass)) <= tolerance);
+            static if (isFloatingPoint!T) {
+                assert(fabs(cast(double)negativeBinomialCDF(k, 2, T(0.5)) - expectedCDF) <= tolerance);
+                assert(fabs(cast(double)negativeBinomialCCDF(k, 2, T(0.5)) - expectedCCDF) <= tolerance);
+                assert(negativeBinomialInvCDF(q, 2, T(0.5)) == k);
+            } else {
+                const tails = negativeBinomialTailsChecked(k, 2, T(0.5));
+                assert(tails.status == NegativeBinomialTailStatus.found);
+                assert(tails.cdf == T(expectedCDF) && tails.ccdf == T(expectedCCDF));
+                const inverse = negativeBinomialInvCDFChecked(q, 2, T(0.5));
+                assert(inverse.status == NegativeBinomialInverseStatus.found && inverse.count == k);
+            }
+        }
+    }}
+}
