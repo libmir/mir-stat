@@ -142,3 +142,21 @@ These views allocate no temporary arrays and add no traversal. Each raw weight
 is read and normalized before its field is replaced by the inclusive prefix.
 The reverse suffix/squared-weight pass, precision fallback, sorting order, and
 query algorithms are unchanged.
+
+## Relative type 7 and type 8 query intervals
+
+For at most four positive-weight observations, `weightedUniformQuantileAt` keeps
+the full scan to avoid binary-search overhead. For larger inputs, it searches
+the prepared cumulative weights for the first and last observations overlapping
+its probability window.
+Upper-half queries search the suffix weights in reverse index order. Shifted
+first-window type 7 queries compare boundaries after subtracting the same origin
+used by their overlap calculation.
+
+Both the value-scale scan and the coefficient/estimate scan visit only the
+resulting observation interval. They retain ascending observation order, the
+existing overlap expressions, Kahan accumulation, and final clamping. Boundary
+searches add no storage. Query cost is O(log n + k), where k is the number of
+observations in the selected interval; broad windows can still require O(n).
+The separate compensated tiny-weight fallback retains its full scan. Frequency
+quantiles, inverse-CDF queries, and Harrell-Davis calculations are unchanged.
