@@ -12,6 +12,34 @@ import mir.stat.distribution.poisson: PoissonTailResult, PoissonTailStatus,
     PoissonInverseResult, PoissonInverseStatus;
 import mir.stat.internal.fp_probability: fpProbabilityLess;
 
+// Exact rational rounding, including bounds at zero and one.
+package(mir.stat) @safe pure nothrow @nogc
+Fp!bits roundedPoissonRatio(uint bits, Integer)(ref const Integer numerator, ref const Integer denominator)
+{
+    alias T = Fp!bits;
+    if (!numerator.length) return T(0);
+    if (numerator == denominator) return T(1);
+    assert(numerator < denominator);
+    const offset = denominator.bitLength - numerator.bitLength;
+    Integer quotient = numerator;
+    quotient <<= offset;
+    const extra = bits - 1 + (quotient < denominator);
+    quotient <<= extra;
+    Integer remainder;
+    quotient.divMod(denominator, quotient, remainder);
+    remainder <<= 1;
+    UInt!(bits + 64) coefficient;
+    coefficient.data[0 .. quotient.length] = quotient.data[0 .. quotient.length];
+    if (remainder > denominator || (remainder == denominator && coefficient.bt(0)))
+        coefficient += 1;
+    auto result = T(coefficient);
+    result.exponent -= cast(long)(offset + extra);
+    return result;
+}
+
+// The from-zero workspace is sized for rates below this ceiling.
+private enum poissonTermCeiling = 1024;
+
 // Directed fixed-point bounds for the unnormalized masses lambda^j/j!.
 // Every upward rounding adds less than one grid unit. Since lambda < 1024,
 // each propagated error is bounded by exp(1024), as is the mass series.
@@ -47,29 +75,6 @@ private struct PoissonIntervals(uint bits)
         const remainder = a.opOpAssign!"/"(b);
         a.normalize();
         return remainder != 0;
-    }
-
-    // Exact rational rounding, including bounds at zero and one.
-    private static T roundedRatio(ref const Integer numerator, ref const Integer denominator)
-    {
-        if (!numerator.length) return T(0);
-        if (numerator == denominator) return T(1);
-        assert(numerator < denominator);
-        const offset = denominator.bitLength - numerator.bitLength;
-        Integer quotient = numerator;
-        quotient <<= offset;
-        const extra = bits - 1 + (quotient < denominator);
-        quotient <<= extra;
-        Integer remainder;
-        quotient.divMod(denominator, quotient, remainder);
-        remainder <<= 1;
-        UInt!(bits + 64) coefficient;
-        coefficient.data[0 .. quotient.length] = quotient.data[0 .. quotient.length];
-        if (remainder > denominator || (remainder == denominator && coefficient.bt(0)))
-            coefficient += 1;
-        auto result = T(coefficient);
-        result.exponent -= cast(long)(offset + extra);
-        return result;
     }
 
     private static void advance(ref Integer value,
@@ -210,10 +215,10 @@ private struct PoissonIntervals(uint bits)
 
             // A/(A+B) increases with A and decreases with B. Keep that
             // dependency when bounding the normalized tails, independently.
-            const cdfLo = roundedRatio(lowerLo, lowerDenominator);
-            const cdfHi = roundedRatio(lowerHi, upperDenominator);
-            const ccdfLo = roundedRatio(upperLo, upperDenominator);
-            const ccdfHi = roundedRatio(upper, lowerDenominator);
+            const cdfLo = roundedPoissonRatio!bits(lowerLo, lowerDenominator);
+            const cdfHi = roundedPoissonRatio!bits(lowerHi, upperDenominator);
+            const ccdfLo = roundedPoissonRatio!bits(upperLo, upperDenominator);
+            const ccdfHi = roundedPoissonRatio!bits(upper, lowerDenominator);
             if (cdfLo == cdfHi && ccdfLo == ccdfHi)
                 return Result(PoissonTailStatus.found, cdfLo, ccdfLo);
         }
@@ -228,7 +233,12 @@ PoissonTailResult!(Fp!bits) boundedPoissonTails(uint bits)(size_t k, Fp!bits lam
     alias Result = PoissonTailResult!T;
     if (lambda.exponent == long.max)
         return Result(PoissonTailStatus.found, T(0), T(1));
-    const limit = maxTerms < 1024 ? maxTerms : 1024;
+    const limit = maxTerms < poissonTermCeiling ? maxTerms : poissonTermCeiling;
+    if (!limit) return Result.init;
+    if (!fpProbabilityLess(lambda, T(poissonTermCeiling))) {
+        import mir.stat.internal.fp_poisson_mode: PoissonMode;
+        return PoissonMode!bits.tails(k, lambda, limit);
+    }
     if (k >= limit || !fpProbabilityLess(lambda, T(limit)))
         return Result.init;
 
@@ -270,8 +280,12 @@ PoissonInverseResult boundedPoissonInverse(uint bits)(Fp!bits q, Fp!bits lambda,
         return Result(Status.found, 0);
     if (!fpProbabilityLess(q, T(1)) || lambda.exponent == long.max)
         return Result(Status.found, size_t.max);
-    const limit = maxTerms < 1024 ? maxTerms : 1024;
-    if (!limit || !fpProbabilityLess(lambda, T(limit)))
-        return Result.init;
+    const limit = maxTerms < poissonTermCeiling ? maxTerms : poissonTermCeiling;
+    if (!limit) return Result.init;
+    if (!fpProbabilityLess(lambda, T(poissonTermCeiling))) {
+        import mir.stat.internal.fp_poisson_mode: PoissonMode;
+        return PoissonMode!bits.inverse(q, lambda, limit);
+    }
+    if (!fpProbabilityLess(lambda, T(limit))) return Result.init;
     return PoissonIntervals!bits.quantile(q, lambda, poissonRateCeiling(lambda), limit);
 }
