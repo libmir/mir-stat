@@ -2604,11 +2604,132 @@ private bool weightedEntryLess(Entry)(const ref Entry a, const ref Entry b)
     return a.value < b.value || (a.value == b.value && a.cumulative < b.cumulative);
 }
 
+private enum maxWeightedBatch = 8;
+
+private struct WeightedBatchRequest
+{
+    real probability;
+    size_t outputIndex;
+}
+
+private struct WeightedBatchResult(F)
+{
+    F[maxWeightedBatch] values;
+    bool ready;
+}
+
+// Partition only the ranges containing outstanding probabilities. Each recursive
+// call splits the requests into two nonempty groups, bounding the stack by K.
+private bool selectWeightedBatch(Workspace, F)(scope Workspace rows,
+    scope WeightedBatchRequest[] requests, real base, real total,
+    ref F[maxWeightedBatch] result, ref size_t budget)
+{
+    import mir.utility: swap;
+    while (requests.length)
+    {
+        if (rows.length > budget)
+            return false;
+        budget -= rows.length;
+
+        const quarter = rows.length / 4;
+        const a = rows[quarter].value;
+        const b = rows[rows.length / 2].value;
+        const c = rows[rows.length - 1 - quarter].value;
+        const pivot = a < b ? (b < c ? b : (a < c ? c : a))
+                            : (a < c ? a : (b < c ? c : b));
+
+        size_t lower, i, upper = rows.length;
+        real leftMass = 0, equalMass = 0;
+        while (i < upper)
+        {
+            const value = rows[i].value;
+            if (value < pivot)
+            {
+                leftMass += rows[i].cumulative;
+                swap(rows[i++], rows[lower++]);
+            }
+            else if (value > pivot)
+                swap(rows[i], rows[--upper]);
+            else
+                equalMass += rows[i++].cumulative;
+        }
+
+        // Use the same division and inclusive CDF boundary as sorted lookup.
+        const before = base + leftMass;
+        const through = before + equalMass;
+        const lowerCDF = before / total;
+        const upperCDF = through / total;
+        size_t first, next;
+        if (lower)
+            while (first < requests.length && requests[first].probability <= lowerCDF)
+                ++first;
+        next = first;
+        while (next < requests.length &&
+               (upper == rows.length || requests[next].probability <= upperCDF))
+            result[requests[next++].outputIndex] = cast(F) pivot;
+
+        if (first == requests.length)
+        {
+            rows = rows[0 .. lower];
+            continue;
+        }
+        if (first && !selectWeightedBatch(rows[0 .. lower], requests[0 .. first],
+                base, total, result, budget))
+            return false;
+        requests = requests[next .. $];
+        rows = rows[upper .. $];
+        base = through;
+    }
+    return true;
+}
+
+private bool tryWeightedBatch(Workspace, Levels, F)(scope Workspace workspace,
+    real maximum, scope Levels levels, ref WeightedBatchResult!F batch)
+{
+    if (levels.length < 2 || levels.length > maxWeightedBatch)
+        return false;
+    // Every integer partial sum must be exactly representable in real. Dividing
+    // the bound first also avoids overflowing the eligibility calculation.
+    enum exactLimit = 1UL << (real.mant_dig < 63 ? real.mant_dig : 63);
+    if (maximum > exactLimit / workspace.length)
+        return false;
+    real total = 0;
+    foreach (i; 0 .. workspace.length)
+    {
+        static if (isFloatingPoint!(typeof(workspace[i].value)))
+        {
+            import std.math: signbit;
+            if (workspace[i].value == 0 && signbit(workspace[i].value))
+                return false;
+        }
+        total += workspace[i].cumulative;
+    }
+    WeightedBatchRequest[maxWeightedBatch] storage;
+    auto requests = storage[0 .. levels.length];
+    foreach (i; 0 .. levels.length)
+    {
+        const probability = cast(real) levels[i];
+        assert(probability >= 0 && probability <= 1,
+            "weightedQuantile: probability must be in [0, 1]");
+        size_t j = i;
+        while (j && probability < requests[j - 1].probability)
+        {
+            requests[j] = requests[j - 1];
+            --j;
+        }
+        requests[j] = WeightedBatchRequest(probability, i);
+    }
+    // A failed selection has only permuted complete rows. The ordinary sort
+    // and prefix pass can finish in the same workspace.
+    size_t budget = workspace.length > size_t.max / 8 ? size_t.max : 8 * workspace.length;
+    return selectWeightedBatch(workspace, requests, 0, total, batch.values, budget);
+}
+
 // Copy the validated positive-weight observations in preparation for queries.
 // The caller retains ownership; evaluation never changes these entries.
 private WeightedQuantileState!(interpretation, algorithm) prepareWeightedQuantileWorkspace(
-    WeightInterpretation interpretation, WeightedQuantileAlgo algorithm, Workspace, Values, Masses)(
-    scope Workspace workspace, scope Values values, scope Masses masses, real maximum)
+    WeightInterpretation interpretation, WeightedQuantileAlgo algorithm, Workspace, Values, Masses, BatchArgs...)(
+    scope Workspace workspace, scope Values values, scope Masses masses, real maximum, scope auto ref BatchArgs batchArgs)
 {
     import mir.ndslice.sorting: sort;
     import mir.primitives: DeepElementType;
@@ -2650,7 +2771,15 @@ private WeightedQuantileState!(interpretation, algorithm) prepareWeightedQuantil
                 swap(workspace[i], workspace[workspace.length - 1 - i]);
         }
         else
+        {
+            static if (BatchArgs.length)
+                if (tryWeightedBatch(workspace, maximum, batchArgs[0], batchArgs[1]))
+                {
+                    batchArgs[1].ready = true;
+                    return typeof(return).init;
+                }
             sort!(weightedEntryLess!Entry)(workspace);
+        }
     }
     static if (weightedQuantileUsesEffectiveSize!(interpretation, algorithm))
     {
@@ -2762,14 +2891,28 @@ private auto allocatedWeightedQuantile(F, WeightInterpretation interpretation, W
     static if (allocation == QuantileAllocation.custom)
         scope(exit) releaseQuantiles(context, scratch);
     scope auto workspace = scratch.lightScope;
-    const state = prepareWeightedQuantileWorkspace!(interpretation, algorithm)(workspace, values.lightScope, masses.lightScope, input.maximum);
+    import mir.ndslice.slice: IteratorOf;
+    import std.traits: isPointer;
+    static if (!isFloatingPoint!(Unqual!P))
+        scope auto levels = quantileSlice(probabilities);
+    enum selectBatch = interpretation == WeightInterpretation.relative &&
+        algorithm == WeightedQuantileAlgo.inverseCDF && isIntegral!Weight &&
+        !isFloatingPoint!(Unqual!P) && isPointer!(IteratorOf!(typeof(levels)));
+    static if (selectBatch)
+    {
+        WeightedBatchResult!(Unqual!F) batch;
+        const state = prepareWeightedQuantileWorkspace!(interpretation, algorithm)(
+            workspace, values.lightScope, masses.lightScope, input.maximum, levels, batch);
+    }
+    else
+        const state = prepareWeightedQuantileWorkspace!(interpretation, algorithm)(
+            workspace, values.lightScope, masses.lightScope, input.maximum);
     // Keep custom workspace/result cleanup in the same owning frame, including
     // when a probability assertion fails in a debug build.
     static if (isFloatingPoint!(Unqual!P))
         return preparedWeightedQuantileAt!(F, interpretation, algorithm)(workspace, probabilities, state);
     else
     {
-        scope auto levels = quantileSlice(probabilities);
         static assert(typeof(levels).N == 1, "Probabilities must be one-dimensional");
         static if (fixedResultLength)
         {
@@ -2783,6 +2926,13 @@ private auto allocatedWeightedQuantile(F, WeightInterpretation interpretation, W
         }
         static if (!fixedResultLength && allocation == QuantileAllocation.custom)
             scope(failure) releaseQuantiles(context, result);
+        static if (selectBatch)
+            if (batch.ready)
+            {
+                foreach (i; 0 .. levels.length)
+                    result[i] = batch.values[i];
+                return result;
+            }
         foreach (i; 0 .. levels.length)
             result[i] = preparedWeightedQuantileAt!(F, interpretation, algorithm)(workspace, levels[i], state);
         return result;
@@ -10261,4 +10411,125 @@ version(mir_stat_test)
     assert(preparedWeightedQuantileAt!(long, interpretation, algorithm)(storage[].sliced, 0.5, state) == long.max - 2);
     assert(preparedWeightedQuantileAt!(long, interpretation, algorithm)(storage[].sliced, 0.75, state) == long.max - 1);
     assert(values == [long.max, long.max - 1, long.max - 2, long.max - 3]);
+}
+version(mir_stat_test)
+@system unittest
+{
+    import std.experimental.allocator: dispose;
+    import std.experimental.allocator.mallocator: Mallocator;
+    import std.math: nextafter;
+
+    // Beyond double's exact integer range, adjacent observations still differ.
+    enum base = 1UL << 54;
+    const ulong[6] values = [base + 3, 0, base + 1, base, base + 3, base + 2];
+    const int[6] weights = [1, 0, 2, 1, 1, 3];
+    const real boundary = 3.0L / 8;
+    const real[8] levels = [1, nextafter(boundary, 1.0L), 0, boundary,
+        nextafter(boundary, 0.0L), 0.75L, boundary, 0.875L];
+    const ulong[8] expected = [base + 3, base + 2, base, base + 1,
+        base + 1, base + 2, base + 1, base + 3];
+    assert(weightedQuantile(values, weights, levels) == expected[]);
+    assert(rcWeightedQuantile(values, weights, levels) == expected[]);
+    auto custom = makeWeightedQuantile(Mallocator.instance, values, weights, levels);
+    scope(exit) Mallocator.instance.dispose(custom.field);
+    assert(custom == expected[]);
+}
+
+version(mir_stat_test)
+@safe pure unittest
+{
+    import mir.ndslice.slice: sliced;
+
+    // This permutation exhausts the partition budget after some requests
+    // have been answered. Unequal weights make detached values and weights
+    // observable when the ordinary sort finishes the batch.
+    enum count = 2048;
+    alias Entry = WeightedQuantileEntry!(int, WeightInterpretation.relative,
+        WeightedQuantileAlgo.inverseCDF);
+    Entry[count] rows;
+    int[count] values, weights, prefix;
+    int total;
+    foreach (i; 0 .. count)
+    {
+        values[i] = (461 * i + count / 2) % count;
+        weights[i] = 1 + values[i] % 3;
+        rows[i] = Entry(values[i], weights[i]);
+        total += 1 + i % 3; // Weight of value i in sorted order.
+        prefix[i] = total;
+    }
+    int[8] expected;
+    real[8] levels;
+    foreach (i; 0 .. 8)
+    {
+        expected[i] = i == 7 ? count - 1 : i * count / 7;
+        levels[i] = cast(real) prefix[expected[i]] / total;
+    }
+
+    WeightedBatchResult!int partial;
+    partial.values[] = -1;
+    assert(!tryWeightedBatch(rows[].sliced, 3, levels[].sliced, partial));
+    size_t answered;
+    foreach (i, value; partial.values)
+        if (value != -1)
+        {
+            assert(value == expected[i]);
+            ++answered;
+        }
+    assert(answered > 0 && answered < levels.length);
+    assert(weightedQuantile(values, weights, levels) == expected[]);
+}
+
+// Rejected batches finish through sorted lookup, including its signed-zero behavior.
+version(mir_stat_test)
+@safe pure unittest
+{
+    import mir.ndslice.slice: sliced;
+    alias Entry = WeightedQuantileEntry!(double, WeightInterpretation.relative,
+        WeightedQuantileAlgo.inverseCDF);
+    double[4] values = [3, 1, 0, 2];
+    ulong[4] weights = [1, 1, 1, 1];
+    const double[9] levels = [0.75, 0, 1, 0.25, 0.5, 0.125, 0.875, 0.5, 1];
+    Entry[4] rows;
+    foreach (i, ref row; rows) row = Entry(values[i], weights[i]);
+    WeightedBatchResult!double batch;
+    assert(!tryWeightedBatch(rows[].sliced, 1, levels[], batch));
+    assert(!tryWeightedBatch(rows[].sliced, 1, levels[0 .. 0], batch));
+    auto result = rcWeightedQuantile(values, weights, levels);
+    foreach (i, p; levels)
+        assert(result[i] is rcWeightedQuantile(values, weights, p));
+
+    // The conservative maximum-times-length bound exceeds exact real sums.
+    weights[0] = ulong.max;
+    rows[0].cumulative = cast(real) weights[0];
+    assert(!tryWeightedBatch(rows[].sliced, cast(real) weights[0], levels[0 .. 2], batch));
+    auto large = rcWeightedQuantile(values, weights, levels[0 .. 2]);
+    foreach (i, p; levels[0 .. 2])
+        assert(large[i] is rcWeightedQuantile(values, weights, p));
+
+    weights[] = 1;
+    values[2] = -0.0;
+    foreach (i, ref row; rows) row = Entry(values[i], weights[i]);
+    assert(!tryWeightedBatch(rows[].sliced, 1, levels[0 .. 2], batch));
+    auto signedZero = rcWeightedQuantile(values, weights, levels[0 .. 2]);
+    assert(signedZero[1] is -0.0);
+    foreach (i, p; levels[0 .. 2])
+        assert(signedZero[i] is rcWeightedQuantile(values, weights, p));
+}
+
+// A failed left recursion must report failure even after answering another request.
+version(mir_stat_test)
+@safe pure unittest
+{
+    import mir.ndslice.slice: sliced;
+    alias Entry = WeightedQuantileEntry!(int, WeightInterpretation.relative,
+        WeightedQuantileAlgo.inverseCDF);
+    Entry[4] rows = [Entry(3, 4), Entry(1, 2), Entry(2, 3), Entry(0, 1)];
+    WeightedBatchRequest[2] requests = [
+        WeightedBatchRequest(0.1L, 0), WeightedBatchRequest(0.6L, 1)];
+    int[maxWeightedBatch] result = -1;
+    size_t budget = rows.length;
+    assert(!selectWeightedBatch(rows[].sliced, requests[], 0, 10, result, budget));
+    assert(budget == 0 && result[0] == -1 && result[1] == 2);
+    foreach (row; rows)
+        assert(row.cumulative == row.value + 1);
 }
