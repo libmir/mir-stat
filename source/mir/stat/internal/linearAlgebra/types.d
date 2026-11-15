@@ -9,6 +9,19 @@ import mir.ndslice.slice: isSlice;
 import mir.internal.utility: isComplex;
 import std.traits: Unqual, isFloatingPoint, isMutable;
 
+/// Representation of the supplied covariance or precision matrix.
+enum CovarianceRepresentation
+{
+    /// Symmetric positive-definite covariance S. Factorized once per call, including a whole batch.
+    covariance,
+    /// Covariance factor reused without factorization: upper U with S = U.transpose * U, or lower L with S = L * L.transpose.
+    covarianceCholesky,
+    /// Symmetric positive-definite precision matrix P = inverse(S).
+    inverseCovariance,
+    /// Upper R with P = R.transpose * R, or lower Q with P = Q * Q.transpose.
+    inverseCovarianceCholesky,
+}
+
 /// Selected triangle of the logical matrix view.
 enum TrianglePolicy
 {
