@@ -178,6 +178,18 @@ private struct ExactTails(uint bits, uint capacity)
     }
 }
 
+// In a balanced population, exchange successes and failures: k pairs with n-k.
+// When half the population is drawn, exchange the sample with its complement:
+// k pairs with K-k. Return the sum of paired counts, or zero if neither applies.
+// Callers have already handled distributions supported on a single count.
+private @safe pure nothrow @nogc
+size_t reflectionSum(size_t N, size_t K, size_t n)
+{
+    if (K == N-K) return n;
+    if (n == N-n) return K;
+    return 0;
+}
+
 package(mir.stat) @safe pure nothrow @nogc
 HypergeometricTailResult!(Fp!bits) exactHypergeometricTails(uint bits)(
     size_t k, size_t N, size_t K, size_t n, size_t maxSupport)
@@ -186,6 +198,13 @@ HypergeometricTailResult!(Fp!bits) exactHypergeometricTails(uint bits)(
     alias Result = HypergeometricTailResult!T;
     if (k == (K < n ? K : n))
         return Result(HypergeometricTailStatus.found, T(1), T(0));
+
+    const reflection = reflectionSum(N,K,n);
+    if ((reflection & 1) && k == reflection / 2) {
+        auto half = T(1);
+        --half.exponent;
+        return Result(HypergeometricTailStatus.found, half, half);
+    }
 
     const lower = n > N-K ? n-(N-K) : 0;
     const upper = K < n ? K : n;
@@ -225,6 +244,15 @@ HypergeometricInverseResult exactHypergeometricInverse(uint bits)(
     const upper = K < n ? K : n;
     if (lower == upper || !fpProbabilityLess(q,Fp!bits(1)))
         return HypergeometricInverseResult(S.found,upper);
+    const reflection = reflectionSum(N,K,n);
+    if (reflection) {
+        enum half = Fp!bits(false,-1,UInt!bits(1));
+        // Every supported count has positive mass. For an even reflection
+        // sum the middle atom straddles one half; for an odd sum the lower
+        // of the two middle counts reaches exactly one half.
+        if (!fpProbabilityLess(q,half) && !fpProbabilityLess(half,q))
+            return HypergeometricInverseResult(S.found, reflection / 2);
+    }
     const flipped = canonicalize(N,K,n);
     if (n >= maxSupport || n >= 1024) return HypergeometricInverseResult.init;
     size_t count;
@@ -238,7 +266,7 @@ HypergeometricInverseResult exactHypergeometricInverse(uint bits)(
 version(mir_stat_test)
 @safe pure nothrow @nogc unittest
 {
-    assert(exactHypergeometricInverse(Fp!64(0.5),2048,1024,1024,1025).status
+    assert(exactHypergeometricInverse(Fp!64(0.25),2048,1024,1024,1025).status
         == HypergeometricInverseStatus.supportLimit);
     alias evaluate = exactHypergeometricTails!64;
     assert(evaluate(0, 2048, 1024, 1024, 1025).status == HypergeometricTailStatus.supportLimit);

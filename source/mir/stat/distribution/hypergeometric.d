@@ -660,7 +660,10 @@ Params:
 
 Returns:
     At the upper support endpoint, returns $(D found) with tails one and zero
-    for any budget. Otherwise the support contains
+    for any budget. If exactly half the population consists of successes and n
+    is odd, both tails at k = n/2 (integer division) are exactly one half,
+    also for any budget. The same holds with n and K exchanged.
+    For other queries the support contains
     $(D 1 + min(n, N-n, K, N-K)) outcomes. If this exceeds $(D maxSupport),
     returns $(D supportLimit). Increasing the budget may resolve the request.
 
@@ -713,7 +716,7 @@ version(mir_stat_test)
     foreach (n; [63, 255, 1023]) {
         result = evaluate(n/2, 2*n, n, n, n+1);
         assert(result.status == S.found && result.cdf == T(0.5) && result.ccdf == T(0.5));
-        assert(evaluate(n/2, 2*n, n, n, n).status == S.supportLimit);
+        assert(evaluate(n/2-1, 2*n, n, n, n).status == S.supportLimit);
     }
     // Reflection and transposition preserve the strict upper-tail convention.
     foreach (params; [cast(size_t[3])[1,2,7], cast(size_t[3])[1,7,2]]) {
@@ -1339,7 +1342,9 @@ Returns:
     At zero, returns zero even if the lower support bound is positive. At one,
     returns the upper support bound. A deterministic distribution returns its
     sole count for positive probabilities. These cases are independent of the
-    budget. Other queries return $(D supportLimit) if the support exceeds it.
+    budget. At q = 1/2, a population with exactly half successes has median
+    floor(n/2). Sampling exactly half the population gives median floor(K/2).
+    Both symmetry results apply with any budget. Other queries return $(D supportLimit) if the support exceeds it.
 +/
 @safe pure nothrow @nogc
 HypergeometricInverseResult hypergeometricInvCDFChecked(uint bits)(
@@ -1460,12 +1465,33 @@ version(mir_stat_test)
     assert(r.status == S.found && r.count == 3);
     r = hypergeometricInvCDFChecked(T(0.25),size_t.max,size_t.max,size_t.max,0);
     assert(r.status == S.found && r.count == size_t.max);
-    assert(hypergeometricInvCDFChecked(T(0.5),512,256,256).status == S.supportLimit);
+    r = hypergeometricInvCDFChecked(T(0.5),512,256,256,0);
+    assert(r.status == S.found && r.count == 128);
     foreach (n; [63,255,1023]) {
         r = hypergeometricInvCDFChecked(T(0.5),2*n,n,n,n+1);
         assert(r.status == S.found && r.count == n/2);
-        assert(hypergeometricInvCDFChecked(T(0.5),2*n,n,n,n).status == S.supportLimit);
+        assert(hypergeometricInvCDFChecked(T(0.25),2*n,n,n,n).status == S.supportLimit);
     }
+    // Away from the median, both larger workspaces use the general inverse.
+    r = hypergeometricInvCDFChecked(T(0.25),128,64,64,65);
+    assert(r.status == S.found && r.count == 30);
+    r = hypergeometricInvCDFChecked(T(0.25),512,256,256,257);
+    assert(r.status == S.found && r.count == 124);
+    // Both reflections work with a positive lower support bound and no budget.
+    enum rawHalf = T(false,-3,UInt!128(4));
+    foreach (margins; [cast(size_t[2])[2048,2049], cast(size_t[2])[2049,2048]]) {
+        const tails = hypergeometricTailsChecked!T(1024,4096,margins[0],margins[1],0);
+        assert(tails.status == HypergeometricTailStatus.found);
+        assert(tails.cdf == T(0.5) && tails.ccdf == T(0.5));
+        r = hypergeometricInvCDFChecked(rawHalf,4096,margins[0],margins[1],0);
+        assert(r.status == S.found && r.count == 1024);
+    }
+    // An even reflection has a middle atom. Only the median follows directly.
+    assert(hypergeometricTailsChecked!T(1024,4096,2048,2048,0).status
+        == HypergeometricTailStatus.supportLimit);
+    assert(hypergeometricInvCDFChecked(rawHalf,4095,2048,2049,0).status == S.supportLimit);
+    r = hypergeometricInvCDFChecked(rawHalf,size_t.max-1,size_t.max/2,size_t.max-2,0);
+    assert(r.status == S.found && r.count == (size_t.max-2)/2);
     debug {
         import core.exception: AssertError;
         import std.exception: assertThrown;
