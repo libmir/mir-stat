@@ -132,8 +132,31 @@ While copying positive-weight rows, it checks whether adjacent entries are in
 ascending or descending order by value, using the raw weight to break ties.
 Zero-weight rows are skipped. Ascending entries can be used immediately;
 descending entries are reversed in the workspace. Once both directions are
-ruled out, the remaining rows are copied and the usual sort orders the entries.
+ruled out, preparation finishes copying the rows and normally sorts them.
 
 Equal-weight entries with opposite signed zeros use the usual sort as well,
 so queries preserve the zero sign selected by that sort. Recognizing order
 uses constant extra storage and takes at most linear time.
+
+### Small relative inverse-CDF batches
+
+For a batch of 2 through 8 directly stored probabilities, integer-typed relative
+weights can make selection cheaper than sorting. The GC, RC, and custom
+allocator calls share this decision in `prepareWeightedQuantileWorkspace`.
+Ascending and descending inputs take their existing paths first. Scalar calls
+and reusable weighted tables use the ordinary preparation.
+
+For example, a batch requesting the 25th and 75th percentiles partitions the
+unordered workspace around a pivot. The total weights below and equal to the
+pivot identify which requests it answers and which still need a lower or higher
+value. Selection visits only ranges with outstanding requests and writes answers
+in caller order. It keeps at most eight requests and answers on the stack.
+
+`tryWeightedBatch` checks that the maximum weight times the number of positive
+weights fits an exact integer bound for the accumulator. This makes partition
+sums independent of addition order. A floating observation of negative zero
+uses the ordinary sort to preserve tie behavior. Each pivot is the median of
+three observations sampled near the quarter, halfway, and three-quarter
+positions. If partitioning would visit more than eight times the original row
+count, preparation sorts the partially partitioned workspace and evaluates the
+entire batch from its cumulative weights.
