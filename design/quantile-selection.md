@@ -140,8 +140,8 @@ uses constant extra storage and takes at most linear time.
 
 ### Small relative inverse-CDF batches
 
-For a batch of 2 through 8 directly stored probabilities, integer-typed relative
-weights can make selection cheaper than sorting. The GC, RC, and custom
+For `inverseCDF` and `averagedInverseCDF` batches of 2 through 8 directly stored
+probabilities, integer-typed relative weights can make selection cheaper than sorting. The GC, RC, and custom
 allocator calls share this decision in `prepareWeightedQuantileWorkspace`.
 Ascending and descending inputs take their existing paths first. Scalar calls
 and reusable weighted tables use the ordinary preparation.
@@ -160,3 +160,12 @@ three observations sampled near the quarter, halfway, and three-quarter
 positions. If partitioning would visit more than eight times the original row
 count, preparation sorts the partially partitioned workspace and evaluates the
 entire batch from its cumulative weights.
+
+With `averagedInverseCDF`, a query exactly at the end of a group of equal
+values averages that value with the next distinct value. For example, with
+values `[10, 20, 20, 30]` and equal weights, probabilities 0.5 and 0.75
+return 20 and 25 respectively. At a boundary, selection scans the upper
+partition for its minimum, charging the scan to the same work budget. When
+the upper partition is empty, the nearest higher ancestor pivot supplies the
+successor. Repeated requests at that boundary share the midpoint. Plain
+`inverseCDF` omits this logic at compile time.
