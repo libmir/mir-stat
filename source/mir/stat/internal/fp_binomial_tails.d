@@ -379,12 +379,17 @@ package(mir.stat) NegativeBinomialInverseResult exactNegativeBinomialInverse(uin
 
     const trailing = p.coefficient.cttz;
     const s = (0UL - cast(ulong)p.exponent) - trailing;
+    const odd = p.coefficient >> trailing;
     enum half = T(false, -1, UInt!bits(1));
     // At k=r-1 the binomial identity has 2*r-1 symmetric trials.
     // All masses are positive, so this is the least count reaching half.
-    if (s == 1 && (p.coefficient >> trailing) == UInt!bits(1) &&
+    if (s == 1 && odd == UInt!bits(1) &&
         !fpProbabilityLess(q, half) && !fpProbabilityLess(half, q))
         return Result(found, r - 1);
+    // For power-of-two p, the zero-failure mass is exact or smaller than
+    // every positive represented query if it underflows.
+    if (odd == UInt!bits(1) && !fpProbabilityLess(binomialPowerOfTwo!bits(s, r), q))
+        return Result(found, 0);
     const scaleLimit = maxScale < 65536 ? maxScale : 65536;
     if (!maxTerms || s > scaleLimit / r)
         return Result.init;
@@ -394,7 +399,6 @@ package(mir.stat) NegativeBinomialInverseResult exactNegativeBinomialInverse(uin
     const available = scaleLimit / cast(size_t)s - r;
     const last = terms - 1 < available ? terms - 1 : available;
     const scale = (r + last)*cast(size_t)s;
-    const odd = p.coefficient >> trailing;
     if (scale <= 4096)
         return ExactTails!(bits, 4096).negativeInverse(q, r, odd, cast(size_t)s, terms, scaleLimit);
     if (scale <= 16384)
