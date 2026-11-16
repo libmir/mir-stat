@@ -241,6 +241,21 @@ unittest
     3.uniformDiscreteCCDF(1, 3).shouldApprox == 0.0;
 }
 
+private @safe pure nothrow @nogc
+size_t uniformRankOffset(size_t bits)(UInt!bits significand, ulong shift, size_t span)
+{
+    if (shift >= bits + 128) return 0;
+    auto n = UInt!128(span);
+    n += 1;
+    auto product = significand.toSize!(bits + 128);
+    product *= n;
+    // For positive product, ceil(product / 2^shift)-1 equals
+    // floor((product-1) / 2^shift), including exact CDF jumps.
+    product -= 1;
+    product >>= cast(size_t)shift;
+    return cast(size_t)product;
+}
+
 /++
 Computes the discrete uniform inverse cumulative distribution function (InvCDF).
 
@@ -304,19 +319,8 @@ size_t uniformDiscreteInvCDF(T)(const T p, const size_t lower = 0, const size_t 
 {
     if (!p.coefficient)
         return lower;
-    enum bits = typeof(T.init.coefficient).sizeof * 8;
-    auto n = UInt!128(upper - lower);
-    n += 1;
-    auto product = p.coefficient.toSize!(bits + 128);
-    product *= n;
-    // For positive product, ceil(product / 2^shift)-1 equals
-    // floor((product-1) / 2^shift), including exact CDF jumps.
-    product -= 1;
     const shift = 0UL - cast(ulong)p.exponent;
-    if (shift >= bits + 128)
-        return lower;
-    product >>= cast(size_t)shift;
-    return lower + cast(size_t)product;
+    return lower + uniformRankOffset(p.coefficient, shift, upper - lower);
 }
 
 ///.
