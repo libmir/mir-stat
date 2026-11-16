@@ -2779,7 +2779,7 @@ private bool tryWeightedBatch(WeightInterpretation interpretation, WeightedQuant
         static if (interpretation == WeightInterpretation.relative &&
                    algorithm == WeightedQuantileAlgo.averagedInverseCDF)
         {
-            if (workspace.length < 16 || levels[0] != 0.5)
+            if (workspace.length < 16 || !(levels[0] > 0 && levels[0] < 1))
                 return false;
         }
         else
@@ -10958,12 +10958,27 @@ version(mir_stat_test)
         rows[i] = Entry(values[i], 1);
     }
     const double[1] medianLevel = [0.5];
-    const double[1] otherLevel = [nextafter(0.5, 1.0)];
     WeightedBatchResult!double batch;
     assert(!tryWeightedBatch!(meaning, algorithm)(rows[0 .. 15].sliced, 1, medianLevel[], batch));
-    assert(!tryWeightedBatch!(meaning, algorithm)(rows[].sliced, 1, otherLevel[], batch));
+    foreach (p; [0.0, 1.0])
+        assert(!tryWeightedBatch!(meaning, algorithm)(rows[].sliced, 1, p, batch));
     assert(tryWeightedBatch!(meaning, algorithm)(rows[].sliced, 1, medianLevel[], batch));
     assert(batch.values[0] == 7.5);
+
+    // With unit weights the quartiles fall exactly between distinct values.
+    foreach (p; [0.25, 0.75])
+    {
+        const upper = p * rows.length;
+        foreach (i, level; [nextafter(p, 0.0), p, nextafter(p, 1.0)])
+        {
+            const expected = upper - 1 + 0.5 * i;
+            const double[1] single = [level];
+            assert(tryWeightedBatch!(meaning, algorithm)(rows[].sliced, 1, level, batch));
+            assert(batch.values[0] == expected);
+            assert(rcWeightedQuantile!algorithm(values, weights, level) == expected);
+            assert(rcWeightedQuantile!algorithm(values, weights, single)[0] == expected);
+        }
+    }
 
     // The seventeenth row has zero weight. The extra unit on value 8
     // moves the median from the boundary between 7 and 8 into the 8s.
