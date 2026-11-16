@@ -33,9 +33,9 @@ module mir.stat.internal.linearAlgebra.cholesky;
 version(mir_stat_test) version = mir_stat_test_linearAlgebra;
 version(mir_stat_test_blas) version = mir_stat_test_linearAlgebra;
 
-import mir.stat.internal.linearAlgebra.views: diagonalView, DiagonalView;
+import mir.stat.internal.linearAlgebra.views: diagonalView, DiagonalView, TriangularView;
 import mir.stat.internal.linearAlgebra.allocation;
-import mir.stat.internal.linearAlgebra.types: Scalar, numericSlice, TrianglePolicy;
+import mir.stat.internal.linearAlgebra.types: Scalar, numericSlice, TrianglePolicy, DiagonalPolicy;
 import mir.stat.internal.linearAlgebra.backend: hasBlas, hasLapack, nativeSlice, blasMatrix, blasVector;
 import mir.stat.internal.linearAlgebra.views: SymmetricView;
 import std.traits: isFloatingPoint;
@@ -113,6 +113,46 @@ version(mir_stat_test_linearAlgebra)
     }
 }
 
+/// Evaluate a Cholesky factor stored as a diagonal vector.
+package(mir.stat) Scalar!D logDeterminantFromCholesky(Summation summation = Summation.kbn, D)(
+    scope auto ref const(DiagonalView!D) factor)
+    if (isFloatingPoint!(Scalar!D))
+{
+    return sumLogDiagonal!(summation, Scalar!D)(factor);
+}
+
+/// Use the triangle and diagonal policies carried by the factor view.
+/// An implicit unit diagonal gives zero without reading the stored entries.
+package(mir.stat) Scalar!A logDeterminantFromCholesky(
+    Summation summation = Summation.kbn, TrianglePolicy triangle, DiagonalPolicy diagonal, A)(
+    scope auto ref const(TriangularView!(triangle, diagonal, A)) factor)
+    if (isFloatingPoint!(Scalar!A))
+{
+    static if (diagonal == DiagonalPolicy.unit)
+        return 0;
+    else
+        return sumLogDiagonal!(summation, Scalar!A)(factor);
+}
+
+/// Diagonal and triangular views can be passed directly, including unit factors.
+version(mir_stat_test_linearAlgebra)
+@safe pure nothrow @nogc unittest
+{
+    import mir.stat.internal.linearAlgebra.types: TrianglePolicy, DiagonalPolicy;
+    import mir.stat.internal.linearAlgebra.views: diagonalView, triangularView;
+    import mir.ndslice.slice: sliced;
+    import std.math: log, fabs;
+    double[2] entries = [2, 3];
+    double[4] data = [2, double.nan, 1, 3];
+    auto lower = triangularView!(TrianglePolicy.lower)(data[].sliced(2, 2));
+    const result = logDeterminantFromCholesky(diagonalView(entries[].sliced));
+    assert(fabs(result - log(36.0)) < 4 * double.epsilon);
+    assert(logDeterminantFromCholesky(lower) == result);
+    data[0] = data[3] = double.nan;
+    auto unit = triangularView!(TrianglePolicy.lower, DiagonalPolicy.unit)(data[].sliced(2, 2));
+    assert(logDeterminantFromCholesky(unit) == 0);
+}
+
 /// Compensated summation retains a small log term between two cancelling terms.
 version(mir_stat_test_linearAlgebra)
 @safe pure nothrow @nogc unittest
@@ -120,6 +160,7 @@ version(mir_stat_test_linearAlgebra)
     import mir.math.sum: Summation, Summator;
     import mir.stat.internal.linearAlgebra.types: TrianglePolicy;
     import mir.ndslice.slice: sliced;
+    import mir.stat.internal.linearAlgebra.views: diagonalView, triangularView;
     import std.math: log;
     float[3] d = [0x1p100f, 1 + float.epsilon, 0x1p-100f];
     float[9] values = [d[0], 0, 0, 0, d[1], 0, 0, 0, d[2]];
@@ -134,6 +175,8 @@ version(mir_stat_test_linearAlgebra)
     assert(logDeterminantFromCholesky!(TrianglePolicy.lower, Summation.kbn)(factor) == smallTerm);
     assert(logDeterminantFromCholesky!(Summation.fast)(factor) == fastResult);
     assert(logDeterminantFromCholesky!(TrianglePolicy.lower, Summation.fast)(factor) == fastResult);
+    assert(logDeterminantFromCholesky!(Summation.fast)(diagonalView(d[].sliced)) == fastResult);
+    assert(logDeterminantFromCholesky!(Summation.fast)(triangularView(factor)) == fastResult);
 }
 
 /++
