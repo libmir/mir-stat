@@ -257,6 +257,16 @@ Fp!bits binomialPowerOfTwo(uint bits)(ulong s, size_t n)
     return T(false, exponent - cast(long)shift, UInt!bits(1) << shift);
 }
 
+// For reduced p = odd/2^s, its complement is a power of two iff odd = 2^s-1.
+private @safe pure nothrow @nogc
+bool hasPowerOfTwoComplement(uint bits)(UInt!bits odd, ulong s)
+{
+    if (s > bits) return false;
+    UInt!bits ones;
+    ones.data[] = size_t.max;
+    return odd == (ones >> (bits - cast(size_t)s));
+}
+
 package(mir.stat) BinomialTailResult!(Fp!bits) exactBinomialTails(uint bits)(
     size_t k, size_t n, Fp!bits p, size_t maxTerms, size_t maxScale)
     @safe pure nothrow @nogc
@@ -292,15 +302,9 @@ package(mir.stat) BinomialTailResult!(Fp!bits) exactBinomialTails(uint bits)(
         return Result(found, fpProbabilityComplement(upper), upper);
     }
 
-    // For reduced p = odd/2^s, 1-p is a power of two exactly when
-    // odd = 2^s-1. Form the mask without shifting by a full coefficient.
-    if (!k && s <= bits) {
-        UInt!bits ones;
-        ones.data[] = size_t.max;
-        if (odd == (ones >> (bits - cast(size_t)s))) {
-            const lower = binomialPowerOfTwo!bits(s, n);
-            return Result(found, lower, fpProbabilityComplement(lower));
-        }
+    if (!k && hasPowerOfTwoComplement!bits(odd, s)) {
+        const lower = binomialPowerOfTwo!bits(s, n);
+        return Result(found, lower, fpProbabilityComplement(lower));
     }
 
     const terms = k + 1 < n - k ? k + 1 : n - k;
@@ -328,19 +332,32 @@ package(mir.stat) BinomialInverseResult exactBinomialInverse(uint bits)(
 
     const trailing = p.coefficient.cttz;
     const s = (0UL - cast(ulong)p.exponent) - trailing;
+    const odd = p.coefficient >> trailing;
     enum half = T(false, -1, UInt!bits(1));
     // Positive masses and reflection symmetry make floor(n/2) the least
     // count reaching one half, for both even and odd n.
-    if (s == 1 && (p.coefficient >> trailing) == UInt!bits(1) &&
+    if (s == 1 && odd == UInt!bits(1) &&
         !fpProbabilityLess(q, half) && !fpProbabilityLess(half, q))
         return BinomialInverseResult(found, n / 2);
+    if (hasPowerOfTwoComplement!bits(odd, s)) {
+        // The power is exact or smaller than every positive represented q.
+        const firstMass = binomialPowerOfTwo!bits(s, n);
+        if (!fpProbabilityLess(firstMass, q))
+            return BinomialInverseResult(found, 0);
+    }
+    if (odd == UInt!bits(1) && s <= bits / n) {
+        // Only then is 1-p^n representable below one. For larger scales
+        // every represented interior q lies strictly below this boundary.
+        const boundary = fpProbabilityComplement(binomialPowerOfTwo!bits(s, n));
+        if (!fpProbabilityLess(q, boundary))
+            return BinomialInverseResult(found, fpProbabilityLess(boundary, q) ? n : n-1);
+    }
     if (!maxTerms || s > maxScale / n || s > 65536 / n)
         return BinomialInverseResult.init;
     // Reaching either end of the support must resolve every interior query.
     const terms = maxTerms < 1024 ? maxTerms : 1024;
     const budget = n < terms ? n+1 : terms;
     const scale = cast(size_t)s*n;
-    const odd = p.coefficient >> trailing;
     if (scale <= 4096)
         return ExactTails!(bits, 4096).inverse(q, n, odd, cast(size_t)s, budget);
     if (scale <= 16384)
