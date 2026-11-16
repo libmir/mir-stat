@@ -2777,7 +2777,8 @@ private bool tryWeightedBatch(WeightInterpretation interpretation, WeightedQuant
     if (levels.length == 1)
     {
         static if (interpretation == WeightInterpretation.relative &&
-                   algorithm == WeightedQuantileAlgo.averagedInverseCDF)
+                   (algorithm == WeightedQuantileAlgo.inverseCDF ||
+                    algorithm == WeightedQuantileAlgo.averagedInverseCDF))
         {
             if (workspace.length < 16 || !(levels[0] > 0 && levels[0] < 1))
                 return false;
@@ -3046,19 +3047,18 @@ private auto allocatedWeightedQuantile(F, WeightInterpretation interpretation, W
     import mir.ndslice.slice: IteratorOf;
     import std.traits: isPointer;
     enum scalar = isFloatingPoint!(Unqual!P);
+    enum selectRelative = interpretation == WeightInterpretation.relative && isIntegral!Weight &&
+        (algorithm == WeightedQuantileAlgo.inverseCDF || algorithm == WeightedQuantileAlgo.averagedInverseCDF);
     static if (scalar)
     {
-        enum selectBatch = interpretation == WeightInterpretation.relative &&
-            algorithm == WeightedQuantileAlgo.averagedInverseCDF && isIntegral!Weight;
+        enum selectBatch = selectRelative;
         static if (selectBatch)
             alias levels = probabilities;
     }
     else
     {
         scope auto levels = quantileSlice(probabilities);
-        enum selectBatch = (interpretation == WeightInterpretation.frequency ||
-            (isIntegral!Weight && (algorithm == WeightedQuantileAlgo.inverseCDF ||
-                                   algorithm == WeightedQuantileAlgo.averagedInverseCDF))) &&
+        enum selectBatch = (interpretation == WeightInterpretation.frequency || selectRelative) &&
             isPointer!(IteratorOf!(typeof(levels)));
     }
     static if (selectBatch)
@@ -10965,6 +10965,12 @@ version(mir_stat_test)
     assert(tryWeightedBatch!(meaning, algorithm)(rows[].sliced, 1, medianLevel[], batch));
     assert(batch.values[0] == 7.5);
 
+    enum inverse = WeightedQuantileAlgo.inverseCDF;
+    WeightedBatchResult!int inverseBatch;
+    assert(!tryWeightedBatch!(meaning, inverse)(rows[0 .. 15].sliced, 1, 0.25, inverseBatch));
+    foreach (p; [0.0, 1.0])
+        assert(!tryWeightedBatch!(meaning, inverse)(rows[].sliced, 1, p, inverseBatch));
+
     // With unit weights the quartiles fall exactly between distinct values.
     foreach (p; [0.25, 0.75])
     {
@@ -10977,6 +10983,12 @@ version(mir_stat_test)
             assert(batch.values[0] == expected);
             assert(rcWeightedQuantile!algorithm(values, weights, level) == expected);
             assert(rcWeightedQuantile!algorithm(values, weights, single)[0] == expected);
+            // At the boundary inverseCDF returns the lower observation.
+            const selected = level <= p ? cast(int) upper - 1 : cast(int) upper;
+            assert(tryWeightedBatch!(meaning, inverse)(rows[].sliced, 1, level, inverseBatch));
+            assert(inverseBatch.values[0] == selected);
+            assert(rcWeightedQuantile!inverse(values, weights, level) == selected);
+            assert(rcWeightedQuantile!inverse(values, weights, single)[0] == selected);
         }
     }
 
@@ -10994,6 +11006,15 @@ version(mir_stat_test)
         auto result = makeWeightedQuantile!algorithm(Mallocator.instance, values, weights, medianLevel);
         scope(exit) Mallocator.instance.dispose(result.field);
         assert(result[0] == expected);
+    }
+    // Make the fourth and fifth observations equal across the lower quartile.
+    weights[8] = 1;
+    values[4] = 3;
+    foreach (level; [0.25, nextafter(0.25, 1.0)])
+    {
+        const double[1] single = [level];
+        assert(rcWeightedQuantile!inverse(values, weights, level) == 3);
+        assert(rcWeightedQuantile!inverse(values, weights, single)[0] == 3);
     }
 }
 
@@ -11029,7 +11050,7 @@ version(mir_stat_test)
     }
 }
 
-// Other conventions finish single-probability batches through sorted lookup.
+// Single inverse CDF queries select; frequency conventions still use sorted lookup.
 version(mir_stat_test)
 @safe pure unittest
 {
@@ -11049,7 +11070,10 @@ version(mir_stat_test)
         foreach (i, ref row; rows)
             row = Entry(values[i], weights[i]);
         WeightedBatchResult!double batch;
-        assert(!tryWeightedBatch!(meaning, algorithm)(rows[].sliced, 1, levels[], batch));
+        static if (algorithm == A.inverseCDF)
+            assert(tryWeightedBatch!(meaning, algorithm)(rows[].sliced, 1, levels[], batch));
+        else
+            assert(!tryWeightedBatch!(meaning, algorithm)(rows[].sliced, 1, levels[], batch));
         // Unit counts give the ordered sample 0..63: inverse CDF selects 31,
         // while types 7 and 8 interpolate halfway between 31 and 32.
         enum expected = algorithm == A.inverseCDF ? 31.0 : 31.5;
