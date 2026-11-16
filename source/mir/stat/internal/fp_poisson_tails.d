@@ -25,7 +25,13 @@ private struct PoissonIntervals(uint bits)
     alias T = Fp!bits;
     alias Result = PoissonTailResult!T;
     enum precision = bits + 128;
-    alias Integer = BigInt!((precision + bits + 2048 + 63) / 64);
+    enum weightLimbs = (precision + 2048 + 63) / 64;
+    enum coefficientLimbs = (bits + 63) / 64;
+    alias Weight = BigInt!weightLimbs;
+    alias Coefficient = BigInt!coefficientLimbs;
+    // Multiplication requires the sum of the operand capacities, not the
+    // rounded sum of their bit counts. They differ for widths such as Fp!32.
+    alias Integer = BigInt!(weightLimbs + coefficientLimbs);
 
     @safe pure nothrow @nogc:
 
@@ -73,9 +79,9 @@ private struct PoissonIntervals(uint bits)
     }
 
     private static void advance(ref Integer value,
-        ref const BigInt!((bits + 63) / 64) coefficient, long exponent, uint divisor, bool up)
+        ref const Coefficient coefficient, long exponent, uint divisor, bool up)
     {
-        BigInt!((precision + 2048 + 63) / 64) weight;
+        Weight weight;
         assert(value.bitLength <= precision + 2048);
         weight = value;
         Integer product;
@@ -113,9 +119,9 @@ private struct PoissonIntervals(uint bits)
     // target as an integer avoids rounding a CDF before the comparison.
     private static Integer targetRank(ref const Integer denominator, T q)
     {
-        BigInt!((precision + 2048 + 63) / 64) weight;
+        Weight weight;
         weight = denominator;
-        auto coefficient = BigInt!((bits + 63) / 64)(q.coefficient);
+        auto coefficient = Coefficient(q.coefficient);
         Integer rank;
         rank.multiply(weight, coefficient);
         Integer one = Integer(1);
@@ -132,7 +138,7 @@ private struct PoissonIntervals(uint bits)
     {
         alias R = PoissonInverseResult;
         assert(limit && limit <= 1024 && ceiling <= limit);
-        auto coefficient = BigInt!((bits + 63) / 64)(lambda.coefficient);
+        auto coefficient = Coefficient(lambda.coefficient);
         Integer lo = Integer(1);
         lo <<= precision;
         Integer hi = lo;
@@ -175,7 +181,7 @@ private struct PoissonIntervals(uint bits)
     static Result evaluate(size_t k, T lambda, uint ceiling, size_t limit)
     {
         assert(ceiling > 0 && ceiling <= 1024 && limit <= 1024 && k < limit);
-        auto coefficient = BigInt!((bits + 63) / 64)(lambda.coefficient);
+        auto coefficient = Coefficient(lambda.coefficient);
         Integer lo = Integer(1);
         lo <<= precision;
         Integer hi = lo;
