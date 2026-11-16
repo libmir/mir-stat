@@ -2351,32 +2351,36 @@ private WeightedQuantileState!(interpretation, algorithm) prepareCompensatedWeig
 private enum ulong ordinaryFrequencyRankLimit = real.mant_dig >= 97 ?
     ulong.max : 1UL << (real.mant_dig - 33);
 
-private auto frequencyQuantileAt(F, WeightedQuantileAlgo algorithm, Workspace)(
-    scope Workspace workspace, real probability)
+private struct FrequencyQuantileRank
+{
+    ulong index;
+    real fraction;
+}
+
+private FrequencyQuantileRank frequencyQuantileRank(WeightedQuantileAlgo algorithm)(
+    ulong total, real probability)
 {
     import std.math: floor;
-    const total = workspace[$ - 1].cumulative;
     if (total > ordinaryFrequencyRankLimit)
-        return compensatedFrequencyQuantileAt!(F, algorithm)(workspace, probability);
+        return compensatedFrequencyQuantileRank!algorithm(total, probability);
     static if (algorithm == WeightedQuantileAlgo.type7)
         const rank = cast(real)(total - 1) * probability;
     else
         // Equivalent to (N+1/3)*p-2/3, with an exact zero correction at p=0.5.
         const rank = cast(real)(total - 1) * probability + (4 * probability - 2) / 3;
-    if (rank <= 0) return cast(F) workspace[0].value;
-    if (rank >= cast(real)(total - 1)) return cast(F) workspace[$ - 1].value;
+    if (rank <= 0) return FrequencyQuantileRank(0, 0);
+    if (rank >= cast(real)(total - 1)) return FrequencyQuantileRank(total - 1, 0);
     const index = cast(ulong) floor(rank);
     const fraction = rank - index;
-    return frequencyQuantileFromRank!F(workspace, index, fraction);
+    return FrequencyQuantileRank(index, fraction);
 }
 
 // Keep the integer part and fractional part separate. At large total counts,
 // adding a small correction to the full rank would immediately round it away.
-private auto compensatedFrequencyQuantileAt(F, WeightedQuantileAlgo algorithm, Workspace)(
-    scope Workspace workspace, real probability)
+private FrequencyQuantileRank compensatedFrequencyQuantileRank(WeightedQuantileAlgo algorithm)(
+    ulong total, real probability)
 {
     import std.math: floor;
-    const total = workspace[$ - 1].cumulative;
     const a = cast(real)(total - 1);
     const rank = a * probability;
 
@@ -2407,7 +2411,7 @@ private auto compensatedFrequencyQuantileAt(F, WeightedQuantileAlgo algorithm, W
             sum = next;
         }
         const shift = cast(int) floor((sum + error) / 3);
-        if (shift < 0 && index == 0) return cast(F) workspace[0].value;
+        if (shift < 0 && index == 0) return FrequencyQuantileRank(0, 0);
         if (shift < 0) --index;
         else if (shift > 0) ++index;
         const x = -3.0L * shift;
@@ -2420,7 +2424,7 @@ private auto compensatedFrequencyQuantileAt(F, WeightedQuantileAlgo algorithm, W
     // clamp the upper endpoint before looking for a following observation.
     if (fraction < 0)
     {
-        if (index == 0) return cast(F) workspace[0].value;
+        if (index == 0) return FrequencyQuantileRank(0, 0);
         --index;
         fraction += 1;
     }
@@ -2429,8 +2433,8 @@ private auto compensatedFrequencyQuantileAt(F, WeightedQuantileAlgo algorithm, W
         ++index;
         fraction -= 1;
     }
-    if (index >= total - 1) return cast(F) workspace[$ - 1].value;
-    return frequencyQuantileFromRank!F(workspace, index, fraction);
+    if (index >= total - 1) return FrequencyQuantileRank(total - 1, 0);
+    return FrequencyQuantileRank(index, fraction);
 }
 
 // Locate a conceptual order statistic without expanding occurrence counts.
@@ -2462,7 +2466,13 @@ private auto weightedQuantileAt(F, WeightInterpretation interpretation, Weighted
     if (probability == 1)
         return cast(F) workspace[$ - 1].value;
     static if (interpretation == WeightInterpretation.frequency)
-        return frequencyQuantileAt!(F, algorithm)(workspace, cast(real) probability);
+    {
+        const total = workspace[$ - 1].cumulative;
+        const rank = frequencyQuantileRank!algorithm(total, cast(real) probability);
+        if (rank.index == total - 1) return cast(F) workspace[$ - 1].value;
+        if (rank.index == 0 && rank.fraction == 0) return cast(F) workspace[0].value;
+        return frequencyQuantileFromRank!F(workspace, rank.index, rank.fraction);
+    }
     else static if (algorithm == WeightedQuantileAlgo.type7 || algorithm == WeightedQuantileAlgo.type8)
         return weightedUniformQuantileAt!(F, algorithm)(workspace, cast(real) probability, effectiveSize);
     else static if (algorithm == WeightedQuantileAlgo.harrellDavis ||
@@ -2606,10 +2616,24 @@ private bool weightedEntryLess(Entry)(const ref Entry a, const ref Entry b)
 
 private enum maxWeightedBatch = 8;
 
-private struct WeightedBatchRequest
+private struct WeightedBatchRequest(Target)
 {
-    real probability;
+    Target target;
     size_t outputIndex;
+}
+
+// At most two ranks per probability. Insert in target order while retaining
+// each request's original output slot.
+private void insertWeightedRequest(Target)(scope WeightedBatchRequest!Target[] requests,
+    ref size_t length, Target target, size_t outputIndex)
+{
+    size_t j = length++;
+    while (j && target < requests[j - 1].target)
+    {
+        requests[j] = requests[j - 1];
+        --j;
+    }
+    requests[j] = WeightedBatchRequest!Target(target, outputIndex);
 }
 
 private struct WeightedBatchResult(F)
@@ -2618,11 +2642,18 @@ private struct WeightedBatchResult(F)
     bool ready;
 }
 
-// Partition only the ranges containing outstanding probabilities. Each recursive
-// call splits the requests into two nonempty groups, bounding the stack by K.
-private bool selectWeightedBatch(Workspace, F, Higher...)(scope Workspace rows,
-    scope WeightedBatchRequest[] requests, real base, real total,
-    ref F[maxWeightedBatch] result, ref size_t budget, Higher higher)
+private struct FrequencyRankValue(T)
+{
+    T value;
+    static if (isIntegral!T)
+        bool spansMultipleRows;
+}
+
+// Partition only ranges with outstanding requests. Each recursive call handles
+// fewer requests, so stack depth is bounded by the number of requested targets.
+private bool selectWeightedBatch(Workspace, Target, F, size_t N, Higher...)(scope Workspace rows,
+    scope WeightedBatchRequest!Target[] requests, Target base, Target total,
+    ref F[N] result, ref size_t budget, Higher higher)
 {
     import mir.utility: swap;
     while (requests.length)
@@ -2639,7 +2670,7 @@ private bool selectWeightedBatch(Workspace, F, Higher...)(scope Workspace rows,
                             : (a < c ? a : (b < c ? c : b));
 
         size_t lower, i, upper = rows.length;
-        real leftMass = 0, equalMass = 0;
+        Target leftMass = 0, equalMass = 0;
         while (i < upper)
         {
             const value = rows[i].value;
@@ -2654,21 +2685,30 @@ private bool selectWeightedBatch(Workspace, F, Higher...)(scope Workspace rows,
                 equalMass += rows[i++].cumulative;
         }
 
-        // Use the same division and inclusive CDF boundary as sorted lookup.
         const before = base + leftMass;
         const through = before + equalMass;
-        const lowerCDF = before / total;
-        const upperCDF = through / total;
+        static if (is(Target == ulong))
+        {
+            // The one-based ranks in the pivot group are (before, through].
+            alias lowerCut = before;
+            alias upperCut = through;
+        }
+        else
+        {
+            // Match the division and inclusive boundary used by sorted CDF lookup.
+            const lowerCut = before / total;
+            const upperCut = through / total;
+        }
         size_t first, next;
         if (lower)
-            while (first < requests.length && requests[first].probability <= lowerCDF)
+            while (first < requests.length && requests[first].target <= lowerCut)
                 ++first;
         next = first;
         while (next < requests.length &&
-               (upper == rows.length || requests[next].probability <= upperCDF))
+               (upper == rows.length || requests[next].target <= upperCut))
         {
             static if (Higher.length)
-                if (through < total && requests[next].probability == upperCDF)
+                if (through < total && requests[next].target == upperCut)
                 {
                     // At the end of a group, average with its next distinct
                     // value. A left turn saved the successor if it lies outside
@@ -2688,10 +2728,18 @@ private bool selectWeightedBatch(Workspace, F, Higher...)(scope Workspace rows,
                     const midpoint = interpolateQuantile!F(pivot, following, 0.5L);
                     do
                         result[requests[next++].outputIndex] = midpoint;
-                    while (next < requests.length && requests[next].probability == upperCDF);
+                    while (next < requests.length && requests[next].target == upperCut);
                     continue;
                 }
-            result[requests[next++].outputIndex] = cast(F) pivot;
+            static if (is(Target == ulong))
+            {
+                static if (isIntegral!(typeof(pivot)))
+                    result[requests[next++].outputIndex] = F(pivot, upper - lower > 1);
+                else
+                    result[requests[next++].outputIndex] = F(pivot);
+            }
+            else
+                result[requests[next++].outputIndex] = cast(F) pivot;
         }
 
         if (first == requests.length)
@@ -2712,17 +2760,26 @@ private bool selectWeightedBatch(Workspace, F, Higher...)(scope Workspace rows,
     return true;
 }
 
-private bool tryWeightedBatch(WeightedQuantileAlgo algorithm, Workspace, Levels, F)(scope Workspace workspace,
+private bool tryWeightedBatch(WeightInterpretation interpretation, WeightedQuantileAlgo algorithm, Workspace, Levels, F)(
+    scope Workspace workspace,
     real maximum, scope Levels levels, ref WeightedBatchResult!F batch)
 {
     if (levels.length < 2 || levels.length > maxWeightedBatch)
         return false;
-    // Every integer partial sum must be exactly representable in real. Dividing
-    // the bound first also avoids overflowing the eligibility calculation.
-    enum exactLimit = 1UL << (real.mant_dig < 63 ? real.mant_dig : 63);
-    if (maximum > exactLimit / workspace.length)
-        return false;
-    real total = 0;
+    static if (interpretation == WeightInterpretation.frequency)
+    {
+        if (workspace.length < 64)
+            return false;
+        ulong total = 0;
+    }
+    else
+    {
+        // Every partial sum must be exactly representable in real.
+        enum exactLimit = 1UL << (real.mant_dig < 63 ? real.mant_dig : 63);
+        if (maximum > exactLimit / workspace.length)
+            return false;
+        real total = 0;
+    }
     foreach (i; 0 .. workspace.length)
     {
         static if (isFloatingPoint!(typeof(workspace[i].value)))
@@ -2733,31 +2790,72 @@ private bool tryWeightedBatch(WeightedQuantileAlgo algorithm, Workspace, Levels,
         }
         total += workspace[i].cumulative;
     }
-    WeightedBatchRequest[maxWeightedBatch] storage;
-    auto requests = storage[0 .. levels.length];
+    // A failed selection has only permuted complete rows. The ordinary sort
+    // and prefix pass can finish in the same workspace.
+    size_t budget = workspace.length > size_t.max / 8 ? size_t.max : 8 * workspace.length;
+    static if (interpretation == WeightInterpretation.frequency)
+    {
+        WeightedBatchRequest!ulong[2 * maxWeightedBatch] storage;
+        real[maxWeightedBatch] fractions;
+    }
+    else
+        WeightedBatchRequest!real[maxWeightedBatch] storage;
+
+    size_t length;
     foreach (i; 0 .. levels.length)
     {
         const probability = cast(real) levels[i];
         assert(probability >= 0 && probability <= 1,
             "weightedQuantile: probability must be in [0, 1]");
-        size_t j = i;
-        while (j && probability < requests[j - 1].probability)
+        static if (interpretation == WeightInterpretation.frequency)
         {
-            requests[j] = requests[j - 1];
-            --j;
+            const rank = probability == 0 ? FrequencyQuantileRank(0, 0) :
+                probability == 1 ? FrequencyQuantileRank(total - 1, 0) :
+                frequencyQuantileRank!algorithm(total, probability);
+            fractions[i] = rank.fraction;
+            insertWeightedRequest(storage[], length, rank.index + 1, 2 * i);
+            if (rank.fraction != 0)
+                insertWeightedRequest(storage[], length, rank.index + 2, 2 * i + 1);
         }
-        requests[j] = WeightedBatchRequest(probability, i);
+        else
+            insertWeightedRequest(storage[], length, probability, i);
     }
-    // A failed selection has only permuted complete rows. The ordinary sort
-    // and prefix pass can finish in the same workspace.
-    size_t budget = workspace.length > size_t.max / 8 ? size_t.max : 8 * workspace.length;
-    static if (algorithm == WeightedQuantileAlgo.averagedInverseCDF)
+    auto requests = storage[0 .. length];
+    static if (interpretation == WeightInterpretation.frequency)
+    {
+        // Retain observation precision until interpolation, including when
+        // the requested result type is narrower than the observations.
+        FrequencyRankValue!(typeof(workspace[0].value))[2 * maxWeightedBatch] values;
+        if (!selectWeightedBatch(workspace, requests, 0UL, total, values, budget))
+            return false;
+        foreach (i; 0 .. levels.length)
+        {
+            const left = values[2 * i].value;
+            batch.values[i] = cast(F) left;
+            if (fractions[i] == 0)
+                continue;
+            const right = values[2 * i + 1].value;
+            if (left != right)
+                batch.values[i] = interpolateQuantile!F(left, right, fractions[i]);
+            else static if (isIntegral!(typeof(left)))
+            {
+                // Sorted lookup casts within a row and interpolates across
+                // rows. A partition groups ties and loses that distinction.
+                // If rounding makes it observable, let sorted lookup decide.
+                if (values[2 * i].spansMultipleRows &&
+                    interpolateQuantile!F(left, right, fractions[i]) !is batch.values[i])
+                    return false;
+            }
+        }
+        return true;
+    }
+    else static if (algorithm == WeightedQuantileAlgo.averagedInverseCDF)
         // At the root, the highest value has cumulative probability one and
         // never needs a successor. Left partitions supply their actual bound.
-        return selectWeightedBatch(workspace, requests, 0, total, batch.values, budget,
+        return selectWeightedBatch(workspace, requests, 0.0L, total, batch.values, budget,
             typeof(workspace[0].value).init);
     else
-        return selectWeightedBatch(workspace, requests, 0, total, batch.values, budget);
+        return selectWeightedBatch(workspace, requests, 0.0L, total, batch.values, budget);
 }
 
 // Copy the validated positive-weight observations in preparation for queries.
@@ -2808,7 +2906,7 @@ private WeightedQuantileState!(interpretation, algorithm) prepareWeightedQuantil
         else
         {
             static if (BatchArgs.length)
-                if (tryWeightedBatch!algorithm(workspace, maximum, batchArgs[0], batchArgs[1]))
+                if (tryWeightedBatch!(interpretation, algorithm)(workspace, maximum, batchArgs[0], batchArgs[1]))
                 {
                     batchArgs[1].ready = true;
                     return typeof(return).init;
@@ -2930,9 +3028,9 @@ private auto allocatedWeightedQuantile(F, WeightInterpretation interpretation, W
     import std.traits: isPointer;
     static if (!isFloatingPoint!(Unqual!P))
         scope auto levels = quantileSlice(probabilities);
-    enum selectBatch = interpretation == WeightInterpretation.relative &&
-        (algorithm == WeightedQuantileAlgo.inverseCDF || algorithm == WeightedQuantileAlgo.averagedInverseCDF) &&
-        isIntegral!Weight &&
+    enum selectBatch = (interpretation == WeightInterpretation.frequency ||
+        (isIntegral!Weight && (algorithm == WeightedQuantileAlgo.inverseCDF ||
+                               algorithm == WeightedQuantileAlgo.averagedInverseCDF))) &&
         !isFloatingPoint!(Unqual!P) && isPointer!(IteratorOf!(typeof(levels)));
     static if (selectBatch)
     {
@@ -10503,7 +10601,7 @@ version(mir_stat_test)
 
     WeightedBatchResult!int partial;
     partial.values[] = -1;
-    assert(!tryWeightedBatch!(WeightedQuantileAlgo.inverseCDF)(rows[].sliced, 3, levels[].sliced, partial));
+    assert(!tryWeightedBatch!(WeightInterpretation.relative, WeightedQuantileAlgo.inverseCDF)(rows[].sliced, 3, levels[].sliced, partial));
     size_t answered;
     foreach (i, value; partial.values)
         if (value != -1)
@@ -10528,8 +10626,8 @@ version(mir_stat_test)
     Entry[4] rows;
     foreach (i, ref row; rows) row = Entry(values[i], weights[i]);
     WeightedBatchResult!double batch;
-    assert(!tryWeightedBatch!(WeightedQuantileAlgo.inverseCDF)(rows[].sliced, 1, levels[], batch));
-    assert(!tryWeightedBatch!(WeightedQuantileAlgo.inverseCDF)(rows[].sliced, 1, levels[0 .. 0], batch));
+    assert(!tryWeightedBatch!(WeightInterpretation.relative, WeightedQuantileAlgo.inverseCDF)(rows[].sliced, 1, levels[], batch));
+    assert(!tryWeightedBatch!(WeightInterpretation.relative, WeightedQuantileAlgo.inverseCDF)(rows[].sliced, 1, levels[0 .. 0], batch));
     auto result = rcWeightedQuantile(values, weights, levels);
     foreach (i, p; levels)
         assert(result[i] is rcWeightedQuantile(values, weights, p));
@@ -10537,7 +10635,7 @@ version(mir_stat_test)
     // The conservative maximum-times-length bound exceeds exact real sums.
     weights[0] = ulong.max;
     rows[0].cumulative = cast(real) weights[0];
-    assert(!tryWeightedBatch!(WeightedQuantileAlgo.inverseCDF)(rows[].sliced, cast(real) weights[0], levels[0 .. 2], batch));
+    assert(!tryWeightedBatch!(WeightInterpretation.relative, WeightedQuantileAlgo.inverseCDF)(rows[].sliced, cast(real) weights[0], levels[0 .. 2], batch));
     auto large = rcWeightedQuantile(values, weights, levels[0 .. 2]);
     foreach (i, p; levels[0 .. 2])
         assert(large[i] is rcWeightedQuantile(values, weights, p));
@@ -10545,7 +10643,7 @@ version(mir_stat_test)
     weights[] = 1;
     values[2] = -0.0;
     foreach (i, ref row; rows) row = Entry(values[i], weights[i]);
-    assert(!tryWeightedBatch!(WeightedQuantileAlgo.inverseCDF)(rows[].sliced, 1, levels[0 .. 2], batch));
+    assert(!tryWeightedBatch!(WeightInterpretation.relative, WeightedQuantileAlgo.inverseCDF)(rows[].sliced, 1, levels[0 .. 2], batch));
     auto signedZero = rcWeightedQuantile(values, weights, levels[0 .. 2]);
     assert(signedZero[1] is -0.0);
     foreach (i, p; levels[0 .. 2])
@@ -10560,11 +10658,11 @@ version(mir_stat_test)
     alias Entry = WeightedQuantileEntry!(int, WeightInterpretation.relative,
         WeightedQuantileAlgo.inverseCDF);
     Entry[4] rows = [Entry(3, 4), Entry(1, 2), Entry(2, 3), Entry(0, 1)];
-    WeightedBatchRequest[2] requests = [
-        WeightedBatchRequest(0.1L, 0), WeightedBatchRequest(0.6L, 1)];
+    WeightedBatchRequest!real[2] requests = [
+        WeightedBatchRequest!real(0.1L, 0), WeightedBatchRequest!real(0.6L, 1)];
     int[maxWeightedBatch] result = -1;
     size_t budget = rows.length;
-    assert(!selectWeightedBatch(rows[].sliced, requests[], 0, 10, result, budget));
+    assert(!selectWeightedBatch(rows[].sliced, requests[], 0.0L, 10.0L, result, budget));
     assert(budget == 0 && result[0] == -1 && result[1] == 2);
     foreach (row; rows)
         assert(row.cumulative == row.value + 1);
@@ -10601,13 +10699,13 @@ version(mir_stat_test)
     alias Entry = WeightedQuantileEntry!(int, WeightInterpretation.relative,
         WeightedQuantileAlgo.averagedInverseCDF);
     Entry[4] rows = [Entry(30, 2), Entry(10, 1), Entry(20, 1), Entry(20, 2)];
-    WeightedBatchRequest[2] requests = [WeightedBatchRequest(0.5L, 0),
-        WeightedBatchRequest(4.0L / 6, 1)];
+    alias Request = WeightedBatchRequest!real;
+    Request[2] requests = [Request(0.5L, 0), Request(4.0L / 6, 1)];
     double[maxWeightedBatch] result;
     // Partitioning all four rows answers the first request. The second needs
     // one more visit, to find the successor in the upper partition.
     size_t budget = rows.length;
-    assert(!selectWeightedBatch(rows[].sliced, requests[], 0, 6, result, budget, 0));
+    assert(!selectWeightedBatch(rows[].sliced, requests[], 0.0L, 6.0L, result, budget, 0));
     assert(result[0] == 20 && budget == 0);
 }
 
@@ -10628,8 +10726,180 @@ version(mir_stat_test)
         row = Entry(values[i], weights[i]);
     WeightedBatchResult!double batch;
     // Require selection to finish, so sorted fallback cannot hide a lost bound.
-    assert(tryWeightedBatch!(A.averagedInverseCDF)(rows[].sliced, 2, levels[], batch));
+    assert(tryWeightedBatch!(WeightInterpretation.relative, A.averagedInverseCDF)(rows[].sliced, 2, levels[], batch));
     assert(batch.values[0 .. levels.length] == expected[]);
     assert(weightedQuantile!(A.averagedInverseCDF)(values, weights, levels) == expected[]);
     assert(rcWeightedQuantile!(A.averagedInverseCDF)(values, weights, levels) == expected[]);
+}
+
+version(mir_stat_test)
+@system unittest
+{
+    import mir.ndslice.slice: sliced;
+    import std.experimental.allocator: dispose;
+    import std.experimental.allocator.mallocator: Mallocator;
+    import mir.math.common: approxEqual;
+
+    alias W = WeightInterpretation;
+    alias A = WeightedQuantileAlgo;
+    // In expanded order each value 0..63 occurs twice. The extra row has
+    // zero weight, and whole-valued floating-point counts are accepted.
+    int[65] values;
+    double[65] counts = 0;
+    foreach (i; 0 .. 64)
+    {
+        values[i] = i * 17 % 64;
+        counts[i] = 2;
+    }
+    const real[8] levels = [1, 0.5L, 0, 0.25L, 0.75L, 0.25L, 0.125L, 0.5L];
+    static foreach (algorithm; [A.type7, A.type8])
+    {{
+        alias Entry = WeightedQuantileEntry!(int, W.frequency, algorithm);
+        Entry[64] rows;
+        foreach (i, ref row; rows)
+            row = Entry(values[i], 2);
+        WeightedBatchResult!real selected;
+        assert(!tryWeightedBatch!(W.frequency, algorithm)(rows[0 .. 63].sliced, 2, levels[].sliced, selected));
+        assert(tryWeightedBatch!(W.frequency, algorithm)(rows[].sliced, 2, levels[].sliced, selected));
+
+        auto gc = weightedQuantile!(real, W.frequency, algorithm)(values, counts, levels);
+        auto rc = rcWeightedQuantile!(real, W.frequency, algorithm)(values, counts, levels);
+        auto custom = makeWeightedQuantile!(real, W.frequency, algorithm)(Mallocator.instance, values, counts, levels);
+        scope(exit) Mallocator.instance.dispose(custom.field);
+        foreach (i, p; levels)
+        {
+            // Independent interpolation in the conceptual 128-element sample.
+            real h = algorithm == A.type7 ? 127 * p : (128 + 1.0L / 3) * p - 2.0L / 3;
+            h = h < 0 ? 0 : h > 127 ? 127 : h;
+            const rank = cast(int) h;
+            const expected = rank / 2 + (rank % 2 && rank < 127 ? h - rank : 0);
+            assert(approxEqual(selected.values[i], expected, 64 * real.epsilon, 64 * real.epsilon));
+            assert(gc[i] == selected.values[i] && rc[i] == gc[i] && custom[i] == gc[i]);
+        }
+    }}
+}
+
+version(mir_stat_test)
+@safe pure unittest
+{
+    import std.math: nextafter;
+    alias W = WeightInterpretation;
+    alias A = WeightedQuantileAlgo;
+    enum total = weightedQuantileMaxFrequency;
+    enum quarter = total / 4;
+    enum long unit = 1L << 50;
+    ulong[64] counts;
+    long[64] values;
+    foreach (i; 0 .. 64)
+    {
+        const order = 17 * i % 64;
+        values[i] = order * (12 * unit);
+        counts[i] = order == 0 ? quarter : order == 63 ? total - quarter - 62 : 1;
+    }
+    const real boundary = cast(real)(quarter - 1) / (total - 1);
+    const real[8] levels = [1, 0, boundary, nextafter(boundary, 1.0L),
+        nextafter(boundary, 0.0L), 0.5L, nextafter(1.0L, 0.0L), 0.25L];
+    static foreach (algorithm; [A.type7, A.type8])
+    {{
+        auto batch = rcWeightedQuantile!(real, W.frequency, algorithm)(values, counts, levels);
+        // For N = 4q, type 7 lies 3/4 of the way from 0 to 12 units.
+        // For N = 4q+3, it lies halfway from 12 to 24. At p = 1/4 the type 8 correction
+        // (4*p - 2)/3 lowers the rank by 1/3, subtracting four units.
+        static assert(total % 4 == 0 || total % 4 == 3);
+        enum type7Units = total % 4 == 0 ? 9 : 18;
+        enum expectedUnits = algorithm == A.type7 ? type7Units : type7Units - 4;
+        assert(batch[7] == expectedUnits * unit);
+        foreach (i, probability; levels)
+            assert(batch[i] == rcWeightedQuantile!(real, W.frequency, algorithm)(values, counts, probability));
+    }}
+}
+
+// Adjacent ranks with equal integer values can belong to a single row or
+// straddle two rows. Preserve the sorted lookup's interpolation rounding.
+version(mir_stat_test)
+@safe pure unittest
+{
+    alias W = WeightInterpretation;
+    alias A = WeightedQuantileAlgo;
+    int[65] values;
+    int[65] counts;
+    foreach (i; 0 .. values.length)
+    {
+        values[i] = 699906384 + cast(int)((17 * i) % 65);
+        counts[i] = 1;
+    }
+    values[1] = values[0];
+    foreach (split; [true, false])
+    {
+        counts[0] = split ? 1 : 2;
+        counts[1] = split ? 1 : 0;
+        const real[2] levels = [0x1.1c3a9f8de6439p-44L / 64, 0.5L];
+        auto batch = rcWeightedQuantile!(real, W.frequency, A.type7)(values, counts, levels);
+        foreach (i, p; levels)
+            assert(batch[i] is rcWeightedQuantile!(real, W.frequency, A.type7)(values, counts, p));
+    }
+}
+
+// Floating-point observations retain their fractional part during rank selection.
+version(mir_stat_test)
+@safe pure unittest
+{
+    import mir.ndslice.slice: sliced;
+    alias W = WeightInterpretation;
+    alias A = WeightedQuantileAlgo;
+    static foreach (T; AliasSeq!(float, double))
+    static foreach (algorithm; [A.type7, A.type8])
+    {{
+        T[64] values;
+        int[64] counts = 2;
+        alias Entry = WeightedQuantileEntry!(T, W.frequency, algorithm);
+        Entry[64] rows;
+        foreach (i, ref value; values)
+        {
+            value = cast(T)((17 * i) % 64 + 0.25);
+            rows[i] = Entry(value, 2);
+        }
+        const double[4] levels = [0.5, 0, 0.25, 1];
+        WeightedBatchResult!double selected;
+        assert(tryWeightedBatch!(W.frequency, algorithm)(rows[].sliced, 2, levels[], selected));
+        auto result = weightedQuantile!(double, W.frequency, algorithm)(values, counts, levels);
+        foreach (i, p; levels)
+            assert(result[i] == selected.values[i] &&
+                result[i] == rcWeightedQuantile!(double, W.frequency, algorithm)(values, counts, p));
+        static if (algorithm == A.type7)
+            assert(result == [31.75, 0.25, 16.0, 63.25]);
+    }}
+}
+
+// Exhausting frequency selection's budget still finishes through sorted lookup.
+version(mir_stat_test)
+@safe pure unittest
+{
+    import mir.ndslice.slice: sliced;
+    alias W = WeightInterpretation;
+    alias A = WeightedQuantileAlgo;
+    enum count = 2048;
+    int[count] values, counts;
+    foreach (i; 0 .. count)
+    {
+        values[i] = (461 * i + count / 2) % count;
+        counts[i] = 1 + values[i] % 3;
+    }
+    real[8] levels;
+    foreach (i, ref p; levels)
+        p = cast(real) i / 7;
+    static foreach (algorithm; [A.type7, A.type8])
+    {{
+        alias Entry = WeightedQuantileEntry!(int, W.frequency, algorithm);
+        Entry[count] rows;
+        foreach (i, ref row; rows)
+            row = Entry(values[i], counts[i]);
+        WeightedBatchResult!double selected;
+        assert(!tryWeightedBatch!(W.frequency, algorithm)(rows[].sliced, 3, levels[], selected));
+        foreach (row; rows)
+            assert(row.cumulative == 1 + row.value % 3);
+        auto result = weightedQuantile!(double, W.frequency, algorithm)(values, counts, levels);
+        foreach (i, p; levels)
+            assert(result[i] == rcWeightedQuantile!(double, W.frequency, algorithm)(values, counts, p));
+    }}
 }

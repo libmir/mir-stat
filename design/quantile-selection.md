@@ -169,3 +169,30 @@ partition for its minimum, charging the scan to the same work budget. When
 the upper partition is empty, the nearest higher ancestor pivot supplies the
 successor. Repeated requests at that boundary share the midpoint. Plain
 `inverseCDF` omits this logic at compile time.
+
+### Small frequency-weighted batches
+
+For frequency `type7` and `type8`, an unordered workspace with at least 64
+positive-weight rows can use partition selection for 2 through 8 directly stored
+probabilities. The row count is the number of stored positive observations,
+regardless of the sum of their occurrence counts. The cutoff avoids the cost
+of preparing rank requests for small inputs. GC, RC, and custom allocator
+calls share this path. Already ordered rows and reusable tables keep their
+existing preparation.
+
+`frequencyQuantileRank` supplies the same zero-based rank and interpolation
+fraction for sorted lookup and batch selection, including the compensated
+calculation for large totals. Each probability requests its rank and, for a
+nonzero fraction, the adjacent rank. The partition traversal compares these
+as one-based positions against exact cumulative occurrence counts. It keeps
+up to sixteen requests and selected observations on the stack. If the ranks
+select different values, their interpolation uses the original observation
+type before conversion to the result type. For example, with values
+`[10, 20, 30]` and counts `[1, 2, 1]`, the type 7 median is 20 and the 75th
+percentile is 22.5. No call expands the counts into repeated observations.
+
+The same partition work limit and negative-zero fallback apply as for relative
+weights. Sorted lookup casts when both ranks fall within a single row and
+interpolates when they span two rows. For integer observations, selection records
+whether a selected value occurs in multiple rows. Only when such a tie makes
+the two operations round differently does it defer to sorted lookup. Smaller workspaces and larger batches use sorted cumulative counts.
