@@ -34,6 +34,7 @@ version(mir_stat_test) version = mir_stat_test_linearAlgebra;
 version(mir_stat_test_blas) version = mir_stat_test_linearAlgebra;
 
 import mir.stat.internal.linearAlgebra.views: diagonalView, DiagonalView, TriangularView;
+import mir.stat.internal.linearAlgebra.packed: PackedInfo, isPacked;
 import mir.stat.internal.linearAlgebra.allocation;
 import mir.stat.internal.linearAlgebra.types: Scalar, numericSlice, TrianglePolicy, DiagonalPolicy;
 import mir.stat.internal.linearAlgebra.backend: hasBlas, hasLapack, nativeSlice, blasMatrix, blasVector;
@@ -153,17 +154,43 @@ version(mir_stat_test_linearAlgebra)
     assert(logDeterminantFromCholesky(unit) == 0);
 }
 
+/// Read a complete packed Cholesky factor with a stored diagonal. The
+/// direction of the stairs selects upper or lower storage without copying.
+package(mir.stat) PackedInfo!S.Element logDeterminantFromCholesky(Summation summation = Summation.kbn, S)(
+    scope auto ref S rows)
+    if (isPacked!S && isFloatingPoint!(PackedInfo!S.Element))
+{
+    import mir.stat.internal.linearAlgebra.views: triangularView;
+    return logDeterminantFromCholesky!summation(triangularView(rows));
+}
+
+/// Packed upper and lower factors give the same result as their dense counterpart.
+version(mir_stat_test_linearAlgebra)
+@system pure nothrow @nogc unittest
+{
+    import mir.ndslice.slice: sliced;
+    import mir.ndslice.topology: stairs;
+    double[9] dense = [2, 1, 4, double.nan, 3, 5, double.nan, double.nan, 7];
+    double[6] upper = [2, 1, 4, 3, 5, 7];
+    double[6] lower = [2, 1, 3, 4, 5, 7];
+    const expected = logDeterminantFromCholesky(dense[].sliced(3, 3));
+    assert(logDeterminantFromCholesky(upper[].stairs!"-"(3)) == expected);
+    assert(logDeterminantFromCholesky(lower[].stairs!"+"(3)) == expected);
+}
+
 /// Compensated summation retains a small log term between two cancelling terms.
 version(mir_stat_test_linearAlgebra)
-@safe pure nothrow @nogc unittest
+@system pure nothrow @nogc unittest
 {
     import mir.math.sum: Summation, Summator;
     import mir.stat.internal.linearAlgebra.types: TrianglePolicy;
     import mir.ndslice.slice: sliced;
+    import mir.ndslice.topology: stairs;
     import mir.stat.internal.linearAlgebra.views: diagonalView, triangularView;
     import std.math: log;
     float[3] d = [0x1p100f, 1 + float.epsilon, 0x1p-100f];
     float[9] values = [d[0], 0, 0, 0, d[1], 0, 0, 0, d[2]];
+    float[6] packed = [d[0], 0, d[1], 0, 0, d[2]];
     auto factor = values[].sliced(3, 3);
     Summator!(float, Summation.fast) fast;
     foreach (value; d)
@@ -177,6 +204,9 @@ version(mir_stat_test_linearAlgebra)
     assert(logDeterminantFromCholesky!(TrianglePolicy.lower, Summation.fast)(factor) == fastResult);
     assert(logDeterminantFromCholesky!(Summation.fast)(diagonalView(d[].sliced)) == fastResult);
     assert(logDeterminantFromCholesky!(Summation.fast)(triangularView(factor)) == fastResult);
+    auto rows = packed[].stairs!"+"(3);
+    assert(logDeterminantFromCholesky(rows) == smallTerm);
+    assert(logDeterminantFromCholesky!(Summation.fast)(rows) == fastResult);
 }
 
 /++
