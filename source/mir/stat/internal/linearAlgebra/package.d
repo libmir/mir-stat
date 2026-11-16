@@ -135,6 +135,8 @@ produces upper or lower factors with the same ownership choices. `Into` uses
 separate caller storage; `InPlace` reuses writable input. The `try` in-place
 variant returns a failed pivot index without throwing. Factorization is
 available without LAPACK, with optional acceleration for native layouts.
+`logDeterminantFromCholesky` reads the factor diagonal to compute the natural logarithm
+of the determinant of the original matrix. A factor with diagonal [2, 3] gives log(36).
 The `choleskySolve` family reuses a factor to solve vector or matrix right-hand
 sides without inversion. It follows the same ownership conventions and offers
 caller-output and in-place forms, with optional BLAS triangular solves.

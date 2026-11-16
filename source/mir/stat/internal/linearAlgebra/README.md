@@ -26,6 +26,7 @@ contracts and executable examples.
 | `quadraticForm` | Vector and general, symmetric, or diagonal matrix | `xᵀ A x` |
 | `quadraticFormWithWorkspace` | Same inputs and a separate vector workspace | Compensated or explicitly fast `xᵀ A x` |
 | `choleskyDecompose` | Real symmetric positive-definite matrix | Upper or lower Cholesky factor |
+| `logDeterminantFromCholesky` | Existing upper or lower Cholesky factor of `A` | Natural logarithm of the determinant of `A` |
 | `choleskySolve` | Existing Cholesky factor and vector or matrix right-hand side | Solution of `A X = B` |
 
 Multiplication accepts matching floating-point or complex element types.
@@ -481,6 +482,12 @@ must not be used as a valid factor.
 without forming an inverse. Each column of a matrix right-hand side is one
 system. The caller is responsible for supplying a valid factor; solves do not
 repeat the decomposition's positive-definiteness checks.
+
+`logDeterminantFromCholesky(factor)` uses compensated summation
+(`Summation.kbn`) for the diagonal logarithms. To select another policy, use
+`logDeterminantFromCholesky!(Summation.fast)(factor)`. For a dense factor you
+can also specify both policies, as in
+`logDeterminantFromCholesky!(TrianglePolicy.lower, Summation.fast)(factor)`.
 
 ## Native D and BLAS-accelerated implementations
 

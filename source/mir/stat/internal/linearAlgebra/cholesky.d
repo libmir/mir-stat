@@ -12,6 +12,7 @@ supported. LAPACK is optional and accelerates compatible native float/double
 output layouts. Other layouts use an allocation-free native D kernel. Backend
 and summation order can affect rounding and failure near singularity.
 
+`logDeterminantFromCholesky` computes the log-determinant from the factor diagonal.
 The `choleskySolve` family reuses a factor for vector or matrix right-hand
 sides, without forming an inverse. Choose GC, RC, custom, caller-output, or
 in-place solution storage. Optional BLAS accelerates compatible native solves.
@@ -38,9 +39,102 @@ import mir.stat.internal.linearAlgebra.types: Scalar, numericSlice, TrianglePoli
 import mir.stat.internal.linearAlgebra.backend: hasBlas, hasLapack, nativeSlice, blasMatrix, blasVector;
 import mir.stat.internal.linearAlgebra.views: SymmetricView;
 import std.traits: isFloatingPoint;
+import mir.math.sum: Summation, Summator;
 
 /// Whether an input is a real floating-point matrix.
 private enum matrix(A) = numericSlice!A && A.N == 2 && isFloatingPoint!(Scalar!A);
+
+/++
+Return the natural logarithm of the determinant of the positive-definite
+matrix represented by an upper or lower Cholesky factor. Only the diagonal
+is read. Its entries must be positive and finite. An empty factor gives zero.
+The summation policy applies to the logarithms and defaults to compensated
+Kahan-Babuska-Neumaier summation (`Summation.kbn`).
++/
+package(mir.stat) Scalar!A logDeterminantFromCholesky(
+    Summation summation = Summation.kbn, A)(scope auto ref A factor)
+    if (matrix!A)
+{
+    assert(factor.length!0 == factor.length!1);
+    return sumLogDiagonal!(summation, Scalar!A)(factor);
+}
+
+/// Accept an explicit upper or lower triangle; both use the same diagonal.
+package(mir.stat) Scalar!A logDeterminantFromCholesky(
+    TrianglePolicy triangle, Summation summation = Summation.kbn, A)(scope auto ref A factor)
+    if (matrix!A)
+{
+    static assert(triangle == TrianglePolicy.upper || triangle == TrianglePolicy.lower);
+    return logDeterminantFromCholesky!summation(factor);
+}
+
+/// Accumulate the diagonal logarithms using the selected policy, then double the sum.
+private T sumLogDiagonal(Summation summation, T, A)(scope auto ref A factor)
+{
+    import std.math: log, isFinite;
+    Summator!(T, summation) total;
+    foreach (i; 0 .. factor.length!0)
+    {
+        const d = factor[i, i];
+        assert(d > 0 && isFinite(d));
+        total.put(log(d));
+    }
+    return 2 * total.sum;
+}
+
+/// A factor with diagonal [2, 3] represents a matrix with determinant 36.
+version(mir_stat_test_linearAlgebra)
+@safe pure nothrow @nogc unittest
+{
+    import mir.stat.internal.linearAlgebra.types: TrianglePolicy;
+    import mir.ndslice.slice: sliced;
+    import mir.ndslice.dynamic: transposed;
+    import std.math: fabs, log;
+    const double[4] storage = [2, 1, double.nan, 3];
+    auto upper = storage[].sliced(2, 2);
+    const expected = log(36.0);
+    assert(fabs(logDeterminantFromCholesky(upper) - expected) < 4 * double.epsilon);
+    assert(fabs(logDeterminantFromCholesky!(TrianglePolicy.lower)(upper.transposed) - expected) < 4 * double.epsilon);
+}
+
+version(mir_stat_test_linearAlgebra)
+@safe pure nothrow @nogc unittest
+{
+    import mir.ndslice.slice: sliced;
+    import std.math: log, fabs;
+    // The product of either pair overflows or underflows before taking its log.
+    foreach (scale; [0x1p600, 0x1p-600])
+    {
+        double[4] data = [scale, double.nan, double.nan, scale];
+        const expected = (scale > 1 ? 2400 : -2400) * log(2.0);
+        assert(fabs(logDeterminantFromCholesky(data[].sliced(2, 2)) / expected - 1)
+            <= 4 * double.epsilon);
+        assert(logDeterminantFromCholesky(data[0..0].sliced(0, 0)) == 0);
+    }
+}
+
+/// Compensated summation retains a small log term between two cancelling terms.
+version(mir_stat_test_linearAlgebra)
+@safe pure nothrow @nogc unittest
+{
+    import mir.math.sum: Summation, Summator;
+    import mir.stat.internal.linearAlgebra.types: TrianglePolicy;
+    import mir.ndslice.slice: sliced;
+    import std.math: log;
+    float[3] d = [0x1p100f, 1 + float.epsilon, 0x1p-100f];
+    float[9] values = [d[0], 0, 0, 0, d[1], 0, 0, 0, d[2]];
+    auto factor = values[].sliced(3, 3);
+    Summator!(float, Summation.fast) fast;
+    foreach (value; d)
+        fast.put(log(value));
+    const fastResult = 2 * fast.sum;
+    // Older Phobos versions return real from log(float). Compare at the factor's precision.
+    const smallTerm = cast(float)(2 * log(d[1]));
+    assert(logDeterminantFromCholesky(factor) == smallTerm);
+    assert(logDeterminantFromCholesky!(TrianglePolicy.lower, Summation.kbn)(factor) == smallTerm);
+    assert(logDeterminantFromCholesky!(Summation.fast)(factor) == fastResult);
+    assert(logDeterminantFromCholesky!(TrianglePolicy.lower, Summation.fast)(factor) == fastResult);
+}
 
 /++
 Factor a real symmetric positive-definite matrix into GC-managed storage.
