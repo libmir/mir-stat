@@ -1464,6 +1464,10 @@ Returns:
 
     At p=q=1/2, returns n/2 (rounded down) by symmetry, ignoring the budgets.
 
+    Two endpoint comparisons also ignore the budgets. When 1-p is a power
+    of two, q at or below (1-p)^n selects zero. When p is a power of two,
+    q equal to 1-p^n selects n-1 and q above it selects n.
+
     Other queries use the same denominator budget as $(LREF binomialTailsChecked).
     The search starts at zero for q at most one half, and at n otherwise.
     If the denominator exceeds its limit, or the selected search cannot resolve
@@ -1531,11 +1535,34 @@ version(mir_stat_test)
     q.coefficient -= UInt!64(1);
     assert(binomialTailsChecked(1, 2, p).cdf == q);
     assert(evaluate(q, 2, p) == R(S.found, 2));
-    // Exercise each larger workspace with one exact endpoint mass.
+    auto firstMass = T(1);
+    firstMass.exponent -= 200000;
+    const rawThreeQuarters = T(false, -4, UInt!64(12));
+    assert(evaluate(firstMass, 100000, rawThreeQuarters, 0, 0) == R(S.found, 0));
+    auto next = firstMass;
+    next.coefficient += UInt!64(1);
+    assert(evaluate(next, 100000, rawThreeQuarters, 0, 0).status == S.workLimit);
+    assert(evaluate(T(0.5), 4, T(0.125), 0, 0).status == S.workLimit);
+
+    const lastBoundary = T(false, -4, UInt!64(15));
+    assert(evaluate(lastBoundary, 2, T(0.25), 0, 0) == R(S.found, 1));
+    auto aboveLast = T(0.9375);
+    aboveLast.coefficient += UInt!64(1);
+    assert(evaluate(aboveLast, 2, T(0.25), 0, 0) == R(S.found, 2));
+    const predecessor = T(false, -64, UInt!64(ulong.max));
+    assert(evaluate(predecessor, 64, T(0.5), 0, 0) == R(S.found, 63));
+    assert(evaluate(predecessor, 65, T(0.5), 0, 0).status == S.workLimit);
+    static if (size_t.sizeof == 8) {
+        const atFloor = size_t(1) << 62;
+        assert(evaluate(tiny, atFloor, rawThreeQuarters, 0, 0) == R(S.found, 0));
+        assert(evaluate(tiny, atFloor + 1, rawThreeQuarters, 0, 0).status == S.workLimit);
+    }
+
+    // Exercise each larger workspace at the second cumulative mass.
     foreach (n; [4097, 16385]) {
-        const endpointQuery = T(false, -cast(long)n, UInt!64(1));
-        assert(evaluate(endpointQuery, n, T(0.5), 1, n) == R(S.found, 0));
-        assert(evaluate(endpointQuery, n, T(0.5), 1, n-1).status == S.workLimit);
+        const query = T(false, -cast(long)n, UInt!64(n + 1));
+        assert(evaluate(query, n, T(0.5), 2, n) == R(S.found, 1));
+        assert(evaluate(query, n, T(0.5), 2, n-1).status == S.workLimit);
     }
 }
 
