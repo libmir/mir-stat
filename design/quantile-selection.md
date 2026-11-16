@@ -146,12 +146,12 @@ allocator calls share this decision in `prepareWeightedQuantileWorkspace`.
 Ascending and descending inputs take their existing paths first. Reusable
 weighted tables use the ordinary preparation.
 
-A single `inverseCDF` or `averagedInverseCDF` request can also use selection when its probability
-is strictly between 0 and 1 and at least 16 rows have positive integer-typed
-relative weights. For example, a scalar `0.25` and a directly stored one-element
-batch `[0.25]` both select the lower quartile. With the values 0 through 15 in
-shuffled order and unit weights, the cumulative weight reaches 25% at value 3.
-`inverseCDF` returns 3, while `averagedInverseCDF` averages 3 and 4 to return 3.5.
+A single `inverseCDF` or `averagedInverseCDF` request can also use selection for
+integer-typed relative weights when its probability is strictly between 0 and 1.
+There is no minimum row count. For example, with values `[30, 10, 20]` and
+weights `[1, 1, 2]`, the lowest value, 10, holds exactly 25% of the weight.
+For a scalar `0.25` or a directly stored one-element batch `[0.25]`,
+`inverseCDF` selects 10 and `averagedInverseCDF` averages 10 and 20 to give 15.
 The same rule for choosing selection covers
 `weightedMedian` and its RC and custom-allocator variants at 0.5.
 The scalar form reads the probability after copying the observations, so a lazy
