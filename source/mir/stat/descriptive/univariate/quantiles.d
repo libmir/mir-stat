@@ -2620,9 +2620,9 @@ private struct WeightedBatchResult(F)
 
 // Partition only the ranges containing outstanding probabilities. Each recursive
 // call splits the requests into two nonempty groups, bounding the stack by K.
-private bool selectWeightedBatch(Workspace, F)(scope Workspace rows,
+private bool selectWeightedBatch(Workspace, F, Higher...)(scope Workspace rows,
     scope WeightedBatchRequest[] requests, real base, real total,
-    ref F[maxWeightedBatch] result, ref size_t budget)
+    ref F[maxWeightedBatch] result, ref size_t budget, Higher higher)
 {
     import mir.utility: swap;
     while (requests.length)
@@ -2666,15 +2666,44 @@ private bool selectWeightedBatch(Workspace, F)(scope Workspace rows,
         next = first;
         while (next < requests.length &&
                (upper == rows.length || requests[next].probability <= upperCDF))
+        {
+            static if (Higher.length)
+                if (through < total && requests[next].probability == upperCDF)
+                {
+                    // At the end of a group, average with its next distinct
+                    // value. A left turn saved the successor if it lies outside
+                    // the current range.
+                    auto following = higher[0];
+                    if (upper < rows.length)
+                    {
+                        const width = rows.length - upper;
+                        if (width > budget)
+                            return false;
+                        budget -= width;
+                        following = rows[upper].value;
+                        foreach (j; upper + 1 .. rows.length)
+                            if (rows[j].value < following)
+                                following = rows[j].value;
+                    }
+                    const midpoint = interpolateQuantile!F(pivot, following, 0.5L);
+                    do
+                        result[requests[next++].outputIndex] = midpoint;
+                    while (next < requests.length && requests[next].probability == upperCDF);
+                    continue;
+                }
             result[requests[next++].outputIndex] = cast(F) pivot;
+        }
 
         if (first == requests.length)
         {
+            static if (Higher.length) higher[0] = pivot;
             rows = rows[0 .. lower];
             continue;
         }
+        Higher leftBound;
+        static if (Higher.length) leftBound[0] = pivot;
         if (first && !selectWeightedBatch(rows[0 .. lower], requests[0 .. first],
-                base, total, result, budget))
+                base, total, result, budget, leftBound))
             return false;
         requests = requests[next .. $];
         rows = rows[upper .. $];
@@ -2683,7 +2712,7 @@ private bool selectWeightedBatch(Workspace, F)(scope Workspace rows,
     return true;
 }
 
-private bool tryWeightedBatch(Workspace, Levels, F)(scope Workspace workspace,
+private bool tryWeightedBatch(WeightedQuantileAlgo algorithm, Workspace, Levels, F)(scope Workspace workspace,
     real maximum, scope Levels levels, ref WeightedBatchResult!F batch)
 {
     if (levels.length < 2 || levels.length > maxWeightedBatch)
@@ -2722,7 +2751,13 @@ private bool tryWeightedBatch(Workspace, Levels, F)(scope Workspace workspace,
     // A failed selection has only permuted complete rows. The ordinary sort
     // and prefix pass can finish in the same workspace.
     size_t budget = workspace.length > size_t.max / 8 ? size_t.max : 8 * workspace.length;
-    return selectWeightedBatch(workspace, requests, 0, total, batch.values, budget);
+    static if (algorithm == WeightedQuantileAlgo.averagedInverseCDF)
+        // At the root, the highest value has cumulative probability one and
+        // never needs a successor. Left partitions supply their actual bound.
+        return selectWeightedBatch(workspace, requests, 0, total, batch.values, budget,
+            typeof(workspace[0].value).init);
+    else
+        return selectWeightedBatch(workspace, requests, 0, total, batch.values, budget);
 }
 
 // Copy the validated positive-weight observations in preparation for queries.
@@ -2773,7 +2808,7 @@ private WeightedQuantileState!(interpretation, algorithm) prepareWeightedQuantil
         else
         {
             static if (BatchArgs.length)
-                if (tryWeightedBatch(workspace, maximum, batchArgs[0], batchArgs[1]))
+                if (tryWeightedBatch!algorithm(workspace, maximum, batchArgs[0], batchArgs[1]))
                 {
                     batchArgs[1].ready = true;
                     return typeof(return).init;
@@ -2896,7 +2931,8 @@ private auto allocatedWeightedQuantile(F, WeightInterpretation interpretation, W
     static if (!isFloatingPoint!(Unqual!P))
         scope auto levels = quantileSlice(probabilities);
     enum selectBatch = interpretation == WeightInterpretation.relative &&
-        algorithm == WeightedQuantileAlgo.inverseCDF && isIntegral!Weight &&
+        (algorithm == WeightedQuantileAlgo.inverseCDF || algorithm == WeightedQuantileAlgo.averagedInverseCDF) &&
+        isIntegral!Weight &&
         !isFloatingPoint!(Unqual!P) && isPointer!(IteratorOf!(typeof(levels)));
     static if (selectBatch)
     {
@@ -10467,7 +10503,7 @@ version(mir_stat_test)
 
     WeightedBatchResult!int partial;
     partial.values[] = -1;
-    assert(!tryWeightedBatch(rows[].sliced, 3, levels[].sliced, partial));
+    assert(!tryWeightedBatch!(WeightedQuantileAlgo.inverseCDF)(rows[].sliced, 3, levels[].sliced, partial));
     size_t answered;
     foreach (i, value; partial.values)
         if (value != -1)
@@ -10492,8 +10528,8 @@ version(mir_stat_test)
     Entry[4] rows;
     foreach (i, ref row; rows) row = Entry(values[i], weights[i]);
     WeightedBatchResult!double batch;
-    assert(!tryWeightedBatch(rows[].sliced, 1, levels[], batch));
-    assert(!tryWeightedBatch(rows[].sliced, 1, levels[0 .. 0], batch));
+    assert(!tryWeightedBatch!(WeightedQuantileAlgo.inverseCDF)(rows[].sliced, 1, levels[], batch));
+    assert(!tryWeightedBatch!(WeightedQuantileAlgo.inverseCDF)(rows[].sliced, 1, levels[0 .. 0], batch));
     auto result = rcWeightedQuantile(values, weights, levels);
     foreach (i, p; levels)
         assert(result[i] is rcWeightedQuantile(values, weights, p));
@@ -10501,7 +10537,7 @@ version(mir_stat_test)
     // The conservative maximum-times-length bound exceeds exact real sums.
     weights[0] = ulong.max;
     rows[0].cumulative = cast(real) weights[0];
-    assert(!tryWeightedBatch(rows[].sliced, cast(real) weights[0], levels[0 .. 2], batch));
+    assert(!tryWeightedBatch!(WeightedQuantileAlgo.inverseCDF)(rows[].sliced, cast(real) weights[0], levels[0 .. 2], batch));
     auto large = rcWeightedQuantile(values, weights, levels[0 .. 2]);
     foreach (i, p; levels[0 .. 2])
         assert(large[i] is rcWeightedQuantile(values, weights, p));
@@ -10509,7 +10545,7 @@ version(mir_stat_test)
     weights[] = 1;
     values[2] = -0.0;
     foreach (i, ref row; rows) row = Entry(values[i], weights[i]);
-    assert(!tryWeightedBatch(rows[].sliced, 1, levels[0 .. 2], batch));
+    assert(!tryWeightedBatch!(WeightedQuantileAlgo.inverseCDF)(rows[].sliced, 1, levels[0 .. 2], batch));
     auto signedZero = rcWeightedQuantile(values, weights, levels[0 .. 2]);
     assert(signedZero[1] is -0.0);
     foreach (i, p; levels[0 .. 2])
@@ -10532,4 +10568,68 @@ version(mir_stat_test)
     assert(budget == 0 && result[0] == -1 && result[1] == 2);
     foreach (row; rows)
         assert(row.cumulative == row.value + 1);
+}
+
+version(mir_stat_test)
+@system unittest
+{
+    import std.experimental.allocator: dispose;
+    import std.experimental.allocator.mallocator: Mallocator;
+    import std.math: nextafter;
+
+    alias A = WeightedQuantileAlgo;
+    const int[4] values = [30, 10, 20, 20];
+    const int[4] weights = [2, 1, 1, 2];
+    const real edge = 4.0L / 6;
+    // Within the tied 20s, across their upper boundary, and at the end
+    // of the lower partition (10), whose successor is the ancestor pivot.
+    const real[8] levels = [edge, 2.0L / 6, nextafter(edge, 0.0L), 1.0L / 6,
+        nextafter(edge, 1.0L), 1, edge, 0];
+    const double[8] expected = [25, 20, 20, 15, 30, 30, 25, 10];
+    assert(weightedQuantile!(A.averagedInverseCDF)(values, weights, levels) == expected[]);
+    assert(rcWeightedQuantile!(A.averagedInverseCDF)(values, weights, levels) == expected[]);
+    auto custom = makeWeightedQuantile!(A.averagedInverseCDF)(Mallocator.instance, values, weights, levels);
+    scope(exit) Mallocator.instance.dispose(custom.field);
+    assert(custom == expected[]);
+}
+
+// A boundary lookup can consume the last of the partition budget.
+version(mir_stat_test)
+@safe pure nothrow @nogc unittest
+{
+    import mir.ndslice.slice: sliced;
+    alias Entry = WeightedQuantileEntry!(int, WeightInterpretation.relative,
+        WeightedQuantileAlgo.averagedInverseCDF);
+    Entry[4] rows = [Entry(30, 2), Entry(10, 1), Entry(20, 1), Entry(20, 2)];
+    WeightedBatchRequest[2] requests = [WeightedBatchRequest(0.5L, 0),
+        WeightedBatchRequest(4.0L / 6, 1)];
+    double[maxWeightedBatch] result;
+    // Partitioning all four rows answers the first request. The second needs
+    // one more visit, to find the successor in the upper partition.
+    size_t budget = rows.length;
+    assert(!selectWeightedBatch(rows[].sliced, requests[], 0, 6, result, budget, 0));
+    assert(result[0] == 20 && budget == 0);
+}
+
+// An all-left batch retains the pivot as the successor at a CDF boundary.
+version(mir_stat_test)
+@safe pure unittest
+{
+    import mir.ndslice.slice: sliced;
+    alias A = WeightedQuantileAlgo;
+    alias Entry = WeightedQuantileEntry!(int, WeightInterpretation.relative,
+        A.averagedInverseCDF);
+    const int[4] values = [30, 10, 20, 20];
+    const int[4] weights = [2, 1, 1, 2];
+    const real[4] levels = [1.0L / 6, 0, 1.0L / 12, 1.0L / 6];
+    const double[4] expected = [15, 10, 10, 15];
+    Entry[4] rows;
+    foreach (i, ref row; rows)
+        row = Entry(values[i], weights[i]);
+    WeightedBatchResult!double batch;
+    // Require selection to finish, so sorted fallback cannot hide a lost bound.
+    assert(tryWeightedBatch!(A.averagedInverseCDF)(rows[].sliced, 2, levels[], batch));
+    assert(batch.values[0 .. levels.length] == expected[]);
+    assert(weightedQuantile!(A.averagedInverseCDF)(values, weights, levels) == expected[]);
+    assert(rcWeightedQuantile!(A.averagedInverseCDF)(values, weights, levels) == expected[]);
 }
