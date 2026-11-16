@@ -185,13 +185,17 @@ successor. Repeated requests at that boundary share the midpoint. Plain
 
 ### Small frequency-weighted batches
 
-For frequency `type7` and `type8`, an unordered workspace with at least 64
-positive-weight rows can use partition selection for 2 through 8 directly stored
-probabilities. The row count is the number of stored positive observations,
-regardless of the sum of their occurrence counts. The cutoff avoids the cost
-of preparing rank requests for small inputs. GC, RC, and custom allocator
-calls share this path. Already ordered rows and reusable tables keep their
-existing preparation.
+For frequency `type7` and `type8`, a scalar probability or a directly stored
+one-element batch can use partition selection when the probability is strictly
+between 0 and 1 and the unordered workspace contains at least 32 positive-weight rows. Batches of
+2 through 8 directly stored probabilities use a 64-row cutoff. Both cutoffs
+count stored positive-weight observations, regardless of the sum of their
+occurrence counts. GC, RC, and custom allocator calls share this path.
+
+The single-probability cutoff reflects the cost of preparing ranks versus
+sorting the observations. Selection was faster on shuffled inputs in benchmarks,
+while sorting was faster on ascending inputs with one adjacent pair out of order.
+Fully ordered inputs and reusable tables follow their existing preparation.
 
 `frequencyQuantileRank` supplies the same zero-based rank and interpolation
 fraction for sorted lookup and batch selection, including the compensated

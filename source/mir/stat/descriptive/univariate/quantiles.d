@@ -2777,19 +2777,11 @@ private bool tryWeightedBatch(WeightInterpretation interpretation, WeightedQuant
         alias levels = probabilities;
     if (!levels.length || levels.length > maxWeightedBatch)
         return false;
-    if (levels.length == 1)
-    {
-        static if (interpretation == WeightInterpretation.relative && isWeightedInverseCDF!algorithm)
-        {
-            if (!(levels[0] > 0 && levels[0] < 1))
-                return false;
-        }
-        else
-            return false;
-    }
+    if (levels.length == 1 && !(levels[0] > 0 && levels[0] < 1))
+        return false;
     static if (interpretation == WeightInterpretation.frequency)
     {
-        if (workspace.length < 64)
+        if (workspace.length < (levels.length == 1 ? 32 : 64))
             return false;
         ulong total = 0;
     }
@@ -3051,7 +3043,7 @@ private auto allocatedWeightedQuantile(F, WeightInterpretation interpretation, W
         isWeightedInverseCDF!algorithm;
     static if (scalar)
     {
-        enum selectBatch = selectRelative;
+        enum selectBatch = interpretation == WeightInterpretation.frequency || selectRelative;
         static if (selectBatch)
             alias levels = probabilities;
     }
@@ -10793,6 +10785,27 @@ version(mir_stat_test)
         foreach (i, ref row; rows)
             row = Entry(values[i], 2);
         WeightedBatchResult!real selected;
+        const real[1] medianLevel = [0.5L];
+        assert(!tryWeightedBatch!(W.frequency, algorithm)(rows[0 .. 31].sliced, 2, medianLevel[], selected));
+        foreach (endpoint; [0.0L, 1.0L])
+            assert(!tryWeightedBatch!(W.frequency, algorithm)(rows[0 .. 32].sliced, 2, endpoint, selected));
+        // Use a separate workspace because selection permutes the rows.
+        Entry[32] small;
+        int[32] observations;
+        int[32] frequencies = 2;
+        foreach (i, ref row; small)
+        {
+            observations[i] = 17 * i % 32;
+            row = Entry(observations[i], 2);
+        }
+        assert(tryWeightedBatch!(W.frequency, algorithm)(small[].sliced, 2, medianLevel[], selected));
+        assert(selected.values[0] == 15.5L);
+        alias single = rcWeightedQuantile!(real, W.frequency, algorithm);
+        assert(single(observations, frequencies, medianLevel[0]) == 15.5L);
+        assert(single(observations, frequencies, medianLevel)[0] == 15.5L);
+        // An extra copy of value 31 puts the median exactly at expanded rank 32 (zero-based).
+        frequencies[15] = 3;
+        assert(single(observations, frequencies, medianLevel[0]) == 16);
         assert(!tryWeightedBatch!(W.frequency, algorithm)(rows[0 .. 63].sliced, 2, levels[].sliced, selected));
         assert(tryWeightedBatch!(W.frequency, algorithm)(rows[].sliced, 2, levels[].sliced, selected));
 
@@ -10868,9 +10881,13 @@ version(mir_stat_test)
         counts[0] = split ? 1 : 2;
         counts[1] = split ? 1 : 0;
         const real[2] levels = [0x1.1c3a9f8de6439p-44L / 64, 0.5L];
+        const table = rcWeightedQuantileTable!(W.frequency)(values, counts);
         auto batch = rcWeightedQuantile!(real, W.frequency, A.type7)(values, counts, levels);
         foreach (i, p; levels)
+        {
+            assert(batch[i] is table.quantile!(real, A.type7)(p));
             assert(batch[i] is rcWeightedQuantile!(real, W.frequency, A.type7)(values, counts, p));
+        }
     }
 }
 
@@ -11057,7 +11074,7 @@ version(mir_stat_test)
     }
 }
 
-// Single inverse CDF queries select; frequency conventions still use sorted lookup.
+// Single relative and frequency queries select their expected median values.
 version(mir_stat_test)
 @safe pure unittest
 {
@@ -11077,10 +11094,7 @@ version(mir_stat_test)
         foreach (i, ref row; rows)
             row = Entry(values[i], weights[i]);
         WeightedBatchResult!double batch;
-        static if (algorithm == A.inverseCDF)
-            assert(tryWeightedBatch!(meaning, algorithm)(rows[].sliced, 1, levels[], batch));
-        else
-            assert(!tryWeightedBatch!(meaning, algorithm)(rows[].sliced, 1, levels[], batch));
+        assert(tryWeightedBatch!(meaning, algorithm)(rows[].sliced, 1, levels[], batch));
         // Unit counts give the ordered sample 0..63: inverse CDF selects 31,
         // while types 7 and 8 interpolate halfway between 31 and 32.
         enum expected = algorithm == A.inverseCDF ? 31.0 : 31.5;
