@@ -2762,10 +2762,29 @@ private bool selectWeightedBatch(Workspace, Target, F, size_t N, Higher...)(scop
 
 private bool tryWeightedBatch(WeightInterpretation interpretation, WeightedQuantileAlgo algorithm, Workspace, Levels, F)(
     scope Workspace workspace,
-    real maximum, scope Levels levels, ref WeightedBatchResult!F batch)
+    real maximum, scope Levels probabilities, ref WeightedBatchResult!F batch)
 {
-    if (levels.length < 2 || levels.length > maxWeightedBatch)
+    static if (isFloatingPoint!Levels)
+    {
+        // Read the scalar here, after traversal of potentially lazy inputs.
+        Levels[1] single = [probabilities];
+        scope auto levels = single[];
+    }
+    else
+        alias levels = probabilities;
+    if (!levels.length || levels.length > maxWeightedBatch)
         return false;
+    if (levels.length == 1)
+    {
+        static if (interpretation == WeightInterpretation.relative &&
+                   algorithm == WeightedQuantileAlgo.averagedInverseCDF)
+        {
+            if (workspace.length < 16 || levels[0] != 0.5)
+                return false;
+        }
+        else
+            return false;
+    }
     static if (interpretation == WeightInterpretation.frequency)
     {
         if (workspace.length < 64)
@@ -3026,12 +3045,22 @@ private auto allocatedWeightedQuantile(F, WeightInterpretation interpretation, W
     scope auto workspace = scratch.lightScope;
     import mir.ndslice.slice: IteratorOf;
     import std.traits: isPointer;
-    static if (!isFloatingPoint!(Unqual!P))
+    enum scalar = isFloatingPoint!(Unqual!P);
+    static if (scalar)
+    {
+        enum selectBatch = interpretation == WeightInterpretation.relative &&
+            algorithm == WeightedQuantileAlgo.averagedInverseCDF && isIntegral!Weight;
+        static if (selectBatch)
+            alias levels = probabilities;
+    }
+    else
+    {
         scope auto levels = quantileSlice(probabilities);
-    enum selectBatch = (interpretation == WeightInterpretation.frequency ||
-        (isIntegral!Weight && (algorithm == WeightedQuantileAlgo.inverseCDF ||
-                               algorithm == WeightedQuantileAlgo.averagedInverseCDF))) &&
-        !isFloatingPoint!(Unqual!P) && isPointer!(IteratorOf!(typeof(levels)));
+        enum selectBatch = (interpretation == WeightInterpretation.frequency ||
+            (isIntegral!Weight && (algorithm == WeightedQuantileAlgo.inverseCDF ||
+                                   algorithm == WeightedQuantileAlgo.averagedInverseCDF))) &&
+            isPointer!(IteratorOf!(typeof(levels)));
+    }
     static if (selectBatch)
     {
         WeightedBatchResult!(Unqual!F) batch;
@@ -3043,8 +3072,13 @@ private auto allocatedWeightedQuantile(F, WeightInterpretation interpretation, W
             workspace, values.lightScope, masses.lightScope, input.maximum);
     // Keep custom workspace/result cleanup in the same owning frame, including
     // when a probability assertion fails in a debug build.
-    static if (isFloatingPoint!(Unqual!P))
+    static if (scalar)
+    {
+        static if (selectBatch)
+            if (batch.ready)
+                return batch.values[0];
         return preparedWeightedQuantileAt!(F, interpretation, algorithm)(workspace, probabilities, state);
+    }
     else
     {
         static assert(typeof(levels).N == 1, "Probabilities must be one-dimensional");
@@ -10901,5 +10935,110 @@ version(mir_stat_test)
         auto result = weightedQuantile!(double, W.frequency, algorithm)(values, counts, levels);
         foreach (i, p; levels)
             assert(result[i] == rcWeightedQuantile!(double, W.frequency, algorithm)(values, counts, p));
+    }}
+}
+
+version(mir_stat_test)
+@system unittest
+{
+    import mir.ndslice.slice: sliced;
+    import std.experimental.allocator: dispose;
+    import std.experimental.allocator.mallocator: Mallocator;
+    import std.math: nextafter;
+
+    enum meaning = WeightInterpretation.relative;
+    enum algorithm = WeightedQuantileAlgo.averagedInverseCDF;
+    alias Entry = WeightedQuantileEntry!(int, meaning, algorithm);
+    Entry[16] rows;
+    int[17] values, weights;
+    foreach (i; 0 .. rows.length)
+    {
+        values[i] = 5 * i % 16;
+        weights[i] = 1;
+        rows[i] = Entry(values[i], 1);
+    }
+    const double[1] medianLevel = [0.5];
+    const double[1] otherLevel = [nextafter(0.5, 1.0)];
+    WeightedBatchResult!double batch;
+    assert(!tryWeightedBatch!(meaning, algorithm)(rows[0 .. 15].sliced, 1, medianLevel[], batch));
+    assert(!tryWeightedBatch!(meaning, algorithm)(rows[].sliced, 1, otherLevel[], batch));
+    assert(tryWeightedBatch!(meaning, algorithm)(rows[].sliced, 1, medianLevel[], batch));
+    assert(batch.values[0] == 7.5);
+
+    // The seventeenth row has zero weight. The extra unit on value 8
+    // moves the median from the boundary between 7 and 8 into the 8s.
+    foreach (extra; 0 .. 2)
+    {
+        weights[8] = 1 + extra;
+        const expected = extra ? 8.0 : 7.5;
+        assert(weightedMedian(values, weights) == expected);
+        assert(rcWeightedMedian(values, weights) == expected);
+        assert(makeWeightedMedian(Mallocator.instance, values, weights) == expected);
+        assert(weightedQuantile!algorithm(values, weights, medianLevel)[0] == expected);
+        assert(rcWeightedQuantile!algorithm(values, weights, medianLevel)[0] == expected);
+        auto result = makeWeightedQuantile!algorithm(Mallocator.instance, values, weights, medianLevel);
+        scope(exit) Mallocator.instance.dispose(result.field);
+        assert(result[0] == expected);
+    }
+}
+
+version(mir_stat_test)
+@safe unittest
+{
+    import mir.ndslice.slice: sliced;
+    import mir.ndslice.topology: map;
+
+    alias algorithm = WeightedQuantileAlgo.averagedInverseCDF;
+    int[16] values, weights;
+    foreach (i; 0 .. values.length)
+    {
+        values[i] = 5 * i % 16;
+        weights[i] = 1;
+    }
+
+    double probability;
+    int observe(int value)
+    {
+        if (value == values[$ - 1])
+            probability = probability == 0.5 ? 0.75 : 0.5;
+        return value;
+    }
+    auto observations = values[].sliced.map!observe;
+    // Validation may also read the observations. In both directions the
+    // query must use the probability left by the final traversal.
+    foreach (initial; [0.5, 0.75])
+    {
+        probability = initial;
+        const result = rcWeightedQuantile!algorithm(observations, weights, probability);
+        assert(result == (probability == 0.5 ? 7.5 : 11.5));
+    }
+}
+
+// Other conventions finish single-probability batches through sorted lookup.
+version(mir_stat_test)
+@safe pure unittest
+{
+    import mir.ndslice.slice: sliced;
+    alias W = WeightInterpretation;
+    alias A = WeightedQuantileAlgo;
+    int[64] values;
+    int[64] weights = 1;
+    foreach (i, ref value; values)
+        value = cast(int)(17 * i % values.length);
+    const double[1] levels = [0.5];
+    static foreach (algorithm; [A.inverseCDF, A.type7, A.type8])
+    {{
+        enum meaning = algorithm == A.inverseCDF ? W.relative : W.frequency;
+        alias Entry = WeightedQuantileEntry!(int, meaning, algorithm);
+        Entry[64] rows;
+        foreach (i, ref row; rows)
+            row = Entry(values[i], weights[i]);
+        WeightedBatchResult!double batch;
+        assert(!tryWeightedBatch!(meaning, algorithm)(rows[].sliced, 1, levels[], batch));
+        // Unit counts give the ordered sample 0..63: inverse CDF selects 31,
+        // while types 7 and 8 interpolate halfway between 31 and 32.
+        enum expected = algorithm == A.inverseCDF ? 31.0 : 31.5;
+        assert(weightedQuantile!(double, meaning, algorithm)(values, weights, levels)[0] == expected);
+        assert(rcWeightedQuantile!(double, meaning, algorithm)(values, weights, levels)[0] == expected);
     }}
 }

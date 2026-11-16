@@ -143,8 +143,16 @@ uses constant extra storage and takes at most linear time.
 For `inverseCDF` and `averagedInverseCDF` batches of 2 through 8 directly stored
 probabilities, integer-typed relative weights can make selection cheaper than sorting. The GC, RC, and custom
 allocator calls share this decision in `prepareWeightedQuantileWorkspace`.
-Ascending and descending inputs take their existing paths first. Scalar calls
-and reusable weighted tables use the ordinary preparation.
+Ascending and descending inputs take their existing paths first. Reusable
+weighted tables use the ordinary preparation.
+
+A single `averagedInverseCDF` request at exactly 0.5 can also use selection
+when at least 16 rows have positive integer-typed weights. This includes
+`weightedMedian`, its RC and custom-allocator variants, and a directly stored
+one-element batch `[0.5]`. The scalar form reads the probability after copying the observations, so a
+lazy input can update a probability passed by reference.
+The same exact-sum check, signed-zero handling, and partition work limit apply.
+Other single probabilities use ordinary preparation.
 
 For example, a batch requesting the 25th and 75th percentiles partitions the
 unordered workspace around a pivot. The total weights below and equal to the
