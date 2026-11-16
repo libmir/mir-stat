@@ -1557,14 +1557,14 @@ template hypergeometricInvCDF(string hypergeometricAlgo)
 version(mir_stat_test)
 @safe pure nothrow @nogc unittest
 {
-    // Draw four objects from five, of which three have the desired feature.
-    // At least two and at most three draws must have that feature.
-    assert(hypergeometricPMF(2, 5, 3, 4) == 0.6);
-    assert(hypergeometricCDF(3, 5, 3, 4) == 1);
-    assert(hypergeometricCCDF(3, 5, 3, 4) == 0);
-    assert(hypergeometricInvCDF(0.0, 5, 3, 4) == 0); // Endpoint convention.
-    assert(hypergeometricInvCDF(0.5, 5, 3, 4) == 2);
-    assert(hypergeometricInvCDF(1.0, 5, 3, 4) == 3);
+    // Draw three objects from four, of which three have the desired feature.
+    // Exactly two draws have the feature when the omitted object is one of those three.
+    assert(hypergeometricPMF(2, 4, 3, 3) == 0.75);
+    assert(hypergeometricCDF(3, 4, 3, 3) == 1);
+    assert(hypergeometricCCDF(3, 4, 3, 3) == 0);
+    assert(hypergeometricInvCDF(0.0, 4, 3, 3) == 0); // Endpoint convention.
+    assert(hypergeometricInvCDF(0.5, 4, 3, 3) == 2);
+    assert(hypergeometricInvCDF(1.0, 4, 3, 3) == 3);
 }
 
 ///
@@ -2122,9 +2122,13 @@ version(mir_stat_test)
         assert(hypergeometricPMF!T(0, 20000, 10000, 10000) == 0);
         assert(hypergeometricCDF!T(0, 20000, 10000, 10000) == 0);
     }
-    assert(hypergeometricPMF(99, 2000, 1000, 1000) == 0x0.0000000000005p-1022);
-    assert(hypergeometricCDF(99, 2000, 1000, 1000) == 0x0.0000000000005p-1022);
-    assert(hypergeometricCCDF(900, 2000, 1000, 1000) == 0x0.0000000000005p-1022);
+    // Store the binary64 results before comparing subnormals on x87.
+    const double mass = hypergeometricPMF(99, 2000, 1000, 1000);
+    assert(mass == 0x0.0000000000005p-1022);
+    const double lower = hypergeometricCDF(99, 2000, 1000, 1000);
+    assert(lower == 0x0.0000000000005p-1022);
+    const double upper = hypergeometricCCDF(900, 2000, 1000, 1000);
+    assert(upper == 0x0.0000000000005p-1022);
     static if (size_t.sizeof == 8) {
         import std.math: abs;
         static foreach (T; AliasSeq!(float, double, real)) {{
