@@ -242,6 +242,21 @@ private struct ExactTails(uint bits, uint capacity)
 
 }
 
+// Round 2^(-s*n) without overflowing the exponent product. At half the
+// smallest quantum or below, the result rounds to zero.
+private @safe pure nothrow @nogc
+Fp!bits binomialPowerOfTwo(uint bits)(ulong s, size_t n)
+{
+    alias T = Fp!bits;
+    enum floorScale = 1UL << 63;
+    if (s > floorScale / n) return T(0);
+    const scale = s * n;
+    const exponent = scale == floorScale ? long.min : -cast(long)scale;
+    const shift = floorScale - scale < bits - 1
+        ? cast(size_t)(floorScale - scale) : bits - 1;
+    return T(false, exponent - cast(long)shift, UInt!bits(1) << shift);
+}
+
 package(mir.stat) BinomialTailResult!(Fp!bits) exactBinomialTails(uint bits)(
     size_t k, size_t n, Fp!bits p, size_t maxTerms, size_t maxScale)
     @safe pure nothrow @nogc
@@ -268,17 +283,19 @@ package(mir.stat) BinomialTailResult!(Fp!bits) exactBinomialTails(uint bits)(
     const odd = p.coefficient >> trailing;
     const s = (0UL - cast(ulong)p.exponent) - trailing;
     if (k == n - 1 && odd == UInt!bits(1)) {
-        // The strict tail is 2^(-s*n). At half the smallest quantum, zero wins.
-        enum floorScale = 1UL << 63;
-        if (s > floorScale / n)
-            return Result(found, T(1), T(0));
-        const scale = s * n;
-        const exponent = scale == floorScale ? long.min : -cast(long)scale;
-        // Normalize as far as the exponent floor permits.
-        const shift = floorScale - scale < bits - 1
-            ? cast(size_t)(floorScale - scale) : bits - 1;
-        const upper = T(false, exponent - cast(long)shift, UInt!bits(1) << shift);
+        const upper = binomialPowerOfTwo!bits(s, n);
         return Result(found, fpProbabilityComplement(upper), upper);
+    }
+
+    // For reduced p = odd/2^s, 1-p is a power of two exactly when
+    // odd = 2^s-1. Form the mask without shifting by a full coefficient.
+    if (!k && s <= bits) {
+        UInt!bits ones;
+        ones.data[] = size_t.max;
+        if (odd == (ones >> (bits - cast(size_t)s))) {
+            const lower = binomialPowerOfTwo!bits(s, n);
+            return Result(found, lower, fpProbabilityComplement(lower));
+        }
     }
 
     const terms = k + 1 < n - k ? k + 1 : n - k;

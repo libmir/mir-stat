@@ -899,7 +899,9 @@ Returns:
     For $(D p = a / 2^^s) in lowest terms, the common denominator is
     $(D 2^^(n*s)). When either budget is exceeded it returns $(D workLimit).
     Endpoints and certain extreme tails can be resolved even with zero
-    budgets. Workspace is allocated on the stack according to the scale.
+    budgets. This includes zero successes when 1-p is an exact power of two,
+    and the strict upper tail at n-1 when p is an exact power of two.
+    Workspace is allocated on the stack according to the scale.
 +/
 @safe pure nothrow @nogc
 BinomialTailResult!T binomialTailsChecked(T)(size_t k, size_t n, const T p,
@@ -939,13 +941,30 @@ version(mir_stat_test)
     assert(evaluate(0, 1, T(0.25), 0, 0) == BinomialTailResult!T(S.found, T(0.75), T(0.25)));
     assert(evaluate(1, 3, T(false, long.min, UInt!64(1)), 0, 0) == certain);
 
-    // For fair trials P(X = 0) is exactly 2^-n. Cross each workspace
-    // boundary with just one mass and round the strict complement to one.
+    // P(X <= 1) = (n+1)*2^-n still needs the full denominator scale.
     foreach (n; [4097, 16385]) {
-        assert(evaluate(0, n, T(0.5), 1, n - 1).status == S.workLimit);
-        const tails = evaluate(0, n, T(0.5), 1, n);
-        assert(tails == BinomialTailResult!T(S.found,
-            T(false, -cast(long)n - 63, UInt!64(1UL << 63)), T(1)));
+        assert(evaluate(1, n, T(0.5), 2, n - 1).status == S.workLimit);
+        const tails = evaluate(1, n, T(0.5), 2, n);
+        auto expected = T(n + 1);
+        expected.exponent -= n;
+        assert(tails == BinomialTailResult!T(S.found, expected, T(1)));
+    }
+
+    enum rawThreeQuarters = T(false, -4, UInt!64(12));
+    auto small = T(1);
+    small.exponent -= 200000;
+    assert(evaluate(0, 100000, rawThreeQuarters, 0, 0)
+        == BinomialTailResult!T(S.found, small, T(1)));
+    enum nearOne = T(false, -64, UInt!64(ulong.max));
+    assert(evaluate(0, 2, nearOne, 0, 0)
+        == BinomialTailResult!T(S.found, T(false,-191,UInt!64(1UL << 63)), T(1)));
+    assert(evaluate(0, 2, T(false,-64,UInt!64(ulong.max-2)), 0, 0).status == S.workLimit);
+    static if (size_t.sizeof == 8) {
+        enum atFloor = size_t(1) << 62;
+        assert(evaluate(0, atFloor, rawThreeQuarters, 0, 0)
+            == BinomialTailResult!T(S.found, T(false,long.min,UInt!64(1)), T(1)));
+        assert(evaluate(0, atFloor + 1, rawThreeQuarters, 0, 0) == impossible);
+        assert(evaluate(0, (size_t(1) << 63) + 1, T(0.5), 0, 0) == impossible);
     }
 
     // P(X <= 1) = (3^4 + 4*3^3)/4^4. The opposite endpoint gives P(X > 2).

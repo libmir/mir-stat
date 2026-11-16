@@ -403,7 +403,9 @@ Returns:
     min(r,k+1) binomial weights. For p=a/2^^s in lowest terms, the common
     denominator is 2^^((k+r)*s). Returns $(D workLimit) when the count sum
     overflows or either budget is exceeded. Certain extreme tails can be
-    resolved even with zero budgets. Workspace is fixed-capacity stack storage,
+    resolved even with zero budgets. For r = 1 and representable k+1, this
+    includes the strict upper tail (1-p)^(k+1) when 1-p is a power of two.
+    Workspace is fixed-capacity stack storage,
     as in $(REF binomialTailsChecked, mir,stat,distribution,binomial).
 +/
 @safe pure nothrow @nogc
@@ -476,6 +478,9 @@ version(mir_stat_test)
     // The complement of 2^-65 is exactly halfway below one at64 bits.
     assert(evaluate(0, 65, T(0.5), 0, 0) ==
         R(S.found, T(false, -128, UInt!64(1UL << 63)), T(1)));
+    auto smallUpper = T(1);
+    smallUpper.exponent -= 200000;
+    assert(evaluate(99999, 1, T(0.75), 0, 0) == R(S.found, T(1), smallUpper));
     const smallLower = evaluate(0, 100, T(0.5));
     assert(smallLower == R(S.found, T(false, -163, UInt!64(1UL << 63)), T(1)));
     assert(evaluate(1, 3, T(false, -40000, UInt!64(3)), size_t.max, size_t.max).status == S.workLimit);
