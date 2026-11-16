@@ -835,6 +835,9 @@ Returns:
 
     At p=q=1/2, returns r-1 by symmetry, ignoring the work budgets.
 
+    When p is a power of two, a query at or below the zero-failure
+    probability $(D p^^r) also returns zero with either budget set to zero.
+
     For p=a/2^^s in lowest terms, the cumulative probability at k failures
     has denominator 2^^((r+k)*s). The scan starts at zero and updates exact
     integer weights and the denominator until the query is reached. Returns
@@ -911,17 +914,28 @@ version(mir_stat_test)
     assert(evaluate(T(false, long.min, UInt!64(1)), 3, T(0.5)) == R(S.found, 0));
     // q has many more fractional bits than the exact denominator.
     T tiny = T(1); tiny.exponent -= 100;
-    assert(evaluate(tiny, 3, T(0.5)) == R(S.found, 0));
+    assert(evaluate(tiny, 3, T(0.75)) == R(S.found, 0));
     T nearOne = T(false, -64, UInt!64(ulong.max));
     assert(evaluate(nearOne, 1, T(0.5), 64) == R(S.found, 63));
     assert(evaluate(nearOne, 1, T(0.5), 63).status == S.workLimit);
     assert(evaluate(T(0.5), 1, T(1.0/2048), size_t.max, size_t.max).status == S.workLimit);
-    foreach (r; [4097, 16385, 65536]) {
-        const q = T(false, -r, UInt!64(1));
-        assert(evaluate(q, r, T(0.5), 1, r) == R(S.found, 0));
-        assert(evaluate(q, r, T(0.5), 1, r - 1).status == S.workLimit);
+    // At one failure the CDF for p = 1/2 is (r+2)/2^^(r+1).
+    foreach (scale; [4097, 16385, 65536]) {
+        const r = scale - 1;
+        const q = T(false, -scale, UInt!64(r + 2));
+        assert(evaluate(q, r, T(0.5), 2, scale) == R(S.found, 1));
+        assert(evaluate(q, r, T(0.5), 2, scale - 1).status == S.workLimit);
     }
-    assert(evaluate(T(false, -65537, UInt!64(1)), 65537, T(0.5), size_t.max, size_t.max).status == S.workLimit);
+    const rawHalf = T(false, -4, UInt!64(8));
+    T firstMass = T(1);
+    firstMass.exponent -= 100000;
+    assert(evaluate(firstMass, 100000, rawHalf, 0, 0) == R(S.found, 0));
+    auto above = firstMass;
+    above.coefficient += 1;
+    assert(evaluate(above, 100000, rawHalf, size_t.max, size_t.max).status == S.workLimit);
+    const floor = T(false, long.min, UInt!64(1));
+    assert(evaluate(floor, 1, floor, 0, 0) == R(S.found, 0));
+    assert(evaluate(floor, 2, floor, 0, 0).status == S.workLimit);
 }
 
 version(mir_stat_test)
