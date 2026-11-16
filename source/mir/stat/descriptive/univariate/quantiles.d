@@ -1912,9 +1912,12 @@ enum WeightedQuantileAlgo
     averagedInverseCDF,
 }
 
+private enum isWeightedInverseCDF(WeightedQuantileAlgo algorithm) =
+    algorithm == WeightedQuantileAlgo.inverseCDF || algorithm == WeightedQuantileAlgo.averagedInverseCDF;
+
 private enum validWeightedQuantileOptions(WeightInterpretation interpretation, WeightedQuantileAlgo algorithm) =
     (interpretation == WeightInterpretation.relative &&
-        (algorithm == WeightedQuantileAlgo.inverseCDF || algorithm == WeightedQuantileAlgo.averagedInverseCDF ||
+        (isWeightedInverseCDF!algorithm ||
          algorithm == WeightedQuantileAlgo.type7 || algorithm == WeightedQuantileAlgo.type8 ||
          algorithm == WeightedQuantileAlgo.harrellDavis || algorithm == WeightedQuantileAlgo.trimmedHarrellDavis)) ||
     (interpretation == WeightInterpretation.frequency &&
@@ -2776,11 +2779,9 @@ private bool tryWeightedBatch(WeightInterpretation interpretation, WeightedQuant
         return false;
     if (levels.length == 1)
     {
-        static if (interpretation == WeightInterpretation.relative &&
-                   (algorithm == WeightedQuantileAlgo.inverseCDF ||
-                    algorithm == WeightedQuantileAlgo.averagedInverseCDF))
+        static if (interpretation == WeightInterpretation.relative && isWeightedInverseCDF!algorithm)
         {
-            if (workspace.length < 16 || !(levels[0] > 0 && levels[0] < 1))
+            if (!(levels[0] > 0 && levels[0] < 1))
                 return false;
         }
         else
@@ -2967,8 +2968,7 @@ private WeightedQuantileState!(interpretation, algorithm) prepareWeightedQuantil
     else
     {
         Summator!(real, Summation.kahan) cumulative;
-        static if (algorithm == WeightedQuantileAlgo.inverseCDF ||
-            algorithm == WeightedQuantileAlgo.averagedInverseCDF)
+        static if (isWeightedInverseCDF!algorithm)
         {
             import std.math: frexp, ldexp;
             int exponent;
@@ -3048,7 +3048,7 @@ private auto allocatedWeightedQuantile(F, WeightInterpretation interpretation, W
     import std.traits: isPointer;
     enum scalar = isFloatingPoint!(Unqual!P);
     enum selectRelative = interpretation == WeightInterpretation.relative && isIntegral!Weight &&
-        (algorithm == WeightedQuantileAlgo.inverseCDF || algorithm == WeightedQuantileAlgo.averagedInverseCDF);
+        isWeightedInverseCDF!algorithm;
     static if (scalar)
     {
         enum selectBatch = selectRelative;
@@ -5047,7 +5047,7 @@ struct WeightedQuantileTable(Iterator, bool customAllocated = false,
     private enum supports(WeightedQuantileAlgo algorithm) =
         interpretation == WeightInterpretation.frequency
             ? validWeightedQuantileOptions!(interpretation, algorithm)
-            : algorithm == WeightedQuantileAlgo.inverseCDF || algorithm == WeightedQuantileAlgo.averagedInverseCDF;
+            : isWeightedInverseCDF!algorithm;
 
     private this(Slice!Iterator storage)
     {
@@ -10959,7 +10959,6 @@ version(mir_stat_test)
     }
     const double[1] medianLevel = [0.5];
     WeightedBatchResult!double batch;
-    assert(!tryWeightedBatch!(meaning, algorithm)(rows[0 .. 15].sliced, 1, medianLevel[], batch));
     foreach (p; [0.0, 1.0])
         assert(!tryWeightedBatch!(meaning, algorithm)(rows[].sliced, 1, p, batch));
     assert(tryWeightedBatch!(meaning, algorithm)(rows[].sliced, 1, medianLevel[], batch));
@@ -10967,9 +10966,17 @@ version(mir_stat_test)
 
     enum inverse = WeightedQuantileAlgo.inverseCDF;
     WeightedBatchResult!int inverseBatch;
-    assert(!tryWeightedBatch!(meaning, inverse)(rows[0 .. 15].sliced, 1, 0.25, inverseBatch));
     foreach (p; [0.0, 1.0])
         assert(!tryWeightedBatch!(meaning, inverse)(rows[].sliced, 1, p, inverseBatch));
+
+    // Three unordered rows suffice. The first sorted row holds 1/4 of the weight.
+    Entry[3] small = [Entry(30, 1), Entry(10, 1), Entry(20, 2)];
+    auto copy = small;
+    const double[1] quartile = [0.25];
+    assert(tryWeightedBatch!(meaning, inverse)(small[].sliced, 2, quartile[], inverseBatch));
+    assert(inverseBatch.values[0] == 10);
+    assert(tryWeightedBatch!(meaning, algorithm)(copy[].sliced, 2, quartile[0], batch));
+    assert(batch.values[0] == 15);
 
     // With unit weights the quartiles fall exactly between distinct values.
     foreach (p; [0.25, 0.75])
