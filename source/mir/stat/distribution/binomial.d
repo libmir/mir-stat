@@ -1339,7 +1339,7 @@ bool binomialExactQuantileReached(T)(size_t k, size_t n, T p, T q,
 {
     import mir.bignum.fixed: UInt;
     import mir.bignum.integer: BigInt;
-    import std.math: frexp, ldexp;
+    import mir.stat.internal.fp_probability: splitBinaryProbability;
 
     enum maxBits = 8192;
     alias Integer = BigInt!(2 * maxBits / 64);
@@ -1347,16 +1347,6 @@ bool binomialExactQuantileReached(T)(size_t k, size_t n, T p, T q,
     static if (T.mant_dig > 64) {
         return false;
     } else {
-        static void split(T value, out ulong numerator, out int exponent) {
-            int e;
-            const T fraction = frexp(value, e);
-            numerator = cast(ulong) ldexp(fraction, T.mant_dig);
-            exponent = T.mant_dig - e;
-            while (numerator && !(numerator & 1)) {
-                numerator >>= 1;
-                --exponent;
-            }
-        }
         static Integer power(Integer value, size_t exponent) {
             Integer result = Integer(1);
             while (exponent) {
@@ -1369,10 +1359,9 @@ bool binomialExactQuantileReached(T)(size_t k, size_t n, T p, T q,
             return result;
         }
 
-        ulong a, qNumerator;
         int b, qExponent;
-        split(p, a, b);
-        split(q, qNumerator, qExponent);
+        auto a = splitBinaryProbability(p, b);
+        auto qNumerator = splitBinaryProbability(q, qExponent);
         if (b <= 0 || b > maxBits || n > maxBits / cast(uint)b || qExponent > maxBits)
             return false;
         supported = true;

@@ -580,7 +580,8 @@ version(mir_stat_test)
 private @safe pure nothrow @nogc
 bool geometricQuantileReached(T, F)(F k, T p, T q, F lp, F lq)
 {
-    import std.math: fabs, frexp, ldexp;
+    import std.math: fabs;
+    import mir.stat.internal.fp_probability: splitBinaryProbability;
     import mir.bignum.integer: BigInt;
     const F value = (k + 1) * lp;
     if (k < 8192 && fabs(value - lq) <= 32 * F.epsilon * (value + lq)) {
@@ -588,16 +589,9 @@ bool geometricQuantileReached(T, F)(F k, T p, T q, F lp, F lq)
             // For p=a/2^b, compare (2^b-a)^(k+1)/2^(b*(k+1))
             // directly with 1-q. Fixed storage keeps the fallback @nogc.
             alias Integer = BigInt!256;
-            static void split(T x, out ulong a, out int b) {
-                int e;
-                a = cast(ulong)ldexp(frexp(x, e), T.mant_dig);
-                b = T.mant_dig - e;
-                while (a && !(a & 1)) { a >>= 1; --b; }
-            }
-            ulong a, c;
             int b, d;
-            split(p, a, b);
-            split(q, c, d);
+            auto a = splitBinaryProbability(p, b);
+            auto c = splitBinaryProbability(q, d);
             const size_t m = cast(size_t)k + 1;
             if (b > 0 && b <= 8192 && d > 0 && d <= 8192 && m <= 8192 / b) {
                 Integer base = Integer(1);
