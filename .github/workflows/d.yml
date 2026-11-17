@@ -37,6 +37,8 @@ jobs:
       contents: read
     steps:
     - uses: actions/checkout@v7.0.1
+    - name: Report Linux runner resources
+      run: bash .github/scripts/linux-resources.sh report
     - uses: dlang-community/setup-dlang@v2.0.0
       with:
         # Keep the compiler coverage previously provided by CircleCI.
@@ -49,7 +51,10 @@ jobs:
         ldc2 --version
         dub --version
         cpus=$(python3 -c 'import os; print(",".join(map(str, sorted(os.sched_getaffinity(0))[:2])))')
-        exec taskset -c "$cpus" dub test --compiler=ldc2 --build-mode=singleFile --parallel
+        exec taskset -c "$cpus" bash .github/scripts/linux-resources.sh run dub test --compiler=ldc2 --build-mode=singleFile --parallel
+    - name: Report kernel memory diagnostics on failure
+      if: failure()
+      run: bash .github/scripts/linux-resources.sh kernel
 
   gdc:
     name: GDC 15 tests
