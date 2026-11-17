@@ -280,7 +280,11 @@ jobs:
 
     - name: Run DIP1000 lifetime tests (Linux LDC)
       if: runner.os == 'Linux' && startsWith(matrix.dc.channel, 'ldc-')
-      run: bash .github/scripts/linux-resources.sh run dub test --build=unittest-dip1000
+      shell: bash
+      run: |
+        cpus=$(python3 -c 'import os; print(",".join(map(str, sorted(os.sched_getaffinity(0))[:4])))')
+        echo "Linux LDC lifetime build CPU affinity: $cpus (at most four compiler workers)"
+        exec taskset -c "$cpus" bash .github/scripts/linux-resources.sh run dub test --build=unittest-dip1000 --build-mode=singleFile --parallel
 
   test:
     name: Tests with coverage (${{ matrix.os }}, ${{ matrix.dc.channel }})
