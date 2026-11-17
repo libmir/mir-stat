@@ -41,10 +41,8 @@ Internal documentation examples are compiled in generated modules within their
 source package, so package-restricted APIs remain accessible without making them
 public. The extraction adapter leaves public API examples in external modules,
 preserves the extracted bodies and line directives, and does not skip examples.
-Both CI systems use `prepare_doc_examples.py` to wire this adapter into the Meson
-template. CircleCI defines the build job locally because the published Mir orb
-has no extraction hook; it retains the orb's container and `web` workspace for
-the existing tag-only upload job.
+The documentation build uses `prepare_doc_examples.py` to wire this adapter
+into the Meson template.
 
 The template builds HTML alongside the extracted example executables.
 Every test configured by Meson must run successfully. The driver requires
@@ -57,13 +55,14 @@ starting parallel example extraction. Single-file results go to stdout, but
 the extractor still creates this directory and otherwise races on first use.
 All build modes retain two Ninja build jobs. The shared Meson configuration uses a timeout multiplier
 of 40, allowing 20 minutes for the full numerical library suite instead of the
-template's default 30 seconds in both GitHub Actions and CircleCI. Tests still
+template's default 30 seconds. Tests still
 fail if they exceed that limit.
 
 Use `--tests-only` for library tests without HTML or extracted examples.
 Run `python3 tools/test_build_docs.py` for driver regression checks.
 
-The existing compiler matrix and CircleCI release publishing remain separate.
+The compiler matrix runs separately. The CircleCI workflow is disabled,
+including its release-tag upload to `mir-stat.libmir.org`.
 An HTML build does not verify every link or the external online example runner.
 
 ## Slow numerical references
