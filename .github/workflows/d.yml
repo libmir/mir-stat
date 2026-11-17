@@ -30,6 +30,27 @@ jobs:
       id: resolve
       run: python3 .github/scripts/compiler_matrix.py
 
+  older-ldc:
+    name: Library tests (Linux, LDC 1.28.1)
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+    steps:
+    - uses: actions/checkout@v7.0.1
+    - uses: dlang-community/setup-dlang@v2.0.0
+      with:
+        # Keep the compiler coverage previously provided by CircleCI.
+        compiler: ldc-1.28.1
+    - name: Run standard library tests
+      env:
+        # The old frontend warns about unreachable histogram template branches.
+        DFLAGS: -wi
+      run: |
+        ldc2 --version
+        dub --version
+        cpus=$(python3 -c 'import os; print(",".join(map(str, sorted(os.sched_getaffinity(0))[:2])))')
+        exec taskset -c "$cpus" dub test --compiler=ldc2 --build-mode=singleFile --parallel
+
   gdc:
     name: GDC 15 tests
     permissions:
