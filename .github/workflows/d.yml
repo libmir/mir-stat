@@ -346,7 +346,7 @@ jobs:
 
     - name: Run tests with coverage (Linux)
       if: runner.os == 'Linux'
-      run: bash .github/scripts/linux-resources.sh run dub test --build=unittest-cov
+      run: bash .github/scripts/linux-coverage.sh
 
     # The BLAS build writes the same filenames; move the general reports first.
     # Forks run the tests; coverage is published by the upstream repository.
