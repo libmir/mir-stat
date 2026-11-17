@@ -132,6 +132,11 @@ and supplied metrics must be positive definite. Preconditions use assertions;
 precomputed matrices and factors are not revalidated for positive definiteness.
 Empty vectors with a zero-by-zero metric have zero distance.
 
+For every metric representation, each centered coordinate is computed as
+$(D x[i] - center[i]) in the input element type. This subtraction can overflow
+even when the mathematical distance is representable. The same centering rule
+applies to single observations, batches, and observation selections.
+
 Covariance and factor forms use a single whitening solve or multiplication,
 followed by a scaled Euclidean norm. Distance is computed without first squaring
 that norm. The direct inverse-covariance form evaluates a compensated quadratic
@@ -207,7 +212,7 @@ version(mir_stat_test_distance)
 // Borrow ndslice storage directly; array inputs use the ordinary slice view.
 // The public call retains the input owners for the lifetime of these views.
 /// Borrow an ndslice or array as a view tied to the input lifetime; callers retain owning inputs.
-private auto asView(A)(return scope auto ref A value)
+package(mir.stat) auto asView(A)(return scope auto ref A value)
 {
     static if (DiagonalInfo!A.valid) return diagonalView(value.borrowStorage);
     else static if (isSlice!A) return value.lightScope;
@@ -217,17 +222,17 @@ private auto asView(A)(return scope auto ref A value)
 /// Borrowed ndslice descriptor used for array and slice inputs.
 private alias View(A) = typeof(A.init.asView);
 /// Unqualified floating-point element type of an observation or workspace.
-private template Element(A)
+package(mir.stat) template Element(A)
 {
     static if (DiagonalInfo!A.valid) alias Element = Unqual!(typeof(A.init[0,0]));
     else alias Element = Unqual!(typeof(View!A.init._iterator[0]));
 }
 /// Whether an input can be borrowed as a real floating-point vector.
-private enum vector(A) = is(typeof(A.init.asView)) && View!A.N == 1 && isFloatingPoint!(Element!A);
+package(mir.stat) enum vector(A) = is(typeof(A.init.asView)) && View!A.N == 1 && isFloatingPoint!(Element!A);
 /// Whether an input can be borrowed as a real floating-point matrix.
-private enum matrix(A) = !isStructuralView!A && is(typeof(A.init.asView)) && View!A.N == 2 && isFloatingPoint!(Element!A);
+package(mir.stat) enum matrix(A) = !isStructuralView!A && is(typeof(A.init.asView)) && View!A.N == 2 && isFloatingPoint!(Element!A);
 /// Whether observation, center, and metric have supported ranks and matching element types.
-private enum compatible(X, C, M) = vector!X && vector!C && (matrix!M || DiagonalInfo!M.valid) &&
+package(mir.stat) enum compatible(X, C, M) = vector!X && vector!C && (matrix!M || DiagonalInfo!M.valid) &&
     is(Element!X == Element!C) && is(Element!X == Element!M);
 
 /++
