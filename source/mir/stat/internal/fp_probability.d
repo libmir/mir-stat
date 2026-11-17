@@ -10,6 +10,35 @@ module mir.stat.internal.fp_probability;
 
 import mir.bignum.fp: Fp;
 
+// Write a represented hardware probability as numerator / 2^^shift in lowest terms.
+package(mir.stat) @safe pure nothrow @nogc
+auto splitBinaryProbability(T)(const T probability, out int shift)
+{
+    import core.math: toPrec;
+    import std.math: frexp, ldexp;
+    import mir.bignum.fixed: UInt;
+    import mir.bitop: cttz;
+
+    int exponent;
+    const fraction = frexp(toPrec!T(probability), exponent);
+    static if (T.mant_dig <= 64) {
+        auto numerator = cast(ulong)ldexp(fraction, T.mant_dig);
+    } else {
+        static assert(T.mant_dig <= 128);
+        const scaled = ldexp(fraction, T.mant_dig - 64);
+        const high = cast(ulong)scaled;
+        const low = cast(ulong)ldexp(scaled - high, 64);
+        auto numerator = (UInt!128(high) << 64) | UInt!128(low);
+    }
+    if (!numerator) {
+        shift = 0;
+        return numerator;
+    }
+    const trailing = numerator.cttz;
+    shift = T.mant_dig - exponent - cast(int)trailing;
+    return numerator >> trailing;
+}
+
 // C(a+b,a), with separate counts so their sum need not fit size_t.
 // Products round at the requested precision; the final integer division has
 // 64 guard bits. This is not a correctly-rounded coefficient guarantee.

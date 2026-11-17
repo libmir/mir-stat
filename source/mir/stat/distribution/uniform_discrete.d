@@ -12,12 +12,12 @@ PMF, CDF, CCDF, and LPMF additionally accept an explicit $(D float), $(D double)
 $(D real), or $(D Fp) result type, such as
 $(D uniformDiscreteCDF!(Fp!128)(x, lower, upper)). The inverse CDF accepts a
 built-in floating-point or $(D Fp) probability and returns $(D size_t).
-For $(D Fp), its integer rank is exact for the represented probability.
+Its integer rank is exact for the represented probability in either case.
 
 In the tables, $(D n = upper - lower + 1) denotes the mathematical number
-of outcomes. The built-in implementation adds one after conversion to floating point
+of outcomes. The built-in forward functions add one after conversion to floating point
 to avoid integer overflow for the full $(D size_t) domain. Large interval
-sizes and interior quantile ranks can still round in the floating-point type.
+sizes can still round in the floating-point type.
 The $(D Fp) PMF, CDF, and CCDF overloads retain exact integer counts, including the full
 $(D size_t) domain, and round the exact ratio once to nearest, ties to even.
 Tested result widths are $(D Fp!64), $(D Fp!128), and $(D Fp!256). Each tail
@@ -241,11 +241,27 @@ unittest
     3.uniformDiscreteCCDF(1, 3).shouldApprox == 0.0;
 }
 
+private @safe pure nothrow @nogc
+size_t uniformRankOffset(size_t bits)(UInt!bits significand, ulong shift, size_t span)
+{
+    if (shift >= bits + 128) return 0;
+    auto n = UInt!128(span);
+    n += 1;
+    auto product = significand.toSize!(bits + 128);
+    product *= n;
+    // For positive product, ceil(product / 2^shift)-1 equals
+    // floor((product-1) / 2^shift), including exact CDF jumps.
+    product -= 1;
+    product >>= cast(size_t)shift;
+    return cast(size_t)product;
+}
+
 /++
 Computes the discrete uniform inverse cumulative distribution function (InvCDF).
 
-Selects the first outcome whose cumulative probability reaches $(D p).
-Interior ranks are computed in $(D T) and are subject to rounding.
+Selects the first outcome whose exact cumulative probability reaches the
+represented value of $(D p). For example, over outcomes 0 through 4 the
+$(D double) value 0.2 is slightly greater than 1/5 and selects outcome 1.
 
 Special values:
 $(TABLE
@@ -271,23 +287,13 @@ size_t uniformDiscreteInvCDF(T)(const T p, const size_t lower = 0, const size_t 
     in (p <= 1, "p must be less than or equal to 1")
     in (lower < upper, "lower must be less than upper")
 {
-    import mir.math.common: ceil;
+    import mir.stat.internal.fp_probability: splitBinaryProbability;
 
-    if (p == 0)
-        return lower;
-    if (p == 1)
-        return upper;
-    // Subtract while integral, then add one in floating point so even the
-    // complete size_t domain has a representable interval size.
-    const n = cast(T)(upper - lower) + 1;
-    const rank = ceil(p * n);
-    if (rank <= 1) {
-        return lower;
-    }
-    // Rounding may reach n before p reaches one. Clamp before the integer cast.
-    if (rank >= n)
-        return upper;
-    return lower + (cast(size_t) rank - 1);
+    if (p == 1) return upper;
+    int shift;
+    auto numerator = splitBinaryProbability(p, shift);
+    if (!numerator) return lower;
+    return lower + uniformRankOffset(UInt!(numerator.sizeof * 8)(numerator), shift, upper - lower);
 }
 
 /++
@@ -304,19 +310,8 @@ size_t uniformDiscreteInvCDF(T)(const T p, const size_t lower = 0, const size_t 
 {
     if (!p.coefficient)
         return lower;
-    enum bits = typeof(T.init.coefficient).sizeof * 8;
-    auto n = UInt!128(upper - lower);
-    n += 1;
-    auto product = p.coefficient.toSize!(bits + 128);
-    product *= n;
-    // For positive product, ceil(product / 2^shift)-1 equals
-    // floor((product-1) / 2^shift), including exact CDF jumps.
-    product -= 1;
     const shift = 0UL - cast(ulong)p.exponent;
-    if (shift >= bits + 128)
-        return lower;
-    product >>= cast(size_t)shift;
-    return lower + cast(size_t)product;
+    return lower + uniformRankOffset(p.coefficient, shift, upper - lower);
 }
 
 ///.
@@ -354,17 +349,22 @@ version(mir_stat_test)
 @safe pure nothrow @nogc
 unittest
 {
-    foreach (lower; 0 .. 4)
-    foreach (n; 2 .. 9)
-    foreach (j; 1 .. 100)
-    {
-        const p = j / 100.0;
-        const upper = lower + n - 1;
-        const x = uniformDiscreteInvCDF(p, lower, upper);
-        assert(uniformDiscreteCDF(x, lower, upper) >= p);
-        if (x > lower)
-            assert(uniformDiscreteCDF(x - 1, lower, upper) < p);
-    }
+    import std.meta: AliasSeq;
+    static foreach (T; AliasSeq!(float, double, real)) {{
+        foreach (lower; 0 .. 4)
+        foreach (n; 2 .. 9)
+        foreach (j; 1 .. 128) {
+            const p = T(j) / 128;
+            const x = uniformDiscreteInvCDF(p, lower, lower + n - 1);
+            assert(x == lower + (j * n - 1) / 128);
+        }
+        assert(uniformDiscreteInvCDF(T(0.5), 0, size_t.max - 1) == size_t.max / 2);
+    }}
+    static assert(uniformDiscreteInvCDF(0.2, 0, 4) == 1);
+    // A positive CTFE expression can round to zero at float precision.
+    static assert(uniformDiscreteInvCDF(float.min_normal * float.epsilon * 0.25f, 10, 13) == 10);
+    assert(uniformDiscreteInvCDF(0.2, 0, 4) == 1);
+    assert(uniformDiscreteInvCDF(0.6, 0, 4) == 2);
     assert(uniformDiscreteInvCDF(0.25, 10, 13) == 10);
     assert(uniformDiscreteInvCDF(0.25 + double.epsilon, 10, 13) == 11);
     assert(uniformDiscreteInvCDF(0.25 - double.epsilon, 10, 13) == 10);
