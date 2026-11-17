@@ -1399,8 +1399,6 @@ version(mir_stat_test)
             Reference(0UL,18446744073709551615UL,T(false,-256,UInt!256.fromHexString("ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff")),T(true,-448,UInt!256.fromHexString("ffffffffffffffff000000000000000000000000000000000000000000000000"))),
             Reference(1UL,18446744073709551615UL,T(false,-64,UInt!256.fromHexString("ffffffffffffffff")),T(true,-255,UInt!256.fromHexString("800000000000000040000000000000002aaaaaaaaaaaaaaacaaaaaaaaaaaaaab"))),
             Reference(2UL,3UL,T(false,long.min,UInt!256.fromHexString("1")),T(true,-191,UInt!256.fromHexString("851591f9dd5b9b3ff21266e0b1f6277239b7d1e6515b4eefa8060e8493839992"))),
-            Reference(7UL,12UL,T(false,-256,UInt!256.fromHexString("ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff")),T(true,-245,UInt!256.fromHexString("99f80e833c486763e7028f3b1cb0accc48a50c280a3785bc3512c03432fa9f02"))),
-            Reference(57UL,19UL,T(false,-4,UInt!256.fromHexString("3")),T(true,-253,UInt!256.fromHexString("91572451b6b80572f96dede89956efeb5f60e2980e256227a708056045ed31a8"))),
             Reference(18446744073709551614UL,18446744073709551615UL,T(false,-1,UInt!256.fromHexString("1")),T(true,-251,UInt!256.fromHexString("bb91dcc9ca4664bc16b126e66e238b8b167494af74fd4560a8762b7c3e71a16a"))),
             Reference(18446744073709551615UL,2UL,T(false,-64,UInt!256.fromHexString("1")),T(true,-250,UInt!256.fromHexString("b57217f7d1cf79abc7e3b39803f2f6af4048987bc7ee0b82df0d175b8baafa2c"))),
             Reference(18446744073709551615UL,18446744073709551615UL,T(false,-1,UInt!256.fromHexString("1")),T(true,-251,UInt!256.fromHexString("bb91dcc9ca4664bc1ab126e66e238b8b1b7494af74fd4560aecb80d193c6f6c0"))),
@@ -1418,8 +1416,6 @@ version(mir_stat_test)
             Reference(0UL,18446744073709551615UL,T(false,-512,UInt!512.fromHexString("ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff")),T(true,-960,UInt!512.fromHexString("ffffffffffffffff0000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000"))),
             Reference(1UL,18446744073709551615UL,T(false,-64,UInt!512.fromHexString("ffffffffffffffff")),T(true,-511,UInt!512.fromHexString("800000000000000040000000000000002aaaaaaaaaaaaaaacaaaaaaaaaaaaaaac4444444444444445999999999999999abe2be2be2be2be2ce2be2be2be2be2c"))),
             Reference(2UL,3UL,T(false,long.min,UInt!512.fromHexString("1")),T(true,-447,UInt!512.fromHexString("851591f9dd5b9b3ff21266e0b1f6277239b7d1e6515b4eefa8060e849383999209f7d57563f6a995f70801c33ae271d85edf5d91299fc3fff5bc0ac05d1f5b29"))),
-            Reference(7UL,12UL,T(false,-512,UInt!512.fromHexString("ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff")),T(true,-500,UInt!512.fromHexString("9a9df1be09eef8ed1bd4e6301012a252d0bcf374d73e929206ef1a5226981cf40fdaa6750dacba06b81aee05052ddc02059403544f6636fb54f4321bedd1750b"))),
-            Reference(57UL,19UL,T(false,-4,UInt!512.fromHexString("3")),T(true,-509,UInt!512.fromHexString("91572451b6b80572f96dede89956efeb5f60e2980e256227a708056045ed31a83e8a1bf2f6d706df8ab0a7457bff898e50f950119c696a7a1c29b0c145c570d5"))),
             Reference(18446744073709551614UL,18446744073709551615UL,T(false,-1,UInt!512.fromHexString("1")),T(true,-507,UInt!512.fromHexString("bb91dcc9ca4664bc16b126e66e238b8b167494af74fd4560a8762b7c3e71a16a22cb7f8f994e7a2b539f4287ff4cf30f44ca928d955bace0484d13c105ad00ba"))),
             Reference(18446744073709551615UL,2UL,T(false,-64,UInt!512.fromHexString("1")),T(true,-506,UInt!512.fromHexString("b57217f7d1cf79abc7e3b39803f2f6af4048987bc7ee0b82df0d175b8baafa2be78542ed3ab87965223ffda5f5a4c5bb97c0f75a538145d67069844da3b2dcb8"))),
             Reference(18446744073709551615UL,18446744073709551615UL,T(false,-1,UInt!512.fromHexString("1")),T(true,-507,UInt!512.fromHexString("bb91dcc9ca4664bc1ab126e66e238b8b1b7494af74fd4560aecb80d193c6f6bf8040d4e4eea3cf80b38164aa216f153174c75f5a622879ad277c29b264c2f219"))),
@@ -1430,6 +1426,37 @@ version(mir_stat_test)
         }
     }
 }
+
+version(mir_stat_test_slow_numerics)
+@safe pure nothrow @nogc unittest
+{
+    import mir.bignum.fixed: UInt;
+    {
+        alias T = Fp!256;
+        struct Reference { ulong k; ulong successes; T p; T value; }
+        enum references = [
+            Reference(7UL,12UL,T(false,-256,UInt!256.fromHexString("ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff")),T(true,-245,UInt!256.fromHexString("99f80e833c486763e7028f3b1cb0accc48a50c280a3785bc3512c03432fa9f02"))),
+            Reference(57UL,19UL,T(false,-4,UInt!256.fromHexString("3")),T(true,-253,UInt!256.fromHexString("91572451b6b80572f96dede89956efeb5f60e2980e256227a708056045ed31a8"))),
+        ];
+        foreach (r; references) {
+            if (r.k > size_t.max || r.successes > size_t.max) continue;
+            assert(negativeBinomialLPMF(cast(size_t)r.k,cast(size_t)r.successes,r.p) == r.value);
+        }
+    }
+    {
+        alias T = Fp!512;
+        struct Reference { ulong k; ulong successes; T p; T value; }
+        enum references = [
+            Reference(7UL,12UL,T(false,-512,UInt!512.fromHexString("ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff")),T(true,-500,UInt!512.fromHexString("9a9df1be09eef8ed1bd4e6301012a252d0bcf374d73e929206ef1a5226981cf40fdaa6750dacba06b81aee05052ddc02059403544f6636fb54f4321bedd1750b"))),
+            Reference(57UL,19UL,T(false,-4,UInt!512.fromHexString("3")),T(true,-509,UInt!512.fromHexString("91572451b6b80572f96dede89956efeb5f60e2980e256227a708056045ed31a83e8a1bf2f6d706df8ab0a7457bff898e50f950119c696a7a1c29b0c145c570d5"))),
+        ];
+        foreach (r; references) {
+            if (r.k > size_t.max || r.successes > size_t.max) continue;
+            assert(negativeBinomialLPMF(cast(size_t)r.k,cast(size_t)r.successes,r.p) == r.value);
+        }
+    }
+}
+
 // END public negative binomial log references
 
 // Independent high-precision references and full-width count boundaries.
