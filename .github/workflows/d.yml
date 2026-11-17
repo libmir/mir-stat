@@ -339,9 +339,14 @@ jobs:
       # DMD can undercount template hits in this mode: https://github.com/dlang/dmd/issues/18723
       run: ./.github/scripts/windows-test.ps1 unittest-cov
 
-    - name: Run tests with coverage
-      if: runner.os != 'Windows' || !startsWith(matrix.dc.channel, 'dmd-')
-      run: dub test --build=unittest-cov
+    - name: Run tests with coverage (Windows LDC)
+      if: runner.os == 'Windows' && startsWith(matrix.dc.channel, 'ldc-')
+      shell: pwsh
+      run: ./.github/scripts/windows-resources.ps1 Run dub test --build=unittest-cov
+
+    - name: Run tests with coverage (Linux)
+      if: runner.os == 'Linux'
+      run: bash .github/scripts/linux-resources.sh run dub test --build=unittest-cov
 
     # The BLAS build writes the same filenames; move the general reports first.
     # Forks run the tests; coverage is published by the upstream repository.
@@ -365,7 +370,7 @@ jobs:
     - name: Run slow numerical tests
       if: matrix.os == 'ubuntu-latest' && matrix.dc.channel == 'ldc-latest'
       # Keep build/link/run markers to distinguish compilation from test runtime.
-      run: dub test mir-stat:slow-numerics --build=unittest-optimized
+      run: bash .github/scripts/linux-resources.sh run dub test mir-stat:slow-numerics --build=unittest-optimized
 
     - name: Install Lapack
       if: contains( matrix.os, 'ubuntu')
@@ -376,7 +381,7 @@ jobs:
 
     - name: Run Blas Tests with coverage
       if: contains( matrix.os, 'ubuntu')
-      run: dub -q test --build=unittest-cov-blas --config=openblas
+      run: bash .github/scripts/linux-resources.sh run dub -q test --build=unittest-cov-blas --config=openblas
 
     - name: Preserve BLAS coverage
       id: blas-coverage
