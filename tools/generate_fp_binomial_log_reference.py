@@ -51,23 +51,35 @@ def reference(k,n,c,e,bits,precision):
 def render():
     out = ['// BEGIN centered binomial references']
     for bits in (64,128,256,512):
-        block_start = len(out)
-        out += ['    {', f'        alias T = Fp!{bits};',
-                '        struct Reference { ulong k; ulong n; T p; T value; }',
-                '        enum references = [']
-        for k,n,c,e in cases(bits):
-            r = reference(k,n,c,e,bits,500)
-            assert r == reference(k,n,c,e,bits,600)
-            coef,exponent = r
-            ep = 'long.min' if e == -2**63 else str(e)
-            out.append(f'            Reference({k}UL,{n}UL,T(false,{ep},UInt!{bits}.fromHexString("{c:x}")),T(true,{exponent},UInt!{bits}.fromHexString("{coef:x}"))),')
-        out += ['        ];', '        foreach (r; references)',
-                f'            assert(BinomialLog!{bits}.mass(r.k,r.n,r.p) == r.value);', '    }']
-        block = out[block_start:]
-        version = 'mir_stat_test_slow_numerics' if bits >= 256 else 'mir_stat_test'
-        out[block_start:] = [f'version({version})',
-                              '@safe pure nothrow @nogc unittest',
-                              *(line[4:] for line in block), '']
+        all_cases = cases(bits)
+        # Keep small, full-width, exponent-floor, and deviance-boundary cases.
+        ordinary = {(1,2,1,-1), (1,2**64-1,1,-64),
+                    (2**64-2,2**64-1,2**bits-1,-bits),
+                    (1,2**64-1,1,-2**63),
+                    (32,128,2**(bits-3)-1,-bits),
+                    (32,128,2**(bits-3)+1,-bits)}
+        if bits == 128:
+            groups = [('mir_stat_test', [c for c in all_cases if c in ordinary]),
+                      ('mir_stat_test_slow_numerics', [c for c in all_cases if c not in ordinary])]
+        else:
+            groups = [('mir_stat_test_slow_numerics' if bits >= 256 else 'mir_stat_test', all_cases)]
+        for version, selected in groups:
+            block_start = len(out)
+            out += ['    {', f'        alias T = Fp!{bits};',
+                    '        struct Reference { ulong k; ulong n; T p; T value; }',
+                    '        enum references = [']
+            for k,n,c,e in selected:
+                r = reference(k,n,c,e,bits,500)
+                assert r == reference(k,n,c,e,bits,600)
+                coef,exponent = r
+                ep = 'long.min' if e == -2**63 else str(e)
+                out.append(f'            Reference({k}UL,{n}UL,T(false,{ep},UInt!{bits}.fromHexString("{c:x}")),T(true,{exponent},UInt!{bits}.fromHexString("{coef:x}"))),')
+            out += ['        ];', '        foreach (r; references)',
+                    f'            assert(BinomialLog!{bits}.mass(r.k,r.n,r.p) == r.value);', '    }']
+            block = out[block_start:]
+            out[block_start:] = [f'version({version})',
+                                  '@safe pure nothrow @nogc unittest',
+                                  *(line[4:] for line in block), '']
     return '\n'.join(out+['// END centered binomial references'])
 
 

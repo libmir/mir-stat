@@ -51,24 +51,36 @@ def reference(k,c,e,bits,precision):
 def render():
     lines = ['// BEGIN Poisson log references']
     for bits in (64,128,256,512):
-        block_start = len(lines)
-        lines+=['    {',f'        alias T = Fp!{bits};',
-                '        struct Reference { ulong k; T rate; T value; }',
-                '        enum references = [']
-        def exponent(e):
-            return 'long.min' if e==-2**63 else 'long.max-1' if e==2**63-2 else str(e)
-        for k,c,e in cases(bits):
-            r=reference(k,c,e,bits,500)
-            assert r==reference(k,c,e,bits,600)
-            coef,exp=r
-            lines.append(f'            Reference({k}UL,T(false,{exponent(e)},UInt!{bits}.fromHexString("{c:x}")),T(true,{exponent(exp)},UInt!{bits}.fromHexString("{coef:x}"))),')
-        lines+=['        ];','        foreach (r; references)',
-                f'            assert(PoissonLog!{bits}.mass(r.k,r.rate) == r.value);','    }']
-        block = lines[block_start:]
-        version = 'mir_stat_test_slow_numerics' if bits >= 512 else 'mir_stat_test'
-        lines[block_start:] = [f'version({version})',
-                              '@safe pure nothrow @nogc unittest',
-                              *(line[4:] for line in block), '']
+        all_cases = cases(bits)
+        # Exercise exact and adjacent means, a series boundary, and extreme rates.
+        ordinary = {(1,1,0), (32,(32 << (bits-6))-1,-(bits-6)),
+                    (32,(32 << (bits-6))+1,-(bits-6)),
+                    (32,(16 << (bits-5))-1,-(bits-5)),
+                    (32,(16 << (bits-5))+1,-(bits-5)),
+                    (2**64-1,1,-2**63), (1,1,2**63-2)}
+        if bits in (128,256):
+            groups = [('mir_stat_test', [c for c in all_cases if c in ordinary]),
+                      ('mir_stat_test_slow_numerics', [c for c in all_cases if c not in ordinary])]
+        else:
+            groups = [('mir_stat_test_slow_numerics' if bits >= 512 else 'mir_stat_test', all_cases)]
+        for version, selected in groups:
+            block_start = len(lines)
+            lines+=['    {',f'        alias T = Fp!{bits};',
+                    '        struct Reference { ulong k; T rate; T value; }',
+                    '        enum references = [']
+            def exponent(e):
+                return 'long.min' if e==-2**63 else 'long.max-1' if e==2**63-2 else str(e)
+            for k,c,e in selected:
+                r=reference(k,c,e,bits,500)
+                assert r==reference(k,c,e,bits,600)
+                coef,exp=r
+                lines.append(f'            Reference({k}UL,T(false,{exponent(e)},UInt!{bits}.fromHexString("{c:x}")),T(true,{exponent(exp)},UInt!{bits}.fromHexString("{coef:x}"))),')
+            lines+=['        ];','        foreach (r; references)',
+                    f'            assert(PoissonLog!{bits}.mass(r.k,r.rate) == r.value);','    }']
+            block = lines[block_start:]
+            lines[block_start:] = [f'version({version})',
+                                  '@safe pure nothrow @nogc unittest',
+                                  *(line[4:] for line in block), '']
     return '\n'.join(lines+['// END Poisson log references'])
 
 
