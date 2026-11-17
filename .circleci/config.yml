@@ -32,6 +32,8 @@ jobs:
 workflows:
   version: 2
   build-deploy:
+    # Skip both the branch build and the release-tag upload.
+    when: false
     jobs:
       - test_and_build_docs:
           filters:
