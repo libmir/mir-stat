@@ -269,10 +269,22 @@ jobs:
       shell: pwsh
       run: ./.github/scripts/windows-test.ps1 unittest-dip1000
 
-    - name: Run DIP1000 lifetime tests
-      if: runner.os != 'Windows'
-      # Keep build/link/run markers to distinguish compilation from test execution.
-      run: dub test --build=unittest-dip1000
+    - name: Run DIP1000 lifetime tests (Linux DMD)
+      if: runner.os == 'Linux' && startsWith(matrix.dc.channel, 'dmd-')
+      shell: bash
+      run: |
+        # DUB sizes its parallel compiler pool from the allowed CPU set.
+        cpus=$(python3 -c 'import os; print(",".join(map(str, sorted(os.sched_getaffinity(0))[:2])))')
+        echo "Linux DMD lifetime build CPU affinity: $cpus (at most two compiler workers)"
+        exec taskset -c "$cpus" bash .github/scripts/linux-resources.sh run dub test --build=unittest-dip1000 --build-mode=singleFile --parallel
+
+    - name: Run DIP1000 lifetime tests (Linux LDC)
+      if: runner.os == 'Linux' && startsWith(matrix.dc.channel, 'ldc-')
+      shell: bash
+      run: |
+        cpus=$(python3 -c 'import os; print(",".join(map(str, sorted(os.sched_getaffinity(0))[:4])))')
+        echo "Linux LDC lifetime build CPU affinity: $cpus (at most four compiler workers)"
+        exec taskset -c "$cpus" bash .github/scripts/linux-resources.sh run dub test --build=unittest-dip1000 --build-mode=singleFile --parallel
 
   test:
     name: Tests with coverage (${{ matrix.os }}, ${{ matrix.dc.channel }})
@@ -327,9 +339,14 @@ jobs:
       # DMD can undercount template hits in this mode: https://github.com/dlang/dmd/issues/18723
       run: ./.github/scripts/windows-test.ps1 unittest-cov
 
-    - name: Run tests with coverage
-      if: runner.os != 'Windows' || !startsWith(matrix.dc.channel, 'dmd-')
-      run: dub test --build=unittest-cov
+    - name: Run tests with coverage (Windows LDC)
+      if: runner.os == 'Windows' && startsWith(matrix.dc.channel, 'ldc-')
+      shell: pwsh
+      run: ./.github/scripts/windows-resources.ps1 Run dub test --build=unittest-cov
+
+    - name: Run tests with coverage (Linux)
+      if: runner.os == 'Linux'
+      run: bash .github/scripts/linux-resources.sh run dub test --build=unittest-cov
 
     # The BLAS build writes the same filenames; move the general reports first.
     # Forks run the tests; coverage is published by the upstream repository.
@@ -353,7 +370,7 @@ jobs:
     - name: Run slow numerical tests
       if: matrix.os == 'ubuntu-latest' && matrix.dc.channel == 'ldc-latest'
       # Keep build/link/run markers to distinguish compilation from test runtime.
-      run: dub test mir-stat:slow-numerics --build=unittest-optimized
+      run: bash .github/scripts/linux-resources.sh run dub test mir-stat:slow-numerics --build=unittest-optimized
 
     - name: Install Lapack
       if: contains( matrix.os, 'ubuntu')
@@ -364,7 +381,7 @@ jobs:
 
     - name: Run Blas Tests with coverage
       if: contains( matrix.os, 'ubuntu')
-      run: dub -q test --build=unittest-cov-blas --config=openblas
+      run: bash .github/scripts/linux-resources.sh run dub -q test --build=unittest-cov-blas --config=openblas
 
     - name: Preserve BLAS coverage
       id: blas-coverage
