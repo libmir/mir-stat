@@ -30,6 +30,7 @@ module mir.stat.distribution.uniform;
 
 import mir.bignum.fp: Fp;
 import mir.stat.internal.fp_probability: fpProbabilityValid, fpProbabilityComplement;
+import mir.stat.internal.fp_uniform: uniformPointValid;
 import mir.internal.utility: isFloatingPoint;
 
 /++
@@ -158,6 +159,46 @@ unittest
     assert(0.5.uniformCDF == 0.5);
     assert(0.5.uniformCDF(0.0, 1.5).approxEqual(1.0 / 3));
     assert(2.5.uniformCDF(1.0, 3.0).approxEqual(3.0 / 4));
+}
+
+/// With finite $(D Fp) bounds, rounds $(D (x-lower)/(upper-lower)) to
+/// nearest, ties to even. Both differences use the represented inputs.
+@safe pure nothrow @nogc
+T uniformCDF(T)(const T x, const T lower, const T upper = T(1))
+    if (is(T == Fp!size, size_t size))
+    in (uniformPointValid(x, lower, upper), "require finite lower <= x <= upper and lower < upper")
+{
+    import mir.stat.internal.fp_uniform: uniformRatio;
+    return uniformRatio(lower, x, lower, upper);
+}
+
+version(mir_stat_test)
+@safe pure nothrow @nogc unittest
+{
+    import mir.bignum.fixed: UInt;
+    import std.meta: AliasSeq;
+    static foreach (T; AliasSeq!(float, double, real, Fp!64, Fp!128))
+    {
+        assert(uniformCDF(T(-1), T(-3), T(5)) == T(0.25));
+    }
+    static foreach (bits; [64u, 128u]) {{
+        alias T = Fp!bits;
+        const tiny = T(false, long.min, UInt!bits(1));
+        assert(uniformCDF(tiny, T(0), T(2)) == T(0)); // Halfway to the smallest result.
+        // The repeating binary expansion of 1/3 rounds upward at these even widths.
+        auto thirds = UInt!bits.max;
+        thirds /= UInt!bits(3);
+        thirds = (thirds << 1) + 1;
+        assert(uniformCDF(T(1), T(0), T(3)) == T(false, -long(bits)-1, thirds));
+        const three = T(false, long.min, UInt!bits(3));
+        assert(uniformCDF(three, T(0), T(2)) == T(false, long.min, UInt!bits(2)));
+        const upper = T(false, long.max - 1, UInt!bits.max);
+        const lower = T(true, upper.exponent, upper.coefficient);
+        assert(uniformCDF(T(0), lower, upper) == T(0.5));
+        assert(uniformCDF(lower, lower, upper) == T(0));
+        assert(uniformCDF(upper, lower, upper) == T(1));
+        assert(uniformCDF(T(0), T(-1)) == T(0.5));
+    }}
 }
 
 /// Unit interval with a represented $(D Fp) input. Returns the represented input exactly, including at the exponent floor.
