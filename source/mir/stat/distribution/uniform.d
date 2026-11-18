@@ -21,6 +21,8 @@ Copyright: 2022-3 Mir Stat Authors.
 
 module mir.stat.distribution.uniform;
 
+import mir.bignum.fp: Fp;
+import mir.stat.internal.fp_probability: fpProbabilityValid;
 import mir.internal.utility: isFloatingPoint;
 
 /++
@@ -125,6 +127,48 @@ unittest
     assert(0.5.uniformCDF == 0.5);
     assert(0.5.uniformCDF(0.0, 1.5).approxEqual(1.0 / 3));
     assert(2.5.uniformCDF(1.0, 3.0).approxEqual(3.0 / 4));
+}
+
+/// Unit interval with a represented $(D Fp) input. Returns the represented input exactly, including at the exponent floor.
+@safe pure nothrow @nogc
+T uniformCDF(T)(const T x)
+    if (is(T == Fp!size, size_t size))
+    in (fpProbabilityValid(x), "x must be finite and in [0, 1]")
+{
+    return x;
+}
+
+// Shared dyadic inputs have exact results in every tested representation.
+version(mir_stat_test)
+@safe pure nothrow @nogc unittest
+{
+    import std.meta: AliasSeq;
+    static foreach (T; AliasSeq!(float, double, real, Fp!64, Fp!128))
+    {{
+        foreach (i; 0 .. 9)
+        {
+            const x = T(i / 8.0);
+            assert(uniformCDF(x) == x);
+        }
+    }}
+}
+
+// Preserve the smallest positive represented input.
+version(mir_stat_test)
+@safe pure nothrow @nogc unittest
+{
+    import mir.bignum.fixed: UInt;
+    import std.meta: AliasSeq;
+    static if (size_t.sizeof == 4)
+        alias widths = AliasSeq!(32u, 64u, 96u, 128u, 256u);
+    else
+        alias widths = AliasSeq!(64u, 128u, 256u);
+    static foreach (bits; widths)
+    {{
+        alias T = Fp!bits;
+        const tiny = T(false, long.min, UInt!bits(1));
+        assert(uniformCDF(tiny) == tiny);
+    }}
 }
 
 /++
