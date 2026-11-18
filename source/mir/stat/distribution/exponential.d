@@ -563,3 +563,23 @@ version(mir_stat_test)
     assert(exponentialCDF(huge,huge) == T(1));
     assert(exponentialCDF(T(64),T(1)) == T(1));
 }
+
+// At p = 2^(1-bits), the quadratic term is exactly half an output ulp.
+// The positive cubic term decides the midpoint. Across the binade boundary
+// the predecessor has half the spacing, and its quantile rounds to p.
+version(mir_stat_test)
+@safe pure nothrow @nogc unittest
+{
+    import mir.bignum.fixed: UInt;
+    enum bits = 256u;
+    alias T = Fp!bits;
+    alias U = UInt!bits;
+    enum leading = U(1) << (bits - 1);
+    enum e = 2 - 2 * long(bits);
+    const below = T(false, e - 1, U.max);
+    const p = T(false, e, leading);
+    const above = T(false, e, leading + 1);
+    assert(exponentialInvCDF(below, T(1)) == p);
+    assert(exponentialInvCDF(p, T(1)) == above);
+    assert(exponentialInvCDF(above, T(1)) == T(false, e, leading + 2));
+}

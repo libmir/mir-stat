@@ -30,14 +30,17 @@ package(mir.stat) Fp!bits exponentialQuantile(uint bits)(Fp!bits p, Fp!bits rate
     import mir.stat.internal.fp_probability_log: ProbabilityLog;
     if (!p.coefficient)
         return Fp!bits(0);
-    alias Log = ProbabilityLog!bits;
+    // At p = 2^(1-bits), p + p^2/2 is an output midpoint. Keep
+    // the cubic term, about 2*bits places below p, through division.
+    enum logBits = bits <= 192 ? bits : 2 * bits;
+    alias Log = ProbabilityLog!logBits;
     alias S = Log.S;
 
     // For very small p the log kernel returns p. The omitted correction
     // is strictly positive. A dyadic p/rate can land exactly on a final
     // midpoint, including half the smallest subnormal. Retain its side.
     const top = bits - p.coefficient.ctlz;
-    if (p.exponent <= -cast(long)bits - 256 - top)
+    if (p.exponent <= -cast(long)logBits - 256 - top)
     {
         // A nonzero distance from a binary rounding boundary for p/rate
         // can cost another rate coefficient's worth of bits to distinguish.
@@ -47,7 +50,12 @@ package(mir.stat) Fp!bits exponentialQuantile(uint bits)(Fp!bits p, Fp!bits rate
             quotient.fraction.coefficient += 1;
         return finish!bits(quotient);
     }
-    return finish!bits(Log.complement(p).divide(S.from(rate)));
+    // This branch is far above the exponent floor, so widening is exact.
+    static if (logBits == bits)
+        auto logarithm = Log.complement(p);
+    else
+        auto logarithm = Log.complement(cast(Fp!logBits)p);
+    return finish!bits(logarithm.divide(S.from(rate)));
 }
 
 // Keep the full coefficient product and both input exponents. For t >=
