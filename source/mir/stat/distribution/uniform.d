@@ -290,6 +290,39 @@ unittest
     assert(2.5.uniformCCDF(1.0, 3.0).approxEqual(1.0 / 4));
 }
 
+/// For finite $(D Fp) bounds, rounds the strict tail $(D (upper-x)/(upper-lower))
+/// directly to nearest, ties to even, including subnormal probabilities.
+@safe pure nothrow @nogc
+T uniformCCDF(T)(const T x, const T lower, const T upper = T(1))
+    if (is(T == Fp!size, size_t size))
+    in (uniformPointValid(x, lower, upper), "require finite lower <= x <= upper and lower < upper")
+{
+    import mir.stat.internal.fp_uniform: uniformRatio;
+    return uniformRatio(x, upper, lower, upper);
+}
+
+version(mir_stat_test)
+@safe pure nothrow @nogc unittest
+{
+    import std.meta: AliasSeq;
+    static foreach (T; AliasSeq!(float, double, real, Fp!64, Fp!128))
+    {
+        assert(uniformCCDF(T(-1), T(-3), T(5)) == T(0.75));
+    }
+    static foreach (bits; [64u, 128u]) {{
+        alias T = Fp!bits;
+        auto lower = T(-1);
+        lower.exponent += 20_000;
+        auto tail = T(1);
+        tail.exponent -= 20_000;
+        // 1/(2^20000+1) rounds to 2^-20000 even though the CDF rounds to one.
+        assert(uniformCCDF(T(0), lower) == tail);
+        assert(uniformCDF(T(0), lower) == T(1));
+        assert(uniformCCDF(lower, lower) == T(1));
+        assert(uniformCCDF(T(1), lower) == T(0));
+    }}
+}
+
 /// Unit interval with a represented $(D Fp) input. Rounds the exact binary complement to nearest, ties to even.
 @safe pure nothrow @nogc
 T uniformCCDF(T)(const T x)
