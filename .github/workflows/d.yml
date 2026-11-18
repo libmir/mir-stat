@@ -368,7 +368,7 @@ jobs:
     - name: Run tests with coverage (Windows LDC)
       if: runner.os == 'Windows' && startsWith(matrix.dc.channel, 'ldc-')
       shell: pwsh
-      run: ./.github/scripts/windows-resources.ps1 Run dub test --build=unittest-cov
+      run: ./.github/scripts/windows-coverage.ps1
 
     - name: Run tests with coverage (Linux)
       if: runner.os == 'Linux'

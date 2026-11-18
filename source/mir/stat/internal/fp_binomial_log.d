@@ -189,26 +189,38 @@ version(mir_stat_test)
     struct Reference { ulong k; ulong n; T p; T value; }
     enum references = [
         Reference(1UL,2UL,T(false,-1,UInt!128.fromHexString("1")),T(true,-128,UInt!128.fromHexString("b17217f7d1cf79abc9e3b39803f2f6af"))),
+        Reference(1UL,18446744073709551615UL,T(false,long.min,UInt!128.fromHexString("1")),T(true,-65,UInt!128.fromHexString("b17217f7d1cf795310d7b7af1c3620cc"))),
+        Reference(1UL,18446744073709551615UL,T(false,-64,UInt!128.fromHexString("1")),T(true,-128,UInt!128.fromHexString("ffffffffffffffff8000000000000000"))),
+        Reference(32UL,128UL,T(false,-128,UInt!128.fromHexString("1fffffffffffffffffffffffffffffff")),T(true,-124,UInt!128.fromHexString("9e49daeef952a46009b7b73b8f663f89"))),
+        Reference(32UL,128UL,T(false,-128,UInt!128.fromHexString("20000000000000000000000000000001")),T(true,-124,UInt!128.fromHexString("9e49daeef952a46009b7b73b8f663f77"))),
+        Reference(18446744073709551614UL,18446744073709551615UL,T(false,-128,UInt!128.fromHexString("ffffffffffffffffffffffffffffffff")),T(true,-122,UInt!128.fromHexString("b17217f7d1cf79abd1e3b39803f2f6af"))),
+    ];
+    foreach (r; references)
+        assert(BinomialLog!128.mass(r.k,r.n,r.p) == r.value);
+}
+
+version(mir_stat_test_slow_numerics)
+@safe pure nothrow @nogc unittest
+{
+    alias T = Fp!128;
+    struct Reference { ulong k; ulong n; T p; T value; }
+    enum references = [
         Reference(1UL,3UL,T(false,-1,UInt!128.fromHexString("1")),T(true,-128,UInt!128.fromHexString("fb17a03ca53dc38cb9918d73069d6758"))),
         Reference(1UL,32UL,T(false,-1,UInt!128.fromHexString("1")),T(true,-123,UInt!128.fromHexString("95b8443919070ea8f2581f8843550024"))),
         Reference(1UL,128UL,T(false,-1,UInt!128.fromHexString("1")),T(true,-121,UInt!128.fromHexString("a7bddaa84456210464d93fc5b3bbad32"))),
         Reference(1UL,4294967297UL,T(false,-1,UInt!128.fromHexString("1")),T(true,-96,UInt!128.fromHexString("b17217e254fe92a861c3f7cb11603746"))),
         Reference(1UL,1000000000000UL,T(false,-1,UInt!128.fromHexString("1")),T(true,-88,UInt!128.fromHexString("a162ca9df4507532b79d3eea928360a7"))),
         Reference(1UL,18446744073709551614UL,T(false,-1,UInt!128.fromHexString("1")),T(true,-64,UInt!128.fromHexString("b17217f7d1cf797e0a7985b3ec759867"))),
-        Reference(1UL,18446744073709551615UL,T(false,long.min,UInt!128.fromHexString("1")),T(true,-65,UInt!128.fromHexString("b17217f7d1cf795310d7b7af1c3620cc"))),
         Reference(1UL,18446744073709551615UL,T(false,-2000,UInt!128.fromHexString("1")),T(true,-117,UInt!128.fromHexString("a7bddaa84456210464f93fc5b3bbad32"))),
         Reference(1UL,18446744073709551615UL,T(false,-448,UInt!128.fromHexString("1")),T(true,-119,UInt!128.fromHexString("851591f9dd5b9b40d7eac6b202f63903"))),
         Reference(1UL,18446744073709551615UL,T(false,-447,UInt!128.fromHexString("1")),T(true,-119,UInt!128.fromHexString("84bcd8ede172b3840205d4d836f43f88"))),
-        Reference(1UL,18446744073709551615UL,T(false,-64,UInt!128.fromHexString("1")),T(true,-128,UInt!128.fromHexString("ffffffffffffffff8000000000000000"))),
         Reference(1UL,18446744073709551615UL,T(false,-1,UInt!128.fromHexString("1")),T(true,-64,UInt!128.fromHexString("b17217f7d1cf797ebbeb9dabbe451212"))),
         Reference(1UL,18446744073709551615UL,T(false,long.min,UInt!128.fromHexString("ffffffffffffffffffffffffffffffff")),T(true,-65,UInt!128.fromHexString("b17217f7d1cf78a19ebfbfdd4cbc7502"))),
         Reference(1UL,18446744073709551615UL,T(false,-128,UInt!128.fromHexString("ffffffffffffffffffffffffffffffff")),T(true,-57,UInt!128.fromHexString("b17217f7d1cf79aa0e4677ac776c4682"))),
         Reference(2UL,3UL,T(false,-1,UInt!128.fromHexString("1")),T(true,-128,UInt!128.fromHexString("fb17a03ca53dc38cb9918d73069d6758"))),
         Reference(16UL,32UL,T(false,-1,UInt!128.fromHexString("1")),T(true,-127,UInt!128.fromHexString("fbb54e73f674a98ef57ca95f21c28208"))),
         Reference(31UL,32UL,T(false,-1,UInt!128.fromHexString("1")),T(true,-123,UInt!128.fromHexString("95b8443919070ea8f2581f8843550024"))),
-        Reference(32UL,128UL,T(false,-128,UInt!128.fromHexString("1fffffffffffffffffffffffffffffff")),T(true,-124,UInt!128.fromHexString("9e49daeef952a46009b7b73b8f663f89"))),
         Reference(32UL,128UL,T(false,-128,UInt!128.fromHexString("20000000000000000000000000000000")),T(true,-124,UInt!128.fromHexString("9e49daeef952a46009b7b73b8f663f80"))),
-        Reference(32UL,128UL,T(false,-128,UInt!128.fromHexString("20000000000000000000000000000001")),T(true,-124,UInt!128.fromHexString("9e49daeef952a46009b7b73b8f663f77"))),
         Reference(32UL,128UL,T(false,-128,UInt!128.fromHexString("5fffffffffffffffffffffffffffffff")),T(true,-125,UInt!128.fromHexString("e13d9fe64bbd91fa98648dd07afeb7f9"))),
         Reference(32UL,128UL,T(false,-128,UInt!128.fromHexString("60000000000000000000000000000000")),T(true,-125,UInt!128.fromHexString("e13d9fe64bbd91fa98648dd07afeb801"))),
         Reference(32UL,128UL,T(false,-128,UInt!128.fromHexString("60000000000000000000000000000001")),T(true,-125,UInt!128.fromHexString("e13d9fe64bbd91fa98648dd07afeb80a"))),
@@ -235,7 +247,6 @@ version(mir_stat_test)
         Reference(9223372036854775807UL,18446744073709551615UL,T(false,-128,UInt!128.fromHexString("ffffffffffffffffffffffffffffffff")),T(true,-58,UInt!128.fromHexString("aeac4f97f2883bc577222efe9962be3f"))),
         Reference(18446744073709551613UL,18446744073709551614UL,T(false,-1,UInt!128.fromHexString("1")),T(true,-64,UInt!128.fromHexString("b17217f7d1cf797e0a7985b3ec759867"))),
         Reference(18446744073709551614UL,18446744073709551615UL,T(false,-1,UInt!128.fromHexString("1")),T(true,-64,UInt!128.fromHexString("b17217f7d1cf797ebbeb9dabbe451212"))),
-        Reference(18446744073709551614UL,18446744073709551615UL,T(false,-128,UInt!128.fromHexString("ffffffffffffffffffffffffffffffff")),T(true,-122,UInt!128.fromHexString("b17217f7d1cf79abd1e3b39803f2f6af"))),
     ];
     foreach (r; references)
         assert(BinomialLog!128.mass(r.k,r.n,r.p) == r.value);

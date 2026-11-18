@@ -25,29 +25,38 @@ def reference(k,r,c,e,bits,precision):
 
 
 def render():
-    lines=['// BEGIN public negative binomial log references','version(mir_stat_test)',
-           '@safe pure nothrow @nogc unittest','{','    import mir.bignum.fixed: UInt;']
-    for bits in (64,128,256,512):
-        maximum = 2**64-1
-        cases = [(0,3,1,-2**63), (0,maximum,2**bits-1,-bits),
-                 (2,3,1,-2**63), (57,19,3,-4), (1,maximum,2**64-1,-64),
-                 (maximum,maximum,1,-1), (maximum-1,maximum,1,-1),
-                 (maximum,2,1,-64), (7,12,2**bits-1,-bits)]
-        lines+=['    {',f'        alias T = Fp!{bits};',
-                '        struct Reference { ulong k; ulong successes; T p; T value; }',
-                '        enum references = [']
-        for k,n,c,e in sorted(cases):
-            r=reference(k,n,c,e,bits,500)
-            assert r==reference(k,n,c,e,bits,600)
-            out,exp=r
-            ep='long.min' if e==-2**63 else str(e)
-            ex='long.min' if exp==-2**63 else str(exp)
-            lines.append(f'            Reference({k}UL,{n}UL,T(false,{ep},UInt!{bits}.fromHexString("{c:x}")),T(true,{ex},UInt!{bits}.fromHexString("{out:x}"))),')
-        lines+=['        ];','        foreach (r; references) {',
-                '            if (r.k > size_t.max || r.successes > size_t.max) continue;',
-                '            assert(negativeBinomialLPMF(cast(size_t)r.k,cast(size_t)r.successes,r.p) == r.value);',
-                '        }','    }']
-    return '\n'.join(lines+['}','// END public negative binomial log references'])
+    lines = ['// BEGIN public negative binomial log references']
+    for slow in (False, True):
+        version = 'mir_stat_test_slow_numerics' if slow else 'mir_stat_test'
+        lines += [f'version({version})', '@safe pure nothrow @nogc unittest',
+                  '{', '    import mir.bignum.fixed: UInt;']
+        for bits in (64,128,256,512):
+            if slow and bits < 256:
+                continue
+            maximum = 2**64-1
+            cases = [(0,3,1,-2**63), (0,maximum,2**bits-1,-bits),
+                     (2,3,1,-2**63), (57,19,3,-4), (1,maximum,2**64-1,-64),
+                     (maximum,maximum,1,-1), (maximum-1,maximum,1,-1),
+                     (maximum,2,1,-64), (7,12,2**bits-1,-bits)]
+            # Wider repetitions of these interior cases dominate ordinary runtime.
+            cases = [case for case in cases
+                     if (bits >= 256 and case[:2] in ((57,19),(7,12))) == slow]
+            lines+=['    {',f'        alias T = Fp!{bits};',
+                    '        struct Reference { ulong k; ulong successes; T p; T value; }',
+                    '        enum references = [']
+            for k,n,c,e in sorted(cases):
+                r=reference(k,n,c,e,bits,500)
+                assert r==reference(k,n,c,e,bits,600)
+                out,exp=r
+                ep='long.min' if e==-2**63 else str(e)
+                ex='long.min' if exp==-2**63 else str(exp)
+                lines.append(f'            Reference({k}UL,{n}UL,T(false,{ep},UInt!{bits}.fromHexString("{c:x}")),T(true,{ex},UInt!{bits}.fromHexString("{out:x}"))),')
+            lines+=['        ];','        foreach (r; references) {',
+                    '            if (r.k > size_t.max || r.successes > size_t.max) continue;',
+                    '            assert(negativeBinomialLPMF(cast(size_t)r.k,cast(size_t)r.successes,r.p) == r.value);',
+                    '        }','    }']
+        lines += ['}', '']
+    return '\n'.join(lines+['// END public negative binomial log references'])
 
 
 if __name__=='__main__':
