@@ -381,7 +381,8 @@ private bool validRate(uint bits)(Fp!bits rate) @safe pure nothrow @nogc
 /// Extended-precision quantile for a finite positive rate and 0 <= p < 1.
 /// Uses a guarded logarithm and retains the exponent through division.
 @safe pure nothrow @nogc
-Fp!bits exponentialInvCDF(uint bits)(const Fp!bits p, const Fp!bits lambda)
+T exponentialInvCDF(T)(const T p, const T lambda)
+    if (is(T == Fp!size, size_t size))
     in (validRate(lambda), "lambda must be finite and positive")
     in (validQuantileProbability(p), "p must be in [0, 1)")
 {
@@ -408,8 +409,6 @@ version(mir_stat_test)
     assert(exponentialInvCDF(tiny, tiny) == T(1));
     assert(exponentialInvCDF(T(0.5), T(2)) == T(false, -65, U(0xb17217f7d1cf79acUL)));
     assert(exponentialInvCDF(T(false,-64,U.max), T(1)) == T(false,-58,U(0xb17217f7d1cf79acUL)));
-    assert(!validQuantileProbability(T(1)));
-    assert(!validRate(T(double.infinity)));
 }
 
 private bool validObservation(uint bits)(Fp!bits x) @safe pure nothrow @nogc
@@ -419,7 +418,8 @@ private bool validObservation(uint bits)(Fp!bits x) @safe pure nothrow @nogc
 
 /// Strict upper tail for a represented observation and finite positive rate. Evaluates the decay directly with guard bits.
 @safe pure nothrow @nogc
-Fp!bits exponentialCCDF(uint bits)(const Fp!bits x, const Fp!bits lambda)
+T exponentialCCDF(T)(const T x, const T lambda)
+    if (is(T == Fp!size, size_t size))
     in (validRate(lambda), "lambda must be finite and positive")
     in (validObservation(x), "x must be nonnegative")
 {
@@ -440,7 +440,8 @@ version(mir_stat_test)
 
 /// Lower tail for a finite positive rate. Retains the small-product correction at rounding midpoints.
 @safe pure nothrow @nogc
-Fp!bits exponentialCDF(uint bits)(const Fp!bits x, const Fp!bits lambda)
+T exponentialCDF(T)(const T x, const T lambda)
+    if (is(T == Fp!size, size_t size))
     in (validRate(lambda), "lambda must be finite and positive")
     in (validObservation(x), "x must be nonnegative")
 {
@@ -465,7 +466,8 @@ version(mir_stat_test)
 
 /// Density for a finite positive rate. Scales the guarded decay before rounding to the result width.
 @safe pure nothrow @nogc
-Fp!bits exponentialPDF(uint bits)(const Fp!bits x, const Fp!bits lambda)
+T exponentialPDF(T)(const T x, const T lambda)
+    if (is(T == Fp!size, size_t size))
     in (validRate(lambda), "lambda must be finite and positive")
     in (validObservation(x), "x must be nonnegative")
 {
@@ -494,7 +496,8 @@ version(mir_stat_test)
 
 /// Log density for a finite positive rate. Subtracts the exact product from a guarded logarithm. Severe cancellation can reduce accuracy.
 @safe pure nothrow @nogc
-Fp!bits exponentialLPDF(uint bits)(const Fp!bits x, const Fp!bits lambda)
+T exponentialLPDF(T)(const T x, const T lambda)
+    if (is(T == Fp!size, size_t size))
     in (validRate(lambda), "lambda must be finite and positive")
     in (validObservation(x), "x must be nonnegative")
 {
@@ -582,4 +585,39 @@ version(mir_stat_test)
     assert(exponentialInvCDF(below, T(1)) == p);
     assert(exponentialInvCDF(p, T(1)) == above);
     assert(exponentialInvCDF(above, T(1)) == T(false, e, leading + 2));
+}
+
+version(mir_stat_test)
+unittest
+{
+    import core.exception: AssertError;
+    import std.exception: assertThrown;
+    import std.meta: AliasSeq;
+
+    static foreach (T; AliasSeq!(double, Fp!64))
+    {{
+        const T x = T(0.5), rate = T(2);
+        static foreach (f; AliasSeq!(exponentialInvCDF, exponentialPDF, exponentialLPDF,
+                                    exponentialCDF, exponentialCCDF))
+        {
+            static assert(is(typeof(f!T(x, rate)) == T));
+            static assert(is(typeof(f(x, rate)) == T));
+        }
+    }}
+
+    bool contractsEnabled;
+    void probe() in { contractsEnabled = true; } do {}
+    probe();
+    if (contractsEnabled)
+    {
+        alias T = Fp!64;
+        assertThrown!AssertError(exponentialInvCDF(T(1), T(1)));
+        assertThrown!AssertError(exponentialInvCDF(T(-1), T(1)));
+        assertThrown!AssertError(exponentialInvCDF(T(0.5), T(0)));
+        static foreach (f; AliasSeq!(exponentialPDF, exponentialLPDF, exponentialCDF, exponentialCCDF))
+        {
+            assertThrown!AssertError(f(T(-1), T(1)));
+            assertThrown!AssertError(f(T(0), T(double.infinity)));
+        }
+    }
 }
