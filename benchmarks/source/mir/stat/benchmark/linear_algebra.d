@@ -208,30 +208,30 @@ private Result[] measure(int family)(string name, size_t iterations, size_t n, u
     /// Measure squared distance including GC scratch allocation and covariance factorization.
     double covarianceGC() { return mahalanobisSquared(x,center,a); }
     /// Measure squared distance from a covariance factor with GC scratch.
-    double factorGC() { return mahalanobisSquared!(MahalanobisMatrix.covarianceCholesky)(x,center,factor); }
+    double factorGC() { return mahalanobisSquared!(CovarianceRepresentation.covarianceCholesky)(x,center,factor); }
     /// Measure squared distance from a precision matrix with GC scratch.
-    double precisionGC() { return mahalanobisSquared!(MahalanobisMatrix.inverseCovariance)(x,center,precision); }
+    double precisionGC() { return mahalanobisSquared!(CovarianceRepresentation.inverseCovariance)(x,center,precision); }
     /// Measure squared distance from a precision factor with GC scratch.
-    double precisionFactorGC() { return mahalanobisSquared!(MahalanobisMatrix.inverseCovarianceCholesky)(x,center,precisionFactor); }
+    double precisionFactorGC() { return mahalanobisSquared!(CovarianceRepresentation.inverseCovarianceCholesky)(x,center,precisionFactor); }
     /// Measure covariance factorization and squared distance with reusable buffers.
     double covarianceWorkspace() { return mahalanobisSquaredWithWorkspace(x,center,a,work,factorWork); }
     /// Measure squared distance using a covariance factor and reusable workspace.
-    double factorWorkspace() { return mahalanobisSquaredWithWorkspace!(MahalanobisMatrix.covarianceCholesky)(x,center,factor,work); }
+    double factorWorkspace() { return mahalanobisSquaredWithWorkspace!(CovarianceRepresentation.covarianceCholesky)(x,center,factor,work); }
     /// Measure squared distance using a precision matrix and reusable workspace.
-    double precisionWorkspace() { return mahalanobisSquaredWithWorkspace!(MahalanobisMatrix.inverseCovariance)(x,center,precision,work); }
+    double precisionWorkspace() { return mahalanobisSquaredWithWorkspace!(CovarianceRepresentation.inverseCovariance)(x,center,precision,work); }
     /// Measure squared distance using a precision factor and reusable workspace.
-    double precisionFactorWorkspace() { return mahalanobisSquaredWithWorkspace!(MahalanobisMatrix.inverseCovarianceCholesky)(x,center,precisionFactor,work); }
+    double precisionFactorWorkspace() { return mahalanobisSquaredWithWorkspace!(CovarianceRepresentation.inverseCovarianceCholesky)(x,center,precisionFactor,work); }
     /// Include two GC vector allocations in the fast precision calculation.
     double precisionFastGC()
     {
         import mir.math.sum: Summation;
-        return mahalanobisSquared!(MahalanobisMatrix.inverseCovariance, TrianglePolicy.upper, Summation.fast)(x,center,precision);
+        return mahalanobisSquared!(CovarianceRepresentation.inverseCovariance, TrianglePolicy.upper, Summation.fast)(x,center,precision);
     }
     /// Reuse both centered-input and matrix-vector buffers for fast precision arithmetic.
     double precisionFastWorkspace()
     {
         import mir.math.sum: Summation;
-        return mahalanobisSquaredWithWorkspace!(MahalanobisMatrix.inverseCovariance, TrianglePolicy.upper, Summation.fast)(x,center,precision,work,productWork);
+        return mahalanobisSquaredWithWorkspace!(CovarianceRepresentation.inverseCovariance, TrianglePolicy.upper, Summation.fast)(x,center,precision,work,productWork);
     }
     import std.meta: AliasSeq;
     static if (family < 2) alias functions = AliasSeq!(denseProduct, triangularProduct, packedProduct);
@@ -401,24 +401,24 @@ private Result[] measureBatch(bool distance)(string name, size_t iterations, siz
     if (factor.length) choleskyDecomposeInPlace(factor);
     if (precisionFactor.length) choleskyDecomposeInto(metric, precisionFactor);
     /// Run the same arithmetic policy as either one batch or repeated column calls.
-    double run(bool batch, MahalanobisMatrix form = MahalanobisMatrix.inverseCovariance, Summation summation = Summation.kbn)()
+    double run(bool batch, CovarianceRepresentation form = CovarianceRepresentation.inverseCovariance, Summation summation = Summation.kbn)()
     {
         auto xc = x.transposed; auto wc = work.transposed;
         static if (!distance) {
             static if (batch) quadraticFormBatchInto!summation(x, symmetricView(metric), result, work);
             else foreach (j;0 .. columns) result[j] = quadraticFormWithWorkspace!summation(xc[j], symmetricView(metric), wc[j]);
         } else {
-            static if (form == MahalanobisMatrix.covarianceCholesky) auto m = factor;
-            else static if (form == MahalanobisMatrix.inverseCovarianceCholesky) auto m = precisionFactor;
+            static if (form == CovarianceRepresentation.covarianceCholesky) auto m = factor;
+            else static if (form == CovarianceRepresentation.inverseCovarianceCholesky) auto m = precisionFactor;
             else auto m = metric;
             static if (batch) {
-                static if (form == MahalanobisMatrix.inverseCovariance && summation == Summation.fast)
+                static if (form == CovarianceRepresentation.inverseCovariance && summation == Summation.fast)
                     mahalanobisSquaredBatchWithWorkspace!(form, TrianglePolicy.upper, summation)(x, center, m, result, work, product);
                 else mahalanobisSquaredBatchWithWorkspace!(form, TrianglePolicy.upper, summation)(x, center, m, result, work);
             } else {
                 auto pc = product.transposed;
                 foreach (j;0 .. columns) {
-                    static if (form == MahalanobisMatrix.inverseCovariance && summation == Summation.fast)
+                    static if (form == CovarianceRepresentation.inverseCovariance && summation == Summation.fast)
                         result[j] = mahalanobisSquaredWithWorkspace!(form, TrianglePolicy.upper, summation)(xc[j], center, m, wc[j], pc[j]);
                     else result[j] = mahalanobisSquaredWithWorkspace!(form)(xc[j], center, m, wc[j]);
                 }
@@ -427,10 +427,10 @@ private Result[] measureBatch(bool distance)(string name, size_t iterations, siz
         return result[0];
     }
     static if (!distance) alias functions = AliasSeq!(run!false, run!true,
-        run!(false, MahalanobisMatrix.inverseCovariance, Summation.fast), run!(true, MahalanobisMatrix.inverseCovariance, Summation.fast));
-    else alias functions = AliasSeq!(run!(false, MahalanobisMatrix.covarianceCholesky), run!(true, MahalanobisMatrix.covarianceCholesky),
-        run!false, run!true, run!(false, MahalanobisMatrix.inverseCovariance, Summation.fast), run!(true, MahalanobisMatrix.inverseCovariance, Summation.fast),
-        run!(false, MahalanobisMatrix.inverseCovarianceCholesky), run!(true, MahalanobisMatrix.inverseCovarianceCholesky));
+        run!(false, CovarianceRepresentation.inverseCovariance, Summation.fast), run!(true, CovarianceRepresentation.inverseCovariance, Summation.fast));
+    else alias functions = AliasSeq!(run!(false, CovarianceRepresentation.covarianceCholesky), run!(true, CovarianceRepresentation.covarianceCholesky),
+        run!false, run!true, run!(false, CovarianceRepresentation.inverseCovariance, Summation.fast), run!(true, CovarianceRepresentation.inverseCovariance, Summation.fast),
+        run!(false, CovarianceRepresentation.inverseCovarianceCholesky), run!(true, CovarianceRepresentation.inverseCovarianceCholesky));
     bool[functions.length] enabled;
     foreach (i, label;labels) enabled[i] = needs(label);
     auto active = enabled[].count(true);

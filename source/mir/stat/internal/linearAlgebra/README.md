@@ -435,7 +435,7 @@ assert(mahalanobisSquaredBatch(columns, center[], metric) == byRows);
 
 Selection adapters recover the observation matrix and forward once to the
 batch operation. Covariance is factorized once per batch. Supplying
-`MahalanobisMatrix.covarianceCholesky` reuses an existing covariance factor
+`CovarianceRepresentation.covarianceCholesky` reuses an existing covariance factor
 without factorization, including when the same factor is retained across calls.
 Squared-distance evaluation is available through all three input conventions.
 
@@ -453,9 +453,9 @@ inverse covariance matrix, select fast arithmetic explicitly:
 ```d
 import mir.stat.distance;
 import mir.math.sum: Summation;
-auto squared = mahalanobisSquared!(MahalanobisMatrix.inverseCovariance,
+auto squared = mahalanobisSquared!(CovarianceRepresentation.inverseCovariance,
     TrianglePolicy.upper, Summation.fast)(x, center, precision);
-auto reused = mahalanobisSquaredWithWorkspace!(MahalanobisMatrix.inverseCovariance,
+auto reused = mahalanobisSquaredWithWorkspace!(CovarianceRepresentation.inverseCovariance,
     TrianglePolicy.upper, Summation.fast)(x, center, precision, difference, product);
 ```
 
@@ -672,7 +672,7 @@ takes selected scratch. Explicit batches use `quadraticFormBatchInto` for both.
 Select workspace axes explicitly too; workspace storage orientation may differ:
 
 ```d
-mahalanobisSquaredWithWorkspace!(MahalanobisMatrix.covarianceCholesky)(
+mahalanobisSquaredWithWorkspace!(CovarianceRepresentation.covarianceCholesky)(
     rows.alongDim!1, center, factor, results, scratchColumns.byDim!1);
 
 quadraticFormWithWorkspace!(Summation.fast)(
@@ -713,11 +713,11 @@ The public distance module provides `mahalanobisBatch` and
 `mahalanobisSquaredBatch`, plus `rc`, `make`, and `WithWorkspace` variants:
 
 ```d
-auto distances = mahalanobisBatch!(MahalanobisMatrix.covarianceCholesky)(
+auto distances = mahalanobisBatch!(CovarianceRepresentation.covarianceCholesky)(
     observations, center, covarianceFactor);
-mahalanobisSquaredBatchWithWorkspace!(MahalanobisMatrix.covarianceCholesky)(
+mahalanobisSquaredBatchWithWorkspace!(CovarianceRepresentation.covarianceCholesky)(
     observations, center, covarianceFactor, results, centeredWorkspace);
-mahalanobisSquaredBatchWithWorkspace!(MahalanobisMatrix.inverseCovariance,
+mahalanobisSquaredBatchWithWorkspace!(CovarianceRepresentation.inverseCovariance,
     TrianglePolicy.upper, Summation.fast)(
     observations, center, precision, results, centeredWorkspace, productWorkspace);
 ```

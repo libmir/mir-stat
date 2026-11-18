@@ -678,10 +678,10 @@ version(mir_stat_test_linearAlgebra)
     double[4] data=[4,double.nan,2,5];
     auto metric=symmetricView!(TrianglePolicy.lower)(data[].sliced(2,2));
     assert(mahalanobisSquared(x[],center[],metric)==0.8125);
-    assert(rcMahalanobisSquared!(MahalanobisMatrix.inverseCovariance)(x[],center[],metric)==32);
+    assert(rcMahalanobisSquared!(CovarianceRepresentation.inverseCovariance)(x[],center[],metric)==32);
     assert(mahalanobisSquared(x[],center[],metric.transposed)==0.8125);
-    static assert(!__traits(compiles,mahalanobisSquared!(MahalanobisMatrix.covariance,TrianglePolicy.upper)(x[],center[],metric)));
-    static assert(!__traits(compiles,mahalanobisSquared!(MahalanobisMatrix.covarianceCholesky)(x[],center[],metric)));
+    static assert(!__traits(compiles,mahalanobisSquared!(CovarianceRepresentation.covariance,TrianglePolicy.upper)(x[],center[],metric)));
+    static assert(!__traits(compiles,mahalanobisSquared!(CovarianceRepresentation.covarianceCholesky)(x[],center[],metric)));
 }
 
 /// Structural precision metrics support custom ownership and inferred batch triangles.
@@ -700,7 +700,7 @@ version(mir_stat_test_linearAlgebra)
     double[2] x=[1,2], center=[0,0], work, product;
     double[4] batch=[1,2,2,4], scratch, products;
     double[2] result;
-    enum precision=MahalanobisMatrix.inverseCovariance;
+    enum precision=CovarianceRepresentation.inverseCovariance;
     assert(makeMahalanobisSquared!precision(Mallocator.instance,x[],center[],metric)==32);
     auto values=makeMahalanobisSquaredBatch!precision(Mallocator.instance,batch[].sliced(2,2).transposed,center[],metric);
     scope(exit) Mallocator.instance.dispose(values.field);
