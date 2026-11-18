@@ -270,3 +270,8 @@ symmetric matrix without mirroring. All cases reuse square output storage,
 exclude allocation, and validate every logical entry against an independent
 extended-precision reference outside timing. This isolates the cost of
 mirroring rather than a reduction in allocated storage.
+
+The [histogram construction benchmark](histogram/README.md) measures short-lived
+histograms with GC, reference-counted, and custom-allocator storage. It reports
+construction and final GC collection separately and uses an independently
+compiled observer library.
