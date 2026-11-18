@@ -628,7 +628,7 @@ version(mir_stat_test)
 {
     import mir.bignum.fixed: UInt;
     import std.meta: AliasSeq;
-    static foreach (T; AliasSeq!(float, double, real, Fp!64, Fp!128))
+    static foreach (T; AliasSeq!(float, double, real, Fp!64))
     {
         assert(uniformLPDF(T(-1), T(-1), T(0)) == T(0));
     }
@@ -645,6 +645,23 @@ version(mir_stat_test)
     const huge = T(false, long.max - 1, U.max);
     const negHuge = T(true, huge.exponent, huge.coefficient);
     assert(uniformLPDF(T(0), negHuge, huge) == T(true, -1, U(0xb17217f7d1cf7a03UL)));
+}
+
+// At 128 bits, increasing the upper bound by one ulp changes the rounded
+// log density by one ulp. The coefficients are round(2^127 * log(width))
+// for exact widths 3 and 3 + 2^-126, computed at 250 decimal digits.
+version(mir_stat_test_slow_numerics)
+@safe pure nothrow @nogc unittest
+{
+    import mir.bignum.fixed: UInt;
+    alias T = Fp!128;
+    alias U = UInt!128;
+    enum atThree = T(true, -127, U.fromHexString("8c9f53d5681854bb520cc6aa829dbe5b"));
+    enum aboveThree = T(true, -127, U.fromHexString("8c9f53d5681854bb520cc6aa829dbe5c"));
+    auto upper = T(2);
+    assert(uniformLPDF(T(0), T(-1), upper) == atThree);
+    upper.coefficient += 1;
+    assert(uniformLPDF(T(0), T(-1), upper) == aboveThree);
 }
 
 /// Unit interval with a represented $(D Fp) input. Returns exactly zero, including at both support endpoints.

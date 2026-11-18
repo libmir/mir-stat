@@ -10,6 +10,7 @@ import mir.stat.distribution.binomial;
 import mir.stat.distribution.hypergeometric;
 import mir.stat.distribution.negative_binomial;
 import mir.stat.distribution.poisson;
+import mir.stat.distribution.uniform;
 import mir.stat.internal.fp_binomial_log;
 import mir.stat.internal.fp_log_factorial;
 import mir.stat.internal.fp_poisson_log;
