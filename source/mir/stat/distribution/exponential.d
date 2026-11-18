@@ -21,6 +21,7 @@ Copyright: 2022-3 Mir Stat Authors.
 
 module mir.stat.distribution.exponential;
 
+import mir.bignum.fp: Fp;
 import mir.internal.utility: isFloatingPoint;
 
 /++
@@ -365,4 +366,43 @@ unittest
     assert(0.5.exponentialLPDF(2.0).approxEqual(log(exponentialPDF(0.5, 2.0))));
     assert(0.75.exponentialLPDF(2.0).approxEqual(log(exponentialPDF(0.75, 2.0))));
     assert(0.25.exponentialLPDF(0.5).approxEqual(log(exponentialPDF(0.25, 0.5))));
+}
+
+private bool validRate(uint bits)(Fp!bits rate) @safe pure nothrow @nogc
+{
+    return !rate.isSpecial && !rate.sign && !!rate.coefficient;
+}
+
+/// Extended-precision quantile for a finite positive rate and 0 <= p < 1.
+/// Uses a guarded logarithm and retains the exponent through division.
+@safe pure nothrow @nogc
+Fp!bits exponentialInvCDF(uint bits)(const Fp!bits p, const Fp!bits lambda)
+    in (validRate(lambda), "lambda must be finite and positive")
+    in (validQuantileProbability(p), "p must be in [0, 1)")
+{
+    import mir.stat.internal.fp_exponential: exponentialQuantile;
+    return exponentialQuantile(p, lambda);
+}
+
+private bool validQuantileProbability(uint bits)(Fp!bits p) @safe pure nothrow @nogc
+{
+    import mir.stat.internal.fp_probability: fpProbabilityValid, fpProbabilityLess;
+    return fpProbabilityValid(p) && fpProbabilityLess(p, Fp!bits(1));
+}
+
+version(mir_stat_test)
+@safe pure nothrow @nogc unittest
+{
+    import mir.bignum.fixed: UInt;
+    alias T = Fp!64;
+    alias U = UInt!64;
+    const tiny = T(false, long.min, U(1));
+    assert(exponentialInvCDF(T(0), tiny) == T(0));
+    assert(exponentialInvCDF(tiny, T(2)) == tiny);
+    assert(exponentialInvCDF(tiny, T(3)) == T(0));
+    assert(exponentialInvCDF(tiny, tiny) == T(1));
+    assert(exponentialInvCDF(T(0.5), T(2)) == T(false, -65, U(0xb17217f7d1cf79acUL)));
+    assert(exponentialInvCDF(T(false,-64,U.max), T(1)) == T(false,-58,U(0xb17217f7d1cf79acUL)));
+    assert(!validQuantileProbability(T(1)));
+    assert(!validRate(T(double.infinity)));
 }

@@ -71,6 +71,7 @@ sources_list = [
     'mir/stat/internal/fp_poisson',
     'mir/stat/internal/fp_poisson_tails',
     'mir/stat/internal/fp_scaled_probability',
+    'mir/stat/internal/fp_exponential',
     'mir/stat/internal/fp_uniform',
     'mir/stat/internal/gamma',
     'mir/stat/internal/neg_log1m',
