@@ -400,6 +400,30 @@ unittest
     assert(1.5.uniformLPDF(1.0, 3.0).approxEqual(-log(2.0)));
 }
 
+/// Unit interval with a represented $(D Fp) input. Returns exactly zero, including at both support endpoints.
+@safe pure nothrow @nogc
+T uniformLPDF(T)(const T x)
+    if (is(T == Fp!size, size_t size))
+    in (fpProbabilityValid(x), "x must be finite and in [0, 1]")
+{
+    return T(0);
+}
+
+// Shared dyadic inputs have exact results in every tested representation.
+version(mir_stat_test)
+@safe pure nothrow @nogc unittest
+{
+    import std.meta: AliasSeq;
+    static foreach (T; AliasSeq!(float, double, real, Fp!64, Fp!128))
+    {{
+        foreach (i; 0 .. 9)
+        {
+            const x = T(i / 8.0);
+            assert(uniformLPDF(x) == T(0));
+        }
+    }}
+}
+
 // Finite bounds remain usable even when their difference overflows.
 version(mir_stat_test)
 @safe pure nothrow @nogc unittest
