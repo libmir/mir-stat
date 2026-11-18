@@ -69,3 +69,39 @@ package(mir.stat) Fp!bits exponentialUpper(uint bits)(Fp!bits x, Fp!bits rate)
         return T(0);
     return finish!bits(scaledDecay(t));
 }
+
+package(mir.stat) Fp!bits exponentialLower(uint bits)(Fp!bits x, Fp!bits rate)
+{
+    import mir.stat.internal.fp_probability: fpProbabilityComplement;
+    import mir.stat.internal.fp_scaled_probability: scaledDecay;
+    alias T = Fp!bits;
+    if (x.isInfinity)
+        return T(1);
+    if (!x.coefficient)
+        return T(0);
+    enum work = 4 * bits + 192;
+    auto t = rateProduct!work(x, rate);
+    if (t.exponent + (2 * bits + 4) <= exponentBias)
+    {
+        // t has at most 2*bits significant bits. The O(t^2) correction
+        // cannot cross a rounding boundary except when t is on it.
+        // Take its working predecessor to resolve that case downward.
+        if (t.fraction.coefficient == (UInt!work(1) << (work - 1)))
+        {
+            t.fraction.coefficient = UInt!work.max;
+            t.exponent -= 1;
+        }
+        else
+            t.fraction.coefficient -= 1;
+        return finish!bits(t);
+    }
+    if (t.exponent >= exponentBias + 66)
+        return T(1);
+    // At most 2*bits+5 leading places cancel at the lower transition.
+    // Complement the guarded decay before rounding to the requested width.
+    auto decay = scaledDecay(t);
+    if (decay.exponent + bits + 1 <= exponentBias)
+        return T(1);
+    decay.fraction.exponent -= cast(long)cast(ulong)(exponentBias - decay.exponent);
+    return cast(T) fpProbabilityComplement(decay.fraction);
+}

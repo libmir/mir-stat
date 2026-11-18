@@ -432,3 +432,28 @@ version(mir_stat_test)
     assert(exponentialCCDF(T(0.5), T(2)) == T(false,-65,UInt!64(0xbc5ab1b16779be35UL)));
     assert(exponentialCCDF(T(1), T(false,100,UInt!64(1))) == T(0));
 }
+
+/// Lower tail for a finite positive rate. Retains the small-product correction at rounding midpoints.
+@safe pure nothrow @nogc
+Fp!bits exponentialCDF(uint bits)(const Fp!bits x, const Fp!bits lambda)
+    in (validRate(lambda), "lambda must be finite and positive")
+    in (validObservation(x), "x must be nonnegative")
+{
+    import mir.stat.internal.fp_exponential: exponentialLower;
+    return exponentialLower(x, lambda);
+}
+
+version(mir_stat_test)
+@safe pure nothrow @nogc unittest
+{
+    import mir.bignum.fixed: UInt;
+    alias T = Fp!64;
+    alias U = UInt!64;
+    const tiny = T(false, long.min, U(1));
+    assert(exponentialCDF(tiny,T(0.5)) == T(0));
+    assert(exponentialCDF(tiny,T(1.5)) == tiny);
+    assert(exponentialCDF(tiny,T(1)) == tiny);
+    assert(exponentialCDF(T(0),tiny) == T(0));
+    assert(exponentialCDF(T(double.infinity),tiny) == T(1));
+    assert(exponentialCDF(T(0.5),T(2)) == T(false,-64,U(0xa1d2a7274c4320e5UL)));
+}
