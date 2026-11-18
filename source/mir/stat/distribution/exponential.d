@@ -486,3 +486,28 @@ version(mir_stat_test)
     const density = exponentialPDF(x,scale);
     assert(density == T(false,-4083141060989546749L,U(0x98d3377e65eee9c8UL)));
 }
+
+/// Log density for a finite positive rate. Subtracts the exact product from a guarded logarithm. Severe cancellation can reduce accuracy.
+@safe pure nothrow @nogc
+Fp!bits exponentialLPDF(uint bits)(const Fp!bits x, const Fp!bits lambda)
+    in (validRate(lambda), "lambda must be finite and positive")
+    in (validObservation(x), "x must be nonnegative")
+{
+    import mir.stat.internal.fp_exponential: exponentialLogDensity;
+    return exponentialLogDensity(x, lambda);
+}
+
+version(mir_stat_test)
+@safe pure nothrow @nogc unittest
+{
+    import mir.bignum.fixed: UInt;
+    alias T = Fp!64;
+    alias U = UInt!64;
+    const tiny = T(false,long.min,U(1));
+    assert(exponentialLPDF(tiny,T(1)) == T(true,long.min,U(1)));
+    assert(exponentialLPDF(T(0),T(1)) == T(0));
+    assert(exponentialLPDF(T(0),T(2)) == T(false,-64,U(0xb17217f7d1cf79acUL)));
+    const nearZero = T(false,-65,U(0xb17217f7d1cf79acUL));
+    assert(exponentialLPDF(nearZero,T(2)) == T(true,-130,U(0xd871319ff0342543UL)));
+    assert(exponentialLPDF(T(double.infinity),T(2)) == T(true,long.max,U(0)));
+}

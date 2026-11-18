@@ -108,3 +108,63 @@ package(mir.stat) Fp!bits exponentialLower(uint bits)(Fp!bits x, Fp!bits rate)
     decay.fraction.exponent -= cast(long)cast(ulong)(exponentBias - decay.exponent);
     return cast(T) fpProbabilityComplement(decay.fraction);
 }
+
+package(mir.stat) Fp!bits exponentialLogDensity(uint bits)(Fp!bits x, Fp!bits rate)
+{
+    import mir.stat.internal.fp_probability_log: ProbabilityLog;
+    alias T = Fp!bits;
+    if (x.isInfinity)
+        return T(true,long.max,UInt!bits(0));
+
+    alias Log = ProbabilityLog!(2 * bits + 64);
+    enum work = 2 * bits + 256;
+    alias S = ProbabilityScaled!work;
+    Log.Context context;
+    const logRate = Log.logDyadic(rate.coefficient, rate.exponent, context);
+    if (!x.coefficient)
+        return cast(T)logRate;
+    const product = rateProduct!work(x, rate);
+    if (!logRate.coefficient)
+    {
+        auto result = finish!bits(product);
+        result.sign = true;
+        return result;
+    }
+
+    const logMagnitude = S.from(logRate);
+    const productLarger = product.exponent > logMagnitude.exponent ||
+        (product.exponent == logMagnitude.exponent &&
+         product.fraction.coefficient >= logMagnitude.fraction.coefficient);
+    auto larger = productLarger ? product : logMagnitude;
+    const smaller = productLarger ? logMagnitude : product;
+    const gap = larger.exponent - smaller.exponent;
+    // Align integer significands before subtraction so cancellation exposes
+    // the guarded low bits. For a remote smaller operand keep a sticky bit
+    // to distinguish either side of a final rounding midpoint.
+    alias I = UInt!(2 * work + 64);
+    auto magnitude = larger.fraction.coefficient.toSize!(2 * work + 64);
+    magnitude <<= work;
+    auto term = I(1);
+    if (gap <= UInt!128(work))
+        term = smaller.fraction.coefficient.toSize!(2 * work + 64) << (work - cast(uint)gap);
+    else if (gap < UInt!128(2 * work))
+    {
+        const shift = cast(uint)gap - work;
+        const c = smaller.fraction.coefficient;
+        term = (c >> shift).toSize!(2 * work + 64);
+        if (((c >> shift) << shift) != c)
+            term |= I(1);
+    }
+    if (logRate.sign)
+        magnitude += term;
+    else
+        magnitude -= term;
+    if (!magnitude)
+        return T(0);
+    // Keep all aligned bits until the destination rounds the signed result.
+    auto total = ProbabilityScaled!(2 * work + 64).from(Fp!(2 * work + 64)(magnitude));
+    total.exponent += larger.exponent - exponentBias - 2 * work;
+    auto result = finish!bits(total);
+    result.sign = logRate.sign || productLarger;
+    return result;
+}
