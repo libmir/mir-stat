@@ -406,3 +406,29 @@ version(mir_stat_test)
     assert(!validQuantileProbability(T(1)));
     assert(!validRate(T(double.infinity)));
 }
+
+private bool validObservation(uint bits)(Fp!bits x) @safe pure nothrow @nogc
+{
+    return !x.isNaN && (!x.sign || (!x.coefficient && !x.isInfinity));
+}
+
+/// Strict upper tail for a represented observation and finite positive rate. Evaluates the decay directly with guard bits.
+@safe pure nothrow @nogc
+Fp!bits exponentialCCDF(uint bits)(const Fp!bits x, const Fp!bits lambda)
+    in (validRate(lambda), "lambda must be finite and positive")
+    in (validObservation(x), "x must be nonnegative")
+{
+    import mir.stat.internal.fp_exponential: exponentialUpper;
+    return exponentialUpper(x, lambda);
+}
+
+version(mir_stat_test)
+@safe pure nothrow @nogc unittest
+{
+    import mir.bignum.fixed: UInt;
+    alias T = Fp!64;
+    assert(exponentialCCDF(T(0), T(2)) == T(1));
+    assert(exponentialCCDF(T(double.infinity), T(2)) == T(0));
+    assert(exponentialCCDF(T(0.5), T(2)) == T(false,-65,UInt!64(0xbc5ab1b16779be35UL)));
+    assert(exponentialCCDF(T(1), T(false,100,UInt!64(1))) == T(0));
+}

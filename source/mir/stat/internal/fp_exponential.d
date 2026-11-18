@@ -47,3 +47,25 @@ package(mir.stat) Fp!bits exponentialQuantile(uint bits)(Fp!bits p, Fp!bits rate
     }
     return finish!bits(Log.complement(p).divide(S.from(rate)));
 }
+
+// Keep the full coefficient product and both input exponents. For t >=
+// 2^65, even the largest finite rate times exp(-t) rounds to zero.
+private auto rateProduct(uint work, uint bits)(Fp!bits x, Fp!bits rate)
+{
+    alias S = ProbabilityScaled!work;
+    return S.from(x).multiply(S.from(rate));
+}
+
+package(mir.stat) Fp!bits exponentialUpper(uint bits)(Fp!bits x, Fp!bits rate)
+{
+    import mir.stat.internal.fp_scaled_probability: scaledDecay;
+    alias T = Fp!bits;
+    if (x.isInfinity)
+        return T(0);
+    if (!x.coefficient)
+        return T(1);
+    const t = rateProduct!(2 * bits + 192)(x, rate);
+    if (t.exponent >= exponentBias + 66)
+        return T(0);
+    return finish!bits(scaledDecay(t));
+}
