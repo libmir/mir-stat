@@ -13,6 +13,12 @@ the exact binary complement to the result width (nearest, ties to even).
 These operations use no hardware floating-point intermediates. Widths are
 positive multiples of the native word size supported by $(D Fp).
 
+The explicit-bound $(D Fp) overloads accept finite bounds over the full
+represented exponent range. They round the PDF, both tails, and the quantile
+to nearest, ties to even. After the exponent search, rounding tests each coefficient
+bit and compares against the final midpoint. The LPDF uses a guarded logarithm
+and preserves the small signed displacement when the width is close to one.
+
 The special-value tables assume finite distribution parameters in the stated
 domain. Finite expressions are subject to floating-point rounding and range
 limits. Contract violations are not prescribed return values: disabling
@@ -30,7 +36,7 @@ module mir.stat.distribution.uniform;
 
 import mir.bignum.fp: Fp;
 import mir.stat.internal.fp_probability: fpProbabilityValid, fpProbabilityComplement;
-import mir.stat.internal.fp_uniform: uniformPointValid;
+import mir.stat.internal.fp_uniform: uniformPointValid, uniformBoundsValid;
 import mir.internal.utility: isFloatingPoint;
 
 /++
@@ -460,6 +466,55 @@ unittest
     assert(0.5.uniformInvCDF == 0.5);
     assert((1.0 / 3).uniformInvCDF(0.0, 1.5).approxEqual(0.5));
     assert((3.0 / 4).uniformInvCDF(1.0, 3.0).approxEqual(2.5));
+}
+
+/// With finite $(D Fp) bounds, returns the exact endpoint at zero and one.
+/// Interior quantiles round the exact affine interpolation to nearest,
+/// ties to even, including results at the exponent floor.
+@safe pure nothrow @nogc
+T uniformInvCDF(T)(const T p, const T lower, const T upper = T(1))
+    if (is(T == Fp!size, size_t size))
+    in (fpProbabilityValid(p), "p must be finite and in [0, 1]")
+    in (uniformBoundsValid(lower, upper), "require finite lower < upper")
+{
+    import mir.stat.internal.fp_uniform: uniformQuantile;
+    return uniformQuantile(p, lower, upper);
+}
+
+version(mir_stat_test)
+@safe pure nothrow @nogc unittest
+{
+    import mir.bignum.fixed: UInt;
+    import std.meta: AliasSeq;
+    static foreach (T; AliasSeq!(float, double, real, Fp!64, Fp!128))
+    {
+        assert(uniformInvCDF(T(0.25), T(-3), T(5)) == T(-1));
+    }
+    static foreach (bits; [64u, 128u]) {{
+        alias T = Fp!bits;
+        auto p = T(1), upper = T(1);
+        p.exponent -= 20_000;
+        upper.exponent += 20_000;
+        // Adjacent bounds around one place p = 1/2 exactly on a rounding tie.
+        auto adjacent = T(1);
+        adjacent.coefficient += 1;
+        auto aboveHalf = T(0.5);
+        aboveHalf.coefficient += 1;
+        assert(uniformInvCDF(T(0.5), T(1), adjacent) == T(1));
+        assert(uniformInvCDF(aboveHalf, T(1), adjacent) == adjacent);
+        // -1 + p*(2^20000+1) = p after cancellation across 20,000 places.
+        assert(uniformInvCDF(p, T(-1), upper) == p);
+        const tiny = T(false, long.min, UInt!bits(1));
+        assert(uniformInvCDF(T(0.5), T(0), tiny) == T(0));
+        assert(uniformInvCDF(T(0.5), tiny, T(false, long.min, UInt!bits(2)))
+            == T(false, long.min, UInt!bits(2)));
+        const huge = T(false, long.max - 1, UInt!bits.max);
+        const lower = T(true, huge.exponent, huge.coefficient);
+        assert(uniformInvCDF(T(0.5), lower, huge) == T(0));
+        assert(uniformInvCDF(T(0), lower, huge) == lower);
+        assert(uniformInvCDF(T(1), lower, huge) == huge);
+        assert(uniformInvCDF(T(0.25), T(-1)) == T(-0.5));
+    }}
 }
 
 /// Unit interval with a represented $(D Fp) input. Returns the represented probability exactly, including at the exponent floor.

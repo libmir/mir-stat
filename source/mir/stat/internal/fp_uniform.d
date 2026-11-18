@@ -231,3 +231,33 @@ package(mir.stat) Fp!bits uniformLogDensity(uint bits)(Fp!bits lower, Fp!bits up
     result.sign = !belowOne;
     return result;
 }
+
+// Compare lower + p*upper - p*lower with a signed candidate. Retaining
+// the two full products lets cancellation expose a much smaller quantile.
+package(mir.stat) Fp!bits uniformQuantile(uint bits)(Fp!bits p, Fp!bits lower, Fp!bits upper)
+{
+    alias T = Fp!bits;
+    if (!p.coefficient)
+        return lower;
+    if (comparePoints(p, T(1)) == 0)
+        return upper;
+    enum capacity = 2 * bits + 64;
+    alias D = Term!capacity;
+    alias C = UInt!(bits + 64);
+    const offset = D.point(lower, false);
+    const e = biased(p.exponent);
+    const high = D.product(upper, p.coefficient, e, false);
+    const low = D.product(lower, p.coefficient, e, true);
+    const side = sumSign([offset, high, low]);
+    if (!side)
+        return T(0);
+    const negative = side < 0;
+    int compare(C c, UInt!128 exponent)
+    {
+        const order = sumSign([offset, high, low, D(c.toSize!capacity, exponent, !negative)]);
+        return negative ? -order : order;
+    }
+    auto result = roundUniform!(bits, compare)();
+    result.sign = negative;
+    return result;
+}
