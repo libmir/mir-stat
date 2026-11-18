@@ -66,6 +66,7 @@ $(BOOKTABLE ,
     $(TR $(TDNW $(MREF mir,stat,distribution,uniform)) $(TD Continuous Uniform Distribution ))
     $(TR $(TDNW $(MREF mir,stat,distribution,weibull)) $(TD Weibull Distribution ))
     $(LEADINGROW Multivariate Distributions)
+    $(TR $(TDNW $(MREF mir,stat,distribution,multivariate_normal)) $(TD Multivariate Normal Distribution ))
     $(TR $(TDNW $(MREF mir,stat,distribution,categorical)) $(TD Categorical Distribution ))
 )
 
@@ -115,6 +116,8 @@ public import mir.stat.distribution.laplace;
 public import mir.stat.distribution.log_normal;
 ///
 public import mir.stat.distribution.logistic;
+///
+public import mir.stat.distribution.multivariate_normal;
 ///
 public import mir.stat.distribution.negative_binomial;
 ///
