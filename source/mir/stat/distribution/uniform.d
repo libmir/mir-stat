@@ -6,6 +6,19 @@ $(D [lower, upper]), with $(D lower < upper). The forward functions require
 $(D x) to lie in that interval; they do not extend the density or probabilities
 outside it. The inverse CDF accepts both probability endpoints.
 
+The one-argument overloads also accept $(D Fp!bits) on the unit interval.
+The PDF and LPDF are exactly one and zero. The CDF and quantile preserve the
+represented input, including at the exponent floor. The strict CCDF rounds
+the exact binary complement to the result width (nearest, ties to even).
+These operations use no hardware floating-point intermediates. Widths are
+positive multiples of the native word size supported by $(D Fp).
+
+The explicit-bound $(D Fp) overloads accept finite bounds over the full
+represented exponent range. They round the PDF, both tails, and the quantile
+to nearest, ties to even. After the exponent search, rounding tests each coefficient
+bit and compares against the final midpoint. The LPDF uses a guarded logarithm
+and preserves the small signed displacement when the width is close to one.
+
 The special-value tables assume finite distribution parameters in the stated
 domain. Finite expressions are subject to floating-point rounding and range
 limits. Contract violations are not prescribed return values: disabling
@@ -21,6 +34,9 @@ Copyright: 2022-3 Mir Stat Authors.
 
 module mir.stat.distribution.uniform;
 
+import mir.bignum.fp: Fp;
+import mir.stat.internal.fp_probability: fpProbabilityValid, fpProbabilityComplement;
+import mir.stat.internal.fp_uniform: uniformPointValid, uniformBoundsValid;
 import mir.internal.utility: isFloatingPoint;
 
 /++
@@ -81,6 +97,63 @@ unittest
     assert(uniformPDF(0.5, 0.0, 0.5) == 2.0);
 }
 
+/// On a finite closed $(D Fp) interval the density is the reciprocal of the
+/// exact width, rounded to nearest, ties to even. A sufficiently wide interval
+/// can have a density that rounds to zero.
+@safe pure nothrow @nogc
+T uniformPDF(T)(const T x, const T lower, const T upper = T(1))
+    if (is(T == Fp!size, size_t size))
+    in (uniformPointValid(x, lower, upper), "require finite lower <= x <= upper and lower < upper")
+{
+    import mir.stat.internal.fp_uniform: uniformRatio;
+    return uniformRatio(T(0), T(1), lower, upper);
+}
+
+version(mir_stat_test)
+@safe pure nothrow @nogc unittest
+{
+    import mir.bignum.fixed: UInt;
+    import std.meta: AliasSeq;
+    static foreach (T; AliasSeq!(float, double, real, Fp!64, Fp!128))
+    {
+        assert(uniformPDF(T(-1), T(-3), T(5)) == T(0.125));
+    }
+    static foreach (bits; [64u, 128u]) {{
+        alias T = Fp!bits;
+        const tiny = T(false, long.min, UInt!bits(1));
+        auto reciprocal = T(1);
+        reciprocal.exponent = long.max - bits + 2;
+        assert(uniformPDF(tiny, T(0), tiny) == reciprocal);
+        const huge = T(false, long.max - 1, UInt!bits.max);
+        assert(uniformPDF(T(0), T(0), huge) == T(0));
+        assert(uniformPDF(T(0), T(-1)) == T(0.5));
+    }}
+}
+
+/// Unit interval with a represented $(D Fp) input. Returns exactly one, including at both support endpoints.
+@safe pure nothrow @nogc
+T uniformPDF(T)(const T x)
+    if (is(T == Fp!size, size_t size))
+    in (fpProbabilityValid(x), "x must be finite and in [0, 1]")
+{
+    return T(1);
+}
+
+// Shared dyadic inputs have exact results in every tested representation.
+version(mir_stat_test)
+@safe pure nothrow @nogc unittest
+{
+    import std.meta: AliasSeq;
+    static foreach (T; AliasSeq!(float, double, real, Fp!64, Fp!128))
+    {{
+        foreach (i; 0 .. 9)
+        {
+            const x = T(i / 8.0);
+            assert(uniformPDF(x) == T(1));
+        }
+    }}
+}
+
 /++
 Computes the uniform cumulative distribution function (CDF).
 
@@ -125,6 +198,88 @@ unittest
     assert(0.5.uniformCDF == 0.5);
     assert(0.5.uniformCDF(0.0, 1.5).approxEqual(1.0 / 3));
     assert(2.5.uniformCDF(1.0, 3.0).approxEqual(3.0 / 4));
+}
+
+/// With finite $(D Fp) bounds, rounds $(D (x-lower)/(upper-lower)) to
+/// nearest, ties to even. Both differences use the represented inputs.
+@safe pure nothrow @nogc
+T uniformCDF(T)(const T x, const T lower, const T upper = T(1))
+    if (is(T == Fp!size, size_t size))
+    in (uniformPointValid(x, lower, upper), "require finite lower <= x <= upper and lower < upper")
+{
+    import mir.stat.internal.fp_uniform: uniformRatio;
+    return uniformRatio(lower, x, lower, upper);
+}
+
+version(mir_stat_test)
+@safe pure nothrow @nogc unittest
+{
+    import mir.bignum.fixed: UInt;
+    import std.meta: AliasSeq;
+    static foreach (T; AliasSeq!(float, double, real, Fp!64, Fp!128))
+    {
+        assert(uniformCDF(T(-1), T(-3), T(5)) == T(0.25));
+    }
+    static foreach (bits; [64u, 128u]) {{
+        alias T = Fp!bits;
+        const tiny = T(false, long.min, UInt!bits(1));
+        assert(uniformCDF(tiny, T(0), T(2)) == T(0)); // Halfway to the smallest result.
+        // The repeating binary expansion of 1/3 rounds upward at these even widths.
+        auto thirds = UInt!bits.max;
+        thirds /= UInt!bits(3);
+        thirds = (thirds << 1) + 1;
+        assert(uniformCDF(T(1), T(0), T(3)) == T(false, -long(bits)-1, thirds));
+        const three = T(false, long.min, UInt!bits(3));
+        assert(uniformCDF(three, T(0), T(2)) == T(false, long.min, UInt!bits(2)));
+        const upper = T(false, long.max - 1, UInt!bits.max);
+        const lower = T(true, upper.exponent, upper.coefficient);
+        assert(uniformCDF(T(0), lower, upper) == T(0.5));
+        assert(uniformCDF(lower, lower, upper) == T(0));
+        assert(uniformCDF(upper, lower, upper) == T(1));
+        assert(uniformCDF(T(0), T(-1)) == T(0.5));
+    }}
+}
+
+/// Unit interval with a represented $(D Fp) input. Returns the represented input exactly, including at the exponent floor.
+@safe pure nothrow @nogc
+T uniformCDF(T)(const T x)
+    if (is(T == Fp!size, size_t size))
+    in (fpProbabilityValid(x), "x must be finite and in [0, 1]")
+{
+    return x;
+}
+
+// Shared dyadic inputs have exact results in every tested representation.
+version(mir_stat_test)
+@safe pure nothrow @nogc unittest
+{
+    import std.meta: AliasSeq;
+    static foreach (T; AliasSeq!(float, double, real, Fp!64, Fp!128))
+    {{
+        foreach (i; 0 .. 9)
+        {
+            const x = T(i / 8.0);
+            assert(uniformCDF(x) == x);
+        }
+    }}
+}
+
+// Preserve the smallest positive represented input.
+version(mir_stat_test)
+@safe pure nothrow @nogc unittest
+{
+    import mir.bignum.fixed: UInt;
+    import std.meta: AliasSeq;
+    static if (size_t.sizeof == 4)
+        alias widths = AliasSeq!(32u, 64u, 96u, 128u, 256u);
+    else
+        alias widths = AliasSeq!(64u, 128u, 256u);
+    static foreach (bits; widths)
+    {{
+        alias T = Fp!bits;
+        const tiny = T(false, long.min, UInt!bits(1));
+        assert(uniformCDF(tiny) == tiny);
+    }}
 }
 
 /++
@@ -174,6 +329,98 @@ unittest
     assert(2.5.uniformCCDF(1.0, 3.0).approxEqual(1.0 / 4));
 }
 
+/// For finite $(D Fp) bounds, rounds the strict tail $(D (upper-x)/(upper-lower))
+/// directly to nearest, ties to even, including subnormal probabilities.
+@safe pure nothrow @nogc
+T uniformCCDF(T)(const T x, const T lower, const T upper = T(1))
+    if (is(T == Fp!size, size_t size))
+    in (uniformPointValid(x, lower, upper), "require finite lower <= x <= upper and lower < upper")
+{
+    import mir.stat.internal.fp_uniform: uniformRatio;
+    return uniformRatio(x, upper, lower, upper);
+}
+
+version(mir_stat_test)
+@safe pure nothrow @nogc unittest
+{
+    import std.meta: AliasSeq;
+    static foreach (T; AliasSeq!(float, double, real, Fp!64, Fp!128))
+    {
+        assert(uniformCCDF(T(-1), T(-3), T(5)) == T(0.75));
+    }
+    static foreach (bits; [64u, 128u]) {{
+        alias T = Fp!bits;
+        auto lower = T(-1);
+        lower.exponent += 20_000;
+        auto tail = T(1);
+        tail.exponent -= 20_000;
+        // 1/(2^20000+1) rounds to 2^-20000 even though the CDF rounds to one.
+        assert(uniformCCDF(T(0), lower) == tail);
+        assert(uniformCDF(T(0), lower) == T(1));
+        assert(uniformCCDF(lower, lower) == T(1));
+        assert(uniformCCDF(T(1), lower) == T(0));
+    }}
+}
+
+/// Unit interval with a represented $(D Fp) input. Rounds the exact binary complement to nearest, ties to even.
+@safe pure nothrow @nogc
+T uniformCCDF(T)(const T x)
+    if (is(T == Fp!size, size_t size))
+    in (fpProbabilityValid(x), "x must be finite and in [0, 1]")
+{
+    return fpProbabilityComplement(x);
+}
+
+// Shared dyadic inputs have exact results in every tested representation.
+version(mir_stat_test)
+@safe pure nothrow @nogc unittest
+{
+    import std.meta: AliasSeq;
+    static foreach (T; AliasSeq!(float, double, real, Fp!64, Fp!128))
+    {{
+        foreach (i; 0 .. 9)
+        {
+            const x = T(i / 8.0);
+            assert(uniformCCDF(x) == T((8 - i) / 8.0));
+        }
+    }}
+}
+
+// Exact dyadic references at the exponent floor and on either side of the
+// midpoint between one and its predecessor. The latter spacing is 2^-bits.
+version(mir_stat_test)
+@safe pure nothrow @nogc unittest
+{
+    import mir.bignum.fixed: UInt;
+    import std.meta: AliasSeq;
+    static if (size_t.sizeof == 4)
+        alias widths = AliasSeq!(32u, 64u, 96u, 128u, 256u);
+    else
+        alias widths = AliasSeq!(64u, 128u, 256u);
+    static foreach (bits; widths)
+    {{
+        alias T = Fp!bits;
+        const tiny = T(false, long.min, UInt!bits(1));
+        assert(uniformCCDF(tiny) == T(1));
+
+        UInt!bits ones;
+        ones.data[] = size_t.max;
+        const predecessor = T(false, -long(bits), ones);
+        auto spacing = T(1);
+        spacing.exponent -= bits;
+        assert(uniformCCDF(predecessor) == spacing);
+
+        auto midpoint = spacing;
+        midpoint.exponent--;
+        assert(uniformCCDF(midpoint) == T(1));
+        const below = T(false, midpoint.exponent - 1, ones);
+        assert(uniformCCDF(below) == T(1));
+        auto above = midpoint;
+        above.coefficient += 1;
+        assert(uniformCCDF(above) == predecessor);
+    }}
+}
+
 /++
 Computes the uniform inverse cumulative distribution function (InvCDF)
 
@@ -219,6 +466,97 @@ unittest
     assert(0.5.uniformInvCDF == 0.5);
     assert((1.0 / 3).uniformInvCDF(0.0, 1.5).approxEqual(0.5));
     assert((3.0 / 4).uniformInvCDF(1.0, 3.0).approxEqual(2.5));
+}
+
+/// With finite $(D Fp) bounds, returns the exact endpoint at zero and one.
+/// Interior quantiles round the exact affine interpolation to nearest,
+/// ties to even, including results at the exponent floor.
+@safe pure nothrow @nogc
+T uniformInvCDF(T)(const T p, const T lower, const T upper = T(1))
+    if (is(T == Fp!size, size_t size))
+    in (fpProbabilityValid(p), "p must be finite and in [0, 1]")
+    in (uniformBoundsValid(lower, upper), "require finite lower < upper")
+{
+    import mir.stat.internal.fp_uniform: uniformQuantile;
+    return uniformQuantile(p, lower, upper);
+}
+
+version(mir_stat_test)
+@safe pure nothrow @nogc unittest
+{
+    import mir.bignum.fixed: UInt;
+    import std.meta: AliasSeq;
+    static foreach (T; AliasSeq!(float, double, real, Fp!64, Fp!128))
+    {
+        assert(uniformInvCDF(T(0.25), T(-3), T(5)) == T(-1));
+    }
+    static foreach (bits; [64u, 128u]) {{
+        alias T = Fp!bits;
+        auto p = T(1), upper = T(1);
+        p.exponent -= 20_000;
+        upper.exponent += 20_000;
+        // Adjacent bounds around one place p = 1/2 exactly on a rounding tie.
+        auto adjacent = T(1);
+        adjacent.coefficient += 1;
+        auto aboveHalf = T(0.5);
+        aboveHalf.coefficient += 1;
+        assert(uniformInvCDF(T(0.5), T(1), adjacent) == T(1));
+        assert(uniformInvCDF(aboveHalf, T(1), adjacent) == adjacent);
+        // -1 + p*(2^20000+1) = p after cancellation across 20,000 places.
+        assert(uniformInvCDF(p, T(-1), upper) == p);
+        const tiny = T(false, long.min, UInt!bits(1));
+        assert(uniformInvCDF(T(0.5), T(0), tiny) == T(0));
+        assert(uniformInvCDF(T(0.5), tiny, T(false, long.min, UInt!bits(2)))
+            == T(false, long.min, UInt!bits(2)));
+        const huge = T(false, long.max - 1, UInt!bits.max);
+        const lower = T(true, huge.exponent, huge.coefficient);
+        assert(uniformInvCDF(T(0.5), lower, huge) == T(0));
+        assert(uniformInvCDF(T(0), lower, huge) == lower);
+        assert(uniformInvCDF(T(1), lower, huge) == huge);
+        assert(uniformInvCDF(T(0.25), T(-1)) == T(-0.5));
+    }}
+}
+
+/// Unit interval with a represented $(D Fp) input. Returns the represented probability exactly, including at the exponent floor.
+@safe pure nothrow @nogc
+T uniformInvCDF(T)(const T p)
+    if (is(T == Fp!size, size_t size))
+    in (fpProbabilityValid(p), "p must be finite and in [0, 1]")
+{
+    return p;
+}
+
+// Shared dyadic inputs have exact results in every tested representation.
+version(mir_stat_test)
+@safe pure nothrow @nogc unittest
+{
+    import std.meta: AliasSeq;
+    static foreach (T; AliasSeq!(float, double, real, Fp!64, Fp!128))
+    {{
+        foreach (i; 0 .. 9)
+        {
+            const x = T(i / 8.0);
+            assert(uniformInvCDF(x) == x);
+        }
+    }}
+}
+
+// Preserve the smallest positive represented input.
+version(mir_stat_test)
+@safe pure nothrow @nogc unittest
+{
+    import mir.bignum.fixed: UInt;
+    import std.meta: AliasSeq;
+    static if (size_t.sizeof == 4)
+        alias widths = AliasSeq!(32u, 64u, 96u, 128u, 256u);
+    else
+        alias widths = AliasSeq!(64u, 128u, 256u);
+    static foreach (bits; widths)
+    {{
+        alias T = Fp!bits;
+        const tiny = T(false, long.min, UInt!bits(1));
+        assert(uniformInvCDF(tiny) == tiny);
+    }}
 }
 
 /++
@@ -271,6 +609,83 @@ unittest
     assert(0.5.uniformLPDF == 0);
     assert(0.5.uniformLPDF(0.0, 1.5).approxEqual(-log(1.5)));
     assert(1.5.uniformLPDF(1.0, 3.0).approxEqual(-log(2.0)));
+}
+
+/// Evaluates $(D -log(upper-lower)) with guard precision. Near unit width
+/// the exact displacement from one preserves cancellation-sensitive results.
+/// The logarithm has no universal correct-rounding guarantee.
+@safe pure nothrow @nogc
+T uniformLPDF(T)(const T x, const T lower, const T upper = T(1))
+    if (is(T == Fp!size, size_t size))
+    in (uniformPointValid(x, lower, upper), "require finite lower <= x <= upper and lower < upper")
+{
+    import mir.stat.internal.fp_uniform: uniformLogDensity;
+    return uniformLogDensity(lower, upper);
+}
+
+version(mir_stat_test)
+@safe pure nothrow @nogc unittest
+{
+    import mir.bignum.fixed: UInt;
+    import std.meta: AliasSeq;
+    static foreach (T; AliasSeq!(float, double, real, Fp!64))
+    {
+        assert(uniformLPDF(T(-1), T(-1), T(0)) == T(0));
+    }
+    alias T = Fp!64;
+    alias U = UInt!64;
+    const tiny = T(false, long.min, U(1));
+    const negTiny = T(true, long.min, U(1));
+    assert(uniformLPDF(T(1), tiny) == tiny);
+    assert(uniformLPDF(T(1), negTiny) == negTiny);
+    // Independent rounded references for -log(3), 2^63*log(2), and the
+    // negative log of twice the largest represented finite value.
+    assert(uniformLPDF(T(1), T(-2)) == T(true, -63, U(0x8c9f53d5681854bbUL)));
+    assert(uniformLPDF(tiny, T(0), tiny) == T(false, -1, U(0xb17217f7d1cf79acUL)));
+    const huge = T(false, long.max - 1, U.max);
+    const negHuge = T(true, huge.exponent, huge.coefficient);
+    assert(uniformLPDF(T(0), negHuge, huge) == T(true, -1, U(0xb17217f7d1cf7a03UL)));
+}
+
+// At 128 bits, increasing the upper bound by one ulp changes the rounded
+// log density by one ulp. The coefficients are round(2^127 * log(width))
+// for exact widths 3 and 3 + 2^-126, computed at 250 decimal digits.
+version(mir_stat_test_slow_numerics)
+@safe pure nothrow @nogc unittest
+{
+    import mir.bignum.fixed: UInt;
+    alias T = Fp!128;
+    alias U = UInt!128;
+    enum atThree = T(true, -127, U.fromHexString("8c9f53d5681854bb520cc6aa829dbe5b"));
+    enum aboveThree = T(true, -127, U.fromHexString("8c9f53d5681854bb520cc6aa829dbe5c"));
+    auto upper = T(2);
+    assert(uniformLPDF(T(0), T(-1), upper) == atThree);
+    upper.coefficient += 1;
+    assert(uniformLPDF(T(0), T(-1), upper) == aboveThree);
+}
+
+/// Unit interval with a represented $(D Fp) input. Returns exactly zero, including at both support endpoints.
+@safe pure nothrow @nogc
+T uniformLPDF(T)(const T x)
+    if (is(T == Fp!size, size_t size))
+    in (fpProbabilityValid(x), "x must be finite and in [0, 1]")
+{
+    return T(0);
+}
+
+// Shared dyadic inputs have exact results in every tested representation.
+version(mir_stat_test)
+@safe pure nothrow @nogc unittest
+{
+    import std.meta: AliasSeq;
+    static foreach (T; AliasSeq!(float, double, real, Fp!64, Fp!128))
+    {{
+        foreach (i; 0 .. 9)
+        {
+            const x = T(i / 8.0);
+            assert(uniformLPDF(x) == T(0));
+        }
+    }}
 }
 
 // Finite bounds remain usable even when their difference overflows.

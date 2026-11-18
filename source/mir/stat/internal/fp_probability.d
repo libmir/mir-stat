@@ -104,7 +104,8 @@ Fp!bits fpProbabilityComplement(uint bits)(Fp!bits p)
     difference <<= cast(size_t)-p.exponent;
     difference -= p.coefficient;
     auto result = Fp!bits(difference);
-    result.exponent += p.exponent;
+    if (result.coefficient) // Keep the exact zero at p == 1 canonical.
+        result.exponent += p.exponent;
     return result;
 }
 
