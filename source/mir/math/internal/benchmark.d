@@ -481,3 +481,104 @@ unittest
     assert(timing.elapsed == timing.loop.elapsed + timing.finalCollection.elapsed);
     // Do not assert durations or GC counts: those depend on runtime settings.
 }
+
+// Histogram construction benchmarks are opt-in; ordinary unit tests do not run
+// timing experiments. Compile the calling program with optimization and release
+// flags. Compare the same inputs, iterations and compiler flags between builds.
+package(mir) enum HistogramAllocation { gc, rc, custom }
+
+package(mir) struct HistogramConstructionTiming
+{
+    BenchmarkTiming timing;
+    ulong checksum;
+}
+
+// Measures allocation, axis construction, zero initialization, insertion and
+// reclamation. Boundary allocation and input generation are outside the timer.
+// Custom uses Mallocator; GC uses normal automatic collection plus a final
+// collection reported separately through benchmarkWithGCStatistics.
+// Pass an observer compiled separately without LTO, which may inspect counts
+// but must not retain the pointer. This prevents eliding the measured allocation.
+// Observer and checksum overhead is included equally in every revision.
+// Compare revisions within a case, not GC versus RC reclamation policies.
+// This measures a batch of short-lived histograms, not retained histograms.
+package(mir) HistogramConstructionTiming benchmarkHistogramConstruction(
+    HistogramAllocation allocation, bool variableAxis)(size_t observations, size_t iterations,
+    void function(const(uint)*, size_t) observe)
+{
+    import core.memory: GC;
+    import mir.ndslice.slice: sliced;
+    import mir.ndslice.allocation: rcslice;
+    import mir.stat.descriptive.histogram: histogram, rchistogram, makeHistogram,
+        RegularAxis, VariableAxis, AxisOptions;
+    import std.experimental.allocator: dispose;
+    import std.experimental.allocator.mallocator: Mallocator;
+    import std.exception: enforce;
+
+    enforce(observe !is null, "Histogram benchmark needs an opaque observer");
+    enforce(iterations > 0, "Histogram benchmark needs at least one iteration");
+    enforce(observations <= uint.max, "Histogram benchmark exceeds uint count capacity");
+    enforce(observations == 0 || iterations <= ulong.max / observations,
+        "Histogram benchmark checksum would overflow");
+    auto values = new double[observations];
+    foreach (i, ref value; values)
+        value = (i % 16) * 0.25;
+    auto data = values.sliced;
+    auto boundaries = rcslice!double([0.0, 1, 2, 3, 4]);
+
+    // Compile bin validation only into the untimed warmup calls.
+    ulong construct(bool validate)()
+    {
+        static if (allocation == HistogramAllocation.custom)
+        {
+            // Use an explicit axis with the same uint count storage as the other cases.
+            static if (variableAxis)
+                auto axis = VariableAxis!(typeof(boundaries._iterator), AxisOptions())(boundaries);
+            else
+                auto axis = RegularAxis!(double, AxisOptions())(4u, 0.0, 4.0);
+            auto h = makeHistogram!uint(Mallocator.instance, data, axis);
+            scope(exit) Mallocator.instance.dispose(h.counts.field);
+        }
+        else
+        {
+            static if (allocation == HistogramAllocation.gc)
+                alias factory = histogram;
+            else
+                alias factory = rchistogram;
+            static if (variableAxis)
+                auto h = factory!(uint, VariableAxis)(data, boundaries);
+            else
+                auto h = factory!(uint, RegularAxis)(data, 4u, 0.0, 4.0);
+        }
+        static if (validate)
+        {
+            enforce(h.counts.length == 4, "Histogram benchmark bin count mismatch");
+            foreach (bin; 0 .. 4)
+            {
+                // Every cycle of 16 inputs contributes four values to each bin.
+                auto remainder = observations % 16;
+                auto extra = remainder > bin * 4 ? remainder - bin * 4 : 0;
+                if (extra > 4) extra = 4;
+                enforce(h.counts[bin] == observations / 16 * 4 + extra,
+                    "Histogram benchmark bin placement mismatch");
+            }
+        }
+        observe(&h.counts[0], h.counts.length);
+        // Read every bin so construction remains observable and check that all
+        // versions counted the same observations. RC destruction occurs here.
+        ulong total;
+        foreach (count; h.counts)
+            total += count;
+        return total;
+    }
+
+    foreach (i; 0 .. 128)
+        enforce(construct!true() == observations, "Histogram warmup count mismatch");
+    GC.collect();
+    ulong checksum;
+    auto timing = benchmarkWithGCStatistics(iterations,
+        () { checksum += construct!false(); }, allocation == HistogramAllocation.gc);
+    enforce(checksum == cast(ulong) observations * iterations,
+        "Histogram benchmark count mismatch");
+    return HistogramConstructionTiming(timing, checksum);
+}

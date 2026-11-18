@@ -1,0 +1,5 @@
+name "histogram-observer"
+license "Apache-2.0"
+targetType "staticLibrary"
+sourcePaths "source"
+targetPath "../../../build/histogram/observer"
