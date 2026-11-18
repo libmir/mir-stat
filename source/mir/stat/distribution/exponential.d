@@ -418,8 +418,8 @@ Fp!bits exponentialCCDF(uint bits)(const Fp!bits x, const Fp!bits lambda)
     in (validRate(lambda), "lambda must be finite and positive")
     in (validObservation(x), "x must be nonnegative")
 {
-    import mir.stat.internal.fp_exponential: exponentialUpper;
-    return exponentialUpper(x, lambda);
+    import mir.stat.internal.fp_exponential: exponentialDecay;
+    return exponentialDecay!false(x, lambda);
 }
 
 version(mir_stat_test)
@@ -456,4 +456,33 @@ version(mir_stat_test)
     assert(exponentialCDF(T(0),tiny) == T(0));
     assert(exponentialCDF(T(double.infinity),tiny) == T(1));
     assert(exponentialCDF(T(0.5),T(2)) == T(false,-64,U(0xa1d2a7274c4320e5UL)));
+}
+
+/// Density for a finite positive rate. Scales the guarded decay before rounding to the result width.
+@safe pure nothrow @nogc
+Fp!bits exponentialPDF(uint bits)(const Fp!bits x, const Fp!bits lambda)
+    in (validRate(lambda), "lambda must be finite and positive")
+    in (validObservation(x), "x must be nonnegative")
+{
+    import mir.stat.internal.fp_exponential: exponentialDecay;
+    return exponentialDecay!true(x, lambda);
+}
+
+version(mir_stat_test)
+@safe pure nothrow @nogc unittest
+{
+    import mir.bignum.fixed: UInt;
+    alias T = Fp!64;
+    alias U = UInt!64;
+    const rate = T(false,long.max - 1,U.max);
+    assert(exponentialPDF(T(0),rate) == rate);
+    assert(exponentialPDF(T(double.infinity),rate) == T(0));
+    assert(exponentialPDF(T(0.5),T(2)) == T(false,-64,U(0xbc5ab1b16779be35UL)));
+    // Choose x so the product is 2^63. The decay alone underflows,
+    // but the rate rescales it into the finite exponent range.
+    const scale = T(false,long.max - 1,U(1));
+    const x = T(false,64 - long.max,U(1));
+    assert(exponentialCCDF(x,scale) == T(0));
+    const density = exponentialPDF(x,scale);
+    assert(density == T(false,-4083141060989546749L,U(0x98d3377e65eee9c8UL)));
 }

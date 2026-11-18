@@ -56,18 +56,21 @@ private auto rateProduct(uint work, uint bits)(Fp!bits x, Fp!bits rate)
     return S.from(x).multiply(S.from(rate));
 }
 
-package(mir.stat) Fp!bits exponentialUpper(uint bits)(Fp!bits x, Fp!bits rate)
+package(mir.stat) Fp!bits exponentialDecay(bool density, uint bits)(Fp!bits x, Fp!bits rate)
 {
     import mir.stat.internal.fp_scaled_probability: scaledDecay;
     alias T = Fp!bits;
     if (x.isInfinity)
         return T(0);
     if (!x.coefficient)
-        return T(1);
+        return density ? rate : T(1);
     const t = rateProduct!(2 * bits + 192)(x, rate);
     if (t.exponent >= exponentBias + 66)
         return T(0);
-    return finish!bits(scaledDecay(t));
+    auto result = scaledDecay(t);
+    static if (density)
+        result = result.multiply(typeof(result).from(rate));
+    return finish!bits(result);
 }
 
 package(mir.stat) Fp!bits exponentialLower(uint bits)(Fp!bits x, Fp!bits rate)
