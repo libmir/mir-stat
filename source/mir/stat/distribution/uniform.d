@@ -91,6 +91,39 @@ unittest
     assert(uniformPDF(0.5, 0.0, 0.5) == 2.0);
 }
 
+/// On a finite closed $(D Fp) interval the density is the reciprocal of the
+/// exact width, rounded to nearest, ties to even. A sufficiently wide interval
+/// can have a density that rounds to zero.
+@safe pure nothrow @nogc
+T uniformPDF(T)(const T x, const T lower, const T upper = T(1))
+    if (is(T == Fp!size, size_t size))
+    in (uniformPointValid(x, lower, upper), "require finite lower <= x <= upper and lower < upper")
+{
+    import mir.stat.internal.fp_uniform: uniformRatio;
+    return uniformRatio(T(0), T(1), lower, upper);
+}
+
+version(mir_stat_test)
+@safe pure nothrow @nogc unittest
+{
+    import mir.bignum.fixed: UInt;
+    import std.meta: AliasSeq;
+    static foreach (T; AliasSeq!(float, double, real, Fp!64, Fp!128))
+    {
+        assert(uniformPDF(T(-1), T(-3), T(5)) == T(0.125));
+    }
+    static foreach (bits; [64u, 128u]) {{
+        alias T = Fp!bits;
+        const tiny = T(false, long.min, UInt!bits(1));
+        auto reciprocal = T(1);
+        reciprocal.exponent = long.max - bits + 2;
+        assert(uniformPDF(tiny, T(0), tiny) == reciprocal);
+        const huge = T(false, long.max - 1, UInt!bits.max);
+        assert(uniformPDF(T(0), T(0), huge) == T(0));
+        assert(uniformPDF(T(0), T(-1)) == T(0.5));
+    }}
+}
+
 /// Unit interval with a represented $(D Fp) input. Returns exactly one, including at both support endpoints.
 @safe pure nothrow @nogc
 T uniformPDF(T)(const T x)
