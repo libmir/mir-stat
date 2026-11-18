@@ -22,7 +22,7 @@ Copyright: 2022-3 Mir Stat Authors.
 module mir.stat.distribution.uniform;
 
 import mir.bignum.fp: Fp;
-import mir.stat.internal.fp_probability: fpProbabilityValid;
+import mir.stat.internal.fp_probability: fpProbabilityValid, fpProbabilityComplement;
 import mir.internal.utility: isFloatingPoint;
 
 /++
@@ -216,6 +216,65 @@ unittest
     assert(0.5.uniformCCDF == 0.5);
     assert(0.5.uniformCCDF(0.0, 1.5).approxEqual(2.0 / 3));
     assert(2.5.uniformCCDF(1.0, 3.0).approxEqual(1.0 / 4));
+}
+
+/// Unit interval with a represented $(D Fp) input. Rounds the exact binary complement to nearest, ties to even.
+@safe pure nothrow @nogc
+T uniformCCDF(T)(const T x)
+    if (is(T == Fp!size, size_t size))
+    in (fpProbabilityValid(x), "x must be finite and in [0, 1]")
+{
+    return fpProbabilityComplement(x);
+}
+
+// Shared dyadic inputs have exact results in every tested representation.
+version(mir_stat_test)
+@safe pure nothrow @nogc unittest
+{
+    import std.meta: AliasSeq;
+    static foreach (T; AliasSeq!(float, double, real, Fp!64, Fp!128))
+    {{
+        foreach (i; 0 .. 9)
+        {
+            const x = T(i / 8.0);
+            assert(uniformCCDF(x) == T((8 - i) / 8.0));
+        }
+    }}
+}
+
+// Exact dyadic references at the exponent floor and on either side of the
+// midpoint between one and its predecessor. The latter spacing is 2^-bits.
+version(mir_stat_test)
+@safe pure nothrow @nogc unittest
+{
+    import mir.bignum.fixed: UInt;
+    import std.meta: AliasSeq;
+    static if (size_t.sizeof == 4)
+        alias widths = AliasSeq!(32u, 64u, 96u, 128u, 256u);
+    else
+        alias widths = AliasSeq!(64u, 128u, 256u);
+    static foreach (bits; widths)
+    {{
+        alias T = Fp!bits;
+        const tiny = T(false, long.min, UInt!bits(1));
+        assert(uniformCCDF(tiny) == T(1));
+
+        UInt!bits ones;
+        ones.data[] = size_t.max;
+        const predecessor = T(false, -long(bits), ones);
+        auto spacing = T(1);
+        spacing.exponent -= bits;
+        assert(uniformCCDF(predecessor) == spacing);
+
+        auto midpoint = spacing;
+        midpoint.exponent--;
+        assert(uniformCCDF(midpoint) == T(1));
+        const below = T(false, midpoint.exponent - 1, ones);
+        assert(uniformCCDF(below) == T(1));
+        auto above = midpoint;
+        above.coefficient += 1;
+        assert(uniformCCDF(above) == predecessor);
+    }}
 }
 
 /++
