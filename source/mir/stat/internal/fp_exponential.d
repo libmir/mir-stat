@@ -14,6 +14,8 @@ import mir.stat.internal.fp_scaled_probability: ProbabilityScaled, exponentBias,
 // exponent before finish converts the separately tracked exponent to long.
 private Fp!bits finish(uint bits, uint work)(ProbabilityScaled!work value)
 {
+    if (!value.fraction.coefficient)
+        return Fp!bits(0);
     auto exponent = value.exponent;
     addExponent(exponent, (cast(Fp!bits)value.fraction).exponent);
     auto ceiling = exponentBias;
@@ -122,7 +124,11 @@ package(mir.stat) Fp!bits exponentialLogDensity(uint bits)(Fp!bits x, Fp!bits ra
     Log.Context context;
     const logRate = Log.logDyadic(rate.coefficient, rate.exponent, context);
     if (!x.coefficient)
-        return cast(T)logRate;
+    {
+        auto result = finish!bits(S.from(logRate));
+        result.sign = logRate.sign;
+        return result;
+    }
     const product = rateProduct!work(x, rate);
     if (!logRate.coefficient)
     {
@@ -147,24 +153,14 @@ package(mir.stat) Fp!bits exponentialLogDensity(uint bits)(Fp!bits x, Fp!bits ra
     auto term = I(1);
     if (gap <= UInt!128(work))
         term = smaller.fraction.coefficient.toSize!(2 * work + 64) << (work - cast(uint)gap);
-    else if (gap < UInt!128(2 * work))
-    {
-        const shift = cast(uint)gap - work;
-        const c = smaller.fraction.coefficient;
-        term = (c >> shift).toSize!(2 * work + 64);
-        if (((c >> shift) << shift) != c)
-            term |= I(1);
-    }
     if (logRate.sign)
         magnitude += term;
     else
         magnitude -= term;
-    if (!magnitude)
-        return T(0);
     // Keep all aligned bits until the destination rounds the signed result.
     auto total = ProbabilityScaled!(2 * work + 64).from(Fp!(2 * work + 64)(magnitude));
     total.exponent += larger.exponent - exponentBias - 2 * work;
     auto result = finish!bits(total);
-    result.sign = logRate.sign || productLarger;
+    result.sign = !!magnitude && (logRate.sign || productLarger);
     return result;
 }

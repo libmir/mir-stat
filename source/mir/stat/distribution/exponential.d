@@ -6,6 +6,11 @@ The support is $(D x >= 0). The inverse CDF currently requires $(D 0 <= p < 1);
 its contract excludes $(D p == 1), although the mathematical quantile tends to
 positive infinity as $(D p) approaches one.
 
+The two-argument $(D Fp) overloads require a finite positive rate and use
+guarded integer-significand calculations. General transcendental results
+have no universal correct-rounding guarantee. In the log density, a
+difference unresolved at working precision yields zero.
+
 The special-value tables assume finite distribution parameters in the stated
 domain. Finite expressions are subject to floating-point rounding and range
 limits. Contract violations are not prescribed return values: disabling
@@ -510,4 +515,51 @@ version(mir_stat_test)
     const nearZero = T(false,-65,U(0xb17217f7d1cf79acUL));
     assert(exponentialLPDF(nearZero,T(2)) == T(true,-130,U(0xd871319ff0342543UL)));
     assert(exponentialLPDF(T(double.infinity),T(2)) == T(true,long.max,U(0)));
+}
+
+// Both arguments are exactly representable in every type. The references
+// use 180-digit decimal arithmetic on x = p = 1/2 and lambda = 5/4.
+version(mir_stat_test)
+@safe pure nothrow @nogc unittest
+{
+    import std.meta: AliasSeq;
+    import mir.math.common: approxEqual;
+    static foreach (T; AliasSeq!(float, double, real))
+    {{
+        const x = T(0.5), rate = T(1.25);
+        assert(approxEqual(exponentialPDF(x,rate), T(0.66907678564873780244577813502755800L), 8*T.epsilon));
+        assert(approxEqual(exponentialCDF(x,rate), T(0.46473857148100975804337749197795359L), 8*T.epsilon));
+        assert(approxEqual(exponentialCCDF(x,rate), T(0.53526142851899024195662250802204640L), 8*T.epsilon));
+        assert(approxEqual(exponentialLPDF(x,rate), T(-0.4018564486857902442337049096901654L), 8*T.epsilon));
+        assert(approxEqual(exponentialInvCDF(x,rate), T(0.55451774444795624753378569716654125L), 8*T.epsilon));
+    }}
+    import mir.bignum.fixed: UInt;
+    alias Wide = Fp!128;
+    alias U = UInt!128;
+    const x = Wide(0.5), rate = Wide(1.25);
+    enum expectedPDF = Wide(false,-128,U.fromHexString("ab489dc0dfc70cafaecf45d7b385b669"));
+    assert(exponentialPDF(x, rate) == expectedPDF);
+    enum expectedCDF = Wide(false,-129,U.fromHexString("edf236cb66c1854d4eb45d0d472a0f57"));
+    assert(exponentialCDF(x, rate) == expectedCDF);
+    enum expectedCCDF = Wide(false,-128,U.fromHexString("8906e49a4c9f3d5958a5d1795c6af854"));
+    assert(exponentialCCDF(x, rate) == expectedCCDF);
+    enum expectedLPDF = Wide(true,-129,U.fromHexString("cdc020e19597794f689f8434011976d4"));
+    assert(exponentialLPDF(x, rate) == expectedLPDF);
+    enum expectedInvCDF = Wide(false,-128,U.fromHexString("8df4dff974a5faefd4b62946698f2bbf"));
+    assert(exponentialInvCDF(x, rate) == expectedInvCDF);
+}
+
+version(mir_stat_test)
+@safe pure nothrow @nogc unittest
+{
+    import mir.bignum.fixed: UInt;
+    alias T = Fp!64;
+    alias U = UInt!64;
+    const huge = T(false,long.max - 1,U.max);
+    const tiny = T(false,long.min,U(1));
+    assert(exponentialLPDF(huge,huge) == T(true,long.max,U(0)));
+    assert(exponentialLPDF(T(2),T(0.5)) == T(true,-63,U(0xd8b90bfbe8e7bcd6UL)));
+    assert(exponentialLPDF(tiny,T(2)) == T(false,-64,U(0xb17217f7d1cf79acUL)));
+    assert(exponentialCDF(huge,huge) == T(1));
+    assert(exponentialCDF(T(64),T(1)) == T(1));
 }
