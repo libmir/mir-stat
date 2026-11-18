@@ -6,6 +6,13 @@ $(D [lower, upper]), with $(D lower < upper). The forward functions require
 $(D x) to lie in that interval; they do not extend the density or probabilities
 outside it. The inverse CDF accepts both probability endpoints.
 
+The one-argument overloads also accept $(D Fp!bits) on the unit interval.
+The PDF and LPDF are exactly one and zero. The CDF and quantile preserve the
+represented input, including at the exponent floor. The strict CCDF rounds
+the exact binary complement to the result width (nearest, ties to even).
+These operations use no hardware floating-point intermediates. Widths are
+positive multiples of the native word size supported by $(D Fp).
+
 The special-value tables assume finite distribution parameters in the stated
 domain. Finite expressions are subject to floating-point rounding and range
 limits. Contract violations are not prescribed return values: disabling
@@ -346,6 +353,48 @@ unittest
     assert(0.5.uniformInvCDF == 0.5);
     assert((1.0 / 3).uniformInvCDF(0.0, 1.5).approxEqual(0.5));
     assert((3.0 / 4).uniformInvCDF(1.0, 3.0).approxEqual(2.5));
+}
+
+/// Unit interval with a represented $(D Fp) input. Returns the represented probability exactly, including at the exponent floor.
+@safe pure nothrow @nogc
+T uniformInvCDF(T)(const T p)
+    if (is(T == Fp!size, size_t size))
+    in (fpProbabilityValid(p), "p must be finite and in [0, 1]")
+{
+    return p;
+}
+
+// Shared dyadic inputs have exact results in every tested representation.
+version(mir_stat_test)
+@safe pure nothrow @nogc unittest
+{
+    import std.meta: AliasSeq;
+    static foreach (T; AliasSeq!(float, double, real, Fp!64, Fp!128))
+    {{
+        foreach (i; 0 .. 9)
+        {
+            const x = T(i / 8.0);
+            assert(uniformInvCDF(x) == x);
+        }
+    }}
+}
+
+// Preserve the smallest positive represented input.
+version(mir_stat_test)
+@safe pure nothrow @nogc unittest
+{
+    import mir.bignum.fixed: UInt;
+    import std.meta: AliasSeq;
+    static if (size_t.sizeof == 4)
+        alias widths = AliasSeq!(32u, 64u, 96u, 128u, 256u);
+    else
+        alias widths = AliasSeq!(64u, 128u, 256u);
+    static foreach (bits; widths)
+    {{
+        alias T = Fp!bits;
+        const tiny = T(false, long.min, UInt!bits(1));
+        assert(uniformInvCDF(tiny) == tiny);
+    }}
 }
 
 /++
