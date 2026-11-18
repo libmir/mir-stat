@@ -556,6 +556,42 @@ unittest
     assert(1.5.uniformLPDF(1.0, 3.0).approxEqual(-log(2.0)));
 }
 
+/// Evaluates $(D -log(upper-lower)) with guard precision. Near unit width
+/// the exact displacement from one preserves cancellation-sensitive results.
+/// The logarithm has no universal correct-rounding guarantee.
+@safe pure nothrow @nogc
+T uniformLPDF(T)(const T x, const T lower, const T upper = T(1))
+    if (is(T == Fp!size, size_t size))
+    in (uniformPointValid(x, lower, upper), "require finite lower <= x <= upper and lower < upper")
+{
+    import mir.stat.internal.fp_uniform: uniformLogDensity;
+    return uniformLogDensity(lower, upper);
+}
+
+version(mir_stat_test)
+@safe pure nothrow @nogc unittest
+{
+    import mir.bignum.fixed: UInt;
+    import std.meta: AliasSeq;
+    static foreach (T; AliasSeq!(float, double, real, Fp!64, Fp!128))
+    {
+        assert(uniformLPDF(T(-1), T(-1), T(0)) == T(0));
+    }
+    alias T = Fp!64;
+    alias U = UInt!64;
+    const tiny = T(false, long.min, U(1));
+    const negTiny = T(true, long.min, U(1));
+    assert(uniformLPDF(T(1), tiny) == tiny);
+    assert(uniformLPDF(T(1), negTiny) == negTiny);
+    // Independent rounded references for -log(3), 2^63*log(2), and the
+    // negative log of twice the largest represented finite value.
+    assert(uniformLPDF(T(1), T(-2)) == T(true, -63, U(0x8c9f53d5681854bbUL)));
+    assert(uniformLPDF(tiny, T(0), tiny) == T(false, -1, U(0xb17217f7d1cf79acUL)));
+    const huge = T(false, long.max - 1, U.max);
+    const negHuge = T(true, huge.exponent, huge.coefficient);
+    assert(uniformLPDF(T(0), negHuge, huge) == T(true, -1, U(0xb17217f7d1cf7a03UL)));
+}
+
 /// Unit interval with a represented $(D Fp) input. Returns exactly zero, including at both support endpoints.
 @safe pure nothrow @nogc
 T uniformLPDF(T)(const T x)

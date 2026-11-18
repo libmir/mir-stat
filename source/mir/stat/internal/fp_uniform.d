@@ -182,3 +182,52 @@ package(mir.stat) Fp!bits uniformRatio(uint bits)(Fp!bits start, Fp!bits end,
     }
     return roundUniform!(bits, compare)();
 }
+
+// Compare |width-1| with a candidate without rounding the width near one.
+private int deviationOrder(uint bits, size_t n)(Fp!bits lower, Fp!bits upper,
+    bool belowOne, UInt!n c, UInt!128 e)
+{
+    alias D = Term!(bits + n + 64);
+    const order = sumSign([D.point(upper, false), D.point(lower, true),
+        D.point(Fp!bits(1), true), D(c.toSize!(bits + n + 64), e, !belowOne)]);
+    return belowOne ? -order : order;
+}
+
+package(mir.stat) Fp!bits uniformLogDensity(uint bits)(Fp!bits lower, Fp!bits upper)
+{
+    import mir.stat.internal.fp_probability_log: ProbabilityLog;
+    alias T = Fp!bits;
+    alias C = UInt!(bits + 64);
+    const side = deviationOrder(lower, upper, false, C(0), exponentBias);
+    if (!side)
+        return T(0);
+    const belowOne = side < 0;
+    if (deviationOrder(lower, upper, belowOne, C(1), biased(-long(bits)-32)) <= 0)
+    {
+        // For |d| <= 2^(-bits-32), log(1+d) differs from d by at most
+        // d^2/(2*(1-|d|)). Round the displacement directly on the output
+        // grid, retaining the sign even when 1+d rounds to one.
+        int compare(C c, UInt!128 e)
+        {
+            return deviationOrder(lower, upper, belowOne, c, e);
+        }
+        auto result = roundUniform!(bits, compare)();
+        result.sign = !belowOne;
+        return result;
+    }
+
+    // At the transition the subtraction implicit in log(width) can cost
+    // bits+32 significant bits. Allow that loss plus 96 guard bits. The
+    // wider Fp also accommodates a full width above the input type's ceiling.
+    enum work = 2 * bits + 128;
+    alias D = Term!(work + 128);
+    int compareWidth(UInt!(work + 64) c, UInt!128 e)
+    {
+        return sumSign([D.point(upper, false), D.point(lower, true),
+            D(c.toSize!(work + 128), e, true)]);
+    }
+    const width = roundUniform!(work, compareWidth)();
+    auto result = cast(T) ProbabilityLog!work.logPositive(width);
+    result.sign = !belowOne;
+    return result;
+}
