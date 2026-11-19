@@ -10,49 +10,7 @@ import mir.bignum.fixed: UInt;
 
 import mir.stat.internal.fp_scaled_probability: ProbabilityScaled, exponentBias;
 
-// exp(-rate), using a fixed-point alternating series for x <= 1/2 followed
-// by at most 67 squarings. The caller supplies 192 extra bits: 67 cover
-// error amplification in squaring, 64 cover full-width powers/products,
-// and the remaining bits absorb series truncation and intermediate rounding.
-private @safe pure nothrow @nogc
-ProbabilityScaled!bits poissonDecay(uint bits)(ProbabilityScaled!bits rate)
-{
-    uint squarings;
-    if (rate.exponent >= exponentBias)
-        squarings = cast(uint)(rate.exponent - exponentBias) + 1;
-    auto shift = exponentBias + squarings - rate.exponent;
-    UInt!(bits + 64) x;
-    if (shift < UInt!128(bits))
-        x = rate.fraction.coefficient.toSize!(bits + 64) >> cast(size_t)shift;
-    auto term = UInt!(bits + 64)(1);
-    term <<= bits;
-    auto sum = term;
-    // A positive rate below the fixed-point grid still makes exp(-rate) < 1.
-    // Retain that direction with one working ulp rather than replacing the
-    // exponential by exactly one and rounding polynomial midpoints upward.
-    if (!x)
-        sum -= 1;
-    for (uint n = 1; ; ++n)
-    {
-        auto product = term.toSize!(2 * bits + 128);
-        product *= x;
-        product >>= bits;
-        product /= UInt!64(n);
-        term = product.toSize!(bits + 64);
-        if (!term)
-            break;
-        if (n & 1)
-            sum -= term;
-        else
-            sum += term;
-    }
-    auto value = Fp!bits(sum);
-    value.exponent -= bits;
-    auto result = ProbabilityScaled!bits.from(value);
-    foreach (i; 0 .. squarings)
-        result = result.multiply(result);
-    return result;
-}
+import mir.stat.internal.fp_scaled_probability: scaledDecay;
 
 package(mir.stat) @safe pure nothrow @nogc
 Fp!bits fpPoisson(uint bits)(size_t k, Fp!bits lambda)
@@ -78,7 +36,7 @@ Fp!bits fpPoisson(uint bits)(size_t k, Fp!bits lambda)
         if (magnitude >= floor)
             return Fp!bits(0);
     }
-    auto result = poissonDecay(rate);
+    auto result = scaledDecay(rate);
     if (k)
     {
         result = result.multiply(rate.power(k));

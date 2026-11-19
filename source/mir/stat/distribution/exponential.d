@@ -6,6 +6,11 @@ The support is $(D x >= 0). The inverse CDF currently requires $(D 0 <= p < 1);
 its contract excludes $(D p == 1), although the mathematical quantile tends to
 positive infinity as $(D p) approaches one.
 
+The two-argument $(D Fp) overloads require a finite positive rate and use
+guarded integer-significand calculations. General transcendental results
+have no universal correct-rounding guarantee. In the log density, a
+difference unresolved at working precision yields zero.
+
 The special-value tables assume finite distribution parameters in the stated
 domain. Finite expressions are subject to floating-point rounding and range
 limits. Contract violations are not prescribed return values: disabling
@@ -21,6 +26,7 @@ Copyright: 2022-3 Mir Stat Authors.
 
 module mir.stat.distribution.exponential;
 
+import mir.bignum.fp: Fp;
 import mir.internal.utility: isFloatingPoint;
 
 /++
@@ -365,4 +371,268 @@ unittest
     assert(0.5.exponentialLPDF(2.0).approxEqual(log(exponentialPDF(0.5, 2.0))));
     assert(0.75.exponentialLPDF(2.0).approxEqual(log(exponentialPDF(0.75, 2.0))));
     assert(0.25.exponentialLPDF(0.5).approxEqual(log(exponentialPDF(0.25, 0.5))));
+}
+
+private bool validRate(uint bits)(Fp!bits rate) @safe pure nothrow @nogc
+{
+    return !rate.isSpecial && !rate.sign && !!rate.coefficient;
+}
+
+/// Extended-precision quantile for a finite positive rate and 0 <= p < 1.
+/// Uses a guarded logarithm and retains the exponent through division.
+@safe pure nothrow @nogc
+T exponentialInvCDF(T)(const T p, const T lambda)
+    if (is(T == Fp!size, size_t size))
+    in (validRate(lambda), "lambda must be finite and positive")
+    in (validQuantileProbability(p), "p must be in [0, 1)")
+{
+    import mir.stat.internal.fp_exponential: exponentialQuantile;
+    return exponentialQuantile(p, lambda);
+}
+
+private bool validQuantileProbability(uint bits)(Fp!bits p) @safe pure nothrow @nogc
+{
+    import mir.stat.internal.fp_probability: fpProbabilityValid, fpProbabilityLess;
+    return fpProbabilityValid(p) && fpProbabilityLess(p, Fp!bits(1));
+}
+
+version(mir_stat_test)
+@safe pure nothrow @nogc unittest
+{
+    import mir.bignum.fixed: UInt;
+    alias T = Fp!64;
+    alias U = UInt!64;
+    const tiny = T(false, long.min, U(1));
+    assert(exponentialInvCDF(T(0), tiny) == T(0));
+    assert(exponentialInvCDF(tiny, T(2)) == tiny);
+    assert(exponentialInvCDF(tiny, T(3)) == T(0));
+    assert(exponentialInvCDF(tiny, tiny) == T(1));
+    assert(exponentialInvCDF(T(0.5), T(2)) == T(false, -65, U(0xb17217f7d1cf79acUL)));
+    assert(exponentialInvCDF(T(false,-64,U.max), T(1)) == T(false,-58,U(0xb17217f7d1cf79acUL)));
+}
+
+private bool validObservation(uint bits)(Fp!bits x) @safe pure nothrow @nogc
+{
+    return !x.isNaN && (!x.sign || (!x.coefficient && !x.isInfinity));
+}
+
+/// Strict upper tail for a represented observation and finite positive rate. Evaluates the decay directly with guard bits.
+@safe pure nothrow @nogc
+T exponentialCCDF(T)(const T x, const T lambda)
+    if (is(T == Fp!size, size_t size))
+    in (validRate(lambda), "lambda must be finite and positive")
+    in (validObservation(x), "x must be nonnegative")
+{
+    import mir.stat.internal.fp_exponential: exponentialDecay;
+    return exponentialDecay!false(x, lambda);
+}
+
+version(mir_stat_test)
+@safe pure nothrow @nogc unittest
+{
+    import mir.bignum.fixed: UInt;
+    alias T = Fp!64;
+    assert(exponentialCCDF(T(0), T(2)) == T(1));
+    assert(exponentialCCDF(T(double.infinity), T(2)) == T(0));
+    assert(exponentialCCDF(T(0.5), T(2)) == T(false,-65,UInt!64(0xbc5ab1b16779be35UL)));
+    assert(exponentialCCDF(T(1), T(false,100,UInt!64(1))) == T(0));
+}
+
+/// Lower tail for a finite positive rate. Retains the small-product correction at rounding midpoints.
+@safe pure nothrow @nogc
+T exponentialCDF(T)(const T x, const T lambda)
+    if (is(T == Fp!size, size_t size))
+    in (validRate(lambda), "lambda must be finite and positive")
+    in (validObservation(x), "x must be nonnegative")
+{
+    import mir.stat.internal.fp_exponential: exponentialLower;
+    return exponentialLower(x, lambda);
+}
+
+version(mir_stat_test)
+@safe pure nothrow @nogc unittest
+{
+    import mir.bignum.fixed: UInt;
+    alias T = Fp!64;
+    alias U = UInt!64;
+    const tiny = T(false, long.min, U(1));
+    assert(exponentialCDF(tiny,T(0.5)) == T(0));
+    assert(exponentialCDF(tiny,T(1.5)) == tiny);
+    assert(exponentialCDF(tiny,T(1)) == tiny);
+    assert(exponentialCDF(T(0),tiny) == T(0));
+    assert(exponentialCDF(T(double.infinity),tiny) == T(1));
+    assert(exponentialCDF(T(0.5),T(2)) == T(false,-64,U(0xa1d2a7274c4320e5UL)));
+}
+
+/// Density for a finite positive rate. Scales the guarded decay before rounding to the result width.
+@safe pure nothrow @nogc
+T exponentialPDF(T)(const T x, const T lambda)
+    if (is(T == Fp!size, size_t size))
+    in (validRate(lambda), "lambda must be finite and positive")
+    in (validObservation(x), "x must be nonnegative")
+{
+    import mir.stat.internal.fp_exponential: exponentialDecay;
+    return exponentialDecay!true(x, lambda);
+}
+
+version(mir_stat_test)
+@safe pure nothrow @nogc unittest
+{
+    import mir.bignum.fixed: UInt;
+    alias T = Fp!64;
+    alias U = UInt!64;
+    const rate = T(false,long.max - 1,U.max);
+    assert(exponentialPDF(T(0),rate) == rate);
+    assert(exponentialPDF(T(double.infinity),rate) == T(0));
+    assert(exponentialPDF(T(0.5),T(2)) == T(false,-64,U(0xbc5ab1b16779be35UL)));
+    // Choose x so the product is 2^63. The decay alone underflows,
+    // but the rate rescales it into the finite exponent range.
+    const scale = T(false,long.max - 1,U(1));
+    const x = T(false,64 - long.max,U(1));
+    assert(exponentialCCDF(x,scale) == T(0));
+    const density = exponentialPDF(x,scale);
+    assert(density == T(false,-4083141060989546749L,U(0x98d3377e65eee9c8UL)));
+}
+
+/// Log density for a finite positive rate. Subtracts the exact product from a guarded logarithm. Severe cancellation can reduce accuracy.
+@safe pure nothrow @nogc
+T exponentialLPDF(T)(const T x, const T lambda)
+    if (is(T == Fp!size, size_t size))
+    in (validRate(lambda), "lambda must be finite and positive")
+    in (validObservation(x), "x must be nonnegative")
+{
+    import mir.stat.internal.fp_exponential: exponentialLogDensity;
+    return exponentialLogDensity(x, lambda);
+}
+
+version(mir_stat_test)
+@safe pure nothrow @nogc unittest
+{
+    import mir.bignum.fixed: UInt;
+    alias T = Fp!64;
+    alias U = UInt!64;
+    const tiny = T(false,long.min,U(1));
+    assert(exponentialLPDF(tiny,T(1)) == T(true,long.min,U(1)));
+    assert(exponentialLPDF(T(0),T(1)) == T(0));
+    assert(exponentialLPDF(T(0),T(2)) == T(false,-64,U(0xb17217f7d1cf79acUL)));
+    const nearZero = T(false,-65,U(0xb17217f7d1cf79acUL));
+    assert(exponentialLPDF(nearZero,T(2)) == T(true,-130,U(0xd871319ff0342543UL)));
+    assert(exponentialLPDF(T(double.infinity),T(2)) == T(true,long.max,U(0)));
+}
+
+// Both arguments are exactly representable in every type. The references
+// use 180-digit decimal arithmetic on x = p = 1/2 and lambda = 5/4.
+version(mir_stat_test)
+@safe pure nothrow @nogc unittest
+{
+    import std.meta: AliasSeq;
+    import mir.math.common: approxEqual;
+    static foreach (T; AliasSeq!(float, double, real))
+    {{
+        const x = T(0.5), rate = T(1.25);
+        assert(approxEqual(exponentialPDF(x,rate), T(0.66907678564873780244577813502755800L), 8*T.epsilon));
+        assert(approxEqual(exponentialCDF(x,rate), T(0.46473857148100975804337749197795359L), 8*T.epsilon));
+        assert(approxEqual(exponentialCCDF(x,rate), T(0.53526142851899024195662250802204640L), 8*T.epsilon));
+        assert(approxEqual(exponentialLPDF(x,rate), T(-0.4018564486857902442337049096901654L), 8*T.epsilon));
+        assert(approxEqual(exponentialInvCDF(x,rate), T(0.55451774444795624753378569716654125L), 8*T.epsilon));
+    }}
+    import mir.bignum.fixed: UInt;
+    alias T = Fp!64;
+    alias U = UInt!64;
+    const x = T(0.5), rate = T(1.25);
+    assert(exponentialPDF(x, rate) == T(false, -64, U(0xab489dc0dfc70cb0UL)));
+    assert(exponentialCDF(x, rate) == T(false, -65, U(0xedf236cb66c1854dUL)));
+    assert(exponentialCCDF(x, rate) == T(false, -64, U(0x8906e49a4c9f3d59UL)));
+    assert(exponentialLPDF(x, rate) == T(true, -65, U(0xcdc020e19597794fUL)));
+    assert(exponentialInvCDF(x, rate) == T(false, -64, U(0x8df4dff974a5faf0UL)));
+}
+
+// Check the same represented inputs against the 128-bit references.
+version(mir_stat_test_slow_numerics)
+@safe pure nothrow @nogc unittest
+{
+    import mir.bignum.fixed: UInt;
+    alias Wide = Fp!128;
+    alias U = UInt!128;
+    const x = Wide(0.5), rate = Wide(1.25);
+    enum expectedPDF = Wide(false,-128,U.fromHexString("ab489dc0dfc70cafaecf45d7b385b669"));
+    assert(exponentialPDF(x, rate) == expectedPDF);
+    enum expectedCDF = Wide(false,-129,U.fromHexString("edf236cb66c1854d4eb45d0d472a0f57"));
+    assert(exponentialCDF(x, rate) == expectedCDF);
+    enum expectedCCDF = Wide(false,-128,U.fromHexString("8906e49a4c9f3d5958a5d1795c6af854"));
+    assert(exponentialCCDF(x, rate) == expectedCCDF);
+    enum expectedLPDF = Wide(true,-129,U.fromHexString("cdc020e19597794f689f8434011976d4"));
+    assert(exponentialLPDF(x, rate) == expectedLPDF);
+    enum expectedInvCDF = Wide(false,-128,U.fromHexString("8df4dff974a5faefd4b62946698f2bbf"));
+    assert(exponentialInvCDF(x, rate) == expectedInvCDF);
+}
+
+version(mir_stat_test)
+@safe pure nothrow @nogc unittest
+{
+    import mir.bignum.fixed: UInt;
+    alias T = Fp!64;
+    alias U = UInt!64;
+    const huge = T(false,long.max - 1,U.max);
+    const tiny = T(false,long.min,U(1));
+    assert(exponentialLPDF(huge,huge) == T(true,long.max,U(0)));
+    assert(exponentialLPDF(T(2),T(0.5)) == T(true,-63,U(0xd8b90bfbe8e7bcd6UL)));
+    assert(exponentialLPDF(tiny,T(2)) == T(false,-64,U(0xb17217f7d1cf79acUL)));
+    assert(exponentialCDF(huge,huge) == T(1));
+    assert(exponentialCDF(T(64),T(1)) == T(1));
+}
+
+// At p = 2^(1-bits), the quadratic term is exactly half an output ulp.
+// The positive cubic term decides the midpoint. Across the binade boundary
+// the predecessor has half the spacing, and its quantile rounds to p.
+version(mir_stat_test)
+@safe pure nothrow @nogc unittest
+{
+    import mir.bignum.fixed: UInt;
+    enum bits = 256u;
+    alias T = Fp!bits;
+    alias U = UInt!bits;
+    enum leading = U(1) << (bits - 1);
+    enum e = 2 - 2 * long(bits);
+    const below = T(false, e - 1, U.max);
+    const p = T(false, e, leading);
+    const above = T(false, e, leading + 1);
+    assert(exponentialInvCDF(below, T(1)) == p);
+    assert(exponentialInvCDF(p, T(1)) == above);
+    assert(exponentialInvCDF(above, T(1)) == T(false, e, leading + 2));
+}
+
+version(mir_stat_test)
+unittest
+{
+    import core.exception: AssertError;
+    import std.exception: assertThrown;
+    import std.meta: AliasSeq;
+
+    static foreach (T; AliasSeq!(double, Fp!64))
+    {{
+        const T x = T(0.5), rate = T(2);
+        static foreach (f; AliasSeq!(exponentialInvCDF, exponentialPDF, exponentialLPDF,
+                                    exponentialCDF, exponentialCCDF))
+        {
+            static assert(is(typeof(f!T(x, rate)) == T));
+            static assert(is(typeof(f(x, rate)) == T));
+        }
+    }}
+
+    bool contractsEnabled;
+    void probe() in { contractsEnabled = true; } do {}
+    probe();
+    if (contractsEnabled)
+    {
+        alias T = Fp!64;
+        assertThrown!AssertError(exponentialInvCDF(T(1), T(1)));
+        assertThrown!AssertError(exponentialInvCDF(T(-1), T(1)));
+        assertThrown!AssertError(exponentialInvCDF(T(0.5), T(0)));
+        static foreach (f; AliasSeq!(exponentialPDF, exponentialLPDF, exponentialCDF, exponentialCCDF))
+        {
+            assertThrown!AssertError(f(T(-1), T(1)));
+            assertThrown!AssertError(f(T(0), T(double.infinity)));
+        }
+    }
 }

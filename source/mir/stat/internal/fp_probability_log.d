@@ -111,7 +111,7 @@ package(mir.stat) struct ProbabilityLog(uint bits)
         return logDyadic(count, 0, context);
     }
 
-    private static Fp!(bits + 192) logDyadic(uint inputBits)(UInt!inputBits coefficient,
+    package(mir.stat) static Fp!(bits + 192) logDyadic(uint inputBits)(UInt!inputBits coefficient,
         long exponent, ref Context context)
     {
         const top = inputBits - coefficient.ctlz - 1;
