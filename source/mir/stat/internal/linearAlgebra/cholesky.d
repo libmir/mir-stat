@@ -359,13 +359,8 @@ package(mir.stat) void choleskyDecomposeInto(TrianglePolicy triangle = TriangleP
     scope auto ref A a, scope auto ref C output)
     if (matrix!A && matrix!C && is(Scalar!A == Scalar!C))
 {
-    assert(a.length!0 == a.length!1, "Cholesky requires a square matrix");
-    assert(a.shape == output.shape, "Incorrect Cholesky output shape");
-    foreach (i; 0 .. a.length!0)
-        foreach (j; 0 .. a.length!1)
-            if (triangle == TrianglePolicy.upper ? j >= i : j <= i)
-                output[i, j] = a[i, j];
-    choleskyDecomposeInPlace!triangle(output);
+    import mir.exception: enforce;
+    enforce!"Cholesky factorization failed"(tryCholeskyDecomposeInto!triangle(a, output) == 0);
 }
 
 /++
@@ -391,6 +386,85 @@ version(mir_stat_test_linearAlgebra)
     choleskyDecomposeInto(data[].sliced(2, 2), output);
     static immutable expected = [[2.0, 1], [0.0, 2]];
     assert(output == expected && data[0] == 4);
+}
+
+/++
+Factor a matrix into caller-owned storage, preserving the source on success and failure.
+
+Params:
+    triangle = Logical triangle to read and to store the factor in, upper by default.
+    a = Square floating-point input ndslice. The selected entries must be finite.
+        Read-only inputs are supported.
+    output = Writable ndslice of the same shape and element type. Its elements
+        must be disjoint from one another and from the input. On success the
+        selected triangle holds the factor and the other triangle is zero.
+        On failure output may contain a partial factorization.
+
+Returns:
+    Zero on success, including a matrix of order zero. A positive value is
+    the one-based pivot position reporting numerical failure. Only use
+    output as a factor after a zero result.
+
+Throws:
+    Exceptions from user-defined iterators propagate.
++/
+package(mir.stat) size_t tryCholeskyDecomposeInto(TrianglePolicy triangle = TrianglePolicy.upper, A, C)(
+    scope auto ref A a, scope auto ref C output)
+    if (matrix!A && matrix!C && is(Scalar!A == Scalar!C))
+{
+    assert(a.length!0 == a.length!1, "Cholesky requires a square matrix");
+    assert(a.shape == output.shape, "Incorrect Cholesky output shape");
+    foreach (i; 0 .. a.length!0)
+        foreach (j; 0 .. a.length!1)
+            if (triangle == TrianglePolicy.upper ? j >= i : j <= i)
+                output[i, j] = a[i, j];
+    return tryCholeskyDecomposeInPlace!triangle(output);
+}
+
+/// Prepare a lower factor from a read-only covariance matrix.
+version(mir_stat_test_linearAlgebra)
+@safe pure nothrow @nogc unittest
+{
+    import mir.ndslice.slice: sliced;
+    import mir.stat.internal.linearAlgebra.types: TrianglePolicy;
+    const double[4] covariance = [4, double.nan, 2, 5];
+    double[4] storage;
+    auto factor = storage[].sliced(2, 2);
+    const failedPivot = tryCholeskyDecomposeInto!(TrianglePolicy.lower)(
+        covariance[].sliced(2, 2), factor);
+    assert(failedPivot == 0);
+    assert(storage == [2, 0, 1, 2]);
+}
+
+version(mir_stat_test_linearAlgebra)
+@safe pure nothrow @nogc unittest
+{
+    import mir.ndslice.slice: sliced;
+    import mir.ndslice.dynamic: strided;
+    import std.math: isNaN;
+    double[4] data = [4, 2, double.nan, 1];
+    auto input = data[].sliced(2, 2);
+    double[16] storage;
+    storage[] = -1;
+    auto output = storage[].sliced(4, 4).strided!(0, 1)(2, 2);
+    assert(tryCholeskyDecomposeInto(input, output) == 2);
+    assert(data[0] == 4 && data[1] == 2 && isNaN(data[2]) && data[3] == 1);
+    data[3] = 5;
+    assert(tryCholeskyDecomposeInto(input, output) == 0);
+    static immutable expected = [[2, 1], [0, 2]];
+    assert(output == expected);
+    assert(storage[1] == -1 && storage[4] == -1);
+    auto empty = data[0 .. 0].sliced(0, 0);
+    assert(tryCholeskyDecomposeInto(empty, empty) == 0);
+    assert(tryCholeskyDecomposeInPlace(empty) == 0);
+    const double[4] readOnlyData = [1, 0, 0, 1];
+    auto readOnly = readOnlyData[].sliced(2, 2);
+    static assert(!__traits(compiles, tryCholeskyDecomposeInPlace(readOnly)));
+    static assert(!__traits(compiles, tryCholeskyDecomposeInto(input, readOnly)));
+
+    float[4] floatData;
+    auto floatInput = floatData[].sliced(2, 2);
+    static assert(!__traits(compiles, tryCholeskyDecomposeInto(floatInput, output)));
 }
 
 /++
