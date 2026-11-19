@@ -6,6 +6,8 @@ Later sections describe weighted selection and cumulative-weight preparation for
 
 ## Entry points and shared implementation
 
+The ordinary selector uses `quantileRanks` to determine the required indices and interpolation fraction. It establishes the upper rank first and then the lower rank when interpolation needs two observations.
+
 GC, RC, and custom-allocation quantile functions share the selection logic. Their allocation policy determines how temporary and result storage is owned and released. Boxes group work by function; a node naming another function represents a call to it.
 
 ```mermaid

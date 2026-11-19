@@ -1511,22 +1511,39 @@ auto selectQuantile(QuantileAlgo quantileAlgo, F = void, Iterator, G)(Slice!Iter
     return selectQuantileImpl!(quantileAlgo, F, false)(slice, p, null);
 }
 
+private struct QuantileRanks(G)
+{
+    size_t lower, upper;
+    G fraction;
+
+    @fmamath auto evaluate(F, QuantileAlgo algorithm, Values)(Values values) const @safe pure nothrow @nogc
+    {
+        static if (is(F == void))
+        {
+            import std.traits : Unqual;
+            alias Parts = QuantileParts!(Unqual!(typeof(values[0])), G);
+            return Parts(values[lower], values[upper], fraction);
+        }
+        else
+        {
+            if (lower == upper) return cast(F) values[lower];
+            static if (algorithm == QuantileAlgo.type2)
+                return interpolateQuantile!F(values[lower], values[upper], G(0.5));
+            else
+                return interpolateQuantile!F(values[lower], values[upper], fraction);
+        }
+    }
+}
+
 @fmamath private @safe pure nothrow @nogc
-auto selectQuantileImpl(QuantileAlgo quantileAlgo, F, bool incremental,
-    PartitionPivotStrategy strategy = PartitionPivotStrategy.midpoint, bool sparse = false, Iterator, G)(
-    Slice!Iterator slice, G p, scope ulong[] established)
+auto quantileRanks(QuantileAlgo quantileAlgo, G)(size_t n, G p)
 {
     assert(p >= 0 && p <= 1, "quantileImpl: p must be between 0 and 1");
-    size_t n = slice.elementCount;
-    assert(n > 1, "quantileImpl: slice.elementCount must be greater than 1");
+    assert(n > 1, "quantile requires at least two observations");
 
     import mir.math.common: floor;
     import std.traits: Unqual, CommonType;
-    import mir.primitives: DeepElementType;
-    alias T = Unqual!(DeepElementType!(typeof(slice)));
-
     alias GG = CommonType!(Unqual!G, double);
-    static if (is(F == void)) alias Parts = QuantileParts!(T, GG);
     const GG probability = p;
 
     size_t j, j_1;
@@ -1636,27 +1653,22 @@ auto selectQuantileImpl(QuantileAlgo quantileAlgo, F, bool incremental,
 
     }
 
-    if (gamma == 0) {
-        partitionQuantileRank!(incremental, strategy, sparse)(slice, established, j, n);
-        static if (is(F == void)) return Parts(slice[j], slice[j], 0);
-        else return cast(F) slice[j];
-    } else if (gamma == 1) {
-        partitionQuantileRank!(incremental, strategy, sparse)(slice, established, j_1, n);
-        static if (is(F == void)) return Parts(slice[j_1], slice[j_1], 0);
-        else return cast(F) slice[j_1];
-    } else if (j != j_1) {
-        partitionQuantileRank!(incremental, strategy, sparse)(slice, established, j_1, n);
-        partitionQuantileRank!(incremental, strategy, sparse)(slice, established, j, j_1);
-        // Type 2 reaches interpolation only for an exact boundary average.
-        static if (quantileAlgo == QuantileAlgo.type2) enum GG fraction = 0.5;
-        else alias fraction = gamma;
-        static if (is(F == void)) return Parts(slice[j], slice[j_1], fraction);
-        else return interpolateQuantile!F(slice[j], slice[j_1], fraction);
-    } else {
-        partitionQuantileRank!(incremental, strategy, sparse)(slice, established, j, n);
-        static if (is(F == void)) return Parts(slice[j], slice[j], 0);
-        else return cast(F) slice[j];
-    }
+    alias Ranks = QuantileRanks!GG;
+    if (gamma == 1) return Ranks(j_1, j_1, 0);
+    if (gamma == 0 || j == j_1) return Ranks(j, j, 0);
+    return Ranks(j, j_1, gamma);
+}
+
+@fmamath private @safe pure nothrow @nogc
+auto selectQuantileImpl(QuantileAlgo algorithm, F, bool incremental,
+    PartitionPivotStrategy strategy = PartitionPivotStrategy.midpoint, bool sparse = false, Values, G)(
+    Values values, G p, scope ulong[] established)
+{
+    const ranks = quantileRanks!algorithm(values.length, p);
+    partitionQuantileRank!(incremental, strategy, sparse)(values, established, ranks.upper, values.length);
+    if (ranks.lower != ranks.upper)
+        partitionQuantileRank!(incremental, strategy, sparse)(values, established, ranks.lower, ranks.upper);
+    return ranks.evaluate!(F, algorithm)(values);
 }
 
 // Returning a scalar directly must preserve tiny floating-point observations
