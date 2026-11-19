@@ -1511,22 +1511,39 @@ auto selectQuantile(QuantileAlgo quantileAlgo, F = void, Iterator, G)(Slice!Iter
     return selectQuantileImpl!(quantileAlgo, F, false)(slice, p, null);
 }
 
+private struct QuantileRanks(G)
+{
+    size_t lower, upper;
+    G fraction;
+
+    @fmamath auto evaluate(F, QuantileAlgo algorithm, Values)(Values values) const @safe pure nothrow @nogc
+    {
+        static if (is(F == void))
+        {
+            import std.traits : Unqual;
+            alias Parts = QuantileParts!(Unqual!(typeof(values[0])), G);
+            return Parts(values[lower], values[upper], fraction);
+        }
+        else
+        {
+            if (lower == upper) return cast(F) values[lower];
+            static if (algorithm == QuantileAlgo.type2)
+                return interpolateQuantile!F(values[lower], values[upper], G(0.5));
+            else
+                return interpolateQuantile!F(values[lower], values[upper], fraction);
+        }
+    }
+}
+
 @fmamath private @safe pure nothrow @nogc
-auto selectQuantileImpl(QuantileAlgo quantileAlgo, F, bool incremental,
-    PartitionPivotStrategy strategy = PartitionPivotStrategy.midpoint, bool sparse = false, Iterator, G)(
-    Slice!Iterator slice, G p, scope ulong[] established)
+auto quantileRanks(QuantileAlgo quantileAlgo, G)(size_t n, G p)
 {
     assert(p >= 0 && p <= 1, "quantileImpl: p must be between 0 and 1");
-    size_t n = slice.elementCount;
-    assert(n > 1, "quantileImpl: slice.elementCount must be greater than 1");
+    assert(n > 1, "quantile requires at least two observations");
 
     import mir.math.common: floor;
     import std.traits: Unqual, CommonType;
-    import mir.primitives: DeepElementType;
-    alias T = Unqual!(DeepElementType!(typeof(slice)));
-
     alias GG = CommonType!(Unqual!G, double);
-    static if (is(F == void)) alias Parts = QuantileParts!(T, GG);
     const GG probability = p;
 
     size_t j, j_1;
@@ -1636,27 +1653,22 @@ auto selectQuantileImpl(QuantileAlgo quantileAlgo, F, bool incremental,
 
     }
 
-    if (gamma == 0) {
-        partitionQuantileRank!(incremental, strategy, sparse)(slice, established, j, n);
-        static if (is(F == void)) return Parts(slice[j], slice[j], 0);
-        else return cast(F) slice[j];
-    } else if (gamma == 1) {
-        partitionQuantileRank!(incremental, strategy, sparse)(slice, established, j_1, n);
-        static if (is(F == void)) return Parts(slice[j_1], slice[j_1], 0);
-        else return cast(F) slice[j_1];
-    } else if (j != j_1) {
-        partitionQuantileRank!(incremental, strategy, sparse)(slice, established, j_1, n);
-        partitionQuantileRank!(incremental, strategy, sparse)(slice, established, j, j_1);
-        // Type 2 reaches interpolation only for an exact boundary average.
-        static if (quantileAlgo == QuantileAlgo.type2) enum GG fraction = 0.5;
-        else alias fraction = gamma;
-        static if (is(F == void)) return Parts(slice[j], slice[j_1], fraction);
-        else return interpolateQuantile!F(slice[j], slice[j_1], fraction);
-    } else {
-        partitionQuantileRank!(incremental, strategy, sparse)(slice, established, j, n);
-        static if (is(F == void)) return Parts(slice[j], slice[j], 0);
-        else return cast(F) slice[j];
-    }
+    alias Ranks = QuantileRanks!GG;
+    if (gamma == 1) return Ranks(j_1, j_1, 0);
+    if (gamma == 0 || j == j_1) return Ranks(j, j, 0);
+    return Ranks(j, j_1, gamma);
+}
+
+@fmamath private @safe pure nothrow @nogc
+auto selectQuantileImpl(QuantileAlgo algorithm, F, bool incremental,
+    PartitionPivotStrategy strategy = PartitionPivotStrategy.midpoint, bool sparse = false, Values, G)(
+    Values values, G p, scope ulong[] established)
+{
+    const ranks = quantileRanks!algorithm(values.length, p);
+    partitionQuantileRank!(incremental, strategy, sparse)(values, established, ranks.upper, values.length);
+    if (ranks.lower != ranks.upper)
+        partitionQuantileRank!(incremental, strategy, sparse)(values, established, ranks.lower, ranks.upper);
+    return ranks.evaluate!(F, algorithm)(values);
 }
 
 // Returning a scalar directly must preserve tiny floating-point observations
@@ -5841,33 +5853,36 @@ private auto allocatedQuantile(F, QuantileAlgo algorithm, bool modify,
 }
 
 private auto dispatchQuantile(F, QuantileAlgo algorithm, bool modify,
-    QuantileAllocation allocation, Context, Data, P...)(
+    QuantileAllocation allocation, bool assumeSorted = false, Context, Data, P...)(
     ref Context context, scope auto ref Data data, scope auto ref P probabilities)
 {
     import std.traits: CommonType, Unqual;
     import mir.ndslice.slice: sliced;
+    auto compute(Probability)(scope auto ref Probability probability)
+    {
+        static if (assumeSorted)
+            return sortedQuantileResult!(F, algorithm)(context, data, probability);
+        else
+            return allocatedQuantile!(F, algorithm, modify, allocation)(context, data, probability);
+    }
     static if (P.length == 0)
     {
         const double[5] levels = [0, 0.25, 0.5, 0.75, 1];
-        return allocatedQuantile!(F, algorithm, modify, allocation)(
-            context, data, levels[].sliced);
+        return compute(levels[].sliced);
     }
     else static if (P.length == 1)
     {
         static if (isFloatingPoint!(Unqual!(P[0])))
-            return allocatedQuantile!(F, algorithm, modify, allocation)(
-                context, data, probabilities[0]);
+            return compute(probabilities[0]);
         else
-            return allocatedQuantile!(F, algorithm, modify, allocation)(
-                context, data, quantileSlice(probabilities[0]));
+            return compute(quantileSlice(probabilities[0]));
     }
     else
     {
         alias G = CommonType!P;
         static assert(isFloatingPoint!(Unqual!G), "Probabilities must be floating-point values");
         G[P.length] levels = [probabilities];
-        return allocatedQuantile!(F, algorithm, modify, allocation)(
-            context, data, levels[].sliced);
+        return compute(levels[].sliced);
     }
 }
 
@@ -6506,12 +6521,22 @@ unittest
 }
 
 /++
-Compute quantiles with GC-allocated scratch and result storage.
+Compute ordinary sample quantiles.
 A scalar probability returns a scalar; a probability slice/array or multiple
 probabilities returns an owning GC slice. The result type is independent of the
 probability type. Use $(LREF rcquantile) for the former reference-counted behavior.
 
-By default observations are copied before partitioning. Setting allowModifySlice
+A random-access Phobos `SortedRange` with a length and the default ascending
+predicate uses $(LREF quantileAssumeSorted) to read the required ranks directly.
+This requires no observation workspace.
+
+When a floating-point result selects a zero-valued observation, it preserves
+that observation's sign. Positive and negative zeros compare equal, so either
+sign may be selected when both occur at the requested rank. Interpolated
+results take their sign from the interpolation arithmetic.
+
+For arrays and Mir slices, observations are copied before partitioning by
+default. Setting allowModifySlice
 permits rearranging the input and avoids that scratch allocation. When input
 modification is enabled, observations must not overlap the probabilities.
 Use $(LREF quantileInto) for caller-provided output.
@@ -6553,14 +6578,19 @@ template quantile(F, QuantileAlgo algorithm = QuantileAlgo.type7, bool allowModi
 {
     /++
     Params:
-        data = observations as a slice or array
+        data = observations as an array, Mir slice, or ascending Phobos `SortedRange`
         probabilities = a scalar, probability slice/array, or variadic probabilities; omitted for quartiles
     +/
     auto quantile(Data, P...)(scope auto ref Data data, scope auto ref P probabilities)
     {
-        QuantileContext context;
-        return dispatchQuantile!(F, algorithm, allowModifySlice, QuantileAllocation.gc)(
-            context, data, probabilities);
+        static if (isPhobosSortedRange!Data)
+            return quantileAssumeSorted!(F, algorithm)(data, probabilities);
+        else
+        {
+            QuantileContext context;
+            return dispatchQuantile!(F, algorithm, allowModifySlice, QuantileAllocation.gc)(
+                context, data, probabilities);
+        }
     }
 }
 
@@ -6569,16 +6599,140 @@ template quantile(QuantileAlgo algorithm = QuantileAlgo.type7, bool allowModifyS
 {
     /++
     Params:
-        data = observations as a slice or array
+        data = observations as an array, Mir slice, or ascending Phobos `SortedRange`
         probabilities = a scalar, probability slice/array, or variadic probabilities; omitted for quartiles
     +/
     auto quantile(Data, P...)(scope auto ref Data data, scope auto ref P probabilities)
     {
-        alias F = quantileType!(typeof(quantileSlice(data)), algorithm);
-        QuantileContext context;
-        return dispatchQuantile!(F, algorithm, allowModifySlice, QuantileAllocation.gc)(
-            context, data, probabilities);
+        static if (isPhobosSortedRange!Data)
+            return quantileAssumeSorted!(algorithm)(data, probabilities);
+        else
+        {
+            alias F = quantileType!(typeof(quantileSlice(data)), algorithm);
+            QuantileContext context;
+            return dispatchQuantile!(F, algorithm, allowModifySlice, QuantileAllocation.gc)(
+                context, data, probabilities);
+        }
     }
+}
+
+version(mir_stat_test)
+@safe unittest
+{
+    import std.range : assumeSorted;
+    int[4] data = [1, 3, 5, 8];
+    auto ordered = assumeSorted(data[]);
+    assert(quantile(ordered, 0.75) == quantileAssumeSorted(data, 0.75));
+    assert(quantile!real(ordered, 0.25) == quantileAssumeSorted!real(data, 0.25));
+}
+
+version(mir_stat_test)
+@safe unittest
+{
+    import std.range : assumeSorted;
+    foreach (first; [-0.0, 0.0])
+    foreach (last; [-0.0, 0.0])
+    {
+        double[2] data = [first, last];
+        auto endpoints = quantile(data, 0.0, 1.0);
+        auto mixed = quantile(data, 0.5, 1.0, 0.0);
+        foreach (i, p; [0.0, 1.0])
+        {
+            const sorted = quantileAssumeSorted(data, p);
+            assert(sorted is data[i]);
+            assert(quantile(assumeSorted(data[]), p) is sorted);
+            foreach (value; [quantile(data, p), endpoints[i], mixed[2 - i]])
+            {
+                assert(value == 0);
+                if (first is last) assert(value is first);
+            }
+        }
+    }
+}
+
+private template isPhobosSortedRange(T)
+{
+    import std.range : SortedRange;
+    import std.traits : isInstanceOf;
+    enum isPhobosSortedRange = isInstanceOf!(SortedRange, T);
+}
+
+private auto sortedQuantileValues(Data)(return scope auto ref Data data)
+{
+    static if (isPhobosSortedRange!Data)
+    {
+        import std.traits : TemplateArgsOf;
+        static assert(is(typeof(TemplateArgsOf!Data[1]) == string) &&
+            TemplateArgsOf!Data[1] == "a < b", "quantile requires ascending observations");
+        return data;
+    }
+    else
+    {
+        import mir.ndslice.topology : flattened;
+        return quantileSlice(data).flattened;
+    }
+}
+
+private auto sortedQuantileResult(F, QuantileAlgo algorithm, Values, Probability)(
+    ref QuantileContext context, scope auto ref Values values, scope auto ref Probability probability)
+{
+    import std.traits : Unqual;
+    alias Result = Unqual!(quantileType!(F, algorithm));
+    static if (isFloatingPoint!(Unqual!Probability))
+        return quantileRanks!algorithm(values.length, probability).evaluate!(Result, algorithm)(values);
+    else
+    {
+        static assert(Probability.N == 1 && isFloatingPoint!(Unqual!(typeof(probability[0]))),
+            "Probabilities must be one-dimensional floating-point values");
+        auto result = allocateQuantiles!(Result, QuantileAllocation.gc)(context, probability.length);
+        foreach (i; 0 .. probability.length)
+            result[i] = quantileRanks!algorithm(values.length, probability[i]).evaluate!(Result, algorithm)(values);
+        return result;
+    }
+}
+
+/++
+Compute ordinary quantiles from observations in ascending order. Arrays and Mir
+slices are read in flattened iteration order. A random-access Phobos SortedRange
+with a length and the default ascending predicate is also accepted. The caller
+guarantees the order. Selected zeros retain their stored sign. Probability forms,
+result types, and the treatment of tied zeros follow $(LREF quantile).
++/
+auto quantileAssumeSorted(F, QuantileAlgo algorithm = QuantileAlgo.type7, Data, P...)(
+    scope auto ref Data data, scope auto ref P probabilities)
+    if (isFloatingPoint!F || algorithm == QuantileAlgo.type1 || algorithm == QuantileAlgo.type3)
+{
+    scope auto values = sortedQuantileValues(data);
+    QuantileContext context;
+    return dispatchQuantile!(F, algorithm, false, QuantileAllocation.gc, true)(context, values, probabilities);
+}
+
+/// ditto
+auto quantileAssumeSorted(QuantileAlgo algorithm = QuantileAlgo.type7, Data, P...)(
+    scope auto ref Data data, scope auto ref P probabilities)
+{
+    alias F = quantileType!(typeof(sortedQuantileValues(data)[0]), algorithm);
+    return quantileAssumeSorted!(F, algorithm)(data, probabilities);
+}
+
+version(mir_stat_test)
+@safe unittest
+{
+    import mir.ndslice : sliced, strided, universal;
+    import std.range : assumeSorted;
+    import std.traits : EnumMembers;
+    int[6] backing = [1, 99, 3, 99, 7, 99];
+    auto values = backing[].sliced.universal.strided(2);
+    const double[4] levels = [0.75, 0, 0.5, 1];
+    static foreach (algorithm; EnumMembers!QuantileAlgo)
+    {{
+        auto expected = quantile!algorithm(values, levels);
+        assert(quantileAssumeSorted!algorithm(values, levels) == expected);
+        assert(quantileAssumeSorted!algorithm(assumeSorted(values), 0.75) == expected[0]);
+    }}
+    assert(quantileAssumeSorted(values) == [1.0, 2, 3, 5, 7]);
+    assert(quantileAssumeSorted!real(values, 1.0, 0.0) == [7.0L, 1.0L]);
+    static assert(!__traits(compiles, quantileAssumeSorted(assumeSorted!"a > b"(values), 0.5)));
 }
 
 /// Omit probabilities to obtain the minimum, quartiles, and maximum.

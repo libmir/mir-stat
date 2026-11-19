@@ -6,6 +6,8 @@ Later sections describe weighted selection and cumulative-weight preparation for
 
 ## Entry points and shared implementation
 
+`quantileAssumeSorted` accepts ascending arrays, Mir slices, and Phobos `SortedRange` inputs with the default ascending predicate. It indexes the required ranks directly using the existing type 1-9 formulas and interpolation. `quantileRanks` determines the required indices and interpolation fraction. Unsorted selection establishes those indices before evaluation, while sorted lookup evaluates them directly. Scalar calls need no workspace. Batch calls allocate only the result. The GC `quantile` entry point forwards a default ascending `SortedRange` to this path at compile time.
+
 GC, RC, and custom-allocation quantile functions share the selection logic. Their allocation policy determines how temporary and result storage is owned and released. Boxes group work by function; a node naming another function represents a call to it.
 
 ```mermaid
@@ -200,7 +202,7 @@ and repeated histogram queries continue to use their persistent bitmaps.
 | Cached interior-first, endpoints-last schedule | Supported | Caller order | Caller order |
 
 - Endpoint-only scanning requires N >= 2, K >= 2, and every probability equal to 0 or 1. It requires directly stored observations and probabilities and a numeric result type. Direct quantileInto calls additionally require directly stored output.
-- Floating endpoint scans fall back for NaNs. They resolve zero ties with negative zero as the minimum and positive zero as the maximum when both signs occur.
+- Floating endpoint scans fall back for NaNs. The endpoint scan chooses negative zero for the minimum and positive zero for the maximum when both signs occur. Ordinary quantiles preserve the sign of a selected observation and permit either sign among tied zeros. The sorted path reads the stored rank directly; mixed batches need no extra scan to resolve ties.
 - Mixed float/double scans finish the copy but require ordinary selection if any NaN or negative zero occurs. Integer scans cannot require this fallback.
 - Floating endpoint scans and mixed-batch copy shortcuts are bypassed during compile-time evaluation.
 - Scheduling changes require directly stored workspace, probabilities, and output. Generic views retain the applicable general path, preserving observable iterator behavior. Copying a view can produce a directly stored workspace for subsequent selection.
