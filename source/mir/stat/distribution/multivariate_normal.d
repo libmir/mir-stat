@@ -69,6 +69,22 @@ version(mir_stat_test_multivariate_normal)
     assert(fabs(multivariateNormalLPDF!(R.inverseCovarianceCholesky)(x[], mean[], pf[].sliced(2, 2)) - expected) < 1e-14);
 }
 
+/// Supply the lower Cholesky factor of a precision matrix.
+version(mir_stat_test_multivariate_normal)
+@safe pure nothrow unittest
+{
+    import mir.ndslice.slice: sliced;
+    import mir.stat.constant: LOGSQRT2PI;
+    import std.math: fabs, log;
+
+    double[2] x = [1, 2], mean = [0, 0];
+    double[4] lower = [2, double.nan, 1, 3];
+    // L.transpose * x = [4, 6] and det(L) = 6.
+    const result = multivariateNormalLPDF!(CovarianceRepresentation.inverseCovarianceCholesky,
+        TrianglePolicy.lower)(x[], mean[], lower[].sliced(2, 2));
+    assert(fabs(result - (log(6.0) - 2 * double(LOGSQRT2PI) - 26)) < 1e-14);
+}
+
 /// Use reference-counted scratch storage.
 Element!X rcMultivariateNormalLPDF(CovarianceRepresentation form = CovarianceRepresentation.covariance,
     TrianglePolicy triangle = TrianglePolicy.upper, X, C, M)(
@@ -79,16 +95,17 @@ Element!X rcMultivariateNormalLPDF(CovarianceRepresentation form = CovarianceRep
     return evaluate!(Allocation.rc, form, triangle)(allocator, x.asView, mean.asView, metric.asView);
 }
 
-/// Evaluate a raw covariance in @nogc code using reference-counted scratch.
+/// Evaluate a covariance factor using reference-counted scratch.
 version(mir_stat_test_multivariate_normal)
-@safe pure @nogc unittest
+@safe pure nothrow @nogc unittest
 {
     import mir.ndslice.slice: sliced;
     import mir.stat.distribution.normal: normalLPDF;
     import std.math: fabs;
 
-    double[1] x = [3], mean = [1], covariance = [4];
-    const result = rcMultivariateNormalLPDF(x[], mean[], covariance[].sliced(1, 1));
+    double[1] x = [3], mean = [1], factor = [2];
+    const result = rcMultivariateNormalLPDF!(CovarianceRepresentation.covarianceCholesky)(
+        x[], mean[], factor[].sliced(1, 1));
     assert(fabs(result - normalLPDF(3.0, 1.0, 2.0)) < 1e-14);
 }
 
@@ -117,6 +134,21 @@ version(mir_stat_test_multivariate_normal)
     assert(fabs(value - normalLPDF(3f, 1f, 2f)) < 4 * float.epsilon);
     assert(makeMultivariateNormalLPDF(Mallocator.instance, x[0 .. 0], mean[0 .. 0],
         precision[0 .. 0].sliced(0, 0)) == 0);
+}
+
+/// Use a custom allocator for scratch with a prepared precision factor.
+version(mir_stat_test_multivariate_normal)
+@system nothrow @nogc unittest
+{
+    import mir.ndslice.slice: sliced;
+    import mir.stat.distribution.normal: normalLPDF;
+    import std.experimental.allocator.mallocator: Mallocator;
+    import std.math: fabs;
+
+    float[1] x = [3], mean = [1], factor = [0.5f];
+    const result = makeMultivariateNormalLPDF!(CovarianceRepresentation.inverseCovarianceCholesky)(
+        Mallocator.instance, x[], mean[], factor[].sliced(1, 1));
+    assert(fabs(result - normalLPDF(3f, 1f, 2f)) < 4 * float.epsilon);
 }
 
 /// Allocate one work vector and, for a raw metric, one factor matrix.
@@ -157,7 +189,7 @@ Element!X multivariateNormalLPDFWithWorkspace(CovarianceRepresentation form, Tri
 
 /// Reuse a lower covariance factor for successive observations.
 version(mir_stat_test_multivariate_normal)
-@safe pure @nogc unittest
+@safe pure nothrow @nogc unittest
 {
     import mir.ndslice.slice: sliced;
     import mir.stat.constant: LOGSQRT2PI;
