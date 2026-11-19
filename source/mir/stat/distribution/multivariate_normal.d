@@ -1,6 +1,7 @@
 /++
 Multivariate normal log-density for one real observation and a positive-definite
-covariance or precision matrix. Supply a Cholesky factor to reuse it across
+covariance or precision matrix. Precision is the inverse of covariance.
+Supply a Cholesky factor of either matrix to reuse it across
 calls. In zero dimensions the log-density is zero.
 These functions accept dense square matrix views, including strided slices.
 Only the selected triangle is read. Upper factors represent a matrix
@@ -27,19 +28,26 @@ private enum prepared(CovarianceRepresentation form) =
     form == CovarianceRepresentation.inverseCovarianceCholesky;
 
 /++
-Evaluate a multivariate normal log-density using GC-managed temporary storage.
-The observation and mean are equal-length vectors of finite floating-point values.
-The selected metric triangle must be finite. The metric is a square
-matrix of the same order and element type. Raw covariance and precision inputs
-are factored once per call and must be positive definite. Supplied factors
-must have a positive finite diagonal. A precision factor is a Cholesky factor
-of the precision matrix. Singular covariance is outside the supported domain.
-The zero-dimensional log-density is zero.
+Evaluate the multivariate normal log density using GC-managed scratch.
+For covariance S and Mahalanobis distance d, the result is
+$(D -0.5 * (d * d + k * log(2 * PI) + log(det(S)))).
+A precision matrix contributes its log determinant with the opposite sign.
 
-For an observation with k coordinates, the result is minus one half of
-the squared Mahalanobis distance plus the normalization term. That term
-is -k * log(2 * PI) / 2 minus half the covariance log-determinant.
-For a precision factor the log-determinant contribution changes sign.
+Params:
+    form = Representation of metric (covariance by default).
+    triangle = Triangle to read, upper by default.
+    x = Observation vector of k finite floating-point coordinates.
+    mean = Vector of k finite means with the same element type as x.
+    metric = Dense k-by-k matrix with the same element type as x. The selected
+        triangle must be finite. Raw matrices must be positive definite,
+        and supplied factors must have positive diagonal entries.
+
+Returns:
+    The natural logarithm of the density at x, in the element type of x.
+    A zero-dimensional observation has log density zero.
+
+Throws:
+    Exception if Cholesky factorization of a raw covariance or precision matrix fails.
 +/
 Element!X multivariateNormalLPDF(CovarianceRepresentation form = CovarianceRepresentation.covariance,
     TrianglePolicy triangle = TrianglePolicy.upper, X, C, M)(
@@ -85,7 +93,25 @@ version(mir_stat_test_multivariate_normal)
     assert(fabs(result - (log(6.0) - 2 * double(LOGSQRT2PI) - 26)) < 1e-14);
 }
 
-/// Use reference-counted scratch storage.
+/++
+Evaluate the multivariate normal log density using reference-counted scratch.
+
+Params:
+    form = Representation of metric (covariance by default).
+    triangle = Triangle to read, upper by default.
+    x = Observation vector of k finite floating-point coordinates.
+    mean = Vector of k finite means with the same element type as x.
+    metric = Dense k-by-k matrix with the same element type as x. The selected
+        triangle must be finite. Raw matrices must be positive definite,
+        and supplied factors must have positive diagonal entries.
+
+Returns:
+    The natural logarithm of the density at x, in the element type of x.
+    A zero-dimensional observation has log density zero.
+
+Throws:
+    Exception if Cholesky factorization of a raw covariance or precision matrix fails.
++/
 Element!X rcMultivariateNormalLPDF(CovarianceRepresentation form = CovarianceRepresentation.covariance,
     TrianglePolicy triangle = TrianglePolicy.upper, X, C, M)(
     scope auto ref X x, scope auto ref C mean, scope auto ref M metric)
@@ -109,7 +135,26 @@ version(mir_stat_test_multivariate_normal)
     assert(fabs(result - normalLPDF(3.0, 1.0, 2.0)) < 1e-14);
 }
 
-/// Use caller-selected allocation for scratch. All storage is disposed on return or exception.
+/++
+Evaluate the multivariate normal log density using a caller-selected allocator.
+
+Params:
+    form = Representation of metric (covariance by default).
+    triangle = Triangle to read, upper by default.
+    x = Observation vector of k finite floating-point coordinates.
+    mean = Vector of k finite means with the same element type as x.
+    metric = Dense k-by-k matrix with the same element type as x. The selected
+        triangle must be finite. Raw matrices must be positive definite,
+        and supplied factors must have positive diagonal entries.
+    allocator = Allocator for scratch storage, which is released on return or exception.
+
+Returns:
+    The natural logarithm of the density at x, in the element type of x.
+    A zero-dimensional observation has log density zero.
+
+Throws:
+    Exception if Cholesky factorization of a raw covariance or precision matrix fails.
++/
 Element!X makeMultivariateNormalLPDF(CovarianceRepresentation form = CovarianceRepresentation.covariance,
     TrianglePolicy triangle = TrianglePolicy.upper, A, X, C, M)(
     auto ref A allocator, scope auto ref X x, scope auto ref C mean, scope auto ref M metric)
@@ -169,7 +214,25 @@ private Element!X evaluate(Allocation policy, CovarianceRepresentation form, Tri
     }
 }
 
-/// Evaluate from a supplied factor using one disjoint writable work vector of observation length.
+/++
+Evaluate the log density from a prepared factor using caller-owned scratch.
+The elements of work must be disjoint from each other and from all inputs.
+
+Params:
+    form = Either covarianceCholesky or inverseCovarianceCholesky.
+    triangle = Triangle to read, upper by default.
+    x = Observation vector of k finite floating-point coordinates.
+    mean = Vector of k finite means with the same element type as x.
+    factor = Dense k-by-k Cholesky factor of the covariance or precision matrix,
+        with the same element type as x. The selected triangle must be finite
+        and its diagonal entries positive.
+    work = Writable vector of k elements of the same type as x for the centered
+        and transformed observation.
+
+Returns:
+    The natural logarithm of the density at x, in the element type of x.
+    A zero-dimensional observation has log density zero.
++/
 Element!X multivariateNormalLPDFWithWorkspace(CovarianceRepresentation form, TrianglePolicy triangle = TrianglePolicy.upper,
     X, C, M, W)(scope auto ref X x, scope auto ref C mean, scope auto ref M factor, scope auto ref W work)
     if (prepared!form && matrix!M && compatible!(X, C, M) && vector!W && is(Element!X == Element!W))
@@ -210,8 +273,31 @@ version(mir_stat_test_multivariate_normal)
     assert(fabs(second - (atMean - 2.5)) < 1e-14);
 }
 
-/// Evaluate from a raw metric using a work vector and a writable factor matrix
-/// of matching shape. Both buffers must be disjoint from each other and all inputs.
+/++
+Factor a raw covariance or precision matrix and evaluate the log density.
+Both scratch buffers must have nonoverlapping elements and be disjoint from
+one another and from all inputs.
+
+Params:
+    form = Either covariance (default) or inverseCovariance.
+    triangle = Triangle to read, upper by default.
+    x = Observation vector of k finite floating-point coordinates.
+    mean = Vector of k finite means with the same element type as x.
+    metric = Dense, positive-definite k-by-k matrix of the same element type as x
+        with finite entries in the selected triangle.
+    work = Writable vector of k elements of the same type as x for the centered
+        and transformed observation.
+    factorWork = Writable matrix of the same shape and element type as metric.
+        On success its selected triangle holds the Cholesky factor.
+
+Returns:
+    The natural logarithm of the density at x, in the element type of x.
+    A zero-dimensional observation has log density zero.
+
+Throws:
+    Exception if Cholesky factorization fails. In that case factorWork may
+    contain a partial factorization.
++/
 Element!X multivariateNormalLPDFWithWorkspace(CovarianceRepresentation form = CovarianceRepresentation.covariance,
     TrianglePolicy triangle = TrianglePolicy.upper, X, C, M, W, F)(scope auto ref X x, scope auto ref C mean,
     scope auto ref M metric, scope auto ref W work, scope auto ref F factorWork)
