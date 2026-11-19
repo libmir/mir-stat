@@ -5853,33 +5853,36 @@ private auto allocatedQuantile(F, QuantileAlgo algorithm, bool modify,
 }
 
 private auto dispatchQuantile(F, QuantileAlgo algorithm, bool modify,
-    QuantileAllocation allocation, Context, Data, P...)(
+    QuantileAllocation allocation, bool assumeSorted = false, Context, Data, P...)(
     ref Context context, scope auto ref Data data, scope auto ref P probabilities)
 {
     import std.traits: CommonType, Unqual;
     import mir.ndslice.slice: sliced;
+    auto compute(Probability)(scope auto ref Probability probability)
+    {
+        static if (assumeSorted)
+            return sortedQuantileResult!(F, algorithm)(context, data, probability);
+        else
+            return allocatedQuantile!(F, algorithm, modify, allocation)(context, data, probability);
+    }
     static if (P.length == 0)
     {
         const double[5] levels = [0, 0.25, 0.5, 0.75, 1];
-        return allocatedQuantile!(F, algorithm, modify, allocation)(
-            context, data, levels[].sliced);
+        return compute(levels[].sliced);
     }
     else static if (P.length == 1)
     {
         static if (isFloatingPoint!(Unqual!(P[0])))
-            return allocatedQuantile!(F, algorithm, modify, allocation)(
-                context, data, probabilities[0]);
+            return compute(probabilities[0]);
         else
-            return allocatedQuantile!(F, algorithm, modify, allocation)(
-                context, data, quantileSlice(probabilities[0]));
+            return compute(quantileSlice(probabilities[0]));
     }
     else
     {
         alias G = CommonType!P;
         static assert(isFloatingPoint!(Unqual!G), "Probabilities must be floating-point values");
         G[P.length] levels = [probabilities];
-        return allocatedQuantile!(F, algorithm, modify, allocation)(
-            context, data, levels[].sliced);
+        return compute(levels[].sliced);
     }
 }
 
@@ -6619,6 +6622,8 @@ version(mir_stat_test)
         auto mixed = quantile(data, 0.5, 1.0, 0.0);
         foreach (i, p; [0.0, 1.0])
         {
+            const sorted = quantileAssumeSorted(data, p);
+            assert(sorted is data[i]);
             foreach (value; [quantile(data, p), endpoints[i], mixed[2 - i]])
             {
                 assert(value == 0);
@@ -6626,6 +6631,91 @@ version(mir_stat_test)
             }
         }
     }
+}
+
+private template isPhobosSortedRange(T)
+{
+    import std.range : SortedRange;
+    import std.traits : isInstanceOf;
+    enum isPhobosSortedRange = isInstanceOf!(SortedRange, T);
+}
+
+private auto sortedQuantileValues(Data)(return scope auto ref Data data)
+{
+    static if (isPhobosSortedRange!Data)
+    {
+        import std.traits : TemplateArgsOf;
+        static assert(is(typeof(TemplateArgsOf!Data[1]) == string) &&
+            TemplateArgsOf!Data[1] == "a < b", "quantile requires ascending observations");
+        return data;
+    }
+    else
+    {
+        import mir.ndslice.topology : flattened;
+        return quantileSlice(data).flattened;
+    }
+}
+
+private auto sortedQuantileResult(F, QuantileAlgo algorithm, Values, Probability)(
+    ref QuantileContext context, scope auto ref Values values, scope auto ref Probability probability)
+{
+    import std.traits : Unqual;
+    alias Result = Unqual!(quantileType!(F, algorithm));
+    static if (isFloatingPoint!(Unqual!Probability))
+        return quantileRanks!algorithm(values.length, probability).evaluate!(Result, algorithm)(values);
+    else
+    {
+        static assert(Probability.N == 1 && isFloatingPoint!(Unqual!(typeof(probability[0]))),
+            "Probabilities must be one-dimensional floating-point values");
+        auto result = allocateQuantiles!(Result, QuantileAllocation.gc)(context, probability.length);
+        foreach (i; 0 .. probability.length)
+            result[i] = quantileRanks!algorithm(values.length, probability[i]).evaluate!(Result, algorithm)(values);
+        return result;
+    }
+}
+
+/++
+Compute ordinary quantiles from observations in ascending order. Arrays and Mir
+slices are read in flattened iteration order. A random-access Phobos SortedRange
+with a length and the default ascending predicate is also accepted. The caller
+guarantees the order. Selected zeros retain their stored sign. Probability forms,
+result types, and the treatment of tied zeros follow $(LREF quantile).
++/
+auto quantileAssumeSorted(F, QuantileAlgo algorithm = QuantileAlgo.type7, Data, P...)(
+    scope auto ref Data data, scope auto ref P probabilities)
+    if (isFloatingPoint!F || algorithm == QuantileAlgo.type1 || algorithm == QuantileAlgo.type3)
+{
+    scope auto values = sortedQuantileValues(data);
+    QuantileContext context;
+    return dispatchQuantile!(F, algorithm, false, QuantileAllocation.gc, true)(context, values, probabilities);
+}
+
+/// ditto
+auto quantileAssumeSorted(QuantileAlgo algorithm = QuantileAlgo.type7, Data, P...)(
+    scope auto ref Data data, scope auto ref P probabilities)
+{
+    alias F = quantileType!(typeof(sortedQuantileValues(data)[0]), algorithm);
+    return quantileAssumeSorted!(F, algorithm)(data, probabilities);
+}
+
+version(mir_stat_test)
+@safe unittest
+{
+    import mir.ndslice : sliced, strided, universal;
+    import std.range : assumeSorted;
+    import std.traits : EnumMembers;
+    int[6] backing = [1, 99, 3, 99, 7, 99];
+    auto values = backing[].sliced.universal.strided(2);
+    const double[4] levels = [0.75, 0, 0.5, 1];
+    static foreach (algorithm; EnumMembers!QuantileAlgo)
+    {{
+        auto expected = quantile!algorithm(values, levels);
+        assert(quantileAssumeSorted!algorithm(values, levels) == expected);
+        assert(quantileAssumeSorted!algorithm(assumeSorted(values), 0.75) == expected[0]);
+    }}
+    assert(quantileAssumeSorted(values) == [1.0, 2, 3, 5, 7]);
+    assert(quantileAssumeSorted!real(values, 1.0, 0.0) == [7.0L, 1.0L]);
+    static assert(!__traits(compiles, quantileAssumeSorted(assumeSorted!"a > b"(values), 0.5)));
 }
 
 /// Omit probabilities to obtain the minimum, quartiles, and maximum.
