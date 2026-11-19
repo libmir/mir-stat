@@ -6682,13 +6682,46 @@ private auto sortedQuantileResult(F, QuantileAlgo algorithm, Values, Probability
         return quantileRanks!algorithm(values.length, probability).evaluate!(Result, algorithm)(values);
     else
     {
-        static assert(Probability.N == 1 && isFloatingPoint!(Unqual!(typeof(probability[0]))),
-            "Probabilities must be one-dimensional floating-point values");
         auto result = allocateQuantiles!(Result, QuantileAllocation.gc)(context, probability.length);
-        foreach (i; 0 .. probability.length)
-            result[i] = quantileRanks!algorithm(values.length, probability[i]).evaluate!(Result, algorithm)(values);
+        writeSortedQuantiles!algorithm(values, probability, result.lightScope);
         return result;
     }
+}
+
+private void writeSortedQuantiles(QuantileAlgo algorithm, V, P, O)(scope V values, scope P levels, scope O output)
+{
+    import std.traits : Unqual;
+    alias F = Unqual!(typeof(output[0]));
+    static assert(P.N == 1 && O.N == 1, "Probabilities and output must be one-dimensional");
+    static assert(isFloatingPoint!(Unqual!(typeof(levels[0]))), "Probabilities must be floating-point values");
+    static assert(isFloatingPoint!F || algorithm == QuantileAlgo.type1 || algorithm == QuantileAlgo.type3,
+        "Interpolated quantiles require floating-point output");
+    assert(output.length == levels.length, "Output length must match probabilities");
+    foreach (i; 0 .. levels.length)
+        output[i] = quantileRanks!algorithm(values.length, levels[i]).evaluate!(F, algorithm)(values);
+}
+
+/++ Write quantiles of ascending observations into caller-provided output without allocating.
+The observations may be read-only. Output must have one element per probability and must
+not overlap the observations or probabilities. The output element type determines the result precision.
++/
+void quantileAssumeSortedInto(QuantileAlgo algorithm = QuantileAlgo.type7, Data, P, Output)(
+    scope auto ref Data data, scope auto ref P probabilities, scope auto ref Output output)
+{
+    writeSortedQuantiles!algorithm(sortedQuantileValues(data), quantileSlice(probabilities), quantileSlice(output));
+}
+
+version(mir_stat_test)
+@safe unittest
+{
+    import mir.ndslice : sliced, stride;
+    const int[6] data = [1, 99, 3, 99, 7, 99];
+    const double[2] levels = [0.75, 0.25];
+    auto values = data[].sliced.stride(2);
+    double[4] storage = [-1, -1, -1, -1];
+    auto output = storage[].sliced.stride(2);
+    quantileAssumeSortedInto(values, levels, output);
+    assert(storage == [5.0, -1, 2, -1]);
 }
 
 /++
