@@ -226,7 +226,7 @@ Zero-weight rows are skipped. Ascending entries can be used immediately;
 descending entries are reversed in the workspace. Once both directions are
 ruled out, preparation finishes copying the rows and normally sorts them.
 
-The explicit GC `weightedQuantileAssumeSorted` entry point requires positive-weight rows ordered by observation value and then raw weight. It copies those rows in order and calls the shared cumulative-weight preparation directly. It never partitions, reverses, or sorts the workspace. A Phobos `SortedRange` describes only the observations; callers still supply ordered weights within ties.
+The explicit GC `weightedQuantileAssumeSorted` entry point requires positive-weight rows ordered by observation value and then raw weight. It copies those rows in order and calls the shared cumulative-weight preparation directly. It never partitions, reverses, or sorts the workspace. A Phobos `SortedRange` describes only the observations; callers still supply ordered weights within ties. `assumeWeightedSorted(values, weights)` borrows both aligned inputs in a `SortedWeightedObservations`. Passing that pair to `weightedQuantile` dispatches to the explicit sorted path. Selected zeros follow the ordinary weighted convention: opposite signs compare equal.
 
 Equal-weight entries with opposite signed zeros use the usual sort as well,
 so queries preserve the zero sign selected by that sort. Recognizing order

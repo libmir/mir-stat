@@ -3233,6 +3233,78 @@ private auto dispatchWeightedQuantile(F, WeightInterpretation interpretation, We
     }
 }
 
+/++ A borrowed pair of one-dimensional observation and weight views with
+positive-weight rows ordered by value, then by raw weight. Construct it with
+$(LREF assumeWeightedSorted) and preserve this order while using the view.
++/
+struct SortedWeightedObservations(Values, Weights)
+{
+    private Values values;
+    private Weights weights;
+    @disable this();
+
+    private this(return scope Values values, return scope Weights weights)
+    {
+        this.values = values;
+        this.weights = weights;
+    }
+}
+
+private template isSortedWeightedObservations(T)
+{
+    import std.traits : isInstanceOf;
+    enum isSortedWeightedObservations = isInstanceOf!(SortedWeightedObservations, T);
+}
+
+/++
+Mark aligned observations and weights as ordered for $(LREF weightedQuantile).
+The factory copies the slice descriptors without allocating or sorting rows.
+Pass a static array as an explicit slice, for example $(D values[]). As with
+$(LREF weightedQuantileAssumeSorted), ordering is checked during the query
+in assertion-enabled builds.
+
+Params:
+    data = one-dimensional array or Mir slice of observations in ascending
+        order among rows with positive weight
+    weights = one-dimensional array or Mir slice of the same length. Among
+        equal observations, positive weights must be nondecreasing.
+
+Returns:
+    A paired view borrowing both inputs. Their storage must remain
+    valid and the positive-weight rows must remain ordered while it is used.
++/
+auto assumeWeightedSorted(Data, Weights)(return scope Data data, return scope Weights weights)
+{
+    import mir.ndslice.slice : isSlice;
+    import std.traits : isDynamicArray;
+    static assert((isDynamicArray!Data || isSlice!Data) && (isDynamicArray!Weights || isSlice!Weights),
+        "Pass arrays as slices or use one-dimensional Mir slices");
+    static assert(typeof(quantileSlice(data)).N == 1 && typeof(quantileSlice(weights)).N == 1,
+        "SortedWeightedObservations requires one-dimensional inputs");
+    assert(data.length == weights.length, "SortedWeightedObservations requires equal lengths");
+    return SortedWeightedObservations!(Data, Weights)(data, weights);
+}
+
+///
+version(mir_stat_test) @safe unittest
+{
+    const int[4] values = [1, 2, 2, 5], weights = [1, 3, 7, 2];
+    auto rows = assumeWeightedSorted(values[], weights[]);
+    assert(weightedQuantile(rows, 0.5) == 2);
+}
+
+version(mir_stat_test) @safe unittest
+{
+    import mir.ndslice : sliced, stride;
+    int[6] storage = [1, 9, 2, 9, 2, 9];
+    int[3] weights = [1, 1, 3];
+    auto rows = assumeWeightedSorted(storage[].sliced.stride(2), weights[]);
+    assert(weightedQuantile!(real, WeightInterpretation.frequency)(rows, 0.5) == 2);
+    assert(weightedQuantile(rows).length == 5);
+    weights[0] = 9;
+    assert(weightedQuantile(rows, 0.5) == 1);
+}
+
 /++
 Compute weighted quantile estimates with GC-allocated scratch and results.
 
@@ -3344,11 +3416,28 @@ template weightedQuantile(F, WeightInterpretation interpretation,
     auto weightedQuantile(Data, Weights, P...)(
         scope auto ref Data data, scope auto ref Weights weights,
         scope auto ref P probabilities)
+        if (!isSortedWeightedObservations!Data)
     {
         QuantileContext context;
         return dispatchWeightedQuantile!(F, interpretation, algorithm, QuantileAllocation.gc)(
             context, weights, data, probabilities);
     }
+
+    /++
+    Params:
+        rows = paired observations and weights from $(LREF assumeWeightedSorted)
+        probabilities = scalar, array/slice, or variadic probabilities in [0, 1];
+            omitted for the minimum, quartiles, and maximum
+    Returns:
+        A scalar for a scalar request, otherwise a GC-owned slice in caller
+        probability order, as for $(LREF weightedQuantileAssumeSorted).
+    +/
+    auto weightedQuantile(Rows, P...)(scope auto ref Rows rows, scope auto ref P probabilities)
+        if (isSortedWeightedObservations!Rows)
+    {
+        return .weightedQuantileAssumeSorted!(F, interpretation, algorithm)(rows.values, rows.weights, probabilities);
+    }
+
 }
 
 /// ditto
@@ -3375,12 +3464,29 @@ template weightedQuantile(WeightInterpretation interpretation,
     auto weightedQuantile(Data, Weights, P...)(
         scope auto ref Data data, scope auto ref Weights weights,
         scope auto ref P probabilities)
+        if (!isSortedWeightedObservations!Data)
     {
         alias F = WeightedQuantileResult!(Data, algorithm);
         QuantileContext context;
         return dispatchWeightedQuantile!(F, interpretation, algorithm, QuantileAllocation.gc)(
             context, weights, data, probabilities);
     }
+
+    /++
+    Params:
+        rows = paired observations and weights from $(LREF assumeWeightedSorted)
+        probabilities = scalar, array/slice, or variadic probabilities in [0, 1];
+            omitted for the minimum, quartiles, and maximum
+    Returns:
+        A scalar for a scalar request, otherwise a GC-owned slice in caller
+        probability order, as for $(LREF weightedQuantileAssumeSorted).
+    +/
+    auto weightedQuantile(Rows, P...)(scope auto ref Rows rows, scope auto ref P probabilities)
+        if (isSortedWeightedObservations!Rows)
+    {
+        return .weightedQuantileAssumeSorted!(interpretation, algorithm)(rows.values, rows.weights, probabilities);
+    }
+
 }
 
 /// ditto
