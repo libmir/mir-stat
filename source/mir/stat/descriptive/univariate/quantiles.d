@@ -6339,6 +6339,11 @@ Compute quantiles with reference-counted scratch and result storage.
 A scalar probability returns a scalar; multiple probabilities return an owning
 RC slice. The result remains valid after the inputs go out of scope.
 
+When a floating-point result selects a zero-valued observation, it preserves
+that observation's sign. Positive and negative zeros compare equal, so either
+sign may be selected when both occur at the requested rank. Interpolated
+results take their sign from the interpolation arithmetic.
+
 By default observations are copied before partitioning. Setting allowModifySlice
 permits rearranging the input and avoids that scratch allocation. When input
 modification is enabled, observations must not overlap the probabilities.
@@ -6429,6 +6434,11 @@ through the same allocator after all uses. Construction failure releases any
 result allocation as well. If passing a temporary allocator, its backing storage
 and a compatible allocator for disposal must outlive the result. Attributes
 depend on the allocator.
+
+When a floating-point result selects a zero-valued observation, it preserves
+that observation's sign. Positive and negative zeros compare equal, so either
+sign may be selected when both occur at the requested rank. Interpolated
+results take their sign from the interpolation arithmetic.
 
 By default observations are copied before partitioning. Setting allowModifySlice
 permits rearranging the input and avoids that scratch allocation. When input
@@ -6523,6 +6533,11 @@ A scalar probability returns a scalar; a probability slice/array or multiple
 probabilities returns an owning GC slice. The result type is independent of the
 probability type. Use $(LREF rcquantile) for the former reference-counted behavior.
 
+When a floating-point result selects a zero-valued observation, it preserves
+that observation's sign. Positive and negative zeros compare equal, so either
+sign may be selected when both occur at the requested rank. Interpolated
+results take their sign from the interpolation arithmetic.
+
 By default observations are copied before partitioning. Setting allowModifySlice
 permits rearranging the input and avoids that scratch allocation. When input
 modification is enabled, observations must not overlap the probabilities.
@@ -6590,6 +6605,26 @@ template quantile(QuantileAlgo algorithm = QuantileAlgo.type7, bool allowModifyS
         QuantileContext context;
         return dispatchQuantile!(F, algorithm, allowModifySlice, QuantileAllocation.gc)(
             context, data, probabilities);
+    }
+}
+
+version(mir_stat_test)
+@safe unittest
+{
+    foreach (first; [-0.0, 0.0])
+    foreach (last; [-0.0, 0.0])
+    {
+        double[2] data = [first, last];
+        auto endpoints = quantile(data, 0.0, 1.0);
+        auto mixed = quantile(data, 0.5, 1.0, 0.0);
+        foreach (i, p; [0.0, 1.0])
+        {
+            foreach (value; [quantile(data, p), endpoints[i], mixed[2 - i]])
+            {
+                assert(value == 0);
+                if (first is last) assert(value is first);
+            }
+        }
     }
 }
 
