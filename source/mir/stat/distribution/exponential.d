@@ -537,6 +537,21 @@ version(mir_stat_test)
         assert(approxEqual(exponentialInvCDF(x,rate), T(0.55451774444795624753378569716654125L), 8*T.epsilon));
     }}
     import mir.bignum.fixed: UInt;
+    alias T = Fp!64;
+    alias U = UInt!64;
+    const x = T(0.5), rate = T(1.25);
+    assert(exponentialPDF(x, rate) == T(false, -64, U(0xab489dc0dfc70cb0UL)));
+    assert(exponentialCDF(x, rate) == T(false, -65, U(0xedf236cb66c1854dUL)));
+    assert(exponentialCCDF(x, rate) == T(false, -64, U(0x8906e49a4c9f3d59UL)));
+    assert(exponentialLPDF(x, rate) == T(true, -65, U(0xcdc020e19597794fUL)));
+    assert(exponentialInvCDF(x, rate) == T(false, -64, U(0x8df4dff974a5faf0UL)));
+}
+
+// Check the same represented inputs against the 128-bit references.
+version(mir_stat_test_slow_numerics)
+@safe pure nothrow @nogc unittest
+{
+    import mir.bignum.fixed: UInt;
     alias Wide = Fp!128;
     alias U = UInt!128;
     const x = Wide(0.5), rate = Wide(1.25);
