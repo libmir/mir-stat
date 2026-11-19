@@ -5861,7 +5861,7 @@ private auto dispatchQuantile(F, QuantileAlgo algorithm, bool modify,
     auto compute(Probability)(scope auto ref Probability probability)
     {
         static if (assumeSorted)
-            return sortedQuantileResult!(F, algorithm)(context, data, probability);
+            return sortedQuantileResult!(F, algorithm, allocation)(context, data, probability);
         else
             return allocatedQuantile!(F, algorithm, modify, allocation)(context, data, probability);
     }
@@ -5903,6 +5903,8 @@ Compute quantiles into caller-provided output without allocating.
 The observations in workspace may be rearranged by partitioning; they need not
 end up sorted. Probabilities are read without modification. Output must have one
 element per probability, and its element type determines the result type.
+The three-argument overload also accepts a default ascending Phobos `SortedRange`
+and forwards to $(LREF quantileAssumeSortedInto), which reads observations directly.
 Workspace, probabilities, and output must not overlap.
 The overload with scratch remembers requested ranks and intermediate pivots
 during the batch, so later queries partition only unresolved intervals. Use it when requesting
@@ -5942,7 +5944,10 @@ template quantileInto(QuantileAlgo algorithm = QuantileAlgo.type7)
     void quantileInto(Data, P, Output)(
         scope auto ref Data workspace, scope auto ref P probabilities, scope auto ref Output output)
     {
-        quantileIntoImpl!(algorithm, false)(workspace, probabilities, output, null);
+        static if (isPhobosSortedRange!Data)
+            quantileAssumeSortedInto!algorithm(workspace, probabilities, output);
+        else
+            quantileIntoImpl!(algorithm, false)(workspace, probabilities, output, null);
     }
 
     /++ Reuse partition boundaries within the batch using caller-provided scratch.
@@ -6342,6 +6347,9 @@ Compute quantiles with reference-counted scratch and result storage.
 A scalar probability returns a scalar; multiple probabilities return an owning
 RC slice. The result remains valid after the inputs go out of scope.
 
+A random-access Phobos `SortedRange` with a length and the default ascending
+predicate uses $(LREF rcquantileAssumeSorted) and reads observations directly.
+
 By default observations are copied before partitioning. Setting allowModifySlice
 permits rearranging the input and avoids that scratch allocation. When input
 modification is enabled, observations must not overlap the probabilities.
@@ -6360,14 +6368,19 @@ template rcquantile(F, QuantileAlgo algorithm = QuantileAlgo.type7, bool allowMo
 {
     /++
     Params:
-        data = observations as a slice or array
+        data = observations as an array, Mir slice, or ascending Phobos `SortedRange`
         probabilities = a scalar, probability slice/array, or variadic probabilities; omitted for quartiles
     +/
     auto rcquantile(Data, P...)(scope auto ref Data data, scope auto ref P probabilities)
     {
-        QuantileContext context;
-        return dispatchQuantile!(F, algorithm, allowModifySlice, QuantileAllocation.rc)(
-            context, data, probabilities);
+        static if (isPhobosSortedRange!Data)
+            return rcquantileAssumeSorted!(F, algorithm)(data, probabilities);
+        else
+        {
+            QuantileContext context;
+            return dispatchQuantile!(F, algorithm, allowModifySlice, QuantileAllocation.rc)(
+                context, data, probabilities);
+        }
     }
 }
 
@@ -6376,15 +6389,20 @@ template rcquantile(QuantileAlgo algorithm = QuantileAlgo.type7, bool allowModif
 {
     /++
     Params:
-        data = observations as a slice or array
+        data = observations as an array, Mir slice, or ascending Phobos `SortedRange`
         probabilities = a scalar, probability slice/array, or variadic probabilities; omitted for quartiles
     +/
     auto rcquantile(Data, P...)(scope auto ref Data data, scope auto ref P probabilities)
     {
-        alias F = quantileType!(typeof(quantileSlice(data)), algorithm);
-        QuantileContext context;
-        return dispatchQuantile!(F, algorithm, allowModifySlice, QuantileAllocation.rc)(
-            context, data, probabilities);
+        static if (isPhobosSortedRange!Data)
+            return rcquantileAssumeSorted!(algorithm)(data, probabilities);
+        else
+        {
+            alias F = quantileType!(typeof(quantileSlice(data)), algorithm);
+            QuantileContext context;
+            return dispatchQuantile!(F, algorithm, allowModifySlice, QuantileAllocation.rc)(
+                context, data, probabilities);
+        }
     }
 }
 
@@ -6433,6 +6451,9 @@ result allocation as well. If passing a temporary allocator, its backing storage
 and a compatible allocator for disposal must outlive the result. Attributes
 depend on the allocator.
 
+A random-access Phobos `SortedRange` with a length and the default ascending
+predicate uses $(LREF makeQuantileAssumeSorted) and reads observations directly.
+
 By default observations are copied before partitioning. Setting allowModifySlice
 permits rearranging the input and avoids that scratch allocation. When input
 modification is enabled, observations must not overlap the probabilities.
@@ -6452,13 +6473,18 @@ template makeQuantile(F, QuantileAlgo algorithm = QuantileAlgo.type7, bool allow
     /++
     Params:
         allocator = allocator used for scratch and result storage
-        data = observations as a slice or array
+        data = observations as an array, Mir slice, or ascending Phobos `SortedRange`
         probabilities = a scalar, probability slice/array, or variadic probabilities; omitted for quartiles
     +/
     auto makeQuantile(Allocator, Data, P...)(auto ref Allocator allocator, scope auto ref Data data, scope auto ref P probabilities)
     {
-        return dispatchQuantile!(F, algorithm, allowModifySlice, QuantileAllocation.custom)(
-            allocator, data, probabilities);
+        static if (isPhobosSortedRange!Data)
+            return makeQuantileAssumeSorted!(F, algorithm)(allocator, data, probabilities);
+        else
+        {
+            return dispatchQuantile!(F, algorithm, allowModifySlice, QuantileAllocation.custom)(
+                allocator, data, probabilities);
+        }
     }
 }
 
@@ -6468,14 +6494,19 @@ template makeQuantile(QuantileAlgo algorithm = QuantileAlgo.type7, bool allowMod
     /++
     Params:
         allocator = allocator used for scratch and result storage
-        data = observations as a slice or array
+        data = observations as an array, Mir slice, or ascending Phobos `SortedRange`
         probabilities = a scalar, probability slice/array, or variadic probabilities; omitted for quartiles
     +/
     auto makeQuantile(Allocator, Data, P...)(auto ref Allocator allocator, scope auto ref Data data, scope auto ref P probabilities)
     {
-        alias F = quantileType!(typeof(quantileSlice(data)), algorithm);
-        return dispatchQuantile!(F, algorithm, allowModifySlice, QuantileAllocation.custom)(
-            allocator, data, probabilities);
+        static if (isPhobosSortedRange!Data)
+            return makeQuantileAssumeSorted!(algorithm)(allocator, data, probabilities);
+        else
+        {
+            alias F = quantileType!(typeof(quantileSlice(data)), algorithm);
+            return dispatchQuantile!(F, algorithm, allowModifySlice, QuantileAllocation.custom)(
+                allocator, data, probabilities);
+        }
     }
 }
 
@@ -6673,8 +6704,8 @@ private auto sortedQuantileValues(Data)(return scope auto ref Data data)
     }
 }
 
-private auto sortedQuantileResult(F, QuantileAlgo algorithm, Values, Probability)(
-    ref QuantileContext context, scope auto ref Values values, scope auto ref Probability probability)
+private auto sortedQuantileResult(F, QuantileAlgo algorithm, QuantileAllocation allocation, Context, Values, Probability)(
+    ref Context context, scope auto ref Values values, scope auto ref Probability probability)
 {
     import std.traits : Unqual;
     alias Result = Unqual!(quantileType!(F, algorithm));
@@ -6682,13 +6713,48 @@ private auto sortedQuantileResult(F, QuantileAlgo algorithm, Values, Probability
         return quantileRanks!algorithm(values.length, probability).evaluate!(Result, algorithm)(values);
     else
     {
-        static assert(Probability.N == 1 && isFloatingPoint!(Unqual!(typeof(probability[0]))),
-            "Probabilities must be one-dimensional floating-point values");
-        auto result = allocateQuantiles!(Result, QuantileAllocation.gc)(context, probability.length);
-        foreach (i; 0 .. probability.length)
-            result[i] = quantileRanks!algorithm(values.length, probability[i]).evaluate!(Result, algorithm)(values);
+        auto result = allocateQuantiles!(Result, allocation)(context, probability.length);
+        static if (allocation == QuantileAllocation.custom)
+            scope(failure) releaseQuantiles(context, result);
+        writeSortedQuantiles!algorithm(values, probability, result.lightScope);
         return result;
     }
+}
+
+private void writeSortedQuantiles(QuantileAlgo algorithm, V, P, O)(scope V values, scope P levels, scope O output)
+{
+    import std.traits : Unqual;
+    alias F = Unqual!(typeof(output[0]));
+    static assert(P.N == 1 && O.N == 1, "Probabilities and output must be one-dimensional");
+    static assert(isFloatingPoint!(Unqual!(typeof(levels[0]))), "Probabilities must be floating-point values");
+    static assert(isFloatingPoint!F || algorithm == QuantileAlgo.type1 || algorithm == QuantileAlgo.type3,
+        "Interpolated quantiles require floating-point output");
+    assert(output.length == levels.length, "Output length must match probabilities");
+    foreach (i; 0 .. levels.length)
+        output[i] = quantileRanks!algorithm(values.length, levels[i]).evaluate!(F, algorithm)(values);
+}
+
+/++ Write quantiles of ascending observations into caller-provided output without allocating.
+The observations may be read-only. Output must have one element per probability and must
+not overlap the observations or probabilities. The output element type determines the result precision.
++/
+void quantileAssumeSortedInto(QuantileAlgo algorithm = QuantileAlgo.type7, Data, P, Output)(
+    scope auto ref Data data, scope auto ref P probabilities, scope auto ref Output output)
+{
+    writeSortedQuantiles!algorithm(sortedQuantileValues(data), quantileSlice(probabilities), quantileSlice(output));
+}
+
+version(mir_stat_test)
+@safe unittest
+{
+    import mir.ndslice : sliced, stride;
+    const int[6] data = [1, 99, 3, 99, 7, 99];
+    const double[2] levels = [0.75, 0.25];
+    auto values = data[].sliced.stride(2);
+    double[4] storage = [-1, -1, -1, -1];
+    auto output = storage[].sliced.stride(2);
+    quantileAssumeSortedInto(values, levels, output);
+    assert(storage == [5.0, -1, 2, -1]);
 }
 
 /++
@@ -6713,6 +6779,92 @@ auto quantileAssumeSorted(QuantileAlgo algorithm = QuantileAlgo.type7, Data, P..
 {
     alias F = quantileType!(typeof(sortedQuantileValues(data)[0]), algorithm);
     return quantileAssumeSorted!(F, algorithm)(data, probabilities);
+}
+
+/++ Return a reference-counted batch result. Scalar queries allocate no storage. Inputs and probability forms follow $(LREF quantileAssumeSorted). +/
+auto rcquantileAssumeSorted(F, QuantileAlgo algorithm = QuantileAlgo.type7, Data, P...)(
+    scope auto ref Data data, scope auto ref P probabilities)
+    if (isFloatingPoint!F || algorithm == QuantileAlgo.type1 || algorithm == QuantileAlgo.type3)
+{
+    scope auto values = sortedQuantileValues(data);
+    QuantileContext context;
+    return dispatchQuantile!(F, algorithm, false, QuantileAllocation.rc, true)(context, values, probabilities);
+}
+
+/// ditto
+auto rcquantileAssumeSorted(QuantileAlgo algorithm = QuantileAlgo.type7, Data, P...)(
+    scope auto ref Data data, scope auto ref P probabilities)
+{
+    alias F = quantileType!(typeof(sortedQuantileValues(data)[0]), algorithm);
+    return rcquantileAssumeSorted!(F, algorithm)(data, probabilities);
+}
+
+/++ Allocate the batch result with the supplied allocator. The caller releases the result. Scalar queries allocate no storage. Inputs and probability forms follow $(LREF quantileAssumeSorted). +/
+auto makeQuantileAssumeSorted(F, QuantileAlgo algorithm = QuantileAlgo.type7, Allocator, Data, P...)(
+    auto ref Allocator allocator, scope auto ref Data data, scope auto ref P probabilities)
+    if (isFloatingPoint!F || algorithm == QuantileAlgo.type1 || algorithm == QuantileAlgo.type3)
+{
+    scope auto values = sortedQuantileValues(data);
+    return dispatchQuantile!(F, algorithm, false, QuantileAllocation.custom, true)(allocator, values, probabilities);
+}
+
+/// ditto
+auto makeQuantileAssumeSorted(QuantileAlgo algorithm = QuantileAlgo.type7, Allocator, Data, P...)(
+    auto ref Allocator allocator, scope auto ref Data data, scope auto ref P probabilities)
+{
+    alias F = quantileType!(typeof(sortedQuantileValues(data)[0]), algorithm);
+    return makeQuantileAssumeSorted!(F, algorithm)(allocator, data, probabilities);
+}
+
+version(mir_stat_test)
+@system unittest
+{
+    import mir.ndslice : sliced, stride, map;
+    import std.exception : assertThrown;
+    import std.experimental.allocator : dispose;
+    const int[6] data = [1, 99, 3, 99, 7, 99];
+    const double[2] levels = [0.75, 0.25];
+    auto values = data[].sliced.stride(2);
+    auto owned()
+    {
+        const int[3] local = [1, 3, 7];
+        return rcquantileAssumeSorted(local, 0.75, 0.25);
+    }
+    assert(owned() == [5.0, 2]);
+    QuantileTestAllocator!() allocator;
+    assert(makeQuantileAssumeSorted(allocator, values, 0.5) == 3);
+    assert(allocator.allocations == 0);
+    auto result = makeQuantileAssumeSorted!real(allocator, values, levels);
+    assert(result == [5.0L, 2] && allocator.allocations == 1);
+    allocator.dispose(result.field);
+    double readLevel(double p)
+    {
+        if (p == 0.25) throw new Exception("probability read failure");
+        return p;
+    }
+    assertThrown!Exception(makeQuantileAssumeSorted(allocator, values, levels[].sliced.map!readLevel));
+    assert(allocator.allocations == 2 && allocator.releases == 2);
+}
+
+version(mir_stat_test)
+@system unittest
+{
+    import mir.ndslice : sliced, stride;
+    import std.range : assumeSorted;
+    import std.experimental.allocator : dispose;
+    const int[6] data = [1, 99, 3, 99, 7, 99];
+    const double[2] levels = [0.75, 0.25];
+    auto values = data[].sliced.stride(2);
+    auto ordered = assumeSorted(values);
+    double[4] storage = [-1, -1, -1, -1];
+    auto output = storage[].sliced.stride(2);
+    quantileInto(ordered, levels, output);
+    assert(storage == [5.0, -1, 2, -1]);
+    assert(rcquantile!real(ordered, levels) == [5.0L, 2]);
+    QuantileTestAllocator!() allocator;
+    auto result = makeQuantile!real(allocator, ordered, levels);
+    assert(result == [5.0L, 2]);
+    allocator.dispose(result.field);
 }
 
 version(mir_stat_test)
