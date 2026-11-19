@@ -112,6 +112,7 @@ sources_list = [
     'mir/stat/distribution/log_normal',
     'mir/stat/distribution/logistic',
     'mir/stat/distribution/negative_binomial',
+    'mir/stat/distribution/multivariate_normal',
     'mir/stat/distribution/normal',
     'mir/stat/distribution/pareto',
     'mir/stat/distribution/poisson',
