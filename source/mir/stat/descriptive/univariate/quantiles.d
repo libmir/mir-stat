@@ -5861,7 +5861,7 @@ private auto dispatchQuantile(F, QuantileAlgo algorithm, bool modify,
     auto compute(Probability)(scope auto ref Probability probability)
     {
         static if (assumeSorted)
-            return sortedQuantileResult!(F, algorithm)(context, data, probability);
+            return sortedQuantileResult!(F, algorithm, allocation)(context, data, probability);
         else
             return allocatedQuantile!(F, algorithm, modify, allocation)(context, data, probability);
     }
@@ -6673,8 +6673,8 @@ private auto sortedQuantileValues(Data)(return scope auto ref Data data)
     }
 }
 
-private auto sortedQuantileResult(F, QuantileAlgo algorithm, Values, Probability)(
-    ref QuantileContext context, scope auto ref Values values, scope auto ref Probability probability)
+private auto sortedQuantileResult(F, QuantileAlgo algorithm, QuantileAllocation allocation, Context, Values, Probability)(
+    ref Context context, scope auto ref Values values, scope auto ref Probability probability)
 {
     import std.traits : Unqual;
     alias Result = Unqual!(quantileType!(F, algorithm));
@@ -6682,7 +6682,9 @@ private auto sortedQuantileResult(F, QuantileAlgo algorithm, Values, Probability
         return quantileRanks!algorithm(values.length, probability).evaluate!(Result, algorithm)(values);
     else
     {
-        auto result = allocateQuantiles!(Result, QuantileAllocation.gc)(context, probability.length);
+        auto result = allocateQuantiles!(Result, allocation)(context, probability.length);
+        static if (allocation == QuantileAllocation.custom)
+            scope(failure) releaseQuantiles(context, result);
         writeSortedQuantiles!algorithm(values, probability, result.lightScope);
         return result;
     }
@@ -6746,6 +6748,71 @@ auto quantileAssumeSorted(QuantileAlgo algorithm = QuantileAlgo.type7, Data, P..
 {
     alias F = quantileType!(typeof(sortedQuantileValues(data)[0]), algorithm);
     return quantileAssumeSorted!(F, algorithm)(data, probabilities);
+}
+
+/++ Return a reference-counted batch result. Scalar queries allocate no storage. Inputs and probability forms follow $(LREF quantileAssumeSorted). +/
+auto rcquantileAssumeSorted(F, QuantileAlgo algorithm = QuantileAlgo.type7, Data, P...)(
+    scope auto ref Data data, scope auto ref P probabilities)
+    if (isFloatingPoint!F || algorithm == QuantileAlgo.type1 || algorithm == QuantileAlgo.type3)
+{
+    scope auto values = sortedQuantileValues(data);
+    QuantileContext context;
+    return dispatchQuantile!(F, algorithm, false, QuantileAllocation.rc, true)(context, values, probabilities);
+}
+
+/// ditto
+auto rcquantileAssumeSorted(QuantileAlgo algorithm = QuantileAlgo.type7, Data, P...)(
+    scope auto ref Data data, scope auto ref P probabilities)
+{
+    alias F = quantileType!(typeof(sortedQuantileValues(data)[0]), algorithm);
+    return rcquantileAssumeSorted!(F, algorithm)(data, probabilities);
+}
+
+/++ Allocate the batch result with the supplied allocator. The caller releases the result. Scalar queries allocate no storage. Inputs and probability forms follow $(LREF quantileAssumeSorted). +/
+auto makeQuantileAssumeSorted(F, QuantileAlgo algorithm = QuantileAlgo.type7, Allocator, Data, P...)(
+    auto ref Allocator allocator, scope auto ref Data data, scope auto ref P probabilities)
+    if (isFloatingPoint!F || algorithm == QuantileAlgo.type1 || algorithm == QuantileAlgo.type3)
+{
+    scope auto values = sortedQuantileValues(data);
+    return dispatchQuantile!(F, algorithm, false, QuantileAllocation.custom, true)(allocator, values, probabilities);
+}
+
+/// ditto
+auto makeQuantileAssumeSorted(QuantileAlgo algorithm = QuantileAlgo.type7, Allocator, Data, P...)(
+    auto ref Allocator allocator, scope auto ref Data data, scope auto ref P probabilities)
+{
+    alias F = quantileType!(typeof(sortedQuantileValues(data)[0]), algorithm);
+    return makeQuantileAssumeSorted!(F, algorithm)(allocator, data, probabilities);
+}
+
+version(mir_stat_test)
+@system unittest
+{
+    import mir.ndslice : sliced, stride, map;
+    import std.exception : assertThrown;
+    import std.experimental.allocator : dispose;
+    const int[6] data = [1, 99, 3, 99, 7, 99];
+    const double[2] levels = [0.75, 0.25];
+    auto values = data[].sliced.stride(2);
+    auto owned()
+    {
+        const int[3] local = [1, 3, 7];
+        return rcquantileAssumeSorted(local, 0.75, 0.25);
+    }
+    assert(owned() == [5.0, 2]);
+    QuantileTestAllocator!() allocator;
+    assert(makeQuantileAssumeSorted(allocator, values, 0.5) == 3);
+    assert(allocator.allocations == 0);
+    auto result = makeQuantileAssumeSorted!real(allocator, values, levels);
+    assert(result == [5.0L, 2] && allocator.allocations == 1);
+    allocator.dispose(result.field);
+    double readLevel(double p)
+    {
+        if (p == 0.25) throw new Exception("probability read failure");
+        return p;
+    }
+    assertThrown!Exception(makeQuantileAssumeSorted(allocator, values, levels[].sliced.map!readLevel));
+    assert(allocator.allocations == 2 && allocator.releases == 2);
 }
 
 version(mir_stat_test)
