@@ -6,7 +6,7 @@ Later sections describe weighted selection and cumulative-weight preparation for
 
 ## Entry points and shared implementation
 
-`quantileAssumeSorted` accepts ascending arrays, Mir slices, and Phobos `SortedRange` inputs with the default ascending predicate. It indexes the required ranks directly using the existing type 1-9 formulas and interpolation. `quantileRanks` determines the required indices and interpolation fraction. Unsorted selection establishes those indices before evaluation, while sorted lookup evaluates them directly. Scalar calls need no workspace. Batch calls allocate only the result.
+`quantileAssumeSorted` accepts ascending arrays, Mir slices, and Phobos `SortedRange` inputs with the default ascending predicate. It indexes the required ranks directly using the existing type 1-9 formulas and interpolation. `quantileRanks` determines the required indices and interpolation fraction. Unsorted selection establishes those indices before evaluation, while sorted lookup evaluates them directly. Scalar calls need no workspace. Batch calls allocate only the result. The GC `quantile` entry point forwards a default ascending `SortedRange` to this path at compile time.
 
 GC, RC, and custom-allocation quantile functions share the selection logic. Their allocation policy determines how temporary and result storage is owned and released. Boxes group work by function; a node naming another function represents a call to it.
 

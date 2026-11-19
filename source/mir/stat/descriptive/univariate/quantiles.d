@@ -6342,11 +6342,6 @@ Compute quantiles with reference-counted scratch and result storage.
 A scalar probability returns a scalar; multiple probabilities return an owning
 RC slice. The result remains valid after the inputs go out of scope.
 
-When a floating-point result selects a zero-valued observation, it preserves
-that observation's sign. Positive and negative zeros compare equal, so either
-sign may be selected when both occur at the requested rank. Interpolated
-results take their sign from the interpolation arithmetic.
-
 By default observations are copied before partitioning. Setting allowModifySlice
 permits rearranging the input and avoids that scratch allocation. When input
 modification is enabled, observations must not overlap the probabilities.
@@ -6438,11 +6433,6 @@ result allocation as well. If passing a temporary allocator, its backing storage
 and a compatible allocator for disposal must outlive the result. Attributes
 depend on the allocator.
 
-When a floating-point result selects a zero-valued observation, it preserves
-that observation's sign. Positive and negative zeros compare equal, so either
-sign may be selected when both occur at the requested rank. Interpolated
-results take their sign from the interpolation arithmetic.
-
 By default observations are copied before partitioning. Setting allowModifySlice
 permits rearranging the input and avoids that scratch allocation. When input
 modification is enabled, observations must not overlap the probabilities.
@@ -6531,17 +6521,22 @@ unittest
 }
 
 /++
-Compute quantiles with GC-allocated scratch and result storage.
+Compute ordinary sample quantiles.
 A scalar probability returns a scalar; a probability slice/array or multiple
 probabilities returns an owning GC slice. The result type is independent of the
 probability type. Use $(LREF rcquantile) for the former reference-counted behavior.
+
+A random-access Phobos `SortedRange` with a length and the default ascending
+predicate uses $(LREF quantileAssumeSorted) to read the required ranks directly.
+This requires no observation workspace.
 
 When a floating-point result selects a zero-valued observation, it preserves
 that observation's sign. Positive and negative zeros compare equal, so either
 sign may be selected when both occur at the requested rank. Interpolated
 results take their sign from the interpolation arithmetic.
 
-By default observations are copied before partitioning. Setting allowModifySlice
+For arrays and Mir slices, observations are copied before partitioning by
+default. Setting allowModifySlice
 permits rearranging the input and avoids that scratch allocation. When input
 modification is enabled, observations must not overlap the probabilities.
 Use $(LREF quantileInto) for caller-provided output.
@@ -6583,14 +6578,19 @@ template quantile(F, QuantileAlgo algorithm = QuantileAlgo.type7, bool allowModi
 {
     /++
     Params:
-        data = observations as a slice or array
+        data = observations as an array, Mir slice, or ascending Phobos `SortedRange`
         probabilities = a scalar, probability slice/array, or variadic probabilities; omitted for quartiles
     +/
     auto quantile(Data, P...)(scope auto ref Data data, scope auto ref P probabilities)
     {
-        QuantileContext context;
-        return dispatchQuantile!(F, algorithm, allowModifySlice, QuantileAllocation.gc)(
-            context, data, probabilities);
+        static if (isPhobosSortedRange!Data)
+            return quantileAssumeSorted!(F, algorithm)(data, probabilities);
+        else
+        {
+            QuantileContext context;
+            return dispatchQuantile!(F, algorithm, allowModifySlice, QuantileAllocation.gc)(
+                context, data, probabilities);
+        }
     }
 }
 
@@ -6599,21 +6599,37 @@ template quantile(QuantileAlgo algorithm = QuantileAlgo.type7, bool allowModifyS
 {
     /++
     Params:
-        data = observations as a slice or array
+        data = observations as an array, Mir slice, or ascending Phobos `SortedRange`
         probabilities = a scalar, probability slice/array, or variadic probabilities; omitted for quartiles
     +/
     auto quantile(Data, P...)(scope auto ref Data data, scope auto ref P probabilities)
     {
-        alias F = quantileType!(typeof(quantileSlice(data)), algorithm);
-        QuantileContext context;
-        return dispatchQuantile!(F, algorithm, allowModifySlice, QuantileAllocation.gc)(
-            context, data, probabilities);
+        static if (isPhobosSortedRange!Data)
+            return quantileAssumeSorted!(algorithm)(data, probabilities);
+        else
+        {
+            alias F = quantileType!(typeof(quantileSlice(data)), algorithm);
+            QuantileContext context;
+            return dispatchQuantile!(F, algorithm, allowModifySlice, QuantileAllocation.gc)(
+                context, data, probabilities);
+        }
     }
 }
 
 version(mir_stat_test)
 @safe unittest
 {
+    import std.range : assumeSorted;
+    int[4] data = [1, 3, 5, 8];
+    auto ordered = assumeSorted(data[]);
+    assert(quantile(ordered, 0.75) == quantileAssumeSorted(data, 0.75));
+    assert(quantile!real(ordered, 0.25) == quantileAssumeSorted!real(data, 0.25));
+}
+
+version(mir_stat_test)
+@safe unittest
+{
+    import std.range : assumeSorted;
     foreach (first; [-0.0, 0.0])
     foreach (last; [-0.0, 0.0])
     {
@@ -6624,6 +6640,7 @@ version(mir_stat_test)
         {
             const sorted = quantileAssumeSorted(data, p);
             assert(sorted is data[i]);
+            assert(quantile(assumeSorted(data[]), p) is sorted);
             foreach (value; [quantile(data, p), endpoints[i], mixed[2 - i]])
             {
                 assert(value == 0);
