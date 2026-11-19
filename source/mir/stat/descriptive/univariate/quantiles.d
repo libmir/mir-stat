@@ -2957,7 +2957,6 @@ private WeightedQuantileState!(interpretation, algorithm) prepareWeightedQuantil
     import mir.ndslice.sorting: sort;
     import mir.primitives: DeepElementType;
     alias Entry = DeepElementType!Workspace;
-    enum uniform = algorithm == WeightedQuantileAlgo.type7 || algorithm == WeightedQuantileAlgo.type8;
     bool ascending = true, descending = true;
     void observe(const ref Entry previous, const ref Entry current)
     {
@@ -3004,6 +3003,14 @@ private WeightedQuantileState!(interpretation, algorithm) prepareWeightedQuantil
             sort!(weightedEntryLess!Entry)(workspace);
         }
     }
+    return accumulateWeightedQuantileWorkspace!(interpretation, algorithm)(workspace, maximum);
+}
+
+// Entries are in ascending observation order, then ascending raw weight order.
+private WeightedQuantileState!(interpretation, algorithm) accumulateWeightedQuantileWorkspace(
+    WeightInterpretation interpretation, WeightedQuantileAlgo algorithm, Workspace)(scope Workspace workspace, real maximum)
+{
+    enum uniform = algorithm == WeightedQuantileAlgo.type7 || algorithm == WeightedQuantileAlgo.type8;
     static if (weightedQuantileUsesEffectiveSize!(interpretation, algorithm))
     {
         Summator!(real, Summation.kahan) suffix, squares;
@@ -3102,7 +3109,7 @@ private F preparedWeightedQuantileAt(F, WeightInterpretation interpretation, Wei
 }
 
 private auto allocatedWeightedQuantile(F, WeightInterpretation interpretation, WeightedQuantileAlgo algorithm,
-    QuantileAllocation allocation, size_t fixedResultLength = 0, Context, Weights, Data, P)(
+    QuantileAllocation allocation, size_t fixedResultLength = 0, bool assumeSorted = false, Context, Weights, Data, P)(
     ref Context context, scope auto ref Weights weights,
     scope auto ref Data data, scope auto ref P probabilities)
 {
@@ -3135,17 +3142,30 @@ private auto allocatedWeightedQuantile(F, WeightInterpretation interpretation, W
         isWeightedInverseCDF!algorithm;
     static if (scalar)
     {
-        enum selectBatch = interpretation == WeightInterpretation.frequency || selectRelative;
+        enum selectBatch = !assumeSorted && (interpretation == WeightInterpretation.frequency || selectRelative);
         static if (selectBatch)
             alias levels = probabilities;
     }
     else
     {
         scope auto levels = quantileSlice(probabilities);
-        enum selectBatch = (interpretation == WeightInterpretation.frequency || selectRelative) &&
+        enum selectBatch = !assumeSorted && (interpretation == WeightInterpretation.frequency || selectRelative) &&
             isPointer!(IteratorOf!(typeof(levels)));
     }
-    static if (selectBatch)
+    static if (assumeSorted)
+    {
+        size_t count;
+        foreach (i; 0 .. masses.length)
+            if (masses[i] > 0)
+            {
+                workspace[count] = Entry(values[i], cast(typeof(Entry.init.cumulative)) masses[i]);
+                assert(!count || !weightedEntryLess(workspace[count], workspace[count - 1]),
+                    "weightedQuantileAssumeSorted requires ascending values and ascending weights within ties");
+                ++count;
+            }
+        const state = accumulateWeightedQuantileWorkspace!(interpretation, algorithm)(workspace, input.maximum);
+    }
+    else static if (selectBatch)
     {
         WeightedBatchResult!(Unqual!F) batch;
         const state = prepareWeightedQuantileWorkspace!(interpretation, algorithm)(
@@ -3192,7 +3212,7 @@ private auto allocatedWeightedQuantile(F, WeightInterpretation interpretation, W
 }
 
 private auto dispatchWeightedQuantile(F, WeightInterpretation interpretation, WeightedQuantileAlgo algorithm,
-    QuantileAllocation allocation, Context, Weights, Data, P...)(
+    QuantileAllocation allocation, bool assumeSorted = false, Context, Weights, Data, P...)(
     ref Context context, scope auto ref Weights weights, scope auto ref Data data,
     scope auto ref P probabilities)
 {
@@ -3200,16 +3220,16 @@ private auto dispatchWeightedQuantile(F, WeightInterpretation interpretation, We
     static if (P.length == 0)
     {
         const double[5] levels = [0, 0.25, 0.5, 0.75, 1];
-        return allocatedWeightedQuantile!(F, interpretation, algorithm, allocation)(context, weights, data, levels);
+        return allocatedWeightedQuantile!(F, interpretation, algorithm, allocation, 0, assumeSorted)(context, weights, data, levels);
     }
     else static if (P.length == 1)
-        return allocatedWeightedQuantile!(F, interpretation, algorithm, allocation)(context, weights, data, probabilities[0]);
+        return allocatedWeightedQuantile!(F, interpretation, algorithm, allocation, 0, assumeSorted)(context, weights, data, probabilities[0]);
     else
     {
         alias G = CommonType!P;
         static assert(isFloatingPoint!(Unqual!G), "Probabilities must be floating-point values");
         G[P.length] levels = [probabilities];
-        return allocatedWeightedQuantile!(F, interpretation, algorithm, allocation)(context, weights, data, levels);
+        return allocatedWeightedQuantile!(F, interpretation, algorithm, allocation, 0, assumeSorted)(context, weights, data, levels);
     }
 }
 
@@ -3386,6 +3406,159 @@ template weightedQuantile(WeightedQuantileAlgo algorithm,
     if (validWeightedQuantileOptions!(interpretation, algorithm))
 {
     alias weightedQuantile = .weightedQuantile!(interpretation, algorithm);
+}
+
+/++
+Compute weighted quantiles for observations in ascending order. Rows with zero
+weight are ignored. Among the remaining rows, weights must be nondecreasing
+within each group of equal observations. The workspace is accumulated directly
+in input order using the numerical conventions of $(LREF weightedQuantile),
+including its signed-zero convention. A Phobos SortedRange describes the value
+order alone; the caller also guarantees the weight order within ties.
+
+Params:
+    F = optional numeric result type. Defaults to the observation type for
+        inverseCDF and otherwise promotes integral observations to double and preserves floating-point types.
+    interpretation = relative (default) or frequency
+    algorithm = weighted estimator, default inverseCDF for relative weights
+        and type7 for frequency weights
+    data = one-dimensional array or Mir slice. Positive-weight observations
+        must be finite and ascending. A default ascending Phobos SortedRange
+        over either input form is also accepted.
+    weights = one-dimensional weights aligned with data, finite and nonnegative,
+        with at least one positive weight. Positive weights on equal values must
+        be nondecreasing. Frequency counts must be whole numbers.
+    probabilities = scalar, array/slice, or variadic probabilities in [0, 1].
+        Omit for the minimum, quartiles, and maximum.
+
+Returns:
+    A scalar for a scalar probability, otherwise a GC-owned slice with one
+    result per requested probability in caller order. Endpoints select the
+    minimum and maximum positive-weight observations.
++/
+template weightedQuantileAssumeSorted(F, WeightInterpretation interpretation = WeightInterpretation.relative,
+    WeightedQuantileAlgo algorithm = weightedTableDefault!interpretation)
+    if (validWeightedQuantileOptions!(interpretation, algorithm) &&
+        (algorithm == WeightedQuantileAlgo.inverseCDF || isFloatingPoint!F))
+{
+    /// ditto
+    auto weightedQuantileAssumeSorted(Data, Weights, P...)(
+        scope auto ref Data data, scope auto ref Weights weights, scope auto ref P probabilities)
+    {
+        static if (isPhobosSortedRange!Data)
+        {
+            scope auto ordered = sortedQuantileValues(data);
+            return .weightedQuantileAssumeSorted!(F, interpretation, algorithm)(ordered.release, weights, probabilities);
+        }
+        else
+        {
+            QuantileContext context;
+            return dispatchWeightedQuantile!(F, interpretation, algorithm, QuantileAllocation.gc, true)(
+                context, weights, data, probabilities);
+        }
+    }
+}
+
+/// ditto
+template weightedQuantileAssumeSorted(WeightInterpretation interpretation = WeightInterpretation.relative,
+    WeightedQuantileAlgo algorithm = weightedTableDefault!interpretation)
+    if (validWeightedQuantileOptions!(interpretation, algorithm))
+{
+    /// ditto
+    auto weightedQuantileAssumeSorted(Data, Weights, P...)(
+        scope auto ref Data data, scope auto ref Weights weights, scope auto ref P probabilities)
+    {
+        static if (isPhobosSortedRange!Data)
+        {
+            scope auto ordered = sortedQuantileValues(data);
+            return .weightedQuantileAssumeSorted!(interpretation, algorithm)(ordered.release, weights, probabilities);
+        }
+        else
+        {
+            alias F = WeightedQuantileResult!(Data, algorithm);
+            return .weightedQuantileAssumeSorted!(F, interpretation, algorithm)(data, weights, probabilities);
+        }
+    }
+}
+
+/// ditto
+template weightedQuantileAssumeSorted(F, WeightedQuantileAlgo algorithm,
+    WeightInterpretation interpretation = WeightInterpretation.relative)
+{
+    alias weightedQuantileAssumeSorted = .weightedQuantileAssumeSorted!(F, interpretation, algorithm);
+}
+
+/// ditto
+template weightedQuantileAssumeSorted(WeightedQuantileAlgo algorithm,
+    WeightInterpretation interpretation = WeightInterpretation.relative)
+{
+    alias weightedQuantileAssumeSorted = .weightedQuantileAssumeSorted!(interpretation, algorithm);
+}
+
+/// Within the tied value 2, weights increase. At the next value the weight may decrease.
+version(mir_stat_test) @safe unittest
+{
+    const int[4] values = [1, 2, 2, 5], weights = [1, 3, 7, 2];
+    assert(weightedQuantileAssumeSorted(values, weights, 0.5) == 2);
+}
+
+version(mir_stat_test) @safe unittest
+{
+    const int[4] weights = [1, 1, 1, 1];
+    const double[3] probabilities = [0, 0.5, 1];
+    foreach (first; [-0.0, 0.0])
+    {
+        const double[4] values = [-1, first, -first, 1];
+        auto actual = weightedQuantileAssumeSorted(values, weights, probabilities);
+        auto expected = weightedQuantile(values, weights, probabilities);
+        assert(actual == expected);
+        assert(actual[1] == 0);
+    }
+}
+
+version(mir_stat_test)
+@safe unittest
+{
+    import std.math : nextUp, nextDown;
+    import std.range : assumeSorted;
+    import std.traits : EnumMembers;
+    const double[5] data = [1, 2, 2, 5, 99];
+    static foreach (meaning; EnumMembers!WeightInterpretation)
+    static foreach (algo; EnumMembers!WeightedQuantileAlgo)
+    static if (validWeightedQuantileOptions!(meaning, algo))
+    {{
+        const int[5] weights = [1, 3, 7, 2, 0];
+        real boundary = 1.0L / 13;
+        real[6] ps = [1, nextUp(boundary), boundary, nextDown(boundary), 0, 0.5L];
+        auto expected = weightedQuantile!(real, meaning, algo)(data, weights, ps);
+        auto actual = weightedQuantileAssumeSorted!(real, meaning, algo)(data, weights, ps);
+        foreach (i, p; ps)
+        {
+            assert(actual[i] is expected[i]);
+            assert(weightedQuantileAssumeSorted!(meaning, algo)(data, weights, p)
+                is weightedQuantile!(meaning, algo)(data, weights, p));
+        }
+    }}
+    // A SortedRange describes the values only. The same tie-weight
+    // precondition applies when observations are wrapped.
+    const double[5] weights = [1, 1e-19, 1, 2, 0];
+    assert(weightedQuantileAssumeSorted!(WeightedQuantileAlgo.type8)(assumeSorted(data[]), weights)
+        == weightedQuantile!(WeightedQuantileAlgo.type8)(data, weights));
+}
+
+version(mir_stat_test)
+@system unittest
+{
+    import core.exception : AssertError;
+    import std.exception : assertThrown;
+    const double[5] values = [-0.0, +0.0, -7, 2, 2];
+    const int[5] weights = [1, 2, 0, 3, 4];
+    const double[3] levels = [0, 0.5, 1];
+    auto actual = weightedQuantileAssumeSorted(values, weights, levels);
+    auto expected = weightedQuantile(values, weights, levels);
+    foreach (i; 0 .. levels.length) assert(actual[i] == expected[i]);
+    const int[5] unordered = [2, 1, 0, 3, 4];
+    assertThrown!AssertError(weightedQuantileAssumeSorted(values, unordered, 0.5));
 }
 
 // Same-typed inputs must be interpreted as observations first in every API.
