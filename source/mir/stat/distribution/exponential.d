@@ -2,6 +2,7 @@
 This module contains algorithms for the $(LINK2 https://en.wikipedia.org/wiki/Exponential_distribution, Exponential Distribution).
 
 The parameter $(D lambda) is a rate (the reciprocal of the mean), not a scale.
+Omitting $(D lambda) selects the unit-rate exponential distribution.
 The support is $(D x >= 0). The inverse CDF currently requires $(D 0 <= p < 1);
 its contract excludes $(D p == 1), although the mathematical quantile tends to
 positive infinity as $(D p) approaches one.
@@ -163,6 +164,42 @@ unittest
 }
 
 /++
+Computes the probability density for an exponential distribution with rate one.
+
+Params:
+    T = Built-in floating-point or $(D Fp) type, inferred from the argument by default.
+    x = Nonnegative observation, including positive infinity.
+
+Returns:
+    The density at $(D x), in type $(D T). It is one at zero and zero at positive infinity.
++/
+@safe pure nothrow @nogc
+T exponentialPDF(T)(const T x)
+    if (isFloatingPoint!T || is(T == Fp!size, size_t size))
+{
+    return exponentialPDF(x, T(1));
+}
+
+///
+version(mir_stat_test)
+@safe pure nothrow @nogc unittest
+{
+    assert(exponentialPDF(0.0) == 1.0);
+}
+
+version(mir_stat_test)
+@safe pure nothrow @nogc unittest
+{
+    import std.meta: AliasSeq;
+    static foreach (T; AliasSeq!(float, double, real, Fp!64))
+    {{
+        const x = T(0.5);
+        assert(exponentialPDF(x) == exponentialPDF(x, T(1)));
+        assert(exponentialPDF(T(0)) == T(1));
+    }}
+}
+
+/++
 Computes the exponential cumulative distribution function (CDF).
 
 Returns the lower-tail probability $(D P(X <= x)).
@@ -227,6 +264,42 @@ unittest
 }
 
 /++
+Computes the cumulative distribution function for an exponential distribution with rate one.
+
+Params:
+    T = Built-in floating-point or $(D Fp) type, inferred from the argument by default.
+    x = Nonnegative observation, including positive infinity.
+
+Returns:
+    The lower-tail probability $(D P(X <= x)), in type $(D T). It is zero at zero and one at positive infinity.
++/
+@safe pure nothrow @nogc
+T exponentialCDF(T)(const T x)
+    if (isFloatingPoint!T || is(T == Fp!size, size_t size))
+{
+    return exponentialCDF(x, T(1));
+}
+
+///
+version(mir_stat_test)
+@safe pure nothrow @nogc unittest
+{
+    assert(exponentialCDF(0.0) == 0.0);
+}
+
+version(mir_stat_test)
+@safe pure nothrow @nogc unittest
+{
+    import std.meta: AliasSeq;
+    static foreach (T; AliasSeq!(float, double, real, Fp!64))
+    {{
+        const x = T(0.5);
+        assert(exponentialCDF(x) == exponentialCDF(x, T(1)));
+        assert(exponentialCDF(T(0)) == T(0));
+    }}
+}
+
+/++
 Computes the exponential complementary cumulative distribution function (CCDF).
 
 Returns the upper-tail probability $(D P(X > x)). Use this function directly
@@ -268,6 +341,42 @@ unittest
     assert(0.5.exponentialCCDF(2.0).approxEqual(1 - exponentialCDF(0.5, 2.0)));
     assert(0.75.exponentialCCDF(2.0).approxEqual(1 - exponentialCDF(0.75, 2.0)));
     assert(0.25.exponentialCCDF(0.5).approxEqual(1 - exponentialCDF(0.25, 0.5)));
+}
+
+/++
+Computes the complementary cumulative distribution function for an exponential distribution with rate one.
+
+Params:
+    T = Built-in floating-point or $(D Fp) type, inferred from the argument by default.
+    x = Nonnegative observation, including positive infinity.
+
+Returns:
+    The strict upper-tail probability $(D P(X > x)), in type $(D T). It is one at zero and zero at positive infinity.
++/
+@safe pure nothrow @nogc
+T exponentialCCDF(T)(const T x)
+    if (isFloatingPoint!T || is(T == Fp!size, size_t size))
+{
+    return exponentialCCDF(x, T(1));
+}
+
+///
+version(mir_stat_test)
+@safe pure nothrow @nogc unittest
+{
+    assert(exponentialCCDF(0.0) == 1.0);
+}
+
+version(mir_stat_test)
+@safe pure nothrow @nogc unittest
+{
+    import std.meta: AliasSeq;
+    static foreach (T; AliasSeq!(float, double, real, Fp!64))
+    {{
+        const x = T(0.5);
+        assert(exponentialCCDF(x) == exponentialCCDF(x, T(1)));
+        assert(exponentialCCDF(T(double.infinity)) == T(0));
+    }}
 }
 
 /++
@@ -330,6 +439,42 @@ unittest
 }
 
 /++
+Computes the inverse cumulative distribution function for an exponential distribution with rate one.
+
+Params:
+    T = Built-in floating-point or $(D Fp) type, inferred from the argument by default.
+    p = Finite cumulative probability satisfying $(D 0 <= p < 1).
+
+Returns:
+    The quantile at $(D p), in type $(D T). It is zero at $(D p == 0).
++/
+@safe pure nothrow @nogc
+T exponentialInvCDF(T)(const T p)
+    if (isFloatingPoint!T || is(T == Fp!size, size_t size))
+{
+    return exponentialInvCDF(p, T(1));
+}
+
+///
+version(mir_stat_test)
+@safe pure nothrow @nogc unittest
+{
+    assert(exponentialInvCDF(0.0) == 0.0);
+}
+
+version(mir_stat_test)
+@safe pure nothrow @nogc unittest
+{
+    import std.meta: AliasSeq;
+    static foreach (T; AliasSeq!(float, double, real, Fp!64))
+    {{
+        const p = T(0.5);
+        assert(exponentialInvCDF(p) == exponentialInvCDF(p, T(1)));
+        assert(exponentialInvCDF(T(0)) == T(0));
+    }}
+}
+
+/++
 Computes the exponential log probability density function (LPDF).
 
 Returns the natural logarithm of the density. A negative value is valid;
@@ -371,6 +516,42 @@ unittest
     assert(0.5.exponentialLPDF(2.0).approxEqual(log(exponentialPDF(0.5, 2.0))));
     assert(0.75.exponentialLPDF(2.0).approxEqual(log(exponentialPDF(0.75, 2.0))));
     assert(0.25.exponentialLPDF(0.5).approxEqual(log(exponentialPDF(0.25, 0.5))));
+}
+
+/++
+Computes the log probability density for an exponential distribution with rate one.
+
+Params:
+    T = Built-in floating-point or $(D Fp) type, inferred from the argument by default.
+    x = Nonnegative observation, including positive infinity.
+
+Returns:
+    The natural logarithm of the density at $(D x), in type $(D T). It equals $(D -x) and is negative infinity at positive infinity.
++/
+@safe pure nothrow @nogc
+T exponentialLPDF(T)(const T x)
+    if (isFloatingPoint!T || is(T == Fp!size, size_t size))
+{
+    return exponentialLPDF(x, T(1));
+}
+
+///
+version(mir_stat_test)
+@safe pure nothrow @nogc unittest
+{
+    assert(exponentialLPDF(2.5) == -2.5);
+}
+
+version(mir_stat_test)
+@safe pure nothrow @nogc unittest
+{
+    import std.meta: AliasSeq;
+    static foreach (T; AliasSeq!(float, double, real, Fp!64))
+    {{
+        const x = T(0.5);
+        assert(exponentialLPDF(x) == exponentialLPDF(x, T(1)));
+        assert(exponentialLPDF(x) == T(-0.5));
+    }}
 }
 
 private bool validRate(uint bits)(Fp!bits rate) @safe pure nothrow @nogc
@@ -615,6 +796,8 @@ unittest
         static foreach (f; AliasSeq!(exponentialInvCDF, exponentialPDF, exponentialLPDF,
                                     exponentialCDF, exponentialCCDF))
         {
+            static assert(is(typeof(f!T(x)) == T));
+            static assert(is(typeof(f(x)) == T));
             static assert(is(typeof(f!T(x, rate)) == T));
             static assert(is(typeof(f(x, rate)) == T));
         }
@@ -626,11 +809,13 @@ unittest
     if (contractsEnabled)
     {
         alias T = Fp!64;
+        assertThrown!AssertError(exponentialInvCDF(T(1)));
         assertThrown!AssertError(exponentialInvCDF(T(1), T(1)));
         assertThrown!AssertError(exponentialInvCDF(T(-1), T(1)));
         assertThrown!AssertError(exponentialInvCDF(T(0.5), T(0)));
         static foreach (f; AliasSeq!(exponentialPDF, exponentialLPDF, exponentialCDF, exponentialCCDF))
         {
+            assertThrown!AssertError(f(T(-1)));
             assertThrown!AssertError(f(T(-1), T(1)));
             assertThrown!AssertError(f(T(0), T(double.infinity)));
         }
