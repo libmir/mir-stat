@@ -43,3 +43,27 @@ package(mir.stat) Fp!bits logisticTail(bool upper, uint bits)(Fp!bits x, Fp!bits
     const numerator = small ? t : one;
     return numerator.divide(one.add(t)).finish!bits;
 }
+
+package(mir.stat) Fp!bits logisticDensity(uint bits)(Fp!bits x, Fp!bits location, Fp!bits scale)
+{
+    alias T = Fp!bits;
+    if (x.isNaN)
+        return x;
+    if (x.isInfinity)
+        return T(0);
+    alias S = Decay!bits;
+    const divisor = S.from(scale);
+    const one = S.from(T(1));
+    if (!position(x, location))
+    {
+        S quarter = one;
+        quarter.exponent -= 2;
+        return quarter.divide(divisor).finish!bits;
+    }
+    const z = distance!(3 * bits + 192)(x, location).divide(divisor);
+    const t = decay(z);
+    if (!t.fraction.coefficient)
+        return T(0);
+    const denominator = one.add(t);
+    return t.divide(denominator.multiply(denominator).multiply(divisor)).finish!bits;
+}

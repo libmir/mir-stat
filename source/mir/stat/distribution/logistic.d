@@ -210,6 +210,93 @@ unittest
 }
 
 /++
+Computes the density for the standard logistic distribution (location zero, scale one).
+
+Params:
+    T = Represented $(D Fp) type, inferred from the arguments.
+    x = Observation, which may be infinite or NaN.
+
+Returns:
+    The density in type $(D T), using guarded evaluation.
+    The peak is one quarter divided by the scale. Either infinity gives zero and NaN propagates.
++/
+@safe pure nothrow @nogc
+T logisticPDF(T)(const T x)
+    if (is(T == Fp!size, size_t size))
+{
+    return logisticPDF(x, T(0), T(1));
+}
+
+///
+version(mir_stat_test)
+@safe pure nothrow @nogc unittest
+{
+    import mir.bignum.fp: Fp;
+    alias T = Fp!64;
+    assert(logisticPDF(T(0)) == T(0.25));
+}
+
+/++
+Computes the density for the logistic distribution with the given location and scale.
+
+Params:
+    T = Represented $(D Fp) type, inferred from the arguments.
+    x = Observation, which may be infinite or NaN.
+    location = Finite location parameter.
+    scale = Positive finite scale parameter.
+
+Returns:
+    The density in type $(D T), using guarded evaluation.
+    The peak is one quarter divided by the scale. Either infinity gives zero and NaN propagates.
++/
+@safe pure nothrow @nogc
+T logisticPDF(T)(const T x, const T location, const T scale)
+    if (is(T == Fp!size, size_t size))
+    in (!location.isSpecial, "location must be finite")
+    in (!scale.isSpecial && !scale.sign && !!scale.coefficient, "scale must be finite and positive")
+{
+    import mir.stat.internal.fp_logistic: logisticDensity;
+    return logisticDensity(x, location, scale);
+}
+
+///
+version(mir_stat_test)
+@safe pure nothrow @nogc unittest
+{
+    import mir.bignum.fp: Fp;
+    alias T = Fp!64;
+    assert(logisticPDF(T(3), T(3), T(2)) == T(0.125));
+}
+
+version(mir_stat_test)
+@safe pure nothrow @nogc unittest
+{
+    import mir.bignum.fixed: UInt;
+    alias T = Fp!64;
+    alias U = UInt!64;
+    import mir.math.common: approxEqual;
+    import std.meta: AliasSeq;
+    static foreach (R; AliasSeq!(float, double, real))
+        assert(approxEqual(logisticPDF(R(7), R(1), R(3)),
+            R(0.03499786180116883911637472492014181L), 8 * R.epsilon));
+    const expected = T(false, -68, U(0x8f59eafddaec198dUL));
+    assert(logisticPDF(T(7), T(1), T(3)) == expected);
+    assert(logisticPDF(T(-5), T(1), T(3)) == expected);
+    assert(logisticPDF(T(double.nan)).isNaN);
+    assert(logisticPDF(T(-double.infinity)) == T(0));
+    // At z = 2^63, exp(-z) underflows. Division by 2^long.min restores
+    // the density; normalize exp(-z) in base two before applying the scale.
+    const quantum = T(false, long.min, U(1));
+    assert(logisticPDF(T(false, 63, U(1))) == T(0));
+    assert(logisticPDF(T(1), T(0), quantum) == T(0));
+    assert(logisticPDF(T(false, long.min + 63, U(1)), T(0), quantum)
+        == T(false, -4083141060989546747L, U(0x98d3377e65eee9c8UL)));
+    const largeScale = T(false, long.max - 1, U(2));
+    assert(logisticPDF(T(0), T(0), largeScale) == T(0)); // half a quantum
+    assert(logisticPDF(T(0), T(0), T(false, long.max - 64, U.max)) == quantum);
+}
+
+/++
 Computes the Logistic cumulative distribution function (CDF).
 
 Returns the lower-tail probability $(D P(X <= x)).
