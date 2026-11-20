@@ -144,3 +144,40 @@ package(mir.stat) Fp!bits logisticLogDensity(uint bits)(Fp!bits x, Fp!bits locat
     const correction = Log.logDyadic(shape.fraction.coefficient, e, context);
     return addOffset!bits(peak, S.from(correction), true);
 }
+
+package(mir.stat) Fp!bits logisticQuantile(uint bits)(Fp!bits p, Fp!bits location, Fp!bits scale)
+{
+    import mir.bignum.fixed: UInt;
+    import mir.stat.internal.fp_probability: fpProbabilityComplement;
+    import mir.stat.internal.fp_probability_log: ProbabilityLog;
+    alias T = Fp!bits;
+    if (!p.coefficient)
+        return T(true, long.max, UInt!bits(0));
+    const side = position(p, half!bits);
+    if (!side)
+        return location;
+    // Reflection is exact for a represented probability above one half.
+    const tail = side < 0 ? p : fpProbabilityComplement(p);
+    if (!tail.coefficient)
+        return T(false, long.max, UInt!bits(0));
+
+    // Subtracting the logs near the median costs up to an input width.
+    // Adding the location can then expose the cubic term of the log odds.
+    alias Log = ProbabilityLog!(4 * bits + 128);
+    alias S = Log.S;
+    enum work = 4 * bits + 320;
+    alias W = Fp!work;
+    Log.Context context;
+    const logTail = Log.logDyadic(tail.coefficient, tail.exponent, context);
+    S magnitude = S.from(logTail);
+    // Beyond this gap log(1-tail) lies below the working grid. Keep the
+    // original tail coefficient and exponent, even at the exponent floor.
+    if (tail.exponent >= -cast(long)work - bits)
+    {
+        const other = fpProbabilityComplement(cast(W)tail);
+        const logOther = Log.logDyadic(other.coefficient, other.exponent, context);
+        if (logOther.coefficient)
+            magnitude = S.from(addOffset!work(logOther, magnitude, false));
+    }
+    return addOffset!bits(location, magnitude.multiply(S.from(scale)), side < 0);
+}
