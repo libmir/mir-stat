@@ -296,6 +296,78 @@ unittest
 }
 
 /++
+Computes the lower-tail probability $(D P(X <= x)) for the standard logistic distribution (location zero, scale one).
+
+Params:
+    T = Represented $(D Fp) type, inferred from the arguments.
+    x = Observation, which may be infinite or NaN.
+
+Returns:
+    The lower-tail probability $(D P(X <= x)) in type $(D T), using guarded evaluation.
+    At the location the result is one half. Negative and positive infinity give zero and one. NaN propagates.
++/
+@safe pure nothrow @nogc
+T logisticCDF(T)(const T x)
+    if (is(T == Fp!size, size_t size))
+{
+    return logisticCDF(x, T(0), T(1));
+}
+
+///
+version(mir_stat_test)
+@safe pure nothrow @nogc unittest
+{
+    import mir.bignum.fp: Fp;
+    alias T = Fp!64;
+    assert(logisticCDF(T(0)) == T(0.5));
+}
+
+/++
+Computes the lower-tail probability $(D P(X <= x)) for the logistic distribution with the given location and scale.
+
+Params:
+    T = Represented $(D Fp) type, inferred from the arguments.
+    x = Observation, which may be infinite or NaN.
+    location = Finite location parameter.
+    scale = Positive finite scale parameter.
+
+Returns:
+    The lower-tail probability $(D P(X <= x)) in type $(D T), using guarded evaluation.
+    At the location the result is one half. Negative and positive infinity give zero and one. NaN propagates.
++/
+@safe pure nothrow @nogc
+T logisticCDF(T)(const T x, const T location, const T scale)
+    if (is(T == Fp!size, size_t size))
+    in (!location.isSpecial, "location must be finite")
+    in (!scale.isSpecial && !scale.sign && !!scale.coefficient, "scale must be finite and positive")
+{
+    import mir.stat.internal.fp_logistic: logisticTail;
+    return logisticTail!false(x, location, scale);
+}
+
+///
+version(mir_stat_test)
+@safe pure nothrow @nogc unittest
+{
+    import mir.bignum.fp: Fp;
+    alias T = Fp!64;
+    assert(logisticCDF(T(3), T(3), T(2)) == T(0.5));
+}
+
+version(mir_stat_test)
+@safe pure nothrow @nogc unittest
+{
+    import mir.bignum.fixed: UInt;
+    alias T = Fp!64;
+    alias U = UInt!64;
+    assert(logisticCDF(T(double.nan)).isNaN);
+    assert(logisticCDF(T(double.infinity)) == T(1));
+    assert(logisticCDF(T(-double.infinity)) == T(0));
+    assert(logisticCDF(T(true, long.max - 1, U.max)) == T(0));
+    assert(logisticCDF(T(false, -1, U(2)), T(1), T(2)) == T(0.5));
+}
+
+/++
 Computes the Logistic complementary cumulative distribution function (CCDF).
 
 Returns the upper-tail probability $(D P(X > x)). Use this function directly
@@ -454,6 +526,52 @@ version(mir_stat_test)
     assert(logisticCCDF(T(6393154322601327831L)) == zero);
     assert(logisticCCDF(T(100)) == T(false, -208, U(0xd460f8a7157ae57aUL)));
     assert(logisticCCDF(T(true, 0, U(0))) == T(0.5));
+}
+
+// Shared dyadic observations have standardized offsets of exactly +/-2.
+version(mir_stat_test)
+@safe pure nothrow @nogc unittest
+{
+    import mir.bignum.fixed: UInt;
+    import mir.math.common: approxEqual;
+    import std.meta: AliasSeq;
+    static foreach (R; AliasSeq!(float, double, real))
+    {{
+        const small = R(0.119202922022117555940270858697603205L);
+        const large = R(0.880797077977882444059729141302396795L);
+        assert(approxEqual(logisticCDF(R(-5), R(1), R(3)), small, 8 * R.epsilon));
+        assert(approxEqual(logisticCCDF(R(7), R(1), R(3)), small, 8 * R.epsilon));
+        assert(approxEqual(logisticCDF(R(7), R(1), R(3)), large, 8 * R.epsilon));
+        assert(approxEqual(logisticCCDF(R(-5), R(1), R(3)), large, 8 * R.epsilon));
+    }}
+    alias T = Fp!64;
+    alias U = UInt!64;
+    const small = T(false, -67, U(0xf420a95d618d754fUL));
+    const large = T(false, -64, U(0xe17bead453ce5156UL));
+    assert(logisticCDF(T(-5), T(1), T(3)) == small);
+    assert(logisticCCDF(T(7), T(1), T(3)) == small);
+    assert(logisticCDF(T(7), T(1), T(3)) == large);
+    assert(logisticCCDF(T(-5), T(1), T(3)) == large);
+}
+
+// At z = t, the cubic term in 1/2 + z/4 - z^3/48 puts the
+// result on the center side of a midpoint. Adding t^3 crosses it.
+version(mir_stat_test_slow_numerics)
+@safe pure nothrow @nogc unittest
+{
+    import mir.bignum.fixed: UInt;
+    enum b = 256;
+    alias T = Fp!b;
+    alias U = UInt!b;
+    const half = T(0.5);
+    auto successor = T(0.5);
+    successor.coefficient += 1;
+    const t = T(false, 1-b, U(1));
+    assert(logisticCDF(t) == half);
+    assert(logisticCDF(t, T(true, 3*(1-b), U(1)), T(1)) == successor);
+    const h = T(false, -b, U(1));
+    assert(logisticCCDF(h) == half);
+    assert(logisticCCDF(h, T(true, -3*b, U(1)), T(1)) == T(false, -b-1, U.max));
 }
 
 /++

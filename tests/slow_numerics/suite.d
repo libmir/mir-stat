@@ -10,6 +10,7 @@ import mir.stat.distribution.binomial;
 import mir.stat.distribution.exponential;
 import mir.stat.distribution.hypergeometric;
 import mir.stat.distribution.laplace;
+import mir.stat.distribution.logistic;
 import mir.stat.distribution.negative_binomial;
 import mir.stat.distribution.poisson;
 import mir.stat.distribution.uniform;
