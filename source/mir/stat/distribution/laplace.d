@@ -304,6 +304,67 @@ unittest
 }
 
 /++
+Computes the lower tail of the standard Laplace distribution (location zero, scale one).
+
+Params:
+    T = Represented $(D Fp) type, inferred from the arguments by default.
+    x = Observation, which may be infinite or NaN.
+
+Returns:
+    $(D P(X <= x)) in type $(D T). The probability is one half at the location.
+    Negative and positive infinity give zero and one, respectively. NaN propagates.
+    Finite interior results use guarded evaluation.
++/
+@safe pure nothrow @nogc
+T laplaceCDF(T)(const T x)
+    if (is(T == Fp!size, size_t size))
+{
+    return laplaceCDF(x, T(0), T(1));
+}
+
+///
+version(mir_stat_test)
+@safe pure nothrow @nogc unittest
+{
+    import mir.bignum.fp: Fp;
+    alias T = Fp!64;
+    assert(laplaceCDF(T(0)) == T(0.5));
+}
+
+/++
+Computes the lower tail of the Laplace distribution with the given location and scale.
+
+Params:
+    T = Represented $(D Fp) type, inferred from the arguments by default.
+    x = Observation, which may be infinite or NaN.
+    location = Finite location parameter.
+    scale = Positive finite scale parameter.
+
+Returns:
+    $(D P(X <= x)) in type $(D T). The probability is one half at the location.
+    Negative and positive infinity give zero and one, respectively. NaN propagates.
+    Finite interior results use guarded evaluation.
++/
+@safe pure nothrow @nogc
+T laplaceCDF(T)(const T x, const T location, const T scale)
+    if (is(T == Fp!size, size_t size))
+    in (!location.isSpecial, "location must be finite")
+    in (!scale.isSpecial && !scale.sign && !!scale.coefficient, "scale must be finite and positive")
+{
+    import mir.stat.internal.fp_laplace: laplaceTail;
+    return laplaceTail!false(x, location, scale);
+}
+
+///
+version(mir_stat_test)
+@safe pure nothrow @nogc unittest
+{
+    import mir.bignum.fp: Fp;
+    alias T = Fp!64;
+    assert(laplaceCDF(T(3), T(3), T(2)) == T(0.5));
+}
+
+/++
 Computes the Laplace complementary cumulative distribution function (CCDF).
 
 Returns the upper-tail probability $(D P(X > x)). Use this function directly
@@ -463,20 +524,25 @@ version(mir_stat_test)
         const low = T(-5), high = T(7), location = T(1), scale = T(3);
         const small = T(0.0676676416183063459469997474862422L);
         const large = T(0.932332358381693654053000252513758L);
+        assert(approxEqual(laplaceCDF(low, location, scale), small, 8 * T.epsilon));
         assert(approxEqual(laplaceCCDF(high, location, scale), small, 8 * T.epsilon));
+        assert(approxEqual(laplaceCDF(high, location, scale), large, 8 * T.epsilon));
         assert(approxEqual(laplaceCCDF(low, location, scale), large, 8 * T.epsilon));
     }}
     alias T = Fp!64;
     alias U = UInt!64;
     const small = T(false, -67, U(0x8a95551dfc0e5cffUL));
     const large = T(false, -64, U(0xeead555c407e3460UL));
+    assert(laplaceCDF(T(-5), T(1), T(3)) == small);
     assert(laplaceCCDF(T(7), T(1), T(3)) == small);
+    assert(laplaceCDF(T(7), T(1), T(3)) == large);
     assert(laplaceCCDF(T(-5), T(1), T(3)) == large);
 
     // Opposite maximum bounds overflow a finite difference but give z = 2.
     const hi = T(false, long.max - 1, U.max);
     const lo = T(true, hi.exponent, hi.coefficient);
     assert(laplaceCCDF(hi, lo, hi) == small);
+    assert(laplaceCDF(hi, lo, hi) == large);
     assert(laplaceCCDF(lo, hi, hi) == large);
     // Adjacent points at the exponent floor differ by precisely one quantum.
     const one = T(false, long.min, U(1)), two = T(false, long.min, U(2));
@@ -484,17 +550,23 @@ version(mir_stat_test)
     assert(laplaceCCDF(two, one, three) == T(false, -65, U(0xb76e98917975268aUL)));
     assert(laplaceCCDF(one, two, three) == T(false, -64, U(0xa448b3b743456cbbUL)));
     assert(laplaceCCDF(T(1), one, T(1)) == T(false, -66, U(0xbc5ab1b16779be35UL)));
+    assert(laplaceCDF(lo) == T(0));
     assert(laplaceCCDF(lo) == T(1));
+    assert(laplaceCDF(T(true, 0, U(0))) == T(0.5));
     assert(laplaceCCDF(T(false, -1, U(2)), T(1), one) == T(0.5));
+    assert(laplaceCDF(T(double.infinity)) == T(1));
     assert(laplaceCCDF(T(-double.infinity)) == T(1));
-    assert(laplaceCCDF(T(double.nan)).isNaN);
+    assert(laplaceCDF(T(double.nan)).isNaN && laplaceCCDF(T(double.nan)).isNaN);
 
     // At the intervening half step the tail is about 0.742 quanta.
     // Rounding the decay first gives one quantum and halving it ties to zero.
     assert(laplaceCCDF(T(6393154322601327829L)) == one);
     assert(laplaceCCDF(T(false, -1, U(12786308645202655659UL))) == one);
     assert(laplaceCCDF(T(6393154322601327830L)) == T(0));
+    assert(laplaceCDF(T(0), T(-2), T(1)) == large);
+    assert(laplaceCDF(T(100)) == T(1));
     // The quadratic term puts both probabilities on the center side of a midpoint.
+    assert(laplaceCDF(T(false, -64, U(1))) == T(0.5));
     assert(laplaceCCDF(T(false, -65, U(1))) == T(0.5));
     assert(laplaceCCDF(T(100)) == T(false, -209, U(0xd460f8a7157ae57aUL)));
 }
@@ -512,6 +584,7 @@ version(mir_stat_test)
     above.coefficient += 1;
     const scale = T(false, above.exponent, U(3));
     assert(laplaceCCDF(above, T(1), scale) == small);
+    assert(laplaceCDF(above, T(1), scale) == large);
 }
 
 /++
