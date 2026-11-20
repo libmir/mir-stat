@@ -3,7 +3,8 @@ Multivariate normal log-density for one real observation and a positive-definite
 covariance or precision matrix. Precision is the inverse of covariance.
 Supply a Cholesky factor of either matrix to reuse it across
 calls. In zero dimensions the log-density is zero.
-For a raw matrix, $(LREF tryMultivariateNormalLPDFWithWorkspace) reports a failed Cholesky pivot.
+For a raw matrix, $(LREF tryMultivariateNormalLPDF) and
+$(LREF tryMultivariateNormalLPDFWithWorkspace) report a failed Cholesky pivot.
 These functions accept dense square matrix views, including strided slices.
 Only the selected triangle is read. Upper factors represent a matrix
 as U.transpose * U, and lower factors represent it as L * L.transpose.
@@ -198,7 +199,8 @@ version(mir_stat_test_multivariate_normal)
 }
 
 /// Allocate one work vector and, for a raw metric, one factor matrix.
-private Element!X evaluate(Allocation policy, CovarianceRepresentation form, TrianglePolicy triangle,
+private auto evaluate(Allocation policy, CovarianceRepresentation form, TrianglePolicy triangle,
+    bool reportFailure = false,
     A, X, C, M)(ref A allocator, scope auto ref X x, scope auto ref C mean, scope auto ref M metric)
 {
     import std.experimental.allocator: dispose;
@@ -211,7 +213,10 @@ private Element!X evaluate(Allocation policy, CovarianceRepresentation form, Tri
     {
         auto factor = allocate!(policy, Element!X)(allocator, metric.shape);
         scope(exit) static if (policy == Allocation.custom) allocator.dispose(factor.field);
-        return multivariateNormalLPDFWithWorkspace!(form, triangle)(x, mean, metric, work, factor);
+        static if (reportFailure)
+            return tryMultivariateNormalLPDFWithWorkspace!(form, triangle)(x, mean, metric, work, factor);
+        else
+            return multivariateNormalLPDFWithWorkspace!(form, triangle)(x, mean, metric, work, factor);
     }
 }
 
@@ -464,4 +469,44 @@ version(mir_stat_test_multivariate_normal)
     const tail = tryMultivariateNormalLPDFWithWorkspace(x[0 .. 1], mean[0 .. 1],
         data[0 .. 1].sliced(1, 1), work[0 .. 1], factor[0 .. 1].sliced(1, 1));
     assert(tail.failedPivot == 0 && tail.logDensity == -double.infinity);
+}
+
+/++
+Evaluate the log density using GC-managed scratch and report Cholesky failure.
+With ordinary floating-point slices, the call is `nothrow`.
+
+Params:
+    form = Raw matrix representation, either covariance (default) or inverseCovariance.
+    triangle = Logical triangle to read, upper by default.
+    x = Observation vector of k finite floating-point coordinates.
+    mean = Vector of k finite means with the same element type as x.
+    metric = Dense k-by-k matrix with the same element type as x. The selected
+        triangle must contain finite entries and defines the symmetric matrix.
+
+Returns:
+    A $(LREF MultivariateNormalLPDFResult). On success, `failedPivot == 0`
+    and `logDensity` is the natural log density at `x`. On factorization
+    failure, `failedPivot` identifies the failed step (counting from 1)
+    and `logDensity` is NaN. In zero dimensions both fields are zero.
++/
+MultivariateNormalLPDFResult!(Element!X) tryMultivariateNormalLPDF(
+    CovarianceRepresentation form = CovarianceRepresentation.covariance,
+    TrianglePolicy triangle = TrianglePolicy.upper, X, C, M)(
+    scope auto ref X x, scope auto ref C mean, scope auto ref M metric)
+    if (!prepared!form && matrix!M && compatible!(X, C, M))
+{
+    int allocator;
+    return evaluate!(Allocation.gc, form, triangle, true)(allocator, x.asView, mean.asView, metric.asView);
+}
+
+/// The first diagonal gives a factor entry of 2. The second pivot is 1 - (2/2)Â² = 0.
+version(mir_stat_test_multivariate_normal)
+@safe pure nothrow unittest
+{
+    import mir.ndslice.slice: sliced;
+    import std.math: isNaN;
+    double[2] x = [1, 2], mean = [0, 0];
+    double[4] covariance = [4, 2, double.nan, 1];
+    const result = tryMultivariateNormalLPDF(x[], mean[], covariance[].sliced(2, 2));
+    assert(result.failedPivot == 2 && isNaN(result.logDensity));
 }
