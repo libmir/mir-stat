@@ -874,6 +874,113 @@ unittest
     logisticLPDF(4.0, 2.0, 3.0).shouldApprox == log(0.07471913);
 }
 
+/++
+Computes the natural logarithm of the density for the standard logistic distribution (location zero, scale one).
+
+Params:
+    T = Represented $(D Fp) type, inferred from the arguments.
+    x = Observation, which may be infinite or NaN.
+
+Returns:
+    The natural logarithm of the density in type $(D T), using guarded evaluation.
+    The peak is minus the logarithm of four times the scale. Either infinity gives negative infinity and NaN propagates.
+    Cancellation beyond the working precision can give zero.
++/
+@safe pure nothrow @nogc
+T logisticLPDF(T)(const T x)
+    if (is(T == Fp!size, size_t size))
+{
+    return logisticLPDF(x, T(0), T(1));
+}
+
+///
+version(mir_stat_test)
+@safe pure nothrow @nogc unittest
+{
+    import mir.bignum.fp: Fp;
+    alias T = Fp!64;
+    assert(logisticLPDF(T(0)).sign);
+}
+
+/++
+Computes the natural logarithm of the density for the logistic distribution with the given location and scale.
+
+Params:
+    T = Represented $(D Fp) type, inferred from the arguments.
+    x = Observation, which may be infinite or NaN.
+    location = Finite location parameter.
+    scale = Positive finite scale parameter.
+
+Returns:
+    The natural logarithm of the density in type $(D T), using guarded evaluation.
+    The peak is minus the logarithm of four times the scale. Either infinity gives negative infinity and NaN propagates.
+    Cancellation beyond the working precision can give zero.
++/
+@safe pure nothrow @nogc
+T logisticLPDF(T)(const T x, const T location, const T scale)
+    if (is(T == Fp!size, size_t size))
+    in (!location.isSpecial, "location must be finite")
+    in (!scale.isSpecial && !scale.sign && !!scale.coefficient, "scale must be finite and positive")
+{
+    import mir.stat.internal.fp_logistic: logisticLogDensity;
+    return logisticLogDensity(x, location, scale);
+}
+
+///
+version(mir_stat_test)
+@safe pure nothrow @nogc unittest
+{
+    import mir.bignum.fp: Fp;
+    alias T = Fp!64;
+    assert(logisticLPDF(T(3), T(3), T(2)).sign);
+}
+
+version(mir_stat_test)
+@safe pure nothrow @nogc unittest
+{
+    import mir.bignum.fixed: UInt;
+    alias T = Fp!64;
+    alias U = UInt!64;
+    import mir.math.common: approxEqual;
+    import std.meta: AliasSeq;
+    static foreach (R; AliasSeq!(float, double, real))
+        assert(approxEqual(logisticLPDF(R(7), R(1), R(3)),
+            R(-3.35246831075405468428269884963913456752L), 8 * R.epsilon));
+    assert(logisticLPDF(T(7), T(1), T(3)) == T(true, -62, U(0xd68ed73ee4297375UL)));
+    assert(logisticLPDF(T(0), T(0), T(0.25)) == T(0));
+    assert(logisticLPDF(T(double.nan)).isNaN);
+    assert(logisticLPDF(T(double.infinity)) == T(-double.infinity));
+    const quantum = T(false, long.min, U(1));
+    const huge = T(false, long.max - 1, U(2));
+    assert(logisticLPDF(huge, T(0), quantum) == T(-double.infinity));
+    assert(logisticLPDF(huge, huge, huge).sign);
+    // At scale 1/4 the peak vanishes. The leading displacement is -4*x^2.
+    const tiny = T(false, -1000, U(1));
+    assert(logisticLPDF(tiny, T(0), T(0.25)) == T(true, -1998-63, U(1UL << 63)));
+    // Here the second term of the log-cosh series fits the working grid.
+    const small = T(false, -160, U(1));
+    assert(logisticLPDF(small, T(0), T(0.25)) == T(true, -318-63, U(1UL << 63)));
+    const high = T(false, 1000, U(1)), low = T(true, 936, U(1));
+    assert(logisticLPDF(high, low, T(1)) == T(true, 937, U(0x8000000000000001UL)));
+}
+
+version(mir_stat_test_slow_numerics)
+@safe pure nothrow @nogc unittest
+{
+    import mir.bignum.fixed: UInt;
+    alias T = Fp!128;
+    alias U = UInt!128;
+    // At scale 1/8 the positive root is log(1+sqrt(2))/4.
+    // Check its two enclosing dyadic observations with independent logs.
+    enum below = T(false, -130, U.fromHexString("e1a1b30bcea13660d8f99e8dd2518a53"));
+    T above = below;
+    above.coefficient += 1;
+    enum positive = T(false, -255, U.fromHexString("911f25b58e6d78d71cf36598a7153461"));
+    enum negative = T(true, -257, U.fromHexString("8f9735f9adc3aeb4f228906b38d628f9"));
+    assert(logisticLPDF(below, T(0), T(0.125)) == positive);
+    assert(logisticLPDF(above, T(0), T(0.125)) == negative);
+}
+
 // A finite standardized value survives an overflowing location subtraction.
 version(mir_stat_test)
 @safe pure nothrow @nogc
