@@ -28,7 +28,8 @@ The scratch matrix holds the centered readings. Subtracting the mean from the
 second run writes `[2, 1, 5]` into its scratch row. The batch then transforms
 all 100 scratch rows in place using the shared Cholesky factor. With a
 compatible layout, BLAS can perform this step in one triangular solve or
-multiply. All 100 log densities use the same log determinant.
+multiply. A raw covariance or precision matrix is factored once, and all
+100 log densities use the same log determinant.
 
 The full batch requires 300 observation scratch elements (100 runs × 3 readings per run).
 Processing ten runs per call requires 30. Each call can reuse the prepared factor and computes
@@ -558,6 +559,65 @@ version(mir_stat_test_multivariate_normal)
     assert(tail.failedPivot == 0 && tail.logDensity == -double.infinity);
 }
 
+/++
+Evaluate selected rows or columns using one shared covariance or precision matrix.
+Select observation and scratch axes independently. Both selections are forwarded
+as column views without copying. Writable elements must be disjoint from one
+another and from all inputs.
+
+Params:
+    form = covariance (default) or inverseCovariance.
+    triangle = Selected matrix triangle, upper by default.
+    x = Rectangular selection of n observations of k finite coordinates, made with
+        byDim or alongDim. For example, rows.byDim!0 selects rows.
+    mean = Vector of k finite means. All buffers share the observation element type.
+    metric = Dense k-by-k matrix with finite selected triangle.
+    result = Writable vector of n log densities in selection order.
+    work = Writable selection of n scratch vectors of length k.
+    factorWork = Writable k-by-k factor workspace. May contain a partial factor on failure.
+
+Returns:
+    Zero on success or the one-based failed pivot. Failure leaves result untouched.
++/
+size_t tryMultivariateNormalLPDFWithWorkspace(CovarianceRepresentation form = CovarianceRepresentation.covariance,
+    TrianglePolicy triangle = TrianglePolicy.upper, X, C, M, R, W, F)(
+    scope auto ref X x, scope auto ref C mean, scope auto ref M metric,
+    scope auto ref R result, scope auto ref W work, scope auto ref F factorWork)
+    if (isObservationSelection!X && isObservationSelection!W && __traits(compiles,
+        tryMultivariateNormalLPDFBatchWithWorkspace!(form, triangle)(
+            ObservationColumns!X.init, mean, metric, result, ObservationColumns!W.init, factorWork)))
+{
+    auto columns = observationColumns(x);
+    auto scratch = observationColumns(work);
+    return tryMultivariateNormalLPDFBatchWithWorkspace!(form, triangle)(columns, mean, metric, result, scratch, factorWork);
+}
+
+/// Evaluate the inlet and chamber temperatures for three test runs.
+/// Each row contains the first two readings in the module's temperature example.
+version(mir_stat_test_multivariate_normal)
+@safe pure nothrow @nogc unittest
+{
+    import mir.ndslice.slice: sliced;
+    import mir.ndslice.topology: byDim;
+    import std.math: PI, fabs, log;
+    double[6] data = [10, 20, 12, 21, 10, 24], scratch;
+    double[2] mean = [10, 20];
+    double[4] covariance = [4, 2, 2, 5], factor;
+    double[3] logDensities;
+    auto rows = data[].sliced(3, 2);
+    auto workRows = scratch[].sliced(3, 2);
+    const pivot = tryMultivariateNormalLPDFWithWorkspace(rows.byDim!0, mean[],
+        covariance[].sliced(2, 2), logDensities[], workRows.byDim!0, factor[].sliced(2, 2));
+    assert(pivot == 0);
+    // The first run is at the mean. The covariance determinant is 16.
+    const atMean = -log(8 * double(PI));
+    assert(fabs(logDensities[0] - atMean) < 1e-14);
+    // The second run's [12, 21] centers to [2, 1] and transforms to [1, 0].
+    assert(fabs(logDensities[1] - (atMean - 0.5)) < 1e-14);
+    // The third run's transformed row is [0, 2].
+    assert(fabs(logDensities[2] - (atMean - 2)) < 1e-14);
+}
+
 private enum batchBuffers(X, C, M, R, W) = matrix!X && matrix!M && vector!C &&
     vector!R && matrix!W && is(Element!X == Element!C) && is(Element!X == Element!M) &&
     is(Element!X == Element!R) && is(Element!X == Element!W);
@@ -610,6 +670,116 @@ version(mir_stat_test_multivariate_normal)
         x[].sliced(1, 2), mean[], factor[].sliced(1, 1), values[], scratch[].sliced(1, 2));
     foreach (j; 0 .. values.length)
         assert(fabs(values[j] - normalLPDF(x[j], 1.0, 2.0)) < 1e-14);
+}
+
+/++
+Factor a covariance or precision matrix once, then write one log density per column.
+All writable elements must be disjoint from one another and from the inputs.
+
+Params:
+    form = covariance (default) or inverseCovariance.
+    triangle = Triangle to read, upper by default.
+    x = Dense k-by-n matrix of finite observations.
+    mean = Vector of k finite means. All buffers share the floating-point element type of x.
+    metric = Dense k-by-k matrix with finite entries in the selected triangle.
+    result = Writable vector of n log densities in column order. A failed factorization
+        leaves every entry untouched.
+    work = Writable k-by-n scratch for centering and transforming the observations.
+    factorWork = Writable k-by-k scratch. Its selected triangle holds the factor on
+        success and may contain a partial factor on failure.
+
+Returns:
+    Zero on success, or the one-based failed Cholesky pivot. The matrix is checked
+    even for an empty batch. In zero dimensions each log density is zero.
++/
+size_t tryMultivariateNormalLPDFBatchWithWorkspace(
+    CovarianceRepresentation form = CovarianceRepresentation.covariance,
+    TrianglePolicy triangle = TrianglePolicy.upper, X, C, M, R, W, F)(
+    scope auto ref X x, scope auto ref C mean, scope auto ref M metric,
+    scope auto ref R result, scope auto ref W work, scope auto ref F factorWork)
+    if ((form == CovarianceRepresentation.covariance || form == CovarianceRepresentation.inverseCovariance) &&
+        batchBuffers!(X, C, M, R, W) && matrix!F && is(Element!X == Element!F))
+{
+    auto columns = x.asView;
+    auto matrixView = metric.asView;
+    auto factor = factorWork.asView;
+    assert(columns.length!0 == mean.asView.length && columns.length!0 == matrixView.length!0);
+    assert(columns.shape == work.asView.shape && columns.length!1 == result.asView.length);
+    const pivot = tryCholeskyDecomposeInto!triangle(matrixView, factor);
+    if (pivot)
+        return pivot;
+    enum factorForm = form == CovarianceRepresentation.covariance
+        ? CovarianceRepresentation.covarianceCholesky : CovarianceRepresentation.inverseCovarianceCholesky;
+    multivariateNormalLPDFBatchWithWorkspace!(factorForm, triangle)(columns, mean, factor, result, work);
+    return 0;
+}
+
+/// A singular covariance fails before either output is written.
+version(mir_stat_test_multivariate_normal)
+@safe pure nothrow @nogc unittest
+{
+    import mir.ndslice.slice: sliced;
+    double[4] x = [1, 2, 3, 4], metric = [1, 1, double.nan, 1], scratch, factor;
+    double[2] mean = [0, 0], values = [7, 8];
+    assert(tryMultivariateNormalLPDFBatchWithWorkspace(x[].sliced(2, 2), mean[],
+        metric[].sliced(2, 2), values[], scratch[].sliced(2, 2), factor[].sliced(2, 2)) == 2);
+    assert(values == [7, 8]);
+}
+
+version(mir_stat_test_multivariate_normal)
+@safe pure nothrow @nogc unittest
+{
+    import mir.ndslice.slice: sliced;
+    import mir.ndslice.topology: alongDim;
+    import std.math: fabs;
+    alias R = CovarianceRepresentation;
+
+    double[6] data = [3, 7, 1, -2, 6, 9], scratch;
+    double[4] lower = [4, double.nan, 2, 5], factor;
+    double[2] mean = [1, -2], vectorWork;
+    double[3] values;
+    auto rows = data[].sliced(3, 2);
+    auto workColumns = scratch[].sliced(2, 3);
+    static foreach (form; [R.covariance, R.inverseCovariance])
+    {{
+        const pivot = tryMultivariateNormalLPDFWithWorkspace!(form, TrianglePolicy.lower)(
+            rows.alongDim!1, mean[], lower[].sliced(2, 2), values[],
+            workColumns.alongDim!0, factor[].sliced(2, 2));
+        assert(pivot == 0);
+        enum preparedForm = form == R.covariance ? R.covarianceCholesky : R.inverseCovarianceCholesky;
+        foreach (j; 0 .. values.length)
+        {
+            auto expected = multivariateNormalLPDFWithWorkspace!(preparedForm, TrianglePolicy.lower)(
+                rows[j], mean[], factor[].sliced(2, 2), vectorWork[]);
+            assert(fabs(values[j] - expected) <= 1e-13 * (1 + fabs(expected)));
+        }
+    }}
+}
+
+version(mir_stat_test_multivariate_normal)
+@safe pure nothrow @nogc unittest
+{
+    import mir.ndslice.slice: sliced;
+    double[1] x = [0x1p512], mean = [0], metric = [1], work, factor, result;
+    auto unit = metric[].sliced(1, 1);
+    auto f = factor[].sliced(1, 1);
+    assert(tryMultivariateNormalLPDFBatchWithWorkspace(x[].sliced(1, 1), mean[], unit,
+        result[], work[].sliced(1, 1), f) == 0);
+    assert(result[0] == -0x1p1023);
+
+    auto noCoordinates = x[0 .. 0].sliced(0, 1);
+    auto emptyFactor = factor[0 .. 0].sliced(0, 0);
+    assert(tryMultivariateNormalLPDFBatchWithWorkspace(noCoordinates, mean[0 .. 0],
+        metric[0 .. 0].sliced(0, 0), result[], work[0 .. 0].sliced(0, 1), emptyFactor) == 0);
+    assert(result[0] == 0);
+
+    auto noObservations = x[0 .. 0].sliced(1, 0);
+    auto emptyWork = work[0 .. 0].sliced(1, 0);
+    assert(tryMultivariateNormalLPDFBatchWithWorkspace(noObservations, mean[], unit,
+        result[0 .. 0], emptyWork, f) == 0);
+    unit[0, 0] = 0;
+    assert(tryMultivariateNormalLPDFBatchWithWorkspace(noObservations, mean[], unit,
+        result[0 .. 0], emptyWork, f) == 1);
 }
 
 /++
