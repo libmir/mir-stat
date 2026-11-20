@@ -759,7 +759,6 @@ Params:
 Returns:
     The quantile in type $(D T), using guarded evaluation.
     Zero and one give negative and positive infinity. One half returns the location exactly.
-    Cancellation beyond the working precision can give zero.
 +/
 @safe pure nothrow @nogc
 T logisticInvCDF(T)(const T p)
@@ -789,7 +788,7 @@ Params:
 Returns:
     The quantile in type $(D T), using guarded evaluation.
     Zero and one give negative and positive infinity. One half returns the location exactly.
-    Cancellation beyond the working precision can give zero.
+    Near a zero quantile, cancellation with the location can reduce relative accuracy.
 +/
 @safe pure nothrow @nogc
 T logisticInvCDF(T)(const T p, const T location, const T scale)
@@ -834,6 +833,13 @@ version(mir_stat_test)
     // The offset overflows on its own. The result is maximum*(1-log(3)).
     assert(logisticInvCDF(T(0.25), maximum, maximum) == T(true, long.max - 4, U(0xc9f53d5681854bb4UL)));
     assert(logisticInvCDF(T(0.75), maximum, maximum) == T(double.infinity));
+
+    // At p = 3/4 the offset is log(3). These locations bracket -log(3).
+    // Round each signed residual from its exact dyadic location.
+    const left = T(true, -63, U(0x8c9f53d5681854bcUL));
+    const right = T(true, -63, U(0x8c9f53d5681854bbUL));
+    assert(logisticInvCDF(T(0.75), left, T(1)) == T(true, -127, U(0xadf339557d6241a5UL)));
+    assert(logisticInvCDF(T(0.75), right, T(1)) == T(false, -128, U(0xa4198d55053b7cb6UL)));
 }
 
 version(mir_stat_test_slow_numerics)
@@ -988,7 +994,6 @@ Params:
 Returns:
     The natural logarithm of the density in type $(D T), using guarded evaluation.
     The peak is minus the logarithm of four times the scale. Either infinity gives negative infinity and NaN propagates.
-    Cancellation beyond the working precision can give zero.
 +/
 @safe pure nothrow @nogc
 T logisticLPDF(T)(const T x)
@@ -1018,7 +1023,7 @@ Params:
 Returns:
     The natural logarithm of the density in type $(D T), using guarded evaluation.
     The peak is minus the logarithm of four times the scale. Either infinity gives negative infinity and NaN propagates.
-    Cancellation beyond the working precision can give zero.
+    Near a density-one crossing, cancellation can reduce relative accuracy.
 +/
 @safe pure nothrow @nogc
 T logisticLPDF(T)(const T x, const T location, const T scale)
@@ -1066,6 +1071,14 @@ version(mir_stat_test)
     assert(logisticLPDF(small, T(0), T(0.25)) == T(true, -318-63, U(1UL << 63)));
     const high = T(false, 1000, U(1)), low = T(true, 936, U(1));
     assert(logisticLPDF(high, low, T(1)) == T(true, 937, U(0x8000000000000001UL)));
+
+    // For scale 1/8 the positive crossing is location + log(1+sqrt(2))/4.
+    // Cancel its leading 64 bits with the location, then bracket the rest.
+    const location = T(true, -66, U(0xe1a1b30bcea13660UL));
+    const below = T(false, -130, U(0xd8f99e8dd2518a53UL));
+    const above = T(false, -130, U(0xd8f99e8dd2518a54UL));
+    assert(logisticLPDF(below, location, T(0.125)) == T(false, -191, U(0x911f25b58e6d78d7UL)));
+    assert(logisticLPDF(above, location, T(0.125)) == T(true, -193, U(0x8f9735f9adc3aeb5UL)));
 }
 
 version(mir_stat_test_slow_numerics)
