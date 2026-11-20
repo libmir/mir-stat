@@ -3713,7 +3713,7 @@ private template WeightedMass(WeightInterpretation interpretation)
         alias WeightedMass = real;
 }
 
-// Map compact positive rows to the original input only when zero weights are present.
+// Map compact positive rows to the original input when more than two weights are zero.
 // On targets with binary64 real, split very large indices into exact 32-bit pieces.
 private size_t weightedRowIndexWords(Mass)(size_t rows) @safe pure nothrow @nogc
 {
@@ -3747,7 +3747,7 @@ template weightedQuantileScratchLength(WeightInterpretation interpretation = Wei
         alias Mass = WeightedMass!interpretation;
         enum sums = 1 + weightedQuantileUsesEffectiveSize!(interpretation, algorithm);
         assert(positiveRows <= rows);
-        const fields = sums + (positiveRows == rows ? 0 : weightedRowIndexWords!Mass(rows));
+        const fields = sums + (rows - positiveRows <= 2 ? 0 : weightedRowIndexWords!Mass(rows));
         if (positiveRows > size_t.max / fields)
         {
             import core.exception : onOutOfMemoryError;
@@ -3762,7 +3762,7 @@ template weightedQuantileScratchLength(WeightInterpretation interpretation = Wei
         import std.algorithm : max;
         alias required = .weightedQuantileScratchLength!(interpretation, algorithm);
         const dense = required(rows, rows);
-        return rows ? max(dense, required(rows, rows - 1)) : 0;
+        return rows > 2 ? max(dense, required(rows, rows - 3)) : dense;
     }
 }
 
@@ -3792,6 +3792,9 @@ private struct BorrowedWeightedRows(Values, Mass, bool withUpper)
     Mass[] cumulative;
     static if (withUpper) Mass[] upper;
     Mass[] indices;
+    // Each rank counts the positive rows preceding a skipped row. Adjacent skips share a rank.
+    size_t firstSkippedRank = size_t.max;
+    size_t secondSkippedRank = size_t.max;
     size_t length() const { return cumulative.length; }
     alias opDollar = length;
 
@@ -3814,7 +3817,7 @@ private struct BorrowedWeightedRows(Values, Mass, bool withUpper)
 
     size_t sourceRow(size_t i) const
     {
-        if (!indices.length) return i;
+        if (!indices.length) return i + (i >= firstSkippedRank) + (i >= secondSkippedRank);
         size_t row = cast(size_t) indices[i];
         static if (is(Mass == real) && real.mant_dig < size_t.sizeof * 8)
             if (indices.length > length)
@@ -3875,7 +3878,7 @@ Params:
         Its element type determines result precision and must be floating-point for interpolation.
     scratch = writable real array for relative weights or ulong array for frequency weights,
         sized with $(LREF weightedQuantileScratchLength). It holds temporary weights and,
-        when zero weights are present, source row indices. Observations are borrowed.
+        when more than two weights are zero, source row indices. Observations are borrowed.
 
 Returns:
     Results are written to output in probability order. Endpoints select the minimum
@@ -3943,6 +3946,11 @@ template weightedQuantileAssumeSortedInto(WeightInterpretation interpretation = 
                     workspace.recordSourceRow(k, i);
                     ++k;
                 }
+                else if (!workspace.indices.length)
+                {
+                    if (workspace.firstSkippedRank == size_t.max) workspace.firstSkippedRank = k;
+                    else workspace.secondSkippedRank = k;
+                }
             static if (withUpper)
                 const state = accumulateWeightedQuantileMasses!(interpretation, algorithm)(
                     workspace.cumulative.sliced, input.maximum, workspace.upper.sliced);
@@ -3984,7 +3992,7 @@ version(mir_stat_test) @safe unittest
     auto values = assumeSorted(data[].sliced.stride(2));
     double[4] weights = [1, 1, 3, 2];
     enum needed = weightedQuantileScratchLength!algorithm(4, 4);
-    static assert(weightedQuantileScratchLength!algorithm(4) == 9);
+    static assert(weightedQuantileScratchLength!algorithm(4) == 8);
     real[needed + 1] scratch;
     scratch[needed] = 123;
     double[8] storage = -1;
@@ -4023,6 +4031,37 @@ version(mir_stat_test) @safe unittest
     weightedQuantileAssumeSortedInto(values, weights, levels, output, scratch);
     assert(reads == preparationReads + 1);
     assert(output[0] == 31);
+}
+
+// Exercise every placement of zero, one, or two skipped rows using exact scratch.
+version(mir_stat_test) @safe pure nothrow @nogc unittest
+{
+    enum algorithm = WeightedQuantileAlgo.inverseCDF;
+    alias required = weightedQuantileScratchLength!algorithm;
+    const int[8] values = [10, 20, 30, 40, 50, 60, 70, 80];
+    static assert(required(8, 5) == 10 && required(8) == 10);
+    foreach (first; 0 .. values.length + 1)
+        foreach (second; first .. values.length + 1)
+        {
+            int[8] weights, expected, output;
+            double[8] levels;
+            real[8] scratch;
+            size_t count;
+            foreach (i, value; values)
+                if (i != first && i != second)
+                {
+                    weights[i] = 1;
+                    expected[count++] = value;
+                }
+            foreach (i; 0 .. count)
+                levels[i] = (i + 0.5) / count;
+            levels[0] = 0;
+            levels[count - 1] = 1;
+            assert(required(values.length, count) == count);
+            weightedQuantileAssumeSortedInto!algorithm(values, weights,
+                levels[0 .. count], output[0 .. count], scratch[0 .. count]);
+            assert(output[0 .. count] == expected[0 .. count]);
+        }
 }
 
 // The successor for interpolation can lie across ignored rows with arbitrary values.
