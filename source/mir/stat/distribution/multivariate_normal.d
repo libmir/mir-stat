@@ -3,12 +3,16 @@ Multivariate normal log-density for one real observation and a positive-definite
 covariance or precision matrix. Precision is the inverse of covariance.
 Supply a Cholesky factor of either matrix to reuse it across
 calls. In zero dimensions the log-density is zero.
-For a raw matrix, $(LREF tryMultivariateNormalLPDF) and
-$(LREF tryMultivariateNormalLPDFWithWorkspace) report a failed Cholesky pivot.
+For a raw matrix, $(LREF tryMultivariateNormalLPDF),
+$(LREF rcTryMultivariateNormalLPDF), $(LREF makeTryMultivariateNormalLPDF), and
+$(LREF tryMultivariateNormalLPDFWithWorkspace) return a
+$(LREF MultivariateNormalLPDFResult). Check its `failedPivot` field
+to see whether factorization succeeded. With custom iterators or allocators,
+function attributes such as `nothrow` depend on the operations they supply.
 These functions accept dense square matrix views, including strided slices.
 Only the selected triangle is read. Upper factors represent a matrix
 as U.transpose * U, and lower factors represent it as L * L.transpose.
-As in $(D mir.stat.distance), subtracting the mean in the input
+As in `mir.stat.distance`, subtracting the mean in the input
 element type can overflow before the factor is applied.
 
 License: $(HTTP www.apache.org/licenses/LICENSE-2.0, Apache-2.0)
@@ -509,4 +513,102 @@ version(mir_stat_test_multivariate_normal)
     double[4] covariance = [4, 2, double.nan, 1];
     const result = tryMultivariateNormalLPDF(x[], mean[], covariance[].sliced(2, 2));
     assert(result.failedPivot == 2 && isNaN(result.logDensity));
+}
+
+/++
+Evaluate the log density using reference-counted scratch and report Cholesky failure.
+With ordinary floating-point slices, the call is `nothrow @nogc`.
+
+Params:
+    form = Raw matrix representation, either covariance (default) or inverseCovariance.
+    triangle = Logical triangle to read, upper by default.
+    x = Observation vector of k finite floating-point coordinates.
+    mean = Vector of k finite means with the same element type as x.
+    metric = Dense k-by-k matrix with the same element type as x. The selected
+        triangle must contain finite entries and defines the symmetric matrix.
+
+Returns:
+    A $(LREF MultivariateNormalLPDFResult). On success, `failedPivot == 0`
+    and `logDensity` is the natural log density at `x`. On factorization
+    failure, `failedPivot` identifies the failed step (counting from 1)
+    and `logDensity` is NaN. In zero dimensions both fields are zero.
++/
+MultivariateNormalLPDFResult!(Element!X) rcTryMultivariateNormalLPDF(
+    CovarianceRepresentation form = CovarianceRepresentation.covariance,
+    TrianglePolicy triangle = TrianglePolicy.upper, X, C, M)(
+    scope auto ref X x, scope auto ref C mean, scope auto ref M metric)
+    if (!prepared!form && matrix!M && compatible!(X, C, M))
+{
+    int allocator;
+    return evaluate!(Allocation.rc, form, triangle, true)(allocator, x.asView, mean.asView, metric.asView);
+}
+
+/// Evaluate a raw covariance using reference-counted scratch.
+version(mir_stat_test_multivariate_normal)
+@safe pure nothrow @nogc unittest
+{
+    import mir.ndslice.slice: sliced;
+    import mir.stat.distribution.normal: normalLPDF;
+    import std.math: fabs, isNaN;
+
+    double[1] x = [3], mean = [1], covariance = [4];
+    auto metric = covariance[].sliced(1, 1);
+    const result = rcTryMultivariateNormalLPDF(x[], mean[], metric);
+    assert(result.failedPivot == 0);
+    assert(fabs(result.logDensity - normalLPDF(3.0, 1.0, 2.0)) < 1e-14);
+
+    metric[0, 0] = 0;
+    const singular = rcTryMultivariateNormalLPDF(x[], mean[], metric);
+    assert(singular.failedPivot == 1 && isNaN(singular.logDensity));
+}
+
+/++
+Evaluate the log density using a caller-selected scratch allocator and report Cholesky failure.
+The call is `nothrow @nogc` with ordinary floating-point slices and
+`Mallocator`. With other allocators or iterators, the inferred attributes depend
+on their operations.
+
+Params:
+    form = Raw matrix representation, either covariance (default) or inverseCovariance.
+    triangle = Logical triangle to read, upper by default.
+    allocator = Allocator used to obtain and release temporary storage.
+    x = Observation vector of k finite floating-point coordinates.
+    mean = Vector of k finite means with the same element type as x.
+    metric = Dense k-by-k matrix with the same element type as x. The selected
+        triangle must contain finite entries and defines the symmetric matrix.
+
+Returns:
+    A $(LREF MultivariateNormalLPDFResult). On success, `failedPivot == 0`
+    and `logDensity` is the natural log density at `x`. On factorization
+    failure, `failedPivot` identifies the failed step (counting from 1)
+    and `logDensity` is NaN. In zero dimensions both fields are zero.
++/
+MultivariateNormalLPDFResult!(Element!X) makeTryMultivariateNormalLPDF(
+    CovarianceRepresentation form = CovarianceRepresentation.covariance,
+    TrianglePolicy triangle = TrianglePolicy.upper, A, X, C, M)(
+    auto ref A allocator, scope auto ref X x, scope auto ref C mean, scope auto ref M metric)
+    if (!prepared!form && matrix!M && compatible!(X, C, M))
+{
+    return evaluate!(Allocation.custom, form, triangle, true)(allocator, x.asView, mean.asView, metric.asView);
+}
+
+/// Evaluate a raw precision using Mallocator for scratch.
+version(mir_stat_test_multivariate_normal)
+@system nothrow @nogc unittest
+{
+    import mir.ndslice.slice: sliced;
+    import mir.stat.distribution.normal: normalLPDF;
+    import std.experimental.allocator.mallocator: Mallocator;
+    import std.math: fabs, isNaN;
+
+    double[1] x = [3], mean = [1], precision = [0.25];
+    auto metric = precision[].sliced(1, 1);
+    enum form = CovarianceRepresentation.inverseCovariance;
+    const result = makeTryMultivariateNormalLPDF!form(Mallocator.instance, x[], mean[], metric);
+    assert(result.failedPivot == 0);
+    assert(fabs(result.logDensity - normalLPDF(3.0, 1.0, 2.0)) < 1e-14);
+
+    metric[0, 0] = 0;
+    const singular = makeTryMultivariateNormalLPDF!form(Mallocator.instance, x[], mean[], metric);
+    assert(singular.failedPivot == 1 && isNaN(singular.logDensity));
 }
