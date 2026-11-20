@@ -75,6 +75,22 @@ private auto halfDecay(uint bits, uint work)(Fp!bits x, Fp!bits location, Probab
     return tail;
 }
 
+package(mir.stat) Fp!bits laplaceDensity(uint bits)(Fp!bits x, Fp!bits location, Fp!bits scale)
+{
+    alias T = Fp!bits;
+    if (x.isNaN)
+        return x;
+    if (x.isInfinity)
+        return T(0);
+    alias S = Decay!bits;
+    const divisor = S.from(scale);
+    const numerator = position(x, location) == 0 ? S.from(half!bits) : halfDecay(x, location, divisor);
+    if (!numerator.fraction.coefficient)
+        return T(0);
+    // The peak 0.5 / 2^long.min is representable for every supported width.
+    return numerator.divide(divisor).finish!bits;
+}
+
 package(mir.stat) Fp!bits laplaceTail(bool upper, uint bits)(Fp!bits x, Fp!bits location, Fp!bits scale)
 {
     alias T = Fp!bits;
