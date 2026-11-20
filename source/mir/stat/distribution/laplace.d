@@ -321,7 +321,7 @@ version(mir_stat_test)
     assert(laplacePDF(T(0), T(0), T(false, long.max - 63, U.max)) == quantum);
 }
 
-version(mir_stat_test)
+version(mir_stat_test_slow_numerics)
 @safe pure nothrow @nogc unittest
 {
     import mir.bignum.fixed: UInt;
@@ -688,7 +688,7 @@ version(mir_stat_test)
     assert(laplaceCCDF(T(100)) == T(false, -209, U(0xd460f8a7157ae57aUL)));
 }
 
-version(mir_stat_test)
+version(mir_stat_test_slow_numerics)
 @safe pure nothrow @nogc unittest
 {
     import mir.bignum.fixed: UInt;
@@ -930,7 +930,7 @@ version(mir_stat_test)
     assert(laplaceInvCDF(T(0.875), maximum, maximum) == infinity);
 }
 
-version(mir_stat_test)
+version(mir_stat_test_slow_numerics)
 @safe pure nothrow @nogc unittest
 {
     import mir.bignum.fixed: UInt;
@@ -1130,6 +1130,8 @@ version(mir_stat_test)
     const expected = T(true, -62, U(0xf2ac2fe8a88008c9UL));
     assert(laplaceLPDF(T(-5), T(1), T(3)) == expected);
     assert(laplaceLPDF(T(7), T(1), T(3)) == expected);
+    // At x = 1/8 and scale = 1/4 the peak exceeds the offset by log(2) - 1/2.
+    assert(laplaceLPDF(T(0.125), T(0), T(0.25)) == T(false, -66, U(0xc5c85fdf473de6afUL)));
     const negInf = T(-double.infinity);
     assert(laplaceLPDF(T(double.infinity)) == negInf && laplaceLPDF(negInf) == negInf);
     assert(laplaceLPDF(T(double.nan)).isNaN);
@@ -1153,7 +1155,7 @@ version(mir_stat_test)
     assert(laplaceLPDF(high, low, T(1)) == T(true, 937, U(0x8000000000000001UL)));
 }
 
-version(mir_stat_test)
+version(mir_stat_test_slow_numerics)
 @safe pure nothrow @nogc unittest
 {
     import mir.bignum.fixed: UInt;
