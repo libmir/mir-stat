@@ -20,6 +20,8 @@ Copyright: 2023 Mir Stat Authors.
 
 module mir.stat.distribution.laplace;
 
+import mir.bignum.fp: Fp;
+import mir.stat.internal.fp_probability: fpProbabilityValid;
 import mir.stat.internal.standardize: standardize;
 
 import mir.internal.utility: isFloatingPoint;
@@ -218,6 +220,122 @@ unittest
 }
 
 /++
+Computes the standard Laplace density at a represented observation.
+
+Params:
+    T = Represented $(D Fp) type, inferred from the argument by default.
+    x = Observation, which may be infinite or NaN.
+
+Returns:
+    $(D exp(-abs(x)) / 2) in type $(D T), with guarded evaluation.
+    The density is one half at zero and zero at either infinity. NaN propagates.
++/
+@safe pure nothrow @nogc
+T laplacePDF(T)(const T x)
+    if (is(T == Fp!size, size_t size))
+{
+    return laplacePDF(x, T(0), T(1));
+}
+
+///
+version(mir_stat_test)
+@safe pure nothrow @nogc unittest
+{
+    import mir.bignum.fp: Fp;
+    alias T = Fp!64;
+    assert(laplacePDF(T(0)) == T(0.5));
+}
+
+/++
+Computes the Laplace density at a represented observation for a given location and scale.
+
+Params:
+    T = Represented $(D Fp) type, inferred from the arguments by default.
+    x = Observation, which may be infinite or NaN.
+    location = Finite location parameter.
+    scale = Positive finite scale parameter.
+
+Returns:
+    $(D exp(-abs(x - location) / scale) / (2 * scale)) in type $(D T).
+    The peak density is $(D 0.5 / scale) and can exceed one. Either infinity
+    gives zero and NaN propagates. Guarded evaluation applies the scale
+    before rounding to the result width and exponent range.
++/
+@safe pure nothrow @nogc
+T laplacePDF(T)(const T x, const T location, const T scale)
+    if (is(T == Fp!size, size_t size))
+    in (!location.isSpecial, "location must be finite")
+    in (!scale.isSpecial && !scale.sign && !!scale.coefficient, "scale must be finite and positive")
+{
+    import mir.stat.internal.fp_laplace: laplaceDensity;
+    return laplaceDensity(x, location, scale);
+}
+
+///
+version(mir_stat_test)
+@safe pure nothrow @nogc unittest
+{
+    import mir.bignum.fp: Fp;
+    alias T = Fp!64;
+    assert(laplacePDF(T(3), T(3), T(0.25)) == T(2));
+}
+
+version(mir_stat_test)
+@safe pure nothrow @nogc unittest
+{
+    import mir.bignum.fixed: UInt;
+    import mir.math.common: approxEqual;
+    import std.meta: AliasSeq;
+
+    // exp(-2)/6 at the same exact observations on both sides of the peak.
+    static foreach (T; AliasSeq!(float, double, real))
+    {
+        foreach (x; [T(-5), T(7)])
+            assert(approxEqual(laplacePDF(x, T(1), T(3)),
+                T(0.0225558805394354486489999158287474L), 8 * T.epsilon));
+    }
+    alias T = Fp!64;
+    alias U = UInt!64;
+    const reference = T(false, -69, U(0xb8c71c27fabdd154UL));
+    assert(laplacePDF(T(-5), T(1), T(3)) == reference);
+    assert(laplacePDF(T(7), T(1), T(3)) == reference);
+    assert(laplacePDF(T(double.nan)).isNaN);
+    assert(laplacePDF(T(-double.infinity)) == T(0));
+    assert(laplacePDF(T(double.infinity)) == T(0));
+
+    const quantum = T(false, long.min, U(1));
+    assert(laplacePDF(T(0), T(0), quantum) == T(false, long.max - 63, U(1UL << 63)));
+    // At z = 2^63 the standard density rounds to zero. Reducing the scale
+    // to the smallest quantum restores a normal density. Reference computed from
+    // -z/log(2) - 1 - log2(scale) at 200 and 400 decimal digits.
+    assert(laplacePDF(T(false, 63, U(1))) == T(0));
+    assert(laplacePDF(T(false, long.min + 63, U(1)), T(0), quantum)
+        == T(false, -4083141060989546748L, U(0x98d3377e65eee9c8UL)));
+    assert(laplacePDF(T(1), T(0), quantum) == T(0));
+    // For scale = 2^long.max the peak is exactly one output quantum.
+    const hugeScale = T(false, long.max - 1, U(2));
+    assert(laplacePDF(T(0), T(0), hugeScale) == quantum);
+    assert(laplacePDF(hugeScale, T(0), hugeScale) == T(0));
+    // At twice that scale the peak ties to zero. Its predecessor rounds up.
+    assert(laplacePDF(T(0), T(0), T(false, long.max - 1, U(4))) == T(0));
+    assert(laplacePDF(T(0), T(0), T(false, long.max - 63, U.max)) == quantum);
+}
+
+version(mir_stat_test_slow_numerics)
+@safe pure nothrow @nogc unittest
+{
+    import mir.bignum.fixed: UInt;
+    alias T = Fp!128;
+    alias U = UInt!128;
+    auto adjacent = T(1);
+    adjacent.coefficient += 1;
+    const scale = T(false, adjacent.exponent, U(3));
+    // z = 1/3 exactly. Scale the exp(-1/3)/6 reference by 2^127.
+    enum expected = T(false, -4, U.fromHexString("f49376174c9c33625ccb10d06be5310d"));
+    assert(laplacePDF(adjacent, T(1), scale) == expected);
+}
+
+/++
 Computes the Laplace cumulative distribution function (CDF).
 
 Returns the lower-tail probability $(D P(X <= x)).
@@ -300,6 +418,67 @@ unittest
     laplaceCDF(-1.0, 2.0, 3.0).shouldApprox == 0.1839397;
     laplaceCDF(1.0, 2.0, 3.0).shouldApprox == 0.3582657;
     laplaceCDF(4.0, 2.0, 3.0).shouldApprox == 0.7432914;
+}
+
+/++
+Computes the lower tail of the standard Laplace distribution (location zero, scale one).
+
+Params:
+    T = Represented $(D Fp) type, inferred from the arguments by default.
+    x = Observation, which may be infinite or NaN.
+
+Returns:
+    $(D P(X <= x)) in type $(D T). The probability is one half at the location.
+    Negative and positive infinity give zero and one, respectively. NaN propagates.
+    Finite interior results use guarded evaluation.
++/
+@safe pure nothrow @nogc
+T laplaceCDF(T)(const T x)
+    if (is(T == Fp!size, size_t size))
+{
+    return laplaceCDF(x, T(0), T(1));
+}
+
+///
+version(mir_stat_test)
+@safe pure nothrow @nogc unittest
+{
+    import mir.bignum.fp: Fp;
+    alias T = Fp!64;
+    assert(laplaceCDF(T(0)) == T(0.5));
+}
+
+/++
+Computes the lower tail of the Laplace distribution with the given location and scale.
+
+Params:
+    T = Represented $(D Fp) type, inferred from the arguments by default.
+    x = Observation, which may be infinite or NaN.
+    location = Finite location parameter.
+    scale = Positive finite scale parameter.
+
+Returns:
+    $(D P(X <= x)) in type $(D T). The probability is one half at the location.
+    Negative and positive infinity give zero and one, respectively. NaN propagates.
+    Finite interior results use guarded evaluation.
++/
+@safe pure nothrow @nogc
+T laplaceCDF(T)(const T x, const T location, const T scale)
+    if (is(T == Fp!size, size_t size))
+    in (!location.isSpecial, "location must be finite")
+    in (!scale.isSpecial && !scale.sign && !!scale.coefficient, "scale must be finite and positive")
+{
+    import mir.stat.internal.fp_laplace: laplaceTail;
+    return laplaceTail!false(x, location, scale);
+}
+
+///
+version(mir_stat_test)
+@safe pure nothrow @nogc unittest
+{
+    import mir.bignum.fp: Fp;
+    alias T = Fp!64;
+    assert(laplaceCDF(T(3), T(3), T(2)) == T(0.5));
 }
 
 /++
@@ -386,6 +565,168 @@ unittest
     laplaceCCDF(-1.0, 2.0, 3.0).shouldApprox == 0.8160603;
     laplaceCCDF(1.0, 2.0, 3.0).shouldApprox == 0.6417343;
     laplaceCCDF(4.0, 2.0, 3.0).shouldApprox == 0.2567086;
+}
+
+/++
+Computes the strict upper tail of the standard Laplace distribution (location zero, scale one).
+
+Params:
+    T = Represented $(D Fp) type, inferred from the arguments by default.
+    x = Observation, which may be infinite or NaN.
+
+Returns:
+    $(D P(X > x)) in type $(D T). The probability is one half at the location.
+    Negative and positive infinity give one and zero, respectively. NaN propagates.
+    Finite interior results use guarded evaluation.
++/
+@safe pure nothrow @nogc
+T laplaceCCDF(T)(const T x)
+    if (is(T == Fp!size, size_t size))
+{
+    return laplaceCCDF(x, T(0), T(1));
+}
+
+///
+version(mir_stat_test)
+@safe pure nothrow @nogc unittest
+{
+    import mir.bignum.fp: Fp;
+    alias T = Fp!64;
+    assert(laplaceCCDF(T(0)) == T(0.5));
+}
+
+/++
+Computes the strict upper tail of the Laplace distribution with the given location and scale.
+
+Params:
+    T = Represented $(D Fp) type, inferred from the arguments by default.
+    x = Observation, which may be infinite or NaN.
+    location = Finite location parameter.
+    scale = Positive finite scale parameter.
+
+Returns:
+    $(D P(X > x)) in type $(D T). The probability is one half at the location.
+    Negative and positive infinity give one and zero, respectively. NaN propagates.
+    Finite interior results use guarded evaluation.
++/
+@safe pure nothrow @nogc
+T laplaceCCDF(T)(const T x, const T location, const T scale)
+    if (is(T == Fp!size, size_t size))
+    in (!location.isSpecial, "location must be finite")
+    in (!scale.isSpecial && !scale.sign && !!scale.coefficient, "scale must be finite and positive")
+{
+    import mir.stat.internal.fp_laplace: laplaceTail;
+    return laplaceTail!true(x, location, scale);
+}
+
+///
+version(mir_stat_test)
+@safe pure nothrow @nogc unittest
+{
+    import mir.bignum.fp: Fp;
+    alias T = Fp!64;
+    assert(laplaceCCDF(T(3), T(3), T(2)) == T(0.5));
+}
+
+// Exact input pairs with standardized offsets +/-2 and +/-1/3. Compute
+// the small tail and its reflection separately at 260 and 400 decimal digits.
+version(mir_stat_test)
+@safe pure nothrow @nogc unittest
+{
+    import mir.bignum.fixed: UInt;
+    import mir.math.common: approxEqual;
+    import std.meta: AliasSeq;
+    static foreach (T; AliasSeq!(float, double, real))
+    {{
+        const low = T(-5), high = T(7), location = T(1), scale = T(3);
+        const small = T(0.0676676416183063459469997474862422L);
+        const large = T(0.932332358381693654053000252513758L);
+        assert(approxEqual(laplaceCDF(low, location, scale), small, 8 * T.epsilon));
+        assert(approxEqual(laplaceCCDF(high, location, scale), small, 8 * T.epsilon));
+        assert(approxEqual(laplaceCDF(high, location, scale), large, 8 * T.epsilon));
+        assert(approxEqual(laplaceCCDF(low, location, scale), large, 8 * T.epsilon));
+    }}
+    alias T = Fp!64;
+    alias U = UInt!64;
+    const small = T(false, -67, U(0x8a95551dfc0e5cffUL));
+    const large = T(false, -64, U(0xeead555c407e3460UL));
+    assert(laplaceCDF(T(-5), T(1), T(3)) == small);
+    assert(laplaceCCDF(T(7), T(1), T(3)) == small);
+    assert(laplaceCDF(T(7), T(1), T(3)) == large);
+    assert(laplaceCCDF(T(-5), T(1), T(3)) == large);
+
+    // Opposite maximum bounds overflow a finite difference but give z = 2.
+    const hi = T(false, long.max - 1, U.max);
+    const lo = T(true, hi.exponent, hi.coefficient);
+    assert(laplaceCCDF(hi, lo, hi) == small);
+    assert(laplaceCDF(hi, lo, hi) == large);
+    assert(laplaceCCDF(lo, hi, hi) == large);
+    // Adjacent points at the exponent floor differ by precisely one quantum.
+    const one = T(false, long.min, U(1)), two = T(false, long.min, U(2));
+    const three = T(false, long.min, U(3));
+    assert(laplaceCCDF(two, one, three) == T(false, -65, U(0xb76e98917975268aUL)));
+    assert(laplaceCCDF(one, two, three) == T(false, -64, U(0xa448b3b743456cbbUL)));
+    assert(laplaceCCDF(T(1), one, T(1)) == T(false, -66, U(0xbc5ab1b16779be35UL)));
+    assert(laplaceCDF(lo) == T(0));
+    assert(laplaceCCDF(lo) == T(1));
+    assert(laplaceCDF(T(true, 0, U(0))) == T(0.5));
+    assert(laplaceCCDF(T(false, -1, U(2)), T(1), one) == T(0.5));
+    assert(laplaceCDF(T(double.infinity)) == T(1));
+    assert(laplaceCCDF(T(-double.infinity)) == T(1));
+    assert(laplaceCDF(T(double.nan)).isNaN && laplaceCCDF(T(double.nan)).isNaN);
+
+    // At the intervening half step the tail is about 0.742 quanta.
+    // Rounding the decay first gives one quantum and halving it ties to zero.
+    assert(laplaceCCDF(T(6393154322601327829L)) == one);
+    assert(laplaceCCDF(T(false, -1, U(12786308645202655659UL))) == one);
+    assert(laplaceCCDF(T(6393154322601327830L)) == T(0));
+    assert(laplaceCDF(T(0), T(-2), T(1)) == large);
+    assert(laplaceCDF(T(100)) == T(1));
+    // The quadratic term puts both probabilities on the center side of a midpoint.
+    assert(laplaceCDF(T(false, -64, U(1))) == T(0.5));
+    assert(laplaceCCDF(T(false, -65, U(1))) == T(0.5));
+    assert(laplaceCCDF(T(100)) == T(false, -209, U(0xd460f8a7157ae57aUL)));
+}
+
+version(mir_stat_test_slow_numerics)
+@safe pure nothrow @nogc unittest
+{
+    import mir.bignum.fixed: UInt;
+    alias T = Fp!128;
+    alias U = UInt!128;
+    enum small = T(false, -129, U.fromHexString("b76e989179752689c5984c9c50ebe4ca"));
+    enum large = T(false, -128, U.fromHexString("a448b3b743456cbb1d33d9b1d78a0d9b"));
+    // Adjacent normalized observations at location one, scaled to z = 1/3.
+    auto above = T(1);
+    above.coefficient += 1;
+    const scale = T(false, above.exponent, U(3));
+    assert(laplaceCCDF(above, T(1), scale) == small);
+    assert(laplaceCDF(above, T(1), scale) == large);
+}
+
+// The cubic term puts each result across the midpoint from one half.
+// References use the exact dyadic inputs at 850 and 1150 decimal digits.
+version(mir_stat_test_slow_numerics)
+@safe pure nothrow @nogc unittest
+{
+    import mir.bignum.fixed: UInt;
+    enum bits = 192;
+    alias T = Fp!bits;
+    alias U = UInt!bits;
+    const scale = T(false, -bits, U.max); // 1 - 2^-bits
+    const t = T(false, -bits, U(1));
+    const location = T(false, -2 * bits - 1, U(1)); // t^2 / 2
+    auto successor = T(0.5);
+    successor.coefficient += 1;
+    assert(laplaceCDF(t, location, scale) == successor);
+
+    const h = T(false, -bits - 1, U(1)); // t / 2
+    const predecessor = T(false, -bits - 1, U.max);
+    const lowerLocation = T(false, -2 * bits - 3, U(3)); // 3*h^2 / 2
+    assert(laplaceCCDF(h, lowerLocation, scale) == predecessor);
+
+    const farLocation = T(true, -3 * bits - 2, (U(1) << (bits - 1)) + U(1));
+    assert(laplacePDF(h, farLocation, T(1)) == predecessor);
 }
 
 /++
@@ -487,6 +828,140 @@ unittest
 }
 
 /++
+Computes the standard Laplace quantile at a represented cumulative probability.
+
+Params:
+    T = Represented $(D Fp) type, inferred from the argument by default.
+    p = Finite cumulative probability in the closed interval [0, 1].
+
+Returns:
+    The quantile in type $(D T). Probabilities zero, one half, and one give
+    negative infinity, zero, and positive infinity, respectively. Interior
+    probabilities use a guarded logarithm.
++/
+@safe pure nothrow @nogc
+T laplaceInvCDF(T)(const T p)
+    if (is(T == Fp!size, size_t size))
+{
+    return laplaceInvCDF(p, T(0), T(1));
+}
+
+///
+version(mir_stat_test)
+@safe pure nothrow @nogc unittest
+{
+    import mir.bignum.fp: Fp;
+    alias T = Fp!64;
+    assert(laplaceInvCDF(T(0.5)) == T(0));
+}
+
+/++
+Computes the Laplace quantile for a given location and scale.
+
+Params:
+    T = Represented $(D Fp) type, inferred from the arguments by default.
+    p = Finite cumulative probability in the closed interval [0, 1].
+    location = Finite location parameter.
+    scale = Positive finite scale parameter.
+
+Returns:
+    The quantile in type $(D T). Zero and one give negative and positive
+    infinity, respectively. One half returns the location exactly. For other
+    probabilities, the scaled logarithmic offset retains its exponent until
+    addition of the location. Overflow gives a signed infinity. Cancellation
+    beyond the working precision can give zero.
++/
+@safe pure nothrow @nogc
+T laplaceInvCDF(T)(const T p, const T location, const T scale)
+    if (is(T == Fp!size, size_t size))
+    in (fpProbabilityValid(p), "p must be finite and in [0, 1]")
+    in (!location.isSpecial, "location must be finite")
+    in (!scale.isSpecial && !scale.sign && !!scale.coefficient, "scale must be finite and positive")
+{
+    import mir.stat.internal.fp_laplace: laplaceQuantile;
+    return laplaceQuantile(p, location, scale);
+}
+
+///
+version(mir_stat_test)
+@safe pure nothrow @nogc unittest
+{
+    import mir.bignum.fp: Fp;
+    alias T = Fp!64;
+    assert(laplaceInvCDF(T(0.5), T(-3), T(2)) == T(-3));
+}
+
+version(mir_stat_test)
+@safe pure nothrow @nogc unittest
+{
+    import mir.bignum.fixed: UInt;
+    import mir.math.common: approxEqual;
+    import std.meta: AliasSeq;
+    // Exact shared inputs give 2 +/- 3*log(2). The Fp references below
+    // were rounded directly from evaluations at 200 and 400 decimal digits.
+    static foreach (T; AliasSeq!(float, double, real))
+    {
+        assert(approxEqual(laplaceInvCDF(T(0.25), T(2), T(3)),
+            T(-0.079441541679835928251696364374529704L), 32 * T.epsilon));
+        assert(approxEqual(laplaceInvCDF(T(0.75), T(2), T(3)),
+            T(4.079441541679835928251696364374529704L), 8 * T.epsilon));
+    }
+    alias T = Fp!64;
+    alias U = UInt!64;
+    assert(laplaceInvCDF(T(0.25), T(2), T(3)) == T(true, -67, U(0xa2b23f3bab73681bUL)));
+    assert(laplaceInvCDF(T(0.75), T(2), T(3)) == T(false, -61, U(0x828ac8fceeadcda0UL)));
+    const negativeZero = T(true, 0, U(0));
+    const infinity = T(double.infinity);
+    assert(laplaceInvCDF(negativeZero) == T(-double.infinity));
+    assert(laplaceInvCDF(T(false, -2, U(4))) == infinity);
+    assert(laplaceInvCDF(T(false, -2, U(2)), negativeZero, T(1)).sign);
+
+    const quantum = T(false, long.min, U(1));
+    assert(laplaceInvCDF(quantum) == T(true, -1, U(0xb17217f7d1cf79aaUL)));
+    assert(laplaceInvCDF(T(false, -64, U.max)) == T(false, -58, U(0xaeac4f97f2883bc5UL)));
+    assert(laplaceInvCDF(T(0.75), T(0), quantum) == quantum);
+    assert(laplaceInvCDF(T(0.625), T(0), quantum) == T(0));
+
+    // The offset exceeds the largest finite magnitude. Adding the location
+    // before narrowing recovers (1 - log(4)) times that finite magnitude.
+    const maximum = T(false, long.max - 1, U.max);
+    assert(laplaceInvCDF(T(0.125), maximum, maximum)
+        == T(true, long.max - 2, U(0xc5c85fdf473de6aeUL)));
+    assert(laplaceInvCDF(T(0.875), maximum, maximum) == infinity);
+}
+
+version(mir_stat_test_slow_numerics)
+@safe pure nothrow @nogc unittest
+{
+    import mir.bignum.fixed: UInt;
+    alias T = Fp!128;
+    alias U = UInt!128;
+    // Use the adjacent probabilities on either side of one half. Choose
+    // the location to cancel the linear term of each logarithm.
+    const h = T(false, -128, U(1));
+    const below = T(false, -129, U.max);
+    auto above = T(0.5);
+    above.coefficient += 1;
+    const highBit = U(1) << 127;
+    assert(laplaceInvCDF(below, h, T(1)) == T(true, -384, highBit));
+    assert(laplaceInvCDF(above, T(true, -127, U(1)), T(1))
+        == T(false, -382, highBit + U(1)));
+}
+
+version(mir_stat_test)
+static if (size_t.sizeof == 4)
+@safe pure nothrow @nogc unittest
+{
+    import mir.bignum.fixed: UInt;
+    alias T = Fp!32;
+    const half = T(false, -32, UInt!32(1u << 31));
+    assert(laplacePDF(T(0)) == half);
+    assert(laplaceCDF(T(0)) == half);
+    assert(laplaceCCDF(T(0)) == half);
+    assert(laplaceInvCDF(half, T(-3), T(2)) == T(-3));
+}
+
+/++
 Computes the Laplace log probability density function (LPDF).
 
 Returns the natural logarithm of the density. A negative value is valid;
@@ -573,6 +1048,128 @@ unittest
     laplaceLPDF(-1.0, 2.0, 3.0).shouldApprox == log(0.06131324);
     laplaceLPDF(1.0, 2.0, 3.0).shouldApprox == log(0.1194219);
     laplaceLPDF(4.0, 2.0, 3.0).shouldApprox == log(0.08556952);
+}
+
+/++
+Computes the natural logarithm of the standard Laplace density.
+
+Params:
+    T = Represented $(D Fp) type, inferred from the argument by default.
+    x = Observation, which may be infinite or NaN.
+
+Returns:
+    $(D -log(2) - abs(x)) in type $(D T). Either infinity gives negative
+    infinity and NaN propagates. Finite results use guarded evaluation.
++/
+@safe pure nothrow @nogc
+T laplaceLPDF(T)(const T x)
+    if (is(T == Fp!size, size_t size))
+{
+    return laplaceLPDF(x, T(0), T(1));
+}
+
+///
+version(mir_stat_test)
+@safe pure nothrow @nogc unittest
+{
+    import mir.bignum.fp: Fp;
+    alias T = Fp!64;
+    assert(laplaceLPDF(T(1)) == laplaceLPDF(T(-1)));
+}
+
+/++
+Computes the natural logarithm of the Laplace density for a given location and scale.
+
+Params:
+    T = Represented $(D Fp) type, inferred from the arguments by default.
+    x = Observation, which may be infinite or NaN.
+    location = Finite location parameter.
+    scale = Positive finite scale parameter.
+
+Returns:
+    $(D -log(2 * scale) - abs(x - location) / scale) in type $(D T).
+    The peak value is $(D -log(2 * scale)). The logarithm can remain finite
+    when the density rounds to zero. Either infinite observation or negative
+    overflow gives negative infinity. NaN propagates. Finite results use
+    guarded evaluation. Cancellation beyond the working precision can give zero.
++/
+@safe pure nothrow @nogc
+T laplaceLPDF(T)(const T x, const T location, const T scale)
+    if (is(T == Fp!size, size_t size))
+    in (!location.isSpecial, "location must be finite")
+    in (!scale.isSpecial && !scale.sign && !!scale.coefficient, "scale must be finite and positive")
+{
+    import mir.stat.internal.fp_laplace: laplaceLogDensity;
+    return laplaceLogDensity(x, location, scale);
+}
+
+///
+version(mir_stat_test)
+@safe pure nothrow @nogc unittest
+{
+    import mir.bignum.fp: Fp;
+    alias T = Fp!64;
+    assert(laplaceLPDF(T(3), T(3), T(0.5)) == T(0));
+}
+
+version(mir_stat_test)
+@safe pure nothrow @nogc unittest
+{
+    import mir.bignum.fixed: UInt;
+    import mir.math.common: approxEqual;
+    import std.meta: AliasSeq;
+    // -log(6) - 2 at the same exact observations for all four types.
+    static foreach (T; AliasSeq!(float, double, real))
+    {
+        foreach (x; [T(-5), T(7)])
+            assert(approxEqual(laplaceLPDF(x, T(1), T(3)),
+                T(-3.7917594692280550008124773583807023L), 8 * T.epsilon));
+    }
+    alias T = Fp!64;
+    alias U = UInt!64;
+    const expected = T(true, -62, U(0xf2ac2fe8a88008c9UL));
+    assert(laplaceLPDF(T(-5), T(1), T(3)) == expected);
+    assert(laplaceLPDF(T(7), T(1), T(3)) == expected);
+    // At x = 1/8 and scale = 1/4 the peak exceeds the offset by log(2) - 1/2.
+    assert(laplaceLPDF(T(0.125), T(0), T(0.25)) == T(false, -66, U(0xc5c85fdf473de6afUL)));
+    const negInf = T(-double.infinity);
+    assert(laplaceLPDF(T(double.infinity)) == negInf && laplaceLPDF(negInf) == negInf);
+    assert(laplaceLPDF(T(double.nan)).isNaN);
+
+    const quantum = T(false, long.min, U(1));
+    const huge = T(false, long.max - 1, U(2));
+    assert(laplaceLPDF(quantum) == T(true, -64, U(0xb17217f7d1cf79acUL)));
+    assert(laplaceLPDF(T(0), T(0), quantum) == T(false, -1, U(0xb17217f7d1cf79aaUL)));
+    assert(laplaceLPDF(T(0), T(0), huge) == T(true, -1, U(0xb17217f7d1cf79acUL)));
+    assert(laplaceLPDF(huge, T(0), quantum) == negInf);
+    assert(laplaceLPDF(quantum, T(0), T(0.5)) == T(true, long.min, U(2)));
+
+    // With h = 2^-64 these coordinates leave a residual of order h^3.
+    const x = T(false, -65, U(1)), location = T(false, -130, U(1));
+    assert(laplaceLPDF(x, location, T(false, -65, U.max))
+        == T(true, -258, U(0xaaaaaaaaaaaaaaacUL)));
+
+    // z is exactly halfway between two results before the remote log(2)
+    // correction. The standard log density rounds toward larger magnitude.
+    const high = T(false, 1000, U(1)), low = T(true, 936, U(1));
+    assert(laplaceLPDF(high, low, T(1)) == T(true, 937, U(0x8000000000000001UL)));
+}
+
+version(mir_stat_test_slow_numerics)
+@safe pure nothrow @nogc unittest
+{
+    import mir.bignum.fixed: UInt;
+    alias T = Fp!128;
+    alias U = UInt!128;
+    // At scale 1/4 the zero lies at log(2)/4. Evaluate its two adjacent
+    // represented observations independently at 200 and 400 decimal digits.
+    enum below = T(false, -130, U.fromHexString("b17217f7d1cf79abc9e3b39803f2f6af"));
+    auto above = below;
+    above.coefficient += 1;
+    enum positive = T(false, -257, U.fromHexString("81e6864ce5316c5b141a2eb71755f458"));
+    enum negative = T(true, -256, U.fromHexString("bf0cbcd98d6749d275f2e8a4745505d4"));
+    assert(laplaceLPDF(below, T(0), T(0.25)) == positive);
+    assert(laplaceLPDF(above, T(0), T(0.25)) == negative);
 }
 
 // Finite location and scale can compensate for overflowing intermediates.
