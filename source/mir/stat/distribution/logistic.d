@@ -21,6 +21,8 @@ Copyright: 2023 Mir Stat Authors.
 
 module mir.stat.distribution.logistic;
 
+import mir.bignum.fp: Fp;
+import mir.stat.internal.fp_probability: fpProbabilityValid;
 import mir.stat.internal.standardize: standardize;
 
 import mir.internal.utility: isFloatingPoint;
@@ -209,6 +211,93 @@ unittest
 }
 
 /++
+Computes the density for the standard logistic distribution (location zero, scale one).
+
+Params:
+    T = Represented $(D Fp) type, inferred from the arguments.
+    x = Observation, which may be infinite or NaN.
+
+Returns:
+    The density in type $(D T), using guarded evaluation.
+    The peak is one quarter divided by the scale. Either infinity gives zero and NaN propagates.
++/
+@safe pure nothrow @nogc
+T logisticPDF(T)(const T x)
+    if (is(T == Fp!size, size_t size))
+{
+    return logisticPDF(x, T(0), T(1));
+}
+
+///
+version(mir_stat_test)
+@safe pure nothrow @nogc unittest
+{
+    import mir.bignum.fp: Fp;
+    alias T = Fp!64;
+    assert(logisticPDF(T(0)) == T(0.25));
+}
+
+/++
+Computes the density for the logistic distribution with the given location and scale.
+
+Params:
+    T = Represented $(D Fp) type, inferred from the arguments.
+    x = Observation, which may be infinite or NaN.
+    location = Finite location parameter.
+    scale = Positive finite scale parameter.
+
+Returns:
+    The density in type $(D T), using guarded evaluation.
+    The peak is one quarter divided by the scale. Either infinity gives zero and NaN propagates.
++/
+@safe pure nothrow @nogc
+T logisticPDF(T)(const T x, const T location, const T scale)
+    if (is(T == Fp!size, size_t size))
+    in (!location.isSpecial, "location must be finite")
+    in (!scale.isSpecial && !scale.sign && !!scale.coefficient, "scale must be finite and positive")
+{
+    import mir.stat.internal.fp_logistic: logisticDensity;
+    return logisticDensity(x, location, scale);
+}
+
+///
+version(mir_stat_test)
+@safe pure nothrow @nogc unittest
+{
+    import mir.bignum.fp: Fp;
+    alias T = Fp!64;
+    assert(logisticPDF(T(3), T(3), T(2)) == T(0.125));
+}
+
+version(mir_stat_test)
+@safe pure nothrow @nogc unittest
+{
+    import mir.bignum.fixed: UInt;
+    alias T = Fp!64;
+    alias U = UInt!64;
+    import mir.math.common: approxEqual;
+    import std.meta: AliasSeq;
+    static foreach (R; AliasSeq!(float, double, real))
+        assert(approxEqual(logisticPDF(R(7), R(1), R(3)),
+            R(0.03499786180116883911637472492014181L), 8 * R.epsilon));
+    const expected = T(false, -68, U(0x8f59eafddaec198dUL));
+    assert(logisticPDF(T(7), T(1), T(3)) == expected);
+    assert(logisticPDF(T(-5), T(1), T(3)) == expected);
+    assert(logisticPDF(T(double.nan)).isNaN);
+    assert(logisticPDF(T(-double.infinity)) == T(0));
+    // At z = 2^63, exp(-z) underflows. Division by 2^long.min restores
+    // the density; normalize exp(-z) in base two before applying the scale.
+    const quantum = T(false, long.min, U(1));
+    assert(logisticPDF(T(false, 63, U(1))) == T(0));
+    assert(logisticPDF(T(1), T(0), quantum) == T(0));
+    assert(logisticPDF(T(false, long.min + 63, U(1)), T(0), quantum)
+        == T(false, -4083141060989546747L, U(0x98d3377e65eee9c8UL)));
+    const largeScale = T(false, long.max - 1, U(2));
+    assert(logisticPDF(T(0), T(0), largeScale) == T(0)); // half a quantum
+    assert(logisticPDF(T(0), T(0), T(false, long.max - 64, U.max)) == quantum);
+}
+
+/++
 Computes the Logistic cumulative distribution function (CDF).
 
 Returns the lower-tail probability $(D P(X <= x)).
@@ -295,6 +384,78 @@ unittest
 }
 
 /++
+Computes the lower-tail probability $(D P(X <= x)) for the standard logistic distribution (location zero, scale one).
+
+Params:
+    T = Represented $(D Fp) type, inferred from the arguments.
+    x = Observation, which may be infinite or NaN.
+
+Returns:
+    The lower-tail probability $(D P(X <= x)) in type $(D T), using guarded evaluation.
+    At the location the result is one half. Negative and positive infinity give zero and one. NaN propagates.
++/
+@safe pure nothrow @nogc
+T logisticCDF(T)(const T x)
+    if (is(T == Fp!size, size_t size))
+{
+    return logisticCDF(x, T(0), T(1));
+}
+
+///
+version(mir_stat_test)
+@safe pure nothrow @nogc unittest
+{
+    import mir.bignum.fp: Fp;
+    alias T = Fp!64;
+    assert(logisticCDF(T(0)) == T(0.5));
+}
+
+/++
+Computes the lower-tail probability $(D P(X <= x)) for the logistic distribution with the given location and scale.
+
+Params:
+    T = Represented $(D Fp) type, inferred from the arguments.
+    x = Observation, which may be infinite or NaN.
+    location = Finite location parameter.
+    scale = Positive finite scale parameter.
+
+Returns:
+    The lower-tail probability $(D P(X <= x)) in type $(D T), using guarded evaluation.
+    At the location the result is one half. Negative and positive infinity give zero and one. NaN propagates.
++/
+@safe pure nothrow @nogc
+T logisticCDF(T)(const T x, const T location, const T scale)
+    if (is(T == Fp!size, size_t size))
+    in (!location.isSpecial, "location must be finite")
+    in (!scale.isSpecial && !scale.sign && !!scale.coefficient, "scale must be finite and positive")
+{
+    import mir.stat.internal.fp_logistic: logisticTail;
+    return logisticTail!false(x, location, scale);
+}
+
+///
+version(mir_stat_test)
+@safe pure nothrow @nogc unittest
+{
+    import mir.bignum.fp: Fp;
+    alias T = Fp!64;
+    assert(logisticCDF(T(3), T(3), T(2)) == T(0.5));
+}
+
+version(mir_stat_test)
+@safe pure nothrow @nogc unittest
+{
+    import mir.bignum.fixed: UInt;
+    alias T = Fp!64;
+    alias U = UInt!64;
+    assert(logisticCDF(T(double.nan)).isNaN);
+    assert(logisticCDF(T(double.infinity)) == T(1));
+    assert(logisticCDF(T(-double.infinity)) == T(0));
+    assert(logisticCDF(T(true, long.max - 1, U.max)) == T(0));
+    assert(logisticCDF(T(false, -1, U(2)), T(1), T(2)) == T(0.5));
+}
+
+/++
 Computes the Logistic complementary cumulative distribution function (CCDF).
 
 Returns the upper-tail probability $(D P(X > x)). Use this function directly
@@ -373,6 +534,132 @@ unittest
     logisticCCDF(-1.0, 2.0, 3.0).shouldApprox == 0.7310586;
     logisticCCDF(1.0, 2.0, 3.0).shouldApprox == 0.5825702;
     logisticCCDF(4.0, 2.0, 3.0).shouldApprox == 0.3392436;
+}
+
+/++
+Computes the strict upper-tail probability $(D P(X > x)) for the standard logistic distribution (location zero, scale one).
+
+Params:
+    T = Represented $(D Fp) type, inferred from the arguments.
+    x = Observation, which may be infinite or NaN.
+
+Returns:
+    The strict upper-tail probability $(D P(X > x)) in type $(D T), using guarded evaluation.
+    At the location the result is one half. Negative and positive infinity give one and zero. NaN propagates.
++/
+@safe pure nothrow @nogc
+T logisticCCDF(T)(const T x)
+    if (is(T == Fp!size, size_t size))
+{
+    return logisticCCDF(x, T(0), T(1));
+}
+
+///
+version(mir_stat_test)
+@safe pure nothrow @nogc unittest
+{
+    import mir.bignum.fp: Fp;
+    alias T = Fp!64;
+    assert(logisticCCDF(T(0)) == T(0.5));
+}
+
+/++
+Computes the strict upper-tail probability $(D P(X > x)) for the logistic distribution with the given location and scale.
+
+Params:
+    T = Represented $(D Fp) type, inferred from the arguments.
+    x = Observation, which may be infinite or NaN.
+    location = Finite location parameter.
+    scale = Positive finite scale parameter.
+
+Returns:
+    The strict upper-tail probability $(D P(X > x)) in type $(D T), using guarded evaluation.
+    At the location the result is one half. Negative and positive infinity give one and zero. NaN propagates.
++/
+@safe pure nothrow @nogc
+T logisticCCDF(T)(const T x, const T location, const T scale)
+    if (is(T == Fp!size, size_t size))
+    in (!location.isSpecial, "location must be finite")
+    in (!scale.isSpecial && !scale.sign && !!scale.coefficient, "scale must be finite and positive")
+{
+    import mir.stat.internal.fp_logistic: logisticTail;
+    return logisticTail!true(x, location, scale);
+}
+
+///
+version(mir_stat_test)
+@safe pure nothrow @nogc unittest
+{
+    import mir.bignum.fp: Fp;
+    alias T = Fp!64;
+    assert(logisticCCDF(T(3), T(3), T(2)) == T(0.5));
+}
+
+version(mir_stat_test)
+@safe pure nothrow @nogc unittest
+{
+    import mir.bignum.fixed: UInt;
+    alias T = Fp!64;
+    alias U = UInt!64;
+    const zero = T(0), one = T(1);
+    assert(logisticCCDF(T(double.nan)).isNaN);
+    assert(logisticCCDF(T(-double.infinity)) == one);
+    assert(logisticCCDF(T(double.infinity)) == zero);
+    const maximum = T(false, long.max - 1, U.max);
+    assert(logisticCCDF(maximum) == zero);
+    const minimum = T(true, maximum.exponent, maximum.coefficient);
+    assert(logisticCCDF(maximum, minimum, maximum) == T(false, -67, U(0xf420a95d618d754fUL)));
+    const quantum = T(false, long.min, U(1));
+    assert(logisticCCDF(T(6393154322601327830L)) == quantum);
+    assert(logisticCCDF(T(6393154322601327831L)) == zero);
+    assert(logisticCCDF(T(100)) == T(false, -208, U(0xd460f8a7157ae57aUL)));
+    assert(logisticCCDF(T(true, 0, U(0))) == T(0.5));
+}
+
+// Shared dyadic observations have standardized offsets of exactly +/-2.
+version(mir_stat_test)
+@safe pure nothrow @nogc unittest
+{
+    import mir.bignum.fixed: UInt;
+    import mir.math.common: approxEqual;
+    import std.meta: AliasSeq;
+    static foreach (R; AliasSeq!(float, double, real))
+    {{
+        const small = R(0.119202922022117555940270858697603205L);
+        const large = R(0.880797077977882444059729141302396795L);
+        assert(approxEqual(logisticCDF(R(-5), R(1), R(3)), small, 8 * R.epsilon));
+        assert(approxEqual(logisticCCDF(R(7), R(1), R(3)), small, 8 * R.epsilon));
+        assert(approxEqual(logisticCDF(R(7), R(1), R(3)), large, 8 * R.epsilon));
+        assert(approxEqual(logisticCCDF(R(-5), R(1), R(3)), large, 8 * R.epsilon));
+    }}
+    alias T = Fp!64;
+    alias U = UInt!64;
+    const small = T(false, -67, U(0xf420a95d618d754fUL));
+    const large = T(false, -64, U(0xe17bead453ce5156UL));
+    assert(logisticCDF(T(-5), T(1), T(3)) == small);
+    assert(logisticCCDF(T(7), T(1), T(3)) == small);
+    assert(logisticCDF(T(7), T(1), T(3)) == large);
+    assert(logisticCCDF(T(-5), T(1), T(3)) == large);
+}
+
+// At z = t, the cubic term in 1/2 + z/4 - z^3/48 puts the
+// result on the center side of a midpoint. Adding t^3 crosses it.
+version(mir_stat_test_slow_numerics)
+@safe pure nothrow @nogc unittest
+{
+    import mir.bignum.fixed: UInt;
+    enum b = 256;
+    alias T = Fp!b;
+    alias U = UInt!b;
+    const half = T(0.5);
+    auto successor = T(0.5);
+    successor.coefficient += 1;
+    const t = T(false, 1-b, U(1));
+    assert(logisticCDF(t) == half);
+    assert(logisticCDF(t, T(true, 3*(1-b), U(1)), T(1)) == successor);
+    const h = T(false, -b, U(1));
+    assert(logisticCCDF(h) == half);
+    assert(logisticCCDF(h, T(true, -3*b, U(1)), T(1)) == T(false, -b-1, U.max));
 }
 
 /++
@@ -460,6 +747,115 @@ unittest
     logisticInvCDF(0.4, 2, 3).shouldApprox == 0.7836047;
     logisticInvCDF(0.6, 2, 3).shouldApprox == 3.216395;
     logisticInvCDF(0.8, 2, 3).shouldApprox == 6.158883;
+}
+
+/++
+Computes the quantile for the standard logistic distribution (location zero, scale one).
+
+Params:
+    T = Represented $(D Fp) type, inferred from the arguments.
+    p = Finite cumulative probability in [0, 1].
+
+Returns:
+    The quantile in type $(D T), using guarded evaluation.
+    Zero and one give negative and positive infinity. One half returns the location exactly.
++/
+@safe pure nothrow @nogc
+T logisticInvCDF(T)(const T p)
+    if (is(T == Fp!size, size_t size))
+{
+    return logisticInvCDF(p, T(0), T(1));
+}
+
+///
+version(mir_stat_test)
+@safe pure nothrow @nogc unittest
+{
+    import mir.bignum.fp: Fp;
+    alias T = Fp!64;
+    assert(logisticInvCDF(T(0.5)) == T(0));
+}
+
+/++
+Computes the quantile for the logistic distribution with the given location and scale.
+
+Params:
+    T = Represented $(D Fp) type, inferred from the arguments.
+    p = Finite cumulative probability in [0, 1].
+    location = Finite location parameter.
+    scale = Positive finite scale parameter.
+
+Returns:
+    The quantile in type $(D T), using guarded evaluation.
+    Zero and one give negative and positive infinity. One half returns the location exactly.
+    Near a zero quantile, cancellation with the location can reduce relative accuracy.
++/
+@safe pure nothrow @nogc
+T logisticInvCDF(T)(const T p, const T location, const T scale)
+    if (is(T == Fp!size, size_t size))
+    in (fpProbabilityValid(p), "p must be finite and in [0, 1]")
+    in (!location.isSpecial, "location must be finite")
+    in (!scale.isSpecial && !scale.sign && !!scale.coefficient, "scale must be finite and positive")
+{
+    import mir.stat.internal.fp_logistic: logisticQuantile;
+    return logisticQuantile(p, location, scale);
+}
+
+///
+version(mir_stat_test)
+@safe pure nothrow @nogc unittest
+{
+    import mir.bignum.fp: Fp;
+    alias T = Fp!64;
+    assert(logisticInvCDF(T(0.5), T(3), T(2)) == T(3));
+}
+
+version(mir_stat_test)
+@safe pure nothrow @nogc unittest
+{
+    import mir.bignum.fixed: UInt;
+    alias T = Fp!64;
+    alias U = UInt!64;
+    import mir.math.common: approxEqual;
+    import std.meta: AliasSeq;
+    static foreach (R; AliasSeq!(float, double, real))
+        assert(approxEqual(logisticInvCDF(R(0.75), R(2), R(3)),
+            R(5.29583686600432907418573571076757711394L), 8 * R.epsilon));
+    assert(logisticInvCDF(T(0.25), T(2), T(3)) == T(true, -63, U(0xa5ddfb803848fe32UL)));
+    assert(logisticInvCDF(T(0.75), T(2), T(3)) == T(false, -61, U(0xa9777ee00e123f8cUL)));
+    assert(logisticInvCDF(T(true, 0, U(0))) == T(-double.infinity));
+    assert(logisticInvCDF(T(false, -2, U(4))) == T(double.infinity));
+    assert(logisticInvCDF(T(false, -1, U(1)), T(true, 0, U(0)), T(1)).sign);
+    const quantum = T(false, long.min, U(1));
+    assert(logisticInvCDF(quantum) == T(true, -1, U(0xb17217f7d1cf79acUL)));
+    assert(logisticInvCDF(T(false, -64, U.max)) == T(false, -58, U(0xb17217f7d1cf79acUL)));
+    const maximum = T(false, long.max - 1, U.max);
+    // The offset overflows on its own. The result is maximum*(1-log(3)).
+    assert(logisticInvCDF(T(0.25), maximum, maximum) == T(true, long.max - 4, U(0xc9f53d5681854bb4UL)));
+    assert(logisticInvCDF(T(0.75), maximum, maximum) == T(double.infinity));
+
+    // At p = 3/4 the offset is log(3). These locations bracket -log(3).
+    // Round each signed residual from its exact dyadic location.
+    const left = T(true, -63, U(0x8c9f53d5681854bcUL));
+    const right = T(true, -63, U(0x8c9f53d5681854bbUL));
+    assert(logisticInvCDF(T(0.75), left, T(1)) == T(true, -127, U(0xadf339557d6241a5UL)));
+    assert(logisticInvCDF(T(0.75), right, T(1)) == T(false, -128, U(0xa4198d55053b7cb6UL)));
+}
+
+version(mir_stat_test_slow_numerics)
+@safe pure nothrow @nogc unittest
+{
+    import mir.bignum.fixed: UInt;
+    alias T = Fp!128;
+    alias U = UInt!128;
+    // On both sides of the median the location cancels the linear term.
+    const below = T(false, -129, U.max);
+    auto above = T(0.5);
+    above.coefficient += 1;
+    enum lower = T(true, -512, U.fromHexString("aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaab"));
+    enum upper = T(false, -509, U.fromHexString("aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaab"));
+    assert(logisticInvCDF(below, T(false, -127, U(1)), T(1)) == lower);
+    assert(logisticInvCDF(above, T(true, -126, U(1)), T(1)) == upper);
 }
 
 /++
@@ -586,6 +982,134 @@ unittest
     logisticLPDF(-1.0, 2.0, 3.0).shouldApprox == log(0.06553731);
     logisticLPDF(1.0, 2.0, 3.0).shouldApprox == log(0.08106072);
     logisticLPDF(4.0, 2.0, 3.0).shouldApprox == log(0.07471913);
+}
+
+/++
+Computes the natural logarithm of the density for the standard logistic distribution (location zero, scale one).
+
+Params:
+    T = Represented $(D Fp) type, inferred from the arguments.
+    x = Observation, which may be infinite or NaN.
+
+Returns:
+    The natural logarithm of the density in type $(D T), using guarded evaluation.
+    The peak is minus the logarithm of four times the scale. Either infinity gives negative infinity and NaN propagates.
++/
+@safe pure nothrow @nogc
+T logisticLPDF(T)(const T x)
+    if (is(T == Fp!size, size_t size))
+{
+    return logisticLPDF(x, T(0), T(1));
+}
+
+///
+version(mir_stat_test)
+@safe pure nothrow @nogc unittest
+{
+    import mir.bignum.fp: Fp;
+    alias T = Fp!64;
+    assert(logisticLPDF(T(0)).sign);
+}
+
+/++
+Computes the natural logarithm of the density for the logistic distribution with the given location and scale.
+
+Params:
+    T = Represented $(D Fp) type, inferred from the arguments.
+    x = Observation, which may be infinite or NaN.
+    location = Finite location parameter.
+    scale = Positive finite scale parameter.
+
+Returns:
+    The natural logarithm of the density in type $(D T), using guarded evaluation.
+    The peak is minus the logarithm of four times the scale. Either infinity gives negative infinity and NaN propagates.
+    Near a density-one crossing, cancellation can reduce relative accuracy.
++/
+@safe pure nothrow @nogc
+T logisticLPDF(T)(const T x, const T location, const T scale)
+    if (is(T == Fp!size, size_t size))
+    in (!location.isSpecial, "location must be finite")
+    in (!scale.isSpecial && !scale.sign && !!scale.coefficient, "scale must be finite and positive")
+{
+    import mir.stat.internal.fp_logistic: logisticLogDensity;
+    return logisticLogDensity(x, location, scale);
+}
+
+///
+version(mir_stat_test)
+@safe pure nothrow @nogc unittest
+{
+    import mir.bignum.fp: Fp;
+    alias T = Fp!64;
+    assert(logisticLPDF(T(3), T(3), T(2)).sign);
+}
+
+version(mir_stat_test)
+@safe pure nothrow @nogc unittest
+{
+    import mir.bignum.fixed: UInt;
+    alias T = Fp!64;
+    alias U = UInt!64;
+    import mir.math.common: approxEqual;
+    import std.meta: AliasSeq;
+    static foreach (R; AliasSeq!(float, double, real))
+        assert(approxEqual(logisticLPDF(R(7), R(1), R(3)),
+            R(-3.35246831075405468428269884963913456752L), 8 * R.epsilon));
+    assert(logisticLPDF(T(7), T(1), T(3)) == T(true, -62, U(0xd68ed73ee4297375UL)));
+    assert(logisticLPDF(T(0), T(0), T(0.25)) == T(0));
+    assert(logisticLPDF(T(double.nan)).isNaN);
+    assert(logisticLPDF(T(double.infinity)) == T(-double.infinity));
+    const quantum = T(false, long.min, U(1));
+    const huge = T(false, long.max - 1, U(2));
+    assert(logisticLPDF(huge, T(0), quantum) == T(-double.infinity));
+    assert(logisticLPDF(huge, huge, huge).sign);
+    // At scale 1/4 the peak vanishes. The leading displacement is -4*x^2.
+    const tiny = T(false, -1000, U(1));
+    assert(logisticLPDF(tiny, T(0), T(0.25)) == T(true, -1998-63, U(1UL << 63)));
+    // Here the second term of the log-cosh series fits the working grid.
+    const small = T(false, -160, U(1));
+    assert(logisticLPDF(small, T(0), T(0.25)) == T(true, -318-63, U(1UL << 63)));
+    const high = T(false, 1000, U(1)), low = T(true, 936, U(1));
+    assert(logisticLPDF(high, low, T(1)) == T(true, 937, U(0x8000000000000001UL)));
+
+    // For scale 1/8 the positive crossing is location + log(1+sqrt(2))/4.
+    // Cancel its leading 64 bits with the location, then bracket the rest.
+    const location = T(true, -66, U(0xe1a1b30bcea13660UL));
+    const below = T(false, -130, U(0xd8f99e8dd2518a53UL));
+    const above = T(false, -130, U(0xd8f99e8dd2518a54UL));
+    assert(logisticLPDF(below, location, T(0.125)) == T(false, -191, U(0x911f25b58e6d78d7UL)));
+    assert(logisticLPDF(above, location, T(0.125)) == T(true, -193, U(0x8f9735f9adc3aeb5UL)));
+}
+
+version(mir_stat_test_slow_numerics)
+@safe pure nothrow @nogc unittest
+{
+    import mir.bignum.fixed: UInt;
+    alias T = Fp!128;
+    alias U = UInt!128;
+    // At scale 1/8 the positive root is log(1+sqrt(2))/4.
+    // Check its two enclosing dyadic observations with independent logs.
+    enum below = T(false, -130, U.fromHexString("e1a1b30bcea13660d8f99e8dd2518a53"));
+    T above = below;
+    above.coefficient += 1;
+    enum positive = T(false, -255, U.fromHexString("911f25b58e6d78d71cf36598a7153461"));
+    enum negative = T(true, -257, U.fromHexString("8f9735f9adc3aeb4f228906b38d628f9"));
+    assert(logisticLPDF(below, T(0), T(0.125)) == positive);
+    assert(logisticLPDF(above, T(0), T(0.125)) == negative);
+}
+
+version(mir_stat_test)
+static if (size_t.sizeof == 4)
+@safe pure nothrow @nogc unittest
+{
+    import mir.bignum.fixed: UInt;
+    alias T = Fp!32;
+    const half = T(false, -32, UInt!32(1u << 31));
+    assert(logisticCDF(T(0)) == half);
+    assert(logisticCCDF(T(0)) == half);
+    assert(logisticPDF(T(0), T(0), half) == half);
+    assert(logisticInvCDF(half, T(-3), T(2)) == T(-3));
+    assert(logisticLPDF(T(0), T(0), T(false, -2, UInt!32(1u))) == T(0));
 }
 
 // A finite standardized value survives an overflowing location subtraction.
