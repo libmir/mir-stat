@@ -202,3 +202,26 @@ package(mir.stat) Fp!bits laplaceLogDensity(uint bits)(Fp!bits x, Fp!bits locati
     const z = distance!work(x, location).divide(ProbabilityScaled!work.from(scale));
     return addOffset!bits(peak, z, true);
 }
+
+package(mir.stat) Fp!bits laplaceQuantile(uint bits)(Fp!bits p, Fp!bits location, Fp!bits scale)
+{
+    import mir.bignum.fixed: UInt;
+    import mir.stat.internal.fp_probability_log: ProbabilityLog;
+    alias T = Fp!bits;
+    if (!p.coefficient)
+        return T(true, long.max, UInt!bits(0));
+    const side = position(p, half!bits);
+    if (!side)
+        return location;
+
+    // Above the median, 1-p is an exact dyadic at the input width.
+    const tail = side < 0 ? p : fpProbabilityComplement(p);
+    if (!tail.coefficient)
+        return T(false, long.max, UInt!bits(0));
+    alias Log = ProbabilityLog!(3 * bits);
+    Log.Context context;
+    const logTail = Log.logDyadic(tail.coefficient, tail.exponent + 1, context);
+    alias S = Log.S;
+    const offset = S.from(logTail).multiply(S.from(scale));
+    return addOffset!bits(location, offset, side < 0);
+}
