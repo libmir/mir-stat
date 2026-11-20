@@ -474,19 +474,12 @@ Element!X mahalanobisWithWorkspace(CovarianceRepresentation form = CovarianceRep
     if (form == CovarianceRepresentation.covariance && compatible!(X,C,M) && vector!W && matrix!F &&
         is(Element!X == Element!W) && is(Element!X == Element!F))
 {
-    auto a = metric.asView;
-    auto f = factorWork.asView;
-    check(x.asView, center.asView, a, work.asView);
-    assert(f.shape == a.shape, "Incorrect Mahalanobis factor workspace shape");
-    import mir.stat.internal.linearAlgebra.cholesky: choleskyDecomposeInto;
-    choleskyDecomposeInto!triangle(a, f);
-    static if (DiagonalInfo!M.valid)
-    {
-        import mir.ndslice.topology: diagonal;
-        return prepared!(false, CovarianceRepresentation.covarianceCholesky, triangle)(
-            x.asView, center.asView, diagonalView(f.diagonal), work.asView);
-    }
-    else return prepared!(false, CovarianceRepresentation.covarianceCholesky, triangle)(x.asView, center.asView, f, work.asView);
+    import mir.exception: enforce;
+    Element!X result;
+    const pivot = tryCovarianceDistanceWithWorkspace!(false, triangle)(
+        x.asView, center.asView, metric.asView, result, work.asView, factorWork.asView);
+    enforce!"Cholesky factorization failed"(pivot == 0);
+    return result;
 }
 
 /// Reuse vector storage with an already computed covariance Cholesky factor.
@@ -531,19 +524,12 @@ Element!X mahalanobisSquaredWithWorkspace(CovarianceRepresentation form = Covari
     if (form == CovarianceRepresentation.covariance && compatible!(X,C,M) && vector!W && matrix!F &&
         is(Element!X == Element!W) && is(Element!X == Element!F))
 {
-    auto a = metric.asView;
-    auto f = factorWork.asView;
-    check(x.asView, center.asView, a, work.asView);
-    assert(f.shape == a.shape, "Incorrect Mahalanobis factor workspace shape");
-    import mir.stat.internal.linearAlgebra.cholesky: choleskyDecomposeInto;
-    choleskyDecomposeInto!triangle(a, f);
-    static if (DiagonalInfo!M.valid)
-    {
-        import mir.ndslice.topology: diagonal;
-        return prepared!(true, CovarianceRepresentation.covarianceCholesky, triangle)(
-            x.asView, center.asView, diagonalView(f.diagonal), work.asView);
-    }
-    else return prepared!(true, CovarianceRepresentation.covarianceCholesky, triangle)(x.asView, center.asView, f, work.asView);
+    import mir.exception: enforce;
+    Element!X result;
+    const pivot = tryCovarianceDistanceWithWorkspace!(true, triangle)(
+        x.asView, center.asView, metric.asView, result, work.asView, factorWork.asView);
+    enforce!"Cholesky factorization failed"(pivot == 0);
+    return result;
 }
 
 /// Reuse vector storage with an already computed covariance Cholesky factor.
@@ -568,6 +554,26 @@ version(mir_stat_test_distance)
     auto result = mahalanobisSquaredWithWorkspace(x[], center[],
         covariance[].sliced(2, 2), work[], factorWork[].sliced(2, 2));
     assert(result == 0.8125);
+}
+
+/// Factor a raw covariance and write the distance only after successful factorization.
+package(mir.stat) size_t tryCovarianceDistanceWithWorkspace(bool squared, TrianglePolicy triangle,
+    X, C, M, T, W, F)(X x, C center, M metric, ref T result, W work, F factor)
+{
+    import mir.stat.internal.linearAlgebra.cholesky: tryCholeskyDecomposeInto;
+    check(x, center, metric, work);
+    const pivot = tryCholeskyDecomposeInto!triangle(metric, factor);
+    if (pivot) return pivot;
+
+    static if (DiagonalInfo!M.valid)
+    {
+        import mir.ndslice.topology: diagonal;
+        auto preparedFactor = diagonalView(factor.diagonal);
+    }
+    else alias preparedFactor = factor;
+    result = prepared!(squared, CovarianceRepresentation.covarianceCholesky, triangle)(
+        x, center, preparedFactor, work);
+    return 0;
 }
 
 /// Assert matching observation, center, workspace, and square metric dimensions.
@@ -1219,6 +1225,26 @@ private void checkBatch(X, C, M, R, W)(X x, C center, M metric, R result, W work
         "Incompatible Mahalanobis batch output or workspace");
 }
 
+/// Factor a raw covariance and write the distances in observation order on success.
+package(mir.stat) size_t tryCovarianceDistanceBatchWithWorkspace(bool squared, TrianglePolicy triangle,
+    Summation summation = Summation.kbn, X, C, M, R, W, F)(X x, C center, M metric, R result, W work, F factor)
+{
+    import mir.stat.internal.linearAlgebra.cholesky: tryCholeskyDecomposeInto;
+    checkBatch(x, center, metric, result, work);
+    const pivot = tryCholeskyDecomposeInto!triangle(metric, factor);
+    if (pivot) return pivot;
+
+    static if (DiagonalInfo!M.valid)
+    {
+        import mir.ndslice.topology: diagonal;
+        auto preparedFactor = diagonalView(factor.diagonal);
+    }
+    else alias preparedFactor = factor;
+    preparedBatch!(squared, CovarianceRepresentation.covarianceCholesky, triangle, summation)(
+        x, center, preparedFactor, result, work);
+    return 0;
+}
+
 /// Center every observation, checking finite inputs and only the selected metric triangle.
 private void centerBatch(TrianglePolicy triangle, X, C, M, W)(X x, C center, M metric, W work)
 {
@@ -1438,22 +1464,16 @@ void mahalanobisBatchWithWorkspace(CovarianceRepresentation form = CovarianceRep
 {
     auto xv = x.asView; auto cv = center.asView; auto mv = metric.asView;
     auto rv = result.asView; auto wv = work.asView; auto ev = extra.asView;
-    checkBatch(xv, cv, mv, rv, wv);
     static if (form == CovarianceRepresentation.covariance)
     {
-        import mir.stat.internal.linearAlgebra.cholesky: choleskyDecomposeInto;
-        assert(ev.shape == mv.shape);
-        choleskyDecomposeInto!triangle(mv, ev);
-        static if (DiagonalInfo!M.valid)
-        {
-            import mir.ndslice.topology: diagonal;
-            preparedBatch!(false, CovarianceRepresentation.covarianceCholesky, triangle, summation)(
-                xv, cv, diagonalView(ev.diagonal), rv, wv);
-        }
-        else preparedBatch!(false, CovarianceRepresentation.covarianceCholesky, triangle, summation)(xv, cv, ev, rv, wv);
+        import mir.exception: enforce;
+        const pivot = tryCovarianceDistanceBatchWithWorkspace!(false, triangle, summation)(
+            xv, cv, mv, rv, wv, ev);
+        enforce!"Cholesky factorization failed"(pivot == 0);
     }
     else
     {
+        checkBatch(xv, cv, mv, rv, wv);
         import mir.stat.internal.linearAlgebra.quadratic: quadraticFormBatchInto;
         import std.math: sqrt;
         assert(ev.shape == xv.shape);
@@ -1585,22 +1605,16 @@ void mahalanobisSquaredBatchWithWorkspace(CovarianceRepresentation form = Covari
 {
     auto xv = x.asView; auto cv = center.asView; auto mv = metric.asView;
     auto rv = result.asView; auto wv = work.asView; auto ev = extra.asView;
-    checkBatch(xv, cv, mv, rv, wv);
     static if (form == CovarianceRepresentation.covariance)
     {
-        import mir.stat.internal.linearAlgebra.cholesky: choleskyDecomposeInto;
-        assert(ev.shape == mv.shape);
-        choleskyDecomposeInto!triangle(mv, ev);
-        static if (DiagonalInfo!M.valid)
-        {
-            import mir.ndslice.topology: diagonal;
-            preparedBatch!(true, CovarianceRepresentation.covarianceCholesky, triangle, summation)(
-                xv, cv, diagonalView(ev.diagonal), rv, wv);
-        }
-        else preparedBatch!(true, CovarianceRepresentation.covarianceCholesky, triangle, summation)(xv, cv, ev, rv, wv);
+        import mir.exception: enforce;
+        const pivot = tryCovarianceDistanceBatchWithWorkspace!(true, triangle, summation)(
+            xv, cv, mv, rv, wv, ev);
+        enforce!"Cholesky factorization failed"(pivot == 0);
     }
     else
     {
+        checkBatch(xv, cv, mv, rv, wv);
         import mir.stat.internal.linearAlgebra.quadratic: quadraticFormBatchInto;
         import std.math: sqrt;
         assert(ev.shape == xv.shape);
