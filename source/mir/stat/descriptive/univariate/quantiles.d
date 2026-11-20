@@ -46,6 +46,7 @@ $(TR $(TH Category) $(TH Declarations))
         $(REF weightedQuantile, mir, stat, descriptive, univariate, quantiles)$(NBSP)
         $(REF rcWeightedQuantile, mir, stat, descriptive, univariate, quantiles)$(NBSP)
         $(REF makeWeightedQuantile, mir, stat, descriptive, univariate, quantiles)$(NBSP)
+        $(REF weightedQuantileScratchLength, mir, stat, descriptive, univariate, quantiles)$(NBSP)
         $(REF WeightedQuantileTable, mir, stat, descriptive, univariate, quantiles)$(NBSP)
         $(REF weightedQuantileTable, mir, stat, descriptive, univariate, quantiles)$(NBSP)
         $(REF rcWeightedQuantileTable, mir, stat, descriptive, univariate, quantiles)$(NBSP)
@@ -3672,6 +3673,87 @@ version(mir_stat_test)
     foreach (i; 0 .. levels.length) assert(actual[i] == expected[i]);
     const int[5] unordered = [2, 1, 0, 3, 4];
     assertThrown!AssertError(weightedQuantileAssumeSorted(values, unordered, 0.5));
+}
+
+private template WeightedMass(WeightInterpretation interpretation)
+{
+    static if (interpretation == WeightInterpretation.frequency)
+        alias WeightedMass = ulong;
+    else
+        alias WeightedMass = real;
+}
+
+// Map compact positive rows to the original input only when zero weights are present.
+// On targets with binary64 real, split very large indices into exact 32-bit pieces.
+private size_t weightedRowIndexWords(Mass)(size_t rows) @safe pure nothrow @nogc
+{
+    static if (is(Mass == real) && real.mant_dig < size_t.sizeof * 8)
+        if (rows > (1UL << real.mant_dig))
+            return 2;
+    return 1;
+}
+
+/++ Size caller-owned numeric scratch for sorted weighted quantiles.
+
+Params:
+    interpretation = relative (default) for real scratch or frequency for ulong scratch
+    algorithm = estimator, default inverseCDF for relative weights and type7 for frequency weights
+    rows = total number of observation rows
+    positiveRows = number of rows with positive weight, when known
+
+Returns:
+    Required number of elements for the given counts, or a sufficient capacity for
+    any distribution of zero weights when positiveRows is omitted.
+
+Throws:
+    $(D OutOfMemoryError) if the required element count exceeds $(D size_t.max).
++/
+template weightedQuantileScratchLength(WeightInterpretation interpretation = WeightInterpretation.relative,
+    WeightedQuantileAlgo algorithm = weightedTableDefault!interpretation)
+    if (validWeightedQuantileOptions!(interpretation, algorithm))
+{
+    size_t weightedQuantileScratchLength(size_t rows, size_t positiveRows) @safe pure nothrow @nogc
+    {
+        alias Mass = WeightedMass!interpretation;
+        enum sums = 1 + weightedQuantileUsesEffectiveSize!(interpretation, algorithm);
+        assert(positiveRows <= rows);
+        const fields = sums + (positiveRows == rows ? 0 : weightedRowIndexWords!Mass(rows));
+        if (positiveRows > size_t.max / fields)
+        {
+            import core.exception : onOutOfMemoryError;
+            onOutOfMemoryError();
+        }
+        return positiveRows * fields;
+    }
+
+    /// ditto
+    size_t weightedQuantileScratchLength(size_t rows) @safe pure nothrow @nogc
+    {
+        import std.algorithm : max;
+        alias required = .weightedQuantileScratchLength!(interpretation, algorithm);
+        const dense = required(rows, rows);
+        return rows ? max(dense, required(rows, rows - 1)) : 0;
+    }
+}
+
+/// ditto
+template weightedQuantileScratchLength(WeightedQuantileAlgo algorithm,
+    WeightInterpretation interpretation = WeightInterpretation.relative)
+    if (validWeightedQuantileOptions!(interpretation, algorithm))
+{
+    alias weightedQuantileScratchLength = .weightedQuantileScratchLength!(interpretation, algorithm);
+}
+
+version(mir_stat_test) @system unittest
+{
+    import core.exception : OutOfMemoryError;
+    import std.exception : assertThrown;
+    alias required = weightedQuantileScratchLength!(WeightInterpretation.relative, WeightedQuantileAlgo.type8);
+    assert(required(0) == 0);
+    const limit = size_t.max / 2;
+    assert(required(limit, limit) == 2 * limit);
+    assertThrown!OutOfMemoryError(required(limit + 1, limit + 1));
+    assertThrown!OutOfMemoryError(required(limit + 1));
 }
 
 // Same-typed inputs must be interpreted as observations first in every API.
