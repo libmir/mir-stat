@@ -21,6 +21,7 @@ Copyright: 2023 Mir Stat Authors.
 
 module mir.stat.distribution.logistic;
 
+import mir.bignum.fp: Fp;
 import mir.stat.internal.standardize: standardize;
 
 import mir.internal.utility: isFloatingPoint;
@@ -373,6 +374,86 @@ unittest
     logisticCCDF(-1.0, 2.0, 3.0).shouldApprox == 0.7310586;
     logisticCCDF(1.0, 2.0, 3.0).shouldApprox == 0.5825702;
     logisticCCDF(4.0, 2.0, 3.0).shouldApprox == 0.3392436;
+}
+
+/++
+Computes the strict upper-tail probability $(D P(X > x)) for the standard logistic distribution (location zero, scale one).
+
+Params:
+    T = Represented $(D Fp) type, inferred from the arguments.
+    x = Observation, which may be infinite or NaN.
+
+Returns:
+    The strict upper-tail probability $(D P(X > x)) in type $(D T), using guarded evaluation.
+    At the location the result is one half. Negative and positive infinity give one and zero. NaN propagates.
++/
+@safe pure nothrow @nogc
+T logisticCCDF(T)(const T x)
+    if (is(T == Fp!size, size_t size))
+{
+    return logisticCCDF(x, T(0), T(1));
+}
+
+///
+version(mir_stat_test)
+@safe pure nothrow @nogc unittest
+{
+    import mir.bignum.fp: Fp;
+    alias T = Fp!64;
+    assert(logisticCCDF(T(0)) == T(0.5));
+}
+
+/++
+Computes the strict upper-tail probability $(D P(X > x)) for the logistic distribution with the given location and scale.
+
+Params:
+    T = Represented $(D Fp) type, inferred from the arguments.
+    x = Observation, which may be infinite or NaN.
+    location = Finite location parameter.
+    scale = Positive finite scale parameter.
+
+Returns:
+    The strict upper-tail probability $(D P(X > x)) in type $(D T), using guarded evaluation.
+    At the location the result is one half. Negative and positive infinity give one and zero. NaN propagates.
++/
+@safe pure nothrow @nogc
+T logisticCCDF(T)(const T x, const T location, const T scale)
+    if (is(T == Fp!size, size_t size))
+    in (!location.isSpecial, "location must be finite")
+    in (!scale.isSpecial && !scale.sign && !!scale.coefficient, "scale must be finite and positive")
+{
+    import mir.stat.internal.fp_logistic: logisticTail;
+    return logisticTail!true(x, location, scale);
+}
+
+///
+version(mir_stat_test)
+@safe pure nothrow @nogc unittest
+{
+    import mir.bignum.fp: Fp;
+    alias T = Fp!64;
+    assert(logisticCCDF(T(3), T(3), T(2)) == T(0.5));
+}
+
+version(mir_stat_test)
+@safe pure nothrow @nogc unittest
+{
+    import mir.bignum.fixed: UInt;
+    alias T = Fp!64;
+    alias U = UInt!64;
+    const zero = T(0), one = T(1);
+    assert(logisticCCDF(T(double.nan)).isNaN);
+    assert(logisticCCDF(T(-double.infinity)) == one);
+    assert(logisticCCDF(T(double.infinity)) == zero);
+    const maximum = T(false, long.max - 1, U.max);
+    assert(logisticCCDF(maximum) == zero);
+    const minimum = T(true, maximum.exponent, maximum.coefficient);
+    assert(logisticCCDF(maximum, minimum, maximum) == T(false, -67, U(0xf420a95d618d754fUL)));
+    const quantum = T(false, long.min, U(1));
+    assert(logisticCCDF(T(6393154322601327830L)) == quantum);
+    assert(logisticCCDF(T(6393154322601327831L)) == zero);
+    assert(logisticCCDF(T(100)) == T(false, -208, U(0xd460f8a7157ae57aUL)));
+    assert(logisticCCDF(T(true, 0, U(0))) == T(0.5));
 }
 
 /++
