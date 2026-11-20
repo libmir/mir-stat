@@ -1,15 +1,41 @@
 /++
-Multivariate normal log-density for one real observation and a positive-definite
+Multivariate normal log-density for real observations and a positive-definite
 covariance or precision matrix. Precision is the inverse of covariance.
+
+For example, a test rig records inlet, chamber, and outlet temperatures in
+degrees Celsius on each of 100 runs. Each run is one observation with three
+coordinates in that order. The second run might yield `[12, 21, 35]` against
+a mean of `[10, 20, 30]`. A batch call returns one log density per run under
+the same three-dimensional normal distribution.
+
 Supply a Cholesky factor of either matrix to reuse it across
 calls. In zero dimensions the log-density is zero.
-For a raw matrix, $(LREF tryMultivariateNormalLPDF),
+For a single observation and a raw matrix, $(LREF tryMultivariateNormalLPDF),
 $(LREF rcTryMultivariateNormalLPDF), $(LREF makeTryMultivariateNormalLPDF), and
 $(LREF tryMultivariateNormalLPDFWithWorkspace) return a
 $(LREF MultivariateNormalLPDFResult). Check its `failedPivot` field
 to see whether factorization succeeded. With custom iterators or allocators,
 function attributes such as `nothrow` depend on the operations they supply.
-These functions accept dense square matrix views, including strided slices.
+
+With one run per row, pass `rows.byDim!0` and a 100-by-3 scratch matrix
+selected as `workRows.byDim!0`. The function writes the second run's log
+density to `result[1]`. A transpose view presents the rows to the batch
+routine as columns while keeping each run's readings together in row-major
+storage. For a 3-by-100 matrix with one run per column, pass the matrix
+directly to the corresponding `Batch` function.
+
+The scratch matrix holds the centered readings. Subtracting the mean from the
+second run writes `[2, 1, 5]` into its scratch row. The batch then transforms
+all 100 scratch rows in place using the shared Cholesky factor. With a
+compatible layout, BLAS can perform this step in one triangular solve or
+multiply. All 100 log densities use the same log determinant.
+
+The full batch requires 300 observation scratch elements (100 runs × 3 readings per run).
+Processing ten runs per call requires 30. Each call can reuse the prepared factor and computes
+its log determinant once. A full batch gives BLAS a larger operation. The
+faster choice depends on the dimensions, storage layout, and backend.
+
+The covariance and precision inputs accept dense square matrix views, including strided slices.
 Only the selected triangle is read. Upper factors represent a matrix
 as U.transpose * U, and lower factors represent it as L * L.transpose.
 As in `mir.stat.distance`, subtracting the mean in the input
@@ -24,6 +50,7 @@ version(mir_stat_test) version = mir_stat_test_multivariate_normal;
 version(mir_stat_test_blas) version = mir_stat_test_multivariate_normal;
 
 public import mir.stat.internal.linearAlgebra.types: CovarianceRepresentation, TrianglePolicy;
+private import mir.stat.internal.linearAlgebra.types: isObservationSelection, ObservationColumns, observationColumns;
 private import mir.stat.distance: asView, compatible, matrix, vector, Element, mahalanobisWithWorkspace;
 private import mir.stat.internal.linearAlgebra.cholesky: tryCholeskyDecomposeInto, logDeterminantFromCholesky;
 private import mir.stat.internal.linearAlgebra.allocation: Allocation, allocate;
@@ -224,6 +251,16 @@ private auto evaluate(Allocation policy, CovarianceRepresentation form, Triangle
     }
 }
 
+private T logDensityFromDistance(CovarianceRepresentation form, T)(T distance, T dimensionTerm, T halfLogDet)
+{
+    // Halve before squaring so the negative half-square can remain finite.
+    const base = (-T(0.5) * distance) * distance - dimensionTerm;
+    static if (form == CovarianceRepresentation.covarianceCholesky)
+        return base - halfLogDet;
+    else
+        return base + halfLogDet;
+}
+
 /++
 Evaluate the log density from a prepared factor using caller-owned scratch.
 The elements of work must be disjoint from each other and from all inputs.
@@ -253,11 +290,7 @@ Element!X multivariateNormalLPDFWithWorkspace(CovarianceRepresentation form, Tri
     auto observation = x.asView;
     const distance = mahalanobisWithWorkspace!(form, triangle)(observation, mean, factorView, work);
     const halfLogDet = T(0.5) * logDeterminantFromCholesky(factorView);
-    const base = (-T(0.5) * distance) * distance - T(observation.length) * T(LOGSQRT2PI);
-    static if (form == CovarianceRepresentation.covarianceCholesky)
-        return base - halfLogDet;
-    else
-        return base + halfLogDet;
+    return logDensityFromDistance!form(distance, T(observation.length) * T(LOGSQRT2PI), halfLogDet);
 }
 
 /// Reuse a lower covariance factor for successive observations.
@@ -345,6 +378,56 @@ version(mir_stat_test_multivariate_normal)
     auto factor = diagonal[].sliced(1, 1);
     enum form = CovarianceRepresentation.covarianceCholesky;
     assert(multivariateNormalLPDFWithWorkspace!form(x[], mean[], factor, work[]) == -0x1p1023);
+}
+
+/++
+Evaluate selected rows or columns using a prepared Cholesky factor.
+Select observation and scratch axes independently. Both selections are forwarded
+as column views without copying. Writable elements must be disjoint from one
+another and from all inputs.
+
+Params:
+    form = covarianceCholesky or inverseCovarianceCholesky.
+    triangle = Selected matrix triangle, upper by default.
+    x = Rectangular selection of n observations of k finite coordinates, made with
+        byDim or alongDim. For example, rows.byDim!0 selects rows.
+    mean = Vector of k finite means. All buffers share the observation element type.
+    factor = Dense k-by-k factor with finite selected triangle and positive diagonal.
+    result = Writable vector of n log densities in selection order.
+    work = Writable selection of n scratch vectors of length k.
+
+Returns:
+    void. Writes one log density per selected observation.
++/
+void multivariateNormalLPDFWithWorkspace(CovarianceRepresentation form,
+    TrianglePolicy triangle = TrianglePolicy.upper, X, C, M, R, W)(
+    scope auto ref X x, scope auto ref C mean, scope auto ref M factor,
+    scope auto ref R result, scope auto ref W work)
+    if (isObservationSelection!X && isObservationSelection!W && __traits(compiles,
+        multivariateNormalLPDFBatchWithWorkspace!(form, triangle)(
+            ObservationColumns!X.init, mean, factor, result, ObservationColumns!W.init)))
+{
+    auto columns = observationColumns(x);
+    auto scratch = observationColumns(work);
+    multivariateNormalLPDFBatchWithWorkspace!(form, triangle)(columns, mean, factor, result, scratch);
+}
+
+/// Select two row observations and use one precision factor for both.
+version(mir_stat_test_multivariate_normal)
+@safe pure nothrow @nogc unittest
+{
+    import mir.ndslice.slice: sliced;
+    import mir.ndslice.topology: byDim;
+    import mir.stat.distribution.normal: normalLPDF;
+    import std.math: fabs;
+    double[2] data = [1, 3], values, scratch;
+    double[1] mean = [1], factor = [0.5];
+    auto rows = data[].sliced(2, 1);
+    auto workRows = scratch[].sliced(2, 1);
+    multivariateNormalLPDFWithWorkspace!(CovarianceRepresentation.inverseCovarianceCholesky)(
+        rows.byDim!0, mean[], factor[].sliced(1, 1), values[], workRows.byDim!0);
+    foreach (j; 0 .. values.length)
+        assert(fabs(values[j] - normalLPDF(data[j], 1.0, 2.0)) < 1e-14);
 }
 
 /++
@@ -475,6 +558,60 @@ version(mir_stat_test_multivariate_normal)
     assert(tail.failedPivot == 0 && tail.logDensity == -double.infinity);
 }
 
+private enum batchBuffers(X, C, M, R, W) = matrix!X && matrix!M && vector!C &&
+    vector!R && matrix!W && is(Element!X == Element!C) && is(Element!X == Element!M) &&
+    is(Element!X == Element!R) && is(Element!X == Element!W);
+
+/++
+Write one log density per observation column using a shared Cholesky factor.
+All writable elements must be disjoint from one another and from the inputs.
+
+Params:
+    form = covarianceCholesky or inverseCovarianceCholesky (factor of the precision matrix).
+    triangle = Triangle containing the factor, upper by default.
+    x = Dense k-by-n matrix of finite observations. Column j is observation j.
+    mean = Vector of k finite means. All buffers share the floating-point element type of x.
+    factor = Dense k-by-k factor with finite selected triangle and positive diagonal.
+    result = Writable vector of n log densities in column order.
+    work = Writable k-by-n scratch for centering and transforming the observations.
+
+Returns:
+    void. Writes each log density to result. In zero dimensions each value is zero.
++/
+void multivariateNormalLPDFBatchWithWorkspace(CovarianceRepresentation form,
+    TrianglePolicy triangle = TrianglePolicy.upper, X, C, M, R, W)(
+    scope auto ref X x, scope auto ref C mean, scope auto ref M factor,
+    scope auto ref R result, scope auto ref W work)
+    if (prepared!form && batchBuffers!(X, C, M, R, W))
+{
+    import mir.stat.constant: LOGSQRT2PI;
+    import mir.stat.distance: mahalanobisBatchWithWorkspace;
+    alias T = Element!X;
+    auto values = result.asView;
+    auto columns = x.asView;
+    auto factorView = factor.asView;
+    mahalanobisBatchWithWorkspace!(form, triangle)(columns, mean, factorView, values, work);
+    const dimensionTerm = T(columns.length!0) * T(LOGSQRT2PI);
+    const halfLogDet = T(0.5) * logDeterminantFromCholesky(factorView);
+    foreach (j; 0 .. values.length)
+        values[j] = logDensityFromDistance!form(values[j], dimensionTerm, halfLogDet);
+}
+
+/// Two columns, each with one coordinate and standard deviation two.
+version(mir_stat_test_multivariate_normal)
+@safe pure nothrow @nogc unittest
+{
+    import mir.ndslice.slice: sliced;
+    import mir.stat.distribution.normal: normalLPDF;
+    import std.math: fabs;
+    double[2] x = [1, 3], values, scratch;
+    double[1] mean = [1], factor = [2];
+    multivariateNormalLPDFBatchWithWorkspace!(CovarianceRepresentation.covarianceCholesky)(
+        x[].sliced(1, 2), mean[], factor[].sliced(1, 1), values[], scratch[].sliced(1, 2));
+    foreach (j; 0 .. values.length)
+        assert(fabs(values[j] - normalLPDF(x[j], 1.0, 2.0)) < 1e-14);
+}
+
 /++
 Evaluate the log density using GC-managed scratch and report Cholesky failure.
 With ordinary floating-point slices, the call is `nothrow`.
@@ -503,7 +640,7 @@ MultivariateNormalLPDFResult!(Element!X) tryMultivariateNormalLPDF(
     return evaluate!(Allocation.gc, form, triangle, true)(allocator, x.asView, mean.asView, metric.asView);
 }
 
-/// The first diagonal gives a factor entry of 2. The second pivot is 1 - (2/2)Â² = 0.
+/// The first diagonal gives a factor entry of 2. The second pivot is 1 - (2/2) * (2/2) = 0.
 version(mir_stat_test_multivariate_normal)
 @safe pure nothrow unittest
 {
