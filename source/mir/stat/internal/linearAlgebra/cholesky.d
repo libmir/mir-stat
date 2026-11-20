@@ -1230,18 +1230,27 @@ package(mir.stat) void choleskyDecomposeInto(TrianglePolicy triangle = TriangleP
     scope auto ref const(DiagonalView!D) a, scope auto ref C output)
     if (numericSlice!D && D.N == 1 && matrix!C && is(Scalar!D == Scalar!C))
 {
+    import mir.exception: enforce;
+    enforce!"Cholesky factorization failed"(tryCholeskyDecomposeInto!triangle(a, output) == 0);
+}
+
+/// Write the dense diagonal factor, returning zero or the one-based nonpositive pivot.
+package(mir.stat) size_t tryCholeskyDecomposeInto(TrianglePolicy triangle = TrianglePolicy.upper, D, C)(
+    scope auto ref const(DiagonalView!D) a, scope auto ref C output)
+    if (numericSlice!D && D.N == 1 && matrix!C && is(Scalar!D == Scalar!C))
+{
     import mir.math.common: sqrt;
     import std.math: isFinite;
-    import mir.exception: enforce;
     static assert(triangle == TrianglePolicy.upper || triangle == TrianglePolicy.lower);
     assert(output.shape == a.shape);
     foreach(i; 0 .. a.length!0)
     {
         auto value = a[i,i];
         assert(isFinite(value), "Cholesky input must be finite");
-        enforce!"Cholesky factorization failed"(value > 0);
+        if (!(value > 0)) return i + 1;
         foreach(j; 0 .. a.length!0) output[i,j] = i == j ? sqrt(value) : Scalar!D(0);
     }
+    return 0;
 }
 
 /++
@@ -1317,6 +1326,8 @@ version(mir_stat_test_linearAlgebra)
     choleskyDecomposeInto(a,outView);
     assert(outView==[[2,0],[0,3]]);
     ds[1]=0;
+    assert(tryCholeskyDecomposeInto(a, outView) == 2);
+    assertThrown!Exception(choleskyDecomposeInto(a, outView));
     assertThrown!Exception(rcCholeskyDecompose(a));
     ds[1]=double.nan;
     assertThrown!AssertError(rcCholeskyDecompose(a));

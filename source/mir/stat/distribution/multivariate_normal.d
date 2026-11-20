@@ -262,6 +262,13 @@ private T logDensityFromDistance(CovarianceRepresentation form, T)(T distance, T
         return base + halfLogDet;
 }
 
+private T scalarLogDensity(CovarianceRepresentation form, T, F)(T distance, F factor)
+{
+    import mir.stat.constant: LOGSQRT2PI;
+    return logDensityFromDistance!form(distance, T(factor.length!0) * T(LOGSQRT2PI),
+        T(0.5) * logDeterminantFromCholesky(factor));
+}
+
 /++
 Evaluate the log density from a prepared factor using caller-owned scratch.
 The elements of work must be disjoint from each other and from all inputs.
@@ -285,13 +292,10 @@ Element!X multivariateNormalLPDFWithWorkspace(CovarianceRepresentation form, Tri
     X, C, M, W)(scope auto ref X x, scope auto ref C mean, scope auto ref M factor, scope auto ref W work)
     if (prepared!form && matrix!M && compatible!(X, C, M) && vector!W && is(Element!X == Element!W))
 {
-    import mir.stat.constant: LOGSQRT2PI;
-    alias T = Element!X;
     auto factorView = factor.asView;
     auto observation = x.asView;
     const distance = mahalanobisWithWorkspace!(form, triangle)(observation, mean, factorView, work);
-    const halfLogDet = T(0.5) * logDeterminantFromCholesky(factorView);
-    return logDensityFromDistance!form(distance, T(observation.length) * T(LOGSQRT2PI), halfLogDet);
+    return scalarLogDensity!form(distance, factorView);
 }
 
 /// Reuse a lower covariance factor for successive observations.
@@ -495,15 +499,25 @@ MultivariateNormalLPDFResult!(Element!X) tryMultivariateNormalLPDFWithWorkspace(
     auto matrixView = metric.asView;
     auto workView = work.asView;
     auto factor = factorWork.asView;
-    assert(observation.length == center.length && observation.length == workView.length);
-    assert(matrixView.length!0 == observation.length && matrixView.length!1 == observation.length);
-    const failedPivot = tryCholeskyDecomposeInto!triangle(matrixView, factor);
-    if (failedPivot)
-        return Result(Element!X.nan, failedPivot);
-    enum factorForm = form == CovarianceRepresentation.covariance
-        ? CovarianceRepresentation.covarianceCholesky : CovarianceRepresentation.inverseCovarianceCholesky;
-    const logDensity = multivariateNormalLPDFWithWorkspace!(factorForm, triangle)(observation, center, factor, workView);
-    return Result(logDensity, 0);
+    static if (form == CovarianceRepresentation.covariance)
+    {
+        import mir.stat.distance: tryCovarianceDistanceWithWorkspace;
+        Element!X distance;
+        const pivot = tryCovarianceDistanceWithWorkspace!(false, triangle)(
+            observation, center, matrixView, distance, workView, factor);
+        if (pivot) return Result(Element!X.nan, pivot);
+        return Result(scalarLogDensity!(CovarianceRepresentation.covarianceCholesky)(distance, factor), 0);
+    }
+    else
+    {
+        assert(observation.length == center.length && observation.length == workView.length);
+        assert(matrixView.length!0 == observation.length && matrixView.length!1 == observation.length);
+        const pivot = tryCholeskyDecomposeInto!triangle(matrixView, factor);
+        if (pivot) return Result(Element!X.nan, pivot);
+        enum factorForm = CovarianceRepresentation.inverseCovarianceCholesky;
+        return Result(multivariateNormalLPDFWithWorkspace!(factorForm, triangle)(
+            observation, center, factor, workView), 0);
+    }
 }
 
 /// A one-dimensional precision of one quarter gives a standard deviation of two.
@@ -622,6 +636,16 @@ private enum batchBuffers(X, C, M, R, W) = matrix!X && matrix!M && vector!C &&
     vector!R && matrix!W && is(Element!X == Element!C) && is(Element!X == Element!M) &&
     is(Element!X == Element!R) && is(Element!X == Element!W);
 
+private void batchLogDensities(CovarianceRepresentation form, R, F)(R values, F factor)
+{
+    import mir.stat.constant: LOGSQRT2PI;
+    alias T = Element!R;
+    const dimensionTerm = T(factor.length!0) * T(LOGSQRT2PI);
+    const halfLogDet = T(0.5) * logDeterminantFromCholesky(factor);
+    foreach (j; 0 .. values.length)
+        values[j] = logDensityFromDistance!form(values[j], dimensionTerm, halfLogDet);
+}
+
 /++
 Write one log density per observation column using a shared Cholesky factor.
 All writable elements must be disjoint from one another and from the inputs.
@@ -644,17 +668,12 @@ void multivariateNormalLPDFBatchWithWorkspace(CovarianceRepresentation form,
     scope auto ref R result, scope auto ref W work)
     if (prepared!form && batchBuffers!(X, C, M, R, W))
 {
-    import mir.stat.constant: LOGSQRT2PI;
     import mir.stat.distance: mahalanobisBatchWithWorkspace;
-    alias T = Element!X;
     auto values = result.asView;
     auto columns = x.asView;
     auto factorView = factor.asView;
     mahalanobisBatchWithWorkspace!(form, triangle)(columns, mean, factorView, values, work);
-    const dimensionTerm = T(columns.length!0) * T(LOGSQRT2PI);
-    const halfLogDet = T(0.5) * logDeterminantFromCholesky(factorView);
-    foreach (j; 0 .. values.length)
-        values[j] = logDensityFromDistance!form(values[j], dimensionTerm, halfLogDet);
+    batchLogDensities!form(values, factorView);
 }
 
 /// Two columns, each with one coordinate and standard deviation two.
@@ -703,14 +722,24 @@ size_t tryMultivariateNormalLPDFBatchWithWorkspace(
     auto columns = x.asView;
     auto matrixView = metric.asView;
     auto factor = factorWork.asView;
-    assert(columns.length!0 == mean.asView.length && columns.length!0 == matrixView.length!0);
-    assert(columns.shape == work.asView.shape && columns.length!1 == result.asView.length);
-    const pivot = tryCholeskyDecomposeInto!triangle(matrixView, factor);
-    if (pivot)
-        return pivot;
-    enum factorForm = form == CovarianceRepresentation.covariance
-        ? CovarianceRepresentation.covarianceCholesky : CovarianceRepresentation.inverseCovarianceCholesky;
-    multivariateNormalLPDFBatchWithWorkspace!(factorForm, triangle)(columns, mean, factor, result, work);
+    static if (form == CovarianceRepresentation.covariance)
+    {
+        import mir.stat.distance: tryCovarianceDistanceBatchWithWorkspace;
+        auto values = result.asView;
+        const pivot = tryCovarianceDistanceBatchWithWorkspace!(false, triangle)(
+            columns, mean.asView, matrixView, values, work.asView, factor);
+        if (pivot) return pivot;
+        batchLogDensities!(CovarianceRepresentation.covarianceCholesky)(values, factor);
+    }
+    else
+    {
+        assert(columns.length!0 == mean.asView.length && columns.length!0 == matrixView.length!0);
+        assert(columns.shape == work.asView.shape && columns.length!1 == result.asView.length);
+        const pivot = tryCholeskyDecomposeInto!triangle(matrixView, factor);
+        if (pivot) return pivot;
+        multivariateNormalLPDFBatchWithWorkspace!(CovarianceRepresentation.inverseCovarianceCholesky, triangle)(
+            columns, mean, factor, result, work);
+    }
     return 0;
 }
 
