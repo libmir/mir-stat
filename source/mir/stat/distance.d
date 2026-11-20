@@ -81,36 +81,30 @@ Precision-matrix calls can opt into `Summation.fast` as a third template argumen
 SYMV plus DOT. GC, RC, custom allocation, and a two-vector `WithWorkspace`
 overload are available. Existing calls keep their compensated behavior.
 
-For multiple observations sharing one center and metric, use `mahalanobisBatch`
-or `mahalanobisSquaredBatch`. Observations are columns of a `(dimension, count)`
-matrix, and the result is a vector of length `count`. GC/RC/custom ownership
-applies to the result as well as scratch. `BatchWithWorkspace` variants accept
-caller output followed by matrix scratch. Covariance is factorized once per
-batch; prepared factors use TRSM/TRMM where eligible. Fast precision batches
-use an extra product matrix and permit SYMM plus column dots. All writable
-buffers must be mutually disjoint and disjoint from inputs.
+For example, consider 100 test runs with three temperature readings per run.
+Selecting rows of a 100-by-3 matrix with `rows.byDim!0` writes 100 distances,
+one per run. Each dense batch needs room for 300 centered readings
+(100 runs times 3 coordinates). The metric determines the additional storage:
 
+$(TABLE
+    $(TR $(TH Dense metric) $(TH Additional workspace) $(TH Use))
+    $(TR $(TD Prepared covariance or precision factor) $(TD None)
+         $(TD Transform the centered readings in place.))
+    $(TR $(TD Covariance) $(TD 3-by-3 factor matrix)
+         $(TD Factor the covariance once for all 100 runs.))
+    $(TR $(TD Precision with default compensated summation) $(TD None required)
+         $(TD Evaluate one quadratic form per run.))
+    $(TR $(TD Precision with `Summation.fast`) $(TD 300 product elements)
+         $(TD Multiply the precision matrix by the centered readings.))
+)
 
-For explicit axis selection, pass a rectangular view made by `alongDim` or
-`byDim` to the ordinary names. For a matrix, `alongDim!0` / `byDim!1` selects
-columns; `alongDim!1` / `byDim!0` selects rows. Negative dimension indices follow
-Mir conventions. The outer selection indexes observations and each inner
-vector contains its coordinates. A selected observation always produces one
-result entry; a vector input to the ordinary function still returns a scalar.
-Bare matrices require the explicit `Batch` names, whose observations are columns.
-
-Selection changes view metadata only. Adapters recover the whole matrix and
-forward once to the batch implementation, preserving input ownership and
-eligible BLAS matrix kernels. They do not map independent distance calls or
-repeat covariance factorization per observation. Arbitrary jagged collections
-and higher-rank selections are not supported by these adapters.
-
-Storage order never determines observation axes. Select the axes of caller
-scratch separately, with the same observation count and coordinate length as
-the input selection. Output is an ordinary vector in selection order. Extra
-covariance-factor scratch remains an ordinary square matrix; extra precision
-product scratch uses an observation selection. All buffers retain the batch
-API's disjointness and nonoverlapping-element requirements.
+Row and column selections are views. The batch can use a BLAS triangular solve
+or multiply for prepared factors, or a symmetric matrix multiply for fast
+precision, when the layout permits. To use less observation scratch, process a
+few runs per call and reuse a prepared factor. Select scratch axes independently
+of input axes. For row selections, a square factor workspace is still an ordinary
+matrix, while product scratch is an observation selection. A single selected
+observation gives one output entry. Negative axis indices follow Mir conventions.
 
 Internal callers may supply `diagonalView(diagonal)` for any representation.
 It stores only the diagonal vector; triangle selection has no effect on values.
@@ -463,10 +457,25 @@ Element!X mahalanobisWithWorkspace(CovarianceRepresentation form = CovarianceRep
 }
 
 /++
-Covariance-input overload. `factorWork` is an additional writable square matrix
-of the same shape and type as `metric`. Both workspaces must have nonoverlapping
-elements and be disjoint from each other and all inputs. No allocation occurs
-on success. Factorization failure throws and leaves partial workspace contents.
+Evaluate one observation with a raw covariance and caller-owned storage.
+On success, the function allocates no temporary storage.
+All writable elements must be disjoint from one another and from the inputs.
+
+Params:
+    form = covariance (default).
+    triangle = Triangle to read, upper by default.
+    x = Observation of k finite coordinates.
+    center = Reference vector of k finite coordinates.
+    metric = Positive-definite k-by-k covariance with finite selected triangle.
+    work = Writable vector of k elements for centering and transforming x.
+    factorWork = Writable k-by-k Cholesky factor storage. All inputs and
+        workspaces have the same floating-point element type.
+
+Returns:
+    The Mahalanobis distance in the input element type, zero for k = 0.
+
+Throws:
+    Exception on Cholesky failure. factorWork may contain a partial factor.
 +/
 Element!X mahalanobisWithWorkspace(CovarianceRepresentation form = CovarianceRepresentation.covariance,
     TrianglePolicy triangle = TrianglePolicy.upper, X, C, M, W, F)(scope auto ref X x,
@@ -513,10 +522,25 @@ Element!X mahalanobisSquaredWithWorkspace(CovarianceRepresentation form = Covari
 }
 
 /++
-Covariance-input overload. `factorWork` is an additional writable square matrix
-of the same shape and type as `metric`. Both workspaces must have nonoverlapping
-elements and be disjoint from each other and all inputs. No allocation occurs
-on success. Factorization failure throws and leaves partial workspace contents.
+Evaluate one observation with a raw covariance and caller-owned storage.
+On success, the function allocates no temporary storage.
+All writable elements must be disjoint from one another and from the inputs.
+
+Params:
+    form = covariance (default).
+    triangle = Triangle to read, upper by default.
+    x = Observation of k finite coordinates.
+    center = Reference vector of k finite coordinates.
+    metric = Positive-definite k-by-k covariance with finite selected triangle.
+    work = Writable vector of k elements for centering and transforming x.
+    factorWork = Writable k-by-k Cholesky factor storage. All inputs and
+        workspaces have the same floating-point element type.
+
+Returns:
+    The squared Mahalanobis distance in the input element type, zero for k = 0.
+
+Throws:
+    Exception on Cholesky failure. factorWork may contain a partial factor.
 +/
 Element!X mahalanobisSquaredWithWorkspace(CovarianceRepresentation form = CovarianceRepresentation.covariance,
     TrianglePolicy triangle = TrianglePolicy.upper, X, C, M, W, F)(scope auto ref X x,
@@ -1447,12 +1471,29 @@ void mahalanobisBatchWithWorkspace(CovarianceRepresentation form,
 }
 
 /++
-Batch workspace overload with an extra matrix. For covariance, `extra` is square
-with the metric's shape and receives the Cholesky factor. For a precision matrix,
-`extra` has `x.shape` and receives the matrix product. Explicit fast precision
-uses SYMM when layouts permit. Other summation policies retain their selected reductions.
-All buffers must be mutually disjoint and disjoint from inputs; no allocation
-occurs. Other contracts follow the one-workspace overload.
+Write one distance per observation column using caller-owned storage.
+On success, the function allocates no temporary storage.
+All writable elements must be disjoint from one another and from the inputs.
+
+Params:
+    form = covariance (default) or inverseCovariance.
+    triangle = Triangle to read, upper by default.
+    summation = Precision quadratic-form summation, kbn by default.
+        With fast summation, eligible precision batches use BLAS.
+    x = k-by-n matrix with one finite observation per column.
+    center = Vector of k finite coordinates shared by all observations.
+    metric = Positive-definite k-by-k matrix with finite selected triangle.
+    result = Writable vector of n distances, in column order.
+    work = Writable k-by-n scratch matrix for centered observations.
+    extra = For covariance, a k-by-k workspace that receives the Cholesky
+        factor. For precision, a k-by-n workspace that receives the matrix
+        product. All buffers have the same floating-point element type.
+
+Returns:
+    void. Zero-dimensional observations have distance zero.
+
+Throws:
+    Exception on covariance factorization failure, before any result is written.
 +/
 void mahalanobisBatchWithWorkspace(CovarianceRepresentation form = CovarianceRepresentation.covariance,
     TrianglePolicy triangle = TrianglePolicy.upper, Summation summation = Summation.kbn,
@@ -1588,12 +1629,29 @@ void mahalanobisSquaredBatchWithWorkspace(CovarianceRepresentation form,
 }
 
 /++
-Batch workspace overload with an extra matrix. For covariance, `extra` is square
-with the metric's shape and receives the Cholesky factor. For a precision matrix,
-`extra` has `x.shape` and receives the matrix product. Explicit fast precision
-uses SYMM when layouts permit. Other summation policies retain their selected reductions.
-All buffers must be mutually disjoint and disjoint from inputs; no allocation
-occurs. Other contracts follow the one-workspace overload.
+Write one squared distance per observation column using caller-owned storage.
+On success, the function allocates no temporary storage.
+All writable elements must be disjoint from one another and from the inputs.
+
+Params:
+    form = covariance (default) or inverseCovariance.
+    triangle = Triangle to read, upper by default.
+    summation = Precision quadratic-form summation, kbn by default.
+        With fast summation, eligible precision batches use BLAS.
+    x = k-by-n matrix with one finite observation per column.
+    center = Vector of k finite coordinates shared by all observations.
+    metric = Positive-definite k-by-k matrix with finite selected triangle.
+    result = Writable vector of n squared distances, in column order.
+    work = Writable k-by-n scratch matrix for centered observations.
+    extra = For covariance, a k-by-k workspace that receives the Cholesky
+        factor. For precision, a k-by-n workspace that receives the matrix
+        product. All buffers have the same floating-point element type.
+
+Returns:
+    void. Zero-dimensional observations have distance zero.
+
+Throws:
+    Exception on covariance factorization failure, before any result is written.
 +/
 void mahalanobisSquaredBatchWithWorkspace(CovarianceRepresentation form = CovarianceRepresentation.covariance,
     TrianglePolicy triangle = TrianglePolicy.upper, Summation summation = Summation.kbn,
@@ -1622,6 +1680,32 @@ void mahalanobisSquaredBatchWithWorkspace(CovarianceRepresentation form = Covari
         quadraticFormBatchInto!summation(wv, symmetricMetric!triangle(mv), rv, ev);
 
     }
+}
+
+/// Compute the same squared distances using factor scratch and product scratch.
+version(mir_stat_test_distance)
+@safe pure unittest
+{
+    import mir.math.sum: Summation;
+    import mir.ndslice.slice: sliced;
+    import std.math: fabs;
+
+    // Three runs in columns. Each column contains two temperature readings.
+    double[6] readings = [10, 12, 10, 20, 21, 24], centered, products;
+    double[2] center = [10, 20];
+    double[4] covariance = [4, 2, 2, 5], precision = [0.3125, -0.125, -0.125, 0.25], factor;
+    double[3] values;
+    auto runs = readings[].sliced(2, 3);
+    auto work = centered[].sliced(2, 3);
+    auto factorWork = factor[].sliced(2, 2);
+    auto productWork = products[].sliced(2, 3);
+
+    mahalanobisSquaredBatchWithWorkspace(runs, center[], covariance[].sliced(2, 2), values[], work, factorWork);
+    assert(values == [0, 1, 4]);
+    mahalanobisSquaredBatchWithWorkspace!(CovarianceRepresentation.inverseCovariance, TrianglePolicy.upper, Summation.fast)(
+        runs, center[], precision[].sliced(2, 2), values[], work, productWork);
+    foreach (i, expected; [0, 1, 4])
+        assert(fabs(values[i] - expected) < 1e-14);
 }
 
 /// Allocate batch output and scratch, releasing custom buffers independently on failure.
