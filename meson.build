@@ -59,6 +59,7 @@ sources_list = [
     'mir/stat/descriptive/histogram/internal/cell',
     'mir/stat/descriptive/histogram/internal/shared_counts',
     'mir/stat/internal/borrow',
+    'mir/stat/internal/uint_sqrt',
     'mir/stat/internal/fp_probability',
     'mir/stat/internal/fp_probability_log',
     'mir/stat/internal/fp_log_factorial',
