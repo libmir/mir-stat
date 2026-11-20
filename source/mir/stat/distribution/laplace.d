@@ -915,6 +915,126 @@ unittest
     laplaceLPDF(4.0, 2.0, 3.0).shouldApprox == log(0.08556952);
 }
 
+/++
+Computes the natural logarithm of the standard Laplace density.
+
+Params:
+    T = Represented $(D Fp) type, inferred from the argument by default.
+    x = Observation, which may be infinite or NaN.
+
+Returns:
+    $(D -log(2) - abs(x)) in type $(D T). Either infinity gives negative
+    infinity and NaN propagates. Finite results use guarded evaluation.
++/
+@safe pure nothrow @nogc
+T laplaceLPDF(T)(const T x)
+    if (is(T == Fp!size, size_t size))
+{
+    return laplaceLPDF(x, T(0), T(1));
+}
+
+///
+version(mir_stat_test)
+@safe pure nothrow @nogc unittest
+{
+    import mir.bignum.fp: Fp;
+    alias T = Fp!64;
+    assert(laplaceLPDF(T(1)) == laplaceLPDF(T(-1)));
+}
+
+/++
+Computes the natural logarithm of the Laplace density for a given location and scale.
+
+Params:
+    T = Represented $(D Fp) type, inferred from the arguments by default.
+    x = Observation, which may be infinite or NaN.
+    location = Finite location parameter.
+    scale = Positive finite scale parameter.
+
+Returns:
+    $(D -log(2 * scale) - abs(x - location) / scale) in type $(D T).
+    The peak value is $(D -log(2 * scale)). The logarithm can remain finite
+    when the density rounds to zero. Either infinite observation or negative
+    overflow gives negative infinity. NaN propagates. Finite results use
+    guarded evaluation. Cancellation beyond the working precision can give zero.
++/
+@safe pure nothrow @nogc
+T laplaceLPDF(T)(const T x, const T location, const T scale)
+    if (is(T == Fp!size, size_t size))
+    in (!location.isSpecial, "location must be finite")
+    in (!scale.isSpecial && !scale.sign && !!scale.coefficient, "scale must be finite and positive")
+{
+    import mir.stat.internal.fp_laplace: laplaceLogDensity;
+    return laplaceLogDensity(x, location, scale);
+}
+
+///
+version(mir_stat_test)
+@safe pure nothrow @nogc unittest
+{
+    import mir.bignum.fp: Fp;
+    alias T = Fp!64;
+    assert(laplaceLPDF(T(3), T(3), T(0.5)) == T(0));
+}
+
+version(mir_stat_test)
+@safe pure nothrow @nogc unittest
+{
+    import mir.bignum.fixed: UInt;
+    import mir.math.common: approxEqual;
+    import std.meta: AliasSeq;
+    // -log(6) - 2 at the same exact observations for all four types.
+    static foreach (T; AliasSeq!(float, double, real))
+    {
+        foreach (x; [T(-5), T(7)])
+            assert(approxEqual(laplaceLPDF(x, T(1), T(3)),
+                T(-3.7917594692280550008124773583807023L), 8 * T.epsilon));
+    }
+    alias T = Fp!64;
+    alias U = UInt!64;
+    const expected = T(true, -62, U(0xf2ac2fe8a88008c9UL));
+    assert(laplaceLPDF(T(-5), T(1), T(3)) == expected);
+    assert(laplaceLPDF(T(7), T(1), T(3)) == expected);
+    const negInf = T(-double.infinity);
+    assert(laplaceLPDF(T(double.infinity)) == negInf && laplaceLPDF(negInf) == negInf);
+    assert(laplaceLPDF(T(double.nan)).isNaN);
+
+    const quantum = T(false, long.min, U(1));
+    const huge = T(false, long.max - 1, U(2));
+    assert(laplaceLPDF(quantum) == T(true, -64, U(0xb17217f7d1cf79acUL)));
+    assert(laplaceLPDF(T(0), T(0), quantum) == T(false, -1, U(0xb17217f7d1cf79aaUL)));
+    assert(laplaceLPDF(T(0), T(0), huge) == T(true, -1, U(0xb17217f7d1cf79acUL)));
+    assert(laplaceLPDF(huge, T(0), quantum) == negInf);
+    assert(laplaceLPDF(quantum, T(0), T(0.5)) == T(true, long.min, U(2)));
+
+    // With h = 2^-64 these coordinates leave a residual of order h^3.
+    const x = T(false, -65, U(1)), location = T(false, -130, U(1));
+    assert(laplaceLPDF(x, location, T(false, -65, U.max))
+        == T(true, -258, U(0xaaaaaaaaaaaaaaacUL)));
+
+    // z is exactly halfway between two results before the remote log(2)
+    // correction. The standard log density rounds toward larger magnitude.
+    const high = T(false, 1000, U(1)), low = T(true, 936, U(1));
+    assert(laplaceLPDF(high, low, T(1)) == T(true, 937, U(0x8000000000000001UL)));
+}
+
+version(mir_stat_test)
+@safe pure nothrow @nogc unittest
+{
+    import mir.bignum.fixed: UInt;
+    alias T = Fp!128;
+    alias U = UInt!128;
+    // At scale 1/4 the zero lies at log(2)/4. Evaluate its two adjacent
+    // represented observations independently at 200 and 400 decimal digits.
+    enum below = T(false, -130, U.fromHexString("b17217f7d1cf79abc9e3b39803f2f6af"));
+    auto above = below;
+    above.coefficient += 1;
+    enum positive = T(false, -257, U.fromHexString("81e6864ce5316c5b141a2eb71755f458"));
+    enum negative = T(true, -256, U.fromHexString("bf0cbcd98d6749d275f2e8a4745505d4"));
+    assert(laplaceLPDF(below, T(0), T(0.25)) == positive);
+    assert(laplaceLPDF(above, T(0), T(0.25)) == negative);
+}
+
 // Finite location and scale can compensate for overflowing intermediates.
 version(mir_stat_test)
 @safe pure nothrow @nogc unittest
