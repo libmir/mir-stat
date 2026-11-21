@@ -25,6 +25,7 @@ module mir.stat.distribution.rayleigh;
 
 import mir.internal.utility: isFloatingPoint;
 import mir.bignum.fp: Fp;
+import mir.stat.internal.fp_probability: fpProbabilityValid;
 
 /++
 Computes the Rayleigh probability density function (PDF).
@@ -601,6 +602,94 @@ unittest
     rayleighInvCDF(0.4, 2).shouldApprox == 2.021535;
     rayleighInvCDF(0.6, 2).shouldApprox == 2.707457;
     rayleighInvCDF(0.8, 2).shouldApprox == 3.588245;
+}
+
+/++
+Computes the quantile for the Rayleigh distribution with unit scale.
+
+Params:
+    T = Represented $(D Fp) type, inferred from the arguments.
+    p = Finite cumulative probability in [0, 1].
+
+Returns:
+    The quantile in type $(D T), using guarded evaluation.
+    Zero gives zero and one gives positive infinity.
++/
+@safe pure nothrow @nogc
+T rayleighInvCDF(T)(const T p)
+    if (is(T == Fp!size, size_t size))
+{
+    return rayleighInvCDF(p, T(1));
+}
+
+///
+version(mir_stat_test)
+@safe pure nothrow @nogc unittest
+{
+    import mir.bignum.fp: Fp;
+    alias T = Fp!64;
+    assert(rayleighInvCDF(T(0)) == T(0));
+}
+
+/++
+Computes the quantile for the Rayleigh distribution with the given scale.
+
+Params:
+    T = Represented $(D Fp) type, inferred from the arguments.
+    p = Finite cumulative probability in [0, 1].
+    scale = Positive finite scale parameter.
+
+Returns:
+    The quantile in type $(D T), using guarded evaluation.
+    Zero gives zero and one gives positive infinity.
++/
+@safe pure nothrow @nogc
+T rayleighInvCDF(T)(const T p, const T scale)
+    if (is(T == Fp!size, size_t size))
+    in (validScale(scale), "scale must be finite and positive")
+    in (fpProbabilityValid(p), "p must be in [0, 1]")
+{
+    import mir.stat.internal.fp_rayleigh: rayleighQuantile;
+    return rayleighQuantile(p, scale);
+}
+
+///
+version(mir_stat_test)
+@safe pure nothrow @nogc unittest
+{
+    import mir.bignum.fp: Fp;
+    alias T = Fp!64;
+    assert(rayleighInvCDF(T(0), T(2)) == T(0));
+}
+
+version(mir_stat_test)
+@safe pure nothrow @nogc unittest
+{
+    import mir.bignum.fixed: UInt;
+    import mir.math.common: approxEqual;
+    import std.meta: AliasSeq;
+    alias T = Fp!64;
+    alias U = UInt!64;
+    static foreach (R; AliasSeq!(float, double, real))
+        assert(approxEqual(rayleighInvCDF(R(0.75), R(2)), R(3.330218444630791025412658579580804190522355409057764L), 8 * R.epsilon));
+    assert(rayleighInvCDF(T(0.75), T(2)) == T(false, -62, U(0xd5224c8b0e6a3ce9UL)));
+    assert(rayleighInvCDF(T(false, -2, U(4))) == T(double.infinity));
+    // The leading quantile is half the least subnormal; -log(1-p) > p.
+    assert(rayleighInvCDF(T(false, -2001, U(1)), T(false, long.min + 999, U(1)))
+        == T(false, long.min, U(1)));
+    assert(rayleighInvCDF(T(false, long.min, U(1)))
+        == T(false, long.min / 2 - 63, U(0xb504f333f9de6484UL)));
+    assert(rayleighInvCDF(T(0.75), T(false, long.max - 1, U.max)) == T(double.infinity));
+}
+
+version(mir_stat_test_slow_numerics)
+@safe pure nothrow @nogc unittest
+{
+    import mir.bignum.fixed: UInt;
+    alias T = Fp!128;
+    alias U = UInt!128;
+    enum expected = T(false, -122, U.fromHexString("9fd9b9684acfadaed0f5cbfa93c19de7"));
+    assert(rayleighInvCDF(T(false, -128, U.max), T(3)) == expected);
 }
 
 /++

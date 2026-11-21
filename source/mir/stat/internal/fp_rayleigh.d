@@ -7,7 +7,7 @@ module mir.stat.internal.fp_rayleigh;
 import mir.bignum.fixed: UInt;
 import mir.bignum.fp: Fp;
 import mir.stat.internal.fp_location_scale: addOffset;
-import mir.stat.internal.fp_probability: fpProbabilityComplement;
+import mir.stat.internal.fp_probability: fpProbabilityComplement, fpProbabilityLess;
 import mir.stat.internal.fp_probability_log: ProbabilityLog;
 import mir.stat.internal.fp_scaled_probability: ProbabilityScaled, exponentBias, scaledDecay;
 
@@ -129,4 +129,43 @@ package(mir.stat) Fp!bits rayleighLogDensity(uint bits)(Fp!bits x, Fp!bits scale
         }
     }
     return addOffset!bits(logRatio, halfSquaredRatio(obs, square), true);
+}
+
+package(mir.stat) Fp!bits rayleighQuantile(uint bits)(Fp!bits p, Fp!bits scale)
+{
+    import mir.stat.internal.uint_sqrt: isqrtRem;
+    alias T = Fp!bits;
+    if (!p.coefficient)
+        return T(0);
+    if (!fpProbabilityLess(p, T(1)))
+        return T(false, long.max, UInt!bits(0));
+
+    enum logBits = 3 * bits + 64;
+    enum work = logBits + 192;
+    alias Log = ProbabilityLog!logBits;
+    alias S = Log.S;
+    const tiny = S.from(p).exponent + (3 * bits + 8) <= exponentBias;
+    // For tiny p the leading squared quantile 2*p*scale^2 is an exact
+    // dyadic with at most 3*bits significant bits. The positive log
+    // correction can decide a midpoint. Avoid widening p at its floor.
+    const logarithm = tiny ? S.from(p) : Log.complement(cast(Fp!logBits)p);
+    const divisor = S.from(scale);
+    auto squared = logarithm.multiply(divisor.multiply(divisor));
+    squared.exponent += 1;
+
+    // Make the binary exponent even and extract a work-bit root. A sticky
+    // low bit preserves the side of a midpoint through the final narrowing.
+    const odd = squared.exponent.bt(0);
+    alias I = UInt!(2 * work);
+    const radicand = squared.fraction.coefficient.toSize!(2 * work) << (work - odd);
+    I remainder;
+    auto coefficient = isqrtRem(radicand, remainder).toSize!work;
+    if (remainder || tiny)
+        coefficient |= 1u;
+    S result;
+    result.fraction = Fp!work(false, -cast(long)work, coefficient);
+    result.exponent = (squared.exponent >> 1) + (exponentBias >> 1);
+    if (odd)
+        result.exponent += 1;
+    return addOffset!bits(T(0), result, false);
 }
