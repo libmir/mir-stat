@@ -9,7 +9,7 @@ import mir.bignum.fp: Fp;
 import mir.stat.internal.fp_location_scale: addOffset, distance;
 import mir.stat.internal.fp_probability: fpProbabilityComplement, fpProbabilityLess;
 import mir.stat.internal.fp_probability_log: ProbabilityLog;
-import mir.stat.internal.fp_scaled_probability: ProbabilityScaled, exponentBias, scaledDecay;
+import mir.stat.internal.fp_scaled_probability: ProbabilityScaled, addExponent, exponentBias, scaledDecay;
 
 @safe pure nothrow @nogc:
 
@@ -98,4 +98,142 @@ package(mir.stat) Fp!bits paretoTail(bool upper, uint bits)(Fp!bits x, Fp!bits l
         tail.fraction.exponent += cast(long)cast(ulong)(tail.exponent - exponentBias);
         return cast(T)fpProbabilityComplement(tail.fraction);
     }
+}
+
+// Scratch has one extra limb so that a product whose bit length is ambiguous
+// by one can be checked without instantiating a double-budget integer.
+private bool multiplyWithin(uint capacity)(ref UInt!(capacity + 64) a, UInt!(capacity + 64) b)
+{
+    enum width = capacity + 64;
+    if ((width - a.ctlz) + (width - b.ctlz) > capacity + 1)
+        return false;
+    a *= b;
+    return a.ctlz >= 64;
+}
+
+private bool multiplyPower(uint capacity)(ref UInt!(capacity + 64) a, UInt!(capacity + 64) factor, uint n)
+{
+    while (n)
+    {
+        if ((n & 1) && !multiplyWithin!capacity(a, factor))
+            return false;
+        n >>= 1;
+        if (n && !multiplyWithin!capacity(factor, factor))
+            return false;
+    }
+    return true;
+}
+
+// For an integral shape, density = shape * lower^shape / x^(shape+1).
+// The caller compares nearby values, so only the low word of the binary
+// exponent is needed after subtracting the exponent of the comparison value.
+private bool densityProducts(uint bits)(Fp!bits x, Fp!bits lower, Fp!bits shape,
+    out UInt!(8 * bits + 64) numerator, out UInt!(8 * bits + 64) denominator, out ulong exponent)
+{
+    enum capacity = 8 * bits;
+    const ts = shape.coefficient.cttz;
+    if (shape.exponent < -cast(long)ts)
+        return false;
+    const shapeShift = cast(ulong)shape.exponent + ts;
+    const tx = x.coefficient.cttz;
+    const tl = lower.coefficient.cttz;
+    numerator = (shape.coefficient >> ts).toSize!(capacity + 64);
+    const base = (lower.coefficient >> tl).toSize!(capacity + 64);
+    denominator = (x.coefficient >> tx).toSize!(capacity + 64);
+    // Two unit odd bases contribute only a binary exponent, even for
+    // shapes too large to materialize as machine integers.
+    const n = shapeShift < 64 ? cast(ulong)numerator << cast(uint)shapeShift : 0UL;
+    if (base != 1 || denominator != 1)
+    {
+        if (shapeShift >= 32 || numerator > (cast(ulong)capacity >> cast(uint)shapeShift))
+            return false;
+        const count = cast(uint)n;
+        if (!multiplyPower!capacity(numerator, base, count)
+            || !multiplyPower!capacity(denominator, denominator, count))
+            return false;
+    }
+    const xe = cast(ulong)x.exponent + tx;
+    const le = cast(ulong)lower.exponent + tl;
+    exponent = shapeShift - xe + n * (le - xe);
+    return true;
+}
+
+// Compare the rational density to the nearest output midpoint only when the
+// guarded result is within 2^(-bits-16) relative distance of that midpoint.
+private bool roundDensityMidpoint(uint bits)(Fp!bits x, Fp!bits lower, Fp!bits shape,
+    Log!bits.S value, out Fp!bits result)
+{
+    enum work = 3 * bits + 256;
+    alias S = Log!bits.S;
+    auto minimum = exponentBias;
+    addExponent(minimum, long.min);
+    // Just below half the least quantum, the midpoint lies one binade above.
+    if (value.exponent + 1 < minimum)
+        return false;
+    const shift = value.exponent < minimum + bits
+        ? cast(uint)(minimum + work - value.exponent) : work - bits;
+    const coefficient = value.fraction.coefficient.toSize!(work + 64);
+    auto units = coefficient >> shift;
+    const odd = (units << 1) + 1;
+    const middle = odd << (shift - 1);
+    const gap = coefficient >= middle ? coefficient - middle : middle - coefficient;
+    if (gap > (coefficient >> (bits + 16)))
+        return false;
+
+    UInt!(8 * bits + 64) numerator, denominator;
+    ulong exponent;
+    if (!densityProducts!bits(x, lower, shape, numerator, denominator, exponent))
+        return false;
+    // The odd midpoint factor has at most bits+1 bits. Since both sides
+    // are already close, aligning them costs at most one further bit.
+    enum width = 9 * bits + 64;
+    auto left = numerator.toSize!width;
+    auto right = denominator.toSize!width;
+    right *= odd.toSize!width;
+    const grid = value.exponent - work + shift;
+    const alignment = cast(long)(exponent - cast(ulong)(grid - exponentBias) + 1);
+    if (alignment >= 0)
+        left <<= cast(uint)alignment;
+    else
+        right <<= cast(uint)-alignment;
+    if (left > right || (left == right && units.bt(0)))
+        units += 1;
+    if (!units)
+        result = Fp!bits(0);
+    else
+    {
+        auto rounded = S.from(Fp!(work + 64)(units));
+        rounded.exponent += grid - exponentBias;
+        result = addOffset!bits(Fp!bits(0), rounded, false);
+    }
+    return true;
+}
+
+package(mir.stat) Fp!bits paretoDensity(uint bits)(Fp!bits x, Fp!bits lower, Fp!bits shape)
+{
+    alias T = Fp!bits;
+    alias S = Log!bits.S;
+    if (x.isInfinity)
+        return T(0);
+    const obs = S.from(x);
+    auto value = S.from(shape).divide(obs);
+    if (fpProbabilityLess(lower, x))
+    {
+        if (S.from(shape) == S.from(T(1)))
+            value = S.from(lower).divide(obs.multiply(obs));
+        else
+        {
+            Log!bits.Context context;
+            const rate = S.from(logRatio!bits(x, lower, context)).multiply(S.from(shape));
+            // Above 2^65, even the largest shape divided by the least x
+            // cannot rescue the density from underflow.
+            if (rate.exponent >= exponentBias + 66)
+                return T(0);
+            value = value.multiply(survival!bits(x, lower, shape, rate));
+        }
+    }
+    T rounded;
+    if (roundDensityMidpoint!bits(x, lower, shape, value, rounded))
+        return rounded;
+    return addOffset!bits(T(0), value, false);
 }
