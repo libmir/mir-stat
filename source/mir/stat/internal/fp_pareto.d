@@ -238,6 +238,48 @@ package(mir.stat) Fp!bits paretoDensity(uint bits)(Fp!bits x, Fp!bits lower, Fp!
     return addOffset!bits(T(0), value, false);
 }
 
+package(mir.stat) Fp!bits paretoQuantile(uint bits)(Fp!bits p, Fp!bits lower, Fp!bits shape)
+{
+    alias T = Fp!bits;
+    alias L = Log!bits;
+    alias S = L.S;
+    alias W = Fp!(3 * bits + 64);
+    if (!p.coefficient)
+        return lower;
+    if (!fpProbabilityLess(p, T(1)))
+        return T(false, long.max, UInt!bits(0));
+    const probability = S.from(p);
+    const tiny = probability.exponent + 3 * bits + 256 < exponentBias;
+    if (S.from(shape) == S.from(T(1)))
+    {
+        if (tiny)
+            return lower;
+        const remaining = fpProbabilityComplement(cast(W)p);
+        return addOffset!bits(T(0), S.from(lower).divide(S.from(remaining)), false);
+    }
+    // A tiny p can still give substantial growth after division by shape.
+    const growth = (tiny ? probability : L.complement(cast(W)p)).divide(S.from(shape));
+    if (growth.exponent >= exponentBias + 66)
+        return T(false, long.max, UInt!bits(0));
+    auto value = S.from(lower);
+    // A dyadic complement below one can be a power of two only for p >= 1/2.
+    if (probability.exponent >= exponentBias)
+    {
+        const remaining = S.from(fpProbabilityComplement(cast(W)p));
+        if (remaining.fraction.coefficient == S.from(T(1)).fraction.coefficient)
+        {
+            const count = Fp!128(exponentBias + 1 - remaining.exponent);
+            UInt!128 n;
+            if (integralPower(S.from(count).divide(S.from(shape)), n))
+            {
+                value.exponent += n;
+                return addOffset!bits(T(0), value, false);
+            }
+        }
+    }
+    return addOffset!bits(T(0), value.divide(scaledDecay(growth)), false);
+}
+
 // Near unit density take -log(1-difference/larger) to retain the sign.
 private bool exactResidual(uint bits)(Fp!bits x, Fp!bits lower, Fp!bits shape, out Fp!bits result)
 {

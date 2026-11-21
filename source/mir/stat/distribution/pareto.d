@@ -22,7 +22,7 @@ Copyright: 2022-3 Mir Stat Authors.
 module mir.stat.distribution.pareto;
 
 import mir.bignum.fp: Fp;
-import mir.stat.internal.fp_probability: fpProbabilityLess;
+import mir.stat.internal.fp_probability: fpProbabilityLess, fpProbabilityValid;
 import mir.internal.utility: isFloatingPoint;
 
 /++
@@ -488,6 +488,69 @@ unittest
     0.0.paretoInvCDF(1, 3).shouldApprox == 1;
     0.875.paretoInvCDF(1, 3).shouldApprox == 2;
     0.8024691.paretoInvCDF(2, 4).shouldApprox == 3;
+}
+
+/++
+Computes the type-I Pareto InvCDF using guarded extended-precision arithmetic.
+
+Params:
+    T = Represented $(D Fp) type, inferred from the arguments.
+    p = Probability in [0, 1].
+    xMin = Positive finite lower support boundary.
+    alpha = Positive finite shape parameter.
+
+Returns:
+    The p-quantile in type T. Zero gives xMin and one gives positive infinity.
++/
+@safe pure nothrow @nogc
+T paretoInvCDF(T)(const T p, const T xMin, const T alpha)
+    if (is(T == Fp!size, size_t size))
+    in (validParameter(xMin), "xMin must be finite and positive")
+    in (validParameter(alpha), "alpha must be finite and positive")
+    in (fpProbabilityValid(p), "p must be in [0, 1]")
+{
+    import mir.stat.internal.fp_pareto: paretoQuantile;
+    return paretoQuantile(p, xMin, alpha);
+}
+
+///
+version(mir_stat_test)
+@safe pure nothrow @nogc unittest
+{
+    import mir.bignum.fp: Fp;
+    alias T = Fp!64;
+    assert(paretoInvCDF(T(0.875), T(1), T(3)) == T(2));
+}
+
+version(mir_stat_test)
+@safe pure nothrow @nogc unittest
+{
+    import mir.bignum.fixed: UInt;
+    import mir.math.common: approxEqual;
+    import std.meta: AliasSeq;
+    static foreach (R; AliasSeq!(float, double, real))
+        assert(approxEqual(paretoInvCDF(R(0.625), R(1.25), R(0.75)),
+            R(4.62240849567089803228901516523974530297290075639L), 8 * R.epsilon));
+    {
+        alias T = Fp!64;
+        enum expected = T(false, -61, UInt!64.fromHexString("93eac538b5170eb4"));
+        assert(paretoInvCDF(T(0.625), T(1.25), T(0.75)) == expected);
+    }
+    {
+        alias T = Fp!128;
+        enum expected = T(false, -125, UInt!128.fromHexString("93eac538b5170eb3b42a55b71f4de539"));
+        assert(paretoInvCDF(T(0.625), T(1.25), T(0.75)) == expected);
+    }
+    alias T = Fp!64;
+    const least = T(false, long.min, UInt!64(1));
+    assert(paretoInvCDF(T(0), least, T(1)) == least);
+    assert(paretoInvCDF(least, T(3), T(1)) == T(3));
+    assert(paretoInvCDF(T(0.5), least, least).isInfinity);
+    assert(paretoInvCDF(T(0.75), least, T(1)) == T(false, long.min, UInt!64(4)));
+    assert(paretoInvCDF(T(1), least, T(2)).isInfinity);
+    assert(paretoInvCDF(T(0.5), least, T(false, -64, UInt!64(1)))
+        == T(false, long.max - 62, UInt!64(1) << 63));
+    assert(paretoInvCDF(least, T(1), least) == T(false, -62, UInt!64(0xadf85458a2bb4a9bUL)));
 }
 
 /++
