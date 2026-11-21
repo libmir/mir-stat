@@ -895,21 +895,35 @@ rcMultivariateNormalLPDFBatch(CovarianceRepresentation form = CovarianceRepresen
     return evaluateBatch!(Allocation.rc, form, triangle)(allocator, x.asView, mean.asView, metric.asView);
 }
 
-/// Evaluate columns with a prepared precision factor.
+/// Evaluate two observations using an upper Cholesky factor of the precision matrix.
 version(mir_stat_test_multivariate_normal)
 @safe pure nothrow @nogc unittest
 {
     import mir.ndslice.slice: sliced;
-    import mir.stat.distribution.normal: normalLPDF;
-    import std.math: fabs;
-    double[2] readings = [10, 14];
-    double[1] mean = [10], factor = [0.5];
-    auto columns = readings[].sliced(1, 2);
-    auto values = rcMultivariateNormalLPDFBatch!(CovarianceRepresentation.inverseCovarianceCholesky)(
-        columns, mean[], factor[].sliced(1, 1));
-    assert(values.length == 2);
+    import std.math: PI, fabs, log;
+
+    // The columns are [10, 20] (the mean) and [11, 21].
+    double[4] readings = [10, 11, 20, 21];
+    double[2] mean = [10, 20];
+    auto columns = readings[].sliced(2, 2);
+
+    // The precision is P = U.transpose * U, with U = [[2, 1], [0, 1]].
+    double[4] upper = [2, 1, 0, 1], precision = [4, 2, 2, 2];
+    alias R = CovarianceRepresentation;
+    auto values = rcMultivariateNormalLPDFBatch!(R.inverseCovarianceCholesky)(
+        columns, mean[], upper[].sliced(2, 2));
+    auto raw = tryRcMultivariateNormalLPDFBatch!(R.inverseCovariance)(
+        columns, mean[], precision[].sliced(2, 2));
+    assert(raw.failedPivot == 0);
+    assert(values.length == 2 && raw.logDensities.length == 2);
+
+    // det(P) = 4. For the second observation, U * [1, 1] = [3, 1],
+    // so the log density drops by (3 * 3 + 1 * 1) / 2 = 5 from its value at the mean.
+    const atMean = -log(double(PI));
+    assert(fabs(values[0] - atMean) < 1e-14);
+    assert(fabs(values[1] - (atMean - 5)) < 1e-14);
     foreach (j; 0 .. values.length)
-        assert(fabs(values[j] - normalLPDF(readings[j], 10.0, 2.0)) < 1e-14);
+        assert(fabs(values[j] - raw.logDensities[j]) < 1e-14);
 }
 
 /++
@@ -1611,19 +1625,23 @@ tryRcMultivariateNormalLPDF(CovarianceRepresentation form = CovarianceRepresenta
     return tryRcMultivariateNormalLPDFBatch!(form, triangle)(columns, mean, metric);
 }
 
-/// Check the pivot before using the log densities for the selected rows.
+/// Evaluate selected rows with raw precision. A precision of 0.25 gives a standard deviation of 2.
 version(mir_stat_test_multivariate_normal)
 @safe pure nothrow @nogc unittest
 {
     import mir.ndslice.slice: sliced;
     import mir.ndslice.topology: byDim;
-    double[2] data = [10, 14];
-    double[1] mean = [10], covariance = [4];
-    auto rows = data[].sliced(2, 1);
-    auto result = tryRcMultivariateNormalLPDF(rows.byDim!0, mean[], covariance[].sliced(1, 1));
-    assert(result.failedPivot == 0);
-    assert(result.logDensities.length == 2);
-    assert(result.logDensities[0] > result.logDensities[1]);
+    import mir.stat.distribution.normal: normalLPDF;
+    import std.math: fabs;
+
+    double[2] readings = [10, 14];
+    double[1] mean = [10], precision = [0.25];
+    auto rows = readings[].sliced(2, 1);
+    auto result = tryRcMultivariateNormalLPDF!(CovarianceRepresentation.inverseCovariance)(
+        rows.byDim!0, mean[], precision[].sliced(1, 1));
+    assert(result.failedPivot == 0 && result.logDensities.length == 2);
+    foreach (j; 0 .. readings.length)
+        assert(fabs(result.logDensities[j] - normalLPDF(readings[j], 10.0, 2.0)) < 1e-14);
 }
 
 /++
