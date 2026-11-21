@@ -12,6 +12,9 @@ Supply a Cholesky factor of either matrix to reuse it across
 calls. Label the matrix with $(D covarianceView), $(D precisionView), $(D covarianceCholeskyView),
 or $(D precisionCholeskyView) from $(MREF mir,stat,covariance_views).
 The label carries the selected triangle and can be reused across observations or batches.
+Alternatively, the four $(D multivariateNormalLPDFFrom...) functions accept a matrix directly.
+For example, $(D multivariateNormalLPDFFromPrecision(x, mean, p)) is equivalent to
+$(D multivariateNormalLPDF(x, mean, precisionView(p))).
 In zero dimensions the log-density is zero.
 For a single observation and a raw matrix, $(LREF tryMultivariateNormalLPDF),
 $(LREF tryRcMultivariateNormalLPDF), $(LREF tryMakeMultivariateNormalLPDF), and
@@ -184,6 +187,227 @@ version(mir_stat_test_multivariate_normal)
     assert(values.length == 2);
     assert(fabs(values[0] - atMean) < 1e-14);
     assert(fabs(values[1] - (atMean - 0.5)) < 1e-14);
+}
+
+// Diagnose a missing label only for otherwise supported arguments.
+auto multivariateNormalLPDF(X, C, M)(scope auto ref X x, scope auto ref C mean, scope auto ref M metric)
+    if (matrix!M && __traits(compiles, multivariateNormalLPDF(x, mean, covarianceView(metric))))
+{
+    static assert(0, "Specify the matrix representation. For covariance, pass covarianceView(metric) " ~
+        "or call multivariateNormalLPDFFromCovariance(x, mean, metric).");
+}
+
+/++
+Evaluate the multivariate normal log density from a covariance matrix.
+
+Params:
+    triangle = Triangle of the supplied matrix to read, upper by default.
+        A labeled input carries its own triangle.
+    x = One vector of k finite coordinates or a rectangular selection of n such vectors.
+    mean = Vector of k finite means with the same floating-point element type as x.
+    metric = Dense k-by-k covariance matrix or matching view from $(D covarianceView).
+        The selected triangle must be finite and define a positive-definite matrix.
+
+Returns:
+    A natural log density in the input element type, or a GC-managed vector of n
+    log densities in selection order. Zero-dimensional observations have log density zero.
+
+Throws:
+    Exception if Cholesky factorization fails, including for an empty batch.
++/
+auto multivariateNormalLPDFFromCovariance(TrianglePolicy triangle = TrianglePolicy.upper, X, C, M)(
+    scope auto ref X x, scope auto ref C mean, scope auto ref M metric)
+    if (matrix!M && __traits(compiles, multivariateNormalLPDF(x, mean, covarianceView!triangle(metric))))
+{
+    return multivariateNormalLPDF(x, mean, covarianceView!triangle(metric));
+}
+
+/// ditto
+auto multivariateNormalLPDFFromCovariance(X, C, M)(
+    scope auto ref X x, scope auto ref C mean, scope auto ref M metric)
+    if (isCovarianceMetric!M && __traits(compiles, multivariateNormalLPDF(x, mean, metric)))
+{
+    static assert(M.form == CovarianceRepresentation.covariance,
+        "multivariateNormalLPDFFromCovariance expects a covariance matrix. Received " ~ M.form.stringof ~ ".");
+    return multivariateNormalLPDF(x, mean, metric);
+}
+
+///
+version(mir_stat_test_multivariate_normal)
+@safe pure unittest
+{
+    import mir.ndslice.slice: sliced;
+    import mir.stat.distribution.normal: normalLPDF;
+    import std.math: fabs;
+    double[1] x = [3], mean = [1], entries = [4];
+    auto matrix = entries[].sliced(1, 1);
+    const expected = normalLPDF(3.0, 1.0, 2.0);
+    assert(fabs(multivariateNormalLPDFFromCovariance(x[], mean[], matrix) - expected) < 1e-14);
+    assert(fabs(multivariateNormalLPDFFromCovariance(x[], mean[], covarianceView(matrix)) - expected) < 1e-14);
+}
+
+/++
+Evaluate the multivariate normal log density from a precision matrix.
+
+Params:
+    triangle = Triangle of the supplied matrix to read, upper by default.
+        A labeled input carries its own triangle.
+    x = One vector of k finite coordinates or a rectangular selection of n such vectors.
+    mean = Vector of k finite means with the same floating-point element type as x.
+    metric = Dense k-by-k precision matrix or matching view from $(D precisionView).
+        The selected triangle must be finite and define a positive-definite matrix.
+
+Returns:
+    A natural log density in the input element type, or a GC-managed vector of n
+    log densities in selection order. Zero-dimensional observations have log density zero.
+
+Throws:
+    Exception if Cholesky factorization fails, including for an empty batch.
++/
+auto multivariateNormalLPDFFromPrecision(TrianglePolicy triangle = TrianglePolicy.upper, X, C, M)(
+    scope auto ref X x, scope auto ref C mean, scope auto ref M metric)
+    if (matrix!M && __traits(compiles, multivariateNormalLPDF(x, mean, precisionView!triangle(metric))))
+{
+    return multivariateNormalLPDF(x, mean, precisionView!triangle(metric));
+}
+
+/// ditto
+auto multivariateNormalLPDFFromPrecision(X, C, M)(
+    scope auto ref X x, scope auto ref C mean, scope auto ref M metric)
+    if (isCovarianceMetric!M && __traits(compiles, multivariateNormalLPDF(x, mean, metric)))
+{
+    static assert(M.form == CovarianceRepresentation.inverseCovariance,
+        "multivariateNormalLPDFFromPrecision expects a precision matrix. Received " ~ M.form.stringof ~ ".");
+    return multivariateNormalLPDF(x, mean, metric);
+}
+
+/// Select two rows and read the lower triangle of their shared precision matrix.
+version(mir_stat_test_multivariate_normal)
+@safe pure unittest
+{
+    import mir.ndslice.slice: sliced;
+    import mir.ndslice.topology: byDim;
+    import std.math: fabs, log, PI;
+
+    double[4] readings = [0, 0, 1, 1], lower = [4, double.nan, 2, 2];
+    double[2] mean = [0, 0];
+    auto rows = readings[].sliced(2, 2);
+    auto matrix = lower[].sliced(2, 2);
+    const metric = precisionView!(TrianglePolicy.lower)(matrix);
+    auto values = multivariateNormalLPDFFromPrecision(rows.byDim!0, mean[], metric);
+    auto fromRaw = multivariateNormalLPDFFromPrecision!(TrianglePolicy.lower)(rows.byDim!0, mean[], matrix);
+    const atMean = -log(double(PI));
+    assert(values == fromRaw && values.length == 2);
+    assert(fabs(values[0] - atMean) < 1e-14 && fabs(values[1] - (atMean - 5)) < 1e-14);
+}
+
+/++
+Evaluate the multivariate normal log density from a Cholesky factor of the covariance matrix.
+
+Params:
+    triangle = Triangle of the supplied matrix to read, upper by default.
+        A labeled input carries its own triangle.
+    x = One vector of k finite coordinates or a rectangular selection of n such vectors.
+    mean = Vector of k finite means with the same floating-point element type as x.
+    metric = Dense k-by-k Cholesky factor of the covariance matrix or matching view from $(D covarianceCholeskyView).
+        The selected triangle must be finite and the factor must have positive diagonal entries.
+
+Returns:
+    A natural log density in the input element type, or a GC-managed vector of n
+    log densities in selection order. Zero-dimensional observations have log density zero.
++/
+auto multivariateNormalLPDFFromCovarianceCholesky(TrianglePolicy triangle = TrianglePolicy.upper, X, C, M)(
+    scope auto ref X x, scope auto ref C mean, scope auto ref M metric)
+    if (matrix!M && __traits(compiles, multivariateNormalLPDF(x, mean, covarianceCholeskyView!triangle(metric))))
+{
+    return multivariateNormalLPDF(x, mean, covarianceCholeskyView!triangle(metric));
+}
+
+/// ditto
+auto multivariateNormalLPDFFromCovarianceCholesky(X, C, M)(
+    scope auto ref X x, scope auto ref C mean, scope auto ref M metric)
+    if (isCovarianceMetric!M && __traits(compiles, multivariateNormalLPDF(x, mean, metric)))
+{
+    static assert(M.form == CovarianceRepresentation.covarianceCholesky,
+        "multivariateNormalLPDFFromCovarianceCholesky expects a Cholesky factor of the covariance matrix. Received " ~ M.form.stringof ~ ".");
+    return multivariateNormalLPDF(x, mean, metric);
+}
+
+///
+version(mir_stat_test_multivariate_normal)
+@safe pure nothrow unittest
+{
+    import mir.ndslice.slice: sliced;
+    import mir.stat.distribution.normal: normalLPDF;
+    import std.math: fabs;
+    double[1] x = [3], mean = [1], entries = [2];
+    auto matrix = entries[].sliced(1, 1);
+    const expected = normalLPDF(3.0, 1.0, 2.0);
+    assert(fabs(multivariateNormalLPDFFromCovarianceCholesky(x[], mean[], matrix) - expected) < 1e-14);
+    assert(fabs(multivariateNormalLPDFFromCovarianceCholesky(x[], mean[], covarianceCholeskyView(matrix)) - expected) < 1e-14);
+}
+
+/++
+Evaluate the multivariate normal log density from a Cholesky factor of the precision matrix.
+
+Params:
+    triangle = Triangle of the supplied matrix to read, upper by default.
+        A labeled input carries its own triangle.
+    x = One vector of k finite coordinates or a rectangular selection of n such vectors.
+    mean = Vector of k finite means with the same floating-point element type as x.
+    metric = Dense k-by-k Cholesky factor of the precision matrix or matching view from $(D precisionCholeskyView).
+        The selected triangle must be finite and the factor must have positive diagonal entries.
+
+Returns:
+    A natural log density in the input element type, or a GC-managed vector of n
+    log densities in selection order. Zero-dimensional observations have log density zero.
++/
+auto multivariateNormalLPDFFromPrecisionCholesky(TrianglePolicy triangle = TrianglePolicy.upper, X, C, M)(
+    scope auto ref X x, scope auto ref C mean, scope auto ref M metric)
+    if (matrix!M && __traits(compiles, multivariateNormalLPDF(x, mean, precisionCholeskyView!triangle(metric))))
+{
+    return multivariateNormalLPDF(x, mean, precisionCholeskyView!triangle(metric));
+}
+
+/// ditto
+auto multivariateNormalLPDFFromPrecisionCholesky(X, C, M)(
+    scope auto ref X x, scope auto ref C mean, scope auto ref M metric)
+    if (isCovarianceMetric!M && __traits(compiles, multivariateNormalLPDF(x, mean, metric)))
+{
+    static assert(M.form == CovarianceRepresentation.inverseCovarianceCholesky,
+        "multivariateNormalLPDFFromPrecisionCholesky expects a Cholesky factor of the precision matrix. Received " ~ M.form.stringof ~ ".");
+    return multivariateNormalLPDF(x, mean, metric);
+}
+
+///
+version(mir_stat_test_multivariate_normal)
+@safe pure nothrow unittest
+{
+    import mir.ndslice.slice: sliced;
+    import mir.stat.distribution.normal: normalLPDF;
+    import std.math: fabs;
+    double[1] x = [3], mean = [1], entries = [0.5];
+    auto matrix = entries[].sliced(1, 1);
+    const expected = normalLPDF(3.0, 1.0, 2.0);
+    assert(fabs(multivariateNormalLPDFFromPrecisionCholesky(x[], mean[], matrix) - expected) < 1e-14);
+    assert(fabs(multivariateNormalLPDFFromPrecisionCholesky(x[], mean[], precisionCholeskyView(matrix)) - expected) < 1e-14);
+}
+
+version(mir_stat_test_multivariate_normal)
+@safe pure unittest
+{
+    import mir.ndslice.slice: sliced;
+    import mir.ndslice.topology: byDim;
+    double[1] x, mean, entry;
+    auto matrix = entry[].sliced(1, 1);
+    const metric = precisionView!(TrianglePolicy.lower)(matrix);
+    static assert(!__traits(compiles, multivariateNormalLPDF(x[], mean[], matrix)));
+    static assert(!__traits(compiles, multivariateNormalLPDF(matrix.byDim!0, mean[], matrix)));
+    static assert(!__traits(compiles, multivariateNormalLPDFFromCovariance(x[], mean[], metric)));
+    static assert(!__traits(compiles, multivariateNormalLPDFFromPrecision(x[], mean[], covarianceView(matrix))));
+    static assert(!__traits(compiles, multivariateNormalLPDFFromPrecisionCholesky(x[], mean[], metric)));
+    static assert(!__traits(compiles, multivariateNormalLPDFFromCovarianceCholesky(x[], mean[], metric)));
+    static assert(!__traits(compiles, multivariateNormalLPDFFromPrecision!(TrianglePolicy.upper)(x[], mean[], metric)));
 }
 
 /++
