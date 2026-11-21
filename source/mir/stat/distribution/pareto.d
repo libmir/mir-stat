@@ -168,6 +168,68 @@ unittest
 }
 
 /++
+Computes the type-I Pareto CDF using guarded extended-precision arithmetic.
+
+Params:
+    T = Represented $(D Fp) type, inferred from the arguments.
+    x = Observation at or above xMin, including positive infinity.
+    xMin = Positive finite lower support boundary.
+    alpha = Positive finite shape parameter.
+
+Returns:
+    The lower-tail probability in type T, ranging from zero at xMin to one at infinity.
++/
+@safe pure nothrow @nogc
+T paretoCDF(T)(const T x, const T xMin, const T alpha)
+    if (is(T == Fp!size, size_t size))
+    in (validParameter(xMin), "xMin must be finite and positive")
+    in (validParameter(alpha), "alpha must be finite and positive")
+    in (!x.isNaN && !x.sign && (x.isInfinity || !fpProbabilityLess(x, xMin)), "x must be at least xMin")
+{
+    import mir.stat.internal.fp_pareto: paretoTail;
+    return paretoTail!false(x, xMin, alpha);
+}
+
+///
+version(mir_stat_test)
+@safe pure nothrow @nogc unittest
+{
+    import mir.bignum.fp: Fp;
+    alias T = Fp!64;
+    assert(paretoCDF(T(2), T(1), T(3)) == T(0.875));
+}
+
+version(mir_stat_test)
+@safe pure nothrow @nogc unittest
+{
+    import mir.bignum.fixed: UInt;
+    import mir.math.common: approxEqual;
+    import std.meta: AliasSeq;
+    static foreach (R; AliasSeq!(float, double, real))
+        assert(approxEqual(paretoCDF(R(1.5), R(1.25), R(0.75)),
+            R(0.12780405050657870351378135209393062842092661676L), 8 * R.epsilon));
+    {
+        alias T = Fp!64;
+        enum expected = T(false, -66, UInt!64.fromHexString("82df10a4e36af994"));
+        assert(paretoCDF(T(1.5), T(1.25), T(0.75)) == expected);
+    }
+    {
+        alias T = Fp!128;
+        enum expected = T(false, -130, UInt!128.fromHexString("82df10a4e36af9947a04cefee929afa7"));
+        assert(paretoCDF(T(1.5), T(1.25), T(0.75)) == expected);
+    }
+    alias T = Fp!64;
+    assert(paretoCDF(T(1), T(1), T(2)) == T(0));
+    assert(paretoCDF(T(double.infinity), T(1), T(2)) == T(1));
+    auto adjacent = T(1);
+    adjacent.coefficient += 1;
+    // Rounded value of 1/(2^63+1) for the next represented input above one.
+    assert(paretoCDF(adjacent, T(1), T(1)) == T(false, -127, UInt!64.max - 1));
+    const least = T(false, long.min, UInt!64(1));
+    assert(paretoCDF(T(2), T(1), least) == least);
+}
+
+/++
 Computes the pareto complementary cumulative distribution function (CCDF).
 
 Returns the upper-tail probability $(D P(X > x)). Use this function directly
@@ -232,8 +294,8 @@ T paretoCCDF(T)(const T x, const T xMin, const T alpha)
     in (validParameter(alpha), "alpha must be finite and positive")
     in (!x.isNaN && !x.sign && (x.isInfinity || !fpProbabilityLess(x, xMin)), "x must be at least xMin")
 {
-    import mir.stat.internal.fp_pareto: paretoUpper;
-    return paretoUpper(x, xMin, alpha);
+    import mir.stat.internal.fp_pareto: paretoTail;
+    return paretoTail!true(x, xMin, alpha);
 }
 
 ///
@@ -274,6 +336,7 @@ version(mir_stat_test)
     assert(paretoCCDF(T(double.infinity), T(1), T(2)) == T(0));
     // A tail far below hardware range remains positive when the CDF rounds to one.
     const large = T(false, 40000, UInt!64(1));
+    assert(paretoCDF(large, T(1), T(0.5)) == T(1));
     assert(paretoCCDF(large, T(1), T(0.5)) == T(false, -20063, UInt!64(1) << 63));
     // 2^(-2^63-1) is halfway between zero and the least positive Fp.
     const n = UInt!64(1) << 63;

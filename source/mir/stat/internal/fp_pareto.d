@@ -6,8 +6,8 @@ module mir.stat.internal.fp_pareto;
 
 import mir.bignum.fixed: UInt;
 import mir.bignum.fp: Fp;
-import mir.stat.internal.fp_location_scale: addOffset;
-import mir.stat.internal.fp_probability: fpProbabilityLess;
+import mir.stat.internal.fp_location_scale: addOffset, distance;
+import mir.stat.internal.fp_probability: fpProbabilityComplement, fpProbabilityLess;
 import mir.stat.internal.fp_probability_log: ProbabilityLog;
 import mir.stat.internal.fp_scaled_probability: ProbabilityScaled, exponentBias, scaledDecay;
 
@@ -66,19 +66,36 @@ private auto survival(uint bits)(Fp!bits x, Fp!bits lower, Fp!bits shape, Log!bi
     return scaledDecay(rate);
 }
 
-package(mir.stat) Fp!bits paretoUpper(uint bits)(Fp!bits x, Fp!bits lower, Fp!bits shape)
+package(mir.stat) Fp!bits paretoTail(bool upper, uint bits)(Fp!bits x, Fp!bits lower, Fp!bits shape)
 {
     alias T = Fp!bits;
     alias S = Log!bits.S;
     if (x.isInfinity)
-        return T(0);
+        return T(upper ? 0 : 1);
     if (!fpProbabilityLess(lower, x))
-        return T(1);
+        return T(upper ? 1 : 0);
     if (S.from(shape) == S.from(T(1)))
-        return S.from(lower).divide(S.from(x)).finish!bits;
+    {
+        static if (upper)
+            return S.from(lower).divide(S.from(x)).finish!bits;
+        else
+            return distance!(3 * bits + 256)(x, lower).divide(S.from(x)).finish!bits;
+    }
     Log!bits.Context context;
     const rate = S.from(logRatio!bits(x, lower, context)).multiply(S.from(shape));
     if (rate.exponent >= exponentBias + 66)
-        return T(0);
-    return survival!bits(x, lower, shape, rate).finish!bits;
+        return T(upper ? 0 : 1);
+    static if (!upper)
+        if (rate.exponent + bits + 64 <= exponentBias)
+            return rate.finish!bits;
+    auto tail = survival!bits(x, lower, shape, rate);
+    static if (upper)
+        return tail.finish!bits;
+    else
+    {
+        if (tail.exponent + bits + 1 <= exponentBias)
+            return T(1);
+        tail.fraction.exponent += cast(long)cast(ulong)(tail.exponent - exponentBias);
+        return cast(T)fpProbabilityComplement(tail.fraction);
+    }
 }
