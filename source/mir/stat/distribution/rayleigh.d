@@ -3,9 +3,10 @@ This module contains algorithms for the $(LINK2 https://en.wikipedia.org/wiki/Ra
 
 The one-argument overloads use scale one. The other overloads take a
 positive finite scale. The support is $(D x >= 0); negative observations
-are outside the supported domain, although the forward functions do not
-enforce this with a contract. Scale is not the standard deviation. The
-inverse CDF accepts both probability endpoints.
+are outside the supported domain. The $(D Fp) forward functions check
+this precondition and propagate NaN. The built-in forward functions leave
+the precondition unchecked. Scale is not the standard deviation. The inverse
+CDF accepts both probability endpoints.
 
 The special-value tables assume finite distribution parameters in the stated
 domain. Finite expressions are subject to floating-point rounding and range
@@ -23,6 +24,7 @@ Copyright: 2023 Mir Stat Authors.
 module mir.stat.distribution.rayleigh;
 
 import mir.internal.utility: isFloatingPoint;
+import mir.bignum.fp: Fp;
 
 /++
 Computes the Rayleigh probability density function (PDF).
@@ -280,6 +282,81 @@ unittest
     0.5.rayleighCCDF(2.0).shouldApprox == 0.9692332;
     1.0.rayleighCCDF(2.0).shouldApprox == 0.8824969;
     4.0.rayleighCCDF(2.0).shouldApprox == 0.1353353;
+}
+
+/++
+Computes the strict upper-tail probability $(D P(X > x)) for the Rayleigh distribution with unit scale.
+
+Params:
+    T = Represented $(D Fp) type, inferred from the arguments.
+    x = Nonnegative observation, including positive infinity, or NaN.
+
+Returns:
+    The strict upper-tail probability $(D P(X > x)) in type $(D T), using guarded evaluation.
+    Zero gives one and positive infinity gives zero. NaN propagates.
++/
+@safe pure nothrow @nogc
+T rayleighCCDF(T)(const T x)
+    if (is(T == Fp!size, size_t size))
+{
+    return rayleighCCDF(x, T(1));
+}
+
+///
+version(mir_stat_test)
+@safe pure nothrow @nogc unittest
+{
+    import mir.bignum.fp: Fp;
+    alias T = Fp!64;
+    assert(rayleighCCDF(T(0)) == T(1));
+}
+
+/++
+Computes the strict upper-tail probability $(D P(X > x)) for the Rayleigh distribution with the given scale.
+
+Params:
+    T = Represented $(D Fp) type, inferred from the arguments.
+    x = Nonnegative observation, including positive infinity, or NaN.
+    scale = Positive finite scale parameter.
+
+Returns:
+    The strict upper-tail probability $(D P(X > x)) in type $(D T), using guarded evaluation.
+    Zero gives one and positive infinity gives zero. NaN propagates.
++/
+@safe pure nothrow @nogc
+T rayleighCCDF(T)(const T x, const T scale)
+    if (is(T == Fp!size, size_t size))
+    in (validScale(scale), "scale must be finite and positive")
+    in (validObservation(x), "x must be nonnegative")
+{
+    import mir.stat.internal.fp_rayleigh: rayleighUpper;
+    return rayleighUpper(x, scale);
+}
+
+///
+version(mir_stat_test)
+@safe pure nothrow @nogc unittest
+{
+    import mir.bignum.fp: Fp;
+    alias T = Fp!64;
+    assert(rayleighCCDF(T(0), T(2)) == T(1));
+}
+
+version(mir_stat_test)
+@safe pure nothrow @nogc unittest
+{
+    import mir.bignum.fixed: UInt;
+    import mir.math.common: approxEqual;
+    import std.meta: AliasSeq;
+    alias T = Fp!64;
+    alias U = UInt!64;
+    static foreach (R; AliasSeq!(float, double, real))
+        assert(approxEqual(rayleighCCDF(R(1.5), R(2)), R(0.7548396019890073373273470959175298273476002094358294L), 8 * R.epsilon));
+    assert(rayleighCCDF(T(1.5), T(2)) == T(false, -64, U(0xc13d2b0c44b8af4aUL)));
+    assert(rayleighCCDF(T(double.nan)).isNaN);
+    assert(rayleighCCDF(T(double.infinity)) == T(0));
+    assert(rayleighCCDF(T(false, long.max - 1, U.max), T(false, long.min, U(1))) == T(0));
+    assert(rayleighCCDF(T(false, long.min, U(1))) == T(1));
 }
 
 /++
@@ -557,4 +634,14 @@ unittest
             assert(rayleighLPDF(T.nan, scale).isNaN);
         }
     }
+}
+
+private bool validScale(uint bits)(Fp!bits scale) @safe pure nothrow @nogc
+{
+    return !scale.isSpecial && !scale.sign && !!scale.coefficient;
+}
+
+private bool validObservation(uint bits)(Fp!bits x) @safe pure nothrow @nogc
+{
+    return x.isNaN || !x.sign || (!x.isSpecial && !x.coefficient);
 }
