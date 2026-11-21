@@ -1,62 +1,76 @@
 /++
-Multivariate normal log-density for real observations and a positive-definite
-covariance or precision matrix. Precision is the inverse of covariance.
+Natural log density of one observation or a batch of observations from a multivariate
+normal distribution. The observations share a mean vector and a positive-definite
+covariance matrix. In zero dimensions the log density is zero.
 
-For example, a test rig records inlet, chamber, and outlet temperatures in
-degrees Celsius on each of 100 runs. Each run is one observation with three
-coordinates in that order. The second run might yield `[12, 21, 35]` against
-a mean of `[10, 20, 30]`. A batch call returns one log density per run under
-the same three-dimensional normal distribution.
+$(H4 Matrix inputs)
 
-Supply a Cholesky factor of either matrix to reuse it across
-calls. Label the matrix with $(D covarianceView), $(D precisionView), $(D covarianceCholeskyView),
-or $(D precisionCholeskyView) from $(MREF mir,stat,covariance_views).
-The label carries the selected triangle and can be reused across observations or batches.
-Alternatively, the four $(D multivariateNormalLPDFFrom...) functions accept a matrix directly.
-For example, $(D multivariateNormalLPDFFromPrecision(x, mean, p)) is equivalent to
-$(D multivariateNormalLPDF(x, mean, precisionView(p))).
-In zero dimensions the log-density is zero.
-For a single observation and a raw matrix, $(LREF tryMultivariateNormalLPDF),
-$(LREF tryRcMultivariateNormalLPDF), $(LREF tryMakeMultivariateNormalLPDF), and
-$(LREF tryMultivariateNormalLPDFWithWorkspace) return a
-$(LREF MultivariateNormalLPDFResult). Check its `failedPivot` field
-to see whether factorization succeeded. With custom iterators or allocators,
-function attributes such as `nothrow` depend on the operations they supply.
+Supply a dense square matrix, including a strided view. Use $(D covarianceView)
+for a covariance matrix or $(D precisionView) for its inverse, the precision matrix.
+If you already have a Cholesky factor, use $(D covarianceCholeskyView) or
+$(D precisionCholeskyView) according to which matrix was factored. For example,
+an upper precision factor U satisfies $(D P = U.transpose * U), where P is
+the precision matrix. A lower factor L represents its matrix as $(D L * L.transpose).
 
-For an allocated result, `multivariateNormalLPDF(rows.byDim!0, mean, covarianceView(covariance))`
-returns a GC-managed vector with one value per run. The `rc` variant returns
-an owning reference-counted vector. The `make` variant uses the supplied
-allocator for the result and scratch, and releases the scratch before returning.
-For a raw matrix, the corresponding batch and selection functions prefixed with
-`try` return a $(LREF MultivariateNormalLPDFBatchResult). For example,
-`tryRcMultivariateNormalLPDF(rows.byDim!0, mean, covarianceView(covariance))` returns all
-100 log densities when `failedPivot == 0`, or an empty vector and the
-one-based failed Cholesky step.
+The view records the representation and which triangle to read (upper by default).
+It references the existing entries. For an unlabeled matrix, the function name
+can supply the representation instead. Both calls below evaluate the same precision
+matrix p using its upper triangle.
+---
+multivariateNormalLPDF(x, mean, precisionView(p));
+multivariateNormalLPDFFromPrecision(x, mean, p);
+---
+The four view constructors are available from $(MREF mir,stat,covariance_views)
+and this module.
 
-With caller-owned storage, pass `rows.byDim!0` and a 100-by-3 scratch matrix
-selected as `workRows.byDim!0`. The function writes the second run's log
-density to `result[1]`. A transpose view presents the rows to the batch
-routine as columns while keeping each run's readings together in row-major
-storage. For a 3-by-100 matrix with one run per column, pass the matrix
-directly to the corresponding `Batch` function.
+$(H4 Factor reuse and failure)
 
-The scratch matrix holds the centered readings. Subtracting the mean from the
-second run writes `[2, 1, 5]` into its scratch row. The batch then transforms
-all 100 scratch rows in place using the shared Cholesky factor. With a
-compatible layout, BLAS can perform this step in one triangular solve or
-multiply. A raw covariance or precision matrix is factored once, and all
-100 log densities use the same log determinant.
+A call with an unfactored covariance or precision matrix computes its Cholesky
+factor once, even for a whole batch. Reusing the view in another call reuses
+the matrix entries. To reuse the factorization as well, pass a view of the
+prepared factor. Each batch computes the log determinant once.
 
-The full batch requires 300 observation scratch elements (100 runs × 3 readings per run).
-Processing ten runs per call requires 30. Each call can reuse the prepared factor and computes
-its log determinant once. A full batch gives BLAS a larger operation. The
-faster choice depends on the dimensions, storage layout, and backend.
+The ordinary allocating functions throw if factorization fails. With an
+unfactored matrix, the $(D try) functions report the Cholesky step instead.
+For a single observation, $(LREF MultivariateNormalLPDFResult) holds the log
+density and $(D failedPivot). Zero means success. On failure the pivot is
+one-based and the log density is NaN. For an allocated batch,
+$(LREF MultivariateNormalLPDFBatchResult) holds the same pivot and a vector
+of log densities, empty on failure. An empty batch still checks the matrix.
+With custom iterators or allocators, attributes such as $(D nothrow) depend
+on the operations they supply.
 
-The covariance and precision inputs accept dense square matrix views, including strided slices.
-Only the selected triangle is read. Upper factors represent a matrix
-as U.transpose * U, and lower factors represent it as L * L.transpose.
-As in `mir.stat.distance`, subtracting the mean in the input
-element type can overflow before the factor is applied.
+$(H4 Batch evaluation)
+
+Suppose a test rig records inlet, chamber, and outlet temperatures in degrees
+Celsius on each of 100 runs. Store the observations in a 100-by-3 matrix,
+one run per row. The following call returns 100 log densities in run order,
+so $(D result[1]) corresponds to the second run.
+---
+auto result = multivariateNormalLPDF(rows.byDim!0, mean, covarianceView(covariance));
+---
+The default result uses GC storage, the $(D rc) form returns an owning
+reference-counted vector, and the $(D make) form uses the supplied allocator
+for result and scratch. For a 3-by-100 matrix with one run per column, pass
+the matrix directly to the corresponding $(D Batch) function.
+
+$(H4 Batch workspace and performance)
+
+With caller-owned storage, supply a result vector of length 100 and select
+the rows of a 100-by-3 scratch matrix with $(D workRows.byDim!0). If the
+second run records $(D [12, 21, 35]) and the mean is $(D [10, 20, 30]),
+its scratch row holds $(D [2, 1, 5]) after centering. The batch transforms
+those centered values in place. A transpose view lets the batch routine
+process observations as columns while the three readings of each run stay
+together in row-major storage. Subtraction takes place in the input element
+type and can overflow before the factor is applied.
+
+The full batch uses 300 observation scratch elements (100 runs × 3 readings per run).
+Processing ten runs per call uses 30. The workspace call for an unfactored
+matrix also needs a 3-by-3 factor workspace. A prepared factor can be shared
+across the smaller calls. With a compatible layout, BLAS can transform the
+full batch in one triangular solve or multiply. The faster batch size
+depends on the dimensions, storage layout, and backend.
 
 License: $(HTTP www.apache.org/licenses/LICENSE-2.0, Apache-2.0)
 Copyright: 2026 Mir Stat Authors.
