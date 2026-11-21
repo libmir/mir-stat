@@ -540,6 +540,79 @@ unittest
     3.0.paretoLPDF(2, 4).shouldApprox == log(paretoPDF(3.0, 2, 4));
 }
 
+/++
+Computes the type-I Pareto LPDF using guarded extended-precision arithmetic.
+
+Params:
+    T = Represented $(D Fp) type, inferred from the arguments.
+    x = Observation at or above xMin, including positive infinity.
+    xMin = Positive finite lower support boundary.
+    alpha = Positive finite shape parameter.
+
+Returns:
+    The natural logarithm of the density in type T. At infinity it is negative infinity.
+    For severe cancellation at integral shapes, the calculation uses exact odd
+    integer products of up to eight input significand widths. For other shapes
+    or larger products, guarded subtraction can lose relative precision or leave
+    a residual at an exact zero.
++/
+@safe pure nothrow @nogc
+T paretoLPDF(T)(const T x, const T xMin, const T alpha)
+    if (is(T == Fp!size, size_t size))
+    in (validParameter(xMin), "xMin must be finite and positive")
+    in (validParameter(alpha), "alpha must be finite and positive")
+    in (!x.isNaN && !x.sign && (x.isInfinity || !fpProbabilityLess(x, xMin)), "x must be at least xMin")
+{
+    import mir.stat.internal.fp_pareto: paretoLogDensity;
+    return paretoLogDensity(x, xMin, alpha);
+}
+
+///
+version(mir_stat_test)
+@safe pure nothrow @nogc unittest
+{
+    import mir.bignum.fp: Fp;
+    alias T = Fp!64;
+    assert(paretoLPDF(T(1.125), T(0.84375), T(2)) == T(0));
+}
+
+version(mir_stat_test)
+@safe pure nothrow @nogc unittest
+{
+    import mir.bignum.fixed: UInt;
+    import mir.math.common: approxEqual;
+    import std.meta: AliasSeq;
+    static foreach (R; AliasSeq!(float, double, real))
+        assert(approxEqual(paretoLPDF(R(1.5), R(1.25), R(0.75)),
+            R(-0.82988834815541127907602064032406254297354213780L), 8 * R.epsilon));
+    {
+        alias T = Fp!64;
+        enum expected = T(true, -64, UInt!64.fromHexString("d4739012a8b12b02"));
+        assert(paretoLPDF(T(1.5), T(1.25), T(0.75)) == expected);
+    }
+    {
+        alias T = Fp!128;
+        enum expected = T(true, -128, UInt!128.fromHexString("d4739012a8b12b01b4c7e8794552e7c4"));
+        assert(paretoLPDF(T(1.5), T(1.25), T(0.75)) == expected);
+    }
+    alias T = Fp!64;
+    assert(paretoLPDF(T(2), T(2), T(2)) == T(0));
+    const limit = paretoLPDF(T(double.infinity), T(2), T(2));
+    assert(limit.isInfinity && limit.sign);
+    // alpha = 3, x = 3*(3/4)^3, xMin = (3/4)*x give density exactly one.
+    assert(paretoLPDF(T(1.265625), T(0.94921875), T(3)) == T(0));
+    alias Wide = Fp!128;
+    assert(paretoLPDF(Wide(1.125), Wide(0.84375), Wide(2)) == Wide(0));
+    // x^9 has 576 odd coefficient bits. Exercise the guarded fallback
+    // at represented inputs just below eight.
+    assert(paretoLPDF(T(false, -61, UInt!64.max), T(false, -61, UInt!64.max - 2), T(8))
+        == T(true, -124, UInt!64(0xf000000000000002UL)));
+    assert(paretoLPDF(T(false, -63, UInt!64(0x8fffffffffffffffUL)), T(0.84375), T(2))
+        == T(false, -125, UInt!64(0xaaaaaaaaaaaaaaabUL)));
+    assert(paretoLPDF(T(false, -63, UInt!64(0x9000000000000001UL)), T(0.84375), T(2))
+        == T(true, -125, UInt!64(0xaaaaaaaaaaaaaaaaUL)));
+}
+
 // Near the lower bound, subtraction is exact. Evaluate log(x/xMin) as
 // -log(1 - (x-xMin)/x) to preserve the small relative distance using the
 // existing corrected logarithm. Farther away, use a representable ratio;

@@ -237,3 +237,88 @@ package(mir.stat) Fp!bits paretoDensity(uint bits)(Fp!bits x, Fp!bits lower, Fp!
         return rounded;
     return addOffset!bits(T(0), value, false);
 }
+
+// Near unit density take -log(1-difference/larger) to retain the sign.
+private bool exactResidual(uint bits)(Fp!bits x, Fp!bits lower, Fp!bits shape, out Fp!bits result)
+{
+    enum capacity = 8 * bits;
+    alias L = Log!bits;
+    alias S = L.S;
+    UInt!(capacity + 64) numerator, denominator;
+    ulong exponent;
+    if (!densityProducts!bits(x, lower, shape, numerator, denominator, exponent))
+        return false;
+    const alignment = cast(long)exponent;
+    // The caller has |log(density)| < 1/8. With both odd products below
+    // 2^capacity, an alignment larger than capacity would put the density
+    // outside [1/2, 2].
+    if (alignment > 0)
+        numerator <<= cast(uint)alignment;
+    else if (alignment < 0)
+        denominator <<= cast(uint)-alignment;
+    if (numerator == denominator)
+    {
+        result = Fp!bits(0);
+        return true;
+    }
+    const negative = numerator < denominator;
+    const larger = negative ? denominator : numerator;
+    const difference = negative ? denominator - numerator : numerator - denominator;
+    alias W = Fp!(capacity + 64);
+    const relative = S.from(W(difference)).divide(S.from(W(larger))).finish!(3 * bits + 64);
+    result = L.complement(relative).finish!bits;
+    result.sign = negative;
+    return true;
+}
+
+package(mir.stat) Fp!bits paretoLogDensity(uint bits)(Fp!bits x, Fp!bits lower, Fp!bits shape)
+{
+    alias T = Fp!bits;
+    alias L = Log!bits;
+    alias S = L.S;
+    if (x.isInfinity)
+        return T(true, long.max, UInt!bits(0));
+    L.Context context;
+    const prefactor = logRatio!bits(shape, x, context);
+    if (!fpProbabilityLess(lower, x))
+        return cast(T)prefactor;
+    const rate = S.from(logRatio!bits(x, lower, context)).multiply(S.from(shape));
+    const result = addOffset!bits(prefactor, rate, true);
+    if (prefactor.coefficient && !prefactor.sign && !result.isSpecial)
+    {
+        const magnitude = result.coefficient ? S.from(result).exponent : UInt!128(0);
+        if (magnitude < exponentBias - 2 && magnitude + bits <= rate.exponent)
+        {
+            T exact;
+            if (exactResidual(x, lower, shape, exact))
+                return exact;
+        }
+    }
+    return result;
+}
+
+// The odd denominators straddle the eight-width limit by one bit.
+// Both densities are close to one; the ninth power is the limiting product.
+version(mir_stat_test)
+@safe pure nothrow @nogc unittest
+{
+    alias T = Fp!64;
+    enum c = 133432608295961803UL;
+    const lower = T(false, -54, UInt!64(c - 2));
+    T residual;
+    assert(exactResidual(T(false, -54, UInt!64(c)), lower, T(8), residual));
+    assert(!exactResidual(T(false, -54, UInt!64(c + 2)), lower, T(8), residual));
+    // Unit density with a nonintegral shape, then near-unit densities
+    // whose integer powers exceed the product budget at different stages.
+    assert(!exactResidual(T(1.5), T(1.5), T(1.5), residual));
+    const belowOne = T(false, -64, UInt!64.max);
+    foreach (shape; [64, 513])
+    {
+        auto near = T(shape);
+        near.coefficient -= 1;
+        assert(!exactResidual(T(shape), near, T(shape), residual));
+    }
+    // At shape one and x=1 the log-density is exactly log(lower).
+    assert(exactResidual(T(1), belowOne, T(1), residual));
+    assert(residual == T(true, -127, UInt!64(1) << 63));
+}
