@@ -7,6 +7,7 @@ $(BOOKTABLE ,
         $(TH Description)
     )
     $(TR $(TDNW $(MREF mir,stat,constant)) $(TD Constants used in other statistical modules ))
+    $(TR $(TDNW $(MREF mir,stat,covariance_views)) $(TD Covariance and precision matrix views ))
     $(TR $(TDNW $(MREF mir,stat,descriptive)) $(TD Descriptive Statistics ))
     $(TR $(TDNW $(MREF mir,stat,distance)) $(TD Mahalanobis distance and squared distance ))
     $(TR $(TDNW $(MREF mir,stat,distribution)) $(TD Statistical Distributions ))

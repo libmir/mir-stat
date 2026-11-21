@@ -94,6 +94,7 @@ sources_list = [
     'mir/stat/descriptive/aliases',
     'mir/stat/descriptive/package',
     'mir/stat/constant',
+    'mir/stat/covariance_views',
     'mir/stat/distance',
     'mir/stat/inference',
     'mir/stat/transform',
