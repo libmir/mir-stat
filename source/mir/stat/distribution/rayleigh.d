@@ -206,6 +206,86 @@ unittest
 }
 
 /++
+Computes the lower-tail probability $(D P(X <= x)) for the Rayleigh distribution with unit scale.
+
+Params:
+    T = Represented $(D Fp) type, inferred from the arguments.
+    x = Nonnegative observation, including positive infinity, or NaN.
+
+Returns:
+    The lower-tail probability $(D P(X <= x)) in type $(D T), using guarded evaluation.
+    Zero gives zero and positive infinity gives one. NaN propagates.
++/
+@safe pure nothrow @nogc
+T rayleighCDF(T)(const T x)
+    if (is(T == Fp!size, size_t size))
+{
+    return rayleighCDF(x, T(1));
+}
+
+///
+version(mir_stat_test)
+@safe pure nothrow @nogc unittest
+{
+    import mir.bignum.fp: Fp;
+    alias T = Fp!64;
+    assert(rayleighCDF(T(0)) == T(0));
+}
+
+/++
+Computes the lower-tail probability $(D P(X <= x)) for the Rayleigh distribution with the given scale.
+
+Params:
+    T = Represented $(D Fp) type, inferred from the arguments.
+    x = Nonnegative observation, including positive infinity, or NaN.
+    scale = Positive finite scale parameter.
+
+Returns:
+    The lower-tail probability $(D P(X <= x)) in type $(D T), using guarded evaluation.
+    Zero gives zero and positive infinity gives one. NaN propagates.
++/
+@safe pure nothrow @nogc
+T rayleighCDF(T)(const T x, const T scale)
+    if (is(T == Fp!size, size_t size))
+    in (validScale(scale), "scale must be finite and positive")
+    in (validObservation(x), "x must be nonnegative")
+{
+    import mir.stat.internal.fp_rayleigh: rayleighTail;
+    return rayleighTail!false(x, scale);
+}
+
+///
+version(mir_stat_test)
+@safe pure nothrow @nogc unittest
+{
+    import mir.bignum.fp: Fp;
+    alias T = Fp!64;
+    assert(rayleighCDF(T(0), T(2)) == T(0));
+}
+
+version(mir_stat_test)
+@safe pure nothrow @nogc unittest
+{
+    import mir.bignum.fixed: UInt;
+    import mir.math.common: approxEqual;
+    import std.meta: AliasSeq;
+    alias T = Fp!64;
+    alias U = UInt!64;
+    static foreach (R; AliasSeq!(float, double, real))
+        assert(approxEqual(rayleighCDF(R(1.5), R(2)), R(0.2451603980109926626726529040824701726523997905641706L), 8 * R.epsilon));
+    assert(rayleighCDF(T(1.5), T(2)) == T(false, -66, U(0xfb0b53ceed1d42d6UL)));
+    assert(rayleighCDF(T(double.nan)).isNaN);
+    assert(rayleighCDF(T(double.infinity)) == T(1));
+    // exp(-128) is representable, but the lower tail rounds to one.
+    assert(rayleighCDF(T(16)) == T(1));
+    assert(!!rayleighCCDF(T(16)).coefficient);
+    // q is half of the least subnormal, or 4.5 subnormal units.
+    assert(rayleighCDF(T(false, long.min / 2, U(1))) == T(0));
+    assert(rayleighCDF(T(false, long.min / 2, U(3))) == T(false, long.min, U(4)));
+    assert(rayleighCDF(T(false, long.max - 1, U.max), T(false, long.min, U(1))) == T(1));
+}
+
+/++
 Computes the Rayleigh complementary cumulative distribution function (CCDF).
 
 Returns the upper-tail probability $(D P(X > x)). Use this function directly
@@ -329,8 +409,8 @@ T rayleighCCDF(T)(const T x, const T scale)
     in (validScale(scale), "scale must be finite and positive")
     in (validObservation(x), "x must be nonnegative")
 {
-    import mir.stat.internal.fp_rayleigh: rayleighUpper;
-    return rayleighUpper(x, scale);
+    import mir.stat.internal.fp_rayleigh: rayleighTail;
+    return rayleighTail!true(x, scale);
 }
 
 ///
