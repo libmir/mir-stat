@@ -21,6 +21,8 @@ Copyright: 2022-3 Mir Stat Authors.
 
 module mir.stat.distribution.pareto;
 
+import mir.bignum.fp: Fp;
+import mir.stat.internal.fp_probability: fpProbabilityLess;
 import mir.internal.utility: isFloatingPoint;
 
 /++
@@ -212,6 +214,76 @@ unittest
 }
 
 /++
+Computes the type-I Pareto CCDF using guarded extended-precision arithmetic.
+
+Params:
+    T = Represented $(D Fp) type, inferred from the arguments.
+    x = Observation at or above xMin, including positive infinity.
+    xMin = Positive finite lower support boundary.
+    alpha = Positive finite shape parameter.
+
+Returns:
+    The probability of an observation strictly greater than x, in type T. It is one at xMin and zero at infinity.
++/
+@safe pure nothrow @nogc
+T paretoCCDF(T)(const T x, const T xMin, const T alpha)
+    if (is(T == Fp!size, size_t size))
+    in (validParameter(xMin), "xMin must be finite and positive")
+    in (validParameter(alpha), "alpha must be finite and positive")
+    in (!x.isNaN && !x.sign && (x.isInfinity || !fpProbabilityLess(x, xMin)), "x must be at least xMin")
+{
+    import mir.stat.internal.fp_pareto: paretoUpper;
+    return paretoUpper(x, xMin, alpha);
+}
+
+///
+version(mir_stat_test)
+@safe pure nothrow @nogc unittest
+{
+    import mir.bignum.fp: Fp;
+    alias T = Fp!64;
+    assert(paretoCCDF(T(2), T(1), T(3)) == T(0.125));
+}
+
+version(mir_stat_test)
+@safe pure nothrow @nogc unittest
+{
+    import mir.bignum.fixed: UInt;
+    import mir.math.common: approxEqual;
+    import std.meta: AliasSeq;
+    static foreach (R; AliasSeq!(float, double, real))
+        assert(approxEqual(paretoCCDF(R(1.5), R(1.25), R(0.75)),
+            R(0.87219594949342129648621864790606937157907338324L), 8 * R.epsilon));
+    {
+        alias T = Fp!64;
+        enum expected = T(false, -64, UInt!64.fromHexString("df483bd6c725419b"));
+        assert(paretoCCDF(T(1.5), T(1.25), T(0.75)) == expected);
+    }
+    {
+        alias T = Fp!128;
+        enum expected = T(false, -128, UInt!128.fromHexString("df483bd6c725419ae17ecc4045b59416"));
+        assert(paretoCCDF(T(1.5), T(1.25), T(0.75)) == expected);
+    }
+    alias T = Fp!64;
+    assert(paretoCCDF(T(1), T(1), T(2)) == T(1));
+    assert(paretoCCDF(T(4), T(1), T(1)) == T(0.25));
+    assert(paretoCCDF(T(2), T(1), T(false, 70, UInt!64(1))) == T(0));
+    // The exponent of two is fractional on either side of one.
+    assert(paretoCCDF(T(2), T(1), T(0.5)) == T(false, -64, UInt!64(0xb504f333f9de6484UL)));
+    assert(paretoCCDF(T(2), T(1), T(1.5)) == T(false, -65, UInt!64(0xb504f333f9de6484UL)));
+    assert(paretoCCDF(T(double.infinity), T(1), T(2)) == T(0));
+    // A tail far below hardware range remains positive when the CDF rounds to one.
+    const large = T(false, 40000, UInt!64(1));
+    assert(paretoCCDF(large, T(1), T(0.5)) == T(false, -20063, UInt!64(1) << 63));
+    // 2^(-2^63-1) is halfway between zero and the least positive Fp.
+    const n = UInt!64(1) << 63;
+    assert(paretoCCDF(T(2), T(1), T(false, 0, n + 1)) == T(0));
+    assert(paretoCCDF(T(2), T(1), T(false, 0, n)) == T(false, long.min, UInt!64(1)));
+    alias Wide = Fp!128;
+    assert(paretoCCDF(Wide(2), Wide(1), Wide(false, 0, UInt!128(n + 1))) == Wide(0));
+}
+
+/++
 Computes the pareto inverse cumulative distribution function (InvCDF).
 
 Returns the quantile at cumulative probability $(D p).
@@ -385,4 +457,9 @@ version(mir_stat_test)
         3.999999999999942054888553e-198, 4e-13, 0.0));
     assert(approxEqual(paretoInvCDF(0.5, 1e-300, 0.0008),
         1.938628441591554730157366e76, 4e-13, 0.0));
+}
+
+private bool validParameter(uint bits)(Fp!bits value) @safe pure nothrow @nogc
+{
+    return !value.isSpecial && !value.sign && !!value.coefficient;
 }
