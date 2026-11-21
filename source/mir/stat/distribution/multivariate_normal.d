@@ -11,7 +11,7 @@ the same three-dimensional normal distribution.
 Supply a Cholesky factor of either matrix to reuse it across
 calls. In zero dimensions the log-density is zero.
 For a single observation and a raw matrix, $(LREF tryMultivariateNormalLPDF),
-$(LREF rcTryMultivariateNormalLPDF), $(LREF makeTryMultivariateNormalLPDF), and
+$(LREF tryRcMultivariateNormalLPDF), $(LREF tryMakeMultivariateNormalLPDF), and
 $(LREF tryMultivariateNormalLPDFWithWorkspace) return a
 $(LREF MultivariateNormalLPDFResult). Check its `failedPivot` field
 to see whether factorization succeeded. With custom iterators or allocators,
@@ -1281,7 +1281,7 @@ Returns:
     failure, `failedPivot` identifies the failed step (counting from 1)
     and `logDensity` is NaN. In zero dimensions both fields are zero.
 +/
-MultivariateNormalLPDFResult!(Element!X) rcTryMultivariateNormalLPDF(
+MultivariateNormalLPDFResult!(Element!X) tryRcMultivariateNormalLPDF(
     CovarianceRepresentation form = CovarianceRepresentation.covariance,
     TrianglePolicy triangle = TrianglePolicy.upper, X, C, M)(
     scope auto ref X x, scope auto ref C mean, scope auto ref M metric)
@@ -1301,12 +1301,12 @@ version(mir_stat_test_multivariate_normal)
 
     double[1] x = [3], mean = [1], covariance = [4];
     auto metric = covariance[].sliced(1, 1);
-    const result = rcTryMultivariateNormalLPDF(x[], mean[], metric);
+    const result = tryRcMultivariateNormalLPDF(x[], mean[], metric);
     assert(result.failedPivot == 0);
     assert(fabs(result.logDensity - normalLPDF(3.0, 1.0, 2.0)) < 1e-14);
 
     metric[0, 0] = 0;
-    const singular = rcTryMultivariateNormalLPDF(x[], mean[], metric);
+    const singular = tryRcMultivariateNormalLPDF(x[], mean[], metric);
     assert(singular.failedPivot == 1 && isNaN(singular.logDensity));
 }
 
@@ -1331,7 +1331,7 @@ Returns:
     failure, `failedPivot` identifies the failed step (counting from 1)
     and `logDensity` is NaN. In zero dimensions both fields are zero.
 +/
-MultivariateNormalLPDFResult!(Element!X) makeTryMultivariateNormalLPDF(
+MultivariateNormalLPDFResult!(Element!X) tryMakeMultivariateNormalLPDF(
     CovarianceRepresentation form = CovarianceRepresentation.covariance,
     TrianglePolicy triangle = TrianglePolicy.upper, A, X, C, M)(
     auto ref A allocator, scope auto ref X x, scope auto ref C mean, scope auto ref M metric)
@@ -1352,11 +1352,11 @@ version(mir_stat_test_multivariate_normal)
     double[1] x = [3], mean = [1], precision = [0.25];
     auto metric = precision[].sliced(1, 1);
     enum form = CovarianceRepresentation.inverseCovariance;
-    const result = makeTryMultivariateNormalLPDF!form(Mallocator.instance, x[], mean[], metric);
+    const result = tryMakeMultivariateNormalLPDF!form(Mallocator.instance, x[], mean[], metric);
     assert(result.failedPivot == 0);
     assert(fabs(result.logDensity - normalLPDF(3.0, 1.0, 2.0)) < 1e-14);
 
     metric[0, 0] = 0;
-    const singular = makeTryMultivariateNormalLPDF!form(Mallocator.instance, x[], mean[], metric);
+    const singular = tryMakeMultivariateNormalLPDF!form(Mallocator.instance, x[], mean[], metric);
     assert(singular.failedPivot == 1 && isNaN(singular.logDensity));
 }
