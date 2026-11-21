@@ -3,9 +3,10 @@ This module contains algorithms for the $(LINK2 https://en.wikipedia.org/wiki/Ra
 
 The one-argument overloads use scale one. The other overloads take a
 positive finite scale. The support is $(D x >= 0); negative observations
-are outside the supported domain, although the forward functions do not
-enforce this with a contract. Scale is not the standard deviation. The
-inverse CDF accepts both probability endpoints.
+are outside the supported domain. The $(D Fp) forward functions check
+this precondition and propagate NaN. The built-in forward functions leave
+the precondition unchecked. Scale is not the standard deviation. The inverse
+CDF accepts both probability endpoints.
 
 The special-value tables assume finite distribution parameters in the stated
 domain. Finite expressions are subject to floating-point rounding and range
@@ -23,6 +24,8 @@ Copyright: 2023 Mir Stat Authors.
 module mir.stat.distribution.rayleigh;
 
 import mir.internal.utility: isFloatingPoint;
+import mir.bignum.fp: Fp;
+import mir.stat.internal.fp_probability: fpProbabilityValid;
 
 /++
 Computes the Rayleigh probability density function (PDF).
@@ -128,6 +131,85 @@ unittest
 }
 
 /++
+Computes the probability density for the Rayleigh distribution with unit scale.
+
+Params:
+    T = Represented $(D Fp) type, inferred from the arguments.
+    x = Nonnegative observation, including positive infinity, or NaN.
+
+Returns:
+    The probability density in type $(D T), using guarded evaluation.
+    Zero and positive infinity give zero. NaN propagates.
++/
+@safe pure nothrow @nogc
+T rayleighPDF(T)(const T x)
+    if (is(T == Fp!size, size_t size))
+{
+    return rayleighPDF(x, T(1));
+}
+
+///
+version(mir_stat_test)
+@safe pure nothrow @nogc unittest
+{
+    import mir.bignum.fp: Fp;
+    alias T = Fp!64;
+    assert(rayleighPDF(T(0)) == T(0));
+}
+
+/++
+Computes the probability density for the Rayleigh distribution with the given scale.
+
+Params:
+    T = Represented $(D Fp) type, inferred from the arguments.
+    x = Nonnegative observation, including positive infinity, or NaN.
+    scale = Positive finite scale parameter.
+
+Returns:
+    The probability density in type $(D T), using guarded evaluation.
+    Zero and positive infinity give zero. NaN propagates.
++/
+@safe pure nothrow @nogc
+T rayleighPDF(T)(const T x, const T scale)
+    if (is(T == Fp!size, size_t size))
+    in (validScale(scale), "scale must be finite and positive")
+    in (validObservation(x), "x must be nonnegative")
+{
+    import mir.stat.internal.fp_rayleigh: rayleighDensity;
+    return rayleighDensity(x, scale);
+}
+
+///
+version(mir_stat_test)
+@safe pure nothrow @nogc unittest
+{
+    import mir.bignum.fp: Fp;
+    alias T = Fp!64;
+    assert(rayleighPDF(T(0), T(2)) == T(0));
+}
+
+version(mir_stat_test)
+@safe pure nothrow @nogc unittest
+{
+    import mir.bignum.fixed: UInt;
+    import mir.math.common: approxEqual;
+    import std.meta: AliasSeq;
+    alias T = Fp!64;
+    alias U = UInt!64;
+    static foreach (R; AliasSeq!(float, double, real))
+        assert(approxEqual(rayleighPDF(R(1.5), R(2)), R(0.2830648507458777514977551609690736852553500785384360L), 8 * R.epsilon));
+    assert(rayleighPDF(T(1.5), T(2)) == T(false, -65, U(0x90ede049338a8378UL)));
+    assert(rayleighPDF(T(double.nan)).isNaN);
+    assert(rayleighPDF(T(double.infinity)) == T(0));
+    // At z = 2^32 the decay alone underflows. Scaling recovers the density.
+    const quantum = T(false, long.min, U(1));
+    assert(rayleighPDF(T(false, long.min + 32, U(1)), quantum)
+        == T(false, -4083141060989546715, U(0x98d3377e65eee9c8UL)));
+    assert(rayleighPDF(quantum, quantum) == T(false, long.max - 63, U(0x9b4597e37cb04ff4UL)));
+    assert(rayleighPDF(T(false, long.max - 1, U.max), quantum) == T(0));
+}
+
+/++
 Computes the Rayleigh cumulative distribution function (CDF).
 
 Returns the lower-tail probability $(D P(X <= x)).
@@ -201,6 +283,86 @@ unittest
     0.5.rayleighCDF(2.0).shouldApprox == 0.03076677;
     1.0.rayleighCDF(2.0).shouldApprox == 0.1175031;
     4.0.rayleighCDF(2.0).shouldApprox == 0.8646647;
+}
+
+/++
+Computes the lower-tail probability $(D P(X <= x)) for the Rayleigh distribution with unit scale.
+
+Params:
+    T = Represented $(D Fp) type, inferred from the arguments.
+    x = Nonnegative observation, including positive infinity, or NaN.
+
+Returns:
+    The lower-tail probability $(D P(X <= x)) in type $(D T), using guarded evaluation.
+    Zero gives zero and positive infinity gives one. NaN propagates.
++/
+@safe pure nothrow @nogc
+T rayleighCDF(T)(const T x)
+    if (is(T == Fp!size, size_t size))
+{
+    return rayleighCDF(x, T(1));
+}
+
+///
+version(mir_stat_test)
+@safe pure nothrow @nogc unittest
+{
+    import mir.bignum.fp: Fp;
+    alias T = Fp!64;
+    assert(rayleighCDF(T(0)) == T(0));
+}
+
+/++
+Computes the lower-tail probability $(D P(X <= x)) for the Rayleigh distribution with the given scale.
+
+Params:
+    T = Represented $(D Fp) type, inferred from the arguments.
+    x = Nonnegative observation, including positive infinity, or NaN.
+    scale = Positive finite scale parameter.
+
+Returns:
+    The lower-tail probability $(D P(X <= x)) in type $(D T), using guarded evaluation.
+    Zero gives zero and positive infinity gives one. NaN propagates.
++/
+@safe pure nothrow @nogc
+T rayleighCDF(T)(const T x, const T scale)
+    if (is(T == Fp!size, size_t size))
+    in (validScale(scale), "scale must be finite and positive")
+    in (validObservation(x), "x must be nonnegative")
+{
+    import mir.stat.internal.fp_rayleigh: rayleighTail;
+    return rayleighTail!false(x, scale);
+}
+
+///
+version(mir_stat_test)
+@safe pure nothrow @nogc unittest
+{
+    import mir.bignum.fp: Fp;
+    alias T = Fp!64;
+    assert(rayleighCDF(T(0), T(2)) == T(0));
+}
+
+version(mir_stat_test)
+@safe pure nothrow @nogc unittest
+{
+    import mir.bignum.fixed: UInt;
+    import mir.math.common: approxEqual;
+    import std.meta: AliasSeq;
+    alias T = Fp!64;
+    alias U = UInt!64;
+    static foreach (R; AliasSeq!(float, double, real))
+        assert(approxEqual(rayleighCDF(R(1.5), R(2)), R(0.2451603980109926626726529040824701726523997905641706L), 8 * R.epsilon));
+    assert(rayleighCDF(T(1.5), T(2)) == T(false, -66, U(0xfb0b53ceed1d42d6UL)));
+    assert(rayleighCDF(T(double.nan)).isNaN);
+    assert(rayleighCDF(T(double.infinity)) == T(1));
+    // exp(-128) is representable, but the lower tail rounds to one.
+    assert(rayleighCDF(T(16)) == T(1));
+    assert(!!rayleighCCDF(T(16)).coefficient);
+    // q is half of the least subnormal, or 4.5 subnormal units.
+    assert(rayleighCDF(T(false, long.min / 2, U(1))) == T(0));
+    assert(rayleighCDF(T(false, long.min / 2, U(3))) == T(false, long.min, U(4)));
+    assert(rayleighCDF(T(false, long.max - 1, U.max), T(false, long.min, U(1))) == T(1));
 }
 
 /++
@@ -280,6 +442,81 @@ unittest
     0.5.rayleighCCDF(2.0).shouldApprox == 0.9692332;
     1.0.rayleighCCDF(2.0).shouldApprox == 0.8824969;
     4.0.rayleighCCDF(2.0).shouldApprox == 0.1353353;
+}
+
+/++
+Computes the strict upper-tail probability $(D P(X > x)) for the Rayleigh distribution with unit scale.
+
+Params:
+    T = Represented $(D Fp) type, inferred from the arguments.
+    x = Nonnegative observation, including positive infinity, or NaN.
+
+Returns:
+    The strict upper-tail probability $(D P(X > x)) in type $(D T), using guarded evaluation.
+    Zero gives one and positive infinity gives zero. NaN propagates.
++/
+@safe pure nothrow @nogc
+T rayleighCCDF(T)(const T x)
+    if (is(T == Fp!size, size_t size))
+{
+    return rayleighCCDF(x, T(1));
+}
+
+///
+version(mir_stat_test)
+@safe pure nothrow @nogc unittest
+{
+    import mir.bignum.fp: Fp;
+    alias T = Fp!64;
+    assert(rayleighCCDF(T(0)) == T(1));
+}
+
+/++
+Computes the strict upper-tail probability $(D P(X > x)) for the Rayleigh distribution with the given scale.
+
+Params:
+    T = Represented $(D Fp) type, inferred from the arguments.
+    x = Nonnegative observation, including positive infinity, or NaN.
+    scale = Positive finite scale parameter.
+
+Returns:
+    The strict upper-tail probability $(D P(X > x)) in type $(D T), using guarded evaluation.
+    Zero gives one and positive infinity gives zero. NaN propagates.
++/
+@safe pure nothrow @nogc
+T rayleighCCDF(T)(const T x, const T scale)
+    if (is(T == Fp!size, size_t size))
+    in (validScale(scale), "scale must be finite and positive")
+    in (validObservation(x), "x must be nonnegative")
+{
+    import mir.stat.internal.fp_rayleigh: rayleighTail;
+    return rayleighTail!true(x, scale);
+}
+
+///
+version(mir_stat_test)
+@safe pure nothrow @nogc unittest
+{
+    import mir.bignum.fp: Fp;
+    alias T = Fp!64;
+    assert(rayleighCCDF(T(0), T(2)) == T(1));
+}
+
+version(mir_stat_test)
+@safe pure nothrow @nogc unittest
+{
+    import mir.bignum.fixed: UInt;
+    import mir.math.common: approxEqual;
+    import std.meta: AliasSeq;
+    alias T = Fp!64;
+    alias U = UInt!64;
+    static foreach (R; AliasSeq!(float, double, real))
+        assert(approxEqual(rayleighCCDF(R(1.5), R(2)), R(0.7548396019890073373273470959175298273476002094358294L), 8 * R.epsilon));
+    assert(rayleighCCDF(T(1.5), T(2)) == T(false, -64, U(0xc13d2b0c44b8af4aUL)));
+    assert(rayleighCCDF(T(double.nan)).isNaN);
+    assert(rayleighCCDF(T(double.infinity)) == T(0));
+    assert(rayleighCCDF(T(false, long.max - 1, U.max), T(false, long.min, U(1))) == T(0));
+    assert(rayleighCCDF(T(false, long.min, U(1))) == T(1));
 }
 
 /++
@@ -365,6 +602,94 @@ unittest
     rayleighInvCDF(0.4, 2).shouldApprox == 2.021535;
     rayleighInvCDF(0.6, 2).shouldApprox == 2.707457;
     rayleighInvCDF(0.8, 2).shouldApprox == 3.588245;
+}
+
+/++
+Computes the quantile for the Rayleigh distribution with unit scale.
+
+Params:
+    T = Represented $(D Fp) type, inferred from the arguments.
+    p = Finite cumulative probability in [0, 1].
+
+Returns:
+    The quantile in type $(D T), using guarded evaluation.
+    Zero gives zero and one gives positive infinity.
++/
+@safe pure nothrow @nogc
+T rayleighInvCDF(T)(const T p)
+    if (is(T == Fp!size, size_t size))
+{
+    return rayleighInvCDF(p, T(1));
+}
+
+///
+version(mir_stat_test)
+@safe pure nothrow @nogc unittest
+{
+    import mir.bignum.fp: Fp;
+    alias T = Fp!64;
+    assert(rayleighInvCDF(T(0)) == T(0));
+}
+
+/++
+Computes the quantile for the Rayleigh distribution with the given scale.
+
+Params:
+    T = Represented $(D Fp) type, inferred from the arguments.
+    p = Finite cumulative probability in [0, 1].
+    scale = Positive finite scale parameter.
+
+Returns:
+    The quantile in type $(D T), using guarded evaluation.
+    Zero gives zero and one gives positive infinity.
++/
+@safe pure nothrow @nogc
+T rayleighInvCDF(T)(const T p, const T scale)
+    if (is(T == Fp!size, size_t size))
+    in (validScale(scale), "scale must be finite and positive")
+    in (fpProbabilityValid(p), "p must be in [0, 1]")
+{
+    import mir.stat.internal.fp_rayleigh: rayleighQuantile;
+    return rayleighQuantile(p, scale);
+}
+
+///
+version(mir_stat_test)
+@safe pure nothrow @nogc unittest
+{
+    import mir.bignum.fp: Fp;
+    alias T = Fp!64;
+    assert(rayleighInvCDF(T(0), T(2)) == T(0));
+}
+
+version(mir_stat_test)
+@safe pure nothrow @nogc unittest
+{
+    import mir.bignum.fixed: UInt;
+    import mir.math.common: approxEqual;
+    import std.meta: AliasSeq;
+    alias T = Fp!64;
+    alias U = UInt!64;
+    static foreach (R; AliasSeq!(float, double, real))
+        assert(approxEqual(rayleighInvCDF(R(0.75), R(2)), R(3.330218444630791025412658579580804190522355409057764L), 8 * R.epsilon));
+    assert(rayleighInvCDF(T(0.75), T(2)) == T(false, -62, U(0xd5224c8b0e6a3ce9UL)));
+    assert(rayleighInvCDF(T(false, -2, U(4))) == T(double.infinity));
+    // The leading quantile is half the least subnormal; -log(1-p) > p.
+    assert(rayleighInvCDF(T(false, -2001, U(1)), T(false, long.min + 999, U(1)))
+        == T(false, long.min, U(1)));
+    assert(rayleighInvCDF(T(false, long.min, U(1)))
+        == T(false, long.min / 2 - 63, U(0xb504f333f9de6484UL)));
+    assert(rayleighInvCDF(T(0.75), T(false, long.max - 1, U.max)) == T(double.infinity));
+}
+
+version(mir_stat_test_slow_numerics)
+@safe pure nothrow @nogc unittest
+{
+    import mir.bignum.fixed: UInt;
+    alias T = Fp!128;
+    alias U = UInt!128;
+    enum expected = T(false, -122, U.fromHexString("9fd9b9684acfadaed0f5cbfa93c19de7"));
+    assert(rayleighInvCDF(T(false, -128, U.max), T(3)) == expected);
 }
 
 /++
@@ -454,6 +779,99 @@ unittest
     0.5.rayleighLPDF(2.0).shouldApprox == log(0.1211541);
     1.0.rayleighLPDF(2.0).shouldApprox == log(0.2206242);
     4.0.rayleighLPDF(2.0).shouldApprox == log(0.1353353);
+}
+
+/++
+Computes the natural logarithm of the density for the Rayleigh distribution with unit scale.
+
+Params:
+    T = Represented $(D Fp) type, inferred from the arguments.
+    x = Nonnegative observation, including positive infinity, or NaN.
+
+Returns:
+    The natural logarithm of the density in type $(D T), using guarded evaluation.
+    Zero and positive infinity give negative infinity. Cancellation near a density-one crossing can reduce relative accuracy. NaN propagates.
++/
+@safe pure nothrow @nogc
+T rayleighLPDF(T)(const T x)
+    if (is(T == Fp!size, size_t size))
+{
+    return rayleighLPDF(x, T(1));
+}
+
+///
+version(mir_stat_test)
+@safe pure nothrow @nogc unittest
+{
+    import mir.bignum.fp: Fp;
+    alias T = Fp!64;
+    assert(rayleighLPDF(T(0)) == T(-double.infinity));
+}
+
+/++
+Computes the natural logarithm of the density for the Rayleigh distribution with the given scale.
+
+Params:
+    T = Represented $(D Fp) type, inferred from the arguments.
+    x = Nonnegative observation, including positive infinity, or NaN.
+    scale = Positive finite scale parameter.
+
+Returns:
+    The natural logarithm of the density in type $(D T), using guarded evaluation.
+    Zero and positive infinity give negative infinity. Cancellation near a density-one crossing can reduce relative accuracy. NaN propagates.
++/
+@safe pure nothrow @nogc
+T rayleighLPDF(T)(const T x, const T scale)
+    if (is(T == Fp!size, size_t size))
+    in (validScale(scale), "scale must be finite and positive")
+    in (validObservation(x), "x must be nonnegative")
+{
+    import mir.stat.internal.fp_rayleigh: rayleighLogDensity;
+    return rayleighLogDensity(x, scale);
+}
+
+///
+version(mir_stat_test)
+@safe pure nothrow @nogc unittest
+{
+    import mir.bignum.fp: Fp;
+    alias T = Fp!64;
+    assert(rayleighLPDF(T(0), T(2)) == T(-double.infinity));
+}
+
+version(mir_stat_test)
+@safe pure nothrow @nogc unittest
+{
+    import mir.bignum.fixed: UInt;
+    import mir.math.common: approxEqual;
+    import std.meta: AliasSeq;
+    alias T = Fp!64;
+    alias U = UInt!64;
+    static foreach (R; AliasSeq!(float, double, real))
+        assert(approxEqual(rayleighLPDF(R(1.5), R(2)), R(-1.262079253011726236856451127452003999579009845258017L), 8 * R.epsilon));
+    assert(rayleighLPDF(T(1.5), T(2)) == T(true, -63, U(0xa18bd01e529ee1c6UL)));
+    assert(rayleighLPDF(T(double.nan)).isNaN);
+    assert(rayleighLPDF(T(double.infinity)) == T(-double.infinity));
+    // x = scale^2 makes the logarithmic prefactor exactly zero.
+    assert(rayleighLPDF(T(false, -4000, U(9)), T(false, -2000, U(3)))
+        == T(true, -4061, U(9UL << 60)));
+    assert(rayleighLPDF(T(false, long.max - 1, U.max), T(false, long.min, U(1)))
+        == T(-double.infinity));
+}
+
+version(mir_stat_test_slow_numerics)
+@safe pure nothrow @nogc unittest
+{
+    import mir.bignum.fixed: UInt;
+    alias T = Fp!128;
+    alias U = UInt!128;
+    // At x = scale the log density crosses zero at scale = exp(-1/2).
+    enum below = T(false, -128, U.fromHexString("9b4597e37cb04ff3d675a35530cdd767"));
+    enum belowResult = T(false, -255, U.fromHexString("bb5c6442b793cf41d490c8638ebca8e5"));
+    assert(rayleighLPDF(below, below) == belowResult);
+    enum above = T(false, -128, U.fromHexString("9b4597e37cb04ff3d675a35530cdd768"));
+    enum aboveResult = T(true, -258, U.fromHexString("bd674171c508784e1375a7bf06ea9fa6"));
+    assert(rayleighLPDF(above, above) == aboveResult);
 }
 
 // Preserve inverse-CDF values below machine epsilon, including scaled calls.
@@ -557,4 +975,14 @@ unittest
             assert(rayleighLPDF(T.nan, scale).isNaN);
         }
     }
+}
+
+private bool validScale(uint bits)(Fp!bits scale) @safe pure nothrow @nogc
+{
+    return !scale.isSpecial && !scale.sign && !!scale.coefficient;
+}
+
+private bool validObservation(uint bits)(Fp!bits x) @safe pure nothrow @nogc
+{
+    return x.isNaN || !x.sign || (!x.isSpecial && !x.coefficient);
 }
