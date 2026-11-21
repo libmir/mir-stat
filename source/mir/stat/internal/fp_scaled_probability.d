@@ -184,7 +184,12 @@ ProbabilityScaled!bits scaledDecay(uint bits)(ProbabilityScaled!bits rate)
         auto product = term.toSize!(2 * bits + 128);
         product *= x;
         product >>= bits;
-        product /= UInt!64(n);
+        // n fits one native word on 32-bit targets. Divide the limbs in
+        // place to avoid the x86 assembly path for a wide UInt divisor.
+        static if (size_t.sizeof == 4)
+            product.view /= n;
+        else
+            product /= UInt!64(n);
         term = product.toSize!(bits + 64);
         if (!term)
             break;
@@ -199,4 +204,15 @@ ProbabilityScaled!bits scaledDecay(uint bits)(ProbabilityScaled!bits rate)
     foreach (i; 0 .. squarings)
         result = result.multiply(result);
     return result;
+}
+
+version(mir_stat_test)
+@safe pure nothrow @nogc unittest
+{
+    // x = 1 and scale = 2 give a Rayleigh decay argument of 1/8.
+    // Exercise the working width at which x86 LDC trapped in the series.
+    alias S = ProbabilityScaled!576;
+    const rate = S.from(Fp!64(false, -3, UInt!64(1)));
+    const expected = Fp!64(false, -64, UInt!64(0xe1eb51276c110c3cUL));
+    assert(scaledDecay(rate).finish!64 == expected);
 }
