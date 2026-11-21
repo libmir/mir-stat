@@ -163,6 +163,8 @@ jobs:
   # Optimized compilation dominates runtime; run it alongside the other suites.
   release:
     name: Optimized release tests (${{ matrix.os }}, ${{ matrix.dc.channel }})
+    env:
+      CACHE_PREFIX: ldc-release-v1-${{ matrix.os }}-${{ matrix.dc.compiler }}
     needs: compilers
     permissions:
       contents: read
@@ -208,8 +210,29 @@ jobs:
         dub --version
         if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 
+    - name: Restore LDC release objects from master
+      if: startsWith(matrix.dc.channel, 'ldc-')
+      id: master-cache
+      uses: actions/cache/restore@v6.1.0
+      with:
+        path: ${{ runner.temp }}/ldc-release-objects
+        key: ${{ env.CACHE_PREFIX }}-${{ runner.arch }}-master-${{ github.event.pull_request.base.sha || github.sha }}
+        restore-keys: ${{ env.CACHE_PREFIX }}-${{ runner.arch }}-master-
+
+    # A draft can measure a warm rerun before master has published a cache.
+    - name: Restore LDC release objects from this draft
+      if: startsWith(matrix.dc.channel, 'ldc-') && github.event.pull_request.draft && !steps.master-cache.outputs.cache-matched-key
+      id: draft-cache
+      uses: actions/cache/restore@v6.1.0
+      with:
+        path: ${{ runner.temp }}/ldc-release-objects
+        key: ${{ env.CACHE_PREFIX }}-${{ runner.arch }}-draft-${{ github.event.pull_request.number }}-${{ github.sha }}
+        restore-keys: ${{ env.CACHE_PREFIX }}-${{ runner.arch }}-draft-${{ github.event.pull_request.number }}-
+
     - name: Run optimized release tests (Linux LDC)
       if: runner.os == 'Linux' && startsWith(matrix.dc.channel, 'ldc-')
+      env:
+        DFLAGS: -cache=${{ runner.temp }}/ldc-release-objects
       shell: bash
       run: |
         # DUB sizes its parallel pool from CPU affinity. Select up to four CPUs
@@ -235,6 +258,8 @@ jobs:
 
     - name: Run optimized release tests (Windows LDC)
       if: runner.os == 'Windows' && startsWith(matrix.dc.channel, 'ldc-')
+      env:
+        DFLAGS: -cache=${{ runner.temp }}/ldc-release-objects
       shell: pwsh
       run: ./.github/scripts/windows-test.ps1 unittest-release -AllowPackage
 
@@ -254,6 +279,16 @@ jobs:
     - name: Report Linux release kernel memory diagnostics
       if: ${{ always() && runner.os == 'Linux' }}
       run: bash .github/scripts/linux-resources.sh kernel
+
+    - name: Save LDC release objects
+      if: >-
+        startsWith(matrix.dc.channel, 'ldc-') &&
+        ((github.event_name == 'push' && steps.master-cache.outputs.cache-hit != 'true') ||
+         (github.event.pull_request.draft && !steps.master-cache.outputs.cache-matched-key && !steps.draft-cache.outputs.cache-matched-key))
+      uses: actions/cache/save@v6.1.0
+      with:
+        path: ${{ runner.temp }}/ldc-release-objects
+        key: ${{ steps.draft-cache.outputs.cache-primary-key || steps.master-cache.outputs.cache-primary-key }}
 
   # Compile and run the full lifetime suite independently of coverage.
   lifetime:
