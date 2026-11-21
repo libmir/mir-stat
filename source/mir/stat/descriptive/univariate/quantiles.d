@@ -42,6 +42,7 @@ $(TR $(TH Category) $(TH Declarations))
     ))
     $(TR $(TD Weighted quantiles) $(TD
         $(REF weightedMedian, mir, stat, descriptive, univariate, quantiles)$(NBSP)
+        $(REF weightedMedianAssumeSorted, mir, stat, descriptive, univariate, quantiles)$(NBSP)
         $(REF rcWeightedMedian, mir, stat, descriptive, univariate, quantiles)$(NBSP)
         $(REF makeWeightedMedian, mir, stat, descriptive, univariate, quantiles)$(NBSP)
         $(REF weightedQuantile, mir, stat, descriptive, univariate, quantiles)$(NBSP)
@@ -280,6 +281,19 @@ template weightedMedian(F)
         return weightedQuantile!(F, WeightedQuantileAlgo.averagedInverseCDF)(
             data, weights, 0.5);
     }
+
+    /++ Query an ordered observation/weight pair.
+    Params:
+        rows = positive-weight rows in ascending value and then raw weight order,
+            borrowed with $(LREF assumeWeightedSorted)
+    Returns:
+        The scalar weighted median, averaging adjacent observations at an exact half-mass boundary.
+    +/
+    F weightedMedian(Rows)(scope auto ref Rows rows)
+        if (isSortedWeightedObservations!Rows)
+    {
+        return weightedMedianAssumeSorted!F(rows);
+    }
 }
 
 /// ditto
@@ -290,6 +304,70 @@ auto weightedMedian(Data, Weights)(
     return .weightedMedian!F(data, weights);
 }
 
+/// ditto
+auto weightedMedian(Rows)(scope auto ref Rows rows)
+    if (isSortedWeightedObservations!Rows)
+{
+    return weightedMedianAssumeSorted(rows);
+}
+
+
+/++ Compute the weighted median of ordered observations with GC-managed scratch.
+Params:
+    F = floating-point result type, inferred as for weightedMedian when omitted
+    data = one-dimensional observations in ascending order among positive-weight rows.
+        Arrays, Mir slices, and containers convertible to a Mir slice of the same
+        element type are accepted, including when wrapped in a default ascending
+        Phobos SortedRange.
+    weights = aligned finite nonnegative relative weights. Positive weights on equal values
+        must be nondecreasing. At least one weight must be positive. All positive-weight
+        observations must be finite.
+Returns:
+    The scalar relative averaged inverse CDF at 0.5. At an exact half-mass
+    boundary the result averages the adjacent positive-weight observations.
++/
+auto weightedMedianAssumeSorted(F = void, Data, Weights)(scope auto ref Data data, scope auto ref Weights weights)
+    if (is(F == void) || isFloatingPoint!F)
+{
+    enum algorithm = WeightedQuantileAlgo.averagedInverseCDF;
+    static if (is(F == void))
+        return weightedQuantileAssumeSorted!algorithm(data, weights, 0.5);
+    else
+        return weightedQuantileAssumeSorted!(F, algorithm)(data, weights, 0.5);
+}
+
+///
+version(mir_stat_test) @safe unittest
+{
+    const int[3] values = [1, 99, 7], weights = [1, 0, 1];
+    assert(weightedMedianAssumeSorted(values, weights) == 4);
+    assert(rcWeightedMedian(assumeWeightedSorted(values[], weights[])) == 4);
+}
+
+/++ Compute the weighted median of a borrowed ordered pair using GC-managed scratch.
+Params:
+    F = floating-point result type, inferred as for weightedMedian when omitted
+    rows = aligned observations and relative weights borrowed with $(LREF assumeWeightedSorted).
+        Positive-weight rows must be ordered by observation, then by weight within ties.
+Returns:
+    The scalar relative averaged inverse CDF at 0.5, averaging adjacent positive-weight
+    observations at an exact half-mass boundary.
++/
+auto weightedMedianAssumeSorted(F = void, Rows)(scope auto ref Rows rows)
+    if (isSortedWeightedObservations!Rows && (is(F == void) || isFloatingPoint!F))
+{
+    return .weightedMedianAssumeSorted!F(rows.values, rows.weights);
+}
+
+///
+version(mir_stat_test) @safe unittest
+{
+    const int[2] values = [1, 4], weights = [1, 1];
+    auto rows = assumeWeightedSorted(values[], weights[]);
+    assert(weightedMedianAssumeSorted(rows) == 2.5);
+    static assert(is(typeof(weightedMedianAssumeSorted!float(rows)) == float));
+    assert(weightedMedianAssumeSorted!float(rows) == weightedMedian!float(rows));
+}
 
 /++
 Compute the same statistic as $(LREF rcWeightedInterquartileRange) using GC-managed scratch.
@@ -2728,7 +2806,7 @@ private struct WeightedQuantileInput
 }
 
 private WeightedQuantileInput validateWeightedQuantileInput(WeightInterpretation interpretation, WeightedQuantileAlgo algorithm,
-    Values, Masses)(scope Values values, scope Masses masses)
+    bool checkOrder = false, Values, Masses)(scope Values values, scope Masses masses)
 {
     import mir.primitives: DeepElementType;
     import std.traits: Unqual;
@@ -2738,10 +2816,16 @@ private WeightedQuantileInput validateWeightedQuantileInput(WeightInterpretation
         "weightedQuantile: values and weights must have equal lengths");
     size_t count;
     static if (interpretation == WeightInterpretation.frequency) ulong frequencyTotal;
+    static if (checkOrder)
+    {
+        alias Entry = WeightedQuantileEntry!(Unqual!(DeepElementType!Values), interpretation, algorithm);
+        Entry previous;
+    }
     real maximum = 0;
     foreach (i; 0 .. masses.length)
     {
-        const w = cast(real) masses[i];
+        const rawWeight = masses[i];
+        const w = cast(real) rawWeight;
         assert(isFinite(w) && w >= 0,
             "weightedQuantile: weights must be finite and nonnegative");
         static if (interpretation == WeightInterpretation.frequency)
@@ -2761,8 +2845,18 @@ private WeightedQuantileInput validateWeightedQuantileInput(WeightInterpretation
         }
         if (w == 0)
             continue;
-        assert(isFinite(cast(real) values[i]),
-            "weightedQuantile: positive-weight values must be finite");
+        version (assert)
+        {
+            const value = values[i];
+            assert(isFinite(cast(real) value), "weightedQuantile: positive-weight values must be finite");
+            static if (checkOrder)
+            {
+                const current = Entry(value, cast(typeof(Entry.init.cumulative)) rawWeight);
+                assert(!count || !weightedEntryLess(current, previous),
+                    "weightedQuantileAssumeSorted requires ascending values and ascending weights within ties");
+                previous = current;
+            }
+        }
         ++count;
         if (w > maximum)
             maximum = w;
@@ -3250,7 +3344,13 @@ private auto allocatedWeightedQuantile(F, WeightInterpretation interpretation, W
         "Convert the input to a Mir slice explicitly before calling.");
     static assert(isNumeric!Element && isNumeric!Weight && isNumeric!F,
         "Weighted quantiles require numeric values, weights, and output");
-    const input = validateWeightedQuantileInput!(interpretation, algorithm)(values.lightScope, masses.lightScope);
+    // Check the ordering contract before acquiring caller-managed scratch.
+    version (assert)
+        enum checkOrderBeforeAllocation = assumeSorted && allocation == QuantileAllocation.custom;
+    else
+        enum checkOrderBeforeAllocation = false;
+    const input = validateWeightedQuantileInput!(interpretation, algorithm, checkOrderBeforeAllocation)(
+        values.lightScope, masses.lightScope);
     alias Entry = WeightedQuantileEntry!(Element, interpretation, algorithm);
     auto scratch = allocateQuantiles!(Entry, allocation)(context, input.count);
     static if (allocation == QuantileAllocation.custom)
@@ -3280,8 +3380,9 @@ private auto allocatedWeightedQuantile(F, WeightInterpretation interpretation, W
             if (masses[i] > 0)
             {
                 workspace[count] = Entry(values[i], cast(typeof(Entry.init.cumulative)) masses[i]);
-                assert(!count || !weightedEntryLess(workspace[count], workspace[count - 1]),
-                    "weightedQuantileAssumeSorted requires ascending values and ascending weights within ties");
+                static if (!checkOrderBeforeAllocation)
+                    assert(!count || !weightedEntryLess(workspace[count], workspace[count - 1]),
+                        "weightedQuantileAssumeSorted requires ascending values and ascending weights within ties");
                 ++count;
             }
         const state = accumulateWeightedQuantileWorkspace!(interpretation, algorithm)(workspace, input.maximum);
@@ -3378,8 +3479,8 @@ private template isSortedWeightedObservations(T)
 }
 
 /++
-Mark aligned observations and weights as ordered for $(LREF weightedQuantile),
-$(LREF rcWeightedQuantile), or $(LREF makeWeightedQuantile).
+Mark aligned observations and weights as ordered for weighted quantile
+and median queries across allocation policies.
 The factory copies the slice descriptors without allocating or sorting rows.
 Pass a static array as an explicit slice, for example $(D values[]). As with
 $(LREF weightedQuantileAssumeSorted), ordering is checked during the query
@@ -4813,6 +4914,7 @@ unittest
     // A conversion that preserves the element type remains valid.
     auto unchanged = PackedMeasurements!false(raw[]);
     assert(rcWeightedQuantile(unchanged, weights, 0.5) == 3);
+    assert(weightedMedianAssumeSorted(unchanged, weights) == 3);
 
     auto decoded = packed.asSlice;
     auto gcMedian = weightedQuantile(decoded, weights, 0.5);
@@ -9678,6 +9780,19 @@ template rcWeightedMedian(F)
         return rcWeightedQuantile!(F, WeightedQuantileAlgo.averagedInverseCDF)(
             data, weights, 0.5);
     }
+
+    /++ Query an ordered observation/weight pair.
+    Params:
+        rows = positive-weight rows in ascending value and then raw weight order,
+            borrowed with $(LREF assumeWeightedSorted)
+    Returns:
+        The scalar weighted median, averaging adjacent observations at an exact half-mass boundary.
+    +/
+    F rcWeightedMedian(Rows)(scope auto ref Rows rows)
+        if (isSortedWeightedObservations!Rows)
+    {
+        return rcWeightedQuantile!(F, WeightedQuantileAlgo.averagedInverseCDF)(rows, 0.5);
+    }
 }
 
 /// ditto
@@ -9686,6 +9801,13 @@ auto rcWeightedMedian(Data, Weights)(
 {
     alias F = WeightedQuantileResult!(Data, WeightedQuantileAlgo.averagedInverseCDF);
     return .rcWeightedMedian!F(data, weights);
+}
+
+/// ditto
+auto rcWeightedMedian(Rows)(scope auto ref Rows rows)
+    if (isSortedWeightedObservations!Rows)
+{
+    return rcWeightedQuantile!(WeightedQuantileAlgo.averagedInverseCDF)(rows, 0.5);
 }
 
 ///
@@ -10415,6 +10537,20 @@ template makeWeightedMedian(F)
         return makeWeightedQuantile!(F, WeightedQuantileAlgo.averagedInverseCDF)(
             allocator, data, weights, 0.5);
     }
+
+    /++ Query an ordered observation/weight pair.
+    Params:
+        allocator = allocator for temporary weighted quantile storage
+        rows = positive-weight rows in ascending value and then raw weight order,
+            borrowed with $(LREF assumeWeightedSorted)
+    Returns:
+        The scalar weighted median, averaging adjacent observations at an exact half-mass boundary.
+    +/
+    F makeWeightedMedian(Allocator, Rows)(auto ref Allocator allocator, scope auto ref Rows rows)
+        if (isSortedWeightedObservations!Rows)
+    {
+        return makeWeightedQuantile!(F, WeightedQuantileAlgo.averagedInverseCDF)(allocator, rows, 0.5);
+    }
 }
 
 /// ditto
@@ -10423,6 +10559,13 @@ auto makeWeightedMedian(Allocator, Data, Weights)(auto ref Allocator allocator,
 {
     alias F = WeightedQuantileResult!(Data, WeightedQuantileAlgo.averagedInverseCDF);
     return .makeWeightedMedian!F(allocator, data, weights);
+}
+
+/// ditto
+auto makeWeightedMedian(Allocator, Rows)(auto ref Allocator allocator, scope auto ref Rows rows)
+    if (isSortedWeightedObservations!Rows)
+{
+    return makeWeightedQuantile!(WeightedQuantileAlgo.averagedInverseCDF)(allocator, rows, 0.5);
 }
 
 /++
@@ -10613,6 +10756,32 @@ template makeWeightedInterquartileRange(WeightedQuantileAlgo algorithm,
     if (validWeightedQuantileOptions!(interpretation, algorithm))
 {
     alias makeWeightedInterquartileRange = .makeWeightedInterquartileRange!(interpretation, algorithm);
+}
+
+// The pair overloads preserve weighting conventions, allocator ownership, and tie ordering.
+version(mir_stat_test) @system unittest
+{
+    import core.exception : AssertError;
+    import std.exception : assertThrown;
+    import std.range : assumeSorted;
+    import mir.ndslice : sliced, stride;
+    const int[8] storage = [0, 99, 0, 99, 4, 99, 8, 99];
+    const int[4] weights = [1, 2, 1, 2];
+    auto values = storage[].sliced.stride(2);
+    auto rows = assumeWeightedSorted(values, weights[]);
+    QuantileTestAllocator!() allocator;
+    assert(weightedMedian(rows) == 2);
+    assert(rcWeightedMedian!real(rows) == 2);
+    assert(makeWeightedMedian(allocator, rows) == 2);
+    assert(makeWeightedMedian!real(allocator, rows) == 2);
+    assert(allocator.allocations == 2 && allocator.releases == 2);
+    assert(weightedMedianAssumeSorted!double(assumeSorted(values), weights) == 2);
+
+    const int[4] unorderedWeights = [2, 1, 1, 2];
+    auto invalid = assumeWeightedSorted(values, unorderedWeights[]);
+    assertThrown!AssertError(weightedMedian(invalid));
+    assertThrown!AssertError(makeWeightedMedian(allocator, invalid));
+    assert(allocator.allocations == 2 && allocator.releases == 2);
 }
 
 /// A custom allocator controls scratch; all four results are scalars.
