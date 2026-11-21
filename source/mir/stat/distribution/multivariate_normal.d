@@ -5,21 +5,25 @@ covariance matrix. In zero dimensions the log density is zero.
 
 $(H4 Matrix inputs)
 
-Supply a dense square matrix, including a strided view. Use $(D covarianceView)
-for a covariance matrix or $(D precisionView) for its inverse, the precision matrix.
-If you already have a Cholesky factor, use $(D covarianceCholeskyView) or
-$(D precisionCholeskyView) according to which matrix was factored. For example,
-an upper precision factor U satisfies $(D P = U.transpose * U), where P is
-the precision matrix. A lower factor L represents its matrix as $(D L * L.transpose).
+Supply a dense square matrix, including a strided view. A view records the
+representation and the selected triangle while referencing the existing entries.
 
-The view records the representation and which triangle to read (upper by default).
-It references the existing entries. For an unlabeled matrix, the function name
-can supply the representation instead. Both calls below evaluate the same precision
-matrix p using its upper triangle.
+$(TABLE
+$(TR $(TH Matrix supplied) $(TH View for $(D_INLINECODE multivariateNormalLPDF)) $(TH Function accepting the matrix directly))
+$(TR $(TD Covariance matrix S) $(TD $(D_INLINECODE covarianceView(s))) $(TD $(D_INLINECODE multivariateNormalLPDFFromCovariance)))
+$(TR $(TD Precision matrix P (the inverse of S)) $(TD $(D_INLINECODE precisionView(p))) $(TD $(D_INLINECODE multivariateNormalLPDFFromPrecision)))
+$(TR $(TD Cholesky factor of S) $(TD $(D_INLINECODE covarianceCholeskyView(factor))) $(TD $(D_INLINECODE multivariateNormalLPDFFromCovarianceCholesky)))
+$(TR $(TD Cholesky factor of P) $(TD $(D_INLINECODE precisionCholeskyView(factor))) $(TD $(D_INLINECODE multivariateNormalLPDFFromPrecisionCholesky)))
+)
+
+The upper triangle is the default. These equivalent calls read the lower triangle of p:
 ---
-multivariateNormalLPDF(x, mean, precisionView(p));
-multivariateNormalLPDFFromPrecision(x, mean, p);
+multivariateNormalLPDF(x, mean, precisionView!(TrianglePolicy.lower)(p));
+multivariateNormalLPDFFromPrecision!(TrianglePolicy.lower)(x, mean, p);
 ---
+For an upper precision factor U, $(D_INLINECODE P = U.transpose * U). For a lower precision
+factor L, $(D_INLINECODE P = L * L.transpose).
+
 The four view constructors are available from $(MREF mir,stat,covariance_views)
 and this module.
 
