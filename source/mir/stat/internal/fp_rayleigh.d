@@ -6,7 +6,9 @@ module mir.stat.internal.fp_rayleigh;
 
 import mir.bignum.fixed: UInt;
 import mir.bignum.fp: Fp;
+import mir.stat.internal.fp_location_scale: addOffset;
 import mir.stat.internal.fp_probability: fpProbabilityComplement;
+import mir.stat.internal.fp_probability_log: ProbabilityLog;
 import mir.stat.internal.fp_scaled_probability: ProbabilityScaled, exponentBias, scaledDecay;
 
 @safe pure nothrow @nogc:
@@ -89,4 +91,42 @@ package(mir.stat) Fp!bits rayleighDensity(uint bits)(Fp!bits x, Fp!bits scale)
         ? predecessor(prefactor) : prefactor.multiply(scaledDecay(q));
     // The peak is exp(-1/2)/scale, below the Fp ceiling even at the least scale.
     return density.finish!bits;
+}
+
+package(mir.stat) Fp!bits rayleighLogDensity(uint bits)(Fp!bits x, Fp!bits scale)
+{
+    alias T = Fp!bits;
+    if (x.isNaN)
+        return x;
+    if (x.isInfinity || !x.coefficient)
+        return T(true, long.max, UInt!bits(0));
+    enum logBits = 3 * bits + 64;
+    enum work = logBits + 192;
+    alias Log = ProbabilityLog!logBits;
+    alias S = Log.S;
+    const obs = S.from(x);
+    const divisor = S.from(scale);
+    const square = divisor.multiply(divisor);
+    const ratio = obs.divide(square);
+    Log.Context context;
+    Fp!work logRatio;
+    if (ratio.exponent >= exponentBias - 1 && ratio.exponent <= exponentBias + 1)
+    {
+        // Near x == scale^2 take a single log, including exact log(1).
+        const e = cast(long)cast(ulong)(ratio.exponent - exponentBias) - work;
+        logRatio = Log.logDyadic(ratio.fraction.coefficient, e, context);
+    }
+    else
+    {
+        // The exponent of x/scale^2 need not fit in a signed long.
+        logRatio = Log.logDyadic(x.coefficient, x.exponent, context);
+        const logScale = Log.logDyadic(scale.coefficient, scale.exponent, context);
+        if (logScale.coefficient)
+        {
+            auto term = S.from(logScale);
+            term.exponent += 1;
+            logRatio = addOffset!work(logRatio, term, !logScale.sign);
+        }
+    }
+    return addOffset!bits(logRatio, halfSquaredRatio(obs, square), true);
 }

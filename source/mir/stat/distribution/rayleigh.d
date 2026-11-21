@@ -692,6 +692,99 @@ unittest
     4.0.rayleighLPDF(2.0).shouldApprox == log(0.1353353);
 }
 
+/++
+Computes the natural logarithm of the density for the Rayleigh distribution with unit scale.
+
+Params:
+    T = Represented $(D Fp) type, inferred from the arguments.
+    x = Nonnegative observation, including positive infinity, or NaN.
+
+Returns:
+    The natural logarithm of the density in type $(D T), using guarded evaluation.
+    Zero and positive infinity give negative infinity. Cancellation near a density-one crossing can reduce relative accuracy. NaN propagates.
++/
+@safe pure nothrow @nogc
+T rayleighLPDF(T)(const T x)
+    if (is(T == Fp!size, size_t size))
+{
+    return rayleighLPDF(x, T(1));
+}
+
+///
+version(mir_stat_test)
+@safe pure nothrow @nogc unittest
+{
+    import mir.bignum.fp: Fp;
+    alias T = Fp!64;
+    assert(rayleighLPDF(T(0)) == T(-double.infinity));
+}
+
+/++
+Computes the natural logarithm of the density for the Rayleigh distribution with the given scale.
+
+Params:
+    T = Represented $(D Fp) type, inferred from the arguments.
+    x = Nonnegative observation, including positive infinity, or NaN.
+    scale = Positive finite scale parameter.
+
+Returns:
+    The natural logarithm of the density in type $(D T), using guarded evaluation.
+    Zero and positive infinity give negative infinity. Cancellation near a density-one crossing can reduce relative accuracy. NaN propagates.
++/
+@safe pure nothrow @nogc
+T rayleighLPDF(T)(const T x, const T scale)
+    if (is(T == Fp!size, size_t size))
+    in (validScale(scale), "scale must be finite and positive")
+    in (validObservation(x), "x must be nonnegative")
+{
+    import mir.stat.internal.fp_rayleigh: rayleighLogDensity;
+    return rayleighLogDensity(x, scale);
+}
+
+///
+version(mir_stat_test)
+@safe pure nothrow @nogc unittest
+{
+    import mir.bignum.fp: Fp;
+    alias T = Fp!64;
+    assert(rayleighLPDF(T(0), T(2)) == T(-double.infinity));
+}
+
+version(mir_stat_test)
+@safe pure nothrow @nogc unittest
+{
+    import mir.bignum.fixed: UInt;
+    import mir.math.common: approxEqual;
+    import std.meta: AliasSeq;
+    alias T = Fp!64;
+    alias U = UInt!64;
+    static foreach (R; AliasSeq!(float, double, real))
+        assert(approxEqual(rayleighLPDF(R(1.5), R(2)), R(-1.262079253011726236856451127452003999579009845258017L), 8 * R.epsilon));
+    assert(rayleighLPDF(T(1.5), T(2)) == T(true, -63, U(0xa18bd01e529ee1c6UL)));
+    assert(rayleighLPDF(T(double.nan)).isNaN);
+    assert(rayleighLPDF(T(double.infinity)) == T(-double.infinity));
+    // x = scale^2 makes the logarithmic prefactor exactly zero.
+    assert(rayleighLPDF(T(false, -4000, U(9)), T(false, -2000, U(3)))
+        == T(true, -4061, U(9UL << 60)));
+    assert(rayleighLPDF(T(false, long.max - 1, U.max), T(false, long.min, U(1)))
+        == T(-double.infinity));
+}
+
+version(mir_stat_test_slow_numerics)
+@safe pure nothrow @nogc unittest
+{
+    import mir.bignum.fixed: UInt;
+    alias T = Fp!128;
+    alias U = UInt!128;
+    // At x = scale the log density crosses zero at scale = exp(-1/2).
+    enum below = T(false, -128, U.fromHexString("9b4597e37cb04ff3d675a35530cdd767"));
+    enum belowResult = T(false, -255, U.fromHexString("bb5c6442b793cf41d490c8638ebca8e5"));
+    assert(rayleighLPDF(below, below) == belowResult);
+    enum above = T(false, -128, U.fromHexString("9b4597e37cb04ff3d675a35530cdd768"));
+    enum aboveResult = T(true, -258, U.fromHexString("bd674171c508784e1375a7bf06ea9fa6"));
+    assert(rayleighLPDF(above, above) == aboveResult);
+}
+
 // Preserve inverse-CDF values below machine epsilon, including scaled calls.
 version(mir_stat_test)
 @safe pure nothrow @nogc
