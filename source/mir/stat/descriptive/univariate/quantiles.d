@@ -27,6 +27,7 @@ $(BOOKTABLE,
 $(TR $(TH Category) $(TH Declarations))
     $(TR $(TD Ordinary quantiles) $(TD
         $(REF median, mir, stat, descriptive, univariate, quantiles)$(NBSP)
+        $(REF medianAssumeSorted, mir, stat, descriptive, univariate, quantiles)$(NBSP)
         $(REF rcMedian, mir, stat, descriptive, univariate, quantiles)$(NBSP)
         $(REF makeMedian, mir, stat, descriptive, univariate, quantiles)$(NBSP)
         $(REF quantile, mir, stat, descriptive, univariate, quantiles)$(NBSP)
@@ -135,6 +136,39 @@ private meanType!F allocatedMedian(F, bool allowModify, QuantileAllocation alloc
     }
 }
 
+/++ Compute the median directly from ascending observations without scratch.
+Params:
+    F = result type promoted as for median, inferred from the observations when omitted
+    data = nonempty ascending array, Mir slice in ascending flattened order,
+        or indexed Phobos SortedRange with its default ascending predicate
+Returns:
+    The middle observation for odd lengths or the midpoint of the middle pair for even lengths.
++/
+auto medianAssumeSorted(F = void, Data)(scope auto ref Data data)
+{
+    auto values = sortedQuantileValues(data);
+    static if (is(F == void))
+        alias Result = meanType!(typeof(values[0]));
+    else
+        alias Result = meanType!F;
+    const n = values.length;
+    assert(n > 0, "median: range must not be empty");
+    const middle = n / 2;
+    if (n % 2)
+        return cast(Result) values[middle];
+    return medianMidpoint!Result(values[middle - 1], values[middle]);
+}
+
+///
+version(mir_stat_test) @safe pure nothrow @nogc unittest
+{
+    import mir.ndslice : sliced, stride;
+    const long[2] ends = [long.min, long.max];
+    assert(medianAssumeSorted(ends) == -0.5);
+    const int[6] data = [1, 0, 3, 0, 7, 0];
+    assert(medianAssumeSorted!real(data[].sliced.stride(2)) == 3);
+}
+
 /++
 Compute the same statistic as $(LREF rcMedian) using GC-managed scratch.
 
@@ -155,6 +189,19 @@ template median(F, bool allowModify = false)
         QuantileContext context;
         return allocatedMedian!(F, allowModify, QuantileAllocation.gc)(context, slice.lightScope);
     }
+
+    /++ Read the middle observations of an ascending indexed range without scratch.
+    Params:
+        data = nonempty Phobos SortedRange with its default ascending predicate
+    Returns:
+        The middle value for odd length, or the midpoint of the middle pair
+        for even length, using the usual median result type.
+    +/
+    auto median(Data)(scope auto ref Data data)
+        if (isPhobosSortedRange!Data)
+    {
+        return medianAssumeSorted!F(data);
+    }
 }
 
 /// ditto
@@ -172,6 +219,13 @@ template median(bool allowModify = false)
                            "allowModify must be false or the input must be mutable");
         alias F = typeof(return);
         return .median!(F, allowModify)(slice.move);
+    }
+
+    /// ditto
+    auto median(Data)(scope auto ref Data data)
+        if (isPhobosSortedRange!Data)
+    {
+        return medianAssumeSorted(data);
     }
 }
 
@@ -699,6 +753,19 @@ template rcMedian(F, bool allowModify = false)
             }
         }
     }
+
+    /++ Read the middle observations of an ascending indexed range without scratch.
+    Params:
+        data = nonempty Phobos SortedRange with its default ascending predicate
+    Returns:
+        The middle value for odd length, or the midpoint of the middle pair
+        for even length, using the usual median result type.
+    +/
+    auto rcMedian(Data)(scope auto ref Data data)
+        if (isPhobosSortedRange!Data)
+    {
+        return medianAssumeSorted!F(data);
+    }
 }
 
 /// ditto
@@ -716,6 +783,13 @@ template rcMedian(bool allowModify = false)
                            "allowModify must be false or the input must be mutable");
         alias F = typeof(return);
         return .rcMedian!(F, allowModify)(slice.move);
+    }
+
+    /// ditto
+    auto rcMedian(Data)(scope auto ref Data data)
+        if (isPhobosSortedRange!Data)
+    {
+        return medianAssumeSorted(data);
     }
 }
 
@@ -7652,7 +7726,7 @@ private auto sortedQuantileValues(Data)(return scope auto ref Data data)
     {
         import std.traits : TemplateArgsOf;
         static assert(is(typeof(TemplateArgsOf!Data[1]) == string) &&
-            TemplateArgsOf!Data[1] == "a < b", "quantile requires ascending observations");
+            TemplateArgsOf!Data[1] == "a < b", "expected the default ascending SortedRange predicate");
         return data;
     }
     else
@@ -10128,7 +10202,8 @@ By default inputs are unchanged. Setting allowModify permits rearranging the
 observations and avoids scratch allocation. One or two observations also need
 no scratch when inputs are preserved. An unused allocator is not invoked.
 Arrays and Mir slices are accepted; multidimensional slices are flattened for
-selection, as in median.
+selection, as in median. A default ascending Phobos SortedRange is read
+directly at its middle positions and requires no allocator calls.
 
 Params:
     F = output type, promoted as for median
@@ -10143,7 +10218,10 @@ template makeMedian(F, bool allowModify = false)
     +/
     meanType!F makeMedian(Allocator, Data)(auto ref Allocator allocator, scope auto ref Data data)
     {
-        return allocatedMedian!(F, allowModify, QuantileAllocation.custom)(allocator, data);
+        static if (isPhobosSortedRange!Data)
+            return medianAssumeSorted!F(data);
+        else
+            return allocatedMedian!(F, allowModify, QuantileAllocation.custom)(allocator, data);
     }
 }
 
@@ -10153,9 +10231,60 @@ template makeMedian(bool allowModify = false)
     /// ditto
     auto makeMedian(Allocator, Data)(auto ref Allocator allocator, scope auto ref Data data)
     {
-        alias F = meanType!(typeof(quantileSlice(data)));
-        return .makeMedian!(F, allowModify)(allocator, data);
+        static if (isPhobosSortedRange!Data)
+            return medianAssumeSorted(data);
+        else
+        {
+            alias F = meanType!(typeof(quantileSlice(data)));
+            return .makeMedian!(F, allowModify)(allocator, data);
+        }
     }
+}
+
+/// Compute a median over ascending observations in a strided slice.
+version(mir_stat_test) @safe pure nothrow @nogc unittest
+{
+    import mir.ndslice : sliced, stride;
+    import std.experimental.allocator.mallocator : Mallocator;
+    import std.range : assumeSorted;
+    const int[6] data = [1, 0, 3, 0, 7, 0];
+    auto ordered = assumeSorted(data[].sliced.stride(2));
+    assert(makeMedian(Mallocator.instance, ordered) == 3);
+}
+
+// Check allocator use, result types, and wide-integer midpoint arithmetic.
+version(mir_stat_test) @safe pure nothrow @nogc unittest
+{
+    import mir.ndslice : sliced, stride;
+    import std.range : assumeSorted;
+    const long[8] data = [long.min, 0, long.min, 0, long.max, 0, long.max, 0];
+    auto ordered = assumeSorted(data[].sliced.stride(2));
+    QuantileTestAllocator!() allocator;
+    assert(median(ordered) == -0.5);
+    assert(rcMedian!real(ordered) == -0.5L);
+    assert(makeMedian(allocator, ordered) == -0.5);
+    assert(allocator.allocations == 0);
+    const float[3] odd = [1, 3, 7];
+    static assert(is(typeof(median(assumeSorted(odd[]))) == float));
+    assert(rcMedian(assumeSorted(odd[])) == 3);
+    assert(makeMedian!double(allocator, assumeSorted(odd[0 .. 1])) == 1);
+    static assert(!__traits(compiles, median(assumeSorted!"a > b"(odd[]))));
+}
+
+// Count only reads performed by the query on the constructed wrapper.
+version(mir_stat_test) @safe unittest
+{
+    import mir.ndslice : sliced, map;
+    import std.range : assumeSorted;
+    const float[3] odd = [1, 3, 7];
+    static size_t reads;
+    static float observe(float value) { ++reads; return value; }
+    auto counted = assumeSorted(odd[].sliced.map!observe);
+    reads = 0;
+    assert(median(counted) == 3 && reads == 1);
+    auto pair = assumeSorted(odd[0 .. 2].sliced.map!observe);
+    reads = 0;
+    assert(rcMedian(pair) == 2 && reads == 2);
 }
 
 /++
