@@ -130,6 +130,85 @@ unittest
 }
 
 /++
+Computes the probability density for the Rayleigh distribution with unit scale.
+
+Params:
+    T = Represented $(D Fp) type, inferred from the arguments.
+    x = Nonnegative observation, including positive infinity, or NaN.
+
+Returns:
+    The probability density in type $(D T), using guarded evaluation.
+    Zero and positive infinity give zero. NaN propagates.
++/
+@safe pure nothrow @nogc
+T rayleighPDF(T)(const T x)
+    if (is(T == Fp!size, size_t size))
+{
+    return rayleighPDF(x, T(1));
+}
+
+///
+version(mir_stat_test)
+@safe pure nothrow @nogc unittest
+{
+    import mir.bignum.fp: Fp;
+    alias T = Fp!64;
+    assert(rayleighPDF(T(0)) == T(0));
+}
+
+/++
+Computes the probability density for the Rayleigh distribution with the given scale.
+
+Params:
+    T = Represented $(D Fp) type, inferred from the arguments.
+    x = Nonnegative observation, including positive infinity, or NaN.
+    scale = Positive finite scale parameter.
+
+Returns:
+    The probability density in type $(D T), using guarded evaluation.
+    Zero and positive infinity give zero. NaN propagates.
++/
+@safe pure nothrow @nogc
+T rayleighPDF(T)(const T x, const T scale)
+    if (is(T == Fp!size, size_t size))
+    in (validScale(scale), "scale must be finite and positive")
+    in (validObservation(x), "x must be nonnegative")
+{
+    import mir.stat.internal.fp_rayleigh: rayleighDensity;
+    return rayleighDensity(x, scale);
+}
+
+///
+version(mir_stat_test)
+@safe pure nothrow @nogc unittest
+{
+    import mir.bignum.fp: Fp;
+    alias T = Fp!64;
+    assert(rayleighPDF(T(0), T(2)) == T(0));
+}
+
+version(mir_stat_test)
+@safe pure nothrow @nogc unittest
+{
+    import mir.bignum.fixed: UInt;
+    import mir.math.common: approxEqual;
+    import std.meta: AliasSeq;
+    alias T = Fp!64;
+    alias U = UInt!64;
+    static foreach (R; AliasSeq!(float, double, real))
+        assert(approxEqual(rayleighPDF(R(1.5), R(2)), R(0.2830648507458777514977551609690736852553500785384360L), 8 * R.epsilon));
+    assert(rayleighPDF(T(1.5), T(2)) == T(false, -65, U(0x90ede049338a8378UL)));
+    assert(rayleighPDF(T(double.nan)).isNaN);
+    assert(rayleighPDF(T(double.infinity)) == T(0));
+    // At z = 2^32 the decay alone underflows. Scaling recovers the density.
+    const quantum = T(false, long.min, U(1));
+    assert(rayleighPDF(T(false, long.min + 32, U(1)), quantum)
+        == T(false, -4083141060989546715, U(0x98d3377e65eee9c8UL)));
+    assert(rayleighPDF(quantum, quantum) == T(false, long.max - 63, U(0x9b4597e37cb04ff4UL)));
+    assert(rayleighPDF(T(false, long.max - 1, U.max), quantum) == T(0));
+}
+
+/++
 Computes the Rayleigh cumulative distribution function (CDF).
 
 Returns the lower-tail probability $(D P(X <= x)).

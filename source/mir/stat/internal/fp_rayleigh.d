@@ -68,3 +68,25 @@ package(mir.stat) Fp!bits rayleighTail(bool upper, uint bits)(Fp!bits x, Fp!bits
         return cast(T)fpProbabilityComplement(decay.fraction);
     }
 }
+
+package(mir.stat) Fp!bits rayleighDensity(uint bits)(Fp!bits x, Fp!bits scale)
+{
+    alias T = Fp!bits;
+    if (x.isNaN)
+        return x;
+    if (x.isInfinity || !x.coefficient)
+        return T(0);
+    alias S = ProbabilityScaled!(5 * bits + 256);
+    const obs = S.from(x);
+    const divisor = S.from(scale);
+    const square = divisor.multiply(divisor);
+    const q = halfSquaredRatio(obs, square);
+    // Above 2^65 even the smallest scale cannot rescue z*exp(-z*z/2).
+    if (q.exponent >= exponentBias + 66)
+        return T(0);
+    const prefactor = obs.divide(square);
+    const density = q.exponent + (3 * bits + 8) <= exponentBias
+        ? predecessor(prefactor) : prefactor.multiply(scaledDecay(q));
+    // The peak is exp(-1/2)/scale, below the Fp ceiling even at the least scale.
+    return density.finish!bits;
+}
