@@ -21,6 +21,8 @@ Copyright: 2022-3 Mir Stat Authors.
 
 module mir.stat.distribution.pareto;
 
+import mir.bignum.fp: Fp;
+import mir.stat.internal.fp_probability: fpProbabilityLess, fpProbabilityValid;
 import mir.internal.utility: isFloatingPoint;
 
 /++
@@ -121,6 +123,96 @@ unittest
 }
 
 /++
+Computes the type-I Pareto PDF using guarded extended-precision arithmetic.
+
+Params:
+    T = Represented $(D Fp) type, inferred from the arguments.
+    x = Observation at or above xMin, including positive infinity.
+    xMin = Positive finite lower support boundary.
+    alpha = Positive finite shape parameter.
+
+Returns:
+    The density at x in type T. At xMin it is alpha/xMin. At infinity it is zero.
+    Near rounding midpoints, integral shapes use exact comparisons when the
+    odd density products fit within eight input significand widths.
++/
+@safe pure nothrow @nogc
+T paretoPDF(T)(const T x, const T xMin, const T alpha)
+    if (is(T == Fp!size, size_t size))
+    in (validParameter(xMin), "xMin must be finite and positive")
+    in (validParameter(alpha), "alpha must be finite and positive")
+    in (!x.isNaN && !x.sign && (x.isInfinity || !fpProbabilityLess(x, xMin)), "x must be at least xMin")
+{
+    import mir.stat.internal.fp_pareto: paretoDensity;
+    return paretoDensity(x, xMin, alpha);
+}
+
+///
+version(mir_stat_test)
+@safe pure nothrow @nogc unittest
+{
+    import mir.bignum.fp: Fp;
+    alias T = Fp!64;
+    assert(paretoPDF(T(2), T(1), T(3)) == T(0.1875));
+}
+
+version(mir_stat_test)
+@safe pure nothrow @nogc unittest
+{
+    import mir.bignum.fixed: UInt;
+    import mir.math.common: approxEqual;
+    import std.meta: AliasSeq;
+    static foreach (R; AliasSeq!(float, double, real))
+        assert(approxEqual(paretoPDF(R(1.5), R(1.25), R(0.75)),
+            R(0.43609797474671064824310932395303468578953669162L), 8 * R.epsilon));
+    {
+        alias T = Fp!64;
+        enum expected = T(false, -65, UInt!64.fromHexString("df483bd6c725419b"));
+        assert(paretoPDF(T(1.5), T(1.25), T(0.75)) == expected);
+    }
+    {
+        alias T = Fp!128;
+        enum expected = T(false, -129, UInt!128.fromHexString("df483bd6c725419ae17ecc4045b59416"));
+        assert(paretoPDF(T(1.5), T(1.25), T(0.75)) == expected);
+    }
+    alias T = Fp!64;
+    const least = T(false, long.min, UInt!64(1));
+    assert(paretoPDF(least, least, least) == T(1));
+    // At the support boundary this nonintegral shape gives exactly half
+    // a quantum. The guarded quotient resolves the tie directly.
+    const high = T(false, long.max - 1, UInt!64(12));
+    assert(paretoPDF(high, high, T(1.5)) == T(0));
+    assert(paretoPDF(T(4), T(2), T(1)) == T(0.125));
+    assert(paretoPDF(T(2), T(1), T(false, 70, UInt!64(1))) == T(0));
+    assert(paretoPDF(T(2), least, T(2)) == T(0));
+    // For t = 2^-29, (1 + 3*t/2 + 3*t^2/8)^2 exceeds (1+t)^3
+    // by 1/8*t^3 + 9/64*t^4. The density is just above half a quantum.
+    enum m = 29;
+    enum ulong boundaryCoefficient = (1UL << (2*m+3)) + (3UL << (m+2)) + 3;
+    assert(paretoPDF(T(false, -m, UInt!64((1UL << m) + 1)),
+        T(false, long.min/2 - 1 - (2*m+3), UInt!64(boundaryCoefficient)), T(2)) == least);
+    assert(paretoPDF(least, least, T(false, long.max - 1, UInt!64.max)).isInfinity);
+    assert(paretoPDF(T(double.infinity), T(1), T(1)) == T(0));
+    // With xMin = 3*x/4 and shape two the density is 9/(8*x), exactly
+    // half the least quantum here. Vary xMin by one represented step.
+    const x = T(false, long.max - 1, UInt!64(9));
+    auto boundary = T(false, long.max - 62, UInt!64(27) << 59);
+    assert(paretoPDF(x, boundary, T(2)) == T(0));
+    boundary.coefficient -= 1;
+    assert(paretoPDF(x, boundary, T(2)) == T(0));
+    boundary.coefficient += 2;
+    assert(paretoPDF(x, boundary, T(2)) == least);
+    // Three half-quanta round up to the even coefficient two.
+    assert(paretoPDF(T(false, long.max - 1, UInt!64(3)),
+        T(false, long.max - 3, UInt!64(9)), T(2)) == T(false, long.min, UInt!64(2)));
+    // At ordinary exponents the exact density is c^2 * 2^-66.
+    // The odd 65-bit square falls halfway above an even coefficient.
+    enum c = 5000000001UL;
+    assert(paretoPDF(T(2), T(false, -32, UInt!64(c)), T(2))
+        == T(false, -65, UInt!64(12500000005000000000UL)));
+}
+
+/++
 Computes the pareto cumulative distribution function (CDF).
 
 Returns the lower-tail probability $(D P(X <= x)).
@@ -163,6 +255,68 @@ unittest
     1.0.paretoCDF(1, 3).shouldApprox == 0;
     2.0.paretoCDF(1, 3).shouldApprox == 0.875;
     3.0.paretoCDF(2, 4).shouldApprox == 0.8024691;
+}
+
+/++
+Computes the type-I Pareto CDF using guarded extended-precision arithmetic.
+
+Params:
+    T = Represented $(D Fp) type, inferred from the arguments.
+    x = Observation at or above xMin, including positive infinity.
+    xMin = Positive finite lower support boundary.
+    alpha = Positive finite shape parameter.
+
+Returns:
+    The lower-tail probability in type T, ranging from zero at xMin to one at infinity.
++/
+@safe pure nothrow @nogc
+T paretoCDF(T)(const T x, const T xMin, const T alpha)
+    if (is(T == Fp!size, size_t size))
+    in (validParameter(xMin), "xMin must be finite and positive")
+    in (validParameter(alpha), "alpha must be finite and positive")
+    in (!x.isNaN && !x.sign && (x.isInfinity || !fpProbabilityLess(x, xMin)), "x must be at least xMin")
+{
+    import mir.stat.internal.fp_pareto: paretoTail;
+    return paretoTail!false(x, xMin, alpha);
+}
+
+///
+version(mir_stat_test)
+@safe pure nothrow @nogc unittest
+{
+    import mir.bignum.fp: Fp;
+    alias T = Fp!64;
+    assert(paretoCDF(T(2), T(1), T(3)) == T(0.875));
+}
+
+version(mir_stat_test)
+@safe pure nothrow @nogc unittest
+{
+    import mir.bignum.fixed: UInt;
+    import mir.math.common: approxEqual;
+    import std.meta: AliasSeq;
+    static foreach (R; AliasSeq!(float, double, real))
+        assert(approxEqual(paretoCDF(R(1.5), R(1.25), R(0.75)),
+            R(0.12780405050657870351378135209393062842092661676L), 8 * R.epsilon));
+    {
+        alias T = Fp!64;
+        enum expected = T(false, -66, UInt!64.fromHexString("82df10a4e36af994"));
+        assert(paretoCDF(T(1.5), T(1.25), T(0.75)) == expected);
+    }
+    {
+        alias T = Fp!128;
+        enum expected = T(false, -130, UInt!128.fromHexString("82df10a4e36af9947a04cefee929afa7"));
+        assert(paretoCDF(T(1.5), T(1.25), T(0.75)) == expected);
+    }
+    alias T = Fp!64;
+    assert(paretoCDF(T(1), T(1), T(2)) == T(0));
+    assert(paretoCDF(T(double.infinity), T(1), T(2)) == T(1));
+    auto adjacent = T(1);
+    adjacent.coefficient += 1;
+    // Rounded value of 1/(2^63+1) for the next represented input above one.
+    assert(paretoCDF(adjacent, T(1), T(1)) == T(false, -127, UInt!64.max - 1));
+    const least = T(false, long.min, UInt!64(1));
+    assert(paretoCDF(T(2), T(1), least) == least);
 }
 
 /++
@@ -209,6 +363,77 @@ unittest
     1.0.paretoCCDF(1, 3).shouldApprox == 1;
     2.0.paretoCCDF(1, 3).shouldApprox == 0.125;
     3.0.paretoCCDF(2, 4).shouldApprox == 0.1975309;
+}
+
+/++
+Computes the type-I Pareto CCDF using guarded extended-precision arithmetic.
+
+Params:
+    T = Represented $(D Fp) type, inferred from the arguments.
+    x = Observation at or above xMin, including positive infinity.
+    xMin = Positive finite lower support boundary.
+    alpha = Positive finite shape parameter.
+
+Returns:
+    The probability of an observation strictly greater than x, in type T. It is one at xMin and zero at infinity.
++/
+@safe pure nothrow @nogc
+T paretoCCDF(T)(const T x, const T xMin, const T alpha)
+    if (is(T == Fp!size, size_t size))
+    in (validParameter(xMin), "xMin must be finite and positive")
+    in (validParameter(alpha), "alpha must be finite and positive")
+    in (!x.isNaN && !x.sign && (x.isInfinity || !fpProbabilityLess(x, xMin)), "x must be at least xMin")
+{
+    import mir.stat.internal.fp_pareto: paretoTail;
+    return paretoTail!true(x, xMin, alpha);
+}
+
+///
+version(mir_stat_test)
+@safe pure nothrow @nogc unittest
+{
+    import mir.bignum.fp: Fp;
+    alias T = Fp!64;
+    assert(paretoCCDF(T(2), T(1), T(3)) == T(0.125));
+}
+
+version(mir_stat_test)
+@safe pure nothrow @nogc unittest
+{
+    import mir.bignum.fixed: UInt;
+    import mir.math.common: approxEqual;
+    import std.meta: AliasSeq;
+    static foreach (R; AliasSeq!(float, double, real))
+        assert(approxEqual(paretoCCDF(R(1.5), R(1.25), R(0.75)),
+            R(0.87219594949342129648621864790606937157907338324L), 8 * R.epsilon));
+    {
+        alias T = Fp!64;
+        enum expected = T(false, -64, UInt!64.fromHexString("df483bd6c725419b"));
+        assert(paretoCCDF(T(1.5), T(1.25), T(0.75)) == expected);
+    }
+    {
+        alias T = Fp!128;
+        enum expected = T(false, -128, UInt!128.fromHexString("df483bd6c725419ae17ecc4045b59416"));
+        assert(paretoCCDF(T(1.5), T(1.25), T(0.75)) == expected);
+    }
+    alias T = Fp!64;
+    assert(paretoCCDF(T(1), T(1), T(2)) == T(1));
+    assert(paretoCCDF(T(4), T(1), T(1)) == T(0.25));
+    assert(paretoCCDF(T(2), T(1), T(false, 70, UInt!64(1))) == T(0));
+    // The exponent of two is fractional on either side of one.
+    assert(paretoCCDF(T(2), T(1), T(0.5)) == T(false, -64, UInt!64(0xb504f333f9de6484UL)));
+    assert(paretoCCDF(T(2), T(1), T(1.5)) == T(false, -65, UInt!64(0xb504f333f9de6484UL)));
+    assert(paretoCCDF(T(double.infinity), T(1), T(2)) == T(0));
+    // A tail far below hardware range remains positive when the CDF rounds to one.
+    const large = T(false, 40000, UInt!64(1));
+    assert(paretoCDF(large, T(1), T(0.5)) == T(1));
+    assert(paretoCCDF(large, T(1), T(0.5)) == T(false, -20063, UInt!64(1) << 63));
+    // 2^(-2^63-1) is halfway between zero and the least positive Fp.
+    const n = UInt!64(1) << 63;
+    assert(paretoCCDF(T(2), T(1), T(false, 0, n + 1)) == T(0));
+    assert(paretoCCDF(T(2), T(1), T(false, 0, n)) == T(false, long.min, UInt!64(1)));
+    alias Wide = Fp!128;
+    assert(paretoCCDF(Wide(2), Wide(1), Wide(false, 0, UInt!128(n + 1))) == Wide(0));
 }
 
 /++
@@ -266,6 +491,69 @@ unittest
 }
 
 /++
+Computes the type-I Pareto InvCDF using guarded extended-precision arithmetic.
+
+Params:
+    T = Represented $(D Fp) type, inferred from the arguments.
+    p = Probability in [0, 1].
+    xMin = Positive finite lower support boundary.
+    alpha = Positive finite shape parameter.
+
+Returns:
+    The p-quantile in type T. Zero gives xMin and one gives positive infinity.
++/
+@safe pure nothrow @nogc
+T paretoInvCDF(T)(const T p, const T xMin, const T alpha)
+    if (is(T == Fp!size, size_t size))
+    in (validParameter(xMin), "xMin must be finite and positive")
+    in (validParameter(alpha), "alpha must be finite and positive")
+    in (fpProbabilityValid(p), "p must be in [0, 1]")
+{
+    import mir.stat.internal.fp_pareto: paretoQuantile;
+    return paretoQuantile(p, xMin, alpha);
+}
+
+///
+version(mir_stat_test)
+@safe pure nothrow @nogc unittest
+{
+    import mir.bignum.fp: Fp;
+    alias T = Fp!64;
+    assert(paretoInvCDF(T(0.875), T(1), T(3)) == T(2));
+}
+
+version(mir_stat_test)
+@safe pure nothrow @nogc unittest
+{
+    import mir.bignum.fixed: UInt;
+    import mir.math.common: approxEqual;
+    import std.meta: AliasSeq;
+    static foreach (R; AliasSeq!(float, double, real))
+        assert(approxEqual(paretoInvCDF(R(0.625), R(1.25), R(0.75)),
+            R(4.62240849567089803228901516523974530297290075639L), 8 * R.epsilon));
+    {
+        alias T = Fp!64;
+        enum expected = T(false, -61, UInt!64.fromHexString("93eac538b5170eb4"));
+        assert(paretoInvCDF(T(0.625), T(1.25), T(0.75)) == expected);
+    }
+    {
+        alias T = Fp!128;
+        enum expected = T(false, -125, UInt!128.fromHexString("93eac538b5170eb3b42a55b71f4de539"));
+        assert(paretoInvCDF(T(0.625), T(1.25), T(0.75)) == expected);
+    }
+    alias T = Fp!64;
+    const least = T(false, long.min, UInt!64(1));
+    assert(paretoInvCDF(T(0), least, T(1)) == least);
+    assert(paretoInvCDF(least, T(3), T(1)) == T(3));
+    assert(paretoInvCDF(T(0.5), least, least).isInfinity);
+    assert(paretoInvCDF(T(0.75), least, T(1)) == T(false, long.min, UInt!64(4)));
+    assert(paretoInvCDF(T(1), least, T(2)).isInfinity);
+    assert(paretoInvCDF(T(0.5), least, T(false, -64, UInt!64(1)))
+        == T(false, long.max - 62, UInt!64(1) << 63));
+    assert(paretoInvCDF(least, T(1), least) == T(false, -62, UInt!64(0xadf85458a2bb4a9bUL)));
+}
+
+/++
 Computes the pareto log probability density function (LPDF).
 
 Returns the natural logarithm of the density. A negative value is valid;
@@ -313,6 +601,79 @@ unittest
     1.0.paretoLPDF(1, 3).shouldApprox == log(paretoPDF(1.0, 1, 3));
     2.0.paretoLPDF(1, 3).shouldApprox == log(paretoPDF(2.0, 1, 3));
     3.0.paretoLPDF(2, 4).shouldApprox == log(paretoPDF(3.0, 2, 4));
+}
+
+/++
+Computes the type-I Pareto LPDF using guarded extended-precision arithmetic.
+
+Params:
+    T = Represented $(D Fp) type, inferred from the arguments.
+    x = Observation at or above xMin, including positive infinity.
+    xMin = Positive finite lower support boundary.
+    alpha = Positive finite shape parameter.
+
+Returns:
+    The natural logarithm of the density in type T. At infinity it is negative infinity.
+    For severe cancellation at integral shapes, the calculation uses exact odd
+    integer products of up to eight input significand widths. For other shapes
+    or larger products, guarded subtraction can lose relative precision or leave
+    a residual at an exact zero.
++/
+@safe pure nothrow @nogc
+T paretoLPDF(T)(const T x, const T xMin, const T alpha)
+    if (is(T == Fp!size, size_t size))
+    in (validParameter(xMin), "xMin must be finite and positive")
+    in (validParameter(alpha), "alpha must be finite and positive")
+    in (!x.isNaN && !x.sign && (x.isInfinity || !fpProbabilityLess(x, xMin)), "x must be at least xMin")
+{
+    import mir.stat.internal.fp_pareto: paretoLogDensity;
+    return paretoLogDensity(x, xMin, alpha);
+}
+
+///
+version(mir_stat_test)
+@safe pure nothrow @nogc unittest
+{
+    import mir.bignum.fp: Fp;
+    alias T = Fp!64;
+    assert(paretoLPDF(T(1.125), T(0.84375), T(2)) == T(0));
+}
+
+version(mir_stat_test)
+@safe pure nothrow @nogc unittest
+{
+    import mir.bignum.fixed: UInt;
+    import mir.math.common: approxEqual;
+    import std.meta: AliasSeq;
+    static foreach (R; AliasSeq!(float, double, real))
+        assert(approxEqual(paretoLPDF(R(1.5), R(1.25), R(0.75)),
+            R(-0.82988834815541127907602064032406254297354213780L), 8 * R.epsilon));
+    {
+        alias T = Fp!64;
+        enum expected = T(true, -64, UInt!64.fromHexString("d4739012a8b12b02"));
+        assert(paretoLPDF(T(1.5), T(1.25), T(0.75)) == expected);
+    }
+    {
+        alias T = Fp!128;
+        enum expected = T(true, -128, UInt!128.fromHexString("d4739012a8b12b01b4c7e8794552e7c4"));
+        assert(paretoLPDF(T(1.5), T(1.25), T(0.75)) == expected);
+    }
+    alias T = Fp!64;
+    assert(paretoLPDF(T(2), T(2), T(2)) == T(0));
+    const limit = paretoLPDF(T(double.infinity), T(2), T(2));
+    assert(limit.isInfinity && limit.sign);
+    // alpha = 3, x = 3*(3/4)^3, xMin = (3/4)*x give density exactly one.
+    assert(paretoLPDF(T(1.265625), T(0.94921875), T(3)) == T(0));
+    alias Wide = Fp!128;
+    assert(paretoLPDF(Wide(1.125), Wide(0.84375), Wide(2)) == Wide(0));
+    // x^9 has 576 odd coefficient bits. Exercise the guarded fallback
+    // at represented inputs just below eight.
+    assert(paretoLPDF(T(false, -61, UInt!64.max), T(false, -61, UInt!64.max - 2), T(8))
+        == T(true, -124, UInt!64(0xf000000000000002UL)));
+    assert(paretoLPDF(T(false, -63, UInt!64(0x8fffffffffffffffUL)), T(0.84375), T(2))
+        == T(false, -125, UInt!64(0xaaaaaaaaaaaaaaabUL)));
+    assert(paretoLPDF(T(false, -63, UInt!64(0x9000000000000001UL)), T(0.84375), T(2))
+        == T(true, -125, UInt!64(0xaaaaaaaaaaaaaaaaUL)));
 }
 
 // Near the lower bound, subtraction is exact. Evaluate log(x/xMin) as
@@ -385,4 +746,9 @@ version(mir_stat_test)
         3.999999999999942054888553e-198, 4e-13, 0.0));
     assert(approxEqual(paretoInvCDF(0.5, 1e-300, 0.0008),
         1.938628441591554730157366e76, 4e-13, 0.0));
+}
+
+private bool validParameter(uint bits)(Fp!bits value) @safe pure nothrow @nogc
+{
+    return !value.isSpecial && !value.sign && !!value.coefficient;
 }

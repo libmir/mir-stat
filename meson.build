@@ -76,6 +76,7 @@ sources_list = [
     'mir/stat/internal/fp_location_scale',
     'mir/stat/internal/fp_laplace',
     'mir/stat/internal/fp_logistic',
+    'mir/stat/internal/fp_pareto',
     'mir/stat/internal/fp_rayleigh',
     'mir/stat/internal/fp_uniform',
     'mir/stat/internal/gamma',
