@@ -27,6 +27,7 @@ $(BOOKTABLE,
 $(TR $(TH Category) $(TH Declarations))
     $(TR $(TD Ordinary quantiles) $(TD
         $(REF median, mir, stat, descriptive, univariate, quantiles)$(NBSP)
+        $(REF medianAssumeSorted, mir, stat, descriptive, univariate, quantiles)$(NBSP)
         $(REF rcMedian, mir, stat, descriptive, univariate, quantiles)$(NBSP)
         $(REF makeMedian, mir, stat, descriptive, univariate, quantiles)$(NBSP)
         $(REF quantile, mir, stat, descriptive, univariate, quantiles)$(NBSP)
@@ -58,6 +59,7 @@ $(TR $(TH Category) $(TH Declarations))
         $(REF rcWeightedInterquartileRange, mir, stat, descriptive, univariate, quantiles)$(NBSP)
         $(REF makeWeightedInterquartileRange, mir, stat, descriptive, univariate, quantiles)$(NBSP)
         $(REF interquartileRange, mir, stat, descriptive, univariate, quantiles)$(NBSP)
+        $(REF interquartileRangeAssumeSorted, mir, stat, descriptive, univariate, quantiles)$(NBSP)
         $(REF rcInterquartileRange, mir, stat, descriptive, univariate, quantiles)$(NBSP)
         $(REF makeInterquartileRange, mir, stat, descriptive, univariate, quantiles)$(NBSP)
         $(REF weightedMedianAbsoluteDeviation, mir, stat, descriptive, univariate, quantiles)$(NBSP)
@@ -135,6 +137,39 @@ private meanType!F allocatedMedian(F, bool allowModify, QuantileAllocation alloc
     }
 }
 
+/++ Compute the median directly from ascending observations without scratch.
+Params:
+    F = result type promoted as for median, inferred from the observations when omitted
+    data = nonempty ascending array, Mir slice in ascending flattened order,
+        or indexed Phobos SortedRange with its default ascending predicate
+Returns:
+    The middle observation for odd lengths or the midpoint of the middle pair for even lengths.
++/
+auto medianAssumeSorted(F = void, Data)(scope auto ref Data data)
+{
+    auto values = sortedQuantileValues(data);
+    static if (is(F == void))
+        alias Result = meanType!(typeof(values[0]));
+    else
+        alias Result = meanType!F;
+    const n = values.length;
+    assert(n > 0, "median: range must not be empty");
+    const middle = n / 2;
+    if (n % 2)
+        return cast(Result) values[middle];
+    return medianMidpoint!Result(values[middle - 1], values[middle]);
+}
+
+///
+version(mir_stat_test) @safe pure nothrow @nogc unittest
+{
+    import mir.ndslice : sliced, stride;
+    const long[2] ends = [long.min, long.max];
+    assert(medianAssumeSorted(ends) == -0.5);
+    const int[6] data = [1, 0, 3, 0, 7, 0];
+    assert(medianAssumeSorted!real(data[].sliced.stride(2)) == 3);
+}
+
 /++
 Compute the same statistic as $(LREF rcMedian) using GC-managed scratch.
 
@@ -155,6 +190,19 @@ template median(F, bool allowModify = false)
         QuantileContext context;
         return allocatedMedian!(F, allowModify, QuantileAllocation.gc)(context, slice.lightScope);
     }
+
+    /++ Read the middle observations of an ascending indexed range without scratch.
+    Params:
+        data = nonempty Phobos SortedRange with its default ascending predicate
+    Returns:
+        The middle value for odd length, or the midpoint of the middle pair
+        for even length, using the usual median result type.
+    +/
+    auto median(Data)(scope auto ref Data data)
+        if (isPhobosSortedRange!Data)
+    {
+        return medianAssumeSorted!F(data);
+    }
 }
 
 /// ditto
@@ -172,6 +220,13 @@ template median(bool allowModify = false)
                            "allowModify must be false or the input must be mutable");
         alias F = typeof(return);
         return .median!(F, allowModify)(slice.move);
+    }
+
+    /// ditto
+    auto median(Data)(scope auto ref Data data)
+        if (isPhobosSortedRange!Data)
+    {
+        return medianAssumeSorted(data);
     }
 }
 
@@ -400,6 +455,21 @@ template interquartileRange(F, QuantileAlgo quantileAlgo = QuantileAlgo.type7,
         import mir.ndslice.slice: toSlice;
         return .interquartileRange!(F, quantileAlgo, allowModifySlice)(x.toSlice);
     }
+
+    /++ Compute a spread directly from an ascending range.
+    Indexed reads must be callable from $(D @safe pure nothrow @nogc) code.
+    Params:
+        data = Phobos SortedRange with the default ascending predicate and at least two observations
+        probabilities = optional lower bound, or lower and upper bounds in [0, 1].
+            The defaults are 0.25 and 0.75. A single bound selects its complement as the upper bound.
+    Returns:
+        The upper quantile minus the lower quantile, using the usual IQR result type.
+    +/
+    @fmamath auto interquartileRange(Data, P...)(scope auto ref Data data, scope auto ref P probabilities)
+        if (isPhobosSortedRange!Data && P.length <= 2)
+    {
+        return interquartileRangeAssumeSorted!(F, quantileAlgo)(data, probabilities);
+    }
 }
 
 /// ditto
@@ -447,6 +517,7 @@ template interquartileRange(QuantileAlgo quantileAlgo = QuantileAlgo.type7,
     /// ditto
     @fmamath quantileType!(T[], quantileAlgo)
         interquartileRange(T)(scope T[] array...)
+        if (!isPhobosSortedRange!T)
     {
         import core.lifetime: move;
 
@@ -461,6 +532,13 @@ template interquartileRange(QuantileAlgo quantileAlgo = QuantileAlgo.type7,
         import mir.ndslice.slice: toSlice;
         alias F = quantileType!(typeof(x.toSlice), quantileAlgo);
         return .interquartileRange!(F, quantileAlgo, allowModifySlice)(x);
+    }
+
+    /// ditto
+    @fmamath auto interquartileRange(Data, P...)(scope auto ref Data data, scope auto ref P probabilities)
+        if (isPhobosSortedRange!Data && P.length <= 2)
+    {
+        return interquartileRangeAssumeSorted!quantileAlgo(data, probabilities);
     }
 }
 
@@ -699,6 +777,19 @@ template rcMedian(F, bool allowModify = false)
             }
         }
     }
+
+    /++ Read the middle observations of an ascending indexed range without scratch.
+    Params:
+        data = nonempty Phobos SortedRange with its default ascending predicate
+    Returns:
+        The middle value for odd length, or the midpoint of the middle pair
+        for even length, using the usual median result type.
+    +/
+    auto rcMedian(Data)(scope auto ref Data data)
+        if (isPhobosSortedRange!Data)
+    {
+        return medianAssumeSorted!F(data);
+    }
 }
 
 /// ditto
@@ -716,6 +807,13 @@ template rcMedian(bool allowModify = false)
                            "allowModify must be false or the input must be mutable");
         alias F = typeof(return);
         return .rcMedian!(F, allowModify)(slice.move);
+    }
+
+    /// ditto
+    auto rcMedian(Data)(scope auto ref Data data)
+        if (isPhobosSortedRange!Data)
+    {
+        return medianAssumeSorted(data);
     }
 }
 
@@ -7652,7 +7750,7 @@ private auto sortedQuantileValues(Data)(return scope auto ref Data data)
     {
         import std.traits : TemplateArgsOf;
         static assert(is(typeof(TemplateArgsOf!Data[1]) == string) &&
-            TemplateArgsOf!Data[1] == "a < b", "quantile requires ascending observations");
+            TemplateArgsOf!Data[1] == "a < b", "expected the default ascending SortedRange predicate");
         return data;
     }
     else
@@ -9386,25 +9484,78 @@ version(mir_stat_test)
 }
 
 
+/++ Compute a quantile spread directly from ascending observations without scratch.
+Indexed reads must be callable from $(D @safe pure nothrow @nogc) code.
+Params:
+    F = result type promoted as for interquartileRange, inferred when omitted
+    algorithm = quantile convention, default type7
+    data = ascending array, Mir slice in ascending flattened order, or indexed Phobos
+        SortedRange with its default ascending predicate. At least two observations are required.
+    probabilities = optional lower bound or lower and upper bounds in [0, 1].
+        The defaults are 0.25 and 0.75. A single bound uses its complement as the upper bound.
+Returns:
+    The upper quantile minus the lower quantile using the spread arithmetic of $(LREF interquartileRange).
++/
+auto interquartileRangeAssumeSorted(F, QuantileAlgo algorithm = QuantileAlgo.type7, Data, P...)(
+    scope auto ref Data data, scope auto ref P probabilities)
+    if (P.length <= 2)
+{
+    alias Result = quantileType!(F, algorithm);
+    scope auto values = sortedQuantileValues(data);
+    static if (P.length) auto lo = probabilities[0];
+    else enum lo = 0.25;
+    static if (P.length == 2) auto hi = probabilities[1];
+    else auto hi = 1 - lo;
+    return preparedQuantileSpread!(Result, algorithm, false, false, true)(values, lo, hi, null);
+}
+
+/// ditto
+auto interquartileRangeAssumeSorted(QuantileAlgo algorithm = QuantileAlgo.type7, Data, P...)(
+    scope auto ref Data data, scope auto ref P probabilities)
+    if (P.length <= 2)
+{
+    alias Element = typeof(sortedQuantileValues(data)[0]);
+    return interquartileRangeAssumeSorted!(Element, algorithm)(data, probabilities);
+}
+
+///
+version(mir_stat_test) @safe pure nothrow @nogc unittest
+{
+    import mir.ndslice : sliced, stride;
+    const long[6] data = [long.max - 4, 0, long.max - 2, 0, long.max, 0];
+    auto observations = data[].sliced.stride(2);
+    assert(interquartileRangeAssumeSorted(observations) == 2);
+    assert(interquartileRangeAssumeSorted!(double, QuantileAlgo.type1)(observations, 1, 0) == -4);
+    const int[4] values = [1, 2, 4, 8];
+    assert(interquartileRangeAssumeSorted(values, 0) == 7);
+}
+
 // Shared spread arithmetic for ordinary calls, tables, and histogram queries.
 // Incremental callers retain a bitmap; sparse callers supply four zeroed ranks.
 package(mir.stat) auto preparedQuantileSpread(F, QuantileAlgo algorithm, bool incremental,
-    bool sparse = false,
+    bool sparse = false, bool assumeSorted = false,
     S, P, Q)(S workspace, P lo, Q hi, scope ulong[] established)
 {
     import std.traits: isIntegral, Unqual, CommonType;
-    import mir.primitives: DeepElementType;
-    alias T = Unqual!(DeepElementType!S);
+    alias T = Unqual!(typeof(workspace[0]));
     // Accept integer probability arguments while retaining floating precision.
     alias Probability = CommonType!(P, Q);
     static if (isIntegral!Probability) alias Level = double;
     else alias Level = Probability;
+    auto at(R)(Level p)
+    {
+        static if (assumeSorted)
+            return quantileRanks!algorithm(workspace.length, p).evaluate!(R, algorithm)(workspace);
+        else
+            return selectQuantileImpl!(algorithm, R, incremental, PartitionPivotStrategy.midpoint, sparse)(
+                workspace, p, established);
+    }
     const lowerProbability = cast(Level) lo;
     const upperProbability = cast(Level) hi;
     static if (isIntegral!T)
     {
-        const lower = selectQuantileImpl!(algorithm, void, incremental, PartitionPivotStrategy.midpoint, sparse)(workspace, lowerProbability, established);
-        const upper = selectQuantileImpl!(algorithm, void, incremental, PartitionPivotStrategy.midpoint, sparse)(workspace, upperProbability, established);
+        const lower = at!void(lowerProbability);
+        const upper = at!void(upperProbability);
         const negative = upper.low < lower.low;
         const ulong distance = negative ?
             cast(ulong) lower.low - cast(ulong) upper.low :
@@ -9439,8 +9590,8 @@ package(mir.stat) auto preparedQuantileSpread(F, QuantileAlgo algorithm, bool in
     }
     else static if (isFloatingPoint!T && isFloatingPoint!F)
     {
-        auto lower = selectQuantileImpl!(algorithm, void, incremental, PartitionPivotStrategy.midpoint, sparse)(workspace, lowerProbability, established);
-        auto upper = selectQuantileImpl!(algorithm, void, incremental, PartitionPivotStrategy.midpoint, sparse)(workspace, upperProbability, established);
+        auto lower = at!void(lowerProbability);
+        auto upper = at!void(upperProbability);
         alias Work = CommonType!(T, F, Level, double);
         import std.math: isFinite;
         if (!isFinite(lower.low) || !isFinite(lower.high) ||
@@ -9473,8 +9624,8 @@ package(mir.stat) auto preparedQuantileSpread(F, QuantileAlgo algorithm, bool in
     }
     else
     {
-        const lower = selectQuantileImpl!(algorithm, F, incremental, PartitionPivotStrategy.midpoint, sparse)(workspace, lowerProbability, established);
-        const upper = selectQuantileImpl!(algorithm, F, incremental, PartitionPivotStrategy.midpoint, sparse)(workspace, upperProbability, established);
+        const lower = at!F(lowerProbability);
+        const upper = at!F(upperProbability);
         return upper - lower;
     }
 }
@@ -9857,6 +10008,21 @@ template rcInterquartileRange(F, QuantileAlgo quantileAlgo = QuantileAlgo.type7,
         import mir.ndslice.slice: toSlice;
         return .rcInterquartileRange!(F, quantileAlgo, allowModifySlice)(x.toSlice);
     }
+
+    /++ Compute a spread directly from an ascending range.
+    Indexed reads must be callable from $(D @safe pure nothrow @nogc) code.
+    Params:
+        data = Phobos SortedRange with the default ascending predicate and at least two observations
+        probabilities = optional lower bound, or lower and upper bounds in [0, 1].
+            The defaults are 0.25 and 0.75. A single bound selects its complement as the upper bound.
+    Returns:
+        The upper quantile minus the lower quantile, using the usual IQR result type.
+    +/
+    @fmamath auto rcInterquartileRange(Data, P...)(scope auto ref Data data, scope auto ref P probabilities)
+        if (isPhobosSortedRange!Data && P.length <= 2)
+    {
+        return interquartileRangeAssumeSorted!(F, quantileAlgo)(data, probabilities);
+    }
 }
 
 /// ditto
@@ -9904,6 +10070,7 @@ template rcInterquartileRange(QuantileAlgo quantileAlgo = QuantileAlgo.type7,
     /// ditto
     @fmamath quantileType!(T[], quantileAlgo)
         rcInterquartileRange(T)(scope T[] array...)
+        if (!isPhobosSortedRange!T)
     {
         import core.lifetime: move;
 
@@ -9918,6 +10085,13 @@ template rcInterquartileRange(QuantileAlgo quantileAlgo = QuantileAlgo.type7,
         import mir.ndslice.slice: toSlice;
         alias F = quantileType!(typeof(x.toSlice), quantileAlgo);
         return .rcInterquartileRange!(F, quantileAlgo, allowModifySlice)(x);
+    }
+
+    /// ditto
+    @fmamath auto rcInterquartileRange(Data, P...)(scope auto ref Data data, scope auto ref P probabilities)
+        if (isPhobosSortedRange!Data && P.length <= 2)
+    {
+        return interquartileRangeAssumeSorted!quantileAlgo(data, probabilities);
     }
 }
 
@@ -10128,7 +10302,8 @@ By default inputs are unchanged. Setting allowModify permits rearranging the
 observations and avoids scratch allocation. One or two observations also need
 no scratch when inputs are preserved. An unused allocator is not invoked.
 Arrays and Mir slices are accepted; multidimensional slices are flattened for
-selection, as in median.
+selection, as in median. A default ascending Phobos SortedRange is read
+directly at its middle positions and requires no allocator calls.
 
 Params:
     F = output type, promoted as for median
@@ -10143,7 +10318,10 @@ template makeMedian(F, bool allowModify = false)
     +/
     meanType!F makeMedian(Allocator, Data)(auto ref Allocator allocator, scope auto ref Data data)
     {
-        return allocatedMedian!(F, allowModify, QuantileAllocation.custom)(allocator, data);
+        static if (isPhobosSortedRange!Data)
+            return medianAssumeSorted!F(data);
+        else
+            return allocatedMedian!(F, allowModify, QuantileAllocation.custom)(allocator, data);
     }
 }
 
@@ -10153,9 +10331,60 @@ template makeMedian(bool allowModify = false)
     /// ditto
     auto makeMedian(Allocator, Data)(auto ref Allocator allocator, scope auto ref Data data)
     {
-        alias F = meanType!(typeof(quantileSlice(data)));
-        return .makeMedian!(F, allowModify)(allocator, data);
+        static if (isPhobosSortedRange!Data)
+            return medianAssumeSorted(data);
+        else
+        {
+            alias F = meanType!(typeof(quantileSlice(data)));
+            return .makeMedian!(F, allowModify)(allocator, data);
+        }
     }
+}
+
+/// Compute a median over ascending observations in a strided slice.
+version(mir_stat_test) @safe pure nothrow @nogc unittest
+{
+    import mir.ndslice : sliced, stride;
+    import std.experimental.allocator.mallocator : Mallocator;
+    import std.range : assumeSorted;
+    const int[6] data = [1, 0, 3, 0, 7, 0];
+    auto ordered = assumeSorted(data[].sliced.stride(2));
+    assert(makeMedian(Mallocator.instance, ordered) == 3);
+}
+
+// Check allocator use, result types, and wide-integer midpoint arithmetic.
+version(mir_stat_test) @safe pure nothrow @nogc unittest
+{
+    import mir.ndslice : sliced, stride;
+    import std.range : assumeSorted;
+    const long[8] data = [long.min, 0, long.min, 0, long.max, 0, long.max, 0];
+    auto ordered = assumeSorted(data[].sliced.stride(2));
+    QuantileTestAllocator!() allocator;
+    assert(median(ordered) == -0.5);
+    assert(rcMedian!real(ordered) == -0.5L);
+    assert(makeMedian(allocator, ordered) == -0.5);
+    assert(allocator.allocations == 0);
+    const float[3] odd = [1, 3, 7];
+    static assert(is(typeof(median(assumeSorted(odd[]))) == float));
+    assert(rcMedian(assumeSorted(odd[])) == 3);
+    assert(makeMedian!double(allocator, assumeSorted(odd[0 .. 1])) == 1);
+    static assert(!__traits(compiles, median(assumeSorted!"a > b"(odd[]))));
+}
+
+// Count only reads performed by the query on the constructed wrapper.
+version(mir_stat_test) @safe unittest
+{
+    import mir.ndslice : sliced, map;
+    import std.range : assumeSorted;
+    const float[3] odd = [1, 3, 7];
+    static size_t reads;
+    static float observe(float value) { ++reads; return value; }
+    auto counted = assumeSorted(odd[].sliced.map!observe);
+    reads = 0;
+    assert(median(counted) == 3 && reads == 1);
+    auto pair = assumeSorted(odd[0 .. 2].sliced.map!observe);
+    reads = 0;
+    assert(rcMedian(pair) == 2 && reads == 2);
 }
 
 /++
@@ -10203,14 +10432,17 @@ An allocator variable is passed by reference; a temporary allocator is also acce
 Uses the definitions, result types, and numerical safeguards of
 $(LREF interquartileRange). Omitted probabilities select 0.25 and 0.75;
 one probability lo selects lo and 1 - lo; two select lo and hi.
-Both selections share one workspace, preserving small differences at large
-integral or floating-point offsets before rounding the result.
+The spread calculation preserves small differences at large integral or
+floating-point offsets before rounding the result.
 
-Inputs are unchanged by default. Set allowModifySlice to permit rearranging
-the observations and avoid scratch allocation. Otherwise allocator supplies
-the copy, which is released before return, including on exceptions. The scalar
-result requires no disposal. Attributes depend on the allocator. Allocation
-choice changes storage management, not the quantile convention.
+For a Phobos SortedRange with the default ascending predicate, both quantiles
+are read directly from the input. This requires no scratch or allocator calls.
+Indexed reads must be callable from $(D @safe pure nothrow @nogc) code.
+
+For arrays and Mir slices, both selections share a temporary copy by default.
+The allocator supplies this copy, which is released before return, including
+on exceptions. Set allowModifySlice to permit selection in the input and avoid
+the copy. The scalar result requires no disposal.
 
 Params:
     F = output type, inferred as for interquartileRange when omitted
@@ -10223,24 +10455,29 @@ template makeInterquartileRange(F, QuantileAlgo quantileAlgo = QuantileAlgo.type
     /++
     Params:
         allocator = allocator for temporary storage
-        data = observations, as an array or Mir slice
+        data = observations as an array, Mir slice, or default ascending Phobos SortedRange
         probabilities = optional lo, or lo and hi
     +/
     @fmamath quantileType!(F, quantileAlgo) makeInterquartileRange(Allocator, Data, P...)(
         auto ref Allocator allocator, scope auto ref Data data, scope auto ref P probabilities)
         if (P.length <= 2)
     {
-        alias Result = typeof(return);
-        scope auto source = quantileSlice(data);
-        static if (P.length == 0)
-            return allocatedQuantileSpread!(Result, quantileAlgo, allowModifySlice,
-                QuantileAllocation.custom)(allocator, source, 0.25, 0.75);
-        else static if (P.length == 1)
-            return allocatedQuantileSpread!(Result, quantileAlgo, allowModifySlice,
-                QuantileAllocation.custom)(allocator, source, probabilities[0], 1 - probabilities[0]);
+        static if (isPhobosSortedRange!Data)
+            return interquartileRangeAssumeSorted!(F, quantileAlgo)(data, probabilities);
         else
-            return allocatedQuantileSpread!(Result, quantileAlgo, allowModifySlice,
-                QuantileAllocation.custom)(allocator, source, probabilities[0], probabilities[1]);
+        {
+            alias Result = typeof(return);
+            scope auto source = quantileSlice(data);
+            static if (P.length == 0)
+                return allocatedQuantileSpread!(Result, quantileAlgo, allowModifySlice,
+                    QuantileAllocation.custom)(allocator, source, 0.25, 0.75);
+            else static if (P.length == 1)
+                return allocatedQuantileSpread!(Result, quantileAlgo, allowModifySlice,
+                    QuantileAllocation.custom)(allocator, source, probabilities[0], 1 - probabilities[0]);
+            else
+                return allocatedQuantileSpread!(Result, quantileAlgo, allowModifySlice,
+                    QuantileAllocation.custom)(allocator, source, probabilities[0], probabilities[1]);
+        }
     }
 }
 
@@ -10253,9 +10490,34 @@ template makeInterquartileRange(QuantileAlgo quantileAlgo = QuantileAlgo.type7,
         scope auto ref Data data, scope auto ref P probabilities)
         if (P.length <= 2)
     {
-        alias F = quantileType!(typeof(quantileSlice(data)), quantileAlgo);
+        static if (isPhobosSortedRange!Data) alias F = typeof(data[0]);
+        else alias F = quantileType!(typeof(quantileSlice(data)), quantileAlgo);
         return .makeInterquartileRange!(F, quantileAlgo, allowModifySlice)(allocator, data, probabilities);
     }
+}
+
+// Sorted lookup shares spread arithmetic with selection for all nine estimators.
+version(mir_stat_test) @safe pure nothrow @nogc unittest
+{
+    import mir.ndslice : sliced, stride;
+    import std.range : assumeSorted;
+    import std.traits : EnumMembers;
+    const long[8] data = [long.max - 9, 0, long.max - 7, 0, long.max - 2, 0, long.max, 0];
+    auto values = data[].sliced.stride(2);
+    auto ordered = assumeSorted(values);
+    QuantileTestAllocator!() allocator;
+    static foreach (algo; EnumMembers!QuantileAlgo)
+    {
+        assert(interquartileRange!algo(ordered) == rcInterquartileRange!algo(values));
+        assert(rcInterquartileRange!algo(ordered, 0.125f) == rcInterquartileRange!algo(values, 0.125f));
+        assert(makeInterquartileRange!(double, algo)(allocator, ordered, 1, 0) == -9);
+    }
+    static assert(is(typeof(makeInterquartileRange!"type1"(allocator, ordered)) == long));
+    assert(makeInterquartileRange(allocator, ordered, 0.5, 0.5) == 0);
+    assert(allocator.allocations == 0);
+    const double[2] ends = [-double.max, double.max];
+    assert(interquartileRange(assumeSorted(ends[])) == double.max);
+    static assert(!__traits(compiles, interquartileRange(assumeSorted!"a > b"(ends[]))));
 }
 
 /// ditto
