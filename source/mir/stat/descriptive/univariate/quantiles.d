@@ -57,6 +57,7 @@ $(TR $(TH Category) $(TH Declarations))
     ))
     $(TR $(TD Measures of spread) $(TD
         $(REF weightedInterquartileRange, mir, stat, descriptive, univariate, quantiles)$(NBSP)
+        $(REF weightedInterquartileRangeAssumeSorted, mir, stat, descriptive, univariate, quantiles)$(NBSP)
         $(REF rcWeightedInterquartileRange, mir, stat, descriptive, univariate, quantiles)$(NBSP)
         $(REF makeWeightedInterquartileRange, mir, stat, descriptive, univariate, quantiles)$(NBSP)
         $(REF interquartileRange, mir, stat, descriptive, univariate, quantiles)$(NBSP)
@@ -398,15 +399,25 @@ template weightedInterquartileRange(F, WeightInterpretation interpretation,
         QuantileContext context;
         return allocatedWeightedSpread!(F, interpretation, algorithm, QuantileAllocation.gc)(context, data, weights);
     }
+
+    /++ Query an ordered observation/weight pair.
+    Params:
+        rows = positive-weight rows in ascending value and then raw weight order,
+            borrowed with $(LREF assumeWeightedSorted)
+    Returns:
+        The weighted 75th percentile minus the weighted 25th percentile as F.
+    +/
+    F weightedInterquartileRange(Rows)(scope auto ref Rows rows)
+        if (isSortedWeightedObservations!Rows)
+    {
+        return .weightedInterquartileRangeAssumeSorted!(F, interpretation, algorithm)(rows);
+    }
 }
 
 /// ditto
 template weightedInterquartileRange(F, WeightInterpretation interpretation = WeightInterpretation.relative)
 {
-    static if (interpretation == WeightInterpretation.frequency)
-        alias weightedInterquartileRange = .weightedInterquartileRange!(F, interpretation, WeightedQuantileAlgo.type7);
-    else
-        alias weightedInterquartileRange = .weightedInterquartileRange!(F, interpretation, WeightedQuantileAlgo.inverseCDF);
+    alias weightedInterquartileRange = .weightedInterquartileRange!(F, interpretation, weightedTableDefault!interpretation);
 }
 
 /// ditto
@@ -421,15 +432,20 @@ template weightedInterquartileRange(WeightInterpretation interpretation,
         alias F = WeightedQuantileResult!(Data, algorithm);
         return .weightedInterquartileRange!(F, interpretation, algorithm)(data, weights);
     }
+
+    /// ditto
+    auto weightedInterquartileRange(Rows)(scope auto ref Rows rows)
+        if (isSortedWeightedObservations!Rows)
+    {
+        alias F = WeightedQuantileResult!(typeof(rows.values), algorithm);
+        return .weightedInterquartileRange!(F, interpretation, algorithm)(rows);
+    }
 }
 
 /// ditto
 template weightedInterquartileRange(WeightInterpretation interpretation = WeightInterpretation.relative)
 {
-    static if (interpretation == WeightInterpretation.frequency)
-        alias weightedInterquartileRange = .weightedInterquartileRange!(interpretation, WeightedQuantileAlgo.type7);
-    else
-        alias weightedInterquartileRange = .weightedInterquartileRange!(interpretation, WeightedQuantileAlgo.inverseCDF);
+    alias weightedInterquartileRange = .weightedInterquartileRange!(interpretation, weightedTableDefault!interpretation);
 }
 
 /// ditto
@@ -448,6 +464,93 @@ template weightedInterquartileRange(WeightedQuantileAlgo algorithm,
     alias weightedInterquartileRange = .weightedInterquartileRange!(interpretation, algorithm);
 }
 
+
+/++ Compute the weighted quartile spread of ordered observations with GC-managed scratch.
+Params:
+    F = optional result type, inferred as for $(LREF weightedInterquartileRange) when omitted
+    interpretation = relative weights (default) or frequency counts
+    algorithm = estimator, defaulting to inverseCDF for relative weights and type7 for frequency counts.
+        The estimator and interpretation may be passed in either order.
+    data = one-dimensional observations in ascending order among positive-weight rows.
+        Arrays, Mir slices, and containers convertible to a Mir slice of the same
+        element type are accepted, including when wrapped in a default ascending
+        Phobos SortedRange.
+    weights = aligned finite nonnegative weights. Positive weights on equal values must be nondecreasing.
+        Frequency weights must be whole counts. At least one row must have positive weight;
+        positive-weight observations must be finite.
+Returns:
+    The weighted 75th percentile minus the weighted 25th percentile, with the result
+    type and integer range checks of $(LREF weightedInterquartileRange).
++/
+template weightedInterquartileRangeAssumeSorted(F, WeightInterpretation interpretation = WeightInterpretation.relative,
+    WeightedQuantileAlgo algorithm = weightedTableDefault!interpretation)
+    if (validWeightedQuantileOptions!(interpretation, algorithm) &&
+        (isFloatingPoint!F || (algorithm == WeightedQuantileAlgo.inverseCDF && isIntegral!F)))
+{
+    /// ditto
+    F weightedInterquartileRangeAssumeSorted(Data, Weights)(scope auto ref Data data, scope auto ref Weights weights)
+    {
+        return sortedWeightedSpread!(F, interpretation, algorithm)(data, weights);
+    }
+
+    /++ Query an ordered observation/weight pair using the same options as the two-input overload.
+    Params:
+        rows = ordered observations and aligned weights borrowed with $(LREF assumeWeightedSorted)
+    Returns:
+        The weighted 75th percentile minus the weighted 25th percentile, with the
+        result type and integer range checks of $(LREF weightedInterquartileRange).
+    +/
+    F weightedInterquartileRangeAssumeSorted(Rows)(scope auto ref Rows rows)
+        if (isSortedWeightedObservations!Rows)
+    {
+        return .weightedInterquartileRangeAssumeSorted!(F, interpretation, algorithm)(rows.values, rows.weights);
+    }
+}
+
+/// ditto
+template weightedInterquartileRangeAssumeSorted(WeightInterpretation interpretation = WeightInterpretation.relative,
+    WeightedQuantileAlgo algorithm = weightedTableDefault!interpretation)
+    if (validWeightedQuantileOptions!(interpretation, algorithm))
+{
+    /// ditto
+    auto weightedInterquartileRangeAssumeSorted(Data, Weights)(scope auto ref Data data, scope auto ref Weights weights)
+    {
+        return sortedWeightedSpread!(void, interpretation, algorithm)(data, weights);
+    }
+
+    /// ditto
+    auto weightedInterquartileRangeAssumeSorted(Rows)(scope auto ref Rows rows)
+        if (isSortedWeightedObservations!Rows)
+    {
+        return .weightedInterquartileRangeAssumeSorted!(interpretation, algorithm)(rows.values, rows.weights);
+    }
+}
+
+/// ditto
+template weightedInterquartileRangeAssumeSorted(F, WeightedQuantileAlgo algorithm,
+    WeightInterpretation interpretation = WeightInterpretation.relative)
+    if (validWeightedQuantileOptions!(interpretation, algorithm))
+{
+    alias weightedInterquartileRangeAssumeSorted = .weightedInterquartileRangeAssumeSorted!(F, interpretation, algorithm);
+}
+
+/// ditto
+template weightedInterquartileRangeAssumeSorted(WeightedQuantileAlgo algorithm,
+    WeightInterpretation interpretation = WeightInterpretation.relative)
+    if (validWeightedQuantileOptions!(interpretation, algorithm))
+{
+    alias weightedInterquartileRangeAssumeSorted = .weightedInterquartileRangeAssumeSorted!(interpretation, algorithm);
+}
+
+///
+version(mir_stat_test) @safe unittest
+{
+    const long[3] values = [long.max - 3, long.max - 2, long.max], weights = [1, 1, 1];
+    assert(weightedInterquartileRangeAssumeSorted(values, weights) == 3);
+    auto rows = assumeWeightedSorted(values[], weights[]);
+    assert(weightedInterquartileRangeAssumeSorted(rows) == 3);
+    assert(weightedInterquartileRange(rows) == 3);
+}
 
 /++
 Compute the same statistic as $(LREF rcInterquartileRange) using GC-managed scratch.
@@ -3323,6 +3426,18 @@ private F preparedWeightedQuantileAt(F, WeightInterpretation interpretation, Wei
     return weightedQuantileAt!(F, interpretation, algorithm)(workspace, probability, state.effectiveSize);
 }
 
+// Preserve the observation type used for result inference and integral spread arithmetic.
+private auto weightedObservationSlice(Data)(return scope auto ref Data data)
+{
+    import mir.primitives : DeepElementType;
+    import std.traits : Unqual;
+    alias Values = typeof(quantileSlice(data));
+    static assert(is(Unqual!(DeepElementType!Data) == Unqual!(DeepElementType!Values)),
+        "Weighted quantile input conversion changes its element type. " ~
+        "Convert the input to a Mir slice explicitly before calling.");
+    return quantileSlice(data);
+}
+
 private auto allocatedWeightedQuantile(F, WeightInterpretation interpretation, WeightedQuantileAlgo algorithm,
     QuantileAllocation allocation, size_t fixedResultLength = 0, bool assumeSorted = false, Context, Weights, Data, P)(
     ref Context context, scope auto ref Weights weights,
@@ -3333,15 +3448,12 @@ private auto allocatedWeightedQuantile(F, WeightInterpretation interpretation, W
 
     static assert(validWeightedQuantileOptions!(interpretation, algorithm),
         "Unsupported weight interpretation and quantile algorithm combination");
-    scope auto values = quantileSlice(data);
+    scope auto values = weightedObservationSlice(data);
     scope auto masses = quantileSlice(weights);
     static assert(typeof(values).N == 1 && typeof(masses).N == 1,
         "Weighted quantile values and weights must be one-dimensional");
     alias Element = Unqual!(DeepElementType!(typeof(values)));
     alias Weight = Unqual!(DeepElementType!(typeof(masses)));
-    static assert(is(Unqual!(DeepElementType!Data) == Element),
-        "Weighted quantile input conversion changes its element type. " ~
-        "Convert the input to a Mir slice explicitly before calling.");
     static assert(isNumeric!Element && isNumeric!Weight && isNumeric!F,
         "Weighted quantiles require numeric values, weights, and output");
     // Check the ordering contract before acquiring caller-managed scratch.
@@ -3479,8 +3591,8 @@ private template isSortedWeightedObservations(T)
 }
 
 /++
-Mark aligned observations and weights as ordered for weighted quantile
-and median queries across allocation policies.
+Mark aligned observations and weights as ordered for weighted quantile, median,
+and interquartile range queries across allocation policies.
 The factory copies the slice descriptors without allocating or sorting rows.
 Pass a static array as an explicit slice, for example $(D values[]). As with
 $(LREF weightedQuantileAssumeSorted), ordering is checked during the query
@@ -4568,7 +4680,8 @@ version(mir_stat_test)
     alias Q = WeightedQuantileAlgo;
     int[2] values = [0, 10], counts = [1, 3];
     static foreach (fun; AliasSeq!(weightedQuantile, rcWeightedQuantile, makeWeightedQuantile,
-        weightedInterquartileRange, rcWeightedInterquartileRange, makeWeightedInterquartileRange,
+        weightedInterquartileRange, weightedInterquartileRangeAssumeSorted,
+        rcWeightedInterquartileRange, makeWeightedInterquartileRange,
         weightedMedianAbsoluteDeviation, rcWeightedMedianAbsoluteDeviation, makeWeightedMedianAbsoluteDeviation))
     {{
         import std.experimental.allocator.mallocator: Mallocator;
@@ -4915,6 +5028,13 @@ unittest
     auto unchanged = PackedMeasurements!false(raw[]);
     assert(rcWeightedQuantile(unchanged, weights, 0.5) == 3);
     assert(weightedMedianAssumeSorted(unchanged, weights) == 3);
+    assert(weightedInterquartileRangeAssumeSorted(unchanged, weights) == 4);
+    static assert(!__traits(compiles, weightedInterquartileRangeAssumeSorted(packed, weights)));
+    assert(weightedInterquartileRangeAssumeSorted(packed.asSlice, weights) == 2);
+
+    // Weight adapters may expose a different numeric type through their slice.
+    assert(weightedInterquartileRangeAssumeSorted(raw, packed) ==
+        weightedInterquartileRange(raw, packed));
 
     auto decoded = packed.asSlice;
     auto gcMedian = weightedQuantile(decoded, weights, 0.5);
@@ -8195,6 +8315,10 @@ version(mir_stat_test)
                 auto expected = rcWeightedQuantile!(real, interpretation, algorithm)(values, weights, probabilities);
                 assert(pair[0] == expected[0] && pair[1] == expected[1]);
                 assert(rcWeightedInterquartileRange!(real, interpretation, algorithm)(values, weights) == pair[1] - pair[0]);
+                auto rows = assumeWeightedSorted(values[], weights[]);
+                auto spread = makeWeightedInterquartileRange!(real, algorithm, interpretation)(allocator, rows);
+                assert(spread == pair[1] - pair[0]);
+                assert(allocator.allocations == 2 && allocator.releases == 2);
             }
         }}
 }
@@ -9875,8 +9999,26 @@ version(mir_stat_test)
     assertThrown!AssertError(rcWeightedMedian(values, [1, double.infinity]));
 }
 
+private auto sortedWeightedSpread(F, WeightInterpretation interpretation, WeightedQuantileAlgo algorithm,
+    Data, Weights)(scope auto ref Data data, scope auto ref Weights weights)
+{
+    static if (isPhobosSortedRange!Data)
+        return sortedWeightedSpread!(F, interpretation, algorithm)(sortedQuantileValues(data).release, weights);
+    else
+    {
+        scope auto values = weightedObservationSlice(data);
+        static if (is(F == void))
+            alias Result = WeightedQuantileResult!(typeof(values), algorithm);
+        else
+            alias Result = F;
+        QuantileContext context;
+        return allocatedWeightedSpread!(Result, interpretation, algorithm, QuantileAllocation.gc, true)(
+            context, values, weights);
+    }
+}
+
 private F allocatedWeightedSpread(F, WeightInterpretation interpretation, WeightedQuantileAlgo algorithm,
-    QuantileAllocation allocation, Context, Data, Weights)(ref Context context,
+    QuantileAllocation allocation, bool assumeSorted = false, Context, Data, Weights)(ref Context context,
     scope auto ref Data data, scope auto ref Weights weights)
 {
     import mir.primitives: DeepElementType;
@@ -9885,7 +10027,7 @@ private F allocatedWeightedSpread(F, WeightInterpretation interpretation, Weight
     double[2] probabilities = [0.25, 0.75];
     static if (algorithm == WeightedQuantileAlgo.inverseCDF && isIntegral!Element)
     {
-        auto quartiles = allocatedWeightedQuantile!(Element, interpretation, algorithm, allocation, 2)(
+        auto quartiles = allocatedWeightedQuantile!(Element, interpretation, algorithm, allocation, 2, assumeSorted)(
             context, weights, data, probabilities);
         const ulong distance = cast(ulong) quartiles[1] - cast(ulong) quartiles[0];
         static if (isIntegral!F)
@@ -9896,7 +10038,7 @@ private F allocatedWeightedSpread(F, WeightInterpretation interpretation, Weight
     {
         static assert(isFloatingPoint!F,
             "weightedInterquartileRange: nonintegral observations require a floating result");
-        auto quartiles = allocatedWeightedQuantile!(real, interpretation, algorithm, allocation, 2)(
+        auto quartiles = allocatedWeightedQuantile!(real, interpretation, algorithm, allocation, 2, assumeSorted)(
             context, weights, data, probabilities);
         return cast(F)(quartiles[1] - quartiles[0]);
     }
@@ -9959,6 +10101,21 @@ template rcWeightedInterquartileRange(F, WeightInterpretation interpretation,
         QuantileContext context;
         return allocatedWeightedSpread!(F, interpretation, algorithm, QuantileAllocation.rc)(context, data, weights);
     }
+
+    /++ Query an ordered observation/weight pair.
+    Params:
+        rows = positive-weight rows in ascending value and then raw weight order,
+            borrowed with $(LREF assumeWeightedSorted)
+    Returns:
+        The weighted 75th percentile minus the weighted 25th percentile as F.
+    +/
+    F rcWeightedInterquartileRange(Rows)(scope auto ref Rows rows)
+        if (isSortedWeightedObservations!Rows)
+    {
+        QuantileContext context;
+        return allocatedWeightedSpread!(F, interpretation, algorithm, QuantileAllocation.rc, true)(
+            context, rows.values, rows.weights);
+    }
 }
 
 /// ditto
@@ -9981,6 +10138,14 @@ template rcWeightedInterquartileRange(WeightInterpretation interpretation,
     {
         alias F = WeightedQuantileResult!(Data, algorithm);
         return .rcWeightedInterquartileRange!(F, interpretation, algorithm)(data, weights);
+    }
+
+    /// ditto
+    auto rcWeightedInterquartileRange(Rows)(scope auto ref Rows rows)
+        if (isSortedWeightedObservations!Rows)
+    {
+        alias F = WeightedQuantileResult!(typeof(rows.values), algorithm);
+        return .rcWeightedInterquartileRange!(F, interpretation, algorithm)(rows);
     }
 }
 
@@ -10708,6 +10873,21 @@ template makeWeightedInterquartileRange(F, WeightInterpretation interpretation,
     {
         return allocatedWeightedSpread!(F, interpretation, algorithm, QuantileAllocation.custom)(allocator, data, weights);
     }
+
+    /++ Query an ordered observation/weight pair.
+    Params:
+        allocator = allocator for temporary weighted quantile storage
+        rows = positive-weight rows in ascending value and then raw weight order,
+            borrowed with $(LREF assumeWeightedSorted)
+    Returns:
+        The weighted 75th percentile minus the weighted 25th percentile as F.
+    +/
+    F makeWeightedInterquartileRange(Allocator, Rows)(auto ref Allocator allocator, scope auto ref Rows rows)
+        if (isSortedWeightedObservations!Rows)
+    {
+        return allocatedWeightedSpread!(F, interpretation, algorithm, QuantileAllocation.custom, true)(
+            allocator, rows.values, rows.weights);
+    }
 }
 
 /// ditto
@@ -10730,6 +10910,14 @@ template makeWeightedInterquartileRange(WeightInterpretation interpretation,
     {
         alias F = WeightedQuantileResult!(Data, algorithm);
         return .makeWeightedInterquartileRange!(F, interpretation, algorithm)(allocator, data, weights);
+    }
+
+    /// ditto
+    auto makeWeightedInterquartileRange(Allocator, Rows)(auto ref Allocator allocator, scope auto ref Rows rows)
+        if (isSortedWeightedObservations!Rows)
+    {
+        alias F = WeightedQuantileResult!(typeof(rows.values), algorithm);
+        return .makeWeightedInterquartileRange!(F, interpretation, algorithm)(allocator, rows);
     }
 }
 
@@ -10765,6 +10953,8 @@ version(mir_stat_test) @system unittest
     import std.exception : assertThrown;
     import std.range : assumeSorted;
     import mir.ndslice : sliced, stride;
+    alias A = WeightedQuantileAlgo;
+    enum frequency = WeightInterpretation.frequency;
     const int[8] storage = [0, 99, 0, 99, 4, 99, 8, 99];
     const int[4] weights = [1, 2, 1, 2];
     auto values = storage[].sliced.stride(2);
@@ -10776,12 +10966,25 @@ version(mir_stat_test) @system unittest
     assert(makeWeightedMedian!real(allocator, rows) == 2);
     assert(allocator.allocations == 2 && allocator.releases == 2);
     assert(weightedMedianAssumeSorted!double(assumeSorted(values), weights) == 2);
+    const spread = weightedInterquartileRange!frequency(values, weights);
+    assert(weightedInterquartileRangeAssumeSorted!(A.type7, frequency)(assumeSorted(values), weights) == spread);
+    assert(weightedInterquartileRangeAssumeSorted!frequency(rows) == spread);
+    assert(weightedInterquartileRangeAssumeSorted!(float, A.type7, frequency)(rows) ==
+        weightedInterquartileRange!(float, frequency, A.type7)(rows));
+    static assert(is(typeof(weightedInterquartileRangeAssumeSorted!float(rows)) == float));
+    static assert(!__traits(compiles, weightedInterquartileRangeAssumeSorted!(frequency, A.inverseCDF)(rows)));
+    assert(rcWeightedInterquartileRange!frequency(rows) == spread);
+    assert(makeWeightedInterquartileRange!frequency(allocator, rows) == spread);
+    static assert(!__traits(compiles, weightedInterquartileRangeAssumeSorted!(frequency, A.inverseCDF)(values, weights)));
 
     const int[4] unorderedWeights = [2, 1, 1, 2];
     auto invalid = assumeWeightedSorted(values, unorderedWeights[]);
+    assert(allocator.allocations == 3 && allocator.releases == 3);
     assertThrown!AssertError(weightedMedian(invalid));
+    assertThrown!AssertError(weightedInterquartileRange(invalid));
     assertThrown!AssertError(makeWeightedMedian(allocator, invalid));
-    assert(allocator.allocations == 2 && allocator.releases == 2);
+    assertThrown!AssertError(makeWeightedInterquartileRange!frequency(allocator, invalid));
+    assert(allocator.allocations == 3 && allocator.releases == 3);
 }
 
 /// A custom allocator controls scratch; all four results are scalars.
