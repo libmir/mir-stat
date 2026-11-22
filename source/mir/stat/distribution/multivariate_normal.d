@@ -892,10 +892,10 @@ MultivariateNormalLPDFResult!(Element!X) tryMultivariateNormalLPDFWithWorkspace(
     {
         assert(observation.length == center.length && observation.length == workView.length);
         assert(matrixView.length!0 == observation.length && matrixView.length!1 == observation.length);
-        const pivot = tryCholeskyDecomposeInto!(M.triangle)(matrixView, factor);
-        if (pivot) return Result(Element!X.nan, pivot);
+        auto decomposition = tryCholeskyDecomposeInto(metric, factor);
+        if (decomposition.failedPivot) return Result(Element!X.nan, decomposition.failedPivot);
         return Result(multivariateNormalLPDFWithWorkspace(
-            observation, center, precisionCholeskyView!(M.triangle)(factor), workView), 0);
+            observation, center, decomposition.factor.get, workView), 0);
     }
 }
 
@@ -1563,10 +1563,10 @@ size_t tryMultivariateNormalLPDFBatchWithWorkspace(X, C, M, R, W, F)(
     {
         assert(columns.length!0 == mean.asView.length && columns.length!0 == matrixView.length!0);
         assert(columns.shape == work.asView.shape && columns.length!1 == result.asView.length);
-        const pivot = tryCholeskyDecomposeInto!(M.triangle)(matrixView, factor);
-        if (pivot) return pivot;
+        auto decomposition = tryCholeskyDecomposeInto(metric, factor);
+        if (decomposition.failedPivot) return decomposition.failedPivot;
         multivariateNormalLPDFBatchWithWorkspace(
-            columns, mean, precisionCholeskyView!(M.triangle)(factor), result, work);
+            columns, mean, decomposition.factor.get, result, work);
     }
     return 0;
 }
@@ -1611,6 +1611,12 @@ version(mir_stat_test_multivariate_normal)
             assert(fabs(values[j] - expected) <= 1e-13 * (1 + fabs(expected)));
         }
     }}
+    lower[3] = 1;
+    values[] = 17;
+    const failedPivot = tryMultivariateNormalLPDFWithWorkspace(rows.alongDim!1, mean[],
+        precisionView!(TrianglePolicy.lower)(lower[].sliced(2, 2)), values[],
+        workColumns.alongDim!0, factor[].sliced(2, 2));
+    assert(failedPivot == 2 && values == [17, 17, 17]);
 }
 
 version(mir_stat_test_multivariate_normal)
