@@ -1,0 +1,131 @@
+name: Measure Windows LDC PR cache
+
+on:
+  pull_request:
+    branches: [master]
+
+permissions:
+  contents: read
+
+# Temporary experiment for draft PR #333. Keep its archives separate from
+# the release workflow's real master and PR snapshots.
+env:
+  CACHE_DIR: ldc-release-objects
+  PR_CACHE_DIR: ldc-release-pr-objects
+
+jobs:
+  baseline:
+    if: github.event.number == 333 && github.event.pull_request.draft
+    runs-on: windows-latest
+    env:
+      SOURCE_REV: c4bcadc76f54dc89aec99a54ba1b44678dff280e
+    outputs:
+      key: ${{ steps.base-key.outputs.key }}
+    steps:
+      - &checkout
+        uses: actions/checkout@v7.0.1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - &prepare
+        name: Select source revision and dependency versions
+        shell: pwsh
+        run: |
+          git restore --source=$env:SOURCE_REV --worktree -- source
+          if ($LASTEXITCODE) { exit $LASTEXITCODE }
+          '{"fileVersion":1,"versions":{"cblas":"2.3.4","lapack":"0.6.5","mir-algorithm":"3.22.5","mir-blas":"1.1.18","mir-core":"1.7.4","mir-lapack":"1.2.12","mir-linux-kernel":"1.2.1","mir-random":"2.2.21","silly":"1.1.1"}}' | Set-Content dub.selections.json
+      - &install
+        uses: dlang-community/setup-dlang@v2.0.0
+        with:
+          compiler: ldc-1.43.0
+      - name: Build and test with master objects
+        shell: pwsh
+        env:
+          DFLAGS: -cache=${{ runner.temp }}/${{ env.CACHE_DIR }}
+        run: ./.github/scripts/windows-test.ps1 unittest-release -AllowPackage
+      - id: base-key
+        shell: pwsh
+        run: |
+          $objects = @(Get-ChildItem (Join-Path $env:RUNNER_TEMP $env:CACHE_DIR) -Filter 'ircache_*.obj' -File)
+          if (!$objects.Count) { throw 'Empty master baseline' }
+          Write-Host "Master baseline: $($objects.Count) objects"
+          "key=measure-333-${{ github.run_id }}-${{ github.run_attempt }}-master" >> $env:GITHUB_OUTPUT
+      - name: Save historical master baseline
+        uses: actions/cache/save@v6.1.0
+        with:
+          path: ${{ runner.temp }}/${{ env.CACHE_DIR }}
+          key: ${{ steps.base-key.outputs.key }}
+
+  seed:
+    needs: baseline
+    runs-on: windows-latest
+    env:
+      SOURCE_REV: c33dbc7f67956c08ce27c949366cca24aeaf3f64
+    outputs:
+      key: ${{ steps.pr-key.outputs.key }}
+    steps:
+      - *checkout
+      - *prepare
+      - *install
+      - &restore-base
+        name: Restore historical master baseline
+        uses: actions/cache/restore@v6.1.0
+        with:
+          path: ${{ runner.temp }}/${{ env.CACHE_DIR }}
+          key: ${{ needs.baseline.outputs.key }}
+          fail-on-cache-miss: true
+      - name: Build and test with master and PR objects
+        id: pilot
+        shell: pwsh
+        run: ./.github/scripts/windows-release-pr-cache.ps1
+      - id: pr-key
+        shell: pwsh
+        run: |
+          if ('${{ steps.pilot.outputs.changed }}' -ne 'true') { throw 'First source change produced no PR objects' }
+          "key=measure-333-${{ github.run_id }}-${{ github.run_attempt }}-first" >> $env:GITHUB_OUTPUT
+      - name: Save first revision's PR objects
+        uses: actions/cache/save@v6.1.0
+        with:
+          path: ${{ runner.temp }}/${{ env.PR_CACHE_DIR }}
+          key: ${{ steps.pr-key.outputs.key }}
+
+  compare:
+    name: Second revision (${{ matrix.mode }})
+    needs: [baseline, seed]
+    runs-on: windows-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        mode: [master-only, master-plus-pr]
+    env:
+      SOURCE_REV: 7ab7215cbd690eb2e8b5f1ea28adb1aaeb4fef8e
+    steps:
+      - *checkout
+      - *prepare
+      - *install
+      - *restore-base
+      - name: Restore first revision's PR objects
+        if: matrix.mode == 'master-plus-pr'
+        uses: actions/cache/restore@v6.1.0
+        with:
+          path: ${{ runner.temp }}/${{ env.PR_CACHE_DIR }}
+          key: ${{ needs.seed.outputs.key }}
+          fail-on-cache-miss: true
+      - name: Run optimized release suite
+        id: release
+        shell: pwsh
+        env:
+          DFLAGS: -cache=${{ runner.temp }}/${{ env.CACHE_DIR }}
+        run: |
+          if ('${{ matrix.mode }}' -eq 'master-plus-pr') {
+              ./.github/scripts/windows-release-pr-cache.ps1
+          } else {
+              ./.github/scripts/windows-test.ps1 unittest-release -AllowPackage
+          }
+          exit $LASTEXITCODE
+      - name: Save second revision's PR objects
+        if: matrix.mode == 'master-plus-pr' && steps.release.outputs.changed == 'true'
+        uses: actions/cache/save@v6.1.0
+        with:
+          path: ${{ runner.temp }}/${{ env.PR_CACHE_DIR }}
+          key: measure-333-${{ github.run_id }}-${{ github.run_attempt }}-second
