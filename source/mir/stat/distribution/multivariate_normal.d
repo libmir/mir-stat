@@ -645,21 +645,31 @@ private auto evaluate(Allocation policy, bool reportFailure = false, A, X, C, M)
     }
 }
 
-private T logDensityFromDistance(CovarianceRepresentation form, T)(T distance, T dimensionTerm, T halfLogDet)
+/// Factor-dependent terms shared by all observations in a batch.
+private struct LogDensityTerms(CovarianceRepresentation form, T)
 {
-    // Halve before squaring so the negative half-square can remain finite.
-    const base = (-T(0.5) * distance) * distance - dimensionTerm;
-    static if (form == CovarianceRepresentation.covarianceCholesky)
-        return base - halfLogDet;
-    else
-        return base + halfLogDet;
+    T dimensionTerm;
+    T halfLogDet;
+
+    T fromDistance(T distance) const @safe pure nothrow @nogc
+    {
+        // Halve before squaring so the negative half-square can remain finite.
+        const base = (-T(0.5) * distance) * distance - dimensionTerm;
+        static if (form == CovarianceRepresentation.covarianceCholesky)
+            return base - halfLogDet;
+        else
+            return base + halfLogDet;
+    }
 }
 
-private T scalarLogDensity(CovarianceRepresentation form, T, F)(T distance, F factor)
+private auto logDensityTerms(M)(scope auto ref M factor)
+    if (isCovarianceMetric!M && prepared!(M.form))
 {
     import mir.stat.constant: LOGSQRT2PI;
-    return logDensityFromDistance!form(distance, T(factor.length!0) * T(LOGSQRT2PI),
-        T(0.5) * logDeterminantFromCholesky(factor));
+    auto storage = factor.storage.asView;
+    alias T = Element!(typeof(storage));
+    return LogDensityTerms!(M.form, T)(T(storage.length!0) * T(LOGSQRT2PI),
+        T(0.5) * logDeterminantFromCholesky(storage));
 }
 
 /++
@@ -684,10 +694,9 @@ Element!X multivariateNormalLPDFWithWorkspace(X, C, M, W)(
     if (isCovarianceMetric!M && prepared!(M.form) && compatible!(X, C, typeof(factor.storage)) &&
         vector!W && is(Element!X == Element!W))
 {
-    auto factorView = factor.storage.asView;
     auto observation = x.asView;
     const distance = mahalanobisWithWorkspace(observation, mean, factor, work);
-    return scalarLogDensity!(M.form)(distance, factorView);
+    return logDensityTerms(factor).fromDistance(distance);
 }
 
 /// Reuse a lower covariance factor for successive observations.
@@ -1458,16 +1467,6 @@ private auto evaluateBatch(Allocation policy, bool reportFailure = false, A, X, 
 private enum batchBuffers(X, C, M, R, W) = batchInputs!(X, C, M) && vector!R && matrix!W &&
     is(Element!X == Element!R) && is(Element!X == Element!W);
 
-private void batchLogDensities(CovarianceRepresentation form, R, F)(R values, F factor)
-{
-    import mir.stat.constant: LOGSQRT2PI;
-    alias T = Element!R;
-    const dimensionTerm = T(factor.length!0) * T(LOGSQRT2PI);
-    const halfLogDet = T(0.5) * logDeterminantFromCholesky(factor);
-    foreach (j; 0 .. values.length)
-        values[j] = logDensityFromDistance!form(values[j], dimensionTerm, halfLogDet);
-}
-
 /++
 Write one log density per observation column using a shared Cholesky factor.
 All writable elements must be disjoint from one another and from the inputs.
@@ -1490,9 +1489,10 @@ void multivariateNormalLPDFBatchWithWorkspace(X, C, M, R, W)(
     import mir.stat.distance: mahalanobisBatchWithWorkspace;
     auto values = result.asView;
     auto columns = x.asView;
-    auto factorView = factor.storage.asView;
     mahalanobisBatchWithWorkspace(columns, mean, factor, values, work);
-    batchLogDensities!(M.form)(values, factorView);
+    const terms = logDensityTerms(factor);
+    foreach (j; 0 .. values.length)
+        values[j] = terms.fromDistance(values[j]);
 }
 
 /// Two columns, each with one coordinate and standard deviation two.
