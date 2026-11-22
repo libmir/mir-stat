@@ -234,3 +234,49 @@ package(mir.stat) Fp!bits weibullDensity(bool logarithmic, uint bits)(Fp!bits x,
         return addOffset!bits(T(0), prefactor.multiply(scaledDecay(hazard)), false);
     }
 }
+
+package(mir.stat) Fp!bits weibullQuantile(uint bits)(Fp!bits p, Fp!bits shape, Fp!bits scale)
+{
+    alias T = Fp!bits;
+    enum logBits = 3 * bits + 64;
+    alias L = ProbabilityLog!logBits;
+    alias S = L.S;
+    if (!p.coefficient)
+        return T(0);
+    if (!fpProbabilityLess(p, T(1)))
+        return T(false, long.max, UInt!bits(0));
+
+    const probability = S.from(p);
+    const tiny = probability.exponent + (3 * bits + 64) <= exponentBias;
+    // Avoid widening p at its exponent floor. The next term in
+    // -log(1-p) = p + p^2/2 + ... is positive.
+    const hazard = tiny ? probability : L.complement(cast(Fp!logBits)p);
+    const divisor = S.from(shape);
+    const multiplier = S.from(scale);
+    if (divisor == S.from(T(1)))
+    {
+        auto product = multiplier.multiply(hazard);
+        if (tiny)
+            product.fraction.coefficient |= 1u;
+        return addOffset!bits(T(0), product, false);
+    }
+    if (divisor == S.from(T(2)))
+    {
+        import mir.stat.internal.fp_scaled_probability: scaledSqrt;
+        const squared = hazard.multiply(multiplier.multiply(multiplier));
+        return addOffset!bits(T(0), scaledSqrt(squared, tiny), false);
+    }
+    L.Context context;
+    const logarithm = scaledLog!bits(hazard, context);
+    S quantile = multiplier;
+    if (logarithm.coefficient)
+    {
+        const power = S.from(logarithm).divide(divisor);
+        // Even the full scale exponent range cannot restore a finite
+        // nonzero result after an exponent of this magnitude.
+        if (power.exponent >= exponentBias + 66)
+            return logarithm.sign ? T(0) : T(false, long.max, UInt!bits(0));
+        quantile = multiplier.multiply(expMagnitude(power, logarithm.sign));
+    }
+    return addOffset!bits(T(0), quantile, false);
+}

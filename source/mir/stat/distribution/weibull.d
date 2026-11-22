@@ -22,6 +22,7 @@ module mir.stat.distribution.weibull;
 
 import mir.bignum.fp: Fp;
 import mir.internal.utility: isFloatingPoint;
+import mir.stat.internal.fp_probability: fpProbabilityValid;
 
 /++
 Computes the Weibull probability density function (PDF).
@@ -491,6 +492,89 @@ unittest
     weibullInvCDF(0.8, 2, 3).shouldApprox == 3.805909;
 }
 
+
+/++
+Computes the Weibull quantile with guarded extended precision. The
+calculation retains the exponent through the final scaling. General
+quantiles are not certified to be correctly rounded.
+
+Params:
+    T = Represented $(D Fp) type, inferred from the arguments.
+    p = Cumulative probability in the closed interval [0, 1].
+    shape = Positive finite shape parameter.
+    scale = Positive finite scale parameter (default: one).
+
+Returns:
+    The quantile in type T, with zero at probability zero and positive
+    infinity at probability one. An interior quantile can round to zero
+    or overflow to positive infinity.
++/
+@safe pure nothrow @nogc
+T weibullInvCDF(T)(const T p, const T shape, const T scale = T(1))
+    if (is(T == Fp!size, size_t size))
+    in (fpProbabilityValid(p), "p must be in [0, 1]")
+    in (validParameter(shape), "shape must be finite and positive")
+    in (validParameter(scale), "scale must be finite and positive")
+{
+    import mir.stat.internal.fp_weibull: weibullQuantile;
+    return weibullQuantile(p, shape, scale);
+}
+
+///
+version(mir_stat_test)
+@safe pure nothrow @nogc unittest
+{
+    import mir.bignum.fp: Fp;
+    alias T = Fp!64;
+    assert(weibullInvCDF(T(0), T(2)) == T(0));
+    assert(weibullInvCDF(T(1), T(2), T(3)) == T(double.infinity));
+}
+
+version(mir_stat_test)
+@safe pure nothrow @nogc unittest
+{
+    import mir.bignum.fixed: UInt;
+    import mir.math.common: approxEqual;
+    alias T = Fp!64;
+    alias Wide = Fp!128;
+    enum expected = Wide(false, -126, UInt!128.fromHexString("fcb7b7d19e6b36878965c446b82ae73d"));
+    assert(weibullInvCDF(Wide(0.625), Wide(1.5), Wide(4)) == expected);
+    assert(approxEqual(weibullInvCDF(0.625, 1.5, 4.0), 3.9487132594164679205, 8 * double.epsilon));
+
+    // The first omitted log correction puts the quantile above 2.5 grid units.
+    const least = T(false, long.min, UInt!64(1));
+    assert(weibullInvCDF(least, T(1), T(2.5)) == T(false, long.min, UInt!64(3)));
+    // The first correction to the fourth root is below its rounding midpoint.
+    auto fourthRoot = T(1);
+    fourthRoot.exponent += long.min / 4;
+    assert(weibullInvCDF(least, T(4)) == fourthRoot);
+    assert(weibullInvCDF(T(0.5), least) == T(0));
+    assert(weibullInvCDF(T(0.75), least) == T(double.infinity));
+    const square = T(false, long.min, UInt!64(25));
+    const scale = T(false, long.min / 2 - 1, UInt!64(5));
+    assert(weibullInvCDF(square, T(2), scale) == T(false, long.min, UInt!64(13)));
+
+    // Adjacent dyadic probabilities straddle 1-exp(-1). A tiny shape
+    // amplifies their difference on opposite sides of unit quantile.
+    enum lower = Wide(false, -128, UInt!128.fromHexString("a1d2a7274c4320e54521387d6fab06f2"));
+    auto upper = lower;
+    upper.coefficient += 1;
+    const smallShape = Wide(false, -128, UInt!128(1));
+    enum lowerQuantile = Wide(false, -128, UInt!128.fromHexString("ac15bc99fea22d16ae06018847c354a8"));
+    enum upperQuantile = Wide(false, -124, UInt!128.fromHexString("a2fd1e1090bc9a9ea6773d8aa1eebd6e"));
+    assert(weibullInvCDF(lower, smallShape) == lowerQuantile);
+    assert(weibullInvCDF(upper, smallShape) == upperQuantile);
+    enum nearOne = Wide(false, -123, UInt!128.fromHexString("9f23ed24976267a754c70a0eedb3d1e0"));
+    assert(weibullInvCDF(Wide(false, -128, UInt!128.max), Wide(1.5)) == nearOne);
+
+    // The unscaled power overflows or underflows, but the scaled quantile fits.
+    const smallScale = T(false, long.min + 256, UInt!64(1));
+    const largeScale = T(false, 1L << 62, UInt!64(1));
+    assert(weibullInvCDF(T(0.75), T(false, -65, UInt!64(1)), smallScale) ==
+        T(false, 8162080197567958305L, UInt!64(0xd85a2dcb31678382UL)));
+    assert(weibullInvCDF(T(0.5), T(false, -64, UInt!64(1)), largeScale) ==
+        T(false, -5142331938070796815L, UInt!64(0xa669938d484c40edUL)));
+}
 
 /++
 Computes the Weibull log probability density function (LPDF).
