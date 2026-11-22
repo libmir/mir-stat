@@ -879,24 +879,12 @@ MultivariateNormalLPDFResult!(Element!X) tryMultivariateNormalLPDFWithWorkspace(
     auto matrixView = metric.storage.asView;
     auto workView = work.asView;
     auto factor = factorWork.asView;
-    static if (M.form == CovarianceRepresentation.covariance)
-    {
-        import mir.stat.internal.mahalanobis: tryCovarianceDistanceWithWorkspace;
-        Element!X distance;
-        const pivot = tryCovarianceDistanceWithWorkspace!(false, M.triangle)(
-            observation, center, matrixView, distance, workView, factor);
-        if (pivot) return Result(Element!X.nan, pivot);
-        return Result(scalarLogDensity!(CovarianceRepresentation.covarianceCholesky)(distance, factor), 0);
-    }
-    else
-    {
-        assert(observation.length == center.length && observation.length == workView.length);
-        assert(matrixView.length!0 == observation.length && matrixView.length!1 == observation.length);
-        auto decomposition = tryCholeskyDecomposeInto(metric, factor);
-        if (decomposition.failedPivot) return Result(Element!X.nan, decomposition.failedPivot);
-        return Result(multivariateNormalLPDFWithWorkspace(
-            observation, center, decomposition.factor.get, workView), 0);
-    }
+    assert(observation.length == center.length && observation.length == workView.length);
+    assert(matrixView.length!0 == observation.length && matrixView.length!1 == observation.length);
+    auto decomposition = tryCholeskyDecomposeInto(metric, factor);
+    if (decomposition.failedPivot) return Result(Element!X.nan, decomposition.failedPivot);
+    return Result(multivariateNormalLPDFWithWorkspace(
+        observation, center, decomposition.factor.get, workView), 0);
 }
 
 /// A one-dimensional precision of one quarter gives a standard deviation of two.
@@ -1550,24 +1538,13 @@ size_t tryMultivariateNormalLPDFBatchWithWorkspace(X, C, M, R, W, F)(
     auto columns = x.asView;
     auto matrixView = metric.storage.asView;
     auto factor = factorWork.asView;
-    static if (M.form == CovarianceRepresentation.covariance)
-    {
-        import mir.stat.internal.mahalanobis: tryCovarianceDistanceBatchWithWorkspace;
-        auto values = result.asView;
-        const pivot = tryCovarianceDistanceBatchWithWorkspace!(false, M.triangle)(
-            columns, mean.asView, matrixView, values, work.asView, factor);
-        if (pivot) return pivot;
-        batchLogDensities!(CovarianceRepresentation.covarianceCholesky)(values, factor);
-    }
-    else
-    {
-        assert(columns.length!0 == mean.asView.length && columns.length!0 == matrixView.length!0);
-        assert(columns.shape == work.asView.shape && columns.length!1 == result.asView.length);
-        auto decomposition = tryCholeskyDecomposeInto(metric, factor);
-        if (decomposition.failedPivot) return decomposition.failedPivot;
-        multivariateNormalLPDFBatchWithWorkspace(
-            columns, mean, decomposition.factor.get, result, work);
-    }
+    assert(columns.length!0 == mean.asView.length && matrixView.length!0 == columns.length!0 &&
+        matrixView.length!1 == columns.length!0);
+    assert(columns.shape == work.asView.shape && columns.length!1 == result.asView.length);
+    auto decomposition = tryCholeskyDecomposeInto(metric, factor);
+    if (decomposition.failedPivot) return decomposition.failedPivot;
+    multivariateNormalLPDFBatchWithWorkspace(
+        columns, mean, decomposition.factor.get, result, work);
     return 0;
 }
 
