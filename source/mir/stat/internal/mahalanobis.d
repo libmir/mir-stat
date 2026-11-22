@@ -967,43 +967,27 @@ package(mir.stat) Element!X mahalanobisSquaredWithWorkspace(CovarianceRepresenta
 package(mir.stat) Element!X precisionWorkspace(bool squared, TrianglePolicy triangle, Summation summation, X,C,M,W,P)(
     X x, C center, M metric, W work, P productWork)
 {
+    import mir.math.common: sqrt;
+    import std.math: isFinite;
     static assert(triangle == TrianglePolicy.upper || triangle == TrianglePolicy.lower);
-    static if (DiagonalInfo!M.valid)
+    check(x, center, metric, work);
+    assert(productWork.length == x.length, "Incorrect Mahalanobis product workspace length");
+    foreach (i; 0 .. x.length)
     {
-        import mir.math.common: sqrt;
-        import std.math: isFinite;
-        check(x,center,metric,work);
-        assert(productWork.length == x.length);
-        foreach(i; 0 .. x.length)
-        {
-            assert(isFinite(x[i]) && isFinite(center[i]));
-            assert(isFinite(metric[i,i]) && metric[i,i] > 0);
-            work[i] = x[i] - center[i];
-        }
-        auto result = quadraticFormWithWorkspace!summation(work,metric,productWork);
-        static if (squared) return result;
-        else return sqrt(result);
+        auto a = x[i];
+        auto b = center[i];
+        assert(isFinite(a) && isFinite(b), "Mahalanobis vectors must be finite");
+        static if (DiagonalInfo!M.valid)
+            assert(isFinite(metric[i, i]) && metric[i, i] > 0, "Diagonal precision must be finite and positive");
+        work[i] = a - b;
     }
-    else
-    {
-        import std.math: isFinite, sqrt;
-        check(x, center, metric, work);
-        assert(productWork.length == x.length, "Incorrect Mahalanobis product workspace length");
-        foreach (i; 0 .. x.length)
-        {
-            auto a = x[i];
-            auto b = center[i];
-            assert(isFinite(a) && isFinite(b), "Mahalanobis vectors must be finite");
-            work[i] = a - b;
-        }
+    static if (!DiagonalInfo!M.valid)
         foreach (i; 0 .. metric.length!0) foreach (j; 0 .. metric.length!1)
             if (triangle == TrianglePolicy.upper ? j >= i : j <= i)
-                assert(isFinite(metric[i,j]), "Mahalanobis metric must be finite");
-        auto result = quadraticFormWithWorkspace!summation(work, symmetricMetric!triangle(metric), productWork);
-        static if (squared) return result;
-        else return sqrt(result);
-
-    }
+                assert(isFinite(metric[i, j]), "Mahalanobis metric must be finite");
+    auto result = quadraticFormWithWorkspace!summation(work, symmetricMetric!triangle(metric), productWork);
+    static if (squared) return result;
+    else return sqrt(result);
 }
 
 /// Reuse two vectors to opt into BLAS-compatible precision arithmetic.
@@ -1102,16 +1086,24 @@ package(mir.stat) void batchWithExtra(bool squared, CovarianceRepresentation for
     else
     {
         static assert(form == CovarianceRepresentation.inverseCovariance);
-        import mir.stat.internal.linearAlgebra.quadratic: quadraticFormBatchInto;
-        checkBatch(x, center, metric, result, work);
-        assert(extra.shape == x.shape);
-        centerBatch!triangle(x, center, metric, work);
-        quadraticFormBatchInto!summation(work, symmetricMetric!triangle(metric), result, extra);
-        static if (!squared)
-        {
-            import std.math: sqrt;
-            foreach (j; 0 .. result.length) result[j] = sqrt(result[j]);
-        }
+        precisionBatch!(squared, triangle, summation)(x, center, metric, result, work, extra);
+    }
+}
+
+/// Evaluate centered precision quadratic forms, optionally writing the matrix products.
+private void precisionBatch(bool squared, TrianglePolicy triangle, Summation summation,
+    X, C, M, R, W, P...)(X x, C center, M metric, R result, W work, P productWork)
+    if (P.length <= 1)
+{
+    import mir.stat.internal.linearAlgebra.quadratic: quadraticFormBatchInto;
+    checkBatch(x, center, metric, result, work);
+    static if (P.length) assert(productWork[0].shape == x.shape);
+    centerBatch!triangle(x, center, metric, work);
+    quadraticFormBatchInto!summation(work, symmetricMetric!triangle(metric), result, productWork);
+    static if (!squared)
+    {
+        import mir.math.common: sqrt;
+        foreach (j; 0 .. result.length) result[j] = sqrt(result[j]);
     }
 }
 
@@ -1142,67 +1134,45 @@ package(mir.stat) void preparedBatch(bool squared, CovarianceRepresentation form
     Summation summation, X, C, M, R, W)(X x, C center, M metric, R result, W work)
 {
     static assert(triangle == TrianglePolicy.upper || triangle == TrianglePolicy.lower);
-    static if (DiagonalInfo!M.valid)
-    {
-        import mir.ndslice.topology: universal;
-        import mir.ndslice.dynamic: transposed;
-        checkBatch(x,center,metric,result,work);
-        import mir.math.common: sqrt;
-        import std.math: isFinite;
-        // Prepare each coordinate once, sharing its factor across observations.
-        foreach (i; 0 .. x.length!0)
-        {
-            auto d = metric[i,i];
-            assert(isFinite(d) && isFinite(center[i]), "Mahalanobis inputs must be finite");
-            static if (form == CovarianceRepresentation.covariance)
-            {
-                import mir.exception: enforce;
-                enforce!"Cholesky factorization failed"(d > 0);
-            }
-            else static if (form == CovarianceRepresentation.inverseCovariance)
-                assert(d > 0, "Diagonal metric must be positive definite");
-            else assert(d != 0, "Diagonal factor must be nonsingular");
-            static if (form == CovarianceRepresentation.covariance) auto factor = sqrt(d);
-            else auto factor = d;
-            foreach (j; 0 .. x.length!1)
-            {
-                assert(isFinite(x[i,j]), "Mahalanobis observations must be finite");
-                auto delta = x[i,j] - center[i];
-                static if (form == CovarianceRepresentation.covariance || form == CovarianceRepresentation.covarianceCholesky)
-                    work[i,j] = delta / factor;
-                else static if (form == CovarianceRepresentation.inverseCovarianceCholesky)
-                    work[i,j] = factor * delta;
-                else static if (form == CovarianceRepresentation.inverseCovariance) work[i,j] = delta;
-                else static assert(0, "Unknown Mahalanobis matrix representation");
-            }
-        }
-        auto columns = work.universal.transposed;
-        foreach (j; 0 .. result.length)
-        {
-            static if (form == CovarianceRepresentation.inverseCovariance)
-            {
-                auto value = quadraticForm!summation(columns[j], metric);
-                static if (squared) result[j] = value;
-                else result[j] = sqrt(value);
-            }
-            else result[j] = scaledNorm!squared(columns[j]);
-        }
-    }
+    static if (form == CovarianceRepresentation.inverseCovariance)
+        precisionBatch!(squared, triangle, summation)(x, center, metric, result, work);
     else
     {
         import mir.ndslice.topology: universal;
         import mir.ndslice.dynamic: transposed;
-        import std.math: sqrt;
         checkBatch(x, center, metric, result, work);
-        centerBatch!triangle(x, center, metric, work);
-        static if (form == CovarianceRepresentation.inverseCovariance)
+        static if (DiagonalInfo!M.valid)
         {
-            import mir.stat.internal.linearAlgebra.quadratic: quadraticFormBatchInto;
-            quadraticFormBatchInto!summation(work, symmetricMetric!triangle(metric), result);
-            static if (!squared) foreach (j; 0 .. result.length) result[j] = sqrt(result[j]);
+            import mir.math.common: sqrt;
+            import std.math: isFinite;
+            // Prepare each coordinate once, sharing its factor across observations.
+            foreach (i; 0 .. x.length!0)
+            {
+                auto d = metric[i,i];
+                assert(isFinite(d) && isFinite(center[i]), "Mahalanobis inputs must be finite");
+                static if (form == CovarianceRepresentation.covariance)
+                {
+                    import mir.exception: enforce;
+                    enforce!"Cholesky factorization failed"(d > 0);
+                }
+                else assert(d != 0, "Diagonal factor must be nonsingular");
+                static if (form == CovarianceRepresentation.covariance) auto factor = sqrt(d);
+                else auto factor = d;
+                foreach (j; 0 .. x.length!1)
+                {
+                    assert(isFinite(x[i,j]), "Mahalanobis observations must be finite");
+                    auto delta = x[i,j] - center[i];
+                    static if (form == CovarianceRepresentation.covariance || form == CovarianceRepresentation.covarianceCholesky)
+                        work[i,j] = delta / factor;
+                    else static if (form == CovarianceRepresentation.inverseCovarianceCholesky)
+                        work[i,j] = factor * delta;
+                    else static assert(0, "Unknown Mahalanobis matrix representation");
+                }
+            }
         }
         else
         {
+            centerBatch!triangle(x, center, metric, work);
             import mir.stat.internal.linearAlgebra.triangular: triangularMatrixInPlace;
             static if (form == CovarianceRepresentation.covarianceCholesky)
             {
@@ -1217,10 +1187,9 @@ package(mir.stat) void preparedBatch(bool squared, CovarianceRepresentation form
                 triangularMatrixInPlace!(false, TrianglePolicy.upper)(a, work);
             }
             else static assert(0, "A prepared batch requires a factor or precision matrix");
-            auto columns = work.universal.transposed;
-            foreach (j; 0 .. result.length) result[j] = scaledNorm!squared(columns[j]);
         }
-
+        auto columns = work.universal.transposed;
+        foreach (j; 0 .. result.length) result[j] = scaledNorm!squared(columns[j]);
     }
 }
 
@@ -2708,6 +2677,10 @@ version(mir_stat_test_distance)
         static if(form==CovarianceRepresentation.inverseCovariance)
         {
             assert(fabs(mahalanobisSquaredWithWorkspace!(form,triangle,summation)(x[],center[],metric,ws[],ps[])-2)<1e-14);
+            assert(ws == [2, 3]);
+            assert(ps[0] == 0.5 && fabs(ps[1] - 1.0 / 3) < 1e-14);
+            assert(extra[0] == 0.5 && extra[1] == 1);
+            assert(fabs(extra[2] - 1.0 / 3) < 1e-14 && fabs(extra[3] - 2.0 / 3) < 1e-14);
             assert(fabs(rcMahalanobisSquared!(form,triangle,summation)(x[],center[],metric)-2)<1e-14);
             assert(fabs(makeMahalanobisSquared!(form,triangle,summation)(Mallocator.instance,x[],center[],metric)-2)<1e-14);
         }

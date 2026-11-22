@@ -706,9 +706,9 @@ each column. Explicit fast mode with a matrix workspace computes all products
 at once using GEMM for general matrices or SYMM for eligible symmetric views,
 then reduces column dots. It permits backend-dependent rounding. The allocating
 `quadraticFormBatch`, `rcQuadraticFormBatch`, and `makeQuadraticFormBatch` variants
-allocate this workspace only for fast mode; other policies allocate just the
-result. These names are also available through the corresponding allocation
-convenience modules.
+allocate product scratch for fast mode with a nondiagonal matrix representation.
+Diagonal views need only the result vector under every summation policy. These
+names are also available through the corresponding allocation convenience modules.
 
 The public distance module provides `mahalanobisBatch` and
 `mahalanobisSquaredBatch`, plus `rc`, `make`, and `WithWorkspace` variants:
