@@ -8120,6 +8120,15 @@ private void writeSortedQuantiles(QuantileAlgo algorithm, V, P, O)(scope V value
         output[i] = quantileRanks!algorithm(values.length, levels[i]).evaluate!(F, algorithm)(values);
 }
 
+// Keep data and probability types deducible when an estimator is bound as a template alias.
+private template bindSortedQuantileOptions(alias query, Options...)
+{
+    auto bindSortedQuantileOptions(Args...)(scope auto ref Args args)
+    {
+        return query!Options(args);
+    }
+}
+
 /++ Write quantiles of ascending observations into caller-provided output without allocating.
 The observations may be read-only. Output must have one element per probability and must
 not overlap the observations or probabilities. The output element type determines the result precision.
@@ -8128,6 +8137,12 @@ void quantileAssumeSortedInto(QuantileAlgo algorithm = QuantileAlgo.type7, Data,
     scope auto ref Data data, scope auto ref P probabilities, scope auto ref Output output)
 {
     writeSortedQuantiles!algorithm(sortedQuantileValues(data), quantileSlice(probabilities), quantileSlice(output));
+}
+
+/// ditto
+template quantileAssumeSortedInto(string algorithm)
+{
+    alias quantileAssumeSortedInto = bindSortedQuantileOptions!(.quantileAssumeSortedInto, __traits(getMember, QuantileAlgo, algorithm));
 }
 
 version(mir_stat_test)
@@ -8140,6 +8155,9 @@ version(mir_stat_test)
     double[4] storage = [-1, -1, -1, -1];
     auto output = storage[].sliced.stride(2);
     quantileAssumeSortedInto(values, levels, output);
+    assert(storage == [5.0, -1, 2, -1]);
+    storage[] = -1;
+    quantileAssumeSortedInto!"type7"(values, levels, output);
     assert(storage == [5.0, -1, 2, -1]);
 }
 
@@ -8167,6 +8185,36 @@ auto quantileAssumeSorted(QuantileAlgo algorithm = QuantileAlgo.type7, Data, P..
     return quantileAssumeSorted!(F, algorithm)(data, probabilities);
 }
 
+/// ditto
+template quantileAssumeSorted(F, string algorithm)
+{
+    alias quantileAssumeSorted = bindSortedQuantileOptions!(.quantileAssumeSorted, F, __traits(getMember, QuantileAlgo, algorithm));
+}
+
+/// ditto
+template quantileAssumeSorted(string algorithm)
+{
+    alias quantileAssumeSorted = bindSortedQuantileOptions!(.quantileAssumeSorted, __traits(getMember, QuantileAlgo, algorithm));
+}
+
+/// Bind an estimator by name and reuse it for both quartiles.
+version(mir_stat_test) @safe unittest
+{
+    const int[3] values = [1, 4, 9];
+    alias quartiles = quantileAssumeSorted!"type7";
+    assert(quartiles(values, 0.25) == 2.5);
+    assert(quartiles(values, 0.75) == 6.5);
+}
+
+version(mir_stat_test) @safe unittest
+{
+    const int[3] values = [1, 4, 9];
+    const double[2] levels = [0.75, 0.25];
+    static assert(is(typeof(quantileAssumeSorted!"type1"(values, 0.5)) == int));
+    assert(quantileAssumeSorted!(float, "type7")(values, levels) == [6.5f, 2.5f]);
+    static assert(!__traits(compiles, quantileAssumeSorted!"unknown"(values, 0.5)));
+}
+
 /++ Return a reference-counted batch result. Scalar queries allocate no storage. Inputs and probability forms follow $(LREF quantileAssumeSorted). +/
 auto rcquantileAssumeSorted(F, QuantileAlgo algorithm = QuantileAlgo.type7, Data, P...)(
     scope auto ref Data data, scope auto ref P probabilities)
@@ -8185,6 +8233,25 @@ auto rcquantileAssumeSorted(QuantileAlgo algorithm = QuantileAlgo.type7, Data, P
     return rcquantileAssumeSorted!(F, algorithm)(data, probabilities);
 }
 
+/// ditto
+template rcquantileAssumeSorted(F, string algorithm)
+{
+    alias rcquantileAssumeSorted = bindSortedQuantileOptions!(.rcquantileAssumeSorted, F, __traits(getMember, QuantileAlgo, algorithm));
+}
+
+/// ditto
+template rcquantileAssumeSorted(string algorithm)
+{
+    alias rcquantileAssumeSorted = bindSortedQuantileOptions!(.rcquantileAssumeSorted, __traits(getMember, QuantileAlgo, algorithm));
+}
+
+version(mir_stat_test) @safe unittest
+{
+    const int[3] values = [1, 4, 9];
+    assert(rcquantileAssumeSorted!"type7"(values, 0.5) == 4);
+    assert(rcquantileAssumeSorted!(float, "type7")(values, 0.75) == 6.5f);
+}
+
 /++ Allocate the batch result with the supplied allocator. The caller releases the result. Scalar queries allocate no storage. Inputs and probability forms follow $(LREF quantileAssumeSorted). +/
 auto makeQuantileAssumeSorted(F, QuantileAlgo algorithm = QuantileAlgo.type7, Allocator, Data, P...)(
     auto ref Allocator allocator, scope auto ref Data data, scope auto ref P probabilities)
@@ -8200,6 +8267,26 @@ auto makeQuantileAssumeSorted(QuantileAlgo algorithm = QuantileAlgo.type7, Alloc
 {
     alias F = quantileType!(typeof(sortedQuantileValues(data)[0]), algorithm);
     return makeQuantileAssumeSorted!(F, algorithm)(allocator, data, probabilities);
+}
+
+/// ditto
+template makeQuantileAssumeSorted(F, string algorithm)
+{
+    alias makeQuantileAssumeSorted = bindSortedQuantileOptions!(.makeQuantileAssumeSorted, F, __traits(getMember, QuantileAlgo, algorithm));
+}
+
+/// ditto
+template makeQuantileAssumeSorted(string algorithm)
+{
+    alias makeQuantileAssumeSorted = bindSortedQuantileOptions!(.makeQuantileAssumeSorted, __traits(getMember, QuantileAlgo, algorithm));
+}
+
+version(mir_stat_test) @system unittest
+{
+    import std.experimental.allocator.mallocator : Mallocator;
+    const int[3] values = [1, 4, 9];
+    assert(makeQuantileAssumeSorted!"type7"(Mallocator.instance, values, 0.25) == 2.5);
+    assert(makeQuantileAssumeSorted!(float, "type7")(Mallocator.instance, values, 0.75) == 6.5f);
 }
 
 version(mir_stat_test)
