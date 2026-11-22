@@ -12,6 +12,11 @@ supported. LAPACK is optional and accelerates compatible native float/double
 output layouts. Other layouts use an allocation-free native D kernel. Backend
 and summation order can affect rounding and failure near singularity.
 
+For a labeled covariance or precision matrix, the allocating and caller-output
+decomposition overloads return a labeled factor with the same triangle. For
+example, decomposing a lower precision view produces a lower Cholesky factor
+of the precision matrix, ready for repeated multivariate normal evaluations.
+
 `logDeterminantFromCholesky` computes the log-determinant from the factor diagonal.
 The `choleskySolve` family reuses a factor for vector or matrix right-hand
 sides, without forming an inverse. Choose GC, RC, custom, caller-output, or
@@ -41,6 +46,14 @@ import mir.stat.internal.linearAlgebra.backend: hasBlas, hasLapack, nativeSlice,
 import mir.stat.internal.linearAlgebra.views: SymmetricView;
 import std.traits: isFloatingPoint;
 import mir.math.sum: Summation, Summator;
+
+private import mir.stat.covariance_views: CovarianceMetric, CovarianceRepresentation, labelCovariance;
+
+private enum unfactoredMetric(M) = is(M == CovarianceMetric!Args, Args...) &&
+    (M.form == CovarianceRepresentation.covariance || M.form == CovarianceRepresentation.inverseCovariance);
+
+private enum factorForm(M) = M.form == CovarianceRepresentation.covariance
+    ? CovarianceRepresentation.covarianceCholesky : CovarianceRepresentation.inverseCovarianceCholesky;
 
 /// Whether an input is a real floating-point matrix.
 private enum matrix(A) = numericSlice!A && A.N == 2 && isFloatingPoint!(Scalar!A);
@@ -251,6 +264,56 @@ version(mir_stat_test_linearAlgebra)
 }
 
 /++
+Factor a labeled covariance or precision matrix into GC-managed storage.
+
+Params:
+    metric = Square covariance or precision view. Its selected triangle must
+        contain finite entries representing a positive-definite matrix.
+Returns:
+    A GC-managed factor of the same shape, labeled with the input's
+    statistical interpretation and triangle.
+Throws:
+    Exception if the selected matrix is not positive definite.
++/
+package(mir.stat) auto choleskyDecompose(M)(scope auto ref M metric)
+    if (unfactoredMetric!M)
+{
+    auto result = choleskyDecompose!(M.triangle)(metric.storage.lightScope);
+    return labelCovariance!(factorForm!M, M.triangle)(result);
+}
+
+/// The default covariance view produces an upper Cholesky factor.
+version(mir_stat_test_linearAlgebra)
+@safe pure unittest
+{
+    import mir.ndslice.slice: sliced;
+    import mir.stat.covariance_views: covarianceView, CovarianceRepresentation, TrianglePolicy;
+    double[4] data = [4, 2, double.nan, 5];
+    auto factor = choleskyDecompose(covarianceView(data[].sliced(2, 2)));
+    static assert(factor.form == CovarianceRepresentation.covarianceCholesky);
+    static assert(factor.triangle == TrianglePolicy.upper);
+    static immutable expected = [[2.0, 1], [0.0, 2]];
+    assert(factor.storage == expected);
+    static assert(!__traits(compiles, choleskyDecompose(factor)));
+}
+
+/// Pass the same factor to multivariateNormalLPDF for two observations.
+version(mir_stat_test_linearAlgebra)
+@safe pure unittest
+{
+    import mir.ndslice.slice: sliced;
+    import mir.stat.covariance_views: covarianceView;
+    import mir.stat.distribution.multivariate_normal: multivariateNormalLPDF;
+    import std.math: PI, fabs, log;
+    double[4] data = [4, 2, double.nan, 5];
+    double[2] mean = [0, 0], x = [2, 1];
+    auto factor = choleskyDecompose(covarianceView(data[].sliced(2, 2)));
+    const atMean = -log(8 * double(PI));
+    assert(fabs(multivariateNormalLPDF(mean[], mean[], factor) - atMean) < 1e-14);
+    assert(fabs(multivariateNormalLPDF(x[], mean[], factor) - (atMean - 0.5)) < 1e-14);
+}
+
+/++
 Reference-counted variant of $(LINK2 #choleskyDecompose, choleskyDecompose).
 The parameters and failure behavior are the same. Storage is released with
 its last owning reference. Native numeric inputs support `@safe pure @nogc`.
@@ -284,6 +347,43 @@ version(mir_stat_test_linearAlgebra)
     double[4] data = [4, double.nan, 2, 5];
     static immutable expected = [[2.0, 0], [1.0, 2]];
     assert(rcCholeskyDecompose!(TrianglePolicy.lower)(data[].sliced(2, 2)) == expected);
+}
+
+/++
+Factor a labeled covariance or precision matrix into reference-counted storage.
+
+Params:
+    metric = Square covariance or precision view. Its selected triangle must
+        contain finite entries representing a positive-definite matrix.
+Returns:
+    A reference-counted factor of the same shape, labeled with the input's
+    statistical interpretation and triangle.
+Throws:
+    Exception if the selected matrix is not positive definite.
++/
+package(mir.stat) auto rcCholeskyDecompose(M)(scope auto ref M metric)
+    if (unfactoredMetric!M)
+{
+    auto result = rcCholeskyDecompose!(M.triangle)(metric.storage.lightScope);
+    return labelCovariance!(factorForm!M, M.triangle)(result);
+}
+
+/// The returned factor retains its own storage.
+version(mir_stat_test_linearAlgebra)
+@safe pure @nogc unittest
+{
+    import mir.ndslice.slice: sliced;
+    import mir.stat.covariance_views: precisionView, TrianglePolicy, CovarianceRepresentation;
+    static auto retained()
+    {
+        double[4] data = [4, double.nan, 2, 5];
+        return rcCholeskyDecompose(precisionView!(TrianglePolicy.lower)(data[].sliced(2, 2)));
+    }
+    auto factor = retained();
+    static assert(factor.form == CovarianceRepresentation.inverseCovarianceCholesky);
+    static assert(factor.triangle == TrianglePolicy.lower);
+    static immutable expected = [[2.0, 0], [1.0, 2]];
+    assert(factor.storage == expected);
 }
 
 /++
@@ -326,6 +426,42 @@ version(mir_stat_test_linearAlgebra)
     scope(exit) Mallocator.instance.dispose(result.field);
     static immutable expected = [[2.0, 1], [0.0, 2]];
     assert(result == expected);
+}
+
+/++
+Factor a labeled covariance or precision matrix into custom-allocated storage.
+
+Params:
+    allocator = Allocator used for the factor and its disposal.
+    metric = Square covariance or precision view. Its selected triangle must
+        contain finite entries representing a positive-definite matrix.
+Returns:
+    A custom-allocated factor of the same shape, labeled with the input's
+    statistical interpretation and triangle. Dispose `result.storage.field` with
+    the same allocator after all uses of the factor.
+Throws:
+    Exception if the selected matrix is not positive definite. The allocation
+    is released on failure.
++/
+package(mir.stat) auto makeCholeskyDecompose(Allocator, M)(auto ref Allocator allocator, scope auto ref M metric)
+    if (unfactoredMetric!M)
+{
+    auto result = makeCholeskyDecompose!(M.triangle)(allocator, metric.storage.lightScope);
+    return labelCovariance!(factorForm!M, M.triangle)(result);
+}
+
+/// Release the custom factor after its last use.
+version(mir_stat_test_linearAlgebra)
+@system @nogc unittest
+{
+    import mir.ndslice.slice: sliced;
+    import mir.stat.covariance_views: covarianceView;
+    import std.experimental.allocator: dispose;
+    import std.experimental.allocator.mallocator: Mallocator;
+    double[1] data = [9];
+    auto factor = makeCholeskyDecompose(Mallocator.instance, covarianceView(data[].sliced(1, 1)));
+    scope(exit) Mallocator.instance.dispose(factor.storage.field);
+    assert(factor.storage[0, 0] == 3);
 }
 
 /// Allocate a factor, copy and decompose the selected triangle, and release custom storage on failure.
@@ -389,6 +525,39 @@ version(mir_stat_test_linearAlgebra)
 }
 
 /++
+Factor a labeled covariance or precision matrix into caller-supplied storage.
+
+Params:
+    metric = Square covariance or precision view with finite selected entries.
+    output = Writable matrix of the same shape and element type. Its elements
+        must be disjoint from one another and from the input.
+Returns:
+    A factor view over `output` with the input's triangle and statistical
+    interpretation. Keep borrowed output storage alive while using the factor.
+    Finish using the factor before modifying or reusing `output`, including
+    for another factorization attempt.
+Throws:
+    Exception if factorization fails. The output may contain a partial factor.
++/
+package(mir.stat) auto choleskyDecomposeInto(M, C)(scope auto ref M metric, return scope auto ref C output)
+    if (unfactoredMetric!M && matrix!C && is(Scalar!(typeof(M.storage)) == Scalar!C))
+{
+    choleskyDecomposeInto!(M.triangle)(metric.storage.lightScope, output.lightScope);
+    return labelCovariance!(factorForm!M, M.triangle)(output);
+}
+
+/// The factor references the supplied output.
+version(mir_stat_test_linearAlgebra)
+@safe pure @nogc unittest
+{
+    import mir.ndslice.slice: sliced;
+    import mir.stat.covariance_views: covarianceView;
+    double[1] data = [9], buffer;
+    auto factor = choleskyDecomposeInto(covarianceView(data[].sliced(1, 1)), buffer[].sliced(1, 1));
+    assert(factor.storage[0, 0] == 3 && &factor.storage[0, 0] == &buffer[0]);
+}
+
+/++
 Factor a matrix into caller-owned storage, preserving the source on success and failure.
 
 Params:
@@ -434,6 +603,113 @@ version(mir_stat_test_linearAlgebra)
         covariance[].sliced(2, 2), factor);
     assert(failedPivot == 0);
     assert(storage == [2, 0, 1, 2]);
+}
+
+/// Outcome of factoring a labeled matrix into caller-supplied storage.
+package(mir.stat) struct CholeskyFactorResult(F)
+{
+    import std.typecons: Nullable;
+    /// Zero on success, otherwise the one-based index of the first failing pivot.
+    size_t failedPivot;
+    /// The labeled factor on success, including order zero. Null on failure.
+    Nullable!F factor;
+}
+
+/++
+Attempt to factor a labeled covariance or precision matrix into caller-supplied storage.
+Native numeric slices support `nothrow @nogc`.
+
+Params:
+    metric = Square covariance or precision view with finite selected entries.
+    output = Writable matrix of the same shape and element type. Its elements
+        must be disjoint from one another and from the input. A failed attempt
+        may overwrite part of the output.
+Returns:
+    A $(LREF CholeskyFactorResult) containing either a factor over `output`
+    or the one-based failed pivot. Keep borrowed output storage alive while
+    using the factor. Finish using the factor before modifying or reusing
+    `output`, including for another factorization attempt.
+Throws:
+    Exceptions from user-defined iterators propagate.
++/
+package(mir.stat) auto tryCholeskyDecomposeInto(M, C)(scope auto ref M metric, return scope auto ref C output)
+    if (unfactoredMetric!M && matrix!C && is(Scalar!(typeof(M.storage)) == Scalar!C))
+{
+    alias F = typeof(labelCovariance!(factorForm!M, M.triangle)(output));
+    auto pivot = tryCholeskyDecomposeInto!(M.triangle)(metric.storage.lightScope, output.lightScope);
+    if (pivot)
+        return CholeskyFactorResult!F(pivot);
+    import std.typecons: Nullable;
+    return CholeskyFactorResult!F(0, Nullable!F(labelCovariance!(factorForm!M, M.triangle)(output)));
+}
+
+/// Inspect the lower precision factor on success and the failed pivot for a singular matrix.
+version(mir_stat_test_linearAlgebra)
+@safe pure nothrow @nogc unittest
+{
+    import mir.ndslice.slice: sliced;
+    import mir.stat.covariance_views: CovarianceRepresentation, precisionView, TrianglePolicy;
+    double[4] data = [4, double.nan, 2, 2], buffer;
+    auto metric = precisionView!(TrianglePolicy.lower)(data[].sliced(2, 2));
+    auto output = buffer[].sliced(2, 2);
+    auto result = tryCholeskyDecomposeInto(metric, output);
+    assert(result.failedPivot == 0 && !result.factor.isNull);
+    static assert(result.factor.get.form == CovarianceRepresentation.inverseCovarianceCholesky);
+    static assert(result.factor.get.triangle == TrianglePolicy.lower);
+    static immutable expected = [[2.0, 0], [1.0, 1]];
+    assert(result.factor.get.storage == expected);
+
+    data[3] = 1;
+    auto failure = tryCholeskyDecomposeInto(metric, output);
+    assert(failure.failedPivot == 2 && failure.factor.isNull);
+}
+
+/// Pass the prepared precision factor to multivariateNormalLPDFWithWorkspace.
+version(mir_stat_test_linearAlgebra)
+@safe pure nothrow @nogc unittest
+{
+    import mir.ndslice.slice: sliced;
+    import mir.stat.covariance_views: precisionView, TrianglePolicy;
+    import mir.stat.distribution.multivariate_normal: multivariateNormalLPDFWithWorkspace;
+    import std.math: fabs, log, PI;
+    double[4] data = [4, double.nan, 2, 2], buffer;
+    double[2] x = [1, 1], mean = [0, 0], scratch;
+    auto metric = precisionView!(TrianglePolicy.lower)(data[].sliced(2, 2));
+    auto output = buffer[].sliced(2, 2);
+    auto result = tryCholeskyDecomposeInto(metric, output);
+    assert(result.failedPivot == 0 && !result.factor.isNull);
+    auto logDensity = multivariateNormalLPDFWithWorkspace(x[], mean[], result.factor.get, scratch[]);
+    assert(fabs(logDensity + log(double(PI)) + 5) < 1e-14);
+}
+
+version(mir_stat_test_linearAlgebra)
+@safe pure nothrow @nogc unittest
+{
+    import mir.ndslice.slice: sliced;
+    import mir.stat.covariance_views: covarianceView;
+    double[] empty;
+    auto zero = tryCholeskyDecomposeInto(covarianceView(empty.sliced(0, 0)), empty.sliced(0, 0));
+    assert(zero.failedPivot == 0 && !zero.factor.isNull);
+
+    import mir.stat.distribution.multivariate_normal: multivariateNormalLPDFBatchWithWorkspace;
+    import mir.stat.distribution.normal: normalLPDF;
+    import std.math: fabs;
+    const double[1] covariance = [4], mean = [1];
+    double[1] storage;
+    double[2] x = [1, 3], values, scratch;
+    auto result = tryCholeskyDecomposeInto(covarianceView(covariance[].sliced(1, 1)), storage[].sliced(1, 1));
+    multivariateNormalLPDFBatchWithWorkspace(
+        x[].sliced(1, 2), mean[], result.factor.get, values[], scratch[].sliced(1, 2));
+    foreach (i; 0 .. x.length)
+        assert(fabs(values[i] - normalLPDF(x[i], mean[0], 2.0)) < 1e-14);
+
+    version(mir_stat_test_lifetime) static assert(!__traits(compiles, {
+        @safe auto escape()
+        {
+            double[1] input = [1], buffer;
+            return tryCholeskyDecomposeInto(covarianceView(input[].sliced(1, 1)), buffer[].sliced(1, 1));
+        }
+    }));
 }
 
 version(mir_stat_test_linearAlgebra)
@@ -691,6 +967,13 @@ version(mir_stat_test_linearAlgebra)
     auto result = makeCholeskyDecompose(allocator, a);
     assert(result == [[2,1],[0,2]]);
     allocator.dispose(result.field);
+    import mir.stat.covariance_views: precisionView;
+    {
+        CountingAllocator typedAllocator;
+        double[4] indefinite = [1, 2, double.nan, 1];
+        assertThrown!Exception(makeCholeskyDecompose(typedAllocator, precisionView(indefinite[].sliced(2, 2))));
+        assert(typedAllocator.allocations == 1 && typedAllocator.releases == 1);
+    }
     data[] = [1,2,double.nan,1];
     assertThrown!Exception(makeCholeskyDecompose(allocator, a));
     assert(allocator.allocations == 2 && allocator.releases == 2);
