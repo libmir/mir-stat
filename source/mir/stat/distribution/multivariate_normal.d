@@ -686,7 +686,7 @@ Element!X multivariateNormalLPDFWithWorkspace(X, C, M, W)(
 {
     auto factorView = factor.storage.asView;
     auto observation = x.asView;
-    const distance = mahalanobisWithWorkspace!(M.form, M.triangle)(observation, mean, factorView, work);
+    const distance = mahalanobisWithWorkspace(observation, mean, factor, work);
     return scalarLogDensity!(M.form)(distance, factorView);
 }
 
@@ -1503,7 +1503,7 @@ void multivariateNormalLPDFBatchWithWorkspace(X, C, M, R, W)(
     auto values = result.asView;
     auto columns = x.asView;
     auto factorView = factor.storage.asView;
-    mahalanobisBatchWithWorkspace!(M.form, M.triangle)(columns, mean, factorView, values, work);
+    mahalanobisBatchWithWorkspace(columns, mean, factor, values, work);
     batchLogDensities!(M.form)(values, factorView);
 }
 

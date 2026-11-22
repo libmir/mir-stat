@@ -79,7 +79,7 @@ Covariance input is factorized on each call and throws on numerical failure.
 Precomputed forms avoid factorization. See the module documentation for factor
 orientation, input preconditions, and numerical behavior.
 +/
-Element!X mahalanobis(CovarianceRepresentation form = CovarianceRepresentation.covariance,
+package(mir.stat) Element!X mahalanobis(CovarianceRepresentation form = CovarianceRepresentation.covariance,
     TrianglePolicy triangle = TrianglePolicy.upper, X, C, M)(
     scope auto ref X x, scope auto ref C center, scope auto ref M metric)
     if (compatible!(X,C,M))
@@ -114,7 +114,7 @@ Covariance input is factorized on each call and throws on numerical failure.
 Precomputed forms avoid factorization. See the module documentation for factor
 orientation, input preconditions, and numerical behavior.
 +/
-Element!X rcMahalanobis(CovarianceRepresentation form = CovarianceRepresentation.covariance,
+package(mir.stat) Element!X rcMahalanobis(CovarianceRepresentation form = CovarianceRepresentation.covariance,
     TrianglePolicy triangle = TrianglePolicy.upper, X, C, M)(
     scope auto ref X x, scope auto ref C center, scope auto ref M metric)
     if (compatible!(X,C,M))
@@ -150,7 +150,7 @@ Covariance input is factorized on each call and throws on numerical failure.
 Precomputed forms avoid factorization. See the module documentation for factor
 orientation, input preconditions, and numerical behavior.
 +/
-Element!X makeMahalanobis(CovarianceRepresentation form = CovarianceRepresentation.covariance,
+package(mir.stat) Element!X makeMahalanobis(CovarianceRepresentation form = CovarianceRepresentation.covariance,
     TrianglePolicy triangle = TrianglePolicy.upper, Allocator, X, C, M)(
     auto ref Allocator allocator, scope auto ref X x, scope auto ref C center, scope auto ref M metric)
     if (compatible!(X,C,M))
@@ -185,7 +185,7 @@ Covariance input is factorized on each call and throws on numerical failure.
 Precomputed forms avoid factorization. See the module documentation for factor
 orientation, input preconditions, and numerical behavior.
 +/
-Element!X mahalanobisSquared(CovarianceRepresentation form = CovarianceRepresentation.covariance,
+package(mir.stat) Element!X mahalanobisSquared(CovarianceRepresentation form = CovarianceRepresentation.covariance,
     TrianglePolicy triangle = TrianglePolicy.upper, X, C, M)(
     scope auto ref X x, scope auto ref C center, scope auto ref M metric)
     if (compatible!(X,C,M))
@@ -219,7 +219,7 @@ Covariance input is factorized on each call and throws on numerical failure.
 Precomputed forms avoid factorization. See the module documentation for factor
 orientation, input preconditions, and numerical behavior.
 +/
-Element!X rcMahalanobisSquared(CovarianceRepresentation form = CovarianceRepresentation.covariance,
+package(mir.stat) Element!X rcMahalanobisSquared(CovarianceRepresentation form = CovarianceRepresentation.covariance,
     TrianglePolicy triangle = TrianglePolicy.upper, X, C, M)(
     scope auto ref X x, scope auto ref C center, scope auto ref M metric)
     if (compatible!(X,C,M))
@@ -254,7 +254,7 @@ Covariance input is factorized on each call and throws on numerical failure.
 Precomputed forms avoid factorization. See the module documentation for factor
 orientation, input preconditions, and numerical behavior.
 +/
-Element!X makeMahalanobisSquared(CovarianceRepresentation form = CovarianceRepresentation.covariance,
+package(mir.stat) Element!X makeMahalanobisSquared(CovarianceRepresentation form = CovarianceRepresentation.covariance,
     TrianglePolicy triangle = TrianglePolicy.upper, Allocator, X, C, M)(
     auto ref Allocator allocator, scope auto ref X x, scope auto ref C center, scope auto ref M metric)
     if (compatible!(X,C,M))
@@ -282,7 +282,7 @@ element type. Its elements must not overlap each other or any input. No
 allocation is performed. Its contents are overwritten and unspecified afterward.
 Input iterator exceptions may leave partial workspace contents.
 +/
-Element!X mahalanobisWithWorkspace(CovarianceRepresentation form = CovarianceRepresentation.covariance,
+package(mir.stat) Element!X mahalanobisWithWorkspace(CovarianceRepresentation form = CovarianceRepresentation.covariance,
     TrianglePolicy triangle = TrianglePolicy.upper, X, C, M, W)(scope auto ref X x,
     scope auto ref C center, scope auto ref M metric, scope auto ref W work)
     if ((form != CovarianceRepresentation.covariance || DiagonalInfo!M.valid) && compatible!(X,C,M) &&
@@ -312,18 +312,13 @@ Returns:
 Throws:
     Exception on Cholesky failure. factorWork may contain a partial factor.
 +/
-Element!X mahalanobisWithWorkspace(CovarianceRepresentation form = CovarianceRepresentation.covariance,
+package(mir.stat) Element!X mahalanobisWithWorkspace(CovarianceRepresentation form = CovarianceRepresentation.covariance,
     TrianglePolicy triangle = TrianglePolicy.upper, X, C, M, W, F)(scope auto ref X x,
     scope auto ref C center, scope auto ref M metric, scope auto ref W work, scope auto ref F factorWork)
     if (form == CovarianceRepresentation.covariance && compatible!(X,C,M) && vector!W && matrix!F &&
         is(Element!X == Element!W) && is(Element!X == Element!F))
 {
-    import mir.exception: enforce;
-    Element!X result;
-    const pivot = tryCovarianceDistanceWithWorkspace!(false, triangle)(
-        x.asView, center.asView, metric.asView, result, work.asView, factorWork.asView);
-    enforce!"Cholesky factorization failed"(pivot == 0);
-    return result;
+    return covarianceDistance!(false, triangle)(x.asView, center.asView, metric.asView, work.asView, factorWork.asView);
 }
 
 /// Reuse vector storage with an already computed covariance Cholesky factor.
@@ -347,7 +342,7 @@ element type. Its elements must not overlap each other or any input. No
 allocation is performed. Its contents are overwritten and unspecified afterward.
 Input iterator exceptions may leave partial workspace contents.
 +/
-Element!X mahalanobisSquaredWithWorkspace(CovarianceRepresentation form = CovarianceRepresentation.covariance,
+package(mir.stat) Element!X mahalanobisSquaredWithWorkspace(CovarianceRepresentation form = CovarianceRepresentation.covariance,
     TrianglePolicy triangle = TrianglePolicy.upper, X, C, M, W)(scope auto ref X x,
     scope auto ref C center, scope auto ref M metric, scope auto ref W work)
     if ((form != CovarianceRepresentation.covariance || DiagonalInfo!M.valid) && compatible!(X,C,M) &&
@@ -377,18 +372,13 @@ Returns:
 Throws:
     Exception on Cholesky failure. factorWork may contain a partial factor.
 +/
-Element!X mahalanobisSquaredWithWorkspace(CovarianceRepresentation form = CovarianceRepresentation.covariance,
+package(mir.stat) Element!X mahalanobisSquaredWithWorkspace(CovarianceRepresentation form = CovarianceRepresentation.covariance,
     TrianglePolicy triangle = TrianglePolicy.upper, X, C, M, W, F)(scope auto ref X x,
     scope auto ref C center, scope auto ref M metric, scope auto ref W work, scope auto ref F factorWork)
     if (form == CovarianceRepresentation.covariance && compatible!(X,C,M) && vector!W && matrix!F &&
         is(Element!X == Element!W) && is(Element!X == Element!F))
 {
-    import mir.exception: enforce;
-    Element!X result;
-    const pivot = tryCovarianceDistanceWithWorkspace!(true, triangle)(
-        x.asView, center.asView, metric.asView, result, work.asView, factorWork.asView);
-    enforce!"Cholesky factorization failed"(pivot == 0);
-    return result;
+    return covarianceDistance!(true, triangle)(x.asView, center.asView, metric.asView, work.asView, factorWork.asView);
 }
 
 /// Reuse vector storage with an already computed covariance Cholesky factor.
@@ -435,6 +425,17 @@ package(mir.stat) size_t tryCovarianceDistanceWithWorkspace(bool squared, Triang
     return 0;
 }
 
+/// Factor a covariance and return its distance, propagating numerical failure.
+package(mir.stat) Element!X covarianceDistance(bool squared, TrianglePolicy triangle, X, C, M, W, F)(
+    X x, C center, M metric, W work, F factor)
+{
+    import mir.exception: enforce;
+    Element!X result;
+    const pivot = tryCovarianceDistanceWithWorkspace!(squared, triangle)(x, center, metric, result, work, factor);
+    enforce!"Cholesky factorization failed"(pivot == 0);
+    return result;
+}
+
 /// Assert matching observation, center, workspace, and square metric dimensions.
 private void check(X,C,M,W)(X x, C center, M metric, W work)
 {
@@ -445,8 +446,9 @@ private void check(X,C,M,W)(X x, C center, M metric, W work)
 }
 
 /// Allocate temporary workspaces according to policy and release custom storage on success or failure.
-private Element!X evaluate(Allocation policy, bool squared, CovarianceRepresentation form,
-    TrianglePolicy triangle, Allocator, X,C,M)(ref Allocator allocator,
+package(mir.stat) Element!X evaluate(Allocation policy, bool squared, CovarianceRepresentation form,
+    TrianglePolicy triangle, Summation summation = Summation.kbn, bool useProduct = summation != Summation.kbn,
+    Allocator, X,C,M)(ref Allocator allocator,
     scope auto ref X x, scope auto ref C center, scope auto ref M metric)
 {
     static assert(triangle == TrianglePolicy.upper || triangle == TrianglePolicy.lower);
@@ -464,7 +466,21 @@ private Element!X evaluate(Allocation policy, bool squared, CovarianceRepresenta
             allocator.dispose(work.field);
         }
     }
-    static if (DiagonalInfo!M.valid)
+    static if (useProduct)
+    {
+        static assert(form == CovarianceRepresentation.inverseCovariance);
+        auto productWork = allocate!(policy, Element!X)(allocator, xv.shape);
+        scope(exit)
+        {
+            static if (policy == Allocation.custom)
+            {
+                import std.experimental.allocator: dispose;
+                allocator.dispose(productWork.field);
+            }
+        }
+        return precisionWorkspace!(squared, triangle, summation)(xv, cv, mv, work, productWork);
+    }
+    else static if (DiagonalInfo!M.valid)
         return diagonalDistance!(squared,form)(xv,cv,mv,work);
     else static if (form == CovarianceRepresentation.covariance)
     {
@@ -477,15 +493,14 @@ private Element!X evaluate(Allocation policy, bool squared, CovarianceRepresenta
                 allocator.dispose(factor.field);
             }
         }
-        static if (squared) return mahalanobisSquaredWithWorkspace!(form,triangle)(xv,cv,mv,work,factor);
-        else return mahalanobisWithWorkspace!(form,triangle)(xv,cv,mv,work,factor);
+        return covarianceDistance!(squared, triangle)(xv, cv, mv, work, factor);
     }
     else
         return prepared!(squared,form,triangle)(xv,cv,mv,work);
 }
 
 /// Evaluate a precomputed metric using a quadratic form, triangular solve, or triangular multiplication.
-private Element!X prepared(bool squared, CovarianceRepresentation form, TrianglePolicy triangle, X,C,M,W)(
+package(mir.stat) Element!X prepared(bool squared, CovarianceRepresentation form, TrianglePolicy triangle, X,C,M,W)(
     X x, C center, M metric, W work)
 {
     static assert(triangle == TrianglePolicy.upper || triangle == TrianglePolicy.lower);
@@ -813,11 +828,11 @@ strategy. Other policies retain their selected reductions. Inputs and numerical
 preconditions follow `mahalanobis`; fast mode does not promise compensated
 accuracy or backend-independent rounding. Negative squared values are not clamped.
 +/
-Element!X mahalanobis(CovarianceRepresentation form, TrianglePolicy triangle, Summation summation, X, C, M)(scope auto ref X x, scope auto ref C center, scope auto ref M metric)
+package(mir.stat) Element!X mahalanobis(CovarianceRepresentation form, TrianglePolicy triangle, Summation summation, X, C, M)(scope auto ref X x, scope auto ref C center, scope auto ref M metric)
     if (form == CovarianceRepresentation.inverseCovariance && compatible!(X,C,M))
 {
     int unused;
-    return precisionAllocated!(Allocation.gc, false, triangle, summation)(
+    return evaluate!(Allocation.gc, false, form, triangle, summation, true)(
         unused, x, center, metric);
 }
 
@@ -830,11 +845,11 @@ strategy. Other policies retain their selected reductions. Inputs and numerical
 preconditions follow `mahalanobis`; fast mode does not promise compensated
 accuracy or backend-independent rounding. Negative squared values are not clamped.
 +/
-Element!X rcMahalanobis(CovarianceRepresentation form, TrianglePolicy triangle, Summation summation, X, C, M)(scope auto ref X x, scope auto ref C center, scope auto ref M metric)
+package(mir.stat) Element!X rcMahalanobis(CovarianceRepresentation form, TrianglePolicy triangle, Summation summation, X, C, M)(scope auto ref X x, scope auto ref C center, scope auto ref M metric)
     if (form == CovarianceRepresentation.inverseCovariance && compatible!(X,C,M))
 {
     int unused;
-    return precisionAllocated!(Allocation.rc, false, triangle, summation)(
+    return evaluate!(Allocation.rc, false, form, triangle, summation, true)(
         unused, x, center, metric);
 }
 
@@ -847,10 +862,10 @@ strategy. Other policies retain their selected reductions. Inputs and numerical
 preconditions follow `mahalanobis`; fast mode does not promise compensated
 accuracy or backend-independent rounding. Negative squared values are not clamped.
 +/
-Element!X makeMahalanobis(CovarianceRepresentation form, TrianglePolicy triangle, Summation summation, Allocator, X, C, M)(auto ref Allocator allocator, scope auto ref X x, scope auto ref C center, scope auto ref M metric)
+package(mir.stat) Element!X makeMahalanobis(CovarianceRepresentation form, TrianglePolicy triangle, Summation summation, Allocator, X, C, M)(auto ref Allocator allocator, scope auto ref X x, scope auto ref C center, scope auto ref M metric)
     if (form == CovarianceRepresentation.inverseCovariance && compatible!(X,C,M))
 {
-    return precisionAllocated!(Allocation.custom, false, triangle, summation)(
+    return evaluate!(Allocation.custom, false, form, triangle, summation, true)(
         allocator, x, center, metric);
 }
 
@@ -865,7 +880,7 @@ partially written. The default is compensated; explicit `Summation.fast` permits
 SYMV and DOT with backend-dependent rounding. Other input contracts match
 `mahalanobis`. Negative squared results are not clamped.
 +/
-Element!X mahalanobisWithWorkspace(CovarianceRepresentation form,
+package(mir.stat) Element!X mahalanobisWithWorkspace(CovarianceRepresentation form,
     TrianglePolicy triangle = TrianglePolicy.upper, Summation summation = Summation.kbn,
     X, C, M, W, P)(scope auto ref X x, scope auto ref C center, scope auto ref M metric,
     scope auto ref W work, scope auto ref P productWork)
@@ -885,11 +900,11 @@ strategy. Other policies retain their selected reductions. Inputs and numerical
 preconditions follow `mahalanobis`; fast mode does not promise compensated
 accuracy or backend-independent rounding. Negative squared values are not clamped.
 +/
-Element!X mahalanobisSquared(CovarianceRepresentation form, TrianglePolicy triangle, Summation summation, X, C, M)(scope auto ref X x, scope auto ref C center, scope auto ref M metric)
+package(mir.stat) Element!X mahalanobisSquared(CovarianceRepresentation form, TrianglePolicy triangle, Summation summation, X, C, M)(scope auto ref X x, scope auto ref C center, scope auto ref M metric)
     if (form == CovarianceRepresentation.inverseCovariance && compatible!(X,C,M))
 {
     int unused;
-    return precisionAllocated!(Allocation.gc, true, triangle, summation)(
+    return evaluate!(Allocation.gc, true, form, triangle, summation, true)(
         unused, x, center, metric);
 }
 
@@ -902,11 +917,11 @@ strategy. Other policies retain their selected reductions. Inputs and numerical
 preconditions follow `mahalanobis`; fast mode does not promise compensated
 accuracy or backend-independent rounding. Negative squared values are not clamped.
 +/
-Element!X rcMahalanobisSquared(CovarianceRepresentation form, TrianglePolicy triangle, Summation summation, X, C, M)(scope auto ref X x, scope auto ref C center, scope auto ref M metric)
+package(mir.stat) Element!X rcMahalanobisSquared(CovarianceRepresentation form, TrianglePolicy triangle, Summation summation, X, C, M)(scope auto ref X x, scope auto ref C center, scope auto ref M metric)
     if (form == CovarianceRepresentation.inverseCovariance && compatible!(X,C,M))
 {
     int unused;
-    return precisionAllocated!(Allocation.rc, true, triangle, summation)(
+    return evaluate!(Allocation.rc, true, form, triangle, summation, true)(
         unused, x, center, metric);
 }
 
@@ -919,10 +934,10 @@ strategy. Other policies retain their selected reductions. Inputs and numerical
 preconditions follow `mahalanobis`; fast mode does not promise compensated
 accuracy or backend-independent rounding. Negative squared values are not clamped.
 +/
-Element!X makeMahalanobisSquared(CovarianceRepresentation form, TrianglePolicy triangle, Summation summation, Allocator, X, C, M)(auto ref Allocator allocator, scope auto ref X x, scope auto ref C center, scope auto ref M metric)
+package(mir.stat) Element!X makeMahalanobisSquared(CovarianceRepresentation form, TrianglePolicy triangle, Summation summation, Allocator, X, C, M)(auto ref Allocator allocator, scope auto ref X x, scope auto ref C center, scope auto ref M metric)
     if (form == CovarianceRepresentation.inverseCovariance && compatible!(X,C,M))
 {
-    return precisionAllocated!(Allocation.custom, true, triangle, summation)(
+    return evaluate!(Allocation.custom, true, form, triangle, summation, true)(
         allocator, x, center, metric);
 }
 
@@ -937,7 +952,7 @@ partially written. The default is compensated; explicit `Summation.fast` permits
 SYMV and DOT with backend-dependent rounding. Other input contracts match
 `mahalanobis`. Negative squared results are not clamped.
 +/
-Element!X mahalanobisSquaredWithWorkspace(CovarianceRepresentation form,
+package(mir.stat) Element!X mahalanobisSquaredWithWorkspace(CovarianceRepresentation form,
     TrianglePolicy triangle = TrianglePolicy.upper, Summation summation = Summation.kbn,
     X, C, M, W, P)(scope auto ref X x, scope auto ref C center, scope auto ref M metric,
     scope auto ref W work, scope auto ref P productWork)
@@ -948,39 +963,8 @@ Element!X mahalanobisSquaredWithWorkspace(CovarianceRepresentation form,
         x.asView, center.asView, metric.asView, work.asView, productWork.asView);
 }
 
-/// Allocate disjoint precision work vectors and release custom storage on every exit.
-private Element!X precisionAllocated(Allocation policy, bool squared, TrianglePolicy triangle,
-    Summation summation, Allocator, X, C, M)(ref Allocator allocator,
-    scope auto ref X x, scope auto ref C center, scope auto ref M metric)
-{
-    static assert(triangle == TrianglePolicy.upper || triangle == TrianglePolicy.lower);
-    auto xv = x.asView;
-    auto cv = center.asView;
-    auto mv = metric.asView;
-    check(xv, cv, mv, xv);
-    auto work = allocate!(policy, Element!X)(allocator, xv.shape);
-    scope(exit)
-    {
-        static if (policy == Allocation.custom)
-        {
-            import std.experimental.allocator: dispose;
-            allocator.dispose(work.field);
-        }
-    }
-    auto productWork = allocate!(policy, Element!X)(allocator, xv.shape);
-    scope(exit)
-    {
-        static if (policy == Allocation.custom)
-        {
-            import std.experimental.allocator: dispose;
-            allocator.dispose(productWork.field);
-        }
-    }
-    return precisionWorkspace!(squared, triangle, summation)(xv, cv, mv, work, productWork);
-}
-
 /// Center observations and evaluate a precision quadratic form through caller workspace.
-private Element!X precisionWorkspace(bool squared, TrianglePolicy triangle, Summation summation, X,C,M,W,P)(
+package(mir.stat) Element!X precisionWorkspace(bool squared, TrianglePolicy triangle, Summation summation, X,C,M,W,P)(
     X x, C center, M metric, W work, P productWork)
 {
     static assert(triangle == TrianglePolicy.upper || triangle == TrianglePolicy.lower);
@@ -1072,7 +1056,7 @@ version(mir_stat_test_distance)
 }
 
 /// Whether column observations, center, and metric have matching real element types.
-private enum batchCompatible(X, C, M) = matrix!X && vector!C && (matrix!M || DiagonalInfo!M.valid) &&
+package(mir.stat) enum batchCompatible(X, C, M) = matrix!X && vector!C && (matrix!M || DiagonalInfo!M.valid) &&
     is(Element!X == Element!C) && is(Element!X == Element!M);
 
 /// Validate batch shapes before touching caller-owned output or scratch storage.
@@ -1104,6 +1088,33 @@ package(mir.stat) size_t tryCovarianceDistanceBatchWithWorkspace(bool squared, T
     return 0;
 }
 
+/// Use square factor storage for covariance, or observation-shaped product storage for precision.
+package(mir.stat) void batchWithExtra(bool squared, CovarianceRepresentation form, TrianglePolicy triangle,
+    Summation summation, X, C, M, R, W, E)(X x, C center, M metric, R result, W work, E extra)
+{
+    static if (form == CovarianceRepresentation.covariance)
+    {
+        import mir.exception: enforce;
+        const pivot = tryCovarianceDistanceBatchWithWorkspace!(squared, triangle, summation)(
+            x, center, metric, result, work, extra);
+        enforce!"Cholesky factorization failed"(pivot == 0);
+    }
+    else
+    {
+        static assert(form == CovarianceRepresentation.inverseCovariance);
+        import mir.stat.internal.linearAlgebra.quadratic: quadraticFormBatchInto;
+        checkBatch(x, center, metric, result, work);
+        assert(extra.shape == x.shape);
+        centerBatch!triangle(x, center, metric, work);
+        quadraticFormBatchInto!summation(work, symmetricMetric!triangle(metric), result, extra);
+        static if (!squared)
+        {
+            import std.math: sqrt;
+            foreach (j; 0 .. result.length) result[j] = sqrt(result[j]);
+        }
+    }
+}
+
 /// Center every observation, checking finite inputs and only the selected metric triangle.
 private void centerBatch(TrianglePolicy triangle, X, C, M, W)(X x, C center, M metric, W work)
 {
@@ -1127,7 +1138,7 @@ private void centerBatch(TrianglePolicy triangle, X, C, M, W)(X x, C center, M m
 }
 
 /// Evaluate a prepared batch after centering, using one triangular matrix operation when possible.
-private void preparedBatch(bool squared, CovarianceRepresentation form, TrianglePolicy triangle,
+package(mir.stat) void preparedBatch(bool squared, CovarianceRepresentation form, TrianglePolicy triangle,
     Summation summation, X, C, M, R, W)(X x, C center, M metric, R result, W work)
 {
     static assert(triangle == TrianglePolicy.upper || triangle == TrianglePolicy.lower);
@@ -1225,7 +1236,7 @@ Precision matrices retain compensated reductions by default; explicit
 Native D fallbacks support general strides. Zero-dimensional observations have
 zero distance; a batch with no columns returns an empty vector.
 +/
-AllocatedSlice!(Allocation.gc, Element!X, 1)
+package(mir.stat) AllocatedSlice!(Allocation.gc, Element!X, 1)
 mahalanobisBatch(CovarianceRepresentation form = CovarianceRepresentation.covariance,
     TrianglePolicy triangle = TrianglePolicy.upper, Summation summation = Summation.kbn,
     X, C, M)(
@@ -1248,7 +1259,7 @@ Precision matrices retain compensated reductions by default; explicit
 Native D fallbacks support general strides. Zero-dimensional observations have
 zero distance; a batch with no columns returns an empty vector.
 +/
-AllocatedSlice!(Allocation.rc, Element!X, 1)
+package(mir.stat) AllocatedSlice!(Allocation.rc, Element!X, 1)
 rcMahalanobisBatch(CovarianceRepresentation form = CovarianceRepresentation.covariance,
     TrianglePolicy triangle = TrianglePolicy.upper, Summation summation = Summation.kbn,
     X, C, M)(
@@ -1272,7 +1283,7 @@ Native D fallbacks support general strides. Zero-dimensional observations have
 zero distance; a batch with no columns returns an empty vector.
 Custom callers dispose the returned vector's field; temporary buffers are released.
 +/
-AllocatedSlice!(Allocation.custom, Element!X, 1)
+package(mir.stat) AllocatedSlice!(Allocation.custom, Element!X, 1)
 makeMahalanobisBatch(CovarianceRepresentation form = CovarianceRepresentation.covariance,
     TrianglePolicy triangle = TrianglePolicy.upper, Summation summation = Summation.kbn,
     X, C, M, Allocator)(auto ref Allocator allocator,
@@ -1293,7 +1304,7 @@ Internal diagonal-view calls accept every representation here without extra scra
 Factor forms compute scaled norms directly, preserving the unsquared API's
 range. Finite-input and positive-definite preconditions match the scalar API.
 +/
-void mahalanobisBatchWithWorkspace(CovarianceRepresentation form,
+package(mir.stat) void mahalanobisBatchWithWorkspace(CovarianceRepresentation form,
     TrianglePolicy triangle = TrianglePolicy.upper, Summation summation = Summation.kbn,
     X, C, M, R, W)(scope auto ref X x, scope auto ref C center, scope auto ref M metric,
     scope auto ref R result, scope auto ref W work)
@@ -1330,7 +1341,7 @@ Returns:
 Throws:
     Exception on covariance factorization failure, before any result is written.
 +/
-void mahalanobisBatchWithWorkspace(CovarianceRepresentation form = CovarianceRepresentation.covariance,
+package(mir.stat) void mahalanobisBatchWithWorkspace(CovarianceRepresentation form = CovarianceRepresentation.covariance,
     TrianglePolicy triangle = TrianglePolicy.upper, Summation summation = Summation.kbn,
     X, C, M, R, W, E)(scope auto ref X x, scope auto ref C center, scope auto ref M metric,
     scope auto ref R result, scope auto ref W work, scope auto ref E extra)
@@ -1338,25 +1349,8 @@ void mahalanobisBatchWithWorkspace(CovarianceRepresentation form = CovarianceRep
         is(Element!X == Element!R) && is(Element!X == Element!W) && is(Element!X == Element!E) &&
         (form == CovarianceRepresentation.covariance || form == CovarianceRepresentation.inverseCovariance))
 {
-    auto xv = x.asView; auto cv = center.asView; auto mv = metric.asView;
-    auto rv = result.asView; auto wv = work.asView; auto ev = extra.asView;
-    static if (form == CovarianceRepresentation.covariance)
-    {
-        import mir.exception: enforce;
-        const pivot = tryCovarianceDistanceBatchWithWorkspace!(false, triangle, summation)(
-            xv, cv, mv, rv, wv, ev);
-        enforce!"Cholesky factorization failed"(pivot == 0);
-    }
-    else
-    {
-        checkBatch(xv, cv, mv, rv, wv);
-        import mir.stat.internal.linearAlgebra.quadratic: quadraticFormBatchInto;
-        import std.math: sqrt;
-        assert(ev.shape == xv.shape);
-        centerBatch!triangle(xv, cv, mv, wv);
-        quadraticFormBatchInto!summation(wv, symmetricMetric!triangle(mv), rv, ev);
-        foreach (j; 0 .. rv.length) rv[j] = sqrt(rv[j]);
-    }
+    batchWithExtra!(false, form, triangle, summation)(
+        x.asView, center.asView, metric.asView, result.asView, work.asView, extra.asView);
 }
 
 /++
@@ -1371,7 +1365,7 @@ Precision matrices retain compensated reductions by default; explicit
 Native D fallbacks support general strides. Zero-dimensional observations have
 zero distance; a batch with no columns returns an empty vector.
 +/
-AllocatedSlice!(Allocation.gc, Element!X, 1)
+package(mir.stat) AllocatedSlice!(Allocation.gc, Element!X, 1)
 mahalanobisSquaredBatch(CovarianceRepresentation form = CovarianceRepresentation.covariance,
     TrianglePolicy triangle = TrianglePolicy.upper, Summation summation = Summation.kbn,
     X, C, M)(
@@ -1406,7 +1400,7 @@ Precision matrices retain compensated reductions by default; explicit
 Native D fallbacks support general strides. Zero-dimensional observations have
 zero distance; a batch with no columns returns an empty vector.
 +/
-AllocatedSlice!(Allocation.rc, Element!X, 1)
+package(mir.stat) AllocatedSlice!(Allocation.rc, Element!X, 1)
 rcMahalanobisSquaredBatch(CovarianceRepresentation form = CovarianceRepresentation.covariance,
     TrianglePolicy triangle = TrianglePolicy.upper, Summation summation = Summation.kbn,
     X, C, M)(
@@ -1430,7 +1424,7 @@ Native D fallbacks support general strides. Zero-dimensional observations have
 zero distance; a batch with no columns returns an empty vector.
 Custom callers dispose the returned vector's field; temporary buffers are released.
 +/
-AllocatedSlice!(Allocation.custom, Element!X, 1)
+package(mir.stat) AllocatedSlice!(Allocation.custom, Element!X, 1)
 makeMahalanobisSquaredBatch(CovarianceRepresentation form = CovarianceRepresentation.covariance,
     TrianglePolicy triangle = TrianglePolicy.upper, Summation summation = Summation.kbn,
     X, C, M, Allocator)(auto ref Allocator allocator,
@@ -1451,7 +1445,7 @@ Internal diagonal-view calls accept every representation here without extra scra
 Factor forms compute scaled norms directly, preserving the unsquared API's
 range. Finite-input and positive-definite preconditions match the scalar API.
 +/
-void mahalanobisSquaredBatchWithWorkspace(CovarianceRepresentation form,
+package(mir.stat) void mahalanobisSquaredBatchWithWorkspace(CovarianceRepresentation form,
     TrianglePolicy triangle = TrianglePolicy.upper, Summation summation = Summation.kbn,
     X, C, M, R, W)(scope auto ref X x, scope auto ref C center, scope auto ref M metric,
     scope auto ref R result, scope auto ref W work)
@@ -1488,7 +1482,7 @@ Returns:
 Throws:
     Exception on covariance factorization failure, before any result is written.
 +/
-void mahalanobisSquaredBatchWithWorkspace(CovarianceRepresentation form = CovarianceRepresentation.covariance,
+package(mir.stat) void mahalanobisSquaredBatchWithWorkspace(CovarianceRepresentation form = CovarianceRepresentation.covariance,
     TrianglePolicy triangle = TrianglePolicy.upper, Summation summation = Summation.kbn,
     X, C, M, R, W, E)(scope auto ref X x, scope auto ref C center, scope auto ref M metric,
     scope auto ref R result, scope auto ref W work, scope auto ref E extra)
@@ -1496,25 +1490,8 @@ void mahalanobisSquaredBatchWithWorkspace(CovarianceRepresentation form = Covari
         is(Element!X == Element!R) && is(Element!X == Element!W) && is(Element!X == Element!E) &&
         (form == CovarianceRepresentation.covariance || form == CovarianceRepresentation.inverseCovariance))
 {
-    auto xv = x.asView; auto cv = center.asView; auto mv = metric.asView;
-    auto rv = result.asView; auto wv = work.asView; auto ev = extra.asView;
-    static if (form == CovarianceRepresentation.covariance)
-    {
-        import mir.exception: enforce;
-        const pivot = tryCovarianceDistanceBatchWithWorkspace!(true, triangle, summation)(
-            xv, cv, mv, rv, wv, ev);
-        enforce!"Cholesky factorization failed"(pivot == 0);
-    }
-    else
-    {
-        checkBatch(xv, cv, mv, rv, wv);
-        import mir.stat.internal.linearAlgebra.quadratic: quadraticFormBatchInto;
-        import std.math: sqrt;
-        assert(ev.shape == xv.shape);
-        centerBatch!triangle(xv, cv, mv, wv);
-        quadraticFormBatchInto!summation(wv, symmetricMetric!triangle(mv), rv, ev);
-
-    }
+    batchWithExtra!(true, form, triangle, summation)(
+        x.asView, center.asView, metric.asView, result.asView, work.asView, extra.asView);
 }
 
 /// Compute the same squared distances using factor scratch and product scratch.
@@ -1544,7 +1521,7 @@ version(mir_stat_test_distance)
 }
 
 /// Allocate batch output and scratch, releasing custom buffers independently on failure.
-private AllocatedSlice!(policy, Element!X, 1) batchAllocated(Allocation policy, bool squared,
+package(mir.stat) AllocatedSlice!(policy, Element!X, 1) batchAllocated(Allocation policy, bool squared,
     CovarianceRepresentation form, TrianglePolicy triangle, Summation summation, Allocator, X, C, M)(
     ref Allocator allocator, scope auto ref X x, scope auto ref C center, scope auto ref M metric)
 {
@@ -1558,23 +1535,19 @@ private AllocatedSlice!(policy, Element!X, 1) batchAllocated(Allocation policy, 
     auto work = allocate!(policy, T)(allocator, xv.shape);
     scope(exit) { static if (policy == Allocation.custom) {
         import std.experimental.allocator: dispose; allocator.dispose(work.field); } }
-    static if (DiagonalInfo!M.valid)
-        preparedBatch!(squared,form,triangle,summation)(xv,cv,mv,result,work);
-    else static if (form == CovarianceRepresentation.covariance ||
-        (form == CovarianceRepresentation.inverseCovariance && summation == Summation.fast))
+    static if (!DiagonalInfo!M.valid && (form == CovarianceRepresentation.covariance ||
+        (form == CovarianceRepresentation.inverseCovariance && summation == Summation.fast)))
     {
         static if (form == CovarianceRepresentation.covariance) auto shape = mv.shape;
         else auto shape = xv.shape;
         auto extra = allocate!(policy, T)(allocator, shape);
         scope(exit) { static if (policy == Allocation.custom) {
             import std.experimental.allocator: dispose; allocator.dispose(extra.field); } }
-        static if (squared) mahalanobisSquaredBatchWithWorkspace!(form, triangle, summation)(xv, cv, mv, result, work, extra);
-        else mahalanobisBatchWithWorkspace!(form, triangle, summation)(xv, cv, mv, result, work, extra);
+        batchWithExtra!(squared, form, triangle, summation)(xv, cv, mv, result, work, extra);
     }
     else
     {
-        static if (squared) mahalanobisSquaredBatchWithWorkspace!(form, triangle, summation)(xv, cv, mv, result, work);
-        else mahalanobisBatchWithWorkspace!(form, triangle, summation)(xv, cv, mv, result, work);
+        preparedBatch!(squared, form, triangle, summation)(xv, cv, mv, result, work);
     }
     return result;
 }
@@ -1707,7 +1680,7 @@ The result is a GC-managed vector with one entry per selected observation,
 including a one-element vector for a single selected observation. Allocation,
 triangle, summation, numerical, and custom-disposal contracts follow `mahalanobisBatch`.
 +/
-AllocatedSlice!(Allocation.gc, Element!(ObservationColumns!X), 1)
+package(mir.stat) AllocatedSlice!(Allocation.gc, Element!(ObservationColumns!X), 1)
 mahalanobis(CovarianceRepresentation form = CovarianceRepresentation.covariance,
     TrianglePolicy triangle = TrianglePolicy.upper, Summation summation = Summation.kbn,
     X, C, M)(
@@ -1734,7 +1707,7 @@ The result is a reference-counted vector with one entry per selected observation
 including a one-element vector for a single selected observation. Allocation,
 triangle, summation, numerical, and custom-disposal contracts follow `rcMahalanobisBatch`.
 +/
-AllocatedSlice!(Allocation.rc, Element!(ObservationColumns!X), 1)
+package(mir.stat) AllocatedSlice!(Allocation.rc, Element!(ObservationColumns!X), 1)
 rcMahalanobis(CovarianceRepresentation form = CovarianceRepresentation.covariance,
     TrianglePolicy triangle = TrianglePolicy.upper, Summation summation = Summation.kbn,
     X, C, M)(
@@ -1761,7 +1734,7 @@ The result is a custom-allocated vector with one entry per selected observation,
 including a one-element vector for a single selected observation. Allocation,
 triangle, summation, numerical, and custom-disposal contracts follow `makeMahalanobisBatch`.
 +/
-AllocatedSlice!(Allocation.custom, Element!(ObservationColumns!X), 1)
+package(mir.stat) AllocatedSlice!(Allocation.custom, Element!(ObservationColumns!X), 1)
 makeMahalanobis(CovarianceRepresentation form = CovarianceRepresentation.covariance,
     TrianglePolicy triangle = TrianglePolicy.upper, Summation summation = Summation.kbn,
     X, C, M, Allocator)(auto ref Allocator allocator,
@@ -1783,7 +1756,7 @@ writable buffers disjoint from one another and inputs, as in `mahalanobisBatchWi
 Prepared factors and compensated precision need only this workspace. Covariance
 and fast precision use the extra-workspace overload.
 +/
-void mahalanobisWithWorkspace(CovarianceRepresentation form,
+package(mir.stat) void mahalanobisWithWorkspace(CovarianceRepresentation form,
     TrianglePolicy triangle = TrianglePolicy.upper, Summation summation = Summation.kbn,
     X, C, M, R, W)(scope auto ref X x, scope auto ref C center, scope auto ref M metric,
     scope auto ref R result, scope auto ref W work)
@@ -1803,7 +1776,7 @@ For precision, `extra` is an observation selection for product workspace, with
 the same observation count and vector length as `x`. Select its axes independently
 of its storage orientation. Other contracts follow the one-workspace overload.
 +/
-void mahalanobisWithWorkspace(CovarianceRepresentation form = CovarianceRepresentation.covariance,
+package(mir.stat) void mahalanobisWithWorkspace(CovarianceRepresentation form = CovarianceRepresentation.covariance,
     TrianglePolicy triangle = TrianglePolicy.upper, Summation summation = Summation.kbn,
     X, C, M, R, W, E)(scope auto ref X x, scope auto ref C center, scope auto ref M metric,
     scope auto ref R result, scope auto ref W work, scope auto ref E extra)
@@ -1841,7 +1814,7 @@ The result is a GC-managed vector with one entry per selected observation,
 including a one-element vector for a single selected observation. Allocation,
 triangle, summation, numerical, and custom-disposal contracts follow `mahalanobisSquaredBatch`.
 +/
-AllocatedSlice!(Allocation.gc, Element!(ObservationColumns!X), 1)
+package(mir.stat) AllocatedSlice!(Allocation.gc, Element!(ObservationColumns!X), 1)
 mahalanobisSquared(CovarianceRepresentation form = CovarianceRepresentation.covariance,
     TrianglePolicy triangle = TrianglePolicy.upper, Summation summation = Summation.kbn,
     X, C, M)(
@@ -1868,7 +1841,7 @@ The result is a reference-counted vector with one entry per selected observation
 including a one-element vector for a single selected observation. Allocation,
 triangle, summation, numerical, and custom-disposal contracts follow `rcMahalanobisSquaredBatch`.
 +/
-AllocatedSlice!(Allocation.rc, Element!(ObservationColumns!X), 1)
+package(mir.stat) AllocatedSlice!(Allocation.rc, Element!(ObservationColumns!X), 1)
 rcMahalanobisSquared(CovarianceRepresentation form = CovarianceRepresentation.covariance,
     TrianglePolicy triangle = TrianglePolicy.upper, Summation summation = Summation.kbn,
     X, C, M)(
@@ -1895,7 +1868,7 @@ The result is a custom-allocated vector with one entry per selected observation,
 including a one-element vector for a single selected observation. Allocation,
 triangle, summation, numerical, and custom-disposal contracts follow `makeMahalanobisSquaredBatch`.
 +/
-AllocatedSlice!(Allocation.custom, Element!(ObservationColumns!X), 1)
+package(mir.stat) AllocatedSlice!(Allocation.custom, Element!(ObservationColumns!X), 1)
 makeMahalanobisSquared(CovarianceRepresentation form = CovarianceRepresentation.covariance,
     TrianglePolicy triangle = TrianglePolicy.upper, Summation summation = Summation.kbn,
     X, C, M, Allocator)(auto ref Allocator allocator,
@@ -1917,7 +1890,7 @@ writable buffers disjoint from one another and inputs, as in `mahalanobisSquared
 Prepared factors and compensated precision need only this workspace. Covariance
 and fast precision use the extra-workspace overload.
 +/
-void mahalanobisSquaredWithWorkspace(CovarianceRepresentation form,
+package(mir.stat) void mahalanobisSquaredWithWorkspace(CovarianceRepresentation form,
     TrianglePolicy triangle = TrianglePolicy.upper, Summation summation = Summation.kbn,
     X, C, M, R, W)(scope auto ref X x, scope auto ref C center, scope auto ref M metric,
     scope auto ref R result, scope auto ref W work)
@@ -1937,7 +1910,7 @@ For precision, `extra` is an observation selection for product workspace, with
 the same observation count and vector length as `x`. Select its axes independently
 of its storage orientation. Other contracts follow the one-workspace overload.
 +/
-void mahalanobisSquaredWithWorkspace(CovarianceRepresentation form = CovarianceRepresentation.covariance,
+package(mir.stat) void mahalanobisSquaredWithWorkspace(CovarianceRepresentation form = CovarianceRepresentation.covariance,
     TrianglePolicy triangle = TrianglePolicy.upper, Summation summation = Summation.kbn,
     X, C, M, R, W, E)(scope auto ref X x, scope auto ref C center, scope auto ref M metric,
     scope auto ref R result, scope auto ref W work, scope auto ref E extra)
@@ -2142,7 +2115,7 @@ These overloads accept covariance or inverse covariance, never Cholesky
 factors. They borrow the selected storage for the call, preserving the usual
 allocation, workspace, batch, and observation-axis contracts.
 +/
-Element!X mahalanobis(CovarianceRepresentation form = CovarianceRepresentation.covariance,
+package(mir.stat) Element!X mahalanobis(CovarianceRepresentation form = CovarianceRepresentation.covariance,
     TrianglePolicy triangle, X, C, M)(
     scope auto ref X x, scope auto ref C center, scope auto ref const(SymmetricView!(triangle, M)) metric)
     if (compatible!(X,C,M) && (form == CovarianceRepresentation.covariance || form == CovarianceRepresentation.inverseCovariance) &&
@@ -2151,7 +2124,7 @@ Element!X mahalanobis(CovarianceRepresentation form = CovarianceRepresentation.c
     return mahalanobis!(form, triangle)(x, center, metric.borrowStorage);
 }
 /// ditto
-Element!X rcMahalanobis(CovarianceRepresentation form = CovarianceRepresentation.covariance,
+package(mir.stat) Element!X rcMahalanobis(CovarianceRepresentation form = CovarianceRepresentation.covariance,
     TrianglePolicy triangle, X, C, M)(
     scope auto ref X x, scope auto ref C center, scope auto ref const(SymmetricView!(triangle, M)) metric)
     if (compatible!(X,C,M) && (form == CovarianceRepresentation.covariance || form == CovarianceRepresentation.inverseCovariance) &&
@@ -2160,7 +2133,7 @@ Element!X rcMahalanobis(CovarianceRepresentation form = CovarianceRepresentation
     return rcMahalanobis!(form, triangle)(x, center, metric.borrowStorage);
 }
 /// ditto
-Element!X makeMahalanobis(CovarianceRepresentation form = CovarianceRepresentation.covariance,
+package(mir.stat) Element!X makeMahalanobis(CovarianceRepresentation form = CovarianceRepresentation.covariance,
     TrianglePolicy triangle, Allocator, X, C, M)(
     auto ref Allocator allocator, scope auto ref X x, scope auto ref C center, scope auto ref const(SymmetricView!(triangle, M)) metric)
     if (compatible!(X,C,M) && (form == CovarianceRepresentation.covariance || form == CovarianceRepresentation.inverseCovariance) &&
@@ -2169,7 +2142,7 @@ Element!X makeMahalanobis(CovarianceRepresentation form = CovarianceRepresentati
     return makeMahalanobis!(form, triangle)(allocator, x, center, metric.borrowStorage);
 }
 /// ditto
-Element!X mahalanobisSquared(CovarianceRepresentation form = CovarianceRepresentation.covariance,
+package(mir.stat) Element!X mahalanobisSquared(CovarianceRepresentation form = CovarianceRepresentation.covariance,
     TrianglePolicy triangle, X, C, M)(
     scope auto ref X x, scope auto ref C center, scope auto ref const(SymmetricView!(triangle, M)) metric)
     if (compatible!(X,C,M) && (form == CovarianceRepresentation.covariance || form == CovarianceRepresentation.inverseCovariance) &&
@@ -2178,7 +2151,7 @@ Element!X mahalanobisSquared(CovarianceRepresentation form = CovarianceRepresent
     return mahalanobisSquared!(form, triangle)(x, center, metric.borrowStorage);
 }
 /// ditto
-Element!X rcMahalanobisSquared(CovarianceRepresentation form = CovarianceRepresentation.covariance,
+package(mir.stat) Element!X rcMahalanobisSquared(CovarianceRepresentation form = CovarianceRepresentation.covariance,
     TrianglePolicy triangle, X, C, M)(
     scope auto ref X x, scope auto ref C center, scope auto ref const(SymmetricView!(triangle, M)) metric)
     if (compatible!(X,C,M) && (form == CovarianceRepresentation.covariance || form == CovarianceRepresentation.inverseCovariance) &&
@@ -2187,7 +2160,7 @@ Element!X rcMahalanobisSquared(CovarianceRepresentation form = CovarianceReprese
     return rcMahalanobisSquared!(form, triangle)(x, center, metric.borrowStorage);
 }
 /// ditto
-Element!X makeMahalanobisSquared(CovarianceRepresentation form = CovarianceRepresentation.covariance,
+package(mir.stat) Element!X makeMahalanobisSquared(CovarianceRepresentation form = CovarianceRepresentation.covariance,
     TrianglePolicy triangle, Allocator, X, C, M)(
     auto ref Allocator allocator, scope auto ref X x, scope auto ref C center, scope auto ref const(SymmetricView!(triangle, M)) metric)
     if (compatible!(X,C,M) && (form == CovarianceRepresentation.covariance || form == CovarianceRepresentation.inverseCovariance) &&
@@ -2196,7 +2169,7 @@ Element!X makeMahalanobisSquared(CovarianceRepresentation form = CovarianceRepre
     return makeMahalanobisSquared!(form, triangle)(allocator, x, center, metric.borrowStorage);
 }
 /// ditto
-Element!X mahalanobisWithWorkspace(CovarianceRepresentation form = CovarianceRepresentation.covariance,
+package(mir.stat) Element!X mahalanobisWithWorkspace(CovarianceRepresentation form = CovarianceRepresentation.covariance,
     TrianglePolicy triangle, X, C, M, W)(scope auto ref X x,
     scope auto ref C center, scope auto ref const(SymmetricView!(triangle, M)) metric, scope auto ref W work)
     if ((form != CovarianceRepresentation.covariance || DiagonalInfo!M.valid) && compatible!(X,C,M) &&
@@ -2206,7 +2179,7 @@ Element!X mahalanobisWithWorkspace(CovarianceRepresentation form = CovarianceRep
     return mahalanobisWithWorkspace!(form, triangle)(x, center, metric.borrowStorage, work);
 }
 /// ditto
-Element!X mahalanobisWithWorkspace(CovarianceRepresentation form = CovarianceRepresentation.covariance,
+package(mir.stat) Element!X mahalanobisWithWorkspace(CovarianceRepresentation form = CovarianceRepresentation.covariance,
     TrianglePolicy triangle, X, C, M, W, F)(scope auto ref X x,
     scope auto ref C center, scope auto ref const(SymmetricView!(triangle, M)) metric, scope auto ref W work, scope auto ref F factorWork)
     if (form == CovarianceRepresentation.covariance && compatible!(X,C,M) && vector!W && matrix!F &&
@@ -2216,7 +2189,7 @@ Element!X mahalanobisWithWorkspace(CovarianceRepresentation form = CovarianceRep
     return mahalanobisWithWorkspace!(form, triangle)(x, center, metric.borrowStorage, work, factorWork);
 }
 /// ditto
-Element!X mahalanobisSquaredWithWorkspace(CovarianceRepresentation form = CovarianceRepresentation.covariance,
+package(mir.stat) Element!X mahalanobisSquaredWithWorkspace(CovarianceRepresentation form = CovarianceRepresentation.covariance,
     TrianglePolicy triangle, X, C, M, W)(scope auto ref X x,
     scope auto ref C center, scope auto ref const(SymmetricView!(triangle, M)) metric, scope auto ref W work)
     if ((form != CovarianceRepresentation.covariance || DiagonalInfo!M.valid) && compatible!(X,C,M) &&
@@ -2226,7 +2199,7 @@ Element!X mahalanobisSquaredWithWorkspace(CovarianceRepresentation form = Covari
     return mahalanobisSquaredWithWorkspace!(form, triangle)(x, center, metric.borrowStorage, work);
 }
 /// ditto
-Element!X mahalanobisSquaredWithWorkspace(CovarianceRepresentation form = CovarianceRepresentation.covariance,
+package(mir.stat) Element!X mahalanobisSquaredWithWorkspace(CovarianceRepresentation form = CovarianceRepresentation.covariance,
     TrianglePolicy triangle, X, C, M, W, F)(scope auto ref X x,
     scope auto ref C center, scope auto ref const(SymmetricView!(triangle, M)) metric, scope auto ref W work, scope auto ref F factorWork)
     if (form == CovarianceRepresentation.covariance && compatible!(X,C,M) && vector!W && matrix!F &&
@@ -2236,28 +2209,28 @@ Element!X mahalanobisSquaredWithWorkspace(CovarianceRepresentation form = Covari
     return mahalanobisSquaredWithWorkspace!(form, triangle)(x, center, metric.borrowStorage, work, factorWork);
 }
 /// ditto
-Element!X mahalanobis(CovarianceRepresentation form, TrianglePolicy triangle, Summation summation, X, C, M)(scope auto ref X x, scope auto ref C center, scope auto ref const(SymmetricView!(triangle, M)) metric)
+package(mir.stat) Element!X mahalanobis(CovarianceRepresentation form, TrianglePolicy triangle, Summation summation, X, C, M)(scope auto ref X x, scope auto ref C center, scope auto ref const(SymmetricView!(triangle, M)) metric)
     if (form == CovarianceRepresentation.inverseCovariance && compatible!(X,C,M) && (form == CovarianceRepresentation.covariance || form == CovarianceRepresentation.inverseCovariance) &&
         __traits(compiles, mahalanobis!(form, triangle, summation)(x, center, metric.borrowStorage)))
 {
     return mahalanobis!(form, triangle, summation)(x, center, metric.borrowStorage);
 }
 /// ditto
-Element!X rcMahalanobis(CovarianceRepresentation form, TrianglePolicy triangle, Summation summation, X, C, M)(scope auto ref X x, scope auto ref C center, scope auto ref const(SymmetricView!(triangle, M)) metric)
+package(mir.stat) Element!X rcMahalanobis(CovarianceRepresentation form, TrianglePolicy triangle, Summation summation, X, C, M)(scope auto ref X x, scope auto ref C center, scope auto ref const(SymmetricView!(triangle, M)) metric)
     if (form == CovarianceRepresentation.inverseCovariance && compatible!(X,C,M) && (form == CovarianceRepresentation.covariance || form == CovarianceRepresentation.inverseCovariance) &&
         __traits(compiles, rcMahalanobis!(form, triangle, summation)(x, center, metric.borrowStorage)))
 {
     return rcMahalanobis!(form, triangle, summation)(x, center, metric.borrowStorage);
 }
 /// ditto
-Element!X makeMahalanobis(CovarianceRepresentation form, TrianglePolicy triangle, Summation summation, Allocator, X, C, M)(auto ref Allocator allocator, scope auto ref X x, scope auto ref C center, scope auto ref const(SymmetricView!(triangle, M)) metric)
+package(mir.stat) Element!X makeMahalanobis(CovarianceRepresentation form, TrianglePolicy triangle, Summation summation, Allocator, X, C, M)(auto ref Allocator allocator, scope auto ref X x, scope auto ref C center, scope auto ref const(SymmetricView!(triangle, M)) metric)
     if (form == CovarianceRepresentation.inverseCovariance && compatible!(X,C,M) && (form == CovarianceRepresentation.covariance || form == CovarianceRepresentation.inverseCovariance) &&
         __traits(compiles, makeMahalanobis!(form, triangle, summation)(allocator, x, center, metric.borrowStorage)))
 {
     return makeMahalanobis!(form, triangle, summation)(allocator, x, center, metric.borrowStorage);
 }
 /// ditto
-Element!X mahalanobisWithWorkspace(CovarianceRepresentation form,
+package(mir.stat) Element!X mahalanobisWithWorkspace(CovarianceRepresentation form,
     TrianglePolicy triangle, Summation summation = Summation.kbn,
     X, C, M, W, P)(scope auto ref X x, scope auto ref C center, scope auto ref const(SymmetricView!(triangle, M)) metric,
     scope auto ref W work, scope auto ref P productWork)
@@ -2268,28 +2241,28 @@ Element!X mahalanobisWithWorkspace(CovarianceRepresentation form,
     return mahalanobisWithWorkspace!(form, triangle, summation)(x, center, metric.borrowStorage, work, productWork);
 }
 /// ditto
-Element!X mahalanobisSquared(CovarianceRepresentation form, TrianglePolicy triangle, Summation summation, X, C, M)(scope auto ref X x, scope auto ref C center, scope auto ref const(SymmetricView!(triangle, M)) metric)
+package(mir.stat) Element!X mahalanobisSquared(CovarianceRepresentation form, TrianglePolicy triangle, Summation summation, X, C, M)(scope auto ref X x, scope auto ref C center, scope auto ref const(SymmetricView!(triangle, M)) metric)
     if (form == CovarianceRepresentation.inverseCovariance && compatible!(X,C,M) && (form == CovarianceRepresentation.covariance || form == CovarianceRepresentation.inverseCovariance) &&
         __traits(compiles, mahalanobisSquared!(form, triangle, summation)(x, center, metric.borrowStorage)))
 {
     return mahalanobisSquared!(form, triangle, summation)(x, center, metric.borrowStorage);
 }
 /// ditto
-Element!X rcMahalanobisSquared(CovarianceRepresentation form, TrianglePolicy triangle, Summation summation, X, C, M)(scope auto ref X x, scope auto ref C center, scope auto ref const(SymmetricView!(triangle, M)) metric)
+package(mir.stat) Element!X rcMahalanobisSquared(CovarianceRepresentation form, TrianglePolicy triangle, Summation summation, X, C, M)(scope auto ref X x, scope auto ref C center, scope auto ref const(SymmetricView!(triangle, M)) metric)
     if (form == CovarianceRepresentation.inverseCovariance && compatible!(X,C,M) && (form == CovarianceRepresentation.covariance || form == CovarianceRepresentation.inverseCovariance) &&
         __traits(compiles, rcMahalanobisSquared!(form, triangle, summation)(x, center, metric.borrowStorage)))
 {
     return rcMahalanobisSquared!(form, triangle, summation)(x, center, metric.borrowStorage);
 }
 /// ditto
-Element!X makeMahalanobisSquared(CovarianceRepresentation form, TrianglePolicy triangle, Summation summation, Allocator, X, C, M)(auto ref Allocator allocator, scope auto ref X x, scope auto ref C center, scope auto ref const(SymmetricView!(triangle, M)) metric)
+package(mir.stat) Element!X makeMahalanobisSquared(CovarianceRepresentation form, TrianglePolicy triangle, Summation summation, Allocator, X, C, M)(auto ref Allocator allocator, scope auto ref X x, scope auto ref C center, scope auto ref const(SymmetricView!(triangle, M)) metric)
     if (form == CovarianceRepresentation.inverseCovariance && compatible!(X,C,M) && (form == CovarianceRepresentation.covariance || form == CovarianceRepresentation.inverseCovariance) &&
         __traits(compiles, makeMahalanobisSquared!(form, triangle, summation)(allocator, x, center, metric.borrowStorage)))
 {
     return makeMahalanobisSquared!(form, triangle, summation)(allocator, x, center, metric.borrowStorage);
 }
 /// ditto
-Element!X mahalanobisSquaredWithWorkspace(CovarianceRepresentation form,
+package(mir.stat) Element!X mahalanobisSquaredWithWorkspace(CovarianceRepresentation form,
     TrianglePolicy triangle, Summation summation = Summation.kbn,
     X, C, M, W, P)(scope auto ref X x, scope auto ref C center, scope auto ref const(SymmetricView!(triangle, M)) metric,
     scope auto ref W work, scope auto ref P productWork)
@@ -2300,7 +2273,7 @@ Element!X mahalanobisSquaredWithWorkspace(CovarianceRepresentation form,
     return mahalanobisSquaredWithWorkspace!(form, triangle, summation)(x, center, metric.borrowStorage, work, productWork);
 }
 /// ditto
-AllocatedSlice!(Allocation.gc, Element!X, 1) mahalanobisBatch(CovarianceRepresentation form = CovarianceRepresentation.covariance,
+package(mir.stat) AllocatedSlice!(Allocation.gc, Element!X, 1) mahalanobisBatch(CovarianceRepresentation form = CovarianceRepresentation.covariance,
     TrianglePolicy triangle, Summation summation = Summation.kbn,
     X, C, M)(
     scope auto ref X x, scope auto ref C center, scope auto ref const(SymmetricView!(triangle, M)) metric)
@@ -2310,7 +2283,7 @@ AllocatedSlice!(Allocation.gc, Element!X, 1) mahalanobisBatch(CovarianceRepresen
     return mahalanobisBatch!(form, triangle, summation)(x, center, metric.borrowStorage);
 }
 /// ditto
-AllocatedSlice!(Allocation.rc, Element!X, 1) rcMahalanobisBatch(CovarianceRepresentation form = CovarianceRepresentation.covariance,
+package(mir.stat) AllocatedSlice!(Allocation.rc, Element!X, 1) rcMahalanobisBatch(CovarianceRepresentation form = CovarianceRepresentation.covariance,
     TrianglePolicy triangle, Summation summation = Summation.kbn,
     X, C, M)(
     scope auto ref X x, scope auto ref C center, scope auto ref const(SymmetricView!(triangle, M)) metric)
@@ -2320,7 +2293,7 @@ AllocatedSlice!(Allocation.rc, Element!X, 1) rcMahalanobisBatch(CovarianceRepres
     return rcMahalanobisBatch!(form, triangle, summation)(x, center, metric.borrowStorage);
 }
 /// ditto
-AllocatedSlice!(Allocation.custom, Element!X, 1) makeMahalanobisBatch(CovarianceRepresentation form = CovarianceRepresentation.covariance,
+package(mir.stat) AllocatedSlice!(Allocation.custom, Element!X, 1) makeMahalanobisBatch(CovarianceRepresentation form = CovarianceRepresentation.covariance,
     TrianglePolicy triangle, Summation summation = Summation.kbn,
     X, C, M, Allocator)(auto ref Allocator allocator,
     scope auto ref X x, scope auto ref C center, scope auto ref const(SymmetricView!(triangle, M)) metric)
@@ -2330,7 +2303,7 @@ AllocatedSlice!(Allocation.custom, Element!X, 1) makeMahalanobisBatch(Covariance
     return makeMahalanobisBatch!(form, triangle, summation)(allocator, x, center, metric.borrowStorage);
 }
 /// ditto
-void mahalanobisBatchWithWorkspace(CovarianceRepresentation form,
+package(mir.stat) void mahalanobisBatchWithWorkspace(CovarianceRepresentation form,
     TrianglePolicy triangle, Summation summation = Summation.kbn,
     X, C, M, R, W)(scope auto ref X x, scope auto ref C center, scope auto ref const(SymmetricView!(triangle, M)) metric,
     scope auto ref R result, scope auto ref W work)
@@ -2343,7 +2316,7 @@ void mahalanobisBatchWithWorkspace(CovarianceRepresentation form,
     return mahalanobisBatchWithWorkspace!(form, triangle, summation)(x, center, metric.borrowStorage, result, work);
 }
 /// ditto
-void mahalanobisBatchWithWorkspace(CovarianceRepresentation form = CovarianceRepresentation.covariance,
+package(mir.stat) void mahalanobisBatchWithWorkspace(CovarianceRepresentation form = CovarianceRepresentation.covariance,
     TrianglePolicy triangle, Summation summation = Summation.kbn,
     X, C, M, R, W, E)(scope auto ref X x, scope auto ref C center, scope auto ref const(SymmetricView!(triangle, M)) metric,
     scope auto ref R result, scope auto ref W work, scope auto ref E extra)
@@ -2355,7 +2328,7 @@ void mahalanobisBatchWithWorkspace(CovarianceRepresentation form = CovarianceRep
     return mahalanobisBatchWithWorkspace!(form, triangle, summation)(x, center, metric.borrowStorage, result, work, extra);
 }
 /// ditto
-AllocatedSlice!(Allocation.gc, Element!X, 1) mahalanobisSquaredBatch(CovarianceRepresentation form = CovarianceRepresentation.covariance,
+package(mir.stat) AllocatedSlice!(Allocation.gc, Element!X, 1) mahalanobisSquaredBatch(CovarianceRepresentation form = CovarianceRepresentation.covariance,
     TrianglePolicy triangle, Summation summation = Summation.kbn,
     X, C, M)(
     scope auto ref X x, scope auto ref C center, scope auto ref const(SymmetricView!(triangle, M)) metric)
@@ -2365,7 +2338,7 @@ AllocatedSlice!(Allocation.gc, Element!X, 1) mahalanobisSquaredBatch(CovarianceR
     return mahalanobisSquaredBatch!(form, triangle, summation)(x, center, metric.borrowStorage);
 }
 /// ditto
-AllocatedSlice!(Allocation.rc, Element!X, 1) rcMahalanobisSquaredBatch(CovarianceRepresentation form = CovarianceRepresentation.covariance,
+package(mir.stat) AllocatedSlice!(Allocation.rc, Element!X, 1) rcMahalanobisSquaredBatch(CovarianceRepresentation form = CovarianceRepresentation.covariance,
     TrianglePolicy triangle, Summation summation = Summation.kbn,
     X, C, M)(
     scope auto ref X x, scope auto ref C center, scope auto ref const(SymmetricView!(triangle, M)) metric)
@@ -2375,7 +2348,7 @@ AllocatedSlice!(Allocation.rc, Element!X, 1) rcMahalanobisSquaredBatch(Covarianc
     return rcMahalanobisSquaredBatch!(form, triangle, summation)(x, center, metric.borrowStorage);
 }
 /// ditto
-AllocatedSlice!(Allocation.custom, Element!X, 1) makeMahalanobisSquaredBatch(CovarianceRepresentation form = CovarianceRepresentation.covariance,
+package(mir.stat) AllocatedSlice!(Allocation.custom, Element!X, 1) makeMahalanobisSquaredBatch(CovarianceRepresentation form = CovarianceRepresentation.covariance,
     TrianglePolicy triangle, Summation summation = Summation.kbn,
     X, C, M, Allocator)(auto ref Allocator allocator,
     scope auto ref X x, scope auto ref C center, scope auto ref const(SymmetricView!(triangle, M)) metric)
@@ -2385,7 +2358,7 @@ AllocatedSlice!(Allocation.custom, Element!X, 1) makeMahalanobisSquaredBatch(Cov
     return makeMahalanobisSquaredBatch!(form, triangle, summation)(allocator, x, center, metric.borrowStorage);
 }
 /// ditto
-void mahalanobisSquaredBatchWithWorkspace(CovarianceRepresentation form,
+package(mir.stat) void mahalanobisSquaredBatchWithWorkspace(CovarianceRepresentation form,
     TrianglePolicy triangle, Summation summation = Summation.kbn,
     X, C, M, R, W)(scope auto ref X x, scope auto ref C center, scope auto ref const(SymmetricView!(triangle, M)) metric,
     scope auto ref R result, scope auto ref W work)
@@ -2398,7 +2371,7 @@ void mahalanobisSquaredBatchWithWorkspace(CovarianceRepresentation form,
     return mahalanobisSquaredBatchWithWorkspace!(form, triangle, summation)(x, center, metric.borrowStorage, result, work);
 }
 /// ditto
-void mahalanobisSquaredBatchWithWorkspace(CovarianceRepresentation form = CovarianceRepresentation.covariance,
+package(mir.stat) void mahalanobisSquaredBatchWithWorkspace(CovarianceRepresentation form = CovarianceRepresentation.covariance,
     TrianglePolicy triangle, Summation summation = Summation.kbn,
     X, C, M, R, W, E)(scope auto ref X x, scope auto ref C center, scope auto ref const(SymmetricView!(triangle, M)) metric,
     scope auto ref R result, scope auto ref W work, scope auto ref E extra)
@@ -2410,7 +2383,7 @@ void mahalanobisSquaredBatchWithWorkspace(CovarianceRepresentation form = Covari
     return mahalanobisSquaredBatchWithWorkspace!(form, triangle, summation)(x, center, metric.borrowStorage, result, work, extra);
 }
 /// ditto
-AllocatedSlice!(Allocation.gc, Element!(ObservationColumns!X), 1) mahalanobis(CovarianceRepresentation form = CovarianceRepresentation.covariance,
+package(mir.stat) AllocatedSlice!(Allocation.gc, Element!(ObservationColumns!X), 1) mahalanobis(CovarianceRepresentation form = CovarianceRepresentation.covariance,
     TrianglePolicy triangle, Summation summation = Summation.kbn,
     X, C, M)(
     scope auto ref X x, scope auto ref C center, scope auto ref const(SymmetricView!(triangle, M)) metric)
@@ -2421,7 +2394,7 @@ AllocatedSlice!(Allocation.gc, Element!(ObservationColumns!X), 1) mahalanobis(Co
     return mahalanobis!(form, triangle, summation)(x, center, metric.borrowStorage);
 }
 /// ditto
-AllocatedSlice!(Allocation.rc, Element!(ObservationColumns!X), 1) rcMahalanobis(CovarianceRepresentation form = CovarianceRepresentation.covariance,
+package(mir.stat) AllocatedSlice!(Allocation.rc, Element!(ObservationColumns!X), 1) rcMahalanobis(CovarianceRepresentation form = CovarianceRepresentation.covariance,
     TrianglePolicy triangle, Summation summation = Summation.kbn,
     X, C, M)(
     scope auto ref X x, scope auto ref C center, scope auto ref const(SymmetricView!(triangle, M)) metric)
@@ -2432,7 +2405,7 @@ AllocatedSlice!(Allocation.rc, Element!(ObservationColumns!X), 1) rcMahalanobis(
     return rcMahalanobis!(form, triangle, summation)(x, center, metric.borrowStorage);
 }
 /// ditto
-AllocatedSlice!(Allocation.custom, Element!(ObservationColumns!X), 1) makeMahalanobis(CovarianceRepresentation form = CovarianceRepresentation.covariance,
+package(mir.stat) AllocatedSlice!(Allocation.custom, Element!(ObservationColumns!X), 1) makeMahalanobis(CovarianceRepresentation form = CovarianceRepresentation.covariance,
     TrianglePolicy triangle, Summation summation = Summation.kbn,
     X, C, M, Allocator)(auto ref Allocator allocator,
     scope auto ref X x, scope auto ref C center, scope auto ref const(SymmetricView!(triangle, M)) metric)
@@ -2443,7 +2416,7 @@ AllocatedSlice!(Allocation.custom, Element!(ObservationColumns!X), 1) makeMahala
     return makeMahalanobis!(form, triangle, summation)(allocator, x, center, metric.borrowStorage);
 }
 /// ditto
-void mahalanobisWithWorkspace(CovarianceRepresentation form,
+package(mir.stat) void mahalanobisWithWorkspace(CovarianceRepresentation form,
     TrianglePolicy triangle, Summation summation = Summation.kbn,
     X, C, M, R, W)(scope auto ref X x, scope auto ref C center, scope auto ref const(SymmetricView!(triangle, M)) metric,
     scope auto ref R result, scope auto ref W work)
@@ -2455,7 +2428,7 @@ void mahalanobisWithWorkspace(CovarianceRepresentation form,
     return mahalanobisWithWorkspace!(form, triangle, summation)(x, center, metric.borrowStorage, result, work);
 }
 /// ditto
-void mahalanobisWithWorkspace(CovarianceRepresentation form = CovarianceRepresentation.covariance,
+package(mir.stat) void mahalanobisWithWorkspace(CovarianceRepresentation form = CovarianceRepresentation.covariance,
     TrianglePolicy triangle, Summation summation = Summation.kbn,
     X, C, M, R, W, E)(scope auto ref X x, scope auto ref C center, scope auto ref const(SymmetricView!(triangle, M)) metric,
     scope auto ref R result, scope auto ref W work, scope auto ref E extra)
@@ -2471,7 +2444,7 @@ void mahalanobisWithWorkspace(CovarianceRepresentation form = CovarianceRepresen
     return mahalanobisWithWorkspace!(form, triangle, summation)(x, center, metric.borrowStorage, result, work, extra);
 }
 /// ditto
-AllocatedSlice!(Allocation.gc, Element!(ObservationColumns!X), 1) mahalanobisSquared(CovarianceRepresentation form = CovarianceRepresentation.covariance,
+package(mir.stat) AllocatedSlice!(Allocation.gc, Element!(ObservationColumns!X), 1) mahalanobisSquared(CovarianceRepresentation form = CovarianceRepresentation.covariance,
     TrianglePolicy triangle, Summation summation = Summation.kbn,
     X, C, M)(
     scope auto ref X x, scope auto ref C center, scope auto ref const(SymmetricView!(triangle, M)) metric)
@@ -2482,7 +2455,7 @@ AllocatedSlice!(Allocation.gc, Element!(ObservationColumns!X), 1) mahalanobisSqu
     return mahalanobisSquared!(form, triangle, summation)(x, center, metric.borrowStorage);
 }
 /// ditto
-AllocatedSlice!(Allocation.rc, Element!(ObservationColumns!X), 1) rcMahalanobisSquared(CovarianceRepresentation form = CovarianceRepresentation.covariance,
+package(mir.stat) AllocatedSlice!(Allocation.rc, Element!(ObservationColumns!X), 1) rcMahalanobisSquared(CovarianceRepresentation form = CovarianceRepresentation.covariance,
     TrianglePolicy triangle, Summation summation = Summation.kbn,
     X, C, M)(
     scope auto ref X x, scope auto ref C center, scope auto ref const(SymmetricView!(triangle, M)) metric)
@@ -2493,7 +2466,7 @@ AllocatedSlice!(Allocation.rc, Element!(ObservationColumns!X), 1) rcMahalanobisS
     return rcMahalanobisSquared!(form, triangle, summation)(x, center, metric.borrowStorage);
 }
 /// ditto
-AllocatedSlice!(Allocation.custom, Element!(ObservationColumns!X), 1) makeMahalanobisSquared(CovarianceRepresentation form = CovarianceRepresentation.covariance,
+package(mir.stat) AllocatedSlice!(Allocation.custom, Element!(ObservationColumns!X), 1) makeMahalanobisSquared(CovarianceRepresentation form = CovarianceRepresentation.covariance,
     TrianglePolicy triangle, Summation summation = Summation.kbn,
     X, C, M, Allocator)(auto ref Allocator allocator,
     scope auto ref X x, scope auto ref C center, scope auto ref const(SymmetricView!(triangle, M)) metric)
@@ -2504,7 +2477,7 @@ AllocatedSlice!(Allocation.custom, Element!(ObservationColumns!X), 1) makeMahala
     return makeMahalanobisSquared!(form, triangle, summation)(allocator, x, center, metric.borrowStorage);
 }
 /// ditto
-void mahalanobisSquaredWithWorkspace(CovarianceRepresentation form,
+package(mir.stat) void mahalanobisSquaredWithWorkspace(CovarianceRepresentation form,
     TrianglePolicy triangle, Summation summation = Summation.kbn,
     X, C, M, R, W)(scope auto ref X x, scope auto ref C center, scope auto ref const(SymmetricView!(triangle, M)) metric,
     scope auto ref R result, scope auto ref W work)
@@ -2516,7 +2489,7 @@ void mahalanobisSquaredWithWorkspace(CovarianceRepresentation form,
     return mahalanobisSquaredWithWorkspace!(form, triangle, summation)(x, center, metric.borrowStorage, result, work);
 }
 /// ditto
-void mahalanobisSquaredWithWorkspace(CovarianceRepresentation form = CovarianceRepresentation.covariance,
+package(mir.stat) void mahalanobisSquaredWithWorkspace(CovarianceRepresentation form = CovarianceRepresentation.covariance,
     TrianglePolicy triangle, Summation summation = Summation.kbn,
     X, C, M, R, W, E)(scope auto ref X x, scope auto ref C center, scope auto ref const(SymmetricView!(triangle, M)) metric,
     scope auto ref R result, scope auto ref W work, scope auto ref E extra)

@@ -206,32 +206,32 @@ private Result[] measure(int family)(string name, size_t iterations, size_t n, u
     /// Measure the experimental flattened reduction on the shared inputs.
     double single() { return singleTriangle(x,a); }
     /// Measure squared distance including GC scratch allocation and covariance factorization.
-    double covarianceGC() { return mahalanobisSquared(x,center,a); }
+    double covarianceGC() { return mahalanobisSquared(x, center, covarianceView(a)); }
     /// Measure squared distance from a covariance factor with GC scratch.
-    double factorGC() { return mahalanobisSquared!(CovarianceRepresentation.covarianceCholesky)(x,center,factor); }
+    double factorGC() { return mahalanobisSquared(x, center, covarianceCholeskyView(factor)); }
     /// Measure squared distance from a precision matrix with GC scratch.
-    double precisionGC() { return mahalanobisSquared!(CovarianceRepresentation.inverseCovariance)(x,center,precision); }
+    double precisionGC() { return mahalanobisSquared(x, center, precisionView(precision)); }
     /// Measure squared distance from a precision factor with GC scratch.
-    double precisionFactorGC() { return mahalanobisSquared!(CovarianceRepresentation.inverseCovarianceCholesky)(x,center,precisionFactor); }
+    double precisionFactorGC() { return mahalanobisSquared(x, center, precisionCholeskyView(precisionFactor)); }
     /// Measure covariance factorization and squared distance with reusable buffers.
-    double covarianceWorkspace() { return mahalanobisSquaredWithWorkspace(x,center,a,work,factorWork); }
+    double covarianceWorkspace() { return mahalanobisSquaredWithWorkspace(x, center, covarianceView(a), work, factorWork); }
     /// Measure squared distance using a covariance factor and reusable workspace.
-    double factorWorkspace() { return mahalanobisSquaredWithWorkspace!(CovarianceRepresentation.covarianceCholesky)(x,center,factor,work); }
+    double factorWorkspace() { return mahalanobisSquaredWithWorkspace(x, center, covarianceCholeskyView(factor), work); }
     /// Measure squared distance using a precision matrix and reusable workspace.
-    double precisionWorkspace() { return mahalanobisSquaredWithWorkspace!(CovarianceRepresentation.inverseCovariance)(x,center,precision,work); }
+    double precisionWorkspace() { return mahalanobisSquaredWithWorkspace(x, center, precisionView(precision), work); }
     /// Measure squared distance using a precision factor and reusable workspace.
-    double precisionFactorWorkspace() { return mahalanobisSquaredWithWorkspace!(CovarianceRepresentation.inverseCovarianceCholesky)(x,center,precisionFactor,work); }
+    double precisionFactorWorkspace() { return mahalanobisSquaredWithWorkspace(x, center, precisionCholeskyView(precisionFactor), work); }
     /// Include two GC vector allocations in the fast precision calculation.
     double precisionFastGC()
     {
         import mir.math.sum: Summation;
-        return mahalanobisSquared!(CovarianceRepresentation.inverseCovariance, TrianglePolicy.upper, Summation.fast)(x,center,precision);
+        return mahalanobisSquared!(Summation.fast)(x, center, precisionView(precision));
     }
     /// Reuse both centered-input and matrix-vector buffers for fast precision arithmetic.
     double precisionFastWorkspace()
     {
         import mir.math.sum: Summation;
-        return mahalanobisSquaredWithWorkspace!(CovarianceRepresentation.inverseCovariance, TrianglePolicy.upper, Summation.fast)(x,center,precision,work,productWork);
+        return mahalanobisSquaredWithWorkspace!(Summation.fast)(x, center, precisionView(precision), work, productWork);
     }
     import std.meta: AliasSeq;
     static if (family < 2) alias functions = AliasSeq!(denseProduct, triangularProduct, packedProduct);
@@ -408,19 +408,19 @@ private Result[] measureBatch(bool distance)(string name, size_t iterations, siz
             static if (batch) quadraticFormBatchInto!summation(x, symmetricView(metric), result, work);
             else foreach (j;0 .. columns) result[j] = quadraticFormWithWorkspace!summation(xc[j], symmetricView(metric), wc[j]);
         } else {
-            static if (form == CovarianceRepresentation.covarianceCholesky) auto m = factor;
-            else static if (form == CovarianceRepresentation.inverseCovarianceCholesky) auto m = precisionFactor;
-            else auto m = metric;
+            static if (form == CovarianceRepresentation.covarianceCholesky) auto m = covarianceCholeskyView(factor);
+            else static if (form == CovarianceRepresentation.inverseCovarianceCholesky) auto m = precisionCholeskyView(precisionFactor);
+            else auto m = precisionView(metric);
             static if (batch) {
                 static if (form == CovarianceRepresentation.inverseCovariance && summation == Summation.fast)
-                    mahalanobisSquaredBatchWithWorkspace!(form, TrianglePolicy.upper, summation)(x, center, m, result, work, product);
-                else mahalanobisSquaredBatchWithWorkspace!(form, TrianglePolicy.upper, summation)(x, center, m, result, work);
+                    mahalanobisSquaredBatchWithWorkspace!summation(x, center, m, result, work, product);
+                else mahalanobisSquaredBatchWithWorkspace!summation(x, center, m, result, work);
             } else {
                 auto pc = product.transposed;
                 foreach (j;0 .. columns) {
                     static if (form == CovarianceRepresentation.inverseCovariance && summation == Summation.fast)
-                        result[j] = mahalanobisSquaredWithWorkspace!(form, TrianglePolicy.upper, summation)(xc[j], center, m, wc[j], pc[j]);
-                    else result[j] = mahalanobisSquaredWithWorkspace!(form)(xc[j], center, m, wc[j]);
+                        result[j] = mahalanobisSquaredWithWorkspace!summation(xc[j], center, m, wc[j], pc[j]);
+                    else result[j] = mahalanobisSquaredWithWorkspace(xc[j], center, m, wc[j]);
                 }
             }
         }
