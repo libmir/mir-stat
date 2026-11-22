@@ -29,6 +29,16 @@ output; `quadraticFormWithWorkspace` additionally takes selected scratch with
 the same observation count and vector length. Storage order does not change
 axis meaning. Jagged collections and higher-rank selections are not supported.
 
+For example, let the rows of a 3-by-2 matrix be [1, 2], [2, 1], and [0, 0].
+With diagonal entries 4 and 5 and upper off-diagonal entry 2,
+`quadraticForm(rows[0], symmetricView(a))` gives 32. Selecting all three
+rows with `rows.byDim!0` gives [32, 29, 0] in the same order.
+`quadraticFormInto(rows.byDim!0, symmetricView(a), output)` writes those
+three values without product scratch. For fast matrix multiplication, pass
+six product elements (three observations times two coordinates) to
+`quadraticFormWithWorkspace!(Summation.fast)`. A 3-by-2 buffer selected
+by rows and a 2-by-3 buffer selected by columns both fit this batch.
+
 A diagonal view evaluates sum(x[i] * (d[i] * x[i])) in linear time.
 It preserves the chosen summation policy and accepts negative diagonal entries.
 Batch and selection overloads share this specialization; allocating diagonal
@@ -427,12 +437,16 @@ private enum batchCompatible(X, R) = numericSlice!X && X.N == 2 &&
     numericSlice!R && R.N == 1 && is(Scalar!X == Scalar!R) && isFloatingPoint!(Scalar!X);
 
 /++
-Evaluate one quadratic form per column of `x`, writing a vector of length
-`x.length!1`. The metric may be a general matrix or a symmetric view.
-Inputs share a real element type. Output must be disjoint from inputs and
-have nonoverlapping writable elements. Shapes are asserted. No allocation
-occurs. Each column uses the requested summation policy; the default is KBN.
-Use the extra-workspace overload for matrix-matrix acceleration in fast mode.
+Write one quadratic form per observation column without allocating.
+Each observation is reduced separately without product scratch.
+
+Params:
+    summation = Reduction policy. The default is compensated KBN summation.
+    x = Real matrix with one observation per column.
+    a = Square matrix with the observation element type and dimension. A symmetric
+        view reads the selected triangle and a diagonal view reads only its diagonal.
+    result = Writable vector of the same element type, with one element per observation
+        in column order. Its elements must be nonoverlapping and disjoint from the inputs.
 +/
 package(mir.stat) void quadraticFormBatchInto(Summation summation = Summation.kbn, X, A, R)(
     scope auto ref X x, scope auto ref A a, scope auto ref R result)
@@ -447,11 +461,18 @@ package(mir.stat) void quadraticFormBatchInto(Summation summation = Summation.kb
 }
 
 /++
-Batch quadratic forms with an additional writable matrix of shape `x.shape`.
-Workspace and output must be mutually disjoint and disjoint from inputs.
-Explicit `Summation.fast` computes `a*x` once using GEMM or symmetric dispatch
-(SYMM when eligible), then column dots. Other policies retain their requested
-row and final reductions. Workspace is overwritten; no allocation occurs.
+Write one quadratic form per observation column without allocating.
+Fast mode computes all matrix-vector products together when the layout permits.
+
+Params:
+    summation = Reduction policy. The default is compensated KBN summation.
+    x = Real matrix with one observation per column.
+    a = Square matrix with the observation element type and dimension. A symmetric
+        view reads the selected triangle and a diagonal view reads only its diagonal.
+    result = Writable vector of the same element type, with one element per observation
+        in column order. Its elements must be nonoverlapping and disjoint from the inputs.
+    work = Writable product matrix with the shape and element type of `x`.
+        Its elements must be nonoverlapping and disjoint from the inputs and result.
 +/
 package(mir.stat) void quadraticFormBatchInto(Summation summation = Summation.kbn, X, A, R, W)(
     scope auto ref X x, scope auto ref A a, scope auto ref R result, scope auto ref W work)
@@ -475,9 +496,18 @@ package(mir.stat) void quadraticFormBatchInto(Summation summation = Summation.kb
 }
 
 /++
-Return a GC-managed vector of column quadratic forms. Arguments and arithmetic
-follow `quadraticFormBatchInto`. Default policies allocate only the result;
-explicit fast mode additionally allocates a matrix workspace for GEMM/SYMM.
+Evaluate one quadratic form per observation column.
+Only `Summation.fast` with a nondiagonal matrix representation allocates
+a temporary product matrix with one element per observation coordinate.
+
+Params:
+    summation = Reduction policy. The default is compensated KBN summation.
+    x = Real matrix with one observation per column.
+    a = Square matrix with the observation element type and dimension. A symmetric
+        view reads the selected triangle and a diagonal view reads only its diagonal.
+Returns:
+    A GC-managed vector of the input element type with one value per
+    observation in column order. A single observation gives a one-element vector.
 +/
 package(mir.stat) AllocatedSlice!(Allocation.gc, Scalar!X, 1)
 quadraticFormBatch(Summation summation = Summation.kbn, X, A)(
@@ -507,9 +537,18 @@ version(mir_stat_test_linearAlgebra)
 }
 
 /++
-Return a reference-counted vector of column quadratic forms. Arguments and arithmetic
-follow `quadraticFormBatchInto`. Default policies allocate only the result;
-explicit fast mode additionally allocates a matrix workspace for GEMM/SYMM.
+Evaluate one quadratic form per observation column.
+Only `Summation.fast` with a nondiagonal matrix representation allocates
+a temporary product matrix with one element per observation coordinate.
+
+Params:
+    summation = Reduction policy. The default is compensated KBN summation.
+    x = Real matrix with one observation per column.
+    a = Square matrix with the observation element type and dimension. A symmetric
+        view reads the selected triangle and a diagonal view reads only its diagonal.
+Returns:
+    A reference-counted vector of the input element type with one value per
+    observation in column order. A single observation gives a one-element vector.
 +/
 package(mir.stat) AllocatedSlice!(Allocation.rc, Scalar!X, 1)
 rcQuadraticFormBatch(Summation summation = Summation.kbn, X, A)(
@@ -522,10 +561,20 @@ rcQuadraticFormBatch(Summation summation = Summation.kbn, X, A)(
 }
 
 /++
-Return a custom-allocated vector of column quadratic forms. Arguments and arithmetic
-follow `quadraticFormBatchInto`. Default policies allocate only the result;
-explicit fast mode additionally allocates a matrix workspace for GEMM/SYMM.
-Custom result storage belongs to the caller, who disposes its field.
+Evaluate one quadratic form per observation column.
+Only `Summation.fast` with a nondiagonal matrix representation allocates
+a temporary product matrix with one element per observation coordinate.
+
+Params:
+    summation = Reduction policy. The default is compensated KBN summation.
+    allocator = Allocator for the result and any temporary product storage.
+    x = Real matrix with one observation per column.
+    a = Square matrix with the observation element type and dimension. A symmetric
+        view reads the selected triangle and a diagonal view reads only its diagonal.
+Returns:
+    A custom-allocated vector of the input element type with one value per
+    observation in column order. A single observation gives a one-element vector.
+    The caller disposes the result field with the supplied allocator.
 +/
 package(mir.stat) AllocatedSlice!(Allocation.custom, Scalar!X, 1)
 makeQuadraticFormBatch(Summation summation = Summation.kbn, X, A, Allocator)(
@@ -610,15 +659,20 @@ version(mir_stat_test_linearAlgebra)
 import mir.stat.internal.linearAlgebra.types: isObservationSelection, ObservationColumns, observationColumns;
 
 /++
-Evaluate a quadratic form for each explicitly selected observation vector.
-`x.alongDim!0` / `x.byDim!1` selects columns; `x.alongDim!1` / `x.byDim!0`
-selects rows. The result follows selection order. One selection gives a
-one-element vector. A bare matrix requires `quadraticFormBatch`.
-Only rectangular Mir slice-of-slices views are accepted. A descriptor-only
-adapter preserves strides and ownership and forwards to `quadraticFormBatch`;
-eligible fast arithmetic retains whole-batch matrix multiplication.
-The metric, arithmetic, gc ownership, and custom-disposal contracts
-follow `quadraticFormBatch`. The metric may be a general matrix or symmetric view.
+Evaluate one quadratic form per selected observation.
+The selection forwards to the column batch as a view, preserving strides.
+Only `Summation.fast` with a nondiagonal matrix representation allocates
+a temporary product matrix with one element per observation coordinate.
+
+Params:
+    summation = Reduction policy. The default is compensated KBN summation.
+    x = Rectangular selection of real observation vectors. Select rows with
+        `byDim!0` or `alongDim!1`, or columns with `byDim!1` or `alongDim!0`.
+    a = Square matrix with the observation element type and dimension. A symmetric
+        view reads the selected triangle and a diagonal view reads only its diagonal.
+Returns:
+    A GC-managed vector of the input element type with one value per
+    observation in selection order. A single observation gives a one-element vector.
 +/
 package(mir.stat) AllocatedSlice!(Allocation.gc, Scalar!(ObservationColumns!X), 1)
 quadraticForm(Summation summation = Summation.kbn, X, A)(
@@ -631,15 +685,20 @@ quadraticForm(Summation summation = Summation.kbn, X, A)(
 }
 
 /++
-Evaluate a quadratic form for each explicitly selected observation vector.
-`x.alongDim!0` / `x.byDim!1` selects columns; `x.alongDim!1` / `x.byDim!0`
-selects rows. The result follows selection order. One selection gives a
-one-element vector. A bare matrix requires `rcQuadraticFormBatch`.
-Only rectangular Mir slice-of-slices views are accepted. A descriptor-only
-adapter preserves strides and ownership and forwards to `rcQuadraticFormBatch`;
-eligible fast arithmetic retains whole-batch matrix multiplication.
-The metric, arithmetic, rc ownership, and custom-disposal contracts
-follow `rcQuadraticFormBatch`. The metric may be a general matrix or symmetric view.
+Evaluate one quadratic form per selected observation.
+The selection forwards to the column batch as a view, preserving strides.
+Only `Summation.fast` with a nondiagonal matrix representation allocates
+a temporary product matrix with one element per observation coordinate.
+
+Params:
+    summation = Reduction policy. The default is compensated KBN summation.
+    x = Rectangular selection of real observation vectors. Select rows with
+        `byDim!0` or `alongDim!1`, or columns with `byDim!1` or `alongDim!0`.
+    a = Square matrix with the observation element type and dimension. A symmetric
+        view reads the selected triangle and a diagonal view reads only its diagonal.
+Returns:
+    A reference-counted vector of the input element type with one value per
+    observation in selection order. A single observation gives a one-element vector.
 +/
 package(mir.stat) AllocatedSlice!(Allocation.rc, Scalar!(ObservationColumns!X), 1)
 rcQuadraticForm(Summation summation = Summation.kbn, X, A)(
@@ -652,15 +711,22 @@ rcQuadraticForm(Summation summation = Summation.kbn, X, A)(
 }
 
 /++
-Evaluate a quadratic form for each explicitly selected observation vector.
-`x.alongDim!0` / `x.byDim!1` selects columns; `x.alongDim!1` / `x.byDim!0`
-selects rows. The result follows selection order. One selection gives a
-one-element vector. A bare matrix requires `makeQuadraticFormBatch`.
-Only rectangular Mir slice-of-slices views are accepted. A descriptor-only
-adapter preserves strides and ownership and forwards to `makeQuadraticFormBatch`;
-eligible fast arithmetic retains whole-batch matrix multiplication.
-The metric, arithmetic, custom ownership, and custom-disposal contracts
-follow `makeQuadraticFormBatch`. The metric may be a general matrix or symmetric view.
+Evaluate one quadratic form per selected observation.
+The selection forwards to the column batch as a view, preserving strides.
+Only `Summation.fast` with a nondiagonal matrix representation allocates
+a temporary product matrix with one element per observation coordinate.
+
+Params:
+    summation = Reduction policy. The default is compensated KBN summation.
+    allocator = Allocator for the result and any temporary product storage.
+    x = Rectangular selection of real observation vectors. Select rows with
+        `byDim!0` or `alongDim!1`, or columns with `byDim!1` or `alongDim!0`.
+    a = Square matrix with the observation element type and dimension. A symmetric
+        view reads the selected triangle and a diagonal view reads only its diagonal.
+Returns:
+    A custom-allocated vector of the input element type with one value per
+    observation in selection order. A single observation gives a one-element vector.
+    The caller disposes the result field with the supplied allocator.
 +/
 package(mir.stat) AllocatedSlice!(Allocation.custom, Scalar!(ObservationColumns!X), 1)
 makeQuadraticForm(Summation summation = Summation.kbn, X, A, Allocator)(
@@ -673,11 +739,17 @@ makeQuadraticForm(Summation summation = Summation.kbn, X, A, Allocator)(
 }
 
 /++
-Write one quadratic form per selected observation to ordinary vector `result`.
-Select columns with `alongDim!0` / `byDim!1`, or rows with `alongDim!1` / `byDim!0`.
-Output length is the selection count. No allocation occurs; output must have
-nonoverlapping elements and be disjoint from inputs. Other contracts follow
-`quadraticFormBatchInto`. Use `quadraticFormWithWorkspace` for fast matrix products.
+Write one quadratic form per selected observation without allocating.
+Each observation is reduced separately without product scratch.
+
+Params:
+    summation = Reduction policy. The default is compensated KBN summation.
+    x = Rectangular selection of real observation vectors. Select rows with
+        `byDim!0` or `alongDim!1`, or columns with `byDim!1` or `alongDim!0`.
+    a = Square matrix with the observation element type and dimension. A symmetric
+        view reads the selected triangle and a diagonal view reads only its diagonal.
+    result = Writable vector of the same element type, with one element per observation
+        in selection order. Its elements must be nonoverlapping and disjoint from the inputs.
 +/
 package(mir.stat) void quadraticFormInto(Summation summation = Summation.kbn, X, A, R)(
     scope auto ref X x, scope auto ref A a, scope auto ref R result)
@@ -689,12 +761,20 @@ package(mir.stat) void quadraticFormInto(Summation summation = Summation.kbn, X,
 }
 
 /++
-Write quadratic forms using explicitly selected observations and scratch vectors.
-`x` and `work` selections have equal counts and vector lengths; storage layouts
-may differ. Results follow observation selection order. No allocation occurs.
-Output and scratch must be mutually disjoint and disjoint from inputs, with
-nonoverlapping writable elements. Arithmetic follows `quadraticFormBatchInto`;
-explicit fast mode retains whole-batch GEMM/SYMM where eligible.
+Write one quadratic form per selected observation without allocating.
+Fast mode computes all matrix-vector products together when the layout permits.
+
+Params:
+    summation = Reduction policy. The default is compensated KBN summation.
+    x = Rectangular selection of real observation vectors. Select rows with
+        `byDim!0` or `alongDim!1`, or columns with `byDim!1` or `alongDim!0`.
+    a = Square matrix with the observation element type and dimension. A symmetric
+        view reads the selected triangle and a diagonal view reads only its diagonal.
+    result = Writable vector of the same element type, with one element per observation
+        in selection order. Its elements must be nonoverlapping and disjoint from the inputs.
+    work = Selection of writable product vectors matching the input selection in count,
+        vector length, and element type. Input and scratch axes may differ.
+        Its elements must be nonoverlapping and disjoint from the inputs and result.
 +/
 package(mir.stat) void quadraticFormWithWorkspace(Summation summation = Summation.kbn, X, A, R, W)(
     scope auto ref X x, scope auto ref A a, scope auto ref R result, scope auto ref W work)
