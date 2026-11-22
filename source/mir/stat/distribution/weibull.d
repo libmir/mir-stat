@@ -133,7 +133,7 @@ T weibullPDF(T)(const T x, const T shape, const T scale = T(1))
     in (validParameter(scale), "scale must be finite and positive")
 {
     import mir.stat.internal.fp_weibull: weibullDensity;
-    return weibullDensity(x, shape, scale);
+    return weibullDensity!false(x, shape, scale);
 }
 
 ///
@@ -610,6 +610,89 @@ unittest
     0.5.weibullLPDF(2.0, 3.0).shouldApprox == log(0.1080672);
     1.0.weibullLPDF(2.0, 3.0).shouldApprox == log(0.1988532);
     1.5.weibullLPDF(2.0, 3.0).shouldApprox == log(0.2596003);
+}
+
+/++
+Computes the Weibull log density with a guarded logarithm of the density
+prefactor and a separately scaled cumulative hazard. For integral shapes,
+powers are formed before division when their estimated odd-significand
+widths are at most 2*bits+128, preserving an exact unit prefactor. Near unit density,
+cancellation beyond working precision can leave an unresolved residual.
+
+Params:
+    T = Represented $(D Fp) type, inferred from the arguments.
+    x = Nonnegative observation, including positive infinity.
+    shape = Positive finite shape parameter.
+    scale = Positive finite scale parameter (default: one).
+
+Returns:
+    The natural logarithm of the density in type T. At zero it is positive
+    infinity for shape below one, minus log(scale) for shape one, and
+    negative infinity for shape above one. At positive infinity it is
+    negative infinity.
++/
+@safe pure nothrow @nogc
+T weibullLPDF(T)(const T x, const T shape, const T scale = T(1))
+    if (is(T == Fp!size, size_t size))
+    in (!x.isNaN && (!x.sign || (!x.isSpecial && !x.coefficient)), "x must be nonnegative")
+    in (validParameter(shape), "shape must be finite and positive")
+    in (validParameter(scale), "scale must be finite and positive")
+{
+    import mir.stat.internal.fp_weibull: weibullDensity;
+    return weibullDensity!true(x, shape, scale);
+}
+
+///
+version(mir_stat_test)
+@safe pure nothrow @nogc unittest
+{
+    import mir.bignum.fp: Fp;
+    alias T = Fp!64;
+    assert(weibullLPDF(T(0), T(1)) == T(0));
+    assert(weibullLPDF(T(3), T(1)) == T(-3));
+}
+
+version(mir_stat_test)
+@safe pure nothrow @nogc unittest
+{
+    import mir.bignum.fixed: UInt;
+    import mir.math.common: approxEqual;
+    alias T = Fp!64;
+    alias Wide = Fp!128;
+    enum expected = Wide(true, -126, UInt!128.fromHexString("fcd2c42269b724f077d6eced81553854"));
+    assert(weibullLPDF(Wide(9), Wide(1.5), Wide(4)) == expected);
+    assert(approxEqual(weibullLPDF(9.0, 1.5, 4.0), -3.9503641449035618549, 8 * double.epsilon));
+    assert(weibullLPDF(T(0), T(0.5)) == T(double.infinity));
+    assert(weibullLPDF(T(0), T(2)) == T(-double.infinity));
+    assert(weibullLPDF(T(double.infinity), T(0.5)) == T(-double.infinity));
+
+    // The density rounds to one, but its log is exactly minus the hazard.
+    auto x = T(1), scale = T(1), residual = T(-1);
+    x.exponent -= 40_001;
+    scale.exponent -= 20_000;
+    residual.exponent -= 40_002;
+    assert(weibullPDF(x, T(2), scale) == T(1));
+    assert(weibullLPDF(x, T(2), scale) == residual);
+
+    // For t = 5*2^-10000, shape = 3, x = 3*t^3 and scale = 3*t^2,
+    // the prefactor is one and the log density is exactly -t^3.
+    x = T(375);
+    x.exponent -= 30_000;
+    scale = T(75);
+    scale.exponent -= 20_000;
+    residual = T(-125);
+    residual.exponent -= 30_000;
+    assert(weibullLPDF(x, T(3), scale) == residual);
+
+    // The negative log hazard survives even when the density underflows.
+    auto shape = T(1);
+    shape.exponent += 100;
+    enum logHalf = T(true, -64, UInt!64(0xb17217f7d1cf79acUL));
+    auto leading = logHalf;
+    leading.exponent += 100;
+    assert(weibullLPDF(T(0.5), shape) == leading);
+    assert(weibullLPDF(T(2), shape) == T(-double.infinity));
+    assert(weibullLPDF(T(0), T(1), T(2)) == logHalf);
 }
 
 // Density limits at zero and infinity, including the exponential special case.

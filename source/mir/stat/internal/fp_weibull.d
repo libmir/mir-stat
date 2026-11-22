@@ -124,7 +124,27 @@ package(mir.stat) Fp!bits weibullTail(bool upper, uint bits)(Fp!bits x, Fp!bits 
     }
 }
 
-package(mir.stat) Fp!bits weibullDensity(uint bits)(Fp!bits x, Fp!bits shape, Fp!bits scale)
+// A scaled product can have a binary exponent outside long even though
+// its logarithm is small enough to return. Near one take a single log.
+private auto scaledLog(uint bits)(ProbabilityLog!(3 * bits + 64).S value,
+    ref ProbabilityLog!(3 * bits + 64).Context context)
+{
+    alias L = ProbabilityLog!(3 * bits + 64);
+    enum work = 3 * bits + 256;
+    const negative = value.exponent < exponentBias;
+    const count = negative ? exponentBias - value.exponent : value.exponent - exponentBias;
+    if (count <= (1UL << 62))
+    {
+        const e = cast(long)cast(ulong)count;
+        return L.logDyadic(value.fraction.coefficient, (negative ? -e : e) - work, context);
+    }
+    const fractionLog = L.logDyadic(value.fraction.coefficient, -cast(long)work, context);
+    const logTwo = L.logDyadic(UInt!64(1), 1, context);
+    const power = L.S.from(Fp!128(count)).multiply(L.S.from(logTwo));
+    return addOffset!work(fractionLog, power, negative);
+}
+
+package(mir.stat) Fp!bits weibullDensity(bool logarithmic, uint bits)(Fp!bits x, Fp!bits shape, Fp!bits scale)
 {
     alias T = Fp!bits;
     alias L = ProbabilityLog!(3 * bits + 64);
@@ -132,13 +152,32 @@ package(mir.stat) Fp!bits weibullDensity(uint bits)(Fp!bits x, Fp!bits shape, Fp
     const one = S.from(T(1));
     const k = S.from(shape);
     const divisor = S.from(scale);
+    const negativeInfinity = T(true, long.max, UInt!bits(0));
+    L.Context context;
     if (x.isInfinity)
-        return T(0);
+    {
+        static if (logarithmic)
+            return negativeInfinity;
+        else
+            return T(0);
+    }
     if (!x.coefficient)
     {
-        if (k == one)
-            return addOffset!bits(T(0), one.divide(divisor), false);
-        return fpProbabilityLess(shape, T(1)) ? T(false, long.max, UInt!bits(0)) : T(0);
+        static if (logarithmic)
+        {
+            if (k != one)
+                return T(!fpProbabilityLess(shape, T(1)), long.max, UInt!bits(0));
+            auto result = L.logDyadic(scale.coefficient, scale.exponent, context);
+            if (result.coefficient)
+                result.sign = !result.sign;
+            return cast(T)result;
+        }
+        else
+        {
+            if (k == one)
+                return addOffset!bits(T(0), one.divide(divisor), false);
+            return fpProbabilityLess(shape, T(1)) ? T(false, long.max, UInt!bits(0)) : T(0);
+        }
     }
 
     const obs = S.from(x);
@@ -155,7 +194,6 @@ package(mir.stat) Fp!bits weibullDensity(uint bits)(Fp!bits x, Fp!bits shape, Fp
     }
     else
     {
-        L.Context context;
         const logarithm = logRatio!bits(x, scale, context);
         hazard = one;
         if (logarithm.coefficient)
@@ -164,16 +202,35 @@ package(mir.stat) Fp!bits weibullDensity(uint bits)(Fp!bits x, Fp!bits shape, Fp
             // Neither shape/x nor its reciprocal can offset exponential
             // decay once |log(hazard)| reaches 2^65.
             if (magnitude.exponent >= exponentBias + 66)
-                return T(0);
+            {
+                static if (logarithmic)
+                {
+                    if (!logarithm.sign)
+                        return negativeInfinity;
+                    // log(k/x) + log(hazard) - hazard. The last term
+                    // here is below the Fp floor; log(hazard) can be finite.
+                    return addOffset!bits(logRatio!bits(shape, x, context), magnitude, true);
+                }
+                else
+                    return T(0);
+            }
             hazard = expMagnitude(magnitude, logarithm.sign);
         }
         prefactor = k.divide(obs).multiply(hazard);
     }
-    if (hazard.exponent >= exponentBias + 66)
-        return T(0);
-    // Below this threshold the decay can change the rounded rational
-    // prefactor only at a midpoint, where the correction is negative.
-    if (count && hazard.exponent + (3 * bits + 136) <= exponentBias)
-        return addOffset!bits(T(0), belowMidpoint(prefactor), false);
-    return addOffset!bits(T(0), prefactor.multiply(scaledDecay(hazard)), false);
+    static if (logarithmic)
+    {
+        const normalization = scaledLog!bits(prefactor, context);
+        return addOffset!bits(normalization, hazard, true);
+    }
+    else
+    {
+        if (hazard.exponent >= exponentBias + 66)
+            return T(0);
+        // Below this threshold the decay can change the rounded rational
+        // prefactor only at a midpoint, where the correction is negative.
+        if (count && hazard.exponent + (3 * bits + 136) <= exponentBias)
+            return addOffset!bits(T(0), belowMidpoint(prefactor), false);
+        return addOffset!bits(T(0), prefactor.multiply(scaledDecay(hazard)), false);
+    }
 }
