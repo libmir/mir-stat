@@ -8,30 +8,12 @@ import mir.bignum.fixed: UInt;
 import mir.bignum.fp: Fp;
 import mir.stat.internal.fp_location_scale: addOffset, distance;
 import mir.stat.internal.fp_probability: fpProbabilityComplement, fpProbabilityLess;
-import mir.stat.internal.fp_probability_log: ProbabilityLog;
+import mir.stat.internal.fp_probability_log: ProbabilityLog, logRatio;
 import mir.stat.internal.fp_scaled_probability: ProbabilityScaled, addExponent, exponentBias, scaledDecay;
 
 @safe pure nothrow @nogc:
 
 private alias Log(uint bits) = ProbabilityLog!(3 * bits + 64);
-
-// Use one logarithm near equality. Elsewhere subtract the input logarithms,
-// since the exponent of their quotient need not fit in a signed long.
-private auto logRatio(uint bits)(Fp!bits a, Fp!bits b, ref Log!bits.Context context)
-{
-    alias L = Log!bits;
-    alias S = L.S;
-    enum work = 3 * bits + 256;
-    const ratio = S.from(a).divide(S.from(b));
-    if (ratio.exponent >= exponentBias - 1 && ratio.exponent <= exponentBias + 2)
-    {
-        const e = cast(long)cast(ulong)(ratio.exponent - exponentBias) - work;
-        return L.logDyadic(ratio.fraction.coefficient, e, context);
-    }
-    const first = L.logDyadic(a.coefficient, a.exponent, context);
-    const second = L.logDyadic(b.coefficient, b.exponent, context);
-    return second.coefficient ? addOffset!work(first, S.from(second), !second.sign) : first;
-}
 
 // Recognize an integral binary exponent after range reduction. Callers supply
 // values below 2^67. For division, a nonintegral quotient of the input dyadics
