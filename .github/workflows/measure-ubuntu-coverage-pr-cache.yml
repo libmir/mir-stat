@@ -136,11 +136,14 @@ jobs:
     needs: compare
     runs-on: ubuntu-latest
     steps:
+      - uses: actions/checkout@v7.0.1
+        with:
+          persist-credentials: false
       - uses: actions/download-artifact@v4
         with:
           pattern: coverage-*-${{ github.run_attempt }}
           path: reports
-      - name: Compare report names and SHA-256 hashes
+      - name: Record raw hashes and compare line coverage
         env:
           ATTEMPT: ${{ github.run_attempt }}
           LC_ALL: C
@@ -150,4 +153,4 @@ jobs:
             echo "$mode: $(wc -l < "$mode.sha256") reports" >> "$GITHUB_STEP_SUMMARY"
             sha256sum "$mode.sha256" >> "$GITHUB_STEP_SUMMARY"
           done
-          diff -u master-only.sha256 master-plus-pr.sha256
+          python3 .github/scripts/compare-ubuntu-coverage.py "reports/coverage-master-only-$ATTEMPT" "reports/coverage-master-plus-pr-$ATTEMPT"
