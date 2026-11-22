@@ -4,7 +4,12 @@ set -euo pipefail
 # Keep the original source paths in the compiler's .lst reports. Each group
 # uses the project's recipe and dependency selections in its own build directory.
 project=$PWD
-build=$(mktemp -d)
+if [[ ${1:-} == --stable-build-path ]]; then
+    build="${RUNNER_TEMP:?}/mir-stat-coverage"
+    mkdir -- "$build"
+else
+    build=$(mktemp -d)
+fi
 trap 'rm -rf -- "$build"' EXIT
 for group in descriptive remaining; do
     mkdir "$build/$group"

@@ -163,6 +163,9 @@ jobs:
   # Optimized compilation dominates runtime; run it alongside the other suites.
   release:
     name: Optimized release tests (${{ matrix.os }}, ${{ matrix.dc.channel }})
+    env:
+      CACHE_DIR: ldc-release-objects
+      CACHE_PREFIX: ldc-release-v1-${{ matrix.os }}-${{ matrix.dc.compiler }}
     needs: compilers
     permissions:
       contents: read
@@ -208,8 +211,31 @@ jobs:
         dub --version
         if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 
+    - &restore-ldc-master
+      name: Restore LDC objects from master
+      if: startsWith(matrix.dc.channel, 'ldc-')
+      id: master-cache
+      uses: actions/cache/restore@v6.1.0
+      with:
+        path: ${{ runner.temp }}/${{ env.CACHE_DIR }}
+        key: ${{ env.CACHE_PREFIX }}-${{ runner.arch }}-master-${{ github.event.pull_request.base.sha || github.sha }}
+        restore-keys: ${{ env.CACHE_PREFIX }}-${{ runner.arch }}-master-
+
+    # A draft can measure a warm rerun before master has published a cache.
+    - &restore-ldc-draft
+      name: Restore LDC objects from this draft
+      if: startsWith(matrix.dc.channel, 'ldc-') && github.event.pull_request.draft && !steps.master-cache.outputs.cache-matched-key
+      id: draft-cache
+      uses: actions/cache/restore@v6.1.0
+      with:
+        path: ${{ runner.temp }}/${{ env.CACHE_DIR }}
+        key: ${{ env.CACHE_PREFIX }}-${{ runner.arch }}-draft-${{ github.event.pull_request.number }}-${{ github.sha }}
+        restore-keys: ${{ env.CACHE_PREFIX }}-${{ runner.arch }}-draft-${{ github.event.pull_request.number }}-
+
     - name: Run optimized release tests (Linux LDC)
       if: runner.os == 'Linux' && startsWith(matrix.dc.channel, 'ldc-')
+      env: &ldc-cache-flags
+        DFLAGS: -cache=${{ runner.temp }}/${{ env.CACHE_DIR }}
       shell: bash
       run: |
         # DUB sizes its parallel pool from CPU affinity. Select up to four CPUs
@@ -235,6 +261,7 @@ jobs:
 
     - name: Run optimized release tests (Windows LDC)
       if: runner.os == 'Windows' && startsWith(matrix.dc.channel, 'ldc-')
+      env: *ldc-cache-flags
       shell: pwsh
       run: ./.github/scripts/windows-test.ps1 unittest-release -AllowPackage
 
@@ -255,9 +282,23 @@ jobs:
       if: ${{ always() && runner.os == 'Linux' }}
       run: bash .github/scripts/linux-resources.sh kernel
 
+    - &save-ldc
+      name: Save LDC objects
+      if: >-
+        startsWith(matrix.dc.channel, 'ldc-') &&
+        ((github.event_name == 'push' && steps.master-cache.outputs.cache-hit != 'true') ||
+         (github.event.pull_request.draft && !steps.master-cache.outputs.cache-matched-key && !steps.draft-cache.outputs.cache-matched-key))
+      uses: actions/cache/save@v6.1.0
+      with:
+        path: ${{ runner.temp }}/${{ env.CACHE_DIR }}
+        key: ${{ steps.draft-cache.outputs.cache-primary-key || steps.master-cache.outputs.cache-primary-key }}
+
   # Compile and run the full lifetime suite independently of coverage.
   lifetime:
     name: DIP1000 lifetime tests (${{ matrix.os }}, ${{ matrix.dc.channel }})
+    env:
+      CACHE_DIR: ldc-lifetime-objects
+      CACHE_PREFIX: ldc-lifetime-v1-${{ matrix.os }}-${{ matrix.dc.compiler }}
     needs: compilers
     permissions:
       contents: read
@@ -303,8 +344,17 @@ jobs:
         dub --version
         if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 
-    - name: Run DIP1000 lifetime tests (Windows)
-      if: runner.os == 'Windows'
+    - *restore-ldc-master
+    - *restore-ldc-draft
+
+    - name: Run DIP1000 lifetime tests (Windows DMD)
+      if: runner.os == 'Windows' && startsWith(matrix.dc.channel, 'dmd-')
+      shell: pwsh
+      run: ./.github/scripts/windows-test.ps1 unittest-dip1000
+
+    - name: Run DIP1000 lifetime tests (Windows LDC)
+      if: runner.os == 'Windows' && startsWith(matrix.dc.channel, 'ldc-')
+      env: *ldc-cache-flags
       shell: pwsh
       run: ./.github/scripts/windows-test.ps1 unittest-dip1000
 
@@ -319,14 +369,20 @@ jobs:
 
     - name: Run DIP1000 lifetime tests (Linux LDC)
       if: runner.os == 'Linux' && startsWith(matrix.dc.channel, 'ldc-')
+      env: *ldc-cache-flags
       shell: bash
       run: |
         cpus=$(python3 -c 'import os; print(",".join(map(str, sorted(os.sched_getaffinity(0))[:4])))')
         echo "Linux LDC lifetime build CPU affinity: $cpus (at most four compiler workers)"
         exec taskset -c "$cpus" bash .github/scripts/linux-resources.sh run dub test --build=unittest-dip1000 --build-mode=singleFile --parallel
 
+    - *save-ldc
+
   test:
     name: Tests with coverage (${{ matrix.os }}, ${{ matrix.dc.channel }})
+    env:
+      CACHE_DIR: ldc-general-coverage-objects
+      CACHE_PREFIX: ldc-general-coverage-v1-${{ matrix.os }}-${{ matrix.dc.compiler }}
     needs: compilers
     permissions:
       contents: read
@@ -372,6 +428,9 @@ jobs:
         dub --version
         if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 
+    - *restore-ldc-master
+    - *restore-ldc-draft
+
     - name: Run tests with coverage (Windows DMD)
       if: runner.os == 'Windows' && startsWith(matrix.dc.channel, 'dmd-')
       shell: pwsh
@@ -380,12 +439,18 @@ jobs:
 
     - name: Run tests with coverage (Windows LDC)
       if: runner.os == 'Windows' && startsWith(matrix.dc.channel, 'ldc-')
+      env: *ldc-cache-flags
       shell: pwsh
-      run: ./.github/scripts/windows-coverage.ps1
+      run: ./.github/scripts/windows-coverage.ps1 -StableBuildPath
 
-    - name: Run tests with coverage (Linux)
-      if: runner.os == 'Linux'
+    - name: Run tests with coverage (Linux DMD)
+      if: runner.os == 'Linux' && startsWith(matrix.dc.channel, 'dmd-')
       run: bash .github/scripts/linux-coverage.sh
+
+    - name: Run tests with coverage (Linux LDC)
+      if: runner.os == 'Linux' && startsWith(matrix.dc.channel, 'ldc-')
+      env: *ldc-cache-flags
+      run: bash .github/scripts/linux-coverage.sh --stable-build-path
 
     # The BLAS build writes the same filenames; move the general reports first.
     # Forks run the tests; coverage is published by the upstream repository.
@@ -403,6 +468,18 @@ jobs:
           Move-Item -LiteralPath $report.FullName -Destination $destination
         }
         Write-Output "Preserved $($reports.Count) general coverage reports"
+
+    - name: Summarize LDC general coverage reports
+      if: startsWith(matrix.dc.channel, 'ldc-') && steps.general-coverage.outcome == 'success'
+      shell: pwsh
+      run: |
+        $directory = Join-Path $env:RUNNER_TEMP 'coverage/general'
+        $reports = @(Get-ChildItem -LiteralPath $directory -Filter 'source-*.lst' -File | Sort-Object Name -Culture en-US)
+        $manifest = foreach ($report in $reports) {
+          "$($report.Name) $((Get-FileHash -LiteralPath $report.FullName).Hash)"
+        }
+        $digest = [Security.Cryptography.SHA256]::HashData([Text.Encoding]::UTF8.GetBytes(($manifest -join "`n")))
+        "General coverage: $($reports.Count) reports, SHA-256 $([Convert]::ToHexString($digest))" >> $env:GITHUB_STEP_SUMMARY
 
     # Run slow numerical sweeps once; ordinary Fp tests stay in the full matrix.
     # The focused suite makes optimized LDC faster overall than DMD.
@@ -526,3 +603,5 @@ jobs:
         foreach ($report in Get-ChildItem -LiteralPath $source -Filter 'source-*.lst' -File) {
           Remove-Item -LiteralPath (Join-Path $env:GITHUB_WORKSPACE $report.Name)
         }
+
+    - *save-ldc
