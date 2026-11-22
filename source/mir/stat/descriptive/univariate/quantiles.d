@@ -37,6 +37,7 @@ $(TR $(TH Category) $(TH Declarations))
         $(REF quantileSortFirst, mir, stat, descriptive, univariate, quantiles)$(NBSP)
         $(REF rcquantileSortFirst, mir, stat, descriptive, univariate, quantiles)$(NBSP)
         $(REF makeQuantileSortFirst, mir, stat, descriptive, univariate, quantiles)$(NBSP)
+        $(REF quantileSortFirstInto, mir, stat, descriptive, univariate, quantiles)$(NBSP)
         $(REF quantileScratchLength, mir, stat, descriptive, univariate, quantiles)$(NBSP)
         $(REF QuantileTable, mir, stat, descriptive, univariate, quantiles)$(NBSP)
         $(REF quantileTable, mir, stat, descriptive, univariate, quantiles)$(NBSP)
@@ -8374,6 +8375,65 @@ version(mir_stat_test) @system unittest
     const int[3] ordered = [1, 4, 9];
     assert(makeQuantileSortFirst(allocator, assumeSorted(ordered[]), 0.5) == 4);
     assert(allocator.allocations == 2);
+}
+
+/++ Sort a writable observation workspace and write quantiles to caller storage.
+Params:
+    algorithm = estimator, default type7
+    workspace = mutable array or Mir slice to sort in ascending flattened order,
+        or a random-access Phobos SortedRange with a length and the default ascending predicate.
+        At least two observations are required when a probability is requested.
+    probabilities = one-dimensional floating-point probabilities in [0, 1]
+    output = writable destination with one element per probability. Its element type determines
+        result precision. Workspace, probabilities, and output must be disjoint.
+Returns:
+    Quantiles are written to output in caller probability order. Workspace is left sorted.
++/
+template quantileSortFirstInto(QuantileAlgo algorithm = QuantileAlgo.type7)
+{
+    /// ditto
+    void quantileSortFirstInto(Data, P, Output)(scope auto ref Data workspace,
+        scope auto ref P probabilities, scope auto ref Output output)
+    {
+        static if (isPhobosSortedRange!Data)
+            quantileAssumeSortedInto!algorithm(workspace, probabilities, output);
+        else
+        {
+            import mir.ndslice.sorting : sort;
+            import mir.ndslice.topology : flattened;
+            scope auto values = quantileSlice(workspace).flattened;
+            sort(values);
+            quantileAssumeSortedInto!algorithm(values, probabilities, output);
+        }
+    }
+}
+
+/// ditto
+template quantileSortFirstInto(string algorithm)
+{
+    alias quantileSortFirstInto = .quantileSortFirstInto!(__traits(getMember, QuantileAlgo, algorithm));
+}
+
+/// Sort a strided workspace while writing results in request order.
+version(mir_stat_test) @safe pure nothrow @nogc unittest
+{
+    import mir.ndslice : sliced, stride;
+    int[6] storage = [9, 99, 1, 99, 4, 99];
+    const double[3] levels = [0.75, 0.25, 0.75];
+    double[6] output = -1;
+    quantileSortFirstInto!"type7"(storage[].sliced.stride(2), levels, output[].sliced.stride(2));
+    assert(storage == [1, 99, 4, 99, 9, 99]);
+    assert(output == [6.5, -1, 2.5, -1, 6.5, -1]);
+}
+
+version(mir_stat_test) @safe unittest
+{
+    import std.range : assumeSorted;
+    const int[6] ordered = [-1, 2, 2, 4, 7, 9];
+    const double[6] levels = [1, 0.125, 0, 0.5, 0.25, 0.5];
+    double[6] output;
+    quantileSortFirstInto(assumeSorted(ordered[]), levels, output);
+    assert(output[] == quantileAssumeSorted(ordered, levels));
 }
 
 // Keep data and probability types deducible when an estimator is bound as a template alias.
