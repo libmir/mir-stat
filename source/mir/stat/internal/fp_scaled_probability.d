@@ -216,3 +216,26 @@ version(mir_stat_test)
     const expected = Fp!64(false, -64, UInt!64(0xe1eb51276c110c3cUL));
     assert(scaledDecay(rate).finish!64 == expected);
 }
+
+// Square root of a positive scaled radicand. A nonzero integer remainder
+// or a known positive correction below the working grid sets the sticky
+// low bit for the caller's final rounding.
+package(mir.stat) @safe pure nothrow @nogc
+ProbabilityScaled!work scaledSqrt(uint work)(ProbabilityScaled!work squared, bool positiveCorrection)
+{
+    import mir.stat.internal.uint_sqrt: isqrtRem;
+
+    const odd = squared.exponent.bt(0);
+    alias I = UInt!(2 * work);
+    const radicand = squared.fraction.coefficient.toSize!(2 * work) << (work - odd);
+    I remainder;
+    auto coefficient = isqrtRem(radicand, remainder).toSize!work;
+    if (remainder || positiveCorrection)
+        coefficient |= 1u;
+    ProbabilityScaled!work result;
+    result.fraction = Fp!work(false, -cast(long)work, coefficient);
+    result.exponent = (squared.exponent >> 1) + (exponentBias >> 1);
+    if (odd)
+        result.exponent += 1;
+    return result;
+}
