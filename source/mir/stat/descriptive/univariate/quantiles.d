@@ -3770,7 +3770,7 @@ template weightedQuantile(F, WeightInterpretation interpretation,
     auto weightedQuantile(Rows, P...)(scope auto ref Rows rows, scope auto ref P probabilities)
         if (isSortedWeightedObservations!Rows)
     {
-        return .weightedQuantileAssumeSorted!(F, interpretation, algorithm)(rows.values, rows.weights, probabilities);
+        return .weightedQuantileAssumeSorted!(F, interpretation, algorithm)(rows, probabilities);
     }
 
 }
@@ -3819,7 +3819,7 @@ template weightedQuantile(WeightInterpretation interpretation,
     auto weightedQuantile(Rows, P...)(scope auto ref Rows rows, scope auto ref P probabilities)
         if (isSortedWeightedObservations!Rows)
     {
-        return .weightedQuantileAssumeSorted!(interpretation, algorithm)(rows.values, rows.weights, probabilities);
+        return .weightedQuantileAssumeSorted!(interpretation, algorithm)(rows, probabilities);
     }
 
 }
@@ -3906,10 +3906,26 @@ template weightedQuantileAssumeSorted(F, WeightInterpretation interpretation = W
     /// ditto
     auto weightedQuantileAssumeSorted(Data, Weights, P...)(
         scope auto ref Data data, scope auto ref Weights weights, scope auto ref P probabilities)
+        if (!isSortedWeightedObservations!Data)
     {
         QuantileContext context;
         return dispatchSortedWeightedQuantile!(F, interpretation, algorithm, QuantileAllocation.gc)(
             context, data, weights, probabilities);
+    }
+
+    /++ Query an ordered observation/weight pair.
+    Params:
+        rows = ordered observations and aligned weights borrowed with $(LREF assumeWeightedSorted)
+        probabilities = scalar, array/slice, or variadic probabilities in [0, 1];
+            omit for the minimum, quartiles, and maximum
+    Returns:
+        A scalar for a scalar probability, otherwise a GC-owned slice
+        in caller probability order.
+    +/
+    auto weightedQuantileAssumeSorted(Rows, P...)(scope auto ref Rows rows, scope auto ref P probabilities)
+        if (isSortedWeightedObservations!Rows)
+    {
+        return .weightedQuantileAssumeSorted!(F, interpretation, algorithm)(rows.values, rows.weights, probabilities);
     }
 }
 
@@ -3921,10 +3937,18 @@ template weightedQuantileAssumeSorted(WeightInterpretation interpretation = Weig
     /// ditto
     auto weightedQuantileAssumeSorted(Data, Weights, P...)(
         scope auto ref Data data, scope auto ref Weights weights, scope auto ref P probabilities)
+        if (!isSortedWeightedObservations!Data)
     {
         QuantileContext context;
         return dispatchSortedWeightedQuantile!(void, interpretation, algorithm, QuantileAllocation.gc)(
             context, data, weights, probabilities);
+    }
+
+    /// ditto
+    auto weightedQuantileAssumeSorted(Rows, P...)(scope auto ref Rows rows, scope auto ref P probabilities)
+        if (isSortedWeightedObservations!Rows)
+    {
+        return .weightedQuantileAssumeSorted!(interpretation, algorithm)(rows.values, rows.weights, probabilities);
     }
 }
 
@@ -3947,6 +3971,8 @@ version(mir_stat_test) @safe unittest
 {
     const int[4] values = [1, 2, 2, 5], weights = [1, 3, 7, 2];
     assert(weightedQuantileAssumeSorted(values, weights, 0.5) == 2);
+    auto rows = assumeWeightedSorted(values[], weights[]);
+    assert(weightedQuantileAssumeSorted(rows, 0.5) == 2);
 }
 
 version(mir_stat_test) @safe unittest
@@ -4272,6 +4298,27 @@ template weightedQuantileAssumeSortedInto(WeightInterpretation interpretation = 
                 destination[i] = preparedWeightedQuantileAt!(F, interpretation, algorithm)(workspace, levels[i], state);
         }
     }
+
+    /++ Write weighted quantiles from an ordered observation/weight pair.
+    Output and scratch must be disjoint from each other and from the observations,
+    weights, and probabilities.
+
+    Params:
+        rows = ordered observations and aligned weights borrowed with $(LREF assumeWeightedSorted)
+        probabilities = one-dimensional batch of probabilities in [0, 1]
+        output = caller-provided destination with one element per probability, in caller order
+        scratch = caller-provided workspace sized with $(LREF weightedQuantileScratchLength),
+            using real for relative weights and ulong for frequency counts
+    Returns:
+        Results are written to output as for the two-input overload.
+    +/
+    void weightedQuantileAssumeSortedInto(Rows, P, Output)(scope auto ref Rows rows,
+        scope auto ref P probabilities, scope auto ref Output output, scope Mass[] scratch)
+        if (isSortedWeightedObservations!Rows)
+    {
+        .weightedQuantileAssumeSortedInto!(interpretation, algorithm)(
+            rows.values, rows.weights, probabilities, output, scratch);
+    }
 }
 
 /// ditto
@@ -4290,6 +4337,10 @@ version(mir_stat_test) @safe pure nothrow @nogc unittest
     int[3] output;
     real[3] scratch;
     weightedQuantileAssumeSortedInto(values, weights, levels, output, scratch);
+    assert(output == [30, 20, 10]);
+    auto rows = assumeWeightedSorted(values[], weights[]);
+    output[] = -1;
+    weightedQuantileAssumeSortedInto(rows, levels, output, scratch);
     assert(output == [30, 20, 10]);
 }
 
@@ -4580,7 +4631,7 @@ template rcWeightedQuantile(F, WeightInterpretation interpretation,
         if (isSortedWeightedObservations!Rows)
     {
         return .rcWeightedQuantileAssumeSorted!(F, interpretation, algorithm)(
-            rows.values, rows.weights, probabilities);
+            rows, probabilities);
     }
 }
 
@@ -4627,7 +4678,7 @@ template rcWeightedQuantile(WeightInterpretation interpretation,
         if (isSortedWeightedObservations!Rows)
     {
         return .rcWeightedQuantileAssumeSorted!(interpretation, algorithm)(
-            rows.values, rows.weights, probabilities);
+            rows, probabilities);
     }
 }
 
@@ -4788,10 +4839,27 @@ template rcWeightedQuantileAssumeSorted(F, WeightInterpretation interpretation =
     /// ditto
     auto rcWeightedQuantileAssumeSorted(Data, Weights, P...)(
         scope auto ref Data data, scope auto ref Weights weights, scope auto ref P probabilities)
+        if (!isSortedWeightedObservations!Data)
     {
         QuantileContext context;
         return dispatchSortedWeightedQuantile!(F, interpretation, algorithm, QuantileAllocation.rc)(
             context, data, weights, probabilities);
+    }
+
+    /++ Query an ordered observation/weight pair.
+    Params:
+        rows = ordered observations and aligned weights borrowed with $(LREF assumeWeightedSorted)
+        probabilities = scalar, array/slice, or variadic probabilities in [0, 1];
+            omit for the minimum, quartiles, and maximum
+    Returns:
+        A scalar for a scalar probability, otherwise a reference-counted slice
+        in caller probability order.
+    +/
+    auto rcWeightedQuantileAssumeSorted(Rows, P...)(scope auto ref Rows rows, scope auto ref P probabilities)
+        if (isSortedWeightedObservations!Rows)
+    {
+        return .rcWeightedQuantileAssumeSorted!(F, interpretation, algorithm)(
+            rows.values, rows.weights, probabilities);
     }
 }
 
@@ -4803,10 +4871,19 @@ template rcWeightedQuantileAssumeSorted(WeightInterpretation interpretation = We
     /// ditto
     auto rcWeightedQuantileAssumeSorted(Data, Weights, P...)(
         scope auto ref Data data, scope auto ref Weights weights, scope auto ref P probabilities)
+        if (!isSortedWeightedObservations!Data)
     {
         QuantileContext context;
         return dispatchSortedWeightedQuantile!(void, interpretation, algorithm, QuantileAllocation.rc)(
             context, data, weights, probabilities);
+    }
+
+    /// ditto
+    auto rcWeightedQuantileAssumeSorted(Rows, P...)(scope auto ref Rows rows, scope auto ref P probabilities)
+        if (isSortedWeightedObservations!Rows)
+    {
+        return .rcWeightedQuantileAssumeSorted!(interpretation, algorithm)(
+            rows.values, rows.weights, probabilities);
     }
 }
 
@@ -4833,8 +4910,9 @@ version(mir_stat_test) @safe pure nothrow @nogc unittest
     static assert(is(typeof(median) == int));
     assert(median == 2);
     auto rows = assumeWeightedSorted(values[], weights[]);
-    auto batch = rcWeightedQuantile!(double, WeightInterpretation.frequency)(rows, 1.0, 0.5, 0.0);
+    auto batch = rcWeightedQuantileAssumeSorted!(double, WeightInterpretation.frequency)(rows, 1.0, 0.5, 0.0);
     assert(batch == [8.0, 2, 0]);
+    assert(rcWeightedQuantile!(double, WeightInterpretation.frequency)(rows, 1.0, 0.5, 0.0) == batch);
 }
 
 // The paired overload must select the sorted path, including when F is inferred.
@@ -4900,7 +4978,7 @@ template makeWeightedQuantile(F, WeightInterpretation interpretation,
         if (isSortedWeightedObservations!Rows)
     {
         return .makeWeightedQuantileAssumeSorted!(F, interpretation, algorithm)(
-            allocator, rows.values, rows.weights, probabilities);
+            allocator, rows, probabilities);
     }
 }
 
@@ -4949,7 +5027,7 @@ template makeWeightedQuantile(WeightInterpretation interpretation,
         if (isSortedWeightedObservations!Rows)
     {
         return .makeWeightedQuantileAssumeSorted!(interpretation, algorithm)(
-            allocator, rows.values, rows.weights, probabilities);
+            allocator, rows, probabilities);
     }
 }
 
@@ -5895,9 +5973,28 @@ template makeWeightedQuantileAssumeSorted(F, WeightInterpretation interpretation
     /// ditto
     auto makeWeightedQuantileAssumeSorted(Allocator, Data, Weights, P...)(
         auto ref Allocator allocator, scope auto ref Data data, scope auto ref Weights weights, scope auto ref P probabilities)
+        if (!isSortedWeightedObservations!Data)
     {
         return dispatchSortedWeightedQuantile!(F, interpretation, algorithm, QuantileAllocation.custom)(
             allocator, data, weights, probabilities);
+    }
+
+    /++ Query an ordered observation/weight pair.
+    Params:
+        allocator = allocator for scratch and batch results
+        rows = ordered observations and aligned weights borrowed with $(LREF assumeWeightedSorted)
+        probabilities = scalar, array/slice, or variadic probabilities in [0, 1];
+            omit for the minimum, quartiles, and maximum
+    Returns:
+        A scalar for a scalar probability, otherwise a slice the caller releases with the same allocator
+        in caller probability order.
+    +/
+    auto makeWeightedQuantileAssumeSorted(Allocator, Rows, P...)(auto ref Allocator allocator,
+        scope auto ref Rows rows, scope auto ref P probabilities)
+        if (isSortedWeightedObservations!Rows)
+    {
+        return .makeWeightedQuantileAssumeSorted!(F, interpretation, algorithm)(
+            allocator, rows.values, rows.weights, probabilities);
     }
 }
 
@@ -5909,9 +6006,19 @@ template makeWeightedQuantileAssumeSorted(WeightInterpretation interpretation = 
     /// ditto
     auto makeWeightedQuantileAssumeSorted(Allocator, Data, Weights, P...)(
         auto ref Allocator allocator, scope auto ref Data data, scope auto ref Weights weights, scope auto ref P probabilities)
+        if (!isSortedWeightedObservations!Data)
     {
         return dispatchSortedWeightedQuantile!(void, interpretation, algorithm, QuantileAllocation.custom)(
             allocator, data, weights, probabilities);
+    }
+
+    /// ditto
+    auto makeWeightedQuantileAssumeSorted(Allocator, Rows, P...)(auto ref Allocator allocator,
+        scope auto ref Rows rows, scope auto ref P probabilities)
+        if (isSortedWeightedObservations!Rows)
+    {
+        return .makeWeightedQuantileAssumeSorted!(interpretation, algorithm)(
+            allocator, rows.values, rows.weights, probabilities);
     }
 }
 
@@ -5935,7 +6042,8 @@ version(mir_stat_test) @system pure nothrow @nogc unittest
     import std.experimental.allocator : dispose;
     import std.experimental.allocator.mallocator : Mallocator;
     const int[3] values = [1, 2, 5], weights = [2, 1, 1];
-    auto result = makeWeightedQuantileAssumeSorted(Mallocator.instance, values, weights);
+    auto rows = assumeWeightedSorted(values[], weights[]);
+    auto result = makeWeightedQuantileAssumeSorted(Mallocator.instance, rows);
     scope(exit) Mallocator.instance.dispose(result.field);
     assert(result == [1, 1, 1, 2, 5]);
 }
