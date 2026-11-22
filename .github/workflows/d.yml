@@ -288,15 +288,12 @@ jobs:
       run: bash .github/scripts/linux-resources.sh kernel
 
     - &save-ldc
-      name: Save LDC objects
-      if: >-
-        startsWith(matrix.dc.channel, 'ldc-') && !env.PR_CACHE_DIR &&
-        ((github.event_name == 'push' && steps.master-cache.outputs.cache-hit != 'true') ||
-         (github.event.pull_request.draft && !steps.master-cache.outputs.cache-matched-key && !steps.draft-cache.outputs.cache-matched-key))
+      name: Save LDC objects on master
+      if: github.event_name == 'push' && startsWith(matrix.dc.channel, 'ldc-') && steps.master-cache.outputs.cache-hit != 'true'
       uses: actions/cache/save@v6.1.0
       with:
         path: ${{ runner.temp }}/${{ env.CACHE_DIR }}
-        key: ${{ steps.draft-cache.outputs.cache-primary-key || steps.master-cache.outputs.cache-primary-key }}
+        key: ${{ steps.master-cache.outputs.cache-primary-key }}
 
     - &collect-ldc-pr
       name: Collect incremental LDC objects
@@ -404,6 +401,7 @@ jobs:
   test:
     name: Tests with coverage (${{ matrix.os }}, ${{ matrix.dc.channel }})
     env:
+      PR_CACHE_DIR: *pr-cache-dir
       CACHE_DIR: ldc-general-coverage-objects
       CACHE_PREFIX: ldc-general-coverage-v1-${{ matrix.os }}-${{ matrix.dc.compiler }}
     needs: compilers
@@ -452,15 +450,8 @@ jobs:
         if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 
     - *restore-ldc-master
-    # A draft can measure a warm rerun before master has published a cache.
-    - name: Restore LDC objects from this draft
-      if: startsWith(matrix.dc.channel, 'ldc-') && !env.PR_CACHE_DIR && github.event.pull_request.draft && !steps.master-cache.outputs.cache-matched-key
-      id: draft-cache
-      uses: actions/cache/restore@v6.1.0
-      with:
-        path: ${{ runner.temp }}/${{ env.CACHE_DIR }}
-        key: ${{ env.CACHE_PREFIX }}-${{ runner.arch }}-draft-${{ github.event.pull_request.number }}-${{ github.sha }}
-        restore-keys: ${{ env.CACHE_PREFIX }}-${{ runner.arch }}-draft-${{ github.event.pull_request.number }}-
+    - *restore-ldc-pr
+    - *prepare-ldc-pr
 
     - name: Run tests with coverage (Windows DMD)
       if: runner.os == 'Windows' && startsWith(matrix.dc.channel, 'dmd-')
@@ -482,6 +473,8 @@ jobs:
       if: runner.os == 'Linux' && startsWith(matrix.dc.channel, 'ldc-')
       env: *ldc-cache-flags
       run: bash .github/scripts/linux-coverage.sh --stable-build-path
+
+    - *collect-ldc-pr
 
     # The BLAS build writes the same filenames; move the general reports first.
     # Forks run the tests; coverage is published by the upstream repository.
@@ -636,3 +629,4 @@ jobs:
         }
 
     - *save-ldc
+    - *save-ldc-pr
