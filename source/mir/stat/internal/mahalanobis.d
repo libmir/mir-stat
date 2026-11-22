@@ -967,43 +967,27 @@ package(mir.stat) Element!X mahalanobisSquaredWithWorkspace(CovarianceRepresenta
 package(mir.stat) Element!X precisionWorkspace(bool squared, TrianglePolicy triangle, Summation summation, X,C,M,W,P)(
     X x, C center, M metric, W work, P productWork)
 {
+    import mir.math.common: sqrt;
+    import std.math: isFinite;
     static assert(triangle == TrianglePolicy.upper || triangle == TrianglePolicy.lower);
-    static if (DiagonalInfo!M.valid)
+    check(x, center, metric, work);
+    assert(productWork.length == x.length, "Incorrect Mahalanobis product workspace length");
+    foreach (i; 0 .. x.length)
     {
-        import mir.math.common: sqrt;
-        import std.math: isFinite;
-        check(x,center,metric,work);
-        assert(productWork.length == x.length);
-        foreach(i; 0 .. x.length)
-        {
-            assert(isFinite(x[i]) && isFinite(center[i]));
-            assert(isFinite(metric[i,i]) && metric[i,i] > 0);
-            work[i] = x[i] - center[i];
-        }
-        auto result = quadraticFormWithWorkspace!summation(work,metric,productWork);
-        static if (squared) return result;
-        else return sqrt(result);
+        auto a = x[i];
+        auto b = center[i];
+        assert(isFinite(a) && isFinite(b), "Mahalanobis vectors must be finite");
+        static if (DiagonalInfo!M.valid)
+            assert(isFinite(metric[i, i]) && metric[i, i] > 0, "Diagonal precision must be finite and positive");
+        work[i] = a - b;
     }
-    else
-    {
-        import std.math: isFinite, sqrt;
-        check(x, center, metric, work);
-        assert(productWork.length == x.length, "Incorrect Mahalanobis product workspace length");
-        foreach (i; 0 .. x.length)
-        {
-            auto a = x[i];
-            auto b = center[i];
-            assert(isFinite(a) && isFinite(b), "Mahalanobis vectors must be finite");
-            work[i] = a - b;
-        }
+    static if (!DiagonalInfo!M.valid)
         foreach (i; 0 .. metric.length!0) foreach (j; 0 .. metric.length!1)
             if (triangle == TrianglePolicy.upper ? j >= i : j <= i)
-                assert(isFinite(metric[i,j]), "Mahalanobis metric must be finite");
-        auto result = quadraticFormWithWorkspace!summation(work, symmetricMetric!triangle(metric), productWork);
-        static if (squared) return result;
-        else return sqrt(result);
-
-    }
+                assert(isFinite(metric[i, j]), "Mahalanobis metric must be finite");
+    auto result = quadraticFormWithWorkspace!summation(work, symmetricMetric!triangle(metric), productWork);
+    static if (squared) return result;
+    else return sqrt(result);
 }
 
 /// Reuse two vectors to opt into BLAS-compatible precision arithmetic.
@@ -2708,6 +2692,8 @@ version(mir_stat_test_distance)
         static if(form==CovarianceRepresentation.inverseCovariance)
         {
             assert(fabs(mahalanobisSquaredWithWorkspace!(form,triangle,summation)(x[],center[],metric,ws[],ps[])-2)<1e-14);
+            assert(ws == [2, 3]);
+            assert(ps[0] == 0.5 && fabs(ps[1] - 1.0 / 3) < 1e-14);
             assert(fabs(rcMahalanobisSquared!(form,triangle,summation)(x[],center[],metric)-2)<1e-14);
             assert(fabs(makeMahalanobisSquared!(form,triangle,summation)(Mallocator.instance,x[],center[],metric)-2)<1e-14);
         }
