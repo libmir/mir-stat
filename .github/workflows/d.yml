@@ -166,7 +166,7 @@ jobs:
     env:
       CACHE_DIR: ldc-release-objects
       CACHE_PREFIX: ldc-release-v1-${{ matrix.os }}-${{ matrix.dc.compiler }}
-      PR_CACHE_DIR: ${{ github.event_name == 'pull_request' && matrix.os == 'windows-latest' && startsWith(matrix.dc.channel, 'ldc-') && 'ldc-release-pr-objects' || '' }}
+      PR_CACHE_DIR: &pr-cache-dir ${{ github.event_name == 'pull_request' && startsWith(matrix.dc.channel, 'ldc-') && 'ldc-pr-objects' || '' }}
     needs: compilers
     permissions:
       contents: read
@@ -222,18 +222,8 @@ jobs:
         key: ${{ env.CACHE_PREFIX }}-${{ runner.arch }}-master-${{ github.event.pull_request.base.sha || github.sha }}
         restore-keys: ${{ env.CACHE_PREFIX }}-${{ runner.arch }}-master-
 
-    # A draft can measure a warm rerun before master has published a cache.
-    - &restore-ldc-draft
-      name: Restore LDC objects from this draft
-      if: startsWith(matrix.dc.channel, 'ldc-') && !env.PR_CACHE_DIR && github.event.pull_request.draft && !steps.master-cache.outputs.cache-matched-key
-      id: draft-cache
-      uses: actions/cache/restore@v6.1.0
-      with:
-        path: ${{ runner.temp }}/${{ env.CACHE_DIR }}
-        key: ${{ env.CACHE_PREFIX }}-${{ runner.arch }}-draft-${{ github.event.pull_request.number }}-${{ github.sha }}
-        restore-keys: ${{ env.CACHE_PREFIX }}-${{ runner.arch }}-draft-${{ github.event.pull_request.number }}-
-
-    - name: Restore additional Windows LDC objects from this PR
+    - &restore-ldc-pr
+      name: Restore additional LDC objects from this PR
       if: env.PR_CACHE_DIR != ''
       id: pr-cache
       uses: actions/cache/restore@v6.1.0
@@ -241,6 +231,11 @@ jobs:
         path: ${{ runner.temp }}/${{ env.PR_CACHE_DIR }}
         key: ${{ env.CACHE_PREFIX }}-${{ runner.arch }}-pr-${{ github.event.pull_request.number }}-${{ github.sha }}
         restore-keys: ${{ env.CACHE_PREFIX }}-${{ runner.arch }}-pr-${{ github.event.pull_request.number }}-
+
+    - &prepare-ldc-pr
+      name: Prepare incremental LDC cache
+      if: env.PR_CACHE_DIR != ''
+      run: python .github/scripts/ldc_pr_cache.py prepare
 
     - name: Run optimized release tests (Linux LDC)
       if: runner.os == 'Linux' && startsWith(matrix.dc.channel, 'ldc-')
@@ -270,16 +265,10 @@ jobs:
       run: ./.github/scripts/windows-test.ps1 unittest-release
 
     - name: Run optimized release tests (Windows LDC)
-      if: runner.os == 'Windows' && startsWith(matrix.dc.channel, 'ldc-') && !env.PR_CACHE_DIR
+      if: runner.os == 'Windows' && startsWith(matrix.dc.channel, 'ldc-')
       env: *ldc-cache-flags
       shell: pwsh
       run: ./.github/scripts/windows-test.ps1 unittest-release -AllowPackage
-
-    - name: Run optimized release tests (Windows LDC PR)
-      if: env.PR_CACHE_DIR != ''
-      id: pr-release
-      shell: pwsh
-      run: ./.github/scripts/windows-release-pr-cache.ps1
 
     - name: Test the scaled decay series on Windows x86
       if: runner.os == 'Windows' && matrix.dc.channel == 'ldc-latest'
@@ -309,8 +298,15 @@ jobs:
         path: ${{ runner.temp }}/${{ env.CACHE_DIR }}
         key: ${{ steps.draft-cache.outputs.cache-primary-key || steps.master-cache.outputs.cache-primary-key }}
 
-    - name: Save additional Windows LDC objects for this PR
-      if: steps.pr-release.outputs.changed == 'true' && steps.pr-cache.outputs.cache-hit != 'true'
+    - &collect-ldc-pr
+      name: Collect incremental LDC objects
+      if: env.PR_CACHE_DIR != '' && steps.pr-cache.outputs.cache-hit != 'true'
+      id: collect-pr
+      run: python .github/scripts/ldc_pr_cache.py collect
+
+    - &save-ldc-pr
+      name: Save additional LDC objects for this PR
+      if: steps.collect-pr.outputs.changed == 'true'
       uses: actions/cache/save@v6.1.0
       with:
         path: ${{ runner.temp }}/${{ env.PR_CACHE_DIR }}
@@ -320,6 +316,7 @@ jobs:
   lifetime:
     name: DIP1000 lifetime tests (${{ matrix.os }}, ${{ matrix.dc.channel }})
     env:
+      PR_CACHE_DIR: *pr-cache-dir
       CACHE_DIR: ldc-lifetime-objects
       CACHE_PREFIX: ldc-lifetime-v1-${{ matrix.os }}-${{ matrix.dc.compiler }}
     needs: compilers
@@ -368,7 +365,8 @@ jobs:
         if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 
     - *restore-ldc-master
-    - *restore-ldc-draft
+    - *restore-ldc-pr
+    - *prepare-ldc-pr
 
     - name: Run DIP1000 lifetime tests (Windows DMD)
       if: runner.os == 'Windows' && startsWith(matrix.dc.channel, 'dmd-')
@@ -400,6 +398,8 @@ jobs:
         exec taskset -c "$cpus" bash .github/scripts/linux-resources.sh run dub test --build=unittest-dip1000 --build-mode=singleFile --parallel
 
     - *save-ldc
+    - *collect-ldc-pr
+    - *save-ldc-pr
 
   test:
     name: Tests with coverage (${{ matrix.os }}, ${{ matrix.dc.channel }})
@@ -452,7 +452,15 @@ jobs:
         if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 
     - *restore-ldc-master
-    - *restore-ldc-draft
+    # A draft can measure a warm rerun before master has published a cache.
+    - name: Restore LDC objects from this draft
+      if: startsWith(matrix.dc.channel, 'ldc-') && !env.PR_CACHE_DIR && github.event.pull_request.draft && !steps.master-cache.outputs.cache-matched-key
+      id: draft-cache
+      uses: actions/cache/restore@v6.1.0
+      with:
+        path: ${{ runner.temp }}/${{ env.CACHE_DIR }}
+        key: ${{ env.CACHE_PREFIX }}-${{ runner.arch }}-draft-${{ github.event.pull_request.number }}-${{ github.sha }}
+        restore-keys: ${{ env.CACHE_PREFIX }}-${{ runner.arch }}-draft-${{ github.event.pull_request.number }}-
 
     - name: Run tests with coverage (Windows DMD)
       if: runner.os == 'Windows' && startsWith(matrix.dc.channel, 'dmd-')
