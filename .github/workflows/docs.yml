@@ -74,6 +74,8 @@ jobs:
     runs-on: ubuntu-24.04
     env:
       MESON_COMPILER: ldc-1.43.0
+      CACHE_DIR: ldc-meson-objects
+      PR_CACHE_DIR: ldc-meson-pr-objects
     timeout-minutes: 30
     steps:
       - uses: actions/checkout@ec3a7ce113134d7a93b817d10a8272cb61118579
@@ -93,20 +95,23 @@ jobs:
         id: master-cache
         uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
-          path: ${{ runner.temp }}/ldc-meson-objects
+          path: ${{ runner.temp }}/${{ env.CACHE_DIR }}
           key: ldc-meson-v1-ubuntu-24.04-${{ runner.arch }}-${{ env.MESON_COMPILER }}-master-${{ github.event.pull_request.base.sha || github.sha }}
           restore-keys: ldc-meson-v1-ubuntu-24.04-${{ runner.arch }}-${{ env.MESON_COMPILER }}-master-
-      - name: Restore Meson LDC objects from this draft
-        if: github.event.pull_request.draft && !steps.master-cache.outputs.cache-matched-key
-        id: draft-cache
+      - name: Restore additional Meson LDC objects from this PR
+        if: github.event_name == 'pull_request'
+        id: pr-cache
         uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
-          path: ${{ runner.temp }}/ldc-meson-objects
-          key: ldc-meson-v1-ubuntu-24.04-${{ runner.arch }}-${{ env.MESON_COMPILER }}-draft-${{ github.event.pull_request.number }}-${{ github.sha }}
-          restore-keys: ldc-meson-v1-ubuntu-24.04-${{ runner.arch }}-${{ env.MESON_COMPILER }}-draft-${{ github.event.pull_request.number }}-
+          path: ${{ runner.temp }}/${{ env.PR_CACHE_DIR }}
+          key: ldc-meson-v1-ubuntu-24.04-${{ runner.arch }}-${{ env.MESON_COMPILER }}-pr-${{ github.event.pull_request.number }}-${{ github.sha }}
+          restore-keys: ldc-meson-v1-ubuntu-24.04-${{ runner.arch }}-${{ env.MESON_COMPILER }}-pr-${{ github.event.pull_request.number }}-
+      - name: Prepare incremental Meson LDC cache
+        if: github.event_name == 'pull_request'
+        run: python3 .github/scripts/ldc_pr_cache.py prepare
       - name: Build and run Meson tests
         env:
-          DFLAGS: -cache=${{ runner.temp }}/ldc-meson-objects
+          DFLAGS: -cache=${{ runner.temp }}/${{ env.CACHE_DIR }}
         run: python3 tools/build_docs.py build/meson-tests --tests-with-examples
       - name: Upload build and test diagnostics
         if: always()
@@ -118,11 +123,19 @@ jobs:
             build/meson-tests/source/_build_dir_/meson-logs/
           if-no-files-found: ignore
           retention-days: 14
-      - name: Save Meson LDC objects
-        if: >-
-          (github.event_name == 'push' && github.ref == 'refs/heads/master' && steps.master-cache.outputs.cache-hit != 'true') ||
-          (github.event.pull_request.draft && !steps.master-cache.outputs.cache-matched-key && !steps.draft-cache.outputs.cache-matched-key)
+      - name: Save Meson LDC objects on master
+        if: github.event_name == 'push' && github.ref == 'refs/heads/master' && steps.master-cache.outputs.cache-hit != 'true'
         uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
-          path: ${{ runner.temp }}/ldc-meson-objects
-          key: ${{ steps.draft-cache.outputs.cache-primary-key || steps.master-cache.outputs.cache-primary-key }}
+          path: ${{ runner.temp }}/${{ env.CACHE_DIR }}
+          key: ${{ steps.master-cache.outputs.cache-primary-key }}
+      - name: Collect incremental Meson LDC objects
+        if: github.event_name == 'pull_request' && steps.pr-cache.outputs.cache-hit != 'true'
+        id: collect-pr
+        run: python3 .github/scripts/ldc_pr_cache.py collect
+      - name: Save additional Meson LDC objects for this PR
+        if: steps.collect-pr.outputs.changed == 'true'
+        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ${{ runner.temp }}/${{ env.PR_CACHE_DIR }}
+          key: ${{ steps.pr-cache.outputs.cache-primary-key }}
