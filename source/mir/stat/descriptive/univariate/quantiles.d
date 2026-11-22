@@ -134,7 +134,7 @@ private meanType!F allocatedMedian(F, bool allowModify, QuantileAllocation alloc
         static if (allocation == QuantileAllocation.custom)
             scope(exit) releaseQuantiles(allocator, scratch);
         scope auto flat = source.lightScope.flattened;
-        foreach (i; 0 .. flat.length) scratch[i] = flat[i];
+        scratch.lightScope[] = flat;
         return rcMedian!(F, true)(scratch.lightScope);
     }
 }
@@ -6282,7 +6282,7 @@ private auto allocatedQuantileTable(QuantileAllocation allocation, Context, Data
         quantileScratchLength(flat.length));
     static if (allocation == QuantileAllocation.custom)
         scope(failure) releaseQuantiles(context, bitmap);
-    foreach (i; 0 .. flat.length) values[i] = flat[i];
+    values.lightScope[] = flat;
     return QuantileTable!(IteratorOf!(typeof(values)), IteratorOf!(typeof(bitmap)),
         allocation == QuantileAllocation.custom)(values.move, bitmap.move);
 }
@@ -7195,8 +7195,7 @@ private auto allocatedQuantile(F, QuantileAlgo algorithm, bool modify,
                 return result;
             }
         }
-        foreach (i; 0 .. flat.length)
-            workspace[i] = flat[i];
+        workspace[] = flat;
     }
 
     static if (isFloatingPoint!(Unqual!Probability))
@@ -9772,8 +9771,7 @@ private auto allocatedQuantileSpread(F, QuantileAlgo algorithm, bool modify,
         static if (allocation == QuantileAllocation.custom)
             scope(exit) releaseQuantiles(context, owner);
         scope auto flat = source.lightScope.flattened;
-        foreach (i; 0 .. flat.length)
-            owner[i] = flat[i];
+        owner.lightScope[] = flat;
         scope auto workspace = owner.lightScope;
     }
     import mir.ndslice.slice: IteratorOf;
