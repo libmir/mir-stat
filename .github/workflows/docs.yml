@@ -72,6 +72,8 @@ jobs:
   test:
     name: Meson D and documentation example tests
     runs-on: ubuntu-24.04
+    env:
+      MESON_COMPILER: ldc-1.43.0
     timeout-minutes: 30
     steps:
       - uses: actions/checkout@ec3a7ce113134d7a93b817d10a8272cb61118579
@@ -80,14 +82,31 @@ jobs:
           persist-credentials: false
       - uses: dlang-community/setup-dlang@d7d85fcde7c4cd5f9a6618fce1bccc316e1e910b
         with:
-          compiler: ldc-1.43.0
+          compiler: ${{ env.MESON_COMPILER }}
       - name: Install native build tools
         run: |
           sudo apt-get update
           sudo apt-get install --yes g++ ninja-build python3-pip
       - name: Check build driver regressions
         run: python3 tools/test_build_docs.py
+      - name: Restore Meson LDC objects from master
+        id: master-cache
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ${{ runner.temp }}/ldc-meson-objects
+          key: ldc-meson-v1-ubuntu-24.04-${{ runner.arch }}-${{ env.MESON_COMPILER }}-master-${{ github.event.pull_request.base.sha || github.sha }}
+          restore-keys: ldc-meson-v1-ubuntu-24.04-${{ runner.arch }}-${{ env.MESON_COMPILER }}-master-
+      - name: Restore Meson LDC objects from this draft
+        if: github.event.pull_request.draft && !steps.master-cache.outputs.cache-matched-key
+        id: draft-cache
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ${{ runner.temp }}/ldc-meson-objects
+          key: ldc-meson-v1-ubuntu-24.04-${{ runner.arch }}-${{ env.MESON_COMPILER }}-draft-${{ github.event.pull_request.number }}-${{ github.sha }}
+          restore-keys: ldc-meson-v1-ubuntu-24.04-${{ runner.arch }}-${{ env.MESON_COMPILER }}-draft-${{ github.event.pull_request.number }}-
       - name: Build and run Meson tests
+        env:
+          DFLAGS: -cache=${{ runner.temp }}/ldc-meson-objects
         run: python3 tools/build_docs.py build/meson-tests --tests-with-examples
       - name: Upload build and test diagnostics
         if: always()
@@ -99,3 +118,11 @@ jobs:
             build/meson-tests/source/_build_dir_/meson-logs/
           if-no-files-found: ignore
           retention-days: 14
+      - name: Save Meson LDC objects
+        if: >-
+          (github.event_name == 'push' && github.ref == 'refs/heads/master' && steps.master-cache.outputs.cache-hit != 'true') ||
+          (github.event.pull_request.draft && !steps.master-cache.outputs.cache-matched-key && !steps.draft-cache.outputs.cache-matched-key)
+        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ${{ runner.temp }}/ldc-meson-objects
+          key: ${{ steps.draft-cache.outputs.cache-primary-key || steps.master-cache.outputs.cache-primary-key }}
