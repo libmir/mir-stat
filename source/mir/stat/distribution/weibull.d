@@ -20,6 +20,7 @@ Copyright: 2023 Mir Stat Authors.
 
 module mir.stat.distribution.weibull;
 
+import mir.bignum.fp: Fp;
 import mir.internal.utility: isFloatingPoint;
 
 /++
@@ -161,6 +162,43 @@ unittest
 }
 
 /++
+Computes the Weibull lower-tail probability with guarded extended precision.
+
+Very small lower tails retain the scaled cumulative hazard through final rounding.
+Rounding near a midpoint is not certified for general shapes.
+
+Params:
+    T = Represented $(D Fp) type, inferred from the arguments.
+    x = Nonnegative observation, including positive infinity.
+    shape = Positive finite shape parameter.
+    scale = Positive finite scale parameter (default: one).
+
+Returns:
+    $(D P(X <= x)) in type T, with value zero at zero and one at positive infinity.
++/
+@safe pure nothrow @nogc
+T weibullCDF(T)(const T x, const T shape, const T scale = T(1))
+    if (is(T == Fp!size, size_t size))
+    in (!x.isNaN && (!x.sign || (!x.isSpecial && !x.coefficient)), "x must be nonnegative")
+    in (validParameter(shape), "shape must be finite and positive")
+    in (validParameter(scale), "scale must be finite and positive")
+{
+    import mir.stat.internal.fp_weibull: weibullTail;
+    return weibullTail!false(x, shape, scale);
+}
+
+///
+version(mir_stat_test)
+@safe pure nothrow @nogc
+unittest
+{
+    import mir.bignum.fp: Fp;
+    alias T = Fp!64;
+    assert(weibullCDF(T(0), T(2)) == T(0));
+    assert(weibullCDF(T(double.infinity), T(2), T(3)) == T(1));
+}
+
+/++
 Computes the Weibull complementary cumulative distribution function (CCDF).
 
 Returns the upper-tail probability $(D P(X > x)). Use this function directly
@@ -210,6 +248,130 @@ unittest
     0.5.weibullCCDF(2.0, 3.0).shouldApprox == 0.9726045;
     1.0.weibullCCDF(2.0, 3.0).shouldApprox == 0.8948393;
     1.5.weibullCCDF(2.0, 3.0).shouldApprox == 0.7788008;
+}
+
+/++
+Computes the Weibull strict upper-tail probability with guarded extended precision.
+
+The survival probability is evaluated directly, including when the lower tail rounds to one.
+Rounding near a midpoint is not certified for general shapes.
+
+Params:
+    T = Represented $(D Fp) type, inferred from the arguments.
+    x = Nonnegative observation, including positive infinity.
+    shape = Positive finite shape parameter.
+    scale = Positive finite scale parameter (default: one).
+
+Returns:
+    $(D P(X > x)) in type T, with value one at zero and zero at positive infinity.
++/
+@safe pure nothrow @nogc
+T weibullCCDF(T)(const T x, const T shape, const T scale = T(1))
+    if (is(T == Fp!size, size_t size))
+    in (!x.isNaN && (!x.sign || (!x.isSpecial && !x.coefficient)), "x must be nonnegative")
+    in (validParameter(shape), "shape must be finite and positive")
+    in (validParameter(scale), "scale must be finite and positive")
+{
+    import mir.stat.internal.fp_weibull: weibullTail;
+    return weibullTail!true(x, shape, scale);
+}
+
+///
+version(mir_stat_test)
+@safe pure nothrow @nogc
+unittest
+{
+    import mir.bignum.fp: Fp;
+    alias T = Fp!64;
+    assert(weibullCCDF(T(0), T(2)) == T(1));
+    assert(weibullCCDF(T(double.infinity), T(2), T(3)) == T(0));
+}
+
+// Shared dyadic inputs: the cumulative hazard is exactly 27/8.
+version(mir_stat_test)
+@safe pure nothrow @nogc unittest
+{
+    import mir.bignum.fixed: UInt;
+    import mir.math.common: approxEqual;
+    import std.meta: AliasSeq;
+
+    static foreach (R; AliasSeq!(float, double, real))
+    {
+        assert(approxEqual(weibullCDF(R(9), R(1.5), R(4)),
+            R(0.9657818816883339653014449405563691854921516024381881357L), 8 * R.epsilon));
+        assert(approxEqual(weibullCCDF(R(9), R(1.5), R(4)),
+            R(0.03421811831166603469855505944363081450784839756181186426L), 8 * R.epsilon));
+    }
+    alias T = Fp!128;
+    enum expectedCDF = T(false, -128, UInt!128.fromHexString("f73d7b3cebb554ce864552c109c0d0e5"));
+    assert(weibullCDF(T(9), T(1.5), T(4)) == expectedCDF);
+    enum expectedCCDF = T(false, -132, UInt!128.fromHexString("8c284c3144aab3179baad3ef63f2f1aa"));
+    assert(weibullCCDF(T(9), T(1.5), T(4)) == expectedCCDF);
+}
+
+version(mir_stat_test)
+@safe pure nothrow @nogc unittest
+{
+    import mir.bignum.fixed: UInt;
+    alias T = Fp!64;
+    alias U = UInt!64;
+    // exp(-16384) remains representable after the CDF rounds to one.
+    assert(weibullCDF(T(128), T(2)) == T(1));
+    assert(weibullCCDF(T(128), T(2)) == T(false, -23701, U(0xec4bb8768ab8ab91UL)));
+    auto tiny = T(1);
+    tiny.exponent -= 40_000;
+    auto expected = T(1);
+    expected.exponent -= 20_000;
+    assert(weibullCDF(tiny, T(0.5)) == expected);
+    assert(weibullCCDF(tiny, T(0.5)) == T(1));
+    const x = T(false, long.min, U(7));
+    assert(weibullCDF(x, T(1), T(2)) == T(false, long.min, U(3)));
+    // The cubed observation is exactly 62.5 least quanta; the CDF is below it.
+    const cubeRoot = T(false, long.min / 3 - 1, U(5));
+    assert(weibullCDF(cubeRoot, T(3)) == T(false, long.min, U(62)));
+
+    // Adjacent observations on either side of the same represented scale.
+    auto scale = T(false, 40_000, U(0x8000000000000013UL));
+    auto below = scale, above = scale;
+    below.coefficient -= 1;
+    above.coefficient += 1;
+    const shape = T(1UL << 63);
+    assert(weibullCDF(below, shape, scale) == T(false, -65, U(0x9d97e11cc21ad5aeUL)));
+    assert(weibullCCDF(above, shape, scale) == T(false, -67, U(0x8724bc3f102a3d05UL)));
+
+    // The ratio 2^(2^63) lies outside Fp, but the cumulative hazard is two.
+    auto high = T(1), low = T(1), smallShape = T(1);
+    high.exponent += 1L << 62;
+    low.exponent -= 1L << 62;
+    smallShape.exponent -= 63;
+    assert(weibullCDF(high, smallShape, low) == weibullCDF(T(2), T(1)));
+    assert(weibullCCDF(high, smallShape, low) == weibullCCDF(T(2), T(1)));
+
+    // The sign of log(x/scale) determines which tail vanishes.
+    assert(weibullCDF(T(2), high) == T(1));
+    assert(weibullCCDF(T(2), high) == T(0));
+    assert(weibullCDF(T(1), high, T(2)) == T(0));
+    assert(weibullCCDF(T(1), high, T(2)) == T(1));
+
+    // Integral shapes on both sides of the bounded-power budget.
+    assert(weibullCDF(T(2), T(257), T(2)) == weibullCDF(T(1), T(1)));
+    assert(weibullCDF(T(2), T(128)) == T(1));
+    assert(weibullCCDF(T(2), T(128)) == T(0));
+
+    import mir.stat.distribution.exponential: exponentialCDF, exponentialCCDF;
+    assert(weibullCDF(T(3), T(1), T(4)) == exponentialCDF(T(3), T(0.25)));
+    assert(weibullCCDF(T(3), T(1), T(4)) == exponentialCCDF(T(3), T(0.25)));
+}
+
+version(mir_stat_test)
+static if (size_t.sizeof == 4)
+@safe pure nothrow @nogc unittest
+{
+    import mir.bignum.fixed: UInt;
+    alias T = Fp!32;
+    const shape = T(false, -1, UInt!32(3));
+    assert(weibullCDF(T(9), shape, T(4)) == T(false, -32, UInt!32(0xf73d7b3dU)));
+    assert(weibullCCDF(T(9), shape, T(4)) == T(false, -36, UInt!32(0x8c284c31U)));
 }
 
 /++
@@ -582,4 +744,9 @@ unittest
         assert(weibullCDF(T(0), T(2)) == 0);
         assert(weibullCDF(T.infinity, T(2)) == 1);
     }}
+}
+
+private bool validParameter(uint bits)(Fp!bits value) @safe pure nothrow @nogc
+{
+    return !value.isSpecial && !value.sign && !!value.coefficient;
 }
