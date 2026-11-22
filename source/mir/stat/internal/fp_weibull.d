@@ -5,8 +5,9 @@ Authors: Mir Stat Authors.
 module mir.stat.internal.fp_weibull;
 
 import mir.bignum.fp: Fp;
+import mir.bignum.fixed: UInt;
 import mir.stat.internal.fp_location_scale: addOffset;
-import mir.stat.internal.fp_probability: fpProbabilityComplement;
+import mir.stat.internal.fp_probability: fpProbabilityComplement, fpProbabilityLess;
 import mir.stat.internal.fp_probability_log: ProbabilityLog, logRatio;
 import mir.stat.internal.fp_scaled_probability: ProbabilityScaled, exponentBias, scaledDecay;
 
@@ -121,4 +122,58 @@ package(mir.stat) Fp!bits weibullTail(bool upper, uint bits)(Fp!bits x, Fp!bits 
         survival.fraction.exponent += cast(long)cast(ulong)(survival.exponent - exponentBias);
         return cast(T)fpProbabilityComplement(survival.fraction);
     }
+}
+
+package(mir.stat) Fp!bits weibullDensity(uint bits)(Fp!bits x, Fp!bits shape, Fp!bits scale)
+{
+    alias T = Fp!bits;
+    alias L = ProbabilityLog!(3 * bits + 64);
+    alias S = L.S;
+    const one = S.from(T(1));
+    const k = S.from(shape);
+    const divisor = S.from(scale);
+    if (x.isInfinity)
+        return T(0);
+    if (!x.coefficient)
+    {
+        if (k == one)
+            return addOffset!bits(T(0), one.divide(divisor), false);
+        return fpProbabilityLess(shape, T(1)) ? T(false, long.max, UInt!bits(0)) : T(0);
+    }
+
+    const obs = S.from(x);
+    S hazard, prefactor;
+    const count = rationalShape(shape, x, scale);
+    if (count)
+    {
+        // Form k*x^(k-1) and scale^k before dividing so an exact unit
+        // prefactor survives in the log density, even for very small hazards.
+        const previous = obs.power(count - 1);
+        const denominator = divisor.power(count);
+        hazard = previous.multiply(obs).divide(denominator);
+        prefactor = previous.multiply(k).divide(denominator);
+    }
+    else
+    {
+        L.Context context;
+        const logarithm = logRatio!bits(x, scale, context);
+        hazard = one;
+        if (logarithm.coefficient)
+        {
+            const magnitude = S.from(logarithm).multiply(k);
+            // Neither shape/x nor its reciprocal can offset exponential
+            // decay once |log(hazard)| reaches 2^65.
+            if (magnitude.exponent >= exponentBias + 66)
+                return T(0);
+            hazard = expMagnitude(magnitude, logarithm.sign);
+        }
+        prefactor = k.divide(obs).multiply(hazard);
+    }
+    if (hazard.exponent >= exponentBias + 66)
+        return T(0);
+    // Below this threshold the decay can change the rounded rational
+    // prefactor only at a midpoint, where the correction is negative.
+    if (count && hazard.exponent + (3 * bits + 136) <= exponentBias)
+        return addOffset!bits(T(0), belowMidpoint(prefactor), false);
+    return addOffset!bits(T(0), prefactor.multiply(scaledDecay(hazard)), false);
 }

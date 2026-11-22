@@ -110,6 +110,68 @@ unittest
 }
 
 /++
+Computes the Weibull density from represented inputs with guarded precision.
+The density prefactor and survival probability retain separate exponents
+until their product is rounded.
+
+Params:
+    T = Represented $(D Fp) type, inferred from the arguments.
+    x = Nonnegative observation, including positive infinity.
+    shape = Positive finite shape parameter.
+    scale = Positive finite scale parameter (default: one).
+
+Returns:
+    The density in type T. At zero it is positive infinity for shape below
+    one, the reciprocal scale for shape one, and zero for shape above one.
+    At positive infinity the density is zero. Finite densities may overflow.
++/
+@safe pure nothrow @nogc
+T weibullPDF(T)(const T x, const T shape, const T scale = T(1))
+    if (is(T == Fp!size, size_t size))
+    in (!x.isNaN && (!x.sign || (!x.isSpecial && !x.coefficient)), "x must be nonnegative")
+    in (validParameter(shape), "shape must be finite and positive")
+    in (validParameter(scale), "scale must be finite and positive")
+{
+    import mir.stat.internal.fp_weibull: weibullDensity;
+    return weibullDensity(x, shape, scale);
+}
+
+///
+version(mir_stat_test)
+@safe pure nothrow @nogc unittest
+{
+    import mir.bignum.fp: Fp;
+    alias T = Fp!64;
+    assert(weibullPDF(T(0), T(1), T(4)) == T(0.25));
+    assert(weibullPDF(T(0), T(2)) == T(0));
+}
+
+version(mir_stat_test)
+@safe pure nothrow @nogc unittest
+{
+    import mir.bignum.fixed: UInt;
+    import mir.math.common: approxEqual;
+    alias T = Fp!64;
+    alias Wide = Fp!128;
+    enum expected = Wide(false, -133, UInt!128.fromHexString("9dad55b76d40097a8f202e6d50714fdf"));
+    assert(weibullPDF(Wide(9), Wide(1.5), Wide(4)) == expected);
+    assert(approxEqual(weibullPDF(9.0, 1.5, 4.0), 0.019247691550312144518, 8 * double.epsilon));
+    assert(weibullPDF(T(0), T(0.5)).isInfinity);
+    assert(weibullPDF(T(double.infinity), T(0.5)) == T(0));
+    assert(weibullPDF(T(2), T(128)) == T(0));
+    auto largeShape = T(1);
+    largeShape.exponent += 100;
+    assert(weibullPDF(T(0.5), largeShape) == T(0));
+
+    // exp(-2^63) rounds to zero alone; dividing by scale recovers the density.
+    const scale = T(false, long.min + 256, UInt!64(1));
+    const x = T(false, long.min + 319, UInt!64(1));
+    assert(weibullCCDF(x, T(1), scale) == T(0));
+    assert(weibullPDF(x, T(1), scale) ==
+        T(false, -4083141060989547003L, UInt!64(0x98d3377e65eee9c8UL)));
+}
+
+/++
 Computes the Weibull cumulative distribution function (CDF).
 
 Returns the lower-tail probability $(D P(X <= x)).
