@@ -119,6 +119,7 @@ version(mir_stat_test)
     import mir.ndslice.slice: sliced;
     double[2] x = [3, 4], center = [0, 0];
     double[4] identity = [1, 0, double.nan, 1];
-    assert(mahalanobisSquared(x[], center[], identity[].sliced(2,2)) == 25);
-    assert(mahalanobis(x[], center[], identity[].sliced(2,2)) == 5);
+    auto metric = covarianceView(identity[].sliced(2, 2));
+    assert(mahalanobisSquared(x[], center[], metric) == 25);
+    assert(mahalanobis(x[], center[], metric) == 5);
 }

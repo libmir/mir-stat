@@ -204,8 +204,8 @@ One-input allocating calls return a `SymmetricView`, defaulting to the upper
 triangle. They initialize only that triangle using SYRK where eligible or a
 native D triangle kernel otherwise. The square allocation still reserves both
 triangles. Logical indexing reflects the stored values. Quadratic forms,
-Cholesky decomposition, multiplication, and Mahalanobis covariance/precision
-calls consume that structure directly.
+Cholesky decomposition, multiplication, and the internal Mahalanobis
+covariance/precision kernels consume that structure directly.
 
 ~~~d
 auto gram = rcCrossprod(a);
@@ -338,9 +338,10 @@ metadata for algorithm selection. Pass the original view to `mtimes`,
 quadratic forms, and other structure-aware operations to retain their
 specialized paths. Mutation requires an explicit writable copy.
 
-Mahalanobis accepts symmetric covariance/precision views through dedicated
-overloads. It does not implicitly accept triangular views through `toSlice`;
-support for triangular factor descriptors requires its own explicit API.
+Package callers can pass symmetric covariance/precision views directly to
+`mir.stat.internal.mahalanobis`. The public `mir.stat.distance` functions
+take labeled dense metrics. A triangular storage descriptor alone does not
+identify whether it factors covariance or precision.
 
 ## Packed triangular and symmetric storage
 
@@ -426,7 +427,7 @@ double[4] covariance = [4, 0, double.nan, 9];
 double[2] center = [0, 0];
 auto rows = data[].sliced(3, 2);
 auto columns = rows.transposed;
-auto metric = covariance[].sliced(2, 2);
+auto metric = covarianceView(covariance[].sliced(2, 2));
 auto byRows = mahalanobisSquared(rows.byDim!0, center[], metric);
 auto byColumns = mahalanobisSquared(columns.alongDim!0, center[], metric);
 assert(byRows == [2, 4, 4] && byColumns == byRows);
@@ -435,12 +436,12 @@ assert(mahalanobisSquaredBatch(columns, center[], metric) == byRows);
 
 Selection adapters recover the observation matrix and forward once to the
 batch operation. Covariance is factorized once per batch. Supplying
-`CovarianceRepresentation.covarianceCholesky` reuses an existing covariance factor
+`covarianceCholeskyView(factor)` reuses an existing covariance factor
 without factorization, including when the same factor is retained across calls.
 Squared-distance evaluation is available through all three input conventions.
 
-The representation choices are `covariance`, `covarianceCholesky`,
-`inverseCovariance`, and `inverseCovarianceCholesky`. Triangle definitions are
+Label a dense matrix with `covarianceView`, `covarianceCholeskyView`,
+`precisionView`, or `precisionCholeskyView`. Triangle definitions are
 unchanged: an upper covariance factor satisfies `S = Uᵀ U`, while an upper
 precision factor satisfies `P = Rᵀ R`. A Cholesky factor of precision is not
 simply the inverse of a covariance factor.
@@ -453,10 +454,9 @@ inverse covariance matrix, select fast arithmetic explicitly:
 ```d
 import mir.stat.distance;
 import mir.math.sum: Summation;
-auto squared = mahalanobisSquared!(CovarianceRepresentation.inverseCovariance,
-    TrianglePolicy.upper, Summation.fast)(x, center, precision);
-auto reused = mahalanobisSquaredWithWorkspace!(CovarianceRepresentation.inverseCovariance,
-    TrianglePolicy.upper, Summation.fast)(x, center, precision, difference, product);
+auto metric = precisionView(precision);
+auto squared = mahalanobisSquared!(Summation.fast)(x, center, metric);
+auto reused = mahalanobisSquaredWithWorkspace!(Summation.fast)(x, center, metric, difference, product);
 ```
 
 The allocating call needs two temporary vectors; RC and custom-allocator variants
@@ -622,6 +622,7 @@ Use the ordinary names for a single vector or an explicit selection of vectors.
 Use the `Batch` names for a plain matrix with observations in columns:
 
 ```d
+auto metric = covarianceView(covariance);
 auto one = mahalanobisSquared(observation, center, metric); // Scalar
 auto many = mahalanobisSquaredBatch(columns, center, metric); // Vector
 auto fromRows = mahalanobisSquared(rows.alongDim!1, center, metric);
@@ -672,8 +673,8 @@ takes selected scratch. Explicit batches use `quadraticFormBatchInto` for both.
 Select workspace axes explicitly too; workspace storage orientation may differ:
 
 ```d
-mahalanobisSquaredWithWorkspace!(CovarianceRepresentation.covarianceCholesky)(
-    rows.alongDim!1, center, factor, results, scratchColumns.byDim!1);
+mahalanobisSquaredWithWorkspace(
+    rows.alongDim!1, center, covarianceCholeskyView(factor), results, scratchColumns.byDim!1);
 
 quadraticFormWithWorkspace!(Summation.fast)(
     rows.byDim!0, symmetricView(metric), values, scratchColumns.alongDim!0);
@@ -713,13 +714,11 @@ The public distance module provides `mahalanobisBatch` and
 `mahalanobisSquaredBatch`, plus `rc`, `make`, and `WithWorkspace` variants:
 
 ```d
-auto distances = mahalanobisBatch!(CovarianceRepresentation.covarianceCholesky)(
-    observations, center, covarianceFactor);
-mahalanobisSquaredBatchWithWorkspace!(CovarianceRepresentation.covarianceCholesky)(
-    observations, center, covarianceFactor, results, centeredWorkspace);
-mahalanobisSquaredBatchWithWorkspace!(CovarianceRepresentation.inverseCovariance,
-    TrianglePolicy.upper, Summation.fast)(
-    observations, center, precision, results, centeredWorkspace, productWorkspace);
+auto factor = covarianceCholeskyView(covarianceFactor);
+auto distances = mahalanobisBatch(observations, center, factor);
+mahalanobisSquaredBatchWithWorkspace(observations, center, factor, results, centeredWorkspace);
+mahalanobisSquaredBatchWithWorkspace!(Summation.fast)(
+    observations, center, precisionView(precision), results, centeredWorkspace, productWorkspace);
 ```
 
 The center is one vector shared by the batch. `results` has one element per

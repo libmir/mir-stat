@@ -656,7 +656,7 @@ Use the same metric for vectors, batches, and explicit row/column selections.
 version(mir_stat_test_linearAlgebra)
 @safe pure unittest
 {
-    import mir.stat.distance: mahalanobisSquared, mahalanobisSquaredWithWorkspace;
+    import mir.stat.internal.mahalanobis: mahalanobisSquared, mahalanobisSquaredWithWorkspace;
     import mir.ndslice.slice: sliced;
     import mir.ndslice.topology: byDim;
     double[2] ds=[4,9], x=[2,3], zero=[0,0], work;
@@ -671,7 +671,7 @@ version(mir_stat_test_linearAlgebra)
 version(mir_stat_test_linearAlgebra)
 @safe pure unittest
 {
-    import mir.stat.distance;
+    import mir.stat.internal.mahalanobis;
     import mir.ndslice.slice: sliced;
     import mir.stat.internal.linearAlgebra.views: symmetricView;
     double[2] x=[1,2], center=[0,0];
@@ -688,7 +688,7 @@ version(mir_stat_test_linearAlgebra)
 version(mir_stat_test_linearAlgebra)
 @system unittest
 {
-    import mir.stat.distance;
+    import mir.stat.internal.mahalanobis;
     import mir.math.sum: Summation;
     import mir.ndslice.slice: sliced;
     import mir.ndslice.topology: alongDim, byDim;
