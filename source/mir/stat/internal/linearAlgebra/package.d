@@ -358,7 +358,7 @@ version(mir_stat_test_linearAlgebra)
 {
     import mir.ndslice.slice: sliced;
     import mir.ndslice.allocation: slice;
-    import mir.stat.distance: mahalanobisSquared;
+    import mir.stat.internal.mahalanobis: mahalanobisSquared;
     double[4] data=[2,0,1,2];
     double[2] values=[1,2], center=[0,0];
     auto gram=rcCrossprod(data[].sliced(2,2));

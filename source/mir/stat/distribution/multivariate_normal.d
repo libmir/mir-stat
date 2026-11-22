@@ -86,13 +86,12 @@ version(mir_stat_test_blas) version = mir_stat_test_multivariate_normal;
 
 public import mir.stat.covariance_views: CovarianceMetric, CovarianceRepresentation, TrianglePolicy,
     covarianceView, precisionView, covarianceCholeskyView, precisionCholeskyView;
-private import mir.stat.covariance_views: labelCovariance;
-private import mir.stat.internal.linearAlgebra.types: isObservationSelection, ObservationColumns, observationColumns;
-private import mir.stat.distance: asView, compatible, matrix, vector, Element, mahalanobisWithWorkspace;
+private import mir.stat.covariance_views: isCovarianceMetric, labelCovariance;
+private import mir.stat.internal.linearAlgebra.types: isObservationSelection, ObservationColumns, observationColumns,
+    asView, compatible, matrix, vector, Element;
+private import mir.stat.distance: mahalanobisWithWorkspace;
 private import mir.stat.internal.linearAlgebra.cholesky: tryCholeskyDecomposeInto, logDeterminantFromCholesky;
 private import mir.stat.internal.linearAlgebra.allocation: Allocation, AllocatedSlice, allocate;
-
-private enum isCovarianceMetric(M) = is(M == CovarianceMetric!Args, Args...);
 
 /// Whether the caller supplied a Cholesky factor.
 private enum prepared(CovarianceRepresentation form) =
@@ -882,7 +881,7 @@ MultivariateNormalLPDFResult!(Element!X) tryMultivariateNormalLPDFWithWorkspace(
     auto factor = factorWork.asView;
     static if (M.form == CovarianceRepresentation.covariance)
     {
-        import mir.stat.distance: tryCovarianceDistanceWithWorkspace;
+        import mir.stat.internal.mahalanobis: tryCovarianceDistanceWithWorkspace;
         Element!X distance;
         const pivot = tryCovarianceDistanceWithWorkspace!(false, M.triangle)(
             observation, center, matrixView, distance, workView, factor);
@@ -1553,7 +1552,7 @@ size_t tryMultivariateNormalLPDFBatchWithWorkspace(X, C, M, R, W, F)(
     auto factor = factorWork.asView;
     static if (M.form == CovarianceRepresentation.covariance)
     {
-        import mir.stat.distance: tryCovarianceDistanceBatchWithWorkspace;
+        import mir.stat.internal.mahalanobis: tryCovarianceDistanceBatchWithWorkspace;
         auto values = result.asView;
         const pivot = tryCovarianceDistanceBatchWithWorkspace!(false, M.triangle)(
             columns, mean.asView, matrixView, values, work.asView, factor);

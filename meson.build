@@ -96,6 +96,7 @@ sources_list = [
     'mir/stat/descriptive/package',
     'mir/stat/constant',
     'mir/stat/covariance_views',
+    'mir/stat/internal/mahalanobis',
     'mir/stat/distance',
     'mir/stat/inference',
     'mir/stat/transform',

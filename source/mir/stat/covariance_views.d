@@ -7,7 +7,7 @@ Copyright: 2026 Mir Stat Authors.
 module mir.stat.covariance_views;
 
 public import mir.stat.internal.linearAlgebra.types: CovarianceRepresentation, TrianglePolicy;
-private import mir.stat.distance: matrix;
+private import mir.stat.internal.linearAlgebra.types: matrix;
 private import mir.ndslice.slice: isSlice, toSlice;
 
 version(mir_stat_test) version = mir_stat_test_multivariate_normal;
@@ -39,6 +39,9 @@ struct CovarianceMetric(CovarianceRepresentation representation, TrianglePolicy 
     enum triangle = selectedTriangle;
     package(mir.stat) A storage;
 }
+
+/// Whether a matrix descriptor carries a covariance or precision representation.
+package(mir.stat) enum isCovarianceMetric(M) = is(M == CovarianceMetric!Args, Args...);
 
 // Keep the descriptor itself so reference-counted iterators retain their owner.
 package(mir.stat) auto labelCovariance(CovarianceRepresentation form, TrianglePolicy triangle, A)(
