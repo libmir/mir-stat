@@ -1,0 +1,153 @@
+name: Measure Ubuntu LDC coverage PR cache
+
+on:
+  pull_request:
+    branches: [master]
+
+permissions:
+  contents: read
+
+# Isolate each full experiment from ordinary CI and earlier attempts.
+env:
+  CACHE_DIR: ldc-general-coverage-objects
+  PR_CACHE_DIR: ldc-pr-objects
+  KEY_PREFIX: measure-333-ubuntu-coverage-${{ github.run_id }}-${{ github.run_attempt }}
+
+jobs:
+  baseline:
+    if: github.event.number == 333 && github.event.pull_request.draft
+    runs-on: ubuntu-latest
+    env:
+      SOURCE_REV: c4bcadc76f54dc89aec99a54ba1b44678dff280e
+    steps:
+      - &checkout
+        uses: actions/checkout@v7.0.1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - &source
+        name: Select source revision and pin dependencies
+        run: |
+          git restore --source="$SOURCE_REV" --worktree -- source
+          echo '{"fileVersion":1,"versions":{"cblas":"2.3.4","lapack":"0.6.5","mir-algorithm":"3.22.5","mir-blas":"1.1.18","mir-core":"1.7.4","mir-lapack":"1.2.12","mir-linux-kernel":"1.2.1","mir-random":"2.2.21","silly":"1.1.1"}}' > dub.selections.json
+      - &install
+        uses: dlang-community/setup-dlang@v2.0.0
+        with:
+          compiler: ldc-1.43.0
+      - &coverage
+        name: Run general coverage
+        env:
+          DFLAGS: -cache=${{ runner.temp }}/${{ env.CACHE_DIR }}
+        run: bash .github/scripts/linux-coverage.sh --stable-build-path
+      - name: Check baseline objects
+        run: |
+          shopt -s nullglob
+          objects=("$RUNNER_TEMP/$CACHE_DIR"/ircache_*.o)
+          echo "Baseline objects: ${#objects[@]}"
+          test "${#objects[@]}" -gt 0
+      - name: Save historical master objects
+        uses: actions/cache/save@v6.1.0
+        with:
+          path: ${{ runner.temp }}/${{ env.CACHE_DIR }}
+          key: ${{ env.KEY_PREFIX }}-master
+
+  seed:
+    needs: baseline
+    runs-on: ubuntu-latest
+    env:
+      SOURCE_REV: c33dbc7f67956c08ce27c949366cca24aeaf3f64
+    steps:
+      - *checkout
+      - *source
+      - *install
+      - &restore-master
+        name: Restore historical master objects
+        uses: actions/cache/restore@v6.1.0
+        with:
+          path: ${{ runner.temp }}/${{ env.CACHE_DIR }}
+          key: ${{ env.KEY_PREFIX }}-master
+          fail-on-cache-miss: true
+      - name: Prepare incremental cache
+        run: python3 .github/scripts/ldc_pr_cache.py prepare
+      - *coverage
+      - name: Collect first revision's PR objects
+        id: collect
+        run: python3 .github/scripts/ldc_pr_cache.py collect
+      - name: Require a nonempty PR snapshot
+        env:
+          CHANGED: ${{ steps.collect.outputs.changed }}
+        run: |
+          test "$CHANGED" = true
+          compgen -G "$RUNNER_TEMP/$PR_CACHE_DIR/ircache_*.o" > /dev/null
+      - name: Save first revision's PR objects
+        uses: actions/cache/save@v6.1.0
+        with:
+          path: ${{ runner.temp }}/${{ env.PR_CACHE_DIR }}
+          key: ${{ env.KEY_PREFIX }}-first
+
+  compare:
+    name: Second revision (${{ matrix.mode }})
+    needs: seed
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        mode: [master-only, master-plus-pr]
+    env:
+      SOURCE_REV: 7ab7215cbd690eb2e8b5f1ea28adb1aaeb4fef8e
+    steps:
+      - *checkout
+      - *source
+      - *install
+      - name: Report runner resources
+        run: bash .github/scripts/linux-resources.sh report
+      - *restore-master
+      - name: Restore first revision's PR objects
+        if: matrix.mode == 'master-plus-pr'
+        uses: actions/cache/restore@v6.1.0
+        with:
+          path: ${{ runner.temp }}/${{ env.PR_CACHE_DIR }}
+          key: ${{ env.KEY_PREFIX }}-first
+          fail-on-cache-miss: true
+      - name: Prepare incremental cache
+        if: matrix.mode == 'master-plus-pr'
+        run: python3 .github/scripts/ldc_pr_cache.py prepare
+      - *coverage
+      - name: Collect second revision's PR objects
+        if: matrix.mode == 'master-plus-pr'
+        id: collect
+        run: python3 .github/scripts/ldc_pr_cache.py collect
+      - name: Save second revision's PR objects
+        if: steps.collect.outputs.changed == 'true'
+        uses: actions/cache/save@v6.1.0
+        with:
+          path: ${{ runner.temp }}/${{ env.PR_CACHE_DIR }}
+          key: ${{ env.KEY_PREFIX }}-second
+      - name: Preserve coverage reports for comparison
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: coverage-${{ matrix.mode }}-${{ github.run_attempt }}
+          path: source-*.lst
+          if-no-files-found: error
+          retention-days: 7
+
+  reports:
+    name: Compare coverage report inventories and contents
+    needs: compare
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: coverage-*-${{ github.run_attempt }}
+          path: reports
+      - name: Compare report names and SHA-256 hashes
+        env:
+          ATTEMPT: ${{ github.run_attempt }}
+          LC_ALL: C
+        run: |
+          for mode in master-only master-plus-pr; do
+            (cd "reports/coverage-$mode-$ATTEMPT" && sha256sum source-*.lst) > "$mode.sha256"
+            echo "$mode: $(wc -l < "$mode.sha256") reports" >> "$GITHUB_STEP_SUMMARY"
+            sha256sum "$mode.sha256" >> "$GITHUB_STEP_SUMMARY"
+          done
+          diff -u master-only.sha256 master-plus-pr.sha256
