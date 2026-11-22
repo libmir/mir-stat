@@ -1,9 +1,13 @@
+param([switch]$StableBuildPath)
+
 # Match the Linux coverage groups while retaining package-mode template coverage.
 $ErrorActionPreference = 'Stop'
 $PSNativeCommandUseErrorActionPreference = $false
 $project = (Get-Location).Path
-$temporaryRoot = [IO.Path]::GetFullPath([IO.Path]::GetTempPath())
-$build = Join-Path $temporaryRoot ('mir-stat-coverage-' + [Guid]::NewGuid().ToString('N'))
+$temporaryRoot = if ($StableBuildPath) { $env:RUNNER_TEMP } else { [IO.Path]::GetTempPath() }
+$temporaryRoot = [IO.Path]::GetFullPath($temporaryRoot)
+$buildName = if ($StableBuildPath) { 'mir-stat-coverage' } else { 'mir-stat-coverage-' + [Guid]::NewGuid().ToString('N') }
+$build = Join-Path $temporaryRoot $buildName
 New-Item -ItemType Directory -Path $build | Out-Null
 
 try {
@@ -60,11 +64,11 @@ excludedSourceFiles "source/mir/stat/descriptive/*" "source/mir/stat/internal/bo
     }
 } finally {
     Set-Location -LiteralPath $project
-    # Only remove the unique scratch directory created above.
+    # Only remove the scratch directory created by this invocation.
     $resolvedBuild = [IO.Path]::GetFullPath($build)
     $expectedParent = $temporaryRoot.TrimEnd([IO.Path]::DirectorySeparatorChar)
     if ([IO.Path]::GetDirectoryName($resolvedBuild) -ne $expectedParent -or
-        [IO.Path]::GetFileName($resolvedBuild) -notmatch '^mir-stat-coverage-[0-9a-f]{32}$') {
+        [IO.Path]::GetFileName($resolvedBuild) -ne $buildName) {
         throw "Unexpected coverage scratch path: $resolvedBuild"
     }
     Remove-Item -LiteralPath $resolvedBuild -Recurse -Force

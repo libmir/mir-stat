@@ -380,6 +380,9 @@ jobs:
 
   test:
     name: Tests with coverage (${{ matrix.os }}, ${{ matrix.dc.channel }})
+    env:
+      CACHE_DIR: ldc-general-coverage-objects
+      CACHE_PREFIX: ldc-general-coverage-v1-${{ matrix.os }}-${{ matrix.dc.compiler }}
     needs: compilers
     permissions:
       contents: read
@@ -425,6 +428,9 @@ jobs:
         dub --version
         if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 
+    - *restore-ldc-master
+    - *restore-ldc-draft
+
     - name: Run tests with coverage (Windows DMD)
       if: runner.os == 'Windows' && startsWith(matrix.dc.channel, 'dmd-')
       shell: pwsh
@@ -433,12 +439,18 @@ jobs:
 
     - name: Run tests with coverage (Windows LDC)
       if: runner.os == 'Windows' && startsWith(matrix.dc.channel, 'ldc-')
+      env: *ldc-cache-flags
       shell: pwsh
-      run: ./.github/scripts/windows-coverage.ps1
+      run: ./.github/scripts/windows-coverage.ps1 -StableBuildPath
 
-    - name: Run tests with coverage (Linux)
-      if: runner.os == 'Linux'
+    - name: Run tests with coverage (Linux DMD)
+      if: runner.os == 'Linux' && startsWith(matrix.dc.channel, 'dmd-')
       run: bash .github/scripts/linux-coverage.sh
+
+    - name: Run tests with coverage (Linux LDC)
+      if: runner.os == 'Linux' && startsWith(matrix.dc.channel, 'ldc-')
+      env: *ldc-cache-flags
+      run: bash .github/scripts/linux-coverage.sh --stable-build-path
 
     # The BLAS build writes the same filenames; move the general reports first.
     # Forks run the tests; coverage is published by the upstream repository.
@@ -456,6 +468,18 @@ jobs:
           Move-Item -LiteralPath $report.FullName -Destination $destination
         }
         Write-Output "Preserved $($reports.Count) general coverage reports"
+
+    - name: Summarize LDC general coverage reports
+      if: startsWith(matrix.dc.channel, 'ldc-') && steps.general-coverage.outcome == 'success'
+      shell: pwsh
+      run: |
+        $directory = Join-Path $env:RUNNER_TEMP 'coverage/general'
+        $reports = @(Get-ChildItem -LiteralPath $directory -Filter 'source-*.lst' -File | Sort-Object Name -Culture en-US)
+        $manifest = foreach ($report in $reports) {
+          "$($report.Name) $((Get-FileHash -LiteralPath $report.FullName).Hash)"
+        }
+        $digest = [Security.Cryptography.SHA256]::HashData([Text.Encoding]::UTF8.GetBytes(($manifest -join "`n")))
+        "General coverage: $($reports.Count) reports, SHA-256 $([Convert]::ToHexString($digest))" >> $env:GITHUB_STEP_SUMMARY
 
     # Run slow numerical sweeps once; ordinary Fp tests stay in the full matrix.
     # The focused suite makes optimized LDC faster overall than DMD.
@@ -579,3 +603,5 @@ jobs:
         foreach ($report in Get-ChildItem -LiteralPath $source -Filter 'source-*.lst' -File) {
           Remove-Item -LiteralPath (Join-Path $env:GITHUB_WORKSPACE $report.Name)
         }
+
+    - *save-ldc
