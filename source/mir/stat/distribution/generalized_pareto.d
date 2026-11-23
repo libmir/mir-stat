@@ -8,6 +8,13 @@ The forward functions check these support restrictions with contracts.
 Shape zero gives an exponential distribution shifted by $(D mu), with
 rate $(D 1 / sigma).
 
+The $(D Fp) overloads use the represented significands and a separate working
+exponent, including for comparisons with a negative-shape endpoint. Evaluation
+is guarded and universal correct rounding is unproven. Cancellation beyond the
+working precision can give zero in a log density or quantile. The result has
+the input coefficient width; widths exercised include 64, 128, and 256 bits
+on x86-64 and 32, 64, and 128 bits on x86.
+
 The special-value tables assume parameters in the stated domain. Finite
 expressions are subject to floating-point rounding and range limits.
 Contract violations are not prescribed return values: disabling contracts
@@ -258,8 +265,16 @@ version(mir_stat_test)
     const scale = T(false, long.min + 256, UInt!64(1));
     const x = T(false, long.min + 319, UInt!64(1));
     assert(generalizedParetoCCDF(x, T(0), scale, T(0)) == T(0));
-    import mir.stat.distribution.weibull: weibullPDF;
-    assert(generalizedParetoPDF(x, T(0), scale, T(0)) == weibullPDF(x, T(1), scale));
+    assert(generalizedParetoPDF(x, T(0), scale, T(0)) ==
+        T(false, -4083141060989547003L, UInt!64(0x98d3377e65eee9c8UL)));
+    auto large = T(1);
+    large.exponent += 100;
+    assert(generalizedParetoPDF(large, T(0), T(1), T(0)) == T(0));
+    // The reciprocal scale is exactly half the least quantum. With
+    // shape -2 the density grows strictly above that midpoint.
+    const bigScale = T(false, long.max - 1, UInt!64(8));
+    assert(generalizedParetoPDF(T(1), T(0), bigScale, T(-2)) ==
+        T(false, long.min, UInt!64(1)));
 }
 
 /++
@@ -378,7 +393,24 @@ version(mir_stat_test)
     auto tiny = T(1);
     tiny.exponent -= 20_000;
     assert(generalizedParetoCDF(tiny, T(0), T(1), tiny) == tiny);
+    T negative = tiny;
+    negative.sign = true;
+    assert(generalizedParetoCDF(T(0), negative, T(1), T(0)) == tiny);
     assert(generalizedParetoCDF(T(double.infinity), T(0), T(1), T(0)) == T(1));
+    const floorInput = T(false, long.min, UInt!64(3));
+    assert(generalizedParetoCDF(floorInput, T(0), T(2), T(0)) == T(false, long.min, UInt!64(1)));
+    assert(generalizedParetoCDF(floorInput, T(0), T(2), T(-2)) == T(false, long.min, UInt!64(2)));
+    assert(generalizedParetoCCDF(tiny, T(0), T(1), tiny) == T(1));
+    // Leading location and observation products cancel before adding scale.
+    auto common = T(-1);
+    common.exponent += 1000;
+    T next = common;
+    next.coefficient -= 1;
+    assert(generalizedParetoCDF(next, common, T(1), T(1)) == T(1));
+    auto large = T(1), reciprocal = T(1);
+    large.exponent += (1L << 62) + 10;
+    reciprocal.exponent -= (1L << 62) + 10;
+    assert(generalizedParetoCCDF(large, T(0), T(1), T(1)) == reciprocal);
 }
 
 /++
@@ -506,6 +538,15 @@ version(mir_stat_test)
     // 1 - 3*below = 2^-64, so the strict tail is its cube root.
     assert(generalizedParetoCCDF(below, T(0), T(1), T(-3)) ==
         T(false, -85, UInt!64(0xcb2ff529eb71e416UL)));
+    // At z=1024 the shape correction changes the rounded survival
+    // probability on both sides of the exponential limit.
+    auto nearZero = T(1);
+    nearZero.exponent -= 64;
+    assert(generalizedParetoCCDF(T(1024), T(0), T(1), nearZero) ==
+        T(false, -1541, UInt!64(0xcd1d0997743c3560UL)));
+    nearZero.sign = true;
+    assert(generalizedParetoCCDF(T(1024), T(0), T(1), nearZero) ==
+        T(false, -1541, UInt!64(0xcd1d0997742f638fUL)));
 }
 
 /++
@@ -639,6 +680,11 @@ version(mir_stat_test)
     assert(generalizedParetoInvCDF(T(0.5), T(0), T(1), huge) == T(false, -163, UInt!64(1UL << 63)));
     assert(generalizedParetoInvCDF(T(0.5), T(0), T(1), small) ==
         generalizedParetoInvCDF(T(0.5), T(0), T(1), T(0)));
+    // At shape one, p = 1 - 2^-127 gives an exact rational midpoint.
+    alias W = Fp!128;
+    enum nearOne = W(false, -128, UInt!128.max - 1u);
+    enum midpoint = W(false, -3, UInt!128.fromHexString("bfffffffffffffffffffffffffffffde"));
+    assert(generalizedParetoInvCDF(nearOne, W(-4), W(0.1875), W(1)) == midpoint);
 }
 
 /++
@@ -904,6 +950,31 @@ version(mir_stat_test)
     assert(generalizedParetoLPDF(T(1), T(0), T(1), T(-1)) == T(0));
     assert(generalizedParetoLPDF(T(2), T(0), T(1), T(-0.5)) == T(-double.infinity));
     assert(generalizedParetoLPDF(T(0.5), T(0), T(1), T(-2)) == T(double.infinity));
+}
+
+
+version(mir_stat_test)
+static if (size_t.sizeof == 4)
+@safe pure nothrow @nogc unittest
+{
+    import mir.bignum.fixed: UInt;
+    alias T = Fp!32;
+    // Exact binary inputs: location zero, scale 1/8, shape 3/8.
+    auto scale = T(1), shape = T(3), x = T(1), p = T(1);
+    scale.exponent -= 3;
+    shape.exponent -= 3;
+    x.exponent -= 5;
+    p.exponent -= 2;
+    assert(generalizedParetoCDF(x, T(0), scale, shape) ==
+        T(false, -34, UInt!32(0xd9a8d834U)));
+    assert(generalizedParetoCCDF(x, T(0), scale, shape) ==
+        T(false, -32, UInt!32(0xc995c9f3U)));
+    assert(generalizedParetoPDF(x, T(0), scale, shape) ==
+        T(false, -29, UInt!32(0xb84e6f7fU)));
+    assert(generalizedParetoLPDF(x, T(0), scale, shape) ==
+        T(false, -31, UInt!32(0xe01c4ca0U)));
+    assert(generalizedParetoInvCDF(p, T(0), scale, shape) ==
+        T(false, -36, UInt!32(0x9b8827b2U)));
 }
 
 // Called only for positive shape and an overflowing standardized finite input.

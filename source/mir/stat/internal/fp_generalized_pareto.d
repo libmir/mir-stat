@@ -124,12 +124,23 @@ private struct Evaluation(uint bits)
         if (h.exponent + work / 2 <= exponentBias)
         {
             static if (upper) return T(1);
-            else return h.finish!bits;
+            else
+            {
+                // At zero location z is a single dyadic ratio. Its odd
+                // denominator has at most bits bits. In this window a
+                // non-midpoint stays on its side of the rounding boundary.
+                // At a midpoint F(z) - z has the sign of -(1+xi).
+                if (!mu.coefficient && h.exponent + (2 * bits + 64) <= exponentBias &&
+                    (!xi.coefficient || S.from(xi).multiply(h).exponent + (2 * bits + 64) <= exponentBias))
+                    return withCorrection(h, position(xi, T(-1)) < 0).finish!bits;
+                return h.finish!bits;
+            }
         }
         const survival = scaledDecay(h);
         static if (upper) return survival.finish!bits;
         else return addOffset!bits(T(1), survival, true);
     }
+
     // The density is exp(-(1+xi)*h)/sigma. The sign changes at xi=-1;
     // construct the distance from -1 before multiplication to retain it.
     static T density(bool logarithmic)(T x, T mu, T sigma, T xi)
@@ -163,7 +174,9 @@ private struct Evaluation(uint bits)
         {
             if (magnitude.exponent >= exponentBias + 66)
                 return shapeOrder > 0 ? T(0) : T(false, long.max, UInt!bits(0));
-            const decay = magnitude.exponent + work <= exponentBias ? one : scaledDecay(magnitude);
+            if (magnitude.exponent + (2 * bits + 64) <= exponentBias)
+                return addOffset!bits(T(0), withCorrection(one.divide(scale), shapeOrder < 0), false);
+            const decay = scaledDecay(magnitude);
             const value = shapeOrder > 0 ? decay.divide(scale) : one.divide(decay.multiply(scale));
             return addOffset!bits(T(0), value, false);
         }
@@ -233,6 +246,15 @@ private struct Evaluation(uint bits)
                 return finish(Term(withCorrection(base.value, negative == base.negative), base.negative, true), one);
             return finish(combine(base, Term(correction, negative, true)), one);
         }
+        // At shape one the offset is the rational sigma*p/(1-p).
+        // Keep the location in its numerator through the final division.
+        if (!position(xi, T(1)))
+        {
+            const q = combine(Term(one, false, true), Term(prob, true, true)).value;
+            auto base = term(mu);
+            if (base.present) base.value = base.value.multiply(q);
+            return finish(combine(base, Term(linear, false, true)), q);
+        }
         // Widening an input at the exponent floor can discard it. When p
         // is tiny, the relative correction to the complement log is O(p).
         const h = prob.exponent + work / 2 <= exponentBias ? prob
@@ -255,7 +277,6 @@ private struct Evaluation(uint bits)
         if (!xi.sign) offset = offset.divide(decay);
         return addOffset!bits(mu, offset, false);
     }
-
 }
 
 package(mir.stat) bool supported(uint bits)(Fp!bits x, Fp!bits mu, Fp!bits sigma, Fp!bits xi)
