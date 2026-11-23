@@ -87,7 +87,9 @@ public import mir.stat.distribution.log_normal: logNormalPDF;
 public import mir.stat.distribution.logistic: logisticPDF;
 ///
 public import mir.stat.distribution.multivariate_normal: multivariateNormalPDF,
-    rcMultivariateNormalPDF, makeMultivariateNormalPDF, multivariateNormalPDFWithWorkspace;
+    rcMultivariateNormalPDF, makeMultivariateNormalPDF, multivariateNormalPDFWithWorkspace,
+    multivariateNormalPDFBatch, rcMultivariateNormalPDFBatch, makeMultivariateNormalPDFBatch,
+    multivariateNormalPDFBatchWithWorkspace;
 ///
 public import mir.stat.distribution.negative_binomial: negativeBinomialPMF;
 ///
