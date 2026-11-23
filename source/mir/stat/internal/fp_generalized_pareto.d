@@ -130,6 +130,28 @@ private struct Evaluation(uint bits)
         static if (upper) return survival.finish!bits;
         else return addOffset!bits(T(1), survival, true);
     }
+    // The density is exp(-(1+xi)*h)/sigma. The sign changes at xi=-1;
+    // construct the distance from -1 before multiplication to retain it.
+    static T density(T x, T mu, T sigma, T xi)
+    {
+        if (x.isInfinity) return T(0);
+        const uniform = position(xi, T(-1));
+        const scale = S.from(sigma);
+        const one = S.from(T(1));
+        if (!uniform || !position(x, mu))
+            return addOffset!bits(T(0), one.divide(scale), false);
+        const numerator = xi.coefficient ? residual(x, mu, sigma, xi) : term(sigma);
+        if (!numerator.present)
+            return uniform > 0 ? T(0) : T(false, long.max, UInt!bits(0));
+        const h = hazard(x, mu, sigma, xi, numerator);
+        const magnitude = h.multiply(distance!work(xi, T(-1)));
+        if (magnitude.exponent >= exponentBias + 66)
+            return uniform > 0 ? T(0) : T(false, long.max, UInt!bits(0));
+        const decay = magnitude.exponent + work <= exponentBias ? one : scaledDecay(magnitude);
+        const value = uniform > 0 ? decay.divide(scale) : one.divide(decay.multiply(scale));
+        return addOffset!bits(T(0), value, false);
+    }
+
 }
 
 package(mir.stat) bool supported(uint bits)(Fp!bits x, Fp!bits mu, Fp!bits sigma, Fp!bits xi)
@@ -144,4 +166,9 @@ package(mir.stat) bool supported(uint bits)(Fp!bits x, Fp!bits mu, Fp!bits sigma
 package(mir.stat) auto paretoTail(bool upper, uint bits)(Fp!bits x, Fp!bits mu, Fp!bits sigma, Fp!bits xi)
 {
     return Evaluation!bits.tail!upper(x, mu, sigma, xi);
+}
+
+package(mir.stat) auto paretoDensity(uint bits)(Fp!bits x, Fp!bits mu, Fp!bits sigma, Fp!bits xi)
+{
+    return Evaluation!bits.density(x, mu, sigma, xi);
 }

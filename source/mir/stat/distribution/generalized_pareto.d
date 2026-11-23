@@ -199,6 +199,69 @@ unittest
 }
 
 /++
+Evaluates the generalized Pareto PDF with guarded extended precision.
+
+Params:
+    T = Represented $(D Fp) type, inferred from the arguments.
+    x = Observation on the support, including the upper endpoint.
+    mu = Finite location.
+    sigma = Positive finite scale.
+    xi = Finite shape. Negative shape bounds the support above by $(D mu - sigma / xi).
+
+Returns:
+    Density in type T. At the location it is the reciprocal scale. At a finite upper endpoint it is zero, the reciprocal scale, or infinity according as the shape is above, equal to, or below minus one.
++/
+@safe pure nothrow @nogc
+T generalizedParetoPDF(T)(const T x, const T mu, const T sigma, const T xi)
+    if (is(T == Fp!size, size_t size))
+    in (!mu.isSpecial && !xi.isSpecial && !sigma.isSpecial && !sigma.sign && !!sigma.coefficient)
+    in (supported(x, mu, sigma, xi))
+{
+    import mir.stat.internal.fp_generalized_pareto: paretoDensity;
+    return paretoDensity(x, mu, sigma, xi);
+}
+
+///
+version(mir_stat_test)
+@safe pure nothrow @nogc unittest
+{
+    import mir.bignum.fp: Fp;
+    alias T = Fp!64;
+    assert(generalizedParetoPDF(T(2), T(0), T(4), T(-1)) == T(0.25));
+}
+
+version(mir_stat_test)
+@safe pure nothrow @nogc unittest
+{
+    import mir.bignum.fixed: UInt;
+    import mir.math.common: approxEqual;
+    // Independent 220-digit decimal references at shared binary inputs.
+    {
+        alias T = Fp!64;
+        enum expected = T(false, -66, UInt!64.fromHexString("c587e6b74f032916"));
+        assert(generalizedParetoPDF(T(1.5), T(-0.5), T(3), T(-0.25)) == expected);
+        assert(approxEqual(generalizedParetoPDF(1.5, -0.5, 3.0, -0.25), 0.19290123456790123, 8 * double.epsilon));
+    }
+    {
+        alias T = Fp!128;
+        enum expected = T(false, -130, UInt!128.fromHexString("969b1c4dd6c7063b0e28ee47c50979e6"));
+        assert(generalizedParetoPDF(T(1.5), T(-0.5), T(3), T(0.375)) == expected);
+        assert(approxEqual(generalizedParetoPDF(1.5, -0.5, 3.0, 0.375), 0.14707607483950993, 8 * double.epsilon));
+    }
+    alias T = Fp!64;
+    assert(generalizedParetoPDF(T(2), T(0), T(1), T(-0.5)) == T(0));
+    assert(generalizedParetoPDF(T(0.5), T(0), T(1), T(-2)).isInfinity);
+    assert(generalizedParetoPDF(T(double.infinity), T(0), T(2), T(0)) == T(0));
+    assert(generalizedParetoPDF(T(0), T(0), T(2), T(0)) == T(0.5));
+    // An underflowing survival probability can still give a finite density.
+    const scale = T(false, long.min + 256, UInt!64(1));
+    const x = T(false, long.min + 319, UInt!64(1));
+    assert(generalizedParetoCCDF(x, T(0), scale, T(0)) == T(0));
+    import mir.stat.distribution.weibull: weibullPDF;
+    assert(generalizedParetoPDF(x, T(0), scale, T(0)) == weibullPDF(x, T(1), scale));
+}
+
+/++
 Computes the generalized pareto cumulative distribution function (CDF).
 
 Evaluates the probability using $(D log1p) and $(D expm1) near cancellation,
