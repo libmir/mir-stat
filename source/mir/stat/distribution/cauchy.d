@@ -269,6 +269,33 @@ T cauchyCDF(T)(const T x)
 }
 
 /++
+Computes the standard Cauchy lower-tail probability with guarded extended precision.
+
+Params:
+    T = Represented $(D Fp) type, inferred from the arguments.
+    x = Observation, including either infinity or NaN.
+
+Returns:
+    The lower-tail probability in type T. Negative and positive infinity give zero and one, respectively.
+    NaN propagates.
++/
+@safe pure nothrow @nogc
+T cauchyCDF(T)(const T x)
+    if (is(T == Fp!size, size_t size))
+{
+    return cauchyCDF(x, T(0), T(1));
+}
+
+///
+version(mir_stat_test)
+@safe pure nothrow @nogc unittest
+{
+    import mir.bignum.fp: Fp;
+    alias T = Fp!64;
+    assert(cauchyCDF(T(0)) == T(0.5));
+}
+
+/++
 Ditto, with location and scale parameters (by standardizing `x`).
 
 Returns the lower-tail probability $(D P(X <= x)).
@@ -337,6 +364,64 @@ unittest
 }
 
 /++
+Computes the location-scale Cauchy lower-tail probability with guarded extended precision.
+
+Params:
+    T = Represented $(D Fp) type, inferred from the arguments.
+    x = Observation, including either infinity or NaN.
+    location = Finite location.
+    scale = Positive finite scale.
+
+Returns:
+    The lower-tail probability in type T. Negative and positive infinity give zero and one, respectively.
+    NaN propagates.
++/
+@safe pure nothrow @nogc
+T cauchyCDF(T)(const T x, const T location, const T scale)
+    if (is(T == Fp!size, size_t size))
+    in (!location.isSpecial && !scale.isSpecial && !scale.sign && !!scale.coefficient)
+{
+    import mir.stat.internal.fp_cauchy: cauchyTail;
+    return cauchyTail!false(x, location, scale);
+}
+
+///
+version(mir_stat_test)
+@safe pure nothrow @nogc unittest
+{
+    import mir.bignum.fp: Fp;
+    alias T = Fp!64;
+    assert(cauchyCDF(T(0), T(0), T(2)) == T(0.5));
+}
+
+version(mir_stat_test)
+@safe pure nothrow @nogc unittest
+{
+    import mir.bignum.fixed: UInt;
+    import mir.math.common: approxEqual;
+    {
+        alias T = Fp!64;
+        enum expected = T(false, -64, UInt!64.fromHexString("da37f5c4c419ef33"));
+        assert(cauchyCDF(T(2.0)) == expected);
+        assert(approxEqual(cauchyCDF(2.0), 0.8524163823495667, 8 * double.epsilon));
+    }
+    {
+        alias T = Fp!128;
+        enum expected = T(false, -129, UInt!128.fromHexString("a02ba43910bd75f8a792cd67f6410397"));
+        assert(cauchyCDF(T(-1.0), T(1), T(3)) == expected);
+        assert(approxEqual(cauchyCDF(-1.0, 1.0, 3.0), 0.3128329581890012, 8 * double.epsilon));
+    }
+    alias T = Fp!64;
+    const least = T(false, long.min, UInt!64(1));
+    const twice = T(false, long.min, UInt!64(2));
+    assert(cauchyCDF(T(-1), T(0), least) == T(0));
+    assert(cauchyCDF(T(-1), T(0), twice) == least);
+    assert(cauchyCDF(T(-1)) == T(0.25));
+    assert(cauchyCDF(T(-double.infinity)) == T(0));
+    assert(cauchyCDF(T(double.nan)).isNaN);
+}
+
+/++
 Computes the Cauchy complementary cumulative distribution function (CCDF).
 
 Returns the upper-tail probability $(D P(X > x)). Use this function directly
@@ -364,6 +449,33 @@ T cauchyCCDF(T)(const T x)
     if (isFloatingPoint!T)
 {
     return cauchyCDF(-x);
+}
+
+/++
+Computes the standard Cauchy strict upper-tail probability with guarded extended precision.
+
+Params:
+    T = Represented $(D Fp) type, inferred from the arguments.
+    x = Observation, including either infinity or NaN.
+
+Returns:
+    The strict upper-tail probability in type T. Negative and positive infinity give one and zero, respectively.
+    NaN propagates.
++/
+@safe pure nothrow @nogc
+T cauchyCCDF(T)(const T x)
+    if (is(T == Fp!size, size_t size))
+{
+    return cauchyCCDF(x, T(0), T(1));
+}
+
+///
+version(mir_stat_test)
+@safe pure nothrow @nogc unittest
+{
+    import mir.bignum.fp: Fp;
+    alias T = Fp!64;
+    assert(cauchyCCDF(T(0)) == T(0.5));
 }
 
 /++
@@ -419,6 +531,76 @@ unittest
     cauchyCCDF(1.0, 1, 2).shouldApprox == 0.5;
     cauchyCCDF(2.0, 1, 2).shouldApprox == 0.3524164;
     cauchyCCDF(3.0, 1, 2).shouldApprox == 0.25;
+}
+
+/++
+Computes the location-scale Cauchy strict upper-tail probability with guarded extended precision.
+
+Params:
+    T = Represented $(D Fp) type, inferred from the arguments.
+    x = Observation, including either infinity or NaN.
+    location = Finite location.
+    scale = Positive finite scale.
+
+Returns:
+    The strict upper-tail probability in type T. Negative and positive infinity give one and zero, respectively.
+    NaN propagates.
++/
+@safe pure nothrow @nogc
+T cauchyCCDF(T)(const T x, const T location, const T scale)
+    if (is(T == Fp!size, size_t size))
+    in (!location.isSpecial && !scale.isSpecial && !scale.sign && !!scale.coefficient)
+{
+    import mir.stat.internal.fp_cauchy: cauchyTail;
+    return cauchyTail!true(x, location, scale);
+}
+
+///
+version(mir_stat_test)
+@safe pure nothrow @nogc unittest
+{
+    import mir.bignum.fp: Fp;
+    alias T = Fp!64;
+    assert(cauchyCCDF(T(0), T(0), T(2)) == T(0.5));
+}
+
+version(mir_stat_test)
+@safe pure nothrow @nogc unittest
+{
+    import mir.bignum.fixed: UInt;
+    import mir.math.common: approxEqual;
+    {
+        alias T = Fp!64;
+        enum expected = T(false, -66, UInt!64.fromHexString("972028ecef984333"));
+        assert(cauchyCCDF(T(2.0)) == expected);
+        assert(approxEqual(cauchyCCDF(2.0), 0.14758361765043326, 8 * double.epsilon));
+    }
+    {
+        alias T = Fp!128;
+        enum expected = T(false, -128, UInt!128.fromHexString("afea2de377a14503ac36994c04df7e34"));
+        assert(cauchyCCDF(T(-1.0), T(1), T(3)) == expected);
+        assert(approxEqual(cauchyCCDF(-1.0, 1.0, 3.0), 0.6871670418109989, 8 * double.epsilon));
+    }
+    alias T = Fp!64;
+    const least = T(false, long.min, UInt!64(1));
+    const twice = T(false, long.min, UInt!64(2));
+    assert(cauchyCCDF(T(1), T(0), least) == T(0));
+    assert(cauchyCCDF(T(1), T(0), twice) == least);
+    assert(cauchyCCDF(T(1)) == T(0.25));
+    assert(cauchyCCDF(T(double.infinity)) == T(0));
+    assert(cauchyCCDF(T(double.nan)).isNaN);
+}
+
+version(mir_stat_test)
+static if (size_t.sizeof == 4)
+@safe pure nothrow @nogc unittest
+{
+    import mir.bignum.fixed: UInt;
+    alias T = Fp!32;
+    // atan(1/256)/pi, rounded from a 220-decimal-digit reference.
+    enum expected = T(false, -41, UInt!32(0xa2f94d1b));
+    assert(cauchyCCDF(T(256)) == expected);
+    assert(cauchyCDF(T(-256)) == expected);
 }
 
 /++
