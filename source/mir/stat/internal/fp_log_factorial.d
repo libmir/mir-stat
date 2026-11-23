@@ -42,31 +42,11 @@ package(mir.stat) struct CountLog(uint bits)
         return result;
     }
 
-    // Machin's identity pi=16*atan(1/5)-4*atan(1/239), with 64 extra
-    // fractional bits. Integer series divisions never use hardware floats.
     private static I halfLogTwoPi()
     {
-        enum piBits = fractionBits + 64;
-        alias P = UInt!(piBits + 64);
-        P atanInverse(uint denominator) {
-            P power = P(1) << piBits;
-            power /= UInt!64(denominator);
-            P sum = power;
-            bool negative = true;
-            for (uint odd = 3; ; odd += 2) {
-                power /= UInt!64(denominator * denominator);
-                auto term = power;
-                term /= UInt!64(odd);
-                if (!term) break;
-                if (negative) sum -= term;
-                else sum += term;
-                negative = !negative;
-            }
-            return sum;
-        }
-        auto pi = (atanInverse(5) << 4) - (atanInverse(239) << 2);
-        auto twicePi = Fp!fractionBits(pi);
-        twicePi.exponent += 1 - cast(long)piBits;
+        import mir.stat.internal.fp_pi: guardedPi;
+        auto twicePi = guardedPi!fractionBits();
+        twicePi.exponent += 1;
         return fixed(ProbabilityLog!fractionBits.logPositive(twicePi)) >> 1;
     }
 
