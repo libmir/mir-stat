@@ -3,15 +3,23 @@ This module contains algorithms for the $(LINK2 https://en.wikipedia.org/wiki/Ge
 
 The parameters are finite location $(D mu), positive finite scale $(D sigma),
 and finite shape $(D xi). Positive scale is a requirement of the distribution
-but is not enforced by a contract.
+and is checked by the extended-precision overloads.
 
 For $(D xi > 0), the support is $(D x >= b); for $(D xi < 0), it is
 $(D x <= b), where $(D b = mu - sigma / xi). Shape zero gives the Gumbel
 distribution on the whole real line. The forward functions check the
 shape-dependent bounds with contracts rather than extending outside them.
 
-The implementation uses the Gumbel formulas when $(D fabs(xi) <= T.min_normal).
+The built-in implementation uses the Gumbel formulas when $(D fabs(xi) <= T.min_normal).
 Tables for nonzero shape refer to shapes outside this approximation range.
+
+The $(D Fp) overloads evaluate the represented arguments with guard bits
+and a separate working exponent. They classify finite support boundaries
+before rounding and retain nonzero shape in the Gumbel limit. Universal
+correct rounding is unproven; cancellation beyond working precision may
+produce zero in a log-density or quantile. Tests exercise 64-, 128-,
+and 256-bit coefficients on x86-64 and 32-, 64-, and 128-bit coefficients
+on x86.
 
 The special-value tables assume parameters in the stated domain. Finite
 expressions are subject to floating-point rounding and range limits.
@@ -28,6 +36,9 @@ Copyright: 2022-3 Mir Stat Authors.
 
 module mir.stat.distribution.gev;
 
+import mir.bignum.fp: Fp;
+import mir.stat.internal.fp_gev: gevSupported;
+import mir.stat.internal.fp_location_scale: position;
 import mir.stat.internal.standardize: standardize;
 
 import mir.internal.utility: isFloatingPoint;
@@ -191,6 +202,72 @@ unittest
     import mir.test: should;
     gevCDF(-1.0, 0, 1, 1).should == 0;
     gevCDF(1.0, 0, 1, -1).should == 1;
+}
+
+/++
+Evaluates the generalized extreme value lower-tail probability with guarded precision.
+
+Params:
+    T = Represented $(D Fp) type, inferred from the arguments.
+    x = Observation on the support; shape zero also accepts NaN.
+    mu = Finite location.
+    sigma = Positive finite scale.
+    xi = Finite shape. Shape zero gives the Gumbel distribution.
+
+Returns:
+    The lower-tail probability in type T. Zero at the lower endpoint and one at the upper endpoint.
++/
+@safe pure nothrow @nogc
+T gevCDF(T)(const T x, const T mu, const T sigma, const T xi)
+    if (is(T == Fp!size, size_t size))
+    in (!mu.isSpecial && !xi.isSpecial && !sigma.isSpecial && !sigma.sign && !!sigma.coefficient)
+    in (gevSupported(x, mu, sigma, xi))
+{
+    import mir.stat.internal.fp_gev: gevTail;
+    return gevTail!false(x, mu, sigma, xi);
+}
+
+///
+version(mir_stat_test)
+@safe pure nothrow @nogc unittest
+{
+    import mir.bignum.fp: Fp;
+    alias T = Fp!64;
+    assert(gevCDF(T(-1), T(0), T(1), T(1)) == T(0));
+}
+
+version(mir_stat_test)
+@safe pure nothrow @nogc unittest
+{
+    import mir.bignum.fixed: UInt;
+    import mir.math.common: approxEqual;
+    // Independent 380-digit decimal references at shared binary inputs.
+    {
+        alias T = Fp!64;
+        enum expected = T(false, -65, UInt!64(0x8125f8ec20343fb4UL));
+        assert(gevCDF(T(-1.5), T(-0.5), T(3), T(-0.25)) == expected);
+        assert(approxEqual(gevCDF(-1.5, -0.5, 3.0, -0.25),
+            0.2522428310622691, 8 * double.epsilon));
+    }
+    {
+        alias T = Fp!128;
+        enum expected = T(false, -130, UInt!128.fromHexString("f59c263950c0f2d53f197b5283755a2a"));
+        assert(gevCDF(T(-1.5), T(-0.5), T(3), T(0.375)) == expected);
+        assert(approxEqual(gevCDF(-1.5, -0.5, 3.0, 0.375),
+            0.2398534748537608, 8 * double.epsilon));
+    }
+    alias T = Fp!64;
+    assert(gevCDF(T(1000), T(0), T(1), T(0)) == T(1));
+    assert(gevCDF(T(-1000), T(0), T(1), T(0)) == T(0));
+    assert(gevCDF(T(double.nan), T(0), T(1), T(0)).isNaN);
+    assert(gevCDF(T(-double.infinity), T(0), T(1), T(-1)) == T(0));
+    // With xi=3 the lower endpoint -1/3 falls between these inputs.
+    const inside = T(true, -65, UInt!64(0xaaaaaaaaaaaaaaaaUL));
+    T outside = inside;
+    outside.coefficient += 1;
+    assert(gevSupported(inside, T(0), T(1), T(3)));
+    assert(!gevSupported(outside, T(0), T(1), T(3)));
+    assert(gevCDF(inside, T(0), T(1), T(3)) == T(false, -3812019, UInt!64(0xea35da55cfcb7719UL)));
 }
 
 /++
@@ -366,6 +443,98 @@ unittest
                 assert(approxEqual(gevCCDF(s, T(0), T(1), entry[0]),
                     entry[1], 16 * T.epsilon, T(0)));
     }}
+}
+
+/++
+Evaluates the generalized extreme value strict upper-tail probability with guarded precision.
+
+Params:
+    T = Represented $(D Fp) type, inferred from the arguments.
+    x = Observation on the support; shape zero also accepts NaN.
+    mu = Finite location.
+    sigma = Positive finite scale.
+    xi = Finite shape. Shape zero gives the Gumbel distribution.
+
+Returns:
+    The strict upper-tail probability in type T. One at the lower endpoint and zero at the upper endpoint. Small upper tails are evaluated directly.
++/
+@safe pure nothrow @nogc
+T gevCCDF(T)(const T x, const T mu, const T sigma, const T xi)
+    if (is(T == Fp!size, size_t size))
+    in (!mu.isSpecial && !xi.isSpecial && !sigma.isSpecial && !sigma.sign && !!sigma.coefficient)
+    in (gevSupported(x, mu, sigma, xi))
+{
+    import mir.stat.internal.fp_gev: gevTail;
+    return gevTail!true(x, mu, sigma, xi);
+}
+
+///
+version(mir_stat_test)
+@safe pure nothrow @nogc unittest
+{
+    import mir.bignum.fp: Fp;
+    alias T = Fp!64;
+    assert(gevCCDF(T(-1), T(0), T(1), T(1)) == T(1));
+}
+
+version(mir_stat_test)
+@safe pure nothrow @nogc unittest
+{
+    import mir.bignum.fixed: UInt;
+    import mir.math.common: approxEqual;
+    // Independent 380-digit decimal references at shared binary inputs.
+    {
+        alias T = Fp!64;
+        enum expected = T(false, -64, UInt!64(0xbf6d0389efe5e026UL));
+        assert(gevCCDF(T(-1.5), T(-0.5), T(3), T(-0.25)) == expected);
+        assert(approxEqual(gevCCDF(-1.5, -0.5, 3.0, -0.25),
+            0.7477571689377309, 8 * double.epsilon));
+    }
+    {
+        alias T = Fp!128;
+        enum expected = T(false, -128, UInt!128.fromHexString("c298f671abcfc34ab039a12b5f22a976"));
+        assert(gevCCDF(T(-1.5), T(-0.5), T(3), T(0.375)) == expected);
+        assert(approxEqual(gevCCDF(-1.5, -0.5, 3.0, 0.375),
+            0.7601465251462391, 8 * double.epsilon));
+    }
+    alias T = Fp!64;
+    // For Gumbel at 1000, the strict upper tail rounds to exp(-1000).
+    enum tinyTail = T(false, -1506, UInt!64(0x9e210cf20c4aa07aUL));
+    assert(gevCCDF(T(1000), T(0), T(1), T(0)) == tinyTail);
+    assert(gevCCDF(T(double.infinity), T(0), T(1), T(0)) == T(0));
+    assert(gevCCDF(T(-1000), T(0), T(1), T(0)) == T(1));
+    const least = T(false, long.min, UInt!64(1));
+    assert(gevCCDF(T(1), least, T(1), T(-1)) == least);
+    // a = 1.5 least quanta. The strict upper tail is just below a.
+    assert(gevCCDF(T(2), T(false, long.min, UInt!64(3)), T(2), T(-1)) == least);
+    auto huge = T(1);
+    huge.exponent += 100;
+    assert(gevCCDF(huge, T(0), T(1), T(0)) == T(0));
+    huge.sign = true;
+    assert(gevCCDF(huge, T(0), T(1), T(0)) == T(1));
+    assert(!gevSupported(T(-double.infinity), T(0), T(1), T(1)));
+    assert(!gevSupported(T(double.nan), T(0), T(1), T(1)));
+    // At shape one the denominator and the exponential both perturb
+    // half a least quantum. Moving the location by four quanta changes
+    // which side wins. Reflection preserves the standardized distance.
+    const four = T(false, long.min, UInt!64(4));
+    assert(gevCCDF(T(2), T(0), least, T(1)) == T(0));
+    assert(gevCCDF(T(2), four, least, T(1)) == least);
+    assert(gevCCDF(T(4), T(2), least, T(1)) == T(0));
+    assert(gevCCDF(T(true, long.min, UInt!64(4)), T(-2), least, T(1)) == least);
+    // l = 3*sigma/2 cancels the quadratic term; the cubic is negative.
+    const two = T(false, long.min, UInt!64(2));
+    const three = T(false, long.min, UInt!64(3));
+    assert(gevCCDF(T(4), three, two, T(1)) == T(0));
+    assert(gevCCDF(T(4), four, two, T(1)) == least);
+    // Both small nonzero shapes change the representable tail at z=1000.
+    auto nearZero = T(1);
+    nearZero.exponent -= 64;
+    assert(gevCCDF(T(1000), T(0), T(1), nearZero) ==
+        T(false, -1506, UInt!64(0x9e210cf20c4f56e7UL)));
+    nearZero.sign = true;
+    assert(gevCCDF(T(1000), T(0), T(1), nearZero) ==
+        T(false, -1506, UInt!64(0x9e210cf20c45ea0cUL)));
 }
 
 /++
