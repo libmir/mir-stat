@@ -1,0 +1,304 @@
+/++
+License: $(HTTP www.apache.org/licenses/LICENSE-2.0, Apache-2.0)
+Authors: Mir Stat Authors.
++/
+module mir.stat.internal.fp_generalized_pareto;
+
+import mir.bignum.fixed: UInt;
+import mir.bignum.fp: Fp;
+import mir.stat.internal.fp_location_scale: addOffset, distance, position;
+import mir.stat.internal.fp_probability_log: ProbabilityLog;
+import mir.stat.internal.fp_scaled_probability: ProbabilityScaled, exponentBias, scaledDecay;
+
+@safe pure nothrow @nogc:
+
+private struct Evaluation(uint bits)
+{
+    alias T = Fp!bits;
+    alias L = ProbabilityLog!(3 * bits + 64);
+    enum work = 3 * bits + 256;
+    alias S = L.S;
+
+    struct Term
+    {
+        S value;
+        bool negative;
+        bool present;
+    }
+
+    static Term term(T x)
+    {
+        return x.coefficient ? Term(S.from(x), x.sign, true) : Term.init;
+    }
+
+    // Carry the exponent separately when subtracting nearly equal dyadics.
+    // The larger term selects the local grid, even at the Fp exponent floor.
+    static Term combine(Term a, Term b)
+    {
+        if (!a.present) return b;
+        if (!b.present) return a;
+        if (a.negative == b.negative)
+            return Term(a.value.add(b.value), a.negative, true);
+        if (a.value.exponent < b.value.exponent ||
+            (a.value.exponent == b.value.exponent &&
+             a.value.fraction.coefficient < b.value.fraction.coefficient))
+            return combine(b, a);
+        const gap = a.value.exponent - b.value.exponent;
+        if (gap > UInt!128(work))
+            return a;
+        auto c = a.value.fraction.coefficient.toSize!(2 * work);
+        c <<= cast(size_t)gap;
+        c -= b.value.fraction.coefficient.toSize!(2 * work);
+        if (!c) return Term.init;
+        auto value = S.from(Fp!(2 * work)(c));
+        value.exponent += b.value.exponent - exponentBias - work;
+        return Term(value, a.negative, true);
+    }
+
+    // sigma + xi*x - xi*mu. Each product has at most 2*bits significant
+    // bits. Sum the two leading terms first so exact cancellation exposes
+    // the third, even across an arbitrarily large exponent gap.
+    static Term residual(T x, T mu, T sigma, T xi)
+    {
+        const k = S.from(xi);
+        auto a = term(x);
+        auto b = term(mu);
+        auto c = term(sigma);
+        if (a.present) {
+            a.value = a.value.multiply(k);
+            a.negative ^= xi.sign;
+        }
+        if (b.present) {
+            b.value = b.value.multiply(k);
+            b.negative ^= !xi.sign;
+        }
+        if (!a.present || (b.present && a.value.exponent < b.value.exponent))
+        {
+            const tmp = a; a = b; b = tmp;
+        }
+        if (!b.present || b.value.exponent < c.value.exponent)
+            return combine(combine(a, c), b);
+        return combine(combine(a, b), c);
+    }
+
+    static auto logarithm(S value)
+    {
+        L.Context ctx;
+        const neg = value.exponent < exponentBias;
+        const count = neg ? exponentBias - value.exponent : value.exponent - exponentBias;
+        if (count <= (1UL << 62))
+        {
+            const e = cast(long)cast(ulong)count;
+            return L.logDyadic(value.fraction.coefficient, (neg ? -e : e) - work, ctx);
+        }
+        const frac = L.logDyadic(value.fraction.coefficient, -cast(long)work, ctx);
+        const ln2 = L.logDyadic(UInt!64(1), 1, ctx);
+        return addOffset!work(frac, S.from(Fp!128(count)).multiply(S.from(ln2)), neg);
+    }
+
+    static S hazard(T x, T mu, T sigma, T xi, Term numerator)
+    {
+        const scale = S.from(sigma);
+        const z = distance!work(x, mu).divide(scale);
+        if (!xi.coefficient)
+            return z;
+        const k = S.from(xi);
+        if (k.multiply(z).exponent + work / 2 <= exponentBias)
+            return z; // log1p(u)/u = 1 + O(u)
+        return S.from(logarithm(numerator.value.divide(scale))).divide(k);
+    }
+
+    static T tail(bool upper)(T x, T mu, T sigma, T xi)
+    {
+        if (x.isInfinity) return T(upper ? 0 : 1);
+        if (!position(x, mu)) return T(upper ? 1 : 0);
+        auto numerator = xi.coefficient ? residual(x, mu, sigma, xi) : term(sigma);
+        if (!numerator.present) return T(upper ? 0 : 1);
+        if (position(xi, T(-1)) == 0)
+        {
+            const part = upper ? numerator.value : distance!work(x, mu);
+            return part.divide(S.from(sigma)).finish!bits;
+        }
+        const h = hazard(x, mu, sigma, xi, numerator);
+        if (h.exponent >= exponentBias + 66) return T(upper ? 0 : 1);
+        if (h.exponent + work / 2 <= exponentBias)
+        {
+            static if (upper) return T(1);
+            else
+            {
+                // At zero location z is a single dyadic ratio. Its odd
+                // denominator has at most bits bits. In this window a
+                // non-midpoint stays on its side of the rounding boundary.
+                // At a midpoint F(z) - z has the sign of -(1+xi).
+                if (!mu.coefficient && h.exponent + (2 * bits + 64) <= exponentBias &&
+                    (!xi.coefficient || S.from(xi).multiply(h).exponent + (2 * bits + 64) <= exponentBias))
+                    return withCorrection(h, position(xi, T(-1)) < 0).finish!bits;
+                return h.finish!bits;
+            }
+        }
+        const survival = scaledDecay(h);
+        static if (upper) return survival.finish!bits;
+        else return addOffset!bits(T(1), survival, true);
+    }
+
+    // The density is exp(-(1+xi)*h)/sigma. The sign changes at xi=-1;
+    // construct the distance from -1 before multiplication to retain it.
+    static T density(bool logarithmic)(T x, T mu, T sigma, T xi)
+    {
+        const minusInfinity = T(true, long.max, UInt!bits(0));
+        if (x.isInfinity) return logarithmic ? minusInfinity : T(0);
+        const shapeOrder = position(xi, T(-1));
+        const scale = S.from(sigma);
+        const one = S.from(T(1));
+        static if (logarithmic)
+        {
+            // Use the original exponent directly, including at the Fp floor.
+            L.Context context;
+            auto peak = L.logDyadic(sigma.coefficient, sigma.exponent, context);
+            if (peak.coefficient) peak.sign = !peak.sign;
+        }
+        if (!shapeOrder || !position(x, mu))
+        {
+            static if (logarithmic) return cast(T)peak;
+            else return addOffset!bits(T(0), one.divide(scale), false);
+        }
+        const numerator = xi.coefficient ? residual(x, mu, sigma, xi) : term(sigma);
+        if (!numerator.present)
+            return shapeOrder < 0 ? T(false, long.max, UInt!bits(0))
+                : logarithmic ? minusInfinity : T(0);
+        const h = hazard(x, mu, sigma, xi, numerator);
+        const magnitude = h.multiply(distance!work(xi, T(-1)));
+        static if (logarithmic)
+            return addOffset!bits(peak, magnitude, shapeOrder > 0);
+        else
+        {
+            if (magnitude.exponent >= exponentBias + 66)
+                return shapeOrder > 0 ? T(0) : T(false, long.max, UInt!bits(0));
+            if (magnitude.exponent + (2 * bits + 64) <= exponentBias)
+                return addOffset!bits(T(0), withCorrection(one.divide(scale), shapeOrder < 0), false);
+            const decay = scaledDecay(magnitude);
+            const value = shapeOrder > 0 ? decay.divide(scale) : one.divide(decay.multiply(scale));
+            return addOffset!bits(T(0), value, false);
+        }
+    }
+
+    // A nonzero correction below the working grid can still decide an
+    // output midpoint. Set an odd low bit on the correct side, including
+    // just below a power of two, then normalize on the separate exponent.
+    static S withCorrection(S value, bool positive)
+    {
+        auto c = value.fraction.coefficient;
+        if (!c.bt(0))
+        {
+            if (positive) c += 1;
+            else c -= 1;
+        }
+        auto result = S.from(Fp!work(c));
+        result.exponent += value.exponent - exponentBias - work;
+        return result;
+    }
+
+    static T finish(Term result, S divisor)
+    {
+        if (!result.present) return T(0);
+        return addOffset!bits(T(0), result.value.divide(divisor), result.negative);
+    }
+
+    // For negative shapes the upper endpoint can cancel against mu.
+    // Combine mu*|xi| + sigma before subtracting the residual tail;
+    // a zero endpoint then leaves the entire residual available.
+    static T fromEndpoint(T mu, S scale, S k, Term remainder)
+    {
+        auto base = term(mu);
+        if (base.present) base.value = base.value.multiply(k);
+        auto numerator = combine(base, Term(scale, false, true));
+        if (remainder.present)
+            numerator = combine(numerator, Term(scale.multiply(remainder.value), true, true));
+        return finish(numerator, k);
+    }
+
+    static T quantile(T p, T mu, T sigma, T xi)
+    {
+        if (!p.coefficient) return mu;
+        const scale = S.from(sigma);
+        const one = S.from(T(1));
+        if (!position(p, T(1)))
+        {
+            if (xi.sign && xi.coefficient)
+                return fromEndpoint(mu, scale, S.from(xi), Term.init);
+            return T(false, long.max, UInt!bits(0));
+        }
+        const prob = S.from(p);
+        const linear = scale.multiply(prob);
+        if (!position(xi, T(-1)))
+            return addOffset!bits(mu, linear, false);
+        const k = xi.coefficient ? S.from(xi) : one;
+        if (prob.exponent + work / 2 <= exponentBias &&
+            k.multiply(prob).exponent + work / 2 <= exponentBias)
+        {
+            // Q = mu + sigma*p + sigma*p^2*(1+xi)/2 + ...
+            // Keep the second term when the location cancels the first.
+            const base = combine(term(mu), Term(linear, false, true));
+            auto correction = linear.multiply(prob).multiply(distance!work(xi, T(-1)));
+            correction.exponent -= 1;
+            const negative = position(xi, T(-1)) < 0;
+            if (base.present && base.value.exponent > correction.exponent + work)
+                return finish(Term(withCorrection(base.value, negative == base.negative), base.negative, true), one);
+            return finish(combine(base, Term(correction, negative, true)), one);
+        }
+        // At shape one the offset is the rational sigma*p/(1-p).
+        // Keep the location in its numerator through the final division.
+        if (!position(xi, T(1)))
+        {
+            const q = combine(Term(one, false, true), Term(prob, true, true)).value;
+            auto base = term(mu);
+            if (base.present) base.value = base.value.multiply(q);
+            return finish(combine(base, Term(linear, false, true)), q);
+        }
+        // Widening an input at the exponent floor can discard it. When p
+        // is tiny, the relative correction to the complement log is O(p).
+        const h = prob.exponent + work / 2 <= exponentBias ? prob
+            : L.complement(cast(Fp!(3 * bits + 64))p);
+        if (!xi.coefficient)
+            return addOffset!bits(mu, scale.multiply(h), false);
+        const power = h.multiply(k);
+        if (power.exponent + work / 2 <= exponentBias)
+            return addOffset!bits(mu, scale.multiply(h), false);
+        if (power.exponent >= exponentBias + 66)
+        {
+            if (xi.sign) return fromEndpoint(mu, scale, k, Term.init);
+            return T(false, long.max, UInt!bits(0));
+        }
+        const decay = scaledDecay(power);
+        if (xi.sign && power.exponent >= exponentBias + 1)
+            return fromEndpoint(mu, scale, k, Term(decay, false, true));
+        const difference = combine(Term(one, false, true), Term(decay, true, true));
+        auto offset = difference.value.multiply(scale).divide(k);
+        if (!xi.sign) offset = offset.divide(decay);
+        return addOffset!bits(mu, offset, false);
+    }
+}
+
+package(mir.stat) bool supported(uint bits)(Fp!bits x, Fp!bits mu, Fp!bits sigma, Fp!bits xi)
+{
+    if (x.isNaN) return false;
+    if (x.isInfinity) return !x.sign && (!xi.sign || !xi.coefficient);
+    if (position(x, mu) < 0) return false;
+    if (!xi.sign || !xi.coefficient) return true;
+    return !Evaluation!bits.residual(x, mu, sigma, xi).negative;
+}
+
+package(mir.stat) auto paretoTail(bool upper, uint bits)(Fp!bits x, Fp!bits mu, Fp!bits sigma, Fp!bits xi)
+{
+    return Evaluation!bits.tail!upper(x, mu, sigma, xi);
+}
+
+package(mir.stat) auto paretoDensity(bool logarithmic, uint bits)(Fp!bits x, Fp!bits mu, Fp!bits sigma, Fp!bits xi)
+{
+    return Evaluation!bits.density!logarithmic(x, mu, sigma, xi);
+}
+
+package(mir.stat) auto paretoQuantile(uint bits)(Fp!bits p, Fp!bits mu, Fp!bits sigma, Fp!bits xi)
+{
+    return Evaluation!bits.quantile(p, mu, sigma, xi);
+}

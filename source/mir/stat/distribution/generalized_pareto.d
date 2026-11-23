@@ -8,6 +8,13 @@ The forward functions check these support restrictions with contracts.
 Shape zero gives an exponential distribution shifted by $(D mu), with
 rate $(D 1 / sigma).
 
+The $(D Fp) overloads use the represented significands and a separate working
+exponent, including for comparisons with a negative-shape endpoint. Evaluation
+is guarded and universal correct rounding is unproven. Cancellation beyond the
+working precision can give zero in a log density or quantile. The result has
+the input coefficient width; widths exercised include 64, 128, and 256 bits
+on x86-64 and 32, 64, and 128 bits on x86.
+
 The special-value tables assume parameters in the stated domain. Finite
 expressions are subject to floating-point rounding and range limits.
 Contract violations are not prescribed return values: disabling contracts
@@ -23,6 +30,9 @@ Copyright: 2022-3 Mir Stat Authors.
 
 module mir.stat.distribution.generalized_pareto;
 
+import mir.bignum.fp: Fp;
+import mir.stat.internal.fp_generalized_pareto: supported;
+import mir.stat.internal.fp_location_scale: position;
 import mir.internal.utility: isFloatingPoint;
 import mir.stat.internal.shape_transform: log1pScaled, expm1Scaled;
 import mir.stat.internal.standardize: standardize, logDistance;
@@ -197,6 +207,77 @@ unittest
 }
 
 /++
+Evaluates the generalized Pareto PDF with guarded extended precision.
+
+Params:
+    T = Represented $(D Fp) type, inferred from the arguments.
+    x = Observation on the support, including the upper endpoint.
+    mu = Finite location.
+    sigma = Positive finite scale.
+    xi = Finite shape. Negative shape bounds the support above by $(D mu - sigma / xi).
+
+Returns:
+    Density in type T. At the location it is the reciprocal scale. At a finite upper endpoint it is zero, the reciprocal scale, or infinity according as the shape is above, equal to, or below minus one.
++/
+@safe pure nothrow @nogc
+T generalizedParetoPDF(T)(const T x, const T mu, const T sigma, const T xi)
+    if (is(T == Fp!size, size_t size))
+    in (!mu.isSpecial && !xi.isSpecial && !sigma.isSpecial && !sigma.sign && !!sigma.coefficient)
+    in (supported(x, mu, sigma, xi))
+{
+    import mir.stat.internal.fp_generalized_pareto: paretoDensity;
+    return paretoDensity!false(x, mu, sigma, xi);
+}
+
+///
+version(mir_stat_test)
+@safe pure nothrow @nogc unittest
+{
+    import mir.bignum.fp: Fp;
+    alias T = Fp!64;
+    assert(generalizedParetoPDF(T(2), T(0), T(4), T(-1)) == T(0.25));
+}
+
+version(mir_stat_test)
+@safe pure nothrow @nogc unittest
+{
+    import mir.bignum.fixed: UInt;
+    import mir.math.common: approxEqual;
+    // Independent 220-digit decimal references at shared binary inputs.
+    {
+        alias T = Fp!64;
+        enum expected = T(false, -66, UInt!64.fromHexString("c587e6b74f032916"));
+        assert(generalizedParetoPDF(T(1.5), T(-0.5), T(3), T(-0.25)) == expected);
+        assert(approxEqual(generalizedParetoPDF(1.5, -0.5, 3.0, -0.25), 0.19290123456790123, 8 * double.epsilon));
+    }
+    {
+        alias T = Fp!128;
+        enum expected = T(false, -130, UInt!128.fromHexString("969b1c4dd6c7063b0e28ee47c50979e6"));
+        assert(generalizedParetoPDF(T(1.5), T(-0.5), T(3), T(0.375)) == expected);
+        assert(approxEqual(generalizedParetoPDF(1.5, -0.5, 3.0, 0.375), 0.14707607483950993, 8 * double.epsilon));
+    }
+    alias T = Fp!64;
+    assert(generalizedParetoPDF(T(2), T(0), T(1), T(-0.5)) == T(0));
+    assert(generalizedParetoPDF(T(0.5), T(0), T(1), T(-2)).isInfinity);
+    assert(generalizedParetoPDF(T(double.infinity), T(0), T(2), T(0)) == T(0));
+    assert(generalizedParetoPDF(T(0), T(0), T(2), T(0)) == T(0.5));
+    // An underflowing survival probability can still give a finite density.
+    const scale = T(false, long.min + 256, UInt!64(1));
+    const x = T(false, long.min + 319, UInt!64(1));
+    assert(generalizedParetoCCDF(x, T(0), scale, T(0)) == T(0));
+    assert(generalizedParetoPDF(x, T(0), scale, T(0)) ==
+        T(false, -4083141060989547003L, UInt!64(0x98d3377e65eee9c8UL)));
+    auto large = T(1);
+    large.exponent += 100;
+    assert(generalizedParetoPDF(large, T(0), T(1), T(0)) == T(0));
+    // The reciprocal scale is exactly half the least quantum. With
+    // shape -2 the density grows strictly above that midpoint.
+    const bigScale = T(false, long.max - 1, UInt!64(8));
+    assert(generalizedParetoPDF(T(1), T(0), bigScale, T(-2)) ==
+        T(false, long.min, UInt!64(1)));
+}
+
+/++
 Computes the generalized pareto cumulative distribution function (CDF).
 
 Evaluates the probability using $(D log1p) and $(D expm1) near cancellation,
@@ -259,6 +340,80 @@ unittest
 }
 
 /++
+Evaluates the generalized Pareto CDF with guarded extended precision.
+
+Params:
+    T = Represented $(D Fp) type, inferred from the arguments.
+    x = Observation on the support, including the upper endpoint.
+    mu = Finite location.
+    sigma = Positive finite scale.
+    xi = Finite shape. Negative shape bounds the support above by $(D mu - sigma / xi).
+
+Returns:
+    Lower-tail probability in type T, zero at the location and one at the upper endpoint.
++/
+@safe pure nothrow @nogc
+T generalizedParetoCDF(T)(const T x, const T mu, const T sigma, const T xi)
+    if (is(T == Fp!size, size_t size))
+    in (!mu.isSpecial && !xi.isSpecial && !sigma.isSpecial && !sigma.sign && !!sigma.coefficient)
+    in (supported(x, mu, sigma, xi))
+{
+    import mir.stat.internal.fp_generalized_pareto: paretoTail;
+    return paretoTail!false(x, mu, sigma, xi);
+}
+
+///
+version(mir_stat_test)
+@safe pure nothrow @nogc unittest
+{
+    import mir.bignum.fp: Fp;
+    alias T = Fp!64;
+    assert(generalizedParetoCDF(T(2), T(0), T(4), T(-1)) == T(0.5));
+}
+
+version(mir_stat_test)
+@safe pure nothrow @nogc unittest
+{
+    import mir.bignum.fixed: UInt;
+    import mir.math.common: approxEqual;
+    // Independent 220-digit decimal references at shared binary inputs.
+    {
+        alias T = Fp!64;
+        enum expected = T(false, -64, UInt!64.fromHexString("848b0fcd6e9e0652"));
+        assert(generalizedParetoCDF(T(1.5), T(-0.5), T(3), T(-0.25)) == expected);
+        assert(approxEqual(generalizedParetoCDF(1.5, -0.5, 3.0, -0.25), 0.5177469135802469, 8 * double.epsilon));
+    }
+    {
+        alias T = Fp!128;
+        enum expected = T(false, -129, UInt!128.fromHexString("e59d2aee0d4ad451457341396e8e3b71"));
+        assert(generalizedParetoCDF(T(1.5), T(-0.5), T(3), T(0.375)) == expected);
+        assert(approxEqual(generalizedParetoCDF(1.5, -0.5, 3.0, 0.375), 0.4484647193518378, 8 * double.epsilon));
+    }
+    alias T = Fp!64;
+    auto tiny = T(1);
+    tiny.exponent -= 20_000;
+    assert(generalizedParetoCDF(tiny, T(0), T(1), tiny) == tiny);
+    T negative = tiny;
+    negative.sign = true;
+    assert(generalizedParetoCDF(T(0), negative, T(1), T(0)) == tiny);
+    assert(generalizedParetoCDF(T(double.infinity), T(0), T(1), T(0)) == T(1));
+    const floorInput = T(false, long.min, UInt!64(3));
+    assert(generalizedParetoCDF(floorInput, T(0), T(2), T(0)) == T(false, long.min, UInt!64(1)));
+    assert(generalizedParetoCDF(floorInput, T(0), T(2), T(-2)) == T(false, long.min, UInt!64(2)));
+    assert(generalizedParetoCCDF(tiny, T(0), T(1), tiny) == T(1));
+    // Leading location and observation products cancel before adding scale.
+    auto common = T(-1);
+    common.exponent += 1000;
+    T next = common;
+    next.coefficient -= 1;
+    assert(generalizedParetoCDF(next, common, T(1), T(1)) == T(1));
+    auto large = T(1), reciprocal = T(1);
+    large.exponent += (1L << 62) + 10;
+    reciprocal.exponent -= (1L << 62) + 10;
+    assert(generalizedParetoCCDF(large, T(0), T(1), T(1)) == reciprocal);
+}
+
+/++
 Computes the generalized pareto complementary cumulative distribution function (CCDF).
 
 Returns the upper-tail probability $(D P(X > x)). Use this function directly
@@ -318,6 +473,83 @@ unittest
 }
 
 /++
+Evaluates the generalized Pareto CCDF with guarded extended precision.
+
+Params:
+    T = Represented $(D Fp) type, inferred from the arguments.
+    x = Observation on the support, including the upper endpoint.
+    mu = Finite location.
+    sigma = Positive finite scale.
+    xi = Finite shape. Negative shape bounds the support above by $(D mu - sigma / xi).
+
+Returns:
+    Strict upper-tail probability in type T, one at the location and zero at the upper endpoint. Small upper tails are evaluated directly.
++/
+@safe pure nothrow @nogc
+T generalizedParetoCCDF(T)(const T x, const T mu, const T sigma, const T xi)
+    if (is(T == Fp!size, size_t size))
+    in (!mu.isSpecial && !xi.isSpecial && !sigma.isSpecial && !sigma.sign && !!sigma.coefficient)
+    in (supported(x, mu, sigma, xi))
+{
+    import mir.stat.internal.fp_generalized_pareto: paretoTail;
+    return paretoTail!true(x, mu, sigma, xi);
+}
+
+///
+version(mir_stat_test)
+@safe pure nothrow @nogc unittest
+{
+    import mir.bignum.fp: Fp;
+    alias T = Fp!64;
+    assert(generalizedParetoCCDF(T(2), T(0), T(4), T(-1)) == T(0.5));
+}
+
+version(mir_stat_test)
+@safe pure nothrow @nogc unittest
+{
+    import mir.bignum.fixed: UInt;
+    import mir.math.common: approxEqual;
+    // Independent 220-digit decimal references at shared binary inputs.
+    {
+        alias T = Fp!64;
+        enum expected = T(false, -65, UInt!64.fromHexString("f6e9e06522c3f35c"));
+        assert(generalizedParetoCCDF(T(1.5), T(-0.5), T(3), T(-0.25)) == expected);
+        assert(approxEqual(generalizedParetoCCDF(1.5, -0.5, 3.0, -0.25), 0.48225308641975306, 8 * double.epsilon));
+    }
+    {
+        alias T = Fp!128;
+        enum expected = T(false, -128, UInt!128.fromHexString("8d316a88f95a95d75d465f6348b8e248"));
+        assert(generalizedParetoCCDF(T(1.5), T(-0.5), T(3), T(0.375)) == expected);
+        assert(approxEqual(generalizedParetoCCDF(1.5, -0.5, 3.0, 0.375), 0.5515352806481623, 8 * double.epsilon));
+    }
+    alias T = Fp!64;
+    // The represented endpoint rounds to one. The tiny location still
+    // separates x = 1 from that endpoint by exactly one least quantum.
+    const least = T(false, long.min, UInt!64(1));
+    assert(generalizedParetoCCDF(T(1), least, T(1), T(-1)) == least);
+    assert(!supported(T(1), T(true, long.min, UInt!64(1)), T(1), T(-1)));
+    assert(generalizedParetoCCDF(T(1), T(0), T(1), T(-1)) == T(0));
+    // For shape -3, the endpoint 1/3 lies between these adjacent inputs.
+    const below = T(false, -65, UInt!64(0xaaaaaaaaaaaaaaaaUL));
+    T above = below;
+    above.coefficient += 1;
+    assert(supported(below, T(0), T(1), T(-3)));
+    assert(!supported(above, T(0), T(1), T(-3)));
+    // 1 - 3*below = 2^-64, so the strict tail is its cube root.
+    assert(generalizedParetoCCDF(below, T(0), T(1), T(-3)) ==
+        T(false, -85, UInt!64(0xcb2ff529eb71e416UL)));
+    // At z=1024 the shape correction changes the rounded survival
+    // probability on both sides of the exponential limit.
+    auto nearZero = T(1);
+    nearZero.exponent -= 64;
+    assert(generalizedParetoCCDF(T(1024), T(0), T(1), nearZero) ==
+        T(false, -1541, UInt!64(0xcd1d0997743c3560UL)));
+    nearZero.sign = true;
+    assert(generalizedParetoCCDF(T(1024), T(0), T(1), nearZero) ==
+        T(false, -1541, UInt!64(0xcd1d0997742f638fUL)));
+}
+
+/++
 Computes the generalized pareto inverse cumulative distribution function (InvCDF).
 
 Uses $(D expm1) to preserve small nonzero shapes, and a stable logarithm of
@@ -369,6 +601,90 @@ unittest
     0.5555556.generalizedParetoInvCDF(1, 1, 0.5).shouldApprox == 2;
     0.273975.generalizedParetoInvCDF(2, 3, 0.25).shouldApprox == 3;
     0.6321206.generalizedParetoInvCDF(2, 3, 0).shouldApprox == 5;    
+}
+
+/++
+Evaluates the generalized Pareto InvCDF with guarded extended precision.
+
+Params:
+    T = Represented $(D Fp) type, inferred from the arguments.
+    p = Represented probability in [0, 1].
+    mu = Finite location.
+    sigma = Positive finite scale.
+    xi = Finite shape. Negative shape bounds the support above by $(D mu - sigma / xi).
+
+Returns:
+    Quantile in type T. Zero probability returns the location. Unit probability returns the rounded finite endpoint for negative shape and positive infinity otherwise. Cancellation against the location can exhaust working precision.
++/
+@safe pure nothrow @nogc
+T generalizedParetoInvCDF(T)(const T p, const T mu, const T sigma, const T xi)
+    if (is(T == Fp!size, size_t size))
+    in (!mu.isSpecial && !xi.isSpecial && !sigma.isSpecial && !sigma.sign && !!sigma.coefficient)
+    in (!p.isSpecial && position(p, T(0)) >= 0 && position(p, T(1)) <= 0)
+{
+    import mir.stat.internal.fp_generalized_pareto: paretoQuantile;
+    return paretoQuantile(p, mu, sigma, xi);
+}
+
+///
+version(mir_stat_test)
+@safe pure nothrow @nogc unittest
+{
+    import mir.bignum.fp: Fp;
+    alias T = Fp!64;
+    assert(generalizedParetoInvCDF(T(0.5), T(0), T(4), T(-1)) == T(2));
+}
+
+version(mir_stat_test)
+@safe pure nothrow @nogc unittest
+{
+    import mir.bignum.fixed: UInt;
+    import mir.math.common: approxEqual;
+    // Independent 220-digit decimal references at shared binary inputs.
+    {
+        alias T = Fp!64;
+        enum expected = T(false, -62, UInt!64.fromHexString("c0f126641264d273"));
+        assert(generalizedParetoInvCDF(T(0.75), T(-0.5), T(3), T(-0.25)) == expected);
+        assert(approxEqual(generalizedParetoInvCDF(0.75, -0.5, 3.0, -0.25), 3.0147186257614296, 8 * double.epsilon));
+    }
+    {
+        alias T = Fp!128;
+        enum expected = T(false, -125, UInt!128.fromHexString("9e89f995ad3ad5e8734d1773205a7fbc"));
+        assert(generalizedParetoInvCDF(T(0.75), T(-0.5), T(3), T(0.375)) == expected);
+        assert(approxEqual(generalizedParetoInvCDF(0.75, -0.5, 3.0, 0.375), 4.954342644059433, 8 * double.epsilon));
+    }
+    alias T = Fp!64;
+    assert(generalizedParetoInvCDF(T(0), T(-2), T(3), T(1)) == T(-2));
+    assert(generalizedParetoInvCDF(T(1), T(-2), T(6), T(-3)) == T(0));
+    assert(generalizedParetoInvCDF(T(1), T(-2), T(9), T(-3)) == T(1));
+    assert(generalizedParetoInvCDF(T(1), T(-2), T(1), T(0)).isInfinity);
+    // The upper endpoint is zero. The quantile retains the residual
+    // -(1-p)^1024 even though the intermediate displacement rounds to one.
+    auto residual = T(-1);
+    residual.exponent -= 1024;
+    assert(generalizedParetoInvCDF(T(0.5), T(-1), T(1024), T(-1024)) == residual);
+    const least = T(false, long.min, UInt!64(1));
+    assert(generalizedParetoInvCDF(least, T(0), T(2.5), T(0)) ==
+        T(false, long.min, UInt!64(3)));
+    auto small = T(1);
+    small.exponent -= 10_000;
+    T location = small;
+    location.sign = true;
+    auto second = T(1);
+    second.exponent -= 20_001;
+    assert(generalizedParetoInvCDF(small, location, T(1), T(0)) == second);
+    auto huge = T(1);
+    huge.exponent += 100;
+    assert(generalizedParetoInvCDF(T(0.5), T(0), T(1), huge).isInfinity);
+    huge.sign = true;
+    assert(generalizedParetoInvCDF(T(0.5), T(0), T(1), huge) == T(false, -163, UInt!64(1UL << 63)));
+    assert(generalizedParetoInvCDF(T(0.5), T(0), T(1), small) ==
+        generalizedParetoInvCDF(T(0.5), T(0), T(1), T(0)));
+    // At shape one, p = 1 - 2^-127 gives an exact rational midpoint.
+    alias W = Fp!128;
+    enum nearOne = W(false, -128, UInt!128.max - 1u);
+    enum midpoint = W(false, -3, UInt!128.fromHexString("bfffffffffffffffffffffffffffffde"));
+    assert(generalizedParetoInvCDF(nearOne, W(-4), W(0.1875), W(1)) == midpoint);
 }
 
 /++
@@ -573,6 +889,92 @@ unittest
                 generalizedParetoCCDF(T(2), T(0), T(1), xi));
         }
     }}
+}
+
+/++
+Evaluates the generalized Pareto LPDF with guarded extended precision.
+
+Params:
+    T = Represented $(D Fp) type, inferred from the arguments.
+    x = Observation on the support, including the upper endpoint.
+    mu = Finite location.
+    sigma = Positive finite scale.
+    xi = Finite shape. Negative shape bounds the support above by $(D mu - sigma / xi).
+
+Returns:
+    Natural logarithm of the density in type T, including the logarithmic limits at the support endpoints. Cancellation near unit density can exhaust working precision.
++/
+@safe pure nothrow @nogc
+T generalizedParetoLPDF(T)(const T x, const T mu, const T sigma, const T xi)
+    if (is(T == Fp!size, size_t size))
+    in (!mu.isSpecial && !xi.isSpecial && !sigma.isSpecial && !sigma.sign && !!sigma.coefficient)
+    in (supported(x, mu, sigma, xi))
+{
+    import mir.stat.internal.fp_generalized_pareto: paretoDensity;
+    return paretoDensity!true(x, mu, sigma, xi);
+}
+
+///
+version(mir_stat_test)
+@safe pure nothrow @nogc unittest
+{
+    import mir.bignum.fp: Fp;
+    alias T = Fp!64;
+    assert(generalizedParetoLPDF(T(0), T(0), T(1), T(1)) == T(0));
+}
+
+version(mir_stat_test)
+@safe pure nothrow @nogc unittest
+{
+    import mir.bignum.fixed: UInt;
+    import mir.math.common: approxEqual;
+    // Independent 220-digit decimal references at shared binary inputs.
+    {
+        alias T = Fp!64;
+        enum expected = T(true, -63, UInt!64.fromHexString("d2a2440b15dbb767"));
+        assert(generalizedParetoLPDF(T(1.5), T(-0.5), T(3), T(-0.25)) == expected);
+        assert(approxEqual(generalizedParetoLPDF(1.5, -0.5, 3.0, -0.25), -1.6455769590499736, 8 * double.epsilon));
+    }
+    {
+        alias T = Fp!128;
+        enum expected = T(true, -127, UInt!128.fromHexString("f559e05bf44d7add32253825819bbc18"));
+        assert(generalizedParetoLPDF(T(1.5), T(-0.5), T(3), T(0.375)) == expected);
+        assert(approxEqual(generalizedParetoLPDF(1.5, -0.5, 3.0, 0.375), -1.9168053101535454, 8 * double.epsilon));
+    }
+    alias T = Fp!64;
+    auto large = T(1);
+    large.exponent += 20_000;
+    T negative = large;
+    negative.sign = true;
+    assert(generalizedParetoLPDF(large, T(0), T(1), T(0)) == negative);
+    assert(generalizedParetoLPDF(T(1), T(0), T(1), T(-1)) == T(0));
+    assert(generalizedParetoLPDF(T(2), T(0), T(1), T(-0.5)) == T(-double.infinity));
+    assert(generalizedParetoLPDF(T(0.5), T(0), T(1), T(-2)) == T(double.infinity));
+}
+
+
+version(mir_stat_test)
+static if (size_t.sizeof == 4)
+@safe pure nothrow @nogc unittest
+{
+    import mir.bignum.fixed: UInt;
+    alias T = Fp!32;
+    // Exact binary inputs: location zero, scale 1/8, shape 3/8.
+    auto scale = T(1), shape = T(3), x = T(1), p = T(1);
+    scale.exponent -= 3;
+    shape.exponent -= 3;
+    x.exponent -= 5;
+    p.exponent -= 2;
+    assert(generalizedParetoCDF(x, T(0), scale, shape) ==
+        T(false, -34, UInt!32(0xd9a8d834U)));
+    assert(generalizedParetoCCDF(x, T(0), scale, shape) ==
+        T(false, -32, UInt!32(0xc995c9f3U)));
+    assert(generalizedParetoPDF(x, T(0), scale, shape) ==
+        T(false, -29, UInt!32(0xb84e6f7fU)));
+    assert(generalizedParetoLPDF(x, T(0), scale, shape) ==
+        T(false, -31, UInt!32(0xe01c4ca0U)));
+    assert(generalizedParetoInvCDF(p, T(0), scale, shape) ==
+        T(false, -36, UInt!32(0x9b8827b2U)));
 }
 
 // Called only for positive shape and an overflowing standardized finite input.
