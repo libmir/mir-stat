@@ -92,7 +92,7 @@ public import mir.stat.distribution.multivariate_normal: multivariateNormalPDF,
     rcMultivariateNormalPDF, makeMultivariateNormalPDF, multivariateNormalPDFWithWorkspace,
     multivariateNormalPDFBatch, rcMultivariateNormalPDFBatch, makeMultivariateNormalPDFBatch,
     multivariateNormalPDFBatchWithWorkspace, tryMultivariateNormalPDFBatchWithWorkspace,
-    tryMultivariateNormalPDFWithWorkspace, MultivariateNormalPDFBatchResult,
+    tryMultivariateNormalPDFWithWorkspace, MultivariateNormalPDFResult, MultivariateNormalPDFBatchResult,
     tryMultivariateNormalPDFBatch, tryRcMultivariateNormalPDFBatch, tryMakeMultivariateNormalPDFBatch,
     tryMultivariateNormalPDF, tryRcMultivariateNormalPDF, tryMakeMultivariateNormalPDF;
 ///
