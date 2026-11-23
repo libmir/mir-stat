@@ -108,6 +108,33 @@ private struct CauchyTrig(uint bits)
         return reduce ? B.combine(B.Term(quarter, false, true),
             B.Term(angle, true, true)).value : angle;
     }
+
+    // tan(pi*p) for 0 < p < 1/4. The cosine Taylor term of order 2n
+    // divided by 2n+1 is the corresponding term of sin(x)/x.
+    static S tangent(S probability)
+    {
+        const angle = probability.multiply(S.from(guardedPi!work()));
+        const square = squareOnGrid(angle);
+        I term = I(1) << work;
+        I cosine = term, sinc = term;
+        for (uint n = 1; ; ++n)
+        {
+            term = divideWord(divideWord(multiplyOnGrid(term, square), 2 * n - 1), 2 * n);
+            if (!term) break;
+            const sineTerm = divideWord(term, 2 * n + 1);
+            if (n & 1)
+            {
+                cosine -= term;
+                sinc -= sineTerm;
+            }
+            else
+            {
+                cosine += term;
+                sinc += sineTerm;
+            }
+        }
+        return angle.multiply(S.from(Fp!work(sinc))).divide(S.from(Fp!work(cosine)));
+    }
 }
 
 package(mir.stat) @safe pure nothrow @nogc
@@ -135,4 +162,36 @@ Fp!bits cauchyTail(bool upper, uint bits)(Fp!bits x, Fp!bits location, Fp!bits s
         return small ? tail.finish!bits : addOffset!bits(T(1), tail, true);
     }
     return addOffset!bits(half!bits(), A.atanFraction(offset.divide(width)), small);
+}
+
+package(mir.stat) @safe pure nothrow @nogc
+Fp!bits cauchyQuantile(uint bits)(Fp!bits p, Fp!bits location, Fp!bits scale)
+{
+    import mir.stat.internal.fp_location_scale: half;
+    alias T = Fp!bits;
+    alias A = CauchyTrig!bits;
+    alias S = A.S;
+    if (!p.coefficient || !position(p, T(1)))
+        return T(!p.coefficient, long.max, UInt!bits(0));
+    const median = half!bits();
+    const side = position(p, median);
+    if (!side)
+        return location;
+
+    const lower = side < 0;
+    auto quartile = T(lower ? 1 : 3);
+    quartile.exponent -= 2;
+    const relative = position(p, quartile);
+    const width = S.from(scale);
+    if (!relative)
+        return addOffset!bits(location, width, lower);
+
+    // Use cotangent near endpoints and tangent around the median.
+    // Apply scale before narrowing an offset outside the output range.
+    const outer = lower == (relative < 0);
+    const argument = outer ? (lower ? S.from(p) : distance!(A.work)(T(1), p))
+                           : distance!(A.work)(p, median);
+    const tangent = A.tangent(argument);
+    const offset = outer ? width.divide(tangent) : width.multiply(tangent);
+    return addOffset!bits(location, offset, lower);
 }

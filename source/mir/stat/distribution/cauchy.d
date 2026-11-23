@@ -11,6 +11,9 @@ domain. Finite expressions are subject to floating-point rounding and range
 limits. Contract violations are not prescribed return values: disabling
 contracts does not make an invalid input supported.
 
+The extended-precision overloads use guarded significand arithmetic and carry
+intermediate exponents separately. Universal correct rounding is unproven.
+
 License: $(HTTP www.apache.org/licenses/LICENSE-2.0, Apache-2.0)
 
 Authors: John Michael Hall
@@ -22,6 +25,7 @@ Copyright: 2023 Mir Stat Authors.
 module mir.stat.distribution.cauchy;
 
 import mir.bignum.fp: Fp;
+import mir.stat.internal.fp_probability: fpProbabilityValid;
 import mir.stat.internal.standardize: standardize, logDistance;
 
 import mir.internal.utility: isFloatingPoint;
@@ -649,6 +653,34 @@ T cauchyInvCDF(T)(const T p)
 }
 
 /++
+Computes the standard Cauchy quantile with guarded extended precision.
+
+Params:
+    T = Represented $(D Fp) type, inferred from the arguments.
+    p = Finite probability in [0, 1].
+
+Returns:
+    The quantile in type T. Probabilities zero and one give negative and positive infinity.
+    The median is zero.
++/
+@safe pure nothrow @nogc
+T cauchyInvCDF(T)(const T p)
+    if (is(T == Fp!size, size_t size))
+    in (fpProbabilityValid(p))
+{
+    return cauchyInvCDF(p, T(0), T(1));
+}
+
+///
+version(mir_stat_test)
+@safe pure nothrow @nogc unittest
+{
+    import mir.bignum.fp: Fp;
+    alias T = Fp!64;
+    assert(cauchyInvCDF(T(0.5)) == T(0));
+}
+
+/++
 Ditto, with location and scale parameters.
 
 Returns the quantile at cumulative probability $(D p).
@@ -746,6 +778,105 @@ unittest
     cauchyInvCDF(0.4, 1, 2).shouldApprox == 0.3501606;
     cauchyInvCDF(0.6, 1, 2).shouldApprox == 1.649839;
     cauchyInvCDF(0.8, 1, 2).shouldApprox == 3.752764;
+}
+
+/++
+Computes the location-scale Cauchy quantile with guarded extended precision.
+
+Params:
+    T = Represented $(D Fp) type, inferred from the arguments.
+    p = Finite probability in [0, 1].
+    location = Finite location.
+    scale = Positive finite scale.
+
+Returns:
+    The quantile in type T. Probabilities zero and one give negative and positive infinity.
+    The median equals the location. Cancellation beyond working precision can produce zero.
++/
+@safe pure nothrow @nogc
+T cauchyInvCDF(T)(const T p, const T location, const T scale)
+    if (is(T == Fp!size, size_t size))
+    in (fpProbabilityValid(p))
+    in (!location.isSpecial && !scale.isSpecial && !scale.sign && !!scale.coefficient)
+{
+    import mir.stat.internal.fp_cauchy: cauchyQuantile;
+    return cauchyQuantile(p, location, scale);
+}
+
+///
+version(mir_stat_test)
+@safe pure nothrow @nogc unittest
+{
+    import mir.bignum.fp: Fp;
+    alias T = Fp!64;
+    assert(cauchyInvCDF(T(0.5), T(0), T(2)) == T(0));
+}
+
+version(mir_stat_test)
+@safe pure nothrow @nogc unittest
+{
+    import mir.bignum.fixed: UInt;
+    import mir.math.common: approxEqual;
+    {
+        alias T = Fp!64;
+        enum expected = T(true, -62, UInt!64.fromHexString("9a827999fcef3242"));
+        assert(cauchyInvCDF(T(0.125)) == expected);
+        assert(approxEqual(cauchyInvCDF(0.125), -2.414213562373095, 8 * double.epsilon));
+    }
+    {
+        alias T = Fp!128;
+        enum expected = T(false, -127, UInt!128.fromHexString("b2ebebc0aa62b00f7ae9b3a20ca321fb"));
+        assert(cauchyInvCDF(T(0.5625), T(1), T(2)) == expected);
+        assert(approxEqual(cauchyInvCDF(0.5625, 1.0, 2.0), 1.397824734759316, 8 * double.epsilon));
+    }
+    alias T = Fp!64;
+    const least = T(false, long.min, UInt!64(1));
+    // At the exponent floor, p*cot(pi*p) rounds to 1/pi.
+    enum scaledTail = T(true, -65, UInt!64.fromHexString("a2f9836e4e44152a"));
+    assert(cauchyInvCDF(least, T(0), least) == scaledTail);
+    assert(cauchyInvCDF(T(0.25), T(3), T(3)) == T(0));
+    assert(cauchyInvCDF(T(0.75), T(-3), T(3)) == T(0));
+    assert(cauchyInvCDF(T(0)) == T(-double.infinity));
+    assert(cauchyInvCDF(T(1)) == T(double.infinity));
+    // At p=1/8 the unshifted offset is -(1+sqrt(2))*large.
+    const large = T(false, long.max - 1, UInt!64(1) << 63);
+    const shifted = T(true, long.max - 1, UInt!64(0xb504f333f9de6484UL));
+    assert(cauchyInvCDF(T(0.125), T(0), large) == T(-double.infinity));
+    assert(cauchyInvCDF(T(0.125), large, large) == shifted);
+    // Adjacent inputs on both sides of the lower quartile and the median.
+    {
+        const p = T(false, -66, UInt!64(0xffffffffffffffffUL));
+        enum expected = T(true, -127, UInt!64.fromHexString("c90fdaa22168c235"));
+        assert(cauchyInvCDF(p, T(1), T(1)) == expected);
+    }
+    {
+        const p = T(false, -65, UInt!64(0x8000000000000001UL));
+        enum expected = T(false, -126, UInt!64.fromHexString("c90fdaa22168c234"));
+        assert(cauchyInvCDF(p, T(1), T(1)) == expected);
+    }
+    {
+        const p = T(false, -65, UInt!64(0xffffffffffffffffUL));
+        enum expected = T(true, -127, UInt!64.fromHexString("c90fdaa22168c235"));
+        assert(cauchyInvCDF(p, T(0), T(1)) == expected);
+    }
+    {
+        const p = T(false, -64, UInt!64(0x8000000000000001UL));
+        enum expected = T(false, -126, UInt!64.fromHexString("c90fdaa22168c235"));
+        assert(cauchyInvCDF(p, T(0), T(1)) == expected);
+    }
+}
+
+version(mir_stat_test)
+static if (size_t.sizeof == 4)
+@safe pure nothrow @nogc unittest
+{
+    import mir.bignum.fixed: UInt;
+    alias T = Fp!32;
+    // The quantile at 1/8 is -(1+sqrt(2)), rounded to 32 bits.
+    auto p = T(1);
+    p.exponent -= 3;
+    enum expected = T(true, -30, UInt!32(0x9a82799a));
+    assert(cauchyInvCDF(p) == expected);
 }
 
 /++
