@@ -25,6 +25,7 @@ module mir.stat.distribution.generalized_pareto;
 
 import mir.bignum.fp: Fp;
 import mir.stat.internal.fp_generalized_pareto: supported;
+import mir.stat.internal.fp_location_scale: position;
 import mir.internal.utility: isFloatingPoint;
 import mir.stat.internal.shape_transform: log1pScaled, expm1Scaled;
 import mir.stat.internal.standardize: standardize, logDistance;
@@ -559,6 +560,85 @@ unittest
     0.5555556.generalizedParetoInvCDF(1, 1, 0.5).shouldApprox == 2;
     0.273975.generalizedParetoInvCDF(2, 3, 0.25).shouldApprox == 3;
     0.6321206.generalizedParetoInvCDF(2, 3, 0).shouldApprox == 5;    
+}
+
+/++
+Evaluates the generalized Pareto InvCDF with guarded extended precision.
+
+Params:
+    T = Represented $(D Fp) type, inferred from the arguments.
+    p = Represented probability in [0, 1].
+    mu = Finite location.
+    sigma = Positive finite scale.
+    xi = Finite shape. Negative shape bounds the support above by $(D mu - sigma / xi).
+
+Returns:
+    Quantile in type T. Zero probability returns the location. Unit probability returns the rounded finite endpoint for negative shape and positive infinity otherwise. Cancellation against the location can exhaust working precision.
++/
+@safe pure nothrow @nogc
+T generalizedParetoInvCDF(T)(const T p, const T mu, const T sigma, const T xi)
+    if (is(T == Fp!size, size_t size))
+    in (!mu.isSpecial && !xi.isSpecial && !sigma.isSpecial && !sigma.sign && !!sigma.coefficient)
+    in (!p.isSpecial && position(p, T(0)) >= 0 && position(p, T(1)) <= 0)
+{
+    import mir.stat.internal.fp_generalized_pareto: paretoQuantile;
+    return paretoQuantile(p, mu, sigma, xi);
+}
+
+///
+version(mir_stat_test)
+@safe pure nothrow @nogc unittest
+{
+    import mir.bignum.fp: Fp;
+    alias T = Fp!64;
+    assert(generalizedParetoInvCDF(T(0.5), T(0), T(4), T(-1)) == T(2));
+}
+
+version(mir_stat_test)
+@safe pure nothrow @nogc unittest
+{
+    import mir.bignum.fixed: UInt;
+    import mir.math.common: approxEqual;
+    // Independent 220-digit decimal references at shared binary inputs.
+    {
+        alias T = Fp!64;
+        enum expected = T(false, -62, UInt!64.fromHexString("c0f126641264d273"));
+        assert(generalizedParetoInvCDF(T(0.75), T(-0.5), T(3), T(-0.25)) == expected);
+        assert(approxEqual(generalizedParetoInvCDF(0.75, -0.5, 3.0, -0.25), 3.0147186257614296, 8 * double.epsilon));
+    }
+    {
+        alias T = Fp!128;
+        enum expected = T(false, -125, UInt!128.fromHexString("9e89f995ad3ad5e8734d1773205a7fbc"));
+        assert(generalizedParetoInvCDF(T(0.75), T(-0.5), T(3), T(0.375)) == expected);
+        assert(approxEqual(generalizedParetoInvCDF(0.75, -0.5, 3.0, 0.375), 4.954342644059433, 8 * double.epsilon));
+    }
+    alias T = Fp!64;
+    assert(generalizedParetoInvCDF(T(0), T(-2), T(3), T(1)) == T(-2));
+    assert(generalizedParetoInvCDF(T(1), T(-2), T(6), T(-3)) == T(0));
+    assert(generalizedParetoInvCDF(T(1), T(-2), T(9), T(-3)) == T(1));
+    assert(generalizedParetoInvCDF(T(1), T(-2), T(1), T(0)).isInfinity);
+    // The upper endpoint is zero. The quantile retains the residual
+    // -(1-p)^1024 even though the intermediate displacement rounds to one.
+    auto residual = T(-1);
+    residual.exponent -= 1024;
+    assert(generalizedParetoInvCDF(T(0.5), T(-1), T(1024), T(-1024)) == residual);
+    const least = T(false, long.min, UInt!64(1));
+    assert(generalizedParetoInvCDF(least, T(0), T(2.5), T(0)) ==
+        T(false, long.min, UInt!64(3)));
+    auto small = T(1);
+    small.exponent -= 10_000;
+    T location = small;
+    location.sign = true;
+    auto second = T(1);
+    second.exponent -= 20_001;
+    assert(generalizedParetoInvCDF(small, location, T(1), T(0)) == second);
+    auto huge = T(1);
+    huge.exponent += 100;
+    assert(generalizedParetoInvCDF(T(0.5), T(0), T(1), huge).isInfinity);
+    huge.sign = true;
+    assert(generalizedParetoInvCDF(T(0.5), T(0), T(1), huge) == T(false, -163, UInt!64(1UL << 63)));
+    assert(generalizedParetoInvCDF(T(0.5), T(0), T(1), small) ==
+        generalizedParetoInvCDF(T(0.5), T(0), T(1), T(0)));
 }
 
 /++

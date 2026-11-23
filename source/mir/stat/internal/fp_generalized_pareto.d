@@ -169,6 +169,93 @@ private struct Evaluation(uint bits)
         }
     }
 
+    // A nonzero correction below the working grid can still decide an
+    // output midpoint. Set an odd low bit on the correct side, including
+    // just below a power of two, then normalize on the separate exponent.
+    static S withCorrection(S value, bool positive)
+    {
+        auto c = value.fraction.coefficient;
+        if (!c.bt(0))
+        {
+            if (positive) c += 1;
+            else c -= 1;
+        }
+        auto result = S.from(Fp!work(c));
+        result.exponent += value.exponent - exponentBias - work;
+        return result;
+    }
+
+    static T finish(Term result, S divisor)
+    {
+        if (!result.present) return T(0);
+        return addOffset!bits(T(0), result.value.divide(divisor), result.negative);
+    }
+
+    // For negative shapes the upper endpoint can cancel against mu.
+    // Combine mu*|xi| + sigma before subtracting the residual tail;
+    // a zero endpoint then leaves the entire residual available.
+    static T fromEndpoint(T mu, S scale, S k, Term remainder)
+    {
+        auto base = term(mu);
+        if (base.present) base.value = base.value.multiply(k);
+        auto numerator = combine(base, Term(scale, false, true));
+        if (remainder.present)
+            numerator = combine(numerator, Term(scale.multiply(remainder.value), true, true));
+        return finish(numerator, k);
+    }
+
+    static T quantile(T p, T mu, T sigma, T xi)
+    {
+        if (!p.coefficient) return mu;
+        const scale = S.from(sigma);
+        const one = S.from(T(1));
+        if (!position(p, T(1)))
+        {
+            if (xi.sign && xi.coefficient)
+                return fromEndpoint(mu, scale, S.from(xi), Term.init);
+            return T(false, long.max, UInt!bits(0));
+        }
+        const prob = S.from(p);
+        const linear = scale.multiply(prob);
+        if (!position(xi, T(-1)))
+            return addOffset!bits(mu, linear, false);
+        const k = xi.coefficient ? S.from(xi) : one;
+        if (prob.exponent + work / 2 <= exponentBias &&
+            k.multiply(prob).exponent + work / 2 <= exponentBias)
+        {
+            // Q = mu + sigma*p + sigma*p^2*(1+xi)/2 + ...
+            // Keep the second term when the location cancels the first.
+            const base = combine(term(mu), Term(linear, false, true));
+            auto correction = linear.multiply(prob).multiply(distance!work(xi, T(-1)));
+            correction.exponent -= 1;
+            const negative = position(xi, T(-1)) < 0;
+            if (base.present && base.value.exponent > correction.exponent + work)
+                return finish(Term(withCorrection(base.value, negative == base.negative), base.negative, true), one);
+            return finish(combine(base, Term(correction, negative, true)), one);
+        }
+        // Widening an input at the exponent floor can discard it. When p
+        // is tiny, the relative correction to the complement log is O(p).
+        const h = prob.exponent + work / 2 <= exponentBias ? prob
+            : L.complement(cast(Fp!(3 * bits + 64))p);
+        if (!xi.coefficient)
+            return addOffset!bits(mu, scale.multiply(h), false);
+        const power = h.multiply(k);
+        if (power.exponent + work / 2 <= exponentBias)
+            return addOffset!bits(mu, scale.multiply(h), false);
+        if (power.exponent >= exponentBias + 66)
+        {
+            if (xi.sign) return fromEndpoint(mu, scale, k, Term.init);
+            return T(false, long.max, UInt!bits(0));
+        }
+        const decay = scaledDecay(power);
+        if (xi.sign && power.exponent >= exponentBias + 1)
+            return fromEndpoint(mu, scale, k, Term(decay, false, true));
+        const difference = combine(Term(one, false, true), Term(decay, true, true));
+        auto offset = difference.value.multiply(scale).divide(k);
+        if (!xi.sign) offset = offset.divide(decay);
+        return addOffset!bits(mu, offset, false);
+    }
+
 }
 
 package(mir.stat) bool supported(uint bits)(Fp!bits x, Fp!bits mu, Fp!bits sigma, Fp!bits xi)
@@ -188,4 +275,9 @@ package(mir.stat) auto paretoTail(bool upper, uint bits)(Fp!bits x, Fp!bits mu, 
 package(mir.stat) auto paretoDensity(bool logarithmic, uint bits)(Fp!bits x, Fp!bits mu, Fp!bits sigma, Fp!bits xi)
 {
     return Evaluation!bits.density!logarithmic(x, mu, sigma, xi);
+}
+
+package(mir.stat) auto paretoQuantile(uint bits)(Fp!bits p, Fp!bits mu, Fp!bits sigma, Fp!bits xi)
+{
+    return Evaluation!bits.quantile(p, mu, sigma, xi);
 }
