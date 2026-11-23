@@ -51,6 +51,9 @@ $(TR $(TH Category) $(TH Declarations))
         $(REF makeWeightedMedian, mir, stat, descriptive, univariate, quantiles)$(NBSP)
         $(REF weightedQuantile, mir, stat, descriptive, univariate, quantiles)$(NBSP)
         $(REF rcWeightedQuantile, mir, stat, descriptive, univariate, quantiles)$(NBSP)
+        $(REF weightedQuantileSortFirst, mir, stat, descriptive, univariate, quantiles)$(NBSP)
+        $(REF rcWeightedQuantileSortFirst, mir, stat, descriptive, univariate, quantiles)$(NBSP)
+        $(REF makeWeightedQuantileSortFirst, mir, stat, descriptive, univariate, quantiles)$(NBSP)
         $(REF makeWeightedQuantile, mir, stat, descriptive, univariate, quantiles)$(NBSP)
         $(REF weightedQuantileAssumeSortedInto, mir, stat, descriptive, univariate, quantiles)$(NBSP)
         $(REF weightedQuantileScratchLength, mir, stat, descriptive, univariate, quantiles)$(NBSP)
@@ -3442,8 +3445,11 @@ private auto weightedObservationSlice(Data)(return scope auto ref Data data)
     return quantileSlice(data);
 }
 
+private enum WeightedQuantilePreparation { automatic, sortFirst, assumeSorted }
+
 private auto allocatedWeightedQuantile(F, WeightInterpretation interpretation, WeightedQuantileAlgo algorithm,
-    QuantileAllocation allocation, size_t fixedResultLength = 0, bool assumeSorted = false, Context, Weights, Data, P)(
+    QuantileAllocation allocation, size_t fixedResultLength = 0,
+    WeightedQuantilePreparation preparation = WeightedQuantilePreparation.automatic, Context, Weights, Data, P)(
     ref Context context, scope auto ref Weights weights,
     scope auto ref Data data, scope auto ref P probabilities)
 {
@@ -3462,7 +3468,8 @@ private auto allocatedWeightedQuantile(F, WeightInterpretation interpretation, W
         "Weighted quantiles require numeric values, weights, and output");
     // Check the ordering contract before acquiring caller-managed scratch.
     version (assert)
-        enum checkOrderBeforeAllocation = assumeSorted && allocation == QuantileAllocation.custom;
+        enum checkOrderBeforeAllocation = preparation == WeightedQuantilePreparation.assumeSorted &&
+            allocation == QuantileAllocation.custom;
     else
         enum checkOrderBeforeAllocation = false;
     const input = validateWeightedQuantileInput!(interpretation, algorithm, checkOrderBeforeAllocation)(
@@ -3479,17 +3486,19 @@ private auto allocatedWeightedQuantile(F, WeightInterpretation interpretation, W
         isWeightedInverseCDF!algorithm;
     static if (scalar)
     {
-        enum selectBatch = !assumeSorted && (interpretation == WeightInterpretation.frequency || selectRelative);
+        enum selectBatch = preparation == WeightedQuantilePreparation.automatic &&
+            (interpretation == WeightInterpretation.frequency || selectRelative);
         static if (selectBatch)
             alias levels = probabilities;
     }
     else
     {
         scope auto levels = quantileSlice(probabilities);
-        enum selectBatch = !assumeSorted && (interpretation == WeightInterpretation.frequency || selectRelative) &&
+        enum selectBatch = preparation == WeightedQuantilePreparation.automatic &&
+            (interpretation == WeightInterpretation.frequency || selectRelative) &&
             isPointer!(IteratorOf!(typeof(levels)));
     }
-    static if (assumeSorted)
+    static if (preparation == WeightedQuantilePreparation.assumeSorted)
     {
         size_t count;
         foreach (i; 0 .. masses.length)
@@ -3550,7 +3559,8 @@ private auto allocatedWeightedQuantile(F, WeightInterpretation interpretation, W
 }
 
 private auto dispatchWeightedQuantile(F, WeightInterpretation interpretation, WeightedQuantileAlgo algorithm,
-    QuantileAllocation allocation, bool assumeSorted = false, Context, Weights, Data, P...)(
+    QuantileAllocation allocation, WeightedQuantilePreparation preparation = WeightedQuantilePreparation.automatic,
+    Context, Weights, Data, P...)(
     ref Context context, scope auto ref Weights weights, scope auto ref Data data,
     scope auto ref P probabilities)
 {
@@ -3558,16 +3568,16 @@ private auto dispatchWeightedQuantile(F, WeightInterpretation interpretation, We
     static if (P.length == 0)
     {
         const double[5] levels = [0, 0.25, 0.5, 0.75, 1];
-        return allocatedWeightedQuantile!(F, interpretation, algorithm, allocation, 0, assumeSorted)(context, weights, data, levels);
+        return allocatedWeightedQuantile!(F, interpretation, algorithm, allocation, 0, preparation)(context, weights, data, levels);
     }
     else static if (P.length == 1)
-        return allocatedWeightedQuantile!(F, interpretation, algorithm, allocation, 0, assumeSorted)(context, weights, data, probabilities[0]);
+        return allocatedWeightedQuantile!(F, interpretation, algorithm, allocation, 0, preparation)(context, weights, data, probabilities[0]);
     else
     {
         alias G = CommonType!P;
         static assert(isFloatingPoint!(Unqual!G), "Probabilities must be floating-point values");
         G[P.length] levels = [probabilities];
-        return allocatedWeightedQuantile!(F, interpretation, algorithm, allocation, 0, assumeSorted)(context, weights, data, levels);
+        return allocatedWeightedQuantile!(F, interpretation, algorithm, allocation, 0, preparation)(context, weights, data, levels);
     }
 }
 
@@ -3854,13 +3864,14 @@ template weightedQuantile(WeightedQuantileAlgo algorithm,
 }
 
 private auto dispatchSortedWeightedQuantile(F, WeightInterpretation interpretation, WeightedQuantileAlgo algorithm,
-    QuantileAllocation allocation, Context, Data, Weights, P...)(ref Context context, scope auto ref Data data,
+    QuantileAllocation allocation, WeightedQuantilePreparation preparation = WeightedQuantilePreparation.assumeSorted,
+    Context, Data, Weights, P...)(ref Context context, scope auto ref Data data,
     scope auto ref Weights weights, scope auto ref P probabilities)
 {
     static if (isPhobosSortedRange!Data)
     {
         scope auto ordered = sortedQuantileValues(data);
-        return dispatchSortedWeightedQuantile!(F, interpretation, algorithm, allocation)(
+        return dispatchSortedWeightedQuantile!(F, interpretation, algorithm, allocation, preparation)(
             context, ordered.release, weights, probabilities);
     }
     else
@@ -3869,9 +3880,303 @@ private auto dispatchSortedWeightedQuantile(F, WeightInterpretation interpretati
             alias Result = WeightedQuantileResult!(Data, algorithm);
         else
             alias Result = F;
-        return dispatchWeightedQuantile!(Result, interpretation, algorithm, allocation, true)(
+        return dispatchWeightedQuantile!(Result, interpretation, algorithm, allocation, preparation)(
             context, weights, data, probabilities);
     }
+}
+
+/++ Compute weighted quantiles by ordering positive-weight rows in private storage.
+Observations and weights are preserved. Already ordered rows can be used directly
+after copying. Rows are ordered by observation, then by raw weight within ties.
+Params:
+    F = optional result type, inferred as for $(LREF weightedQuantile)
+    interpretation = relative (default) or frequency
+    algorithm = weighted estimator, default inverseCDF for relative weights and type7 for frequency weights
+    data = one-dimensional observations with finite positive-weight values.
+        A default ascending Phobos SortedRange orders only the observations.
+    weights = aligned finite nonnegative weights with at least one positive weight.
+        Frequency weights must be representable whole counts as for $(LREF weightedQuantile).
+    probabilities = scalar, one-dimensional array or slice, or variadic probabilities in [0, 1].
+        Omit for the minimum, quartiles, and maximum.
+Returns:
+    A scalar for a scalar probability, otherwise a GC-owned slice in caller probability order.
+    Endpoints select the minimum and maximum positive-weight observations.
++/
+template weightedQuantileSortFirst(F = void, WeightInterpretation interpretation = WeightInterpretation.relative,
+    WeightedQuantileAlgo algorithm = weightedTableDefault!interpretation)
+    if (validWeightedQuantileOptions!(interpretation, algorithm) &&
+        (is(F == void) || algorithm == WeightedQuantileAlgo.inverseCDF || isFloatingPoint!F))
+{
+    /// ditto
+    auto weightedQuantileSortFirst(Data, Weights, P...)(
+        scope auto ref Data data, scope auto ref Weights weights, scope auto ref P probabilities)
+        if (!isSortedWeightedObservations!Data)
+    {
+        QuantileContext context;
+        return dispatchSortedWeightedQuantile!(F, interpretation, algorithm, QuantileAllocation.gc,
+            WeightedQuantilePreparation.sortFirst)(context, data, weights, probabilities);
+    }
+
+    /++ Query an ordered pair constructed with $(LREF assumeWeightedSorted).
+    Params:
+        rows = observations and aligned weights ordered by observation, then raw weight within ties
+        probabilities = probabilities in the same forms as the two-input overload
+    Returns:
+        A scalar for a scalar probability, otherwise a GC-owned slice in caller probability order.
+    +/
+    auto weightedQuantileSortFirst(Rows, P...)(
+        scope auto ref Rows rows, scope auto ref P probabilities)
+        if (isSortedWeightedObservations!Rows)
+    {
+        static if (is(F == void))
+            alias query = .weightedQuantileAssumeSorted!(interpretation, algorithm);
+        else
+            alias query = .weightedQuantileAssumeSorted!(F, interpretation, algorithm);
+        return query(rows, probabilities);
+    }
+}
+
+/// ditto
+template weightedQuantileSortFirst(WeightInterpretation interpretation,
+    WeightedQuantileAlgo algorithm = weightedTableDefault!interpretation)
+{
+    alias weightedQuantileSortFirst = .weightedQuantileSortFirst!(void, interpretation, algorithm);
+}
+
+/// ditto
+template weightedQuantileSortFirst(F, WeightedQuantileAlgo algorithm,
+    WeightInterpretation interpretation = WeightInterpretation.relative)
+{
+    alias weightedQuantileSortFirst = .weightedQuantileSortFirst!(F, interpretation, algorithm);
+}
+
+/// ditto
+template weightedQuantileSortFirst(WeightedQuantileAlgo algorithm,
+    WeightInterpretation interpretation = WeightInterpretation.relative)
+{
+    alias weightedQuantileSortFirst = .weightedQuantileSortFirst!(void, interpretation, algorithm);
+}
+
+/// Query an unordered batch without modifying observations or weights.
+version(mir_stat_test) @safe unittest
+{
+    int[3] data = [9, 2, 5], weights = [1, 2, 1];
+    assert(weightedQuantileSortFirst(data, weights, 0.75, 0.25) == [5, 2]);
+    assert(data == [9, 2, 5] && weights == [1, 2, 1]);
+}
+
+version(mir_stat_test) @safe unittest
+{
+    import std.range : assumeSorted;
+    import std.math : nextDown, nextUp, signbit;
+    import std.traits : EnumMembers;
+    const int[6] values = [1, 2, 2, 4, 5, 9];
+    const int[6] weights = [1, 7, 3, 0, 2, 1];
+    const int[6] orderedWeights = [1, 3, 7, 0, 2, 1];
+    auto rows = assumeWeightedSorted(values[], orderedWeights[]);
+    auto median = weightedQuantileSortFirst!float(rows, 0.5);
+    static assert(is(typeof(median) == float));
+    assert(median == 2);
+    real boundary = 1.0L / 14;
+    real[5] levels = [nextUp(boundary), boundary, nextDown(boundary), 1, 0];
+    static foreach (meaning; EnumMembers!WeightInterpretation)
+    static foreach (algo; EnumMembers!WeightedQuantileAlgo)
+    static if (validWeightedQuantileOptions!(meaning, algo))
+    {{
+        auto expected = weightedQuantileAssumeSorted!(real, meaning, algo)(values, orderedWeights, levels);
+        auto actual = weightedQuantileSortFirst!(real, algo, meaning)(assumeSorted(values[]), weights, levels);
+        foreach (i; 0 .. levels.length)
+            assert(actual[i] is expected[i]);
+    }}
+    const double[3] signed = [1.0, -0.0, 2.0];
+    assert(signbit(weightedQuantileSortFirst(signed, [1, 1, 1], 0.0)));
+    const double[4] tied = [2.0, 0.0, -0.0, 1.0];
+    const int[4] equalWeights = [1, 1, 1, 1];
+    assert(weightedQuantileSortFirst(tied, equalWeights, 0.25) is
+        weightedQuantile(tied, equalWeights, 0.25));
+}
+
+/++ Compute weighted quantiles by ordering positive-weight rows in private storage.
+Observations and weights are preserved. Already ordered rows can be used directly
+after copying. Rows are ordered by observation, then by raw weight within ties.
+Params:
+    F = optional result type, inferred as for $(LREF weightedQuantile)
+    interpretation = relative (default) or frequency
+    algorithm = weighted estimator, default inverseCDF for relative weights and type7 for frequency weights
+    data = one-dimensional observations with finite positive-weight values.
+        A default ascending Phobos SortedRange orders only the observations.
+    weights = aligned finite nonnegative weights with at least one positive weight.
+        Frequency weights must be representable whole counts as for $(LREF weightedQuantile).
+    probabilities = scalar, one-dimensional array or slice, or variadic probabilities in [0, 1].
+        Omit for the minimum, quartiles, and maximum.
+Returns:
+    A scalar for a scalar probability, otherwise a reference-counted slice in caller probability order.
+    Endpoints select the minimum and maximum positive-weight observations.
++/
+template rcWeightedQuantileSortFirst(F = void, WeightInterpretation interpretation = WeightInterpretation.relative,
+    WeightedQuantileAlgo algorithm = weightedTableDefault!interpretation)
+    if (validWeightedQuantileOptions!(interpretation, algorithm) &&
+        (is(F == void) || algorithm == WeightedQuantileAlgo.inverseCDF || isFloatingPoint!F))
+{
+    /// ditto
+    auto rcWeightedQuantileSortFirst(Data, Weights, P...)(
+        scope auto ref Data data, scope auto ref Weights weights, scope auto ref P probabilities)
+        if (!isSortedWeightedObservations!Data)
+    {
+        QuantileContext context;
+        return dispatchSortedWeightedQuantile!(F, interpretation, algorithm, QuantileAllocation.rc,
+            WeightedQuantilePreparation.sortFirst)(context, data, weights, probabilities);
+    }
+
+    /++ Query an ordered pair constructed with $(LREF assumeWeightedSorted).
+    Params:
+        rows = observations and aligned weights ordered by observation, then raw weight within ties
+        probabilities = probabilities in the same forms as the two-input overload
+    Returns:
+        A scalar for a scalar probability, otherwise a reference-counted slice in caller probability order.
+    +/
+    auto rcWeightedQuantileSortFirst(Rows, P...)(
+        scope auto ref Rows rows, scope auto ref P probabilities)
+        if (isSortedWeightedObservations!Rows)
+    {
+        static if (is(F == void))
+            alias query = .rcWeightedQuantileAssumeSorted!(interpretation, algorithm);
+        else
+            alias query = .rcWeightedQuantileAssumeSorted!(F, interpretation, algorithm);
+        return query(rows, probabilities);
+    }
+}
+
+/// ditto
+template rcWeightedQuantileSortFirst(WeightInterpretation interpretation,
+    WeightedQuantileAlgo algorithm = weightedTableDefault!interpretation)
+{
+    alias rcWeightedQuantileSortFirst = .rcWeightedQuantileSortFirst!(void, interpretation, algorithm);
+}
+
+/// ditto
+template rcWeightedQuantileSortFirst(F, WeightedQuantileAlgo algorithm,
+    WeightInterpretation interpretation = WeightInterpretation.relative)
+{
+    alias rcWeightedQuantileSortFirst = .rcWeightedQuantileSortFirst!(F, interpretation, algorithm);
+}
+
+/// ditto
+template rcWeightedQuantileSortFirst(WeightedQuantileAlgo algorithm,
+    WeightInterpretation interpretation = WeightInterpretation.relative)
+{
+    alias rcWeightedQuantileSortFirst = .rcWeightedQuantileSortFirst!(void, interpretation, algorithm);
+}
+
+/// Evaluate a frequency-weighted quantile from an ordered pair.
+version(mir_stat_test) @safe pure nothrow @nogc unittest
+{
+    const int[3] values = [1, 3, 5], weights = [2, 1, 1];
+    auto rows = assumeWeightedSorted(values[], weights[]);
+    assert(rcWeightedQuantileSortFirst!(WeightInterpretation.frequency)(rows, 0.5) == 2);
+    const int[3] unorderedValues = [3, 1, 5], unorderedWeights = [1, 2, 1];
+    assert(rcWeightedQuantileSortFirst!(WeightInterpretation.frequency)(
+        unorderedValues, unorderedWeights, 0.5) == 2);
+}
+
+/++ Compute weighted quantiles by ordering positive-weight rows in private storage.
+Observations and weights are preserved. Already ordered rows can be used directly
+after copying. Rows are ordered by observation, then by raw weight within ties.
+Params:
+    F = optional result type, inferred as for $(LREF weightedQuantile)
+    interpretation = relative (default) or frequency
+    algorithm = weighted estimator, default inverseCDF for relative weights and type7 for frequency weights
+    allocator = allocator for positive-weight scratch and batch output
+    data = one-dimensional observations with finite positive-weight values.
+        A default ascending Phobos SortedRange orders only the observations.
+    weights = aligned finite nonnegative weights with at least one positive weight.
+        Frequency weights must be representable whole counts as for $(LREF weightedQuantile).
+    probabilities = scalar, one-dimensional array or slice, or variadic probabilities in [0, 1].
+        Omit for the minimum, quartiles, and maximum.
+Returns:
+    A scalar for a scalar probability, otherwise a custom-allocated slice in caller probability order.
+    Endpoints select the minimum and maximum positive-weight observations. Dispose the result field with allocator.
++/
+template makeWeightedQuantileSortFirst(F = void, WeightInterpretation interpretation = WeightInterpretation.relative,
+    WeightedQuantileAlgo algorithm = weightedTableDefault!interpretation)
+    if (validWeightedQuantileOptions!(interpretation, algorithm) &&
+        (is(F == void) || algorithm == WeightedQuantileAlgo.inverseCDF || isFloatingPoint!F))
+{
+    /// ditto
+    auto makeWeightedQuantileSortFirst(Allocator, Data, Weights, P...)(
+        auto ref Allocator allocator, scope auto ref Data data, scope auto ref Weights weights, scope auto ref P probabilities)
+        if (!isSortedWeightedObservations!Data)
+    {
+        return dispatchSortedWeightedQuantile!(F, interpretation, algorithm, QuantileAllocation.custom,
+            WeightedQuantilePreparation.sortFirst)(allocator, data, weights, probabilities);
+    }
+
+    /++ Query an ordered pair constructed with $(LREF assumeWeightedSorted).
+    Params:
+        allocator = allocator for scratch and batch output
+        rows = observations and aligned weights ordered by observation, then raw weight within ties
+        probabilities = probabilities in the same forms as the two-input overload
+    Returns:
+        A scalar for a scalar probability, otherwise a custom-allocated slice in caller probability order.
+    +/
+    auto makeWeightedQuantileSortFirst(Allocator, Rows, P...)(
+        auto ref Allocator allocator, scope auto ref Rows rows, scope auto ref P probabilities)
+        if (isSortedWeightedObservations!Rows)
+    {
+        static if (is(F == void))
+            alias query = .makeWeightedQuantileAssumeSorted!(interpretation, algorithm);
+        else
+            alias query = .makeWeightedQuantileAssumeSorted!(F, interpretation, algorithm);
+        return query(allocator, rows, probabilities);
+    }
+}
+
+/// ditto
+template makeWeightedQuantileSortFirst(WeightInterpretation interpretation,
+    WeightedQuantileAlgo algorithm = weightedTableDefault!interpretation)
+{
+    alias makeWeightedQuantileSortFirst = .makeWeightedQuantileSortFirst!(void, interpretation, algorithm);
+}
+
+/// ditto
+template makeWeightedQuantileSortFirst(F, WeightedQuantileAlgo algorithm,
+    WeightInterpretation interpretation = WeightInterpretation.relative)
+{
+    alias makeWeightedQuantileSortFirst = .makeWeightedQuantileSortFirst!(F, interpretation, algorithm);
+}
+
+/// ditto
+template makeWeightedQuantileSortFirst(WeightedQuantileAlgo algorithm,
+    WeightInterpretation interpretation = WeightInterpretation.relative)
+{
+    alias makeWeightedQuantileSortFirst = .makeWeightedQuantileSortFirst!(void, interpretation, algorithm);
+}
+
+/// Release a custom-allocated batch with the allocator that produced it.
+version(mir_stat_test) @system pure nothrow @nogc unittest
+{
+    import std.experimental.allocator : dispose;
+    import std.experimental.allocator.mallocator : Mallocator;
+    const int[3] values = [4, 1, 2], weights = [1, 1, 1];
+    auto result = makeWeightedQuantileSortFirst!(float, WeightedQuantileAlgo.inverseCDF)(
+        Mallocator.instance, values, weights, 0.0, 1.0);
+    scope(exit) Mallocator.instance.dispose(result.field);
+    assert(result == [1.0f, 4.0f]);
+    const int[3] ordered = [1, 2, 4];
+    auto rows = assumeWeightedSorted(ordered[], weights[]);
+    auto batch = makeWeightedQuantileSortFirst(Mallocator.instance, rows, 1.0, 0.5);
+    scope(exit) Mallocator.instance.dispose(batch.field);
+    static assert(is(typeof(batch[0]) == int));
+    assert(batch == [4, 2]);
+}
+
+version(mir_stat_test) @system unittest
+{
+    import std.exception : assertThrown;
+    QuantileTestAllocator!true allocator;
+    allocator.failAt = 2;
+    assertThrown!Exception(makeWeightedQuantileSortFirst(allocator, [4, 1, 2], [1, 1, 1], 0.0, 1.0));
+    assert(allocator.allocations == 2 && allocator.releases == 1);
 }
 
 /++
@@ -10535,9 +10840,10 @@ private F allocatedWeightedSpread(F, WeightInterpretation interpretation, Weight
     import std.traits: Unqual;
     alias Element = Unqual!(DeepElementType!Data);
     double[2] probabilities = [0.25, 0.75];
+    enum preparation = assumeSorted ? WeightedQuantilePreparation.assumeSorted : WeightedQuantilePreparation.automatic;
     static if (algorithm == WeightedQuantileAlgo.inverseCDF && isIntegral!Element)
     {
-        auto quartiles = allocatedWeightedQuantile!(Element, interpretation, algorithm, allocation, 2, assumeSorted)(
+        auto quartiles = allocatedWeightedQuantile!(Element, interpretation, algorithm, allocation, 2, preparation)(
             context, weights, data, probabilities);
         const ulong distance = cast(ulong) quartiles[1] - cast(ulong) quartiles[0];
         static if (isIntegral!F)
@@ -10548,7 +10854,7 @@ private F allocatedWeightedSpread(F, WeightInterpretation interpretation, Weight
     {
         static assert(isFloatingPoint!F,
             "weightedInterquartileRange: nonintegral observations require a floating result");
-        auto quartiles = allocatedWeightedQuantile!(real, interpretation, algorithm, allocation, 2, assumeSorted)(
+        auto quartiles = allocatedWeightedQuantile!(real, interpretation, algorithm, allocation, 2, preparation)(
             context, weights, data, probabilities);
         return cast(F)(quartiles[1] - quartiles[0]);
     }
