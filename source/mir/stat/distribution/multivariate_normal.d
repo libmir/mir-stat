@@ -9,7 +9,8 @@ to positive infinity. Batch PDF calls reuse one factorization and log determinan
 into the LPDF result storage. Use $(LREF multivariateNormalPDFBatch) for observations
 in columns or $(LREF multivariateNormalPDF) for selected rows or columns.
 For caller-owned buffers, use $(LREF multivariateNormalPDFBatchWithWorkspace) with
-a prepared factor.
+a prepared factor or $(LREF tryMultivariateNormalPDFBatchWithWorkspace) with an
+unfactored matrix and factor scratch. A failed pivot leaves the result buffer untouched.
 
 $(H4 Matrix inputs)
 
@@ -2391,6 +2392,62 @@ version(mir_stat_test_multivariate_normal)
 }
 
 /++
+Evaluate selected rows or columns using one shared covariance or precision matrix.
+Select observation and scratch axes independently. Both selections are forwarded
+as column views without copying. Writable elements must be disjoint from one
+another and from all inputs.
+
+Params:
+    x = Rectangular selection of n observations of k finite coordinates, made with
+        byDim or alongDim. For example, rows.byDim!0 selects rows.
+    mean = Vector of k finite means. All buffers share the observation element type.
+    metric = Raw covariance or precision view of a dense k-by-k matrix with finite selected triangle.
+    result = Writable vector of n densities in selection order.
+    work = Writable selection of n scratch vectors of length k.
+    factorWork = Writable k-by-k factor workspace. May contain a partial factor on failure.
+
+Returns:
+    Zero on success or the one-based failed pivot. Failure leaves result untouched.
++/
+size_t tryMultivariateNormalPDFWithWorkspace(X, C, M, R, W, F)(
+    scope auto ref X x, scope auto ref C mean, scope auto ref M metric,
+    scope auto ref R result, scope auto ref W work, scope auto ref F factorWork)
+    if (isCovarianceMetric!M && isObservationSelection!X && isObservationSelection!W && __traits(compiles,
+        tryMultivariateNormalPDFBatchWithWorkspace(
+            ObservationColumns!X.init, mean, metric, result, ObservationColumns!W.init, factorWork)))
+{
+    auto columns = observationColumns(x);
+    auto scratch = observationColumns(work);
+    return tryMultivariateNormalPDFBatchWithWorkspace(columns, mean, metric, result, scratch, factorWork);
+}
+
+/// Evaluate the inlet and chamber temperatures for three test runs.
+/// Each row contains the first two readings in the module's temperature example.
+version(mir_stat_test_multivariate_normal)
+@safe pure nothrow @nogc unittest
+{
+    import mir.ndslice.slice: sliced;
+    import mir.ndslice.topology: byDim;
+    import std.math: PI, fabs, exp;
+    double[6] data = [10, 20, 12, 21, 10, 24], scratch;
+    double[2] mean = [10, 20];
+    double[4] covariance = [4, 2, 2, 5], factor;
+    double[3] densities;
+    auto rows = data[].sliced(3, 2);
+    auto workRows = scratch[].sliced(3, 2);
+    const pivot = tryMultivariateNormalPDFWithWorkspace(rows.byDim!0, mean[],
+        covarianceView(covariance[].sliced(2, 2)), densities[], workRows.byDim!0, factor[].sliced(2, 2));
+    assert(pivot == 0);
+    // The first run is at the mean. The covariance determinant is 16.
+    const atMean = 1 / (8 * double(PI));
+    assert(fabs(densities[0] - atMean) < 1e-14);
+    // The second run's [12, 21] centers to [2, 1] and transforms to [1, 0].
+    assert(fabs(densities[1] - (atMean * exp(-0.5))) < 1e-14);
+    // The third run's transformed row is [0, 2].
+    assert(fabs(densities[2] - (atMean * exp(-2.0))) < 1e-14);
+}
+
+/++
 Evaluate one observation per column with GC-managed result and scratch storage.
 A raw metric is factored once. All observations share the same mean and log determinant.
 
@@ -2478,16 +2535,21 @@ version(mir_stat_test_multivariate_normal)
     auto columns = readings[].sliced(2, 2);
 
     // The precision is P = U.transpose * U, with U = [[2, 1], [0, 1]].
-    double[4] upper = [2, 1, 0, 1];
+    double[4] upper = [2, 1, 0, 1], precision = [4, 2, 2, 2];
     auto values = rcMultivariateNormalPDFBatch(
         columns, mean[], precisionCholeskyView(upper[].sliced(2, 2)));
-    assert(values.length == 2);
+    auto raw = tryRcMultivariateNormalPDFBatch(
+        columns, mean[], precisionView(precision[].sliced(2, 2)));
+    assert(raw.failedPivot == 0);
+    assert(values.length == 2 && raw.densities.length == 2);
 
     // det(P) = 4. For the second observation, U * [1, 1] = [3, 1],
     // so the density is its value at the mean times exp(-5).
     const atMean = 1 / double(PI);
     assert(fabs(values[0] - atMean) < 1e-14);
     assert(fabs(values[1] - (atMean * exp(-5.0))) < 1e-14);
+    foreach (j; 0 .. values.length)
+        assert(fabs(values[j] - raw.densities[j]) < 1e-14);
 }
 
 /++
@@ -2542,6 +2604,308 @@ version(mir_stat_test_multivariate_normal)
 }
 
 /++
+Outcome of batch evaluation with a raw covariance or precision matrix.
+
+Params:
+    V = Vector type for the chosen allocation strategy.
++/
+struct MultivariateNormalPDFBatchResult(V)
+{
+    /// One density per observation on success. Empty on factorization failure.
+    V densities;
+    /// Zero on success, including an empty batch. A positive value is the one-based
+    /// Cholesky step at which the selected matrix failed the positive-definiteness check.
+    size_t failedPivot;
+}
+
+/++
+Evaluate one density per observation column and report a failed Cholesky step.
+The observations share a single factorization.
+
+Params:
+    x = Dense k-by-n matrix of finite observations, one observation per column.
+    mean = Vector of k finite means with the same floating-point element type as x.
+    metric = Raw covariance or precision view of a dense k-by-k matrix of the same element type. The selected triangle
+        must contain finite entries and defines the symmetric matrix.
+
+Returns:
+    A $(LREF MultivariateNormalPDFBatchResult). On success, failedPivot is zero
+    and densities is a GC-managed vector of n densities
+    in column order. Each zero-dimensional observation has density one.
+    On factorization failure, even for an empty batch, failedPivot is the one-based
+    failed step and densities is empty.
++/
+MultivariateNormalPDFBatchResult!(AllocatedSlice!(Allocation.gc, Element!X, 1))
+tryMultivariateNormalPDFBatch(X, C, M)(
+    scope auto ref X x, scope auto ref C mean, scope auto ref M metric)
+    if (isCovarianceMetric!M && !prepared!(M.form) && batchInputs!(X, C, typeof(metric.storage)))
+{
+    auto outcome = tryMultivariateNormalLPDFBatch(x, mean, metric);
+    return densityBatchResult(outcome);
+}
+
+/// A singular covariance has no batch densities. The pivot identifies the failed step.
+version(mir_stat_test_multivariate_normal)
+@safe pure nothrow unittest
+{
+    import mir.ndslice.slice: sliced;
+    double[2] data = [10, 14];
+    double[1] mean = [10], covariance = [0];
+    auto columns = data[].sliced(1, 2);
+    auto result = tryMultivariateNormalPDFBatch(columns, mean[], covarianceView(covariance[].sliced(1, 1)));
+    assert(result.failedPivot == 1);
+    assert(result.densities.length == 0);
+}
+
+/++
+Evaluate one density per observation column and report a failed Cholesky step.
+The observations share a single factorization.
+
+Params:
+    x = Dense k-by-n matrix of finite observations, one observation per column.
+    mean = Vector of k finite means with the same floating-point element type as x.
+    metric = Raw covariance or precision view of a dense k-by-k matrix of the same element type. The selected triangle
+        must contain finite entries and defines the symmetric matrix.
+
+Returns:
+    A $(LREF MultivariateNormalPDFBatchResult). On success, failedPivot is zero
+    and densities is a reference-counted vector of n densities
+    in column order. Each zero-dimensional observation has density one.
+    On factorization failure, even for an empty batch, failedPivot is the one-based
+    failed step and densities is empty.
++/
+MultivariateNormalPDFBatchResult!(AllocatedSlice!(Allocation.rc, Element!X, 1))
+tryRcMultivariateNormalPDFBatch(X, C, M)(
+    scope auto ref X x, scope auto ref C mean, scope auto ref M metric)
+    if (isCovarianceMetric!M && !prepared!(M.form) && batchInputs!(X, C, typeof(metric.storage)))
+{
+    auto outcome = tryRcMultivariateNormalLPDFBatch(x, mean, metric);
+    return densityBatchResult(outcome);
+}
+
+/// Evaluate two columns and check whether factorization succeeded.
+version(mir_stat_test_multivariate_normal)
+@safe pure nothrow @nogc unittest
+{
+    import mir.ndslice.slice: sliced;
+    double[2] data = [10, 14];
+    double[1] mean = [10], covariance = [4];
+    auto columns = data[].sliced(1, 2);
+    auto result = tryRcMultivariateNormalPDFBatch(columns, mean[], covarianceView(covariance[].sliced(1, 1)));
+    assert(result.failedPivot == 0);
+    assert(result.densities.length == 2);
+    assert(result.densities[0] > result.densities[1]);
+}
+
+// The copied RC result owns the densities after the original leaves scope.
+version(mir_stat_test_multivariate_normal)
+@safe pure nothrow @nogc unittest
+{
+    import mir.ndslice.slice: sliced;
+    import mir.stat.distribution.normal: normalPDF;
+    import std.math: fabs;
+
+    static auto retainedResult()
+    {
+        double[2] x = [1, 3];
+        double[1] mean = [1], covariance = [4];
+        auto original = tryRcMultivariateNormalPDFBatch(x[].sliced(1, 2), mean[],
+            covarianceView(covariance[].sliced(1, 1)));
+        auto copy = original;
+        assert(copy.densities.length == original.densities.length);
+        return copy;
+    }
+
+    auto retained = retainedResult();
+    assert(retained.failedPivot == 0 && retained.densities.length == 2);
+    assert(fabs(retained.densities[0] - normalPDF(1.0, 1.0, 2.0)) < double.epsilon);
+    assert(fabs(retained.densities[1] - normalPDF(3.0, 1.0, 2.0)) < double.epsilon);
+}
+
+/++
+Evaluate one density per observation column and report a failed Cholesky step.
+The observations share a single factorization.
+
+Params:
+    allocator = Allocator for the result and temporary storage.
+    x = Dense k-by-n matrix of finite observations, one observation per column.
+    mean = Vector of k finite means with the same floating-point element type as x.
+    metric = Raw covariance or precision view of a dense k-by-k matrix of the same element type. The selected triangle
+        must contain finite entries and defines the symmetric matrix.
+
+Returns:
+    A $(LREF MultivariateNormalPDFBatchResult). On success, failedPivot is zero
+    and densities is a custom-allocated vector of n densities
+    in column order. Each zero-dimensional observation has density one.
+    On factorization failure, even for an empty batch, failedPivot is the one-based
+    failed step and densities is empty. Release the successful result with
+    allocator.dispose(result.densities.field).
++/
+MultivariateNormalPDFBatchResult!(AllocatedSlice!(Allocation.custom, Element!X, 1))
+tryMakeMultivariateNormalPDFBatch(A, X, C, M)(
+    auto ref A allocator, scope auto ref X x, scope auto ref C mean, scope auto ref M metric)
+    if (isCovarianceMetric!M && !prepared!(M.form) && batchInputs!(X, C, typeof(metric.storage)))
+{
+    auto outcome = tryMakeMultivariateNormalLPDFBatch(allocator, x, mean, metric);
+    return densityBatchResult(outcome);
+}
+
+/// Evaluate two columns and check whether factorization succeeded.
+version(mir_stat_test_multivariate_normal)
+@system nothrow @nogc unittest
+{
+    import mir.ndslice.slice: sliced;
+    import std.experimental.allocator: dispose;
+    import std.experimental.allocator.mallocator: Mallocator;
+    double[2] data = [10, 14];
+    double[1] mean = [10], covariance = [4];
+    auto columns = data[].sliced(1, 2);
+    auto result = tryMakeMultivariateNormalPDFBatch(Mallocator.instance, columns, mean[], covarianceView(covariance[].sliced(1, 1)));
+    assert(result.failedPivot == 0);
+    scope(exit) Mallocator.instance.dispose(result.densities.field);
+    assert(result.densities.length == 2);
+    assert(result.densities[0] > result.densities[1]);
+}
+
+/++
+Evaluate one density per selected observation and report a failed Cholesky step.
+The observations share a single factorization.
+
+Params:
+    x = Rectangular selection of n observations with k finite coordinates each.
+        Select rows with byDim!0 or alongDim!1, or columns with byDim!1 or alongDim!0.
+    mean = Vector of k finite means with the same floating-point element type as x.
+    metric = Raw covariance or precision view of a dense k-by-k matrix of the same element type. The selected triangle
+        must contain finite entries and defines the symmetric matrix.
+
+Returns:
+    A $(LREF MultivariateNormalPDFBatchResult). On success, failedPivot is zero
+    and densities is a GC-managed vector of n densities
+    in selection order. Each zero-dimensional observation has density one.
+    On factorization failure, even for an empty batch, failedPivot is the one-based
+    failed step and densities is empty.
++/
+MultivariateNormalPDFBatchResult!(AllocatedSlice!(Allocation.gc, Element!(ObservationColumns!X), 1))
+tryMultivariateNormalPDF(X, C, M)(
+    scope auto ref X x, scope auto ref C mean, scope auto ref M metric)
+    if (isCovarianceMetric!M && isObservationSelection!X && __traits(compiles,
+        tryMultivariateNormalPDFBatch(ObservationColumns!X.init, mean, metric)))
+{
+    auto columns = observationColumns(x);
+    return tryMultivariateNormalPDFBatch(columns, mean, metric);
+}
+
+/// Check the pivot before using the densities for the selected rows.
+version(mir_stat_test_multivariate_normal)
+@safe pure nothrow unittest
+{
+    import mir.ndslice.slice: sliced;
+    import mir.ndslice.topology: byDim;
+    double[2] data = [10, 14];
+    double[1] mean = [10], covariance = [4];
+    auto rows = data[].sliced(2, 1);
+    auto result = tryMultivariateNormalPDF(rows.byDim!0, mean[], covarianceView(covariance[].sliced(1, 1)));
+    assert(result.failedPivot == 0);
+    assert(result.densities.length == 2);
+    assert(result.densities[0] > result.densities[1]);
+}
+
+/++
+Evaluate one density per selected observation and report a failed Cholesky step.
+The observations share a single factorization.
+
+Params:
+    x = Rectangular selection of n observations with k finite coordinates each.
+        Select rows with byDim!0 or alongDim!1, or columns with byDim!1 or alongDim!0.
+    mean = Vector of k finite means with the same floating-point element type as x.
+    metric = Raw covariance or precision view of a dense k-by-k matrix of the same element type. The selected triangle
+        must contain finite entries and defines the symmetric matrix.
+
+Returns:
+    A $(LREF MultivariateNormalPDFBatchResult). On success, failedPivot is zero
+    and densities is a reference-counted vector of n densities
+    in selection order. Each zero-dimensional observation has density one.
+    On factorization failure, even for an empty batch, failedPivot is the one-based
+    failed step and densities is empty.
++/
+MultivariateNormalPDFBatchResult!(AllocatedSlice!(Allocation.rc, Element!(ObservationColumns!X), 1))
+tryRcMultivariateNormalPDF(X, C, M)(
+    scope auto ref X x, scope auto ref C mean, scope auto ref M metric)
+    if (isCovarianceMetric!M && isObservationSelection!X && __traits(compiles,
+        tryRcMultivariateNormalPDFBatch(ObservationColumns!X.init, mean, metric)))
+{
+    auto columns = observationColumns(x);
+    return tryRcMultivariateNormalPDFBatch(columns, mean, metric);
+}
+
+/// Evaluate selected rows with raw precision. A precision of 0.25 gives a standard deviation of 2.
+version(mir_stat_test_multivariate_normal)
+@safe pure nothrow @nogc unittest
+{
+    import mir.ndslice.slice: sliced;
+    import mir.ndslice.topology: byDim;
+    import mir.stat.distribution.normal: normalPDF;
+    import std.math: fabs;
+
+    double[2] readings = [10, 14];
+    double[1] mean = [10], precision = [0.25];
+    auto rows = readings[].sliced(2, 1);
+    auto result = tryRcMultivariateNormalPDF(
+        rows.byDim!0, mean[], precisionView(precision[].sliced(1, 1)));
+    assert(result.failedPivot == 0 && result.densities.length == 2);
+    foreach (j; 0 .. readings.length)
+        assert(fabs(result.densities[j] - normalPDF(readings[j], 10.0, 2.0)) < 1e-14);
+}
+
+/++
+Evaluate one density per selected observation and report a failed Cholesky step.
+The observations share a single factorization.
+
+Params:
+    allocator = Allocator for the result and temporary storage.
+    x = Rectangular selection of n observations with k finite coordinates each.
+        Select rows with byDim!0 or alongDim!1, or columns with byDim!1 or alongDim!0.
+    mean = Vector of k finite means with the same floating-point element type as x.
+    metric = Raw covariance or precision view of a dense k-by-k matrix of the same element type. The selected triangle
+        must contain finite entries and defines the symmetric matrix.
+
+Returns:
+    A $(LREF MultivariateNormalPDFBatchResult). On success, failedPivot is zero
+    and densities is a custom-allocated vector of n densities
+    in selection order. Each zero-dimensional observation has density one.
+    On factorization failure, even for an empty batch, failedPivot is the one-based
+    failed step and densities is empty. Release the successful result with
+    allocator.dispose(result.densities.field).
++/
+MultivariateNormalPDFBatchResult!(AllocatedSlice!(Allocation.custom, Element!(ObservationColumns!X), 1))
+tryMakeMultivariateNormalPDF(A, X, C, M)(
+    auto ref A allocator, scope auto ref X x, scope auto ref C mean, scope auto ref M metric)
+    if (isCovarianceMetric!M && isObservationSelection!X && __traits(compiles,
+        tryMakeMultivariateNormalPDFBatch(allocator, ObservationColumns!X.init, mean, metric)))
+{
+    auto columns = observationColumns(x);
+    return tryMakeMultivariateNormalPDFBatch(allocator, columns, mean, metric);
+}
+
+/// Check the pivot before using the densities for the selected rows.
+version(mir_stat_test_multivariate_normal)
+@system nothrow @nogc unittest
+{
+    import mir.ndslice.slice: sliced;
+    import mir.ndslice.topology: byDim;
+    import std.experimental.allocator: dispose;
+    import std.experimental.allocator.mallocator: Mallocator;
+    double[2] data = [10, 14];
+    double[1] mean = [10], covariance = [4];
+    auto rows = data[].sliced(2, 1);
+    auto result = tryMakeMultivariateNormalPDF(Mallocator.instance, rows.byDim!0, mean[], covarianceView(covariance[].sliced(1, 1)));
+    assert(result.failedPivot == 0);
+    scope(exit) Mallocator.instance.dispose(result.densities.field);
+    assert(result.densities.length == 2);
+    assert(result.densities[0] > result.densities[1]);
+}
+
+/++
 Write one density per observation column using a shared Cholesky factor.
 All writable elements must be disjoint from one another and from the inputs.
 
@@ -2578,6 +2942,99 @@ version(mir_stat_test_multivariate_normal)
         x[].sliced(1, 2), mean[], covarianceCholeskyView(factor[].sliced(1, 1)), values[], scratch[].sliced(1, 2));
     foreach (j; 0 .. values.length)
         assert(fabs(values[j] - normalPDF(x[j], 1.0, 2.0)) < 1e-14);
+}
+
+/++
+Factor a covariance or precision matrix once, then write one density per column.
+For a prepared factor, use $(LREF multivariateNormalPDFBatchWithWorkspace) and omit factorWork.
+All writable elements must be disjoint from one another and from the inputs.
+
+Params:
+    x = Dense k-by-n matrix of finite observations.
+    mean = Vector of k finite means. All buffers share the floating-point element type of x.
+    metric = Raw covariance or precision view of a dense k-by-k matrix with finite entries in the selected triangle.
+    result = Writable vector of n densities in column order. A failed factorization
+        leaves every entry untouched.
+    work = Writable k-by-n scratch for centering and transforming the observations.
+    factorWork = Writable k-by-k scratch. Its selected triangle holds the factor on
+        success and may contain a partial factor on failure.
+
+Returns:
+    Zero on success, or the one-based failed Cholesky pivot. The matrix is checked
+    even for an empty batch. In zero dimensions each density is one.
++/
+size_t tryMultivariateNormalPDFBatchWithWorkspace(X, C, M, R, W, F)(
+    scope auto ref X x, scope auto ref C mean, scope auto ref M metric,
+    scope auto ref R result, scope auto ref W work, scope auto ref F factorWork)
+    if (isCovarianceMetric!M && !prepared!(M.form) &&
+        batchBuffers!(X, C, typeof(metric.storage), R, W) && matrix!F && is(Element!X == Element!F))
+{
+    auto values = result.asView;
+    const pivot = tryMultivariateNormalLPDFBatchWithWorkspace(x, mean, metric, values, work, factorWork);
+    if (pivot == 0) exponentiateLogDensities(values);
+    return pivot;
+}
+
+/// A failed second pivot preserves both entries of the density vector.
+version(mir_stat_test_multivariate_normal)
+@safe pure nothrow @nogc unittest
+{
+    import mir.ndslice.slice: sliced;
+    double[4] x = [1, 2, 3, 4], metric = [1, 1, double.nan, 1], scratch, factor;
+    double[2] mean = [0, 0], values = [7, 8];
+    assert(tryMultivariateNormalPDFBatchWithWorkspace(x[].sliced(2, 2), mean[],
+        covarianceView(metric[].sliced(2, 2)), values[], scratch[].sliced(2, 2), factor[].sliced(2, 2)) == 2);
+    assert(values == [7, 8]);
+}
+
+version(mir_stat_test_multivariate_normal)
+@safe pure nothrow @nogc unittest
+{
+    import mir.ndslice.slice: sliced;
+    import mir.ndslice.dynamic: reversed;
+    import mir.stat.distribution.normal: normalPDF;
+    import std.math: fabs;
+
+    double[3] x = [3, 1, 0x1p512], scratch;
+    double[1] mean = [1], precision = [1], factor;
+    double[6] buffer = [11, 12, 13, 14, 15, 16];
+    auto values = buffer[].sliced(3, 2)[0 .. $, 1].reversed;
+    auto metric = precisionView(precision[].sliced(1, 1));
+    const pivot = tryMultivariateNormalPDFBatchWithWorkspace(x[].sliced(1, 3), mean[],
+        metric, values, scratch[].sliced(1, 3), factor[].sliced(1, 1));
+    assert(pivot == 0);
+    assert(fabs(buffer[5] - normalPDF(3.0, 1.0, 1.0)) < double.epsilon);
+    assert(fabs(buffer[3] - normalPDF(1.0, 1.0, 1.0)) < double.epsilon);
+    assert(buffer[1] == 0 && buffer[0] == 11 && buffer[2] == 13 && buffer[4] == 15);
+
+    double[] empty;
+    auto emptyMetric = covarianceView(empty.sliced(0, 0));
+    auto result = tryRcMultivariateNormalPDFBatch(empty.sliced(0, 3), empty, emptyMetric);
+    assert(result.failedPivot == 0 && result.densities == [1, 1, 1]);
+    auto noObservations = empty.sliced(1, 0);
+    result = tryRcMultivariateNormalPDFBatch(noObservations, mean[], metric);
+    assert(result.failedPivot == 0 && result.densities.length == 0);
+    precision[0] = 0;
+    result = tryRcMultivariateNormalPDFBatch(noObservations, mean[], metric);
+    assert(result.failedPivot == 1 && result.densities.length == 0);
+}
+
+// Infer the return type so __traits(compiles) also rejects a prepared factor here.
+auto tryMultivariateNormalPDFBatchWithWorkspace(X, C, M, R, W, F...)(
+    scope auto ref X x, scope auto ref C mean, scope auto ref M factor,
+    scope auto ref R result, scope auto ref W work, scope auto ref F factorWork)
+    if (isCovarianceMetric!M && prepared!(M.form) && batchBuffers!(X, C, typeof(factor.storage), R, W) &&
+        (F.length == 0 || (F.length == 1 && matrix!(F[0]) && is(Element!X == Element!(F[0])))))
+{
+    static assert(0, "For a prepared Cholesky factor, use " ~
+        "multivariateNormalPDFBatchWithWorkspace(x, mean, factor, result, work). " ~
+        "It writes the densities and returns void.");
+}
+
+private MultivariateNormalPDFBatchResult!V densityBatchResult(V)(MultivariateNormalLPDFBatchResult!V outcome)
+{
+    if (outcome.failedPivot == 0) exponentiateLogDensities(outcome.logDensities);
+    return MultivariateNormalPDFBatchResult!V(outcome.logDensities, outcome.failedPivot);
 }
 
 /// Convert successful LPDF output in its existing storage, respecting the output stride.
