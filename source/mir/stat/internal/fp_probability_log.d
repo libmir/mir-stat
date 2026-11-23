@@ -503,3 +503,25 @@ version(mir_stat_test)
         }
     }
 }
+
+// Use one logarithm near equality. Elsewhere subtract the input logarithms,
+// since the exponent of their quotient need not fit in a signed long.
+package(mir.stat) @safe pure nothrow @nogc
+auto logRatio(uint bits)(Fp!bits a, Fp!bits b, ref ProbabilityLog!(3 * bits + 64).Context context)
+{
+    import mir.stat.internal.fp_location_scale: addOffset;
+    import mir.stat.internal.fp_scaled_probability: exponentBias;
+
+    alias L = ProbabilityLog!(3 * bits + 64);
+    alias S = L.S;
+    enum work = 3 * bits + 256;
+    const ratio = S.from(a).divide(S.from(b));
+    if (ratio.exponent >= exponentBias - 1 && ratio.exponent <= exponentBias + 2)
+    {
+        const e = cast(long)cast(ulong)(ratio.exponent - exponentBias) - work;
+        return L.logDyadic(ratio.fraction.coefficient, e, context);
+    }
+    const first = L.logDyadic(a.coefficient, a.exponent, context);
+    const second = L.logDyadic(b.coefficient, b.exponent, context);
+    return second.coefficient ? addOffset!work(first, S.from(second), !second.sign) : first;
+}

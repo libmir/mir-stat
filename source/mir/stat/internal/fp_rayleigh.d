@@ -133,7 +133,7 @@ package(mir.stat) Fp!bits rayleighLogDensity(uint bits)(Fp!bits x, Fp!bits scale
 
 package(mir.stat) Fp!bits rayleighQuantile(uint bits)(Fp!bits p, Fp!bits scale)
 {
-    import mir.stat.internal.uint_sqrt: isqrtRem;
+    import mir.stat.internal.fp_scaled_probability: scaledSqrt;
     alias T = Fp!bits;
     if (!p.coefficient)
         return T(0);
@@ -153,19 +153,6 @@ package(mir.stat) Fp!bits rayleighQuantile(uint bits)(Fp!bits p, Fp!bits scale)
     auto squared = logarithm.multiply(divisor.multiply(divisor));
     squared.exponent += 1;
 
-    // Make the binary exponent even and extract a work-bit root. A sticky
-    // low bit preserves the side of a midpoint through the final narrowing.
-    const odd = squared.exponent.bt(0);
-    alias I = UInt!(2 * work);
-    const radicand = squared.fraction.coefficient.toSize!(2 * work) << (work - odd);
-    I remainder;
-    auto coefficient = isqrtRem(radicand, remainder).toSize!work;
-    if (remainder || tiny)
-        coefficient |= 1u;
-    S result;
-    result.fraction = Fp!work(false, -cast(long)work, coefficient);
-    result.exponent = (squared.exponent >> 1) + (exponentBias >> 1);
-    if (odd)
-        result.exponent += 1;
+    const result = scaledSqrt(squared, tiny);
     return addOffset!bits(T(0), result, false);
 }

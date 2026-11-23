@@ -20,7 +20,9 @@ Copyright: 2023 Mir Stat Authors.
 
 module mir.stat.distribution.weibull;
 
+import mir.bignum.fp: Fp;
 import mir.internal.utility: isFloatingPoint;
+import mir.stat.internal.fp_probability: fpProbabilityValid;
 
 /++
 Computes the Weibull probability density function (PDF).
@@ -109,6 +111,68 @@ unittest
 }
 
 /++
+Computes the Weibull density from represented inputs with guarded precision.
+The density prefactor and survival probability retain separate exponents
+until their product is rounded.
+
+Params:
+    T = Represented $(D Fp) type, inferred from the arguments.
+    x = Nonnegative observation, including positive infinity.
+    shape = Positive finite shape parameter.
+    scale = Positive finite scale parameter (default: one).
+
+Returns:
+    The density in type T. At zero it is positive infinity for shape below
+    one, the reciprocal scale for shape one, and zero for shape above one.
+    At positive infinity the density is zero. Finite densities may overflow.
++/
+@safe pure nothrow @nogc
+T weibullPDF(T)(const T x, const T shape, const T scale = T(1))
+    if (is(T == Fp!size, size_t size))
+    in (!x.isNaN && (!x.sign || (!x.isSpecial && !x.coefficient)), "x must be nonnegative")
+    in (validParameter(shape), "shape must be finite and positive")
+    in (validParameter(scale), "scale must be finite and positive")
+{
+    import mir.stat.internal.fp_weibull: weibullDensity;
+    return weibullDensity!false(x, shape, scale);
+}
+
+///
+version(mir_stat_test)
+@safe pure nothrow @nogc unittest
+{
+    import mir.bignum.fp: Fp;
+    alias T = Fp!64;
+    assert(weibullPDF(T(0), T(1), T(4)) == T(0.25));
+    assert(weibullPDF(T(0), T(2)) == T(0));
+}
+
+version(mir_stat_test)
+@safe pure nothrow @nogc unittest
+{
+    import mir.bignum.fixed: UInt;
+    import mir.math.common: approxEqual;
+    alias T = Fp!64;
+    alias Wide = Fp!128;
+    enum expected = Wide(false, -133, UInt!128.fromHexString("9dad55b76d40097a8f202e6d50714fdf"));
+    assert(weibullPDF(Wide(9), Wide(1.5), Wide(4)) == expected);
+    assert(approxEqual(weibullPDF(9.0, 1.5, 4.0), 0.019247691550312144518, 8 * double.epsilon));
+    assert(weibullPDF(T(0), T(0.5)).isInfinity);
+    assert(weibullPDF(T(double.infinity), T(0.5)) == T(0));
+    assert(weibullPDF(T(2), T(128)) == T(0));
+    auto largeShape = T(1);
+    largeShape.exponent += 100;
+    assert(weibullPDF(T(0.5), largeShape) == T(0));
+
+    // exp(-2^63) rounds to zero alone; dividing by scale recovers the density.
+    const scale = T(false, long.min + 256, UInt!64(1));
+    const x = T(false, long.min + 319, UInt!64(1));
+    assert(weibullCCDF(x, T(1), scale) == T(0));
+    assert(weibullPDF(x, T(1), scale) ==
+        T(false, -4083141060989547003L, UInt!64(0x98d3377e65eee9c8UL)));
+}
+
+/++
 Computes the Weibull cumulative distribution function (CDF).
 
 Returns the lower-tail probability $(D P(X <= x)).
@@ -161,6 +225,43 @@ unittest
 }
 
 /++
+Computes the Weibull lower-tail probability with guarded extended precision.
+
+Very small lower tails retain the scaled cumulative hazard through final rounding.
+Rounding near a midpoint is not certified for general shapes.
+
+Params:
+    T = Represented $(D Fp) type, inferred from the arguments.
+    x = Nonnegative observation, including positive infinity.
+    shape = Positive finite shape parameter.
+    scale = Positive finite scale parameter (default: one).
+
+Returns:
+    $(D P(X <= x)) in type T, with value zero at zero and one at positive infinity.
++/
+@safe pure nothrow @nogc
+T weibullCDF(T)(const T x, const T shape, const T scale = T(1))
+    if (is(T == Fp!size, size_t size))
+    in (!x.isNaN && (!x.sign || (!x.isSpecial && !x.coefficient)), "x must be nonnegative")
+    in (validParameter(shape), "shape must be finite and positive")
+    in (validParameter(scale), "scale must be finite and positive")
+{
+    import mir.stat.internal.fp_weibull: weibullTail;
+    return weibullTail!false(x, shape, scale);
+}
+
+///
+version(mir_stat_test)
+@safe pure nothrow @nogc
+unittest
+{
+    import mir.bignum.fp: Fp;
+    alias T = Fp!64;
+    assert(weibullCDF(T(0), T(2)) == T(0));
+    assert(weibullCDF(T(double.infinity), T(2), T(3)) == T(1));
+}
+
+/++
 Computes the Weibull complementary cumulative distribution function (CCDF).
 
 Returns the upper-tail probability $(D P(X > x)). Use this function directly
@@ -210,6 +311,130 @@ unittest
     0.5.weibullCCDF(2.0, 3.0).shouldApprox == 0.9726045;
     1.0.weibullCCDF(2.0, 3.0).shouldApprox == 0.8948393;
     1.5.weibullCCDF(2.0, 3.0).shouldApprox == 0.7788008;
+}
+
+/++
+Computes the Weibull strict upper-tail probability with guarded extended precision.
+
+The survival probability is evaluated directly, including when the lower tail rounds to one.
+Rounding near a midpoint is not certified for general shapes.
+
+Params:
+    T = Represented $(D Fp) type, inferred from the arguments.
+    x = Nonnegative observation, including positive infinity.
+    shape = Positive finite shape parameter.
+    scale = Positive finite scale parameter (default: one).
+
+Returns:
+    $(D P(X > x)) in type T, with value one at zero and zero at positive infinity.
++/
+@safe pure nothrow @nogc
+T weibullCCDF(T)(const T x, const T shape, const T scale = T(1))
+    if (is(T == Fp!size, size_t size))
+    in (!x.isNaN && (!x.sign || (!x.isSpecial && !x.coefficient)), "x must be nonnegative")
+    in (validParameter(shape), "shape must be finite and positive")
+    in (validParameter(scale), "scale must be finite and positive")
+{
+    import mir.stat.internal.fp_weibull: weibullTail;
+    return weibullTail!true(x, shape, scale);
+}
+
+///
+version(mir_stat_test)
+@safe pure nothrow @nogc
+unittest
+{
+    import mir.bignum.fp: Fp;
+    alias T = Fp!64;
+    assert(weibullCCDF(T(0), T(2)) == T(1));
+    assert(weibullCCDF(T(double.infinity), T(2), T(3)) == T(0));
+}
+
+// Shared dyadic inputs: the cumulative hazard is exactly 27/8.
+version(mir_stat_test)
+@safe pure nothrow @nogc unittest
+{
+    import mir.bignum.fixed: UInt;
+    import mir.math.common: approxEqual;
+    import std.meta: AliasSeq;
+
+    static foreach (R; AliasSeq!(float, double, real))
+    {
+        assert(approxEqual(weibullCDF(R(9), R(1.5), R(4)),
+            R(0.9657818816883339653014449405563691854921516024381881357L), 8 * R.epsilon));
+        assert(approxEqual(weibullCCDF(R(9), R(1.5), R(4)),
+            R(0.03421811831166603469855505944363081450784839756181186426L), 8 * R.epsilon));
+    }
+    alias T = Fp!128;
+    enum expectedCDF = T(false, -128, UInt!128.fromHexString("f73d7b3cebb554ce864552c109c0d0e5"));
+    assert(weibullCDF(T(9), T(1.5), T(4)) == expectedCDF);
+    enum expectedCCDF = T(false, -132, UInt!128.fromHexString("8c284c3144aab3179baad3ef63f2f1aa"));
+    assert(weibullCCDF(T(9), T(1.5), T(4)) == expectedCCDF);
+}
+
+version(mir_stat_test)
+@safe pure nothrow @nogc unittest
+{
+    import mir.bignum.fixed: UInt;
+    alias T = Fp!64;
+    alias U = UInt!64;
+    // exp(-16384) remains representable after the CDF rounds to one.
+    assert(weibullCDF(T(128), T(2)) == T(1));
+    assert(weibullCCDF(T(128), T(2)) == T(false, -23701, U(0xec4bb8768ab8ab91UL)));
+    auto tiny = T(1);
+    tiny.exponent -= 40_000;
+    auto expected = T(1);
+    expected.exponent -= 20_000;
+    assert(weibullCDF(tiny, T(0.5)) == expected);
+    assert(weibullCCDF(tiny, T(0.5)) == T(1));
+    const x = T(false, long.min, U(7));
+    assert(weibullCDF(x, T(1), T(2)) == T(false, long.min, U(3)));
+    // The cubed observation is exactly 62.5 least quanta; the CDF is below it.
+    const cubeRoot = T(false, long.min / 3 - 1, U(5));
+    assert(weibullCDF(cubeRoot, T(3)) == T(false, long.min, U(62)));
+
+    // Adjacent observations on either side of the same represented scale.
+    auto scale = T(false, 40_000, U(0x8000000000000013UL));
+    auto below = scale, above = scale;
+    below.coefficient -= 1;
+    above.coefficient += 1;
+    const shape = T(1UL << 63);
+    assert(weibullCDF(below, shape, scale) == T(false, -65, U(0x9d97e11cc21ad5aeUL)));
+    assert(weibullCCDF(above, shape, scale) == T(false, -67, U(0x8724bc3f102a3d05UL)));
+
+    // The ratio 2^(2^63) lies outside Fp, but the cumulative hazard is two.
+    auto high = T(1), low = T(1), smallShape = T(1);
+    high.exponent += 1L << 62;
+    low.exponent -= 1L << 62;
+    smallShape.exponent -= 63;
+    assert(weibullCDF(high, smallShape, low) == weibullCDF(T(2), T(1)));
+    assert(weibullCCDF(high, smallShape, low) == weibullCCDF(T(2), T(1)));
+
+    // The sign of log(x/scale) determines which tail vanishes.
+    assert(weibullCDF(T(2), high) == T(1));
+    assert(weibullCCDF(T(2), high) == T(0));
+    assert(weibullCDF(T(1), high, T(2)) == T(0));
+    assert(weibullCCDF(T(1), high, T(2)) == T(1));
+
+    // Integral shapes on both sides of the bounded-power budget.
+    assert(weibullCDF(T(2), T(257), T(2)) == weibullCDF(T(1), T(1)));
+    assert(weibullCDF(T(2), T(128)) == T(1));
+    assert(weibullCCDF(T(2), T(128)) == T(0));
+
+    import mir.stat.distribution.exponential: exponentialCDF, exponentialCCDF;
+    assert(weibullCDF(T(3), T(1), T(4)) == exponentialCDF(T(3), T(0.25)));
+    assert(weibullCCDF(T(3), T(1), T(4)) == exponentialCCDF(T(3), T(0.25)));
+}
+
+version(mir_stat_test)
+static if (size_t.sizeof == 4)
+@safe pure nothrow @nogc unittest
+{
+    import mir.bignum.fixed: UInt;
+    alias T = Fp!32;
+    const shape = T(false, -1, UInt!32(3));
+    assert(weibullCDF(T(9), shape, T(4)) == T(false, -32, UInt!32(0xf73d7b3dU)));
+    assert(weibullCCDF(T(9), shape, T(4)) == T(false, -36, UInt!32(0x8c284c31U)));
 }
 
 /++
@@ -267,6 +492,89 @@ unittest
     weibullInvCDF(0.8, 2, 3).shouldApprox == 3.805909;
 }
 
+
+/++
+Computes the Weibull quantile with guarded extended precision. The
+calculation retains the exponent through the final scaling. General
+quantiles are not certified to be correctly rounded.
+
+Params:
+    T = Represented $(D Fp) type, inferred from the arguments.
+    p = Cumulative probability in the closed interval [0, 1].
+    shape = Positive finite shape parameter.
+    scale = Positive finite scale parameter (default: one).
+
+Returns:
+    The quantile in type T, with zero at probability zero and positive
+    infinity at probability one. An interior quantile can round to zero
+    or overflow to positive infinity.
++/
+@safe pure nothrow @nogc
+T weibullInvCDF(T)(const T p, const T shape, const T scale = T(1))
+    if (is(T == Fp!size, size_t size))
+    in (fpProbabilityValid(p), "p must be in [0, 1]")
+    in (validParameter(shape), "shape must be finite and positive")
+    in (validParameter(scale), "scale must be finite and positive")
+{
+    import mir.stat.internal.fp_weibull: weibullQuantile;
+    return weibullQuantile(p, shape, scale);
+}
+
+///
+version(mir_stat_test)
+@safe pure nothrow @nogc unittest
+{
+    import mir.bignum.fp: Fp;
+    alias T = Fp!64;
+    assert(weibullInvCDF(T(0), T(2)) == T(0));
+    assert(weibullInvCDF(T(1), T(2), T(3)) == T(double.infinity));
+}
+
+version(mir_stat_test)
+@safe pure nothrow @nogc unittest
+{
+    import mir.bignum.fixed: UInt;
+    import mir.math.common: approxEqual;
+    alias T = Fp!64;
+    alias Wide = Fp!128;
+    enum expected = Wide(false, -126, UInt!128.fromHexString("fcb7b7d19e6b36878965c446b82ae73d"));
+    assert(weibullInvCDF(Wide(0.625), Wide(1.5), Wide(4)) == expected);
+    assert(approxEqual(weibullInvCDF(0.625, 1.5, 4.0), 3.9487132594164679205, 8 * double.epsilon));
+
+    // The first omitted log correction puts the quantile above 2.5 grid units.
+    const least = T(false, long.min, UInt!64(1));
+    assert(weibullInvCDF(least, T(1), T(2.5)) == T(false, long.min, UInt!64(3)));
+    // The first correction to the fourth root is below its rounding midpoint.
+    auto fourthRoot = T(1);
+    fourthRoot.exponent += long.min / 4;
+    assert(weibullInvCDF(least, T(4)) == fourthRoot);
+    assert(weibullInvCDF(T(0.5), least) == T(0));
+    assert(weibullInvCDF(T(0.75), least) == T(double.infinity));
+    const square = T(false, long.min, UInt!64(25));
+    const scale = T(false, long.min / 2 - 1, UInt!64(5));
+    assert(weibullInvCDF(square, T(2), scale) == T(false, long.min, UInt!64(13)));
+
+    // Adjacent dyadic probabilities straddle 1-exp(-1). A tiny shape
+    // amplifies their difference on opposite sides of unit quantile.
+    enum lower = Wide(false, -128, UInt!128.fromHexString("a1d2a7274c4320e54521387d6fab06f2"));
+    auto upper = lower;
+    upper.coefficient += 1;
+    const smallShape = Wide(false, -128, UInt!128(1));
+    enum lowerQuantile = Wide(false, -128, UInt!128.fromHexString("ac15bc99fea22d16ae06018847c354a8"));
+    enum upperQuantile = Wide(false, -124, UInt!128.fromHexString("a2fd1e1090bc9a9ea6773d8aa1eebd6e"));
+    assert(weibullInvCDF(lower, smallShape) == lowerQuantile);
+    assert(weibullInvCDF(upper, smallShape) == upperQuantile);
+    enum nearOne = Wide(false, -123, UInt!128.fromHexString("9f23ed24976267a754c70a0eedb3d1e0"));
+    assert(weibullInvCDF(Wide(false, -128, UInt!128.max), Wide(1.5)) == nearOne);
+
+    // The unscaled power overflows or underflows, but the scaled quantile fits.
+    const smallScale = T(false, long.min + 256, UInt!64(1));
+    const largeScale = T(false, 1L << 62, UInt!64(1));
+    assert(weibullInvCDF(T(0.75), T(false, -65, UInt!64(1)), smallScale) ==
+        T(false, 8162080197567958305L, UInt!64(0xd85a2dcb31678382UL)));
+    assert(weibullInvCDF(T(0.5), T(false, -64, UInt!64(1)), largeScale) ==
+        T(false, -5142331938070796815L, UInt!64(0xa669938d484c40edUL)));
+}
 
 /++
 Computes the Weibull log probability density function (LPDF).
@@ -386,6 +694,89 @@ unittest
     0.5.weibullLPDF(2.0, 3.0).shouldApprox == log(0.1080672);
     1.0.weibullLPDF(2.0, 3.0).shouldApprox == log(0.1988532);
     1.5.weibullLPDF(2.0, 3.0).shouldApprox == log(0.2596003);
+}
+
+/++
+Computes the Weibull log density with a guarded logarithm of the density
+prefactor and a separately scaled cumulative hazard. For integral shapes,
+powers are formed before division when their estimated odd-significand
+widths are at most 2*bits+128, preserving an exact unit prefactor. Near unit density,
+cancellation beyond working precision can leave an unresolved residual.
+
+Params:
+    T = Represented $(D Fp) type, inferred from the arguments.
+    x = Nonnegative observation, including positive infinity.
+    shape = Positive finite shape parameter.
+    scale = Positive finite scale parameter (default: one).
+
+Returns:
+    The natural logarithm of the density in type T. At zero it is positive
+    infinity for shape below one, minus log(scale) for shape one, and
+    negative infinity for shape above one. At positive infinity it is
+    negative infinity.
++/
+@safe pure nothrow @nogc
+T weibullLPDF(T)(const T x, const T shape, const T scale = T(1))
+    if (is(T == Fp!size, size_t size))
+    in (!x.isNaN && (!x.sign || (!x.isSpecial && !x.coefficient)), "x must be nonnegative")
+    in (validParameter(shape), "shape must be finite and positive")
+    in (validParameter(scale), "scale must be finite and positive")
+{
+    import mir.stat.internal.fp_weibull: weibullDensity;
+    return weibullDensity!true(x, shape, scale);
+}
+
+///
+version(mir_stat_test)
+@safe pure nothrow @nogc unittest
+{
+    import mir.bignum.fp: Fp;
+    alias T = Fp!64;
+    assert(weibullLPDF(T(0), T(1)) == T(0));
+    assert(weibullLPDF(T(3), T(1)) == T(-3));
+}
+
+version(mir_stat_test)
+@safe pure nothrow @nogc unittest
+{
+    import mir.bignum.fixed: UInt;
+    import mir.math.common: approxEqual;
+    alias T = Fp!64;
+    alias Wide = Fp!128;
+    enum expected = Wide(true, -126, UInt!128.fromHexString("fcd2c42269b724f077d6eced81553854"));
+    assert(weibullLPDF(Wide(9), Wide(1.5), Wide(4)) == expected);
+    assert(approxEqual(weibullLPDF(9.0, 1.5, 4.0), -3.9503641449035618549, 8 * double.epsilon));
+    assert(weibullLPDF(T(0), T(0.5)) == T(double.infinity));
+    assert(weibullLPDF(T(0), T(2)) == T(-double.infinity));
+    assert(weibullLPDF(T(double.infinity), T(0.5)) == T(-double.infinity));
+
+    // The density rounds to one, but its log is exactly minus the hazard.
+    auto x = T(1), scale = T(1), residual = T(-1);
+    x.exponent -= 40_001;
+    scale.exponent -= 20_000;
+    residual.exponent -= 40_002;
+    assert(weibullPDF(x, T(2), scale) == T(1));
+    assert(weibullLPDF(x, T(2), scale) == residual);
+
+    // For t = 5*2^-10000, shape = 3, x = 3*t^3 and scale = 3*t^2,
+    // the prefactor is one and the log density is exactly -t^3.
+    x = T(375);
+    x.exponent -= 30_000;
+    scale = T(75);
+    scale.exponent -= 20_000;
+    residual = T(-125);
+    residual.exponent -= 30_000;
+    assert(weibullLPDF(x, T(3), scale) == residual);
+
+    // The negative log hazard survives even when the density underflows.
+    auto shape = T(1);
+    shape.exponent += 100;
+    enum logHalf = T(true, -64, UInt!64(0xb17217f7d1cf79acUL));
+    auto leading = logHalf;
+    leading.exponent += 100;
+    assert(weibullLPDF(T(0.5), shape) == leading);
+    assert(weibullLPDF(T(2), shape) == T(-double.infinity));
+    assert(weibullLPDF(T(0), T(1), T(2)) == logHalf);
 }
 
 // Density limits at zero and infinity, including the exponential special case.
@@ -582,4 +973,9 @@ unittest
         assert(weibullCDF(T(0), T(2)) == 0);
         assert(weibullCDF(T.infinity, T(2)) == 1);
     }}
+}
+
+private bool validParameter(uint bits)(Fp!bits value) @safe pure nothrow @nogc
+{
+    return !value.isSpecial && !value.sign && !!value.coefficient;
 }
