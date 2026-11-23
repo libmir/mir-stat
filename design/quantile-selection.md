@@ -225,6 +225,8 @@ Update this page when changing eligibility rules, thresholds, scheduling, alloca
 
 ## Ordering weighted observations
 
+The owning `weightedQuantileSortFirst`, `rcWeightedQuantileSortFirst`, and `makeWeightedQuantileSortFirst` entry points prepare the positive-weight workspace without attempting batch partition selection. They use the same order detection, reversal, comparison sort, cumulative preparation and query evaluation as the ordinary sorted fallback. The allocator owns the copied rows and any batch output. A Phobos sorted range orders only the observations, so weights within ties still participate in order detection. An `assumeWeightedSorted` pair goes directly to the assume-sorted preparation. The choice of preparation is made at compile time.
+
 Weighted quantiles and weighted tables share `prepareWeightedQuantileWorkspace`.
 While copying positive-weight rows, it checks whether adjacent entries are in
 ascending or descending order by value, using the raw weight to break ties.
