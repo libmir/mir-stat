@@ -87,6 +87,8 @@ public import mir.stat.distribution.log_normal: logNormalPDF;
 public import mir.stat.distribution.logistic: logisticPDF;
 ///
 public import mir.stat.distribution.multivariate_normal: multivariateNormalPDF,
+    multivariateNormalPDFFromCovariance, multivariateNormalPDFFromPrecision,
+    multivariateNormalPDFFromCovarianceCholesky, multivariateNormalPDFFromPrecisionCholesky,
     rcMultivariateNormalPDF, makeMultivariateNormalPDF, multivariateNormalPDFWithWorkspace,
     multivariateNormalPDFBatch, rcMultivariateNormalPDFBatch, makeMultivariateNormalPDFBatch,
     multivariateNormalPDFBatchWithWorkspace, tryMultivariateNormalPDFBatchWithWorkspace,
