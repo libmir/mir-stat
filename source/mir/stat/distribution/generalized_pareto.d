@@ -218,7 +218,7 @@ T generalizedParetoPDF(T)(const T x, const T mu, const T sigma, const T xi)
     in (supported(x, mu, sigma, xi))
 {
     import mir.stat.internal.fp_generalized_pareto: paretoDensity;
-    return paretoDensity(x, mu, sigma, xi);
+    return paretoDensity!false(x, mu, sigma, xi);
 }
 
 ///
@@ -763,6 +763,67 @@ unittest
                 generalizedParetoCCDF(T(2), T(0), T(1), xi));
         }
     }}
+}
+
+/++
+Evaluates the generalized Pareto LPDF with guarded extended precision.
+
+Params:
+    T = Represented $(D Fp) type, inferred from the arguments.
+    x = Observation on the support, including the upper endpoint.
+    mu = Finite location.
+    sigma = Positive finite scale.
+    xi = Finite shape. Negative shape bounds the support above by $(D mu - sigma / xi).
+
+Returns:
+    Natural logarithm of the density in type T, including the logarithmic limits at the support endpoints. Cancellation near unit density can exhaust working precision.
++/
+@safe pure nothrow @nogc
+T generalizedParetoLPDF(T)(const T x, const T mu, const T sigma, const T xi)
+    if (is(T == Fp!size, size_t size))
+    in (!mu.isSpecial && !xi.isSpecial && !sigma.isSpecial && !sigma.sign && !!sigma.coefficient)
+    in (supported(x, mu, sigma, xi))
+{
+    import mir.stat.internal.fp_generalized_pareto: paretoDensity;
+    return paretoDensity!true(x, mu, sigma, xi);
+}
+
+///
+version(mir_stat_test)
+@safe pure nothrow @nogc unittest
+{
+    import mir.bignum.fp: Fp;
+    alias T = Fp!64;
+    assert(generalizedParetoLPDF(T(0), T(0), T(1), T(1)) == T(0));
+}
+
+version(mir_stat_test)
+@safe pure nothrow @nogc unittest
+{
+    import mir.bignum.fixed: UInt;
+    import mir.math.common: approxEqual;
+    // Independent 220-digit decimal references at shared binary inputs.
+    {
+        alias T = Fp!64;
+        enum expected = T(true, -63, UInt!64.fromHexString("d2a2440b15dbb767"));
+        assert(generalizedParetoLPDF(T(1.5), T(-0.5), T(3), T(-0.25)) == expected);
+        assert(approxEqual(generalizedParetoLPDF(1.5, -0.5, 3.0, -0.25), -1.6455769590499736, 8 * double.epsilon));
+    }
+    {
+        alias T = Fp!128;
+        enum expected = T(true, -127, UInt!128.fromHexString("f559e05bf44d7add32253825819bbc18"));
+        assert(generalizedParetoLPDF(T(1.5), T(-0.5), T(3), T(0.375)) == expected);
+        assert(approxEqual(generalizedParetoLPDF(1.5, -0.5, 3.0, 0.375), -1.9168053101535454, 8 * double.epsilon));
+    }
+    alias T = Fp!64;
+    auto large = T(1);
+    large.exponent += 20_000;
+    T negative = large;
+    negative.sign = true;
+    assert(generalizedParetoLPDF(large, T(0), T(1), T(0)) == negative);
+    assert(generalizedParetoLPDF(T(1), T(0), T(1), T(-1)) == T(0));
+    assert(generalizedParetoLPDF(T(2), T(0), T(1), T(-0.5)) == T(-double.infinity));
+    assert(generalizedParetoLPDF(T(0.5), T(0), T(1), T(-2)) == T(double.infinity));
 }
 
 // Called only for positive shape and an overflowing standardized finite input.
