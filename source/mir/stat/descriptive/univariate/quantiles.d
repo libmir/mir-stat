@@ -34,6 +34,10 @@ $(TR $(TH Category) $(TH Declarations))
         $(REF rcquantile, mir, stat, descriptive, univariate, quantiles)$(NBSP)
         $(REF makeQuantile, mir, stat, descriptive, univariate, quantiles)$(NBSP)
         $(REF quantileInto, mir, stat, descriptive, univariate, quantiles)$(NBSP)
+        $(REF quantileSortFirst, mir, stat, descriptive, univariate, quantiles)$(NBSP)
+        $(REF rcquantileSortFirst, mir, stat, descriptive, univariate, quantiles)$(NBSP)
+        $(REF makeQuantileSortFirst, mir, stat, descriptive, univariate, quantiles)$(NBSP)
+        $(REF quantileSortFirstInto, mir, stat, descriptive, univariate, quantiles)$(NBSP)
         $(REF quantileScratchLength, mir, stat, descriptive, univariate, quantiles)$(NBSP)
         $(REF QuantileTable, mir, stat, descriptive, univariate, quantiles)$(NBSP)
         $(REF quantileTable, mir, stat, descriptive, univariate, quantiles)$(NBSP)
@@ -134,7 +138,7 @@ private meanType!F allocatedMedian(F, bool allowModify, QuantileAllocation alloc
         static if (allocation == QuantileAllocation.custom)
             scope(exit) releaseQuantiles(allocator, scratch);
         scope auto flat = source.lightScope.flattened;
-        foreach (i; 0 .. flat.length) scratch[i] = flat[i];
+        scratch.lightScope[] = flat;
         return rcMedian!(F, true)(scratch.lightScope);
     }
 }
@@ -6282,7 +6286,7 @@ private auto allocatedQuantileTable(QuantileAllocation allocation, Context, Data
         quantileScratchLength(flat.length));
     static if (allocation == QuantileAllocation.custom)
         scope(failure) releaseQuantiles(context, bitmap);
-    foreach (i; 0 .. flat.length) values[i] = flat[i];
+    values.lightScope[] = flat;
     return QuantileTable!(IteratorOf!(typeof(values)), IteratorOf!(typeof(bitmap)),
         allocation == QuantileAllocation.custom)(values.move, bitmap.move);
 }
@@ -7195,8 +7199,7 @@ private auto allocatedQuantile(F, QuantileAlgo algorithm, bool modify,
                 return result;
             }
         }
-        foreach (i; 0 .. flat.length)
-            workspace[i] = flat[i];
+        workspace[] = flat;
     }
 
     static if (isFloatingPoint!(Unqual!Probability))
@@ -8118,6 +8121,319 @@ private void writeSortedQuantiles(QuantileAlgo algorithm, V, P, O)(scope V value
     assert(output.length == levels.length, "Output length must match probabilities");
     foreach (i; 0 .. levels.length)
         output[i] = quantileRanks!algorithm(values.length, levels[i]).evaluate!(F, algorithm)(values);
+}
+
+// The scratch owner must outlive sorted rank evaluation.
+private auto sortFirstQuantile(F, QuantileAlgo algorithm, bool modify, QuantileAllocation allocation,
+    Context, Data, P...)(ref Context context, scope auto ref Data data, scope auto ref P probabilities)
+{
+    auto evaluate(V)(scope auto ref V values)
+    {
+        static if (is(F == void))
+            alias Result = quantileType!(typeof(values[0]), algorithm);
+        else
+            alias Result = F;
+        return dispatchQuantile!(Result, algorithm, false, allocation, true)(context, values, probabilities);
+    }
+    static if (isPhobosSortedRange!Data)
+    {
+        scope auto values = sortedQuantileValues(data);
+        return evaluate(values);
+    }
+    else
+    {
+        import mir.ndslice.sorting : sort;
+        import mir.ndslice.topology : flattened;
+        import std.traits : Unqual;
+        scope auto source = quantileSlice(data);
+        static if (modify)
+            scope auto workspace = source.flattened;
+        else
+        {
+            alias Element = Unqual!(typeof(source).DeepElement);
+            auto scratch = allocateQuantiles!(Element, allocation)(context, source.elementCount);
+            static if (allocation == QuantileAllocation.custom)
+                scope(exit) releaseQuantiles(context, scratch);
+            scope auto workspace = scratch.lightScope;
+            workspace[] = source.lightScope.flattened;
+        }
+        sort(workspace);
+        return evaluate(workspace);
+    }
+}
+
+/++ Compute quantiles by sorting the observations before looking up ranks.
+A random-access Phobos SortedRange with a length and the default ascending predicate is read directly.
+Params:
+    F = optional result type, inferred as for $(LREF quantile) when omitted
+    algorithm = estimator, default type7; string estimator names are also accepted
+    allowModifySlice = sort writable observations in place when true (default false).
+        In-place observations must be disjoint from probabilities.
++/
+template quantileSortFirst(F, QuantileAlgo algorithm = QuantileAlgo.type7, bool allowModifySlice = false)
+    if (isFloatingPoint!F || algorithm == QuantileAlgo.type1 || algorithm == QuantileAlgo.type3)
+{
+    /++
+    Params:
+        data = observations orderable by ascending comparison in flattened iteration order.
+            At least two observations are required when a probability is requested.
+        probabilities = scalar, one-dimensional array or slice, or variadic probabilities in [0, 1];
+            omit for the minimum, quartiles, and maximum
+    Returns:
+        A scalar for a scalar request, otherwise a GC-owned slice in caller probability order.
+    +/
+    auto quantileSortFirst(Data, P...)(scope auto ref Data data, scope auto ref P probabilities)
+    {
+        QuantileContext context;
+        return sortFirstQuantile!(F, algorithm, allowModifySlice, QuantileAllocation.gc)(
+            context, data, probabilities);
+    }
+}
+
+/// ditto
+template quantileSortFirst(QuantileAlgo algorithm = QuantileAlgo.type7, bool allowModifySlice = false)
+{
+    /// ditto
+    auto quantileSortFirst(Data, P...)(scope auto ref Data data, scope auto ref P probabilities)
+    {
+        QuantileContext context;
+        return sortFirstQuantile!(void, algorithm, allowModifySlice, QuantileAllocation.gc)(
+            context, data, probabilities);
+    }
+}
+
+/// ditto
+template quantileSortFirst(F, string algorithm, bool allowModifySlice = false)
+{
+    alias quantileSortFirst = .quantileSortFirst!(F, __traits(getMember, QuantileAlgo, algorithm), allowModifySlice);
+}
+
+/// ditto
+template quantileSortFirst(string algorithm, bool allowModifySlice = false)
+{
+    alias quantileSortFirst = .quantileSortFirst!(__traits(getMember, QuantileAlgo, algorithm), allowModifySlice);
+}
+
+/// Sort a private copy once for a batch of probabilities.
+version(mir_stat_test) @safe unittest
+{
+    int[3] values = [9, 1, 4];
+    assert(quantileSortFirst(values, 0.75, 0.25) == [6.5, 2.5]);
+    assert(values == [9, 1, 4]);
+}
+
+version(mir_stat_test) @safe unittest
+{
+    import mir.ndslice : sliced;
+    import std.math : signbit;
+    import std.traits : EnumMembers;
+    const int[6] data = [9, 2, 7, 2, -1, 4];
+    const int[6] ordered = [-1, 2, 2, 4, 7, 9];
+    const double[6] levels = [1, 0.125, 0, 0.5, 0.25, 0.5];
+    static foreach (algorithm; EnumMembers!QuantileAlgo)
+    {
+        assert(quantileSortFirst!algorithm(data[].sliced(2, 3), levels) ==
+            quantileAssumeSorted!algorithm(ordered, levels));
+    }
+    const double[3] observations = [1.0, -0.0, -1.0];
+    assert(signbit(quantileSortFirst!(QuantileAlgo.type1)(observations, 0.5)));
+}
+
+/++ Compute quantiles by sorting the observations before looking up ranks.
+A random-access Phobos SortedRange with a length and the default ascending predicate is read directly.
+Params:
+    F = optional result type, inferred as for $(LREF rcquantile) when omitted
+    algorithm = estimator, default type7; string estimator names are also accepted
+    allowModifySlice = sort writable observations in place when true (default false).
+        In-place observations must be disjoint from probabilities.
++/
+template rcquantileSortFirst(F, QuantileAlgo algorithm = QuantileAlgo.type7, bool allowModifySlice = false)
+    if (isFloatingPoint!F || algorithm == QuantileAlgo.type1 || algorithm == QuantileAlgo.type3)
+{
+    /++
+    Params:
+        data = observations orderable by ascending comparison in flattened iteration order.
+            At least two observations are required when a probability is requested.
+        probabilities = scalar, one-dimensional array or slice, or variadic probabilities in [0, 1];
+            omit for the minimum, quartiles, and maximum
+    Returns:
+        A scalar for a scalar request, otherwise a reference-counted slice in caller probability order.
+    +/
+    auto rcquantileSortFirst(Data, P...)(scope auto ref Data data, scope auto ref P probabilities)
+    {
+        QuantileContext context;
+        return sortFirstQuantile!(F, algorithm, allowModifySlice, QuantileAllocation.rc)(
+            context, data, probabilities);
+    }
+}
+
+/// ditto
+template rcquantileSortFirst(QuantileAlgo algorithm = QuantileAlgo.type7, bool allowModifySlice = false)
+{
+    /// ditto
+    auto rcquantileSortFirst(Data, P...)(scope auto ref Data data, scope auto ref P probabilities)
+    {
+        QuantileContext context;
+        return sortFirstQuantile!(void, algorithm, allowModifySlice, QuantileAllocation.rc)(
+            context, data, probabilities);
+    }
+}
+
+/// ditto
+template rcquantileSortFirst(F, string algorithm, bool allowModifySlice = false)
+{
+    alias rcquantileSortFirst = .rcquantileSortFirst!(F, __traits(getMember, QuantileAlgo, algorithm), allowModifySlice);
+}
+
+/// ditto
+template rcquantileSortFirst(string algorithm, bool allowModifySlice = false)
+{
+    alias rcquantileSortFirst = .rcquantileSortFirst!(__traits(getMember, QuantileAlgo, algorithm), allowModifySlice);
+}
+
+/// Reuse writable input as the sorting workspace.
+version(mir_stat_test) @safe pure nothrow @nogc unittest
+{
+    int[3] values = [9, 1, 4];
+    assert(rcquantileSortFirst!("type1", true)(values, 0.5) == 4);
+    assert(values == [1, 4, 9]);
+}
+
+/++ Compute quantiles by sorting the observations before looking up ranks.
+A random-access Phobos SortedRange with a length and the default ascending predicate is read directly.
+Params:
+    F = optional result type, inferred as for $(LREF makeQuantile) when omitted
+    algorithm = estimator, default type7; string estimator names are also accepted
+    allowModifySlice = sort writable observations in place when true (default false).
+        In-place observations must be disjoint from probabilities.
++/
+template makeQuantileSortFirst(F, QuantileAlgo algorithm = QuantileAlgo.type7, bool allowModifySlice = false)
+    if (isFloatingPoint!F || algorithm == QuantileAlgo.type1 || algorithm == QuantileAlgo.type3)
+{
+    /++
+    Params:
+        allocator = allocator for observation scratch and batch output
+        data = observations orderable by ascending comparison in flattened iteration order.
+            At least two observations are required when a probability is requested.
+        probabilities = scalar, one-dimensional array or slice, or variadic probabilities in [0, 1];
+            omit for the minimum, quartiles, and maximum
+    Returns:
+        A scalar for a scalar request, otherwise a custom-allocated slice in caller probability order.
+        Dispose the result field with the same allocator.
+    +/
+    auto makeQuantileSortFirst(Allocator, Data, P...)(auto ref Allocator allocator, scope auto ref Data data, scope auto ref P probabilities)
+    {
+        return sortFirstQuantile!(F, algorithm, allowModifySlice, QuantileAllocation.custom)(
+            allocator, data, probabilities);
+    }
+}
+
+/// ditto
+template makeQuantileSortFirst(QuantileAlgo algorithm = QuantileAlgo.type7, bool allowModifySlice = false)
+{
+    /// ditto
+    auto makeQuantileSortFirst(Allocator, Data, P...)(auto ref Allocator allocator, scope auto ref Data data, scope auto ref P probabilities)
+    {
+        return sortFirstQuantile!(void, algorithm, allowModifySlice, QuantileAllocation.custom)(
+            allocator, data, probabilities);
+    }
+}
+
+/// ditto
+template makeQuantileSortFirst(F, string algorithm, bool allowModifySlice = false)
+{
+    alias makeQuantileSortFirst = .makeQuantileSortFirst!(F, __traits(getMember, QuantileAlgo, algorithm), allowModifySlice);
+}
+
+/// ditto
+template makeQuantileSortFirst(string algorithm, bool allowModifySlice = false)
+{
+    alias makeQuantileSortFirst = .makeQuantileSortFirst!(__traits(getMember, QuantileAlgo, algorithm), allowModifySlice);
+}
+
+/// Release a custom batch result with its allocator.
+version(mir_stat_test) @system pure nothrow @nogc unittest
+{
+    import std.experimental.allocator : dispose;
+    import std.experimental.allocator.mallocator : Mallocator;
+    const int[3] values = [9, 1, 4];
+    auto result = makeQuantileSortFirst!(float, "type7")(Mallocator.instance, values);
+    scope(exit) Mallocator.instance.dispose(result.field);
+    assert(result == [1.0f, 2.5f, 4, 6.5f, 9]);
+}
+
+version(mir_stat_test) @system unittest
+{
+    import std.exception : assertThrown;
+    import std.experimental.allocator : dispose;
+    import std.range : assumeSorted;
+    const int[3] values = [9, 1, 4];
+    QuantileTestAllocator!true allocator;
+    allocator.failAt = 2;
+    assertThrown!Exception(makeQuantileSortFirst(allocator, values, 0.25, 0.75));
+    assert(allocator.allocations == 2 && allocator.releases == 1);
+    const int[3] ordered = [1, 4, 9];
+    assert(makeQuantileSortFirst(allocator, assumeSorted(ordered[]), 0.5) == 4);
+    assert(allocator.allocations == 2);
+}
+
+/++ Sort a writable observation workspace and write quantiles to caller storage.
+Params:
+    algorithm = estimator, default type7
+    workspace = mutable array or Mir slice to sort in ascending flattened order,
+        or a random-access Phobos SortedRange with a length and the default ascending predicate.
+        At least two observations are required when a probability is requested.
+    probabilities = one-dimensional floating-point probabilities in [0, 1]
+    output = writable destination with one element per probability. Its element type determines
+        result precision. Workspace, probabilities, and output must be disjoint.
+Returns:
+    Quantiles are written to output in caller probability order. Workspace is left sorted.
++/
+template quantileSortFirstInto(QuantileAlgo algorithm = QuantileAlgo.type7)
+{
+    /// ditto
+    void quantileSortFirstInto(Data, P, Output)(scope auto ref Data workspace,
+        scope auto ref P probabilities, scope auto ref Output output)
+    {
+        static if (isPhobosSortedRange!Data)
+            quantileAssumeSortedInto!algorithm(workspace, probabilities, output);
+        else
+        {
+            import mir.ndslice.sorting : sort;
+            import mir.ndslice.topology : flattened;
+            scope auto values = quantileSlice(workspace).flattened;
+            sort(values);
+            quantileAssumeSortedInto!algorithm(values, probabilities, output);
+        }
+    }
+}
+
+/// ditto
+template quantileSortFirstInto(string algorithm)
+{
+    alias quantileSortFirstInto = .quantileSortFirstInto!(__traits(getMember, QuantileAlgo, algorithm));
+}
+
+/// Sort a strided workspace while writing results in request order.
+version(mir_stat_test) @safe pure nothrow @nogc unittest
+{
+    import mir.ndslice : sliced, stride;
+    int[6] storage = [9, 99, 1, 99, 4, 99];
+    const double[3] levels = [0.75, 0.25, 0.75];
+    double[6] output = -1;
+    quantileSortFirstInto!"type7"(storage[].sliced.stride(2), levels, output[].sliced.stride(2));
+    assert(storage == [1, 99, 4, 99, 9, 99]);
+    assert(output == [6.5, -1, 2.5, -1, 6.5, -1]);
+}
+
+version(mir_stat_test) @safe unittest
+{
+    import std.range : assumeSorted;
+    const int[6] ordered = [-1, 2, 2, 4, 7, 9];
+    const double[6] levels = [1, 0.125, 0, 0.5, 0.25, 0.5];
+    double[6] output;
+    quantileSortFirstInto(assumeSorted(ordered[]), levels, output);
+    assert(output[] == quantileAssumeSorted(ordered, levels));
 }
 
 // Keep data and probability types deducible when an estimator is bound as a template alias.
@@ -9772,8 +10088,7 @@ private auto allocatedQuantileSpread(F, QuantileAlgo algorithm, bool modify,
         static if (allocation == QuantileAllocation.custom)
             scope(exit) releaseQuantiles(context, owner);
         scope auto flat = source.lightScope.flattened;
-        foreach (i; 0 .. flat.length)
-            owner[i] = flat[i];
+        owner.lightScope[] = flat;
         scope auto workspace = owner.lightScope;
     }
     import mir.ndslice.slice: IteratorOf;
