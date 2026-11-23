@@ -658,6 +658,106 @@ unittest
 }
 
 /++
+Evaluates the generalized extreme value quantile with guarded precision.
+
+Params:
+    T = Represented $(D Fp) type, inferred from the arguments.
+    p = Cumulative probability in [0, 1].
+    mu = Finite location.
+    sigma = Positive finite scale.
+    xi = Finite shape. Shape zero gives the Gumbel distribution.
+
+Returns:
+    The quantile in type T. Zero and unit probability give the lower and upper support endpoints, rounded to the result type.
++/
+@safe pure nothrow @nogc
+T gevInvCDF(T)(const T p, const T mu, const T sigma, const T xi)
+    if (is(T == Fp!size, size_t size))
+    in (!mu.isSpecial && !xi.isSpecial && !sigma.isSpecial && !sigma.sign && !!sigma.coefficient)
+    in (!p.isSpecial && position(p, T(0)) >= 0 && position(p, T(1)) <= 0)
+{
+    import mir.stat.internal.fp_gev: gevQuantile;
+    return gevQuantile(p, mu, sigma, xi);
+}
+
+///
+version(mir_stat_test)
+@safe pure nothrow @nogc unittest
+{
+    import mir.bignum.fp: Fp;
+    alias T = Fp!64;
+    assert(gevInvCDF(T(1), T(0), T(2), T(-1)) == T(2));
+}
+
+version(mir_stat_test)
+@safe pure nothrow @nogc unittest
+{
+    import mir.bignum.fixed: UInt;
+    import mir.math.common: approxEqual;
+    // Independent 380-digit decimal references at shared binary inputs.
+    {
+        alias T = Fp!64;
+        enum expected = T(false, -63, UInt!64(0xc834ed0275529d82UL));
+        assert(gevInvCDF(T(0.625), T(-0.5), T(3), T(-0.25)) == expected);
+        assert(approxEqual(gevInvCDF(0.625, -0.5, 3.0, -0.25),
+            1.564115167808855, 8 * double.epsilon));
+    }
+    {
+        alias T = Fp!128;
+        enum expected = T(false, -126, UInt!128.fromHexString("87910ac206cffad22b01ae9dbf745169"));
+        assert(gevInvCDF(T(0.625), T(-0.5), T(3), T(0.375)) == expected);
+        assert(approxEqual(gevInvCDF(0.625, -0.5, 3.0, 0.375),
+            2.1182276625434038, 8 * double.epsilon));
+    }
+    alias T = Fp!64;
+    // Adjacent represented probabilities straddle exp(-1).
+    assert(gevInvCDF(T(false, -65, UInt!64(0xbc5ab1b16779be35UL)), T(0), T(1), T(0)) ==
+        T(true, -128, UInt!64(0xa006a027f5f2dc06UL)));
+    assert(gevInvCDF(T(false, -65, UInt!64(0xbc5ab1b16779be36UL)), T(0), T(1), T(0)) ==
+        T(false, -128, UInt!64(0xbbea08894f83b930UL)));
+    assert(gevInvCDF(T(0), T(2), T(3), T(0.5)) == T(-4));
+    assert(gevInvCDF(T(0), T(0), T(1), T(0)) == T(-double.infinity));
+    assert(gevInvCDF(T(1), T(0), T(1), T(0)) == T(double.infinity));
+    // The upper endpoint is 1.5 least quanta. Its rounded value is
+    // two; an interior probability approaches the same tie from below.
+    const scale = T(false, long.min, UInt!64(3072));
+    const least = T(false, long.min, UInt!64(1));
+    assert(gevInvCDF(T(0.5), T(0), scale, T(-2048)) == least);
+    assert(gevInvCDF(T(1), T(0), scale, T(-2048)) == T(false, long.min, UInt!64(2)));
+    // With a still larger shape the positive displacement is too
+    // small to materialize even in the separate-exponent calculation.
+    auto farShape = T(-1);
+    farShape.exponent += 100;
+    const farScale = T(false, long.min + 99, UInt!64(3));
+    assert(gevInvCDF(T(0.5), T(0), farScale, farShape) == least);
+    T cancelScale = farShape;
+    cancelScale.sign = false;
+    assert(gevInvCDF(T(0.5), T(-1), cancelScale, farShape) == T(0));
+    // Mirror the construction at a finite lower endpoint on the normal grid.
+    auto normalScale = T(3);
+    normalScale.exponent -= 53;
+    auto inward = T(-1), endpoint = T(-1);
+    inward.coefficient += 1;
+    endpoint.coefficient += 2;
+    assert(gevInvCDF(T(0.25), T(-1), normalScale, T(2048)) == inward);
+    assert(gevInvCDF(T(0), T(-1), normalScale, T(2048)) == endpoint);
+    // mu=-1 and sigma=-xi give a zero upper endpoint. The quantile
+    // is exactly -(-log(p))^1024 even when the displacement rounds to one.
+    assert(gevInvCDF(T(0.75), T(-1), T(1024), T(-1024)) ==
+        T(true, -1904, UInt!64(0xa9e0d72879f87cbeUL)));
+    auto huge = T(1), tiny = T(1);
+    huge.exponent += 100;
+    tiny.exponent -= 1000;
+    assert(gevInvCDF(T(0.75), T(0), T(1), huge) == T(double.infinity));
+    assert(gevInvCDF(T(0.25), T(0), huge, huge) == T(-1));
+    assert(gevInvCDF(T(0.75), T(0), T(1), tiny) == gevInvCDF(T(0.75), T(0), T(1), T(0)));
+    assert(gevInvCDF(T(0.5), T(-1), T(2), T(-1)) ==
+        T(true, -65, UInt!64(0xc5c85fdf473de6afUL)));
+    assert(gevInvCDF(T(0.5), T(-1), T(2), T(1)) ==
+        T(true, -67, UInt!64(0xeab89ad47d01e888UL)));
+}
+
+/++
 Computes the generalized extreme value (GEV) log probability density function (LPDF).
 
 Returns the natural logarithm of the density.
@@ -909,6 +1009,27 @@ version(mir_stat_test)
         T(true, 1379, UInt!64(0xcf391bcd76b9d6c0UL)));
     assert(gevLPDF(T(3), T(0), T(0.5), T(-0.125)) ==
         T(true, -60, UInt!64(0x902cc3795a7892dcUL)));
+}
+
+// Smallest supported coefficient on 32-bit targets.
+version(mir_stat_test)
+static if (size_t.sizeof == 4)
+@safe pure nothrow @nogc unittest
+{
+    import mir.bignum.fixed: UInt;
+    alias T = Fp!32;
+    auto probability = T(3);
+    probability.exponent -= 2;
+    assert(gevCDF(T(1), T(0), T(2), T(1)) ==
+        T(false, -32, UInt!32(0x836f4de7U)));
+    assert(gevCCDF(T(1), T(0), T(2), T(1)) ==
+        T(false, -33, UInt!32(0xf9216431U)));
+    assert(gevPDF(T(1), T(0), T(2), T(1)) ==
+        T(false, -35, UInt!32(0xe9a96e0dU)));
+    assert(gevLPDF(T(1), T(0), T(2), T(1)) ==
+        T(true, -30, UInt!32(0x8aed7882U)));
+    assert(gevInvCDF(probability, T(0), T(2), T(1)) ==
+        T(false, -29, UInt!32(0x9e77c240U)));
 }
 
 // Forward functions and quantiles retain the zero-shape limit.

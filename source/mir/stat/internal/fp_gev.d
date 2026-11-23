@@ -183,6 +183,91 @@ private struct Evaluation(uint bits)
         }
     }
 
+    // mu + sigma*(factor-1)/xi. At either finite endpoint the factor
+    // vanishes. Combine the endpoint numerator first when the factor is
+    // small, so cancellation leaves its signed residual available.
+    static T fromEndpoint(bool interior)(T mu, S scale, T xi, Term factor = Term.init)
+    {
+        const k = S.from(xi);
+        auto base = B.term(mu);
+        if (base.present)
+            base.value = base.value.multiply(k);
+        const scaleTerm = Term(scale, !xi.sign, true);
+        auto result = B.combine(base, scaleTerm);
+        if (factor.present)
+            result = B.combine(result, Term(scale.multiply(factor.value), xi.sign, true));
+        if (!result.present)
+            return T(0);
+        auto q = result.value.divide(k);
+        static if (interior)
+        {
+            if (mayBeMidpoint(q))
+            {
+                // Check the exact endpoint against the candidate before
+                // applying the inward displacement. Each product has at
+                // most 2*bits+1 significant bits. This also handles a
+                // positive factor too small for the scaled exponential.
+                const opposite = Term(q.multiply(k), !result.negative, true);
+                if (!B.combineThree(base, scaleTerm, opposite).present)
+                    q = B.withCorrection(q, result.negative == xi.sign);
+            }
+        }
+        return addOffset!bits(T(0), q, result.negative);
+    }
+
+    static T quantile(T p, T mu, T sigma, T xi)
+    {
+        const scale = S.from(sigma);
+        if (!p.coefficient || !position(p, T(1)))
+        {
+            const lower = !p.coefficient;
+            if (xi.coefficient && lower != xi.sign)
+                return fromEndpoint!false(mu, scale, xi);
+            return T(lower, long.max, UInt!bits(0));
+        }
+        B.L.Context context;
+        const logP = B.L.logDyadic(p.coefficient, p.exponent, context);
+        return fromRate(S.from(logP), mu, scale, xi);
+    }
+
+    static T fromRate(S a, T mu, S scale, T xi)
+    {
+        const logA = B.logarithm(a);
+        if (!logA.coefficient)
+            return mu;
+        const t = S.from(logA);
+        const negative = !logA.sign; // t represents the magnitude of -log(a).
+        if (!xi.coefficient)
+            return addOffset!bits(mu, scale.multiply(t), negative);
+        const k = S.from(xi);
+        const power = k.multiply(t);
+        if (power.exponent + B.work / 2 <= exponentBias)
+            return addOffset!bits(mu, scale.multiply(t), negative);
+        const decreasing = xi.sign != negative;
+        if (power.exponent >= exponentBias + 66)
+        {
+            if (decreasing)
+                return fromEndpoint!true(mu, scale, xi);
+            return T(xi.sign, long.max, UInt!bits(0));
+        }
+        const one = S.from(T(1));
+        S factor;
+        if (!position(xi, T(-1)))
+            factor = a;
+        else if (!position(xi, T(1)))
+            factor = one.divide(a);
+        else
+        {
+            const decay = scaledDecay(power);
+            factor = decreasing ? decay : one.divide(decay);
+        }
+        if (decreasing && power.exponent >= exponentBias + 1)
+            return fromEndpoint!true(mu, scale, xi, Term(factor, false, true));
+        const diff = B.combine(Term(factor, false, true), Term(one, true, true));
+        // The small-power branch handles differences below the working
+        // grid. Here |factor-1| has at least half the working width left.
+        return addOffset!bits(mu, scale.multiply(diff.value).divide(k), negative);
+    }
 }
 
 package(mir.stat) auto gevTail(bool upper, uint bits)(Fp!bits x, Fp!bits mu, Fp!bits sigma, Fp!bits xi)
@@ -193,4 +278,19 @@ package(mir.stat) auto gevTail(bool upper, uint bits)(Fp!bits x, Fp!bits mu, Fp!
 package(mir.stat) auto gevDensity(bool logarithmic, uint bits)(Fp!bits x, Fp!bits mu, Fp!bits sigma, Fp!bits xi)
 {
     return Evaluation!bits.density!logarithmic(x, mu, sigma, xi);
+}
+
+package(mir.stat) auto gevQuantile(uint bits)(Fp!bits p, Fp!bits mu, Fp!bits sigma, Fp!bits xi)
+{
+    return Evaluation!bits.quantile(p, mu, sigma, xi);
+}
+
+// Unit rate corresponds to p = exp(-1), the center of the GEV transform.
+// The probability is irrational, but the intermediate is exactly testable.
+version(mir_stat_test)
+@safe pure nothrow @nogc unittest
+{
+    alias E = Evaluation!64;
+    alias T = Fp!64;
+    assert(E.fromRate(E.S.from(T(1)), T(-3), E.S.from(T(2)), T(0.5)) == T(-3));
 }
