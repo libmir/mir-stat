@@ -35,6 +35,7 @@ $(BOOKTABLE ,
     $(TR $(TDNW $(SUBREF weibull, weibullPDF)) $(TD Weibull PDF ))
     $(LEADINGROW Multivariate Distributions)
     $(TR $(TDNW $(SUBREF categorical, categoricalPMF)) $(TD Categorical PMF ))
+    $(TR $(TDNW $(SUBREF multivariate_normal, multivariateNormalPDF)) $(TD Multivariate Normal PDF ))
 )
 
 License: $(HTTP www.apache.org/licenses/LICENSE-2.0, Apache-2.0)
@@ -84,6 +85,9 @@ public import mir.stat.distribution.laplace: laplacePDF;
 public import mir.stat.distribution.log_normal: logNormalPDF;
 ///
 public import mir.stat.distribution.logistic: logisticPDF;
+///
+public import mir.stat.distribution.multivariate_normal: multivariateNormalPDF,
+    rcMultivariateNormalPDF, makeMultivariateNormalPDF, multivariateNormalPDFWithWorkspace;
 ///
 public import mir.stat.distribution.negative_binomial: negativeBinomialPMF;
 ///

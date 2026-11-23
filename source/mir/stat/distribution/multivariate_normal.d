@@ -1,7 +1,11 @@
 /++
-Natural log density of one observation or a batch of observations from a multivariate
-normal distribution. The observations share a mean vector and a positive-definite
-covariance matrix. In zero dimensions the log density is zero.
+Probability density of one observation and natural log density of one observation
+or a batch from a multivariate normal distribution. The observations share a mean vector and a positive-definite
+covariance matrix. In zero dimensions the density is one and the log density is zero.
+
+$(LREF multivariateNormalPDF) exponentiates each log density, including
+the determinant contribution. The result can underflow to zero or overflow
+to positive infinity.
 
 $(H4 Matrix inputs)
 
@@ -1950,4 +1954,239 @@ version(mir_stat_test_multivariate_normal)
     assert(outcome.failedPivot == 2 && outcome.logDensities.length == 0);
     outcome = tryRcMultivariateNormalLPDFBatch(empty.sliced(0, 3), empty, covarianceView(empty.sliced(0, 0)));
     assert(outcome.failedPivot == 0 && outcome.logDensities == [0, 0, 0]);
+}
+
+/++
+Evaluate the multivariate normal density using GC-managed scratch.
+The result is computed by exponentiating the log density.
+
+Params:
+    x = Observation vector of k finite floating-point coordinates.
+    mean = Vector of k finite means with the same element type as x.
+    metric = Labeled covariance, precision, or Cholesky factor view of a dense k-by-k matrix with the same element type as x. The selected
+        triangle must be finite. Raw matrices must be positive definite,
+        and supplied factors must have positive diagonal entries.
+
+Returns:
+    The probability density at x, in the element type of x.
+    A zero-dimensional observation has density one.
+
+Throws:
+    Exception if Cholesky factorization of a raw covariance or precision matrix fails.
++/
+Element!X multivariateNormalPDF(X, C, M)(
+    scope auto ref X x, scope auto ref C mean, scope auto ref M metric)
+    if (isCovarianceMetric!M && compatible!(X, C, typeof(metric.storage)))
+{
+    import mir.math.common: exp;
+    return exp(multivariateNormalLPDF(x, mean, metric));
+}
+
+/// Check a correlated bivariate density at the mean.
+version(mir_stat_test_multivariate_normal)
+@safe pure unittest
+{
+    import mir.ndslice.slice: sliced;
+    import std.math: fabs, PI;
+    double[2] mean = [1, -2];
+    double[4] covariance = [4, 2, double.nan, 5];
+    const density = multivariateNormalPDF(mean[], mean[], covarianceView(covariance[].sliced(2, 2)));
+    assert(fabs(density - 1 / (8 * double(PI))) < 1e-15);
+}
+
+/++
+Evaluate the multivariate normal density using reference-counted scratch.
+
+Params:
+    x = Observation vector of k finite floating-point coordinates.
+    mean = Vector of k finite means with the same element type as x.
+    metric = Labeled covariance, precision, or Cholesky factor view of a dense k-by-k matrix with the same element type as x. The selected
+        triangle must be finite. Raw matrices must be positive definite,
+        and supplied factors must have positive diagonal entries.
+
+Returns:
+    The probability density at x, in the element type of x.
+    A zero-dimensional observation has density one.
+
+Throws:
+    Exception if Cholesky factorization of a raw covariance or precision matrix fails.
++/
+Element!X rcMultivariateNormalPDF(X, C, M)(
+    scope auto ref X x, scope auto ref C mean, scope auto ref M metric)
+    if (isCovarianceMetric!M && compatible!(X, C, typeof(metric.storage)))
+{
+    import mir.math.common: exp;
+    return exp(rcMultivariateNormalLPDF(x, mean, metric));
+}
+
+/// Use a prepared precision factor with reference-counted scratch.
+version(mir_stat_test_multivariate_normal)
+@safe pure nothrow @nogc unittest
+{
+    import mir.ndslice.slice: sliced;
+    import std.math: fabs;
+    import mir.stat.distribution.normal: normalPDF;
+    double[1] x = [3], mean = [1], factor = [0.5];
+    const density = rcMultivariateNormalPDF(
+        x[], mean[], precisionCholeskyView(factor[].sliced(1, 1)));
+    assert(fabs(density - normalPDF(3.0, 1.0, 2.0)) < double.epsilon);
+}
+
+/++
+Evaluate the multivariate normal density using a caller-selected allocator.
+
+Params:
+    x = Observation vector of k finite floating-point coordinates.
+    mean = Vector of k finite means with the same element type as x.
+    metric = Labeled covariance, precision, or Cholesky factor view of a dense k-by-k matrix with the same element type as x. The selected
+        triangle must be finite. Raw matrices must be positive definite,
+        and supplied factors must have positive diagonal entries.
+    allocator = Allocator for scratch storage, which is released on return or exception.
+
+Returns:
+    The probability density at x, in the element type of x.
+    A zero-dimensional observation has density one.
+
+Throws:
+    Exception if Cholesky factorization of a raw covariance or precision matrix fails.
++/
+Element!X makeMultivariateNormalPDF(A, X, C, M)(
+    auto ref A allocator, scope auto ref X x, scope auto ref C mean, scope auto ref M metric)
+    if (isCovarianceMetric!M && compatible!(X, C, typeof(metric.storage)))
+{
+    import mir.math.common: exp;
+    return exp(makeMultivariateNormalLPDF(allocator, x, mean, metric));
+}
+
+/// Use a custom allocator for a prepared covariance factor.
+version(mir_stat_test_multivariate_normal)
+@system nothrow @nogc unittest
+{
+    import mir.ndslice.slice: sliced;
+    import std.math: fabs;
+    import std.experimental.allocator.mallocator: Mallocator;
+    import mir.stat.distribution.normal: normalPDF;
+    float[1] x = [2], mean = [0], factor = [2];
+    const density = makeMultivariateNormalPDF(
+        Mallocator.instance, x[], mean[], covarianceCholeskyView(factor[].sliced(1, 1)));
+    static assert(is(typeof(density) == const(float)));
+    assert(fabs(density - normalPDF(2f, 0f, 2f)) < float.epsilon);
+}
+
+/++
+Evaluate the density from a prepared factor using caller-owned scratch.
+The elements of work must be disjoint from each other and from all inputs.
+
+Params:
+    x = Observation vector of k finite floating-point coordinates.
+    mean = Vector of k finite means with the same element type as x.
+    factor = Labeled dense k-by-k Cholesky factor of the covariance or precision matrix,
+        with the same element type as x. The selected triangle must be finite
+        and its diagonal entries positive.
+    work = Writable vector of k elements of the same type as x for the centered
+        and transformed observation.
+
+Returns:
+    The probability density at x, in the element type of x.
+    A zero-dimensional observation has density one.
++/
+Element!X multivariateNormalPDFWithWorkspace(X, C, M, W)(
+    scope auto ref X x, scope auto ref C mean, scope auto ref M factor, scope auto ref W work)
+    if (isCovarianceMetric!M && prepared!(M.form) && compatible!(X, C, typeof(factor.storage)) &&
+        vector!W && is(Element!X == Element!W))
+{
+    import mir.math.common: exp;
+    return exp(multivariateNormalLPDFWithWorkspace(x, mean, factor, work));
+}
+
+/// Supply scratch for a lower covariance factor.
+version(mir_stat_test_multivariate_normal)
+@safe pure nothrow @nogc unittest
+{
+    import mir.ndslice.slice: sliced;
+    import std.math: fabs;
+    import mir.stat.distribution.normal: normalPDF;
+    double[2] x = [2, 7], mean = [0, 0], work;
+    double[4] factor = [2, double.nan, 1, 3];
+    const density = multivariateNormalPDFWithWorkspace(x[], mean[],
+        covarianceCholeskyView!(TrianglePolicy.lower)(factor[].sliced(2, 2)), work[]);
+    assert(fabs(density - normalPDF(1.0) * normalPDF(2.0) / 6) < 1e-15);
+}
+
+version(mir_stat_test_multivariate_normal)
+@safe pure nothrow @nogc unittest
+{
+    import mir.ndslice.slice: sliced;
+    double[2] x = [0, 0], mean = [0, 0], work;
+    double[4] data = [1e-200, 0, double.nan, 1e-200];
+    assert(multivariateNormalPDFWithWorkspace(x[], mean[],
+        covarianceCholeskyView(data[].sliced(2, 2)), work[]) == double.infinity);
+    x[0] = 0x1p512;
+    data[0] = 1;
+    assert(multivariateNormalPDFWithWorkspace(x[0 .. 1], mean[0 .. 1],
+        covarianceCholeskyView(data[0 .. 1].sliced(1, 1)), work[0 .. 1]) == 0);
+    assert(multivariateNormalPDFWithWorkspace(x[0 .. 0], mean[0 .. 0],
+        covarianceCholeskyView(data[0 .. 0].sliced(0, 0)), work[0 .. 0]) == 1);
+}
+
+version(mir_stat_test_multivariate_normal)
+@safe pure nothrow @nogc unittest
+{
+    import mir.ndslice.slice: sliced;
+    import std.math: fabs;
+
+    // A finite density even though the normalization alone exceeds double.max.
+    enum scale = 0x1p-550;
+    double[2] x = [39 * scale, 0], mean = [0, 0], work;
+    double[4] factor = [scale, 0, double.nan, scale];
+    const density = multivariateNormalPDFWithWorkspace(x[], mean[],
+        covarianceCholeskyView(factor[].sliced(2, 2)), work[]);
+    // 2^1100 * exp(-39^2 / 2) / (2 * pi), evaluated at 70 decimal digits.
+    enum expected = 1.1320402656725539;
+    assert(fabs(density / expected - 1) < 2e-13);
+}
+
+/++
+Factor a raw covariance or precision matrix and evaluate the density.
+Both scratch buffers must have nonoverlapping elements and be disjoint from
+one another and from all inputs.
+
+Params:
+    x = Observation vector of k finite floating-point coordinates.
+    mean = Vector of k finite means with the same element type as x.
+    metric = Labeled covariance or precision view of a dense, positive-definite k-by-k matrix of the same element type as x
+        with finite entries in the selected triangle.
+    work = Writable vector of k elements of the same type as x for the centered
+        and transformed observation.
+    factorWork = Writable matrix of the same shape and element type as metric.
+        On success its selected triangle holds the Cholesky factor.
+
+Returns:
+    The probability density at x, in the element type of x.
+    A zero-dimensional observation has density one.
+
+Throws:
+    Exception if Cholesky factorization fails. In that case factorWork may
+    contain a partial factorization.
++/
+Element!X multivariateNormalPDFWithWorkspace(X, C, M, W, F)(scope auto ref X x, scope auto ref C mean,
+    scope auto ref M metric, scope auto ref W work, scope auto ref F factorWork)
+    if (isCovarianceMetric!M && !prepared!(M.form) && compatible!(X, C, typeof(metric.storage)) &&
+        vector!W && matrix!F && is(Element!X == Element!W) && is(Element!X == Element!F))
+{
+    import mir.math.common: exp;
+    return exp(multivariateNormalLPDFWithWorkspace(x, mean, metric, work, factorWork));
+}
+
+/// Evaluate a raw precision matrix using caller-owned scratch.
+version(mir_stat_test_multivariate_normal)
+@safe pure @nogc unittest
+{
+    import mir.ndslice.slice: sliced;
+    import std.math: fabs;
+    import mir.stat.distribution.normal: normalPDF;
+    double[1] x = [3], mean = [1], precision = [0.25], work, factor;
+    const density = multivariateNormalPDFWithWorkspace(
+        x[], mean[], precisionView(precision[].sliced(1, 1)), work[], factor[].sliced(1, 1));
+    assert(fabs(density - normalPDF(3.0, 1.0, 2.0)) < double.epsilon);
 }
