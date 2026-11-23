@@ -25,6 +25,7 @@ int main(string[] args)
         size_t warmup = 10;
         size_t iterations = size_t.max;
         size_t size = size_t.max;
+        size_t columns = size_t.max;
         string layout = "rowMajor";
         ulong seed = 5489;
         auto options = getopt(args,
@@ -34,7 +35,8 @@ int main(string[] args)
             "transform", "none (default), center, or standardize (sample z-scores)", &transformName,
             "algorithms", "Comma-separated algorithm names, or all (default)", &algorithmList,
             "seed", "Random seed (default 5489)", &seed,
-            "function", "all (statistics), linearAlgebra, skewness, kurtosis, covariance, correlation, triangularLeft, triangularRight, quadratic, mahalanobis, quadraticBatch, mahalanobisBatch, symmetricVector, symmetricLeft, symmetricRight, symmetricColumn, symmetricRow, crossprod, or tcrossprod", &selected,
+            "function", "all (statistics), linearAlgebra, skewness, kurtosis, covariance, correlation, triangularLeft, triangularRight, quadratic, mahalanobis, quadraticBatch, mahalanobisBatch, multivariateNormal, symmetricVector, symmetricLeft, symmetricRight, symmetricColumn, symmetricRow, crossprod, or tcrossprod", &selected,
+            "columns", "Observation count for multivariateNormal (default 32)", &columns,
             "layout", "rowMajor (default) or transposed; linear algebra only", &layout,
             "iterations", "Iterations per algorithm per round (statistics: 10000; algebra: 20)", &iterations,
             "size", "Observations or matrix order (statistics: 1000; algebra: 32)", &size);
@@ -55,6 +57,9 @@ int main(string[] args)
         if (size == size_t.max) size = algebra ? 32 : 1_000;
         enforce(layout == "rowMajor" || layout == "transposed", "Unknown matrix layout");
         enforce(algebra || layout == "rowMajor", "Matrix layout applies only to linear algebra");
+        enforce(columns == size_t.max || selected == "multivariateNormal",
+            "--columns applies only to --function=multivariateNormal");
+        if (columns == size_t.max) columns = 32;
         auto names = selected == "all" ? functionNames[] : selected == "linearAlgebra" ? algebraNames[] : [selected];
         // Validate the whole request before starting any benchmark.
         foreach (name; names)
@@ -70,7 +75,7 @@ int main(string[] args)
         foreach (name; names)
         {
             auto results = algebra
-                ? runAlgebra(name, iterations, size, seed, algorithms, rounds, warmup, layout == "transposed")
+                ? runAlgebra(name, iterations, size, seed, algorithms, rounds, warmup, layout == "transposed", columns)
                 : runFunction(name, iterations, size, seed, transform, algorithms, rounds, warmup);
             foreach (result; results)
             {

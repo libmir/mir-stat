@@ -275,3 +275,30 @@ The [histogram construction benchmark](histogram/README.md) measures short-lived
 histograms with GC, reference-counted, and custom-allocator storage. It reports
 construction and final GC collection separately and uses an independently
 compiled observer library.
+
+## Multivariate normal density
+
+Use `--function=multivariateNormal` to compare PDF and LPDF with the same
+prepared upper covariance factor and caller-owned workspace. For example:
+
+```sh
+dub run mir-stat:benchmarks --config=native-d --build=release --compiler=ldc2 -- --function=multivariateNormal --size=3 --columns=32 --iterations=1000 --rounds=8 --warmup=10 --format=csv
+```
+
+Here each timed call evaluates 32 observations with three measurements each.
+`--size` is the dimension and `--columns` is the number of observations
+(default 32, range 1 through 4096). Both layouts store observations in logical
+columns. The CSV function label records the column count and physical layout.
+Divide elapsed nanoseconds by iterations and columns for time per observation.
+
+| Algorithm | Timed work |
+| --- | --- |
+| `scalarLPDF`, `scalarPDF` | Evaluate every column with a scalar workspace call, reusing the factor and recomputing its log determinant for each observation. |
+| `batchLPDF`, `batchPDF` | Evaluate the same columns with one public batch workspace call and one log determinant. |
+
+The upper bidiagonal factor has diagonal entries 1, 1.125, and 1.25 in a repeating
+pattern and superdiagonal entries 0.25. Each column is generated as
+`mean + U' z` from seeded standard normal coordinates. Outside timing, the
+runner checks every output against the density or log density calculated
+from those coordinates and the factor diagonal. Factor preparation, input
+generation, allocation, and reference checks are excluded from timings.

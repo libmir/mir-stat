@@ -16,7 +16,7 @@ import std.exception: enforce;
 import std.math: abs, isFinite;
 
 package(mir.stat):
-enum algebraNames = ["crossprod", "tcrossprod", "triangularLeft", "triangularRight", "quadratic", "mahalanobis", "quadraticBatch", "mahalanobisBatch", "symmetricVector", "symmetricLeft", "symmetricRight", "symmetricColumn", "symmetricRow"];
+enum algebraNames = ["crossprod", "tcrossprod", "triangularLeft", "triangularRight", "quadratic", "mahalanobis", "quadraticBatch", "mahalanobisBatch", "multivariateNormal", "symmetricVector", "symmetricLeft", "symmetricRight", "symmetricColumn", "symmetricRow"];
 
 /// List the algorithms available for a validated benchmark family.
 string[] algebraAlgorithms(string name)
@@ -26,6 +26,7 @@ string[] algebraAlgorithms(string name)
     case "crossprod", "tcrossprod": return ["general", "specialized", "triangleOnly"];
     case "symmetricVector": return ["general", "symmetric", "packed"];
     case "symmetricLeft", "symmetricRight", "symmetricColumn", "symmetricRow": return ["general", "symmetric", "packed", "generalMixed", "symmetricMixed", "packedMixed", "workspaceInput", "workspaceOutput"];
+    case "multivariateNormal": return ["scalarLPDF", "batchLPDF", "scalarPDF", "batchPDF"];
     case "quadraticBatch": return ["repeated", "batch", "repeatedFast", "batchFast"];
     case "mahalanobisBatch": return ["repeatedFactor", "batchFactor", "repeatedPrecision", "batchPrecision",
         "repeatedPrecisionFast", "batchPrecisionFast", "repeatedPrecisionFactor", "batchPrecisionFactor"];
@@ -71,7 +72,7 @@ private double singleTriangle(V, M)(V x, M a)
 
 /// Run a benchmark family with shared seeded inputs and return checked per-round results.
 Result[] runAlgebra(string name, size_t iterations, size_t size, ulong seed,
-    string[] selected, size_t rounds, size_t warmup, bool transpose = false)
+    string[] selected, size_t rounds, size_t warmup, bool transpose = false, size_t columns = 32)
 {
     validateAlgebra(name, iterations, size, Transform.none, selected, rounds);
     switch (name)
@@ -83,6 +84,9 @@ Result[] runAlgebra(string name, size_t iterations, size_t size, ulong seed,
     case "symmetricVector": return measureSymmetric!(true, false)(name,iterations,size,seed,selected,rounds,warmup,transpose);
     case "symmetricLeft": return measureSymmetric!(false, false)(name,iterations,size,seed,selected,rounds,warmup,transpose);
     case "symmetricRight": return measureSymmetric!(false, true)(name,iterations,size,seed,selected,rounds,warmup,transpose);
+    case "multivariateNormal":
+        import mir.stat.benchmark.multivariate_normal: measureDensity;
+        return measureDensity(iterations, size, columns, seed, selected, rounds, warmup, transpose);
     case "quadraticBatch": return measureBatch!false(name,iterations,size,seed,selected,rounds,warmup,transpose);
     case "mahalanobisBatch": return measureBatch!true(name,iterations,size,seed,selected,rounds,warmup,transpose);
     case "triangularLeft": return measure!0(name, iterations, size, seed, selected, rounds, warmup, transpose);
