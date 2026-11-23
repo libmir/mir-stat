@@ -138,6 +138,73 @@ unittest
 }
 
 /++
+Evaluates the generalized extreme value density with guarded precision.
+
+Params:
+    T = Represented $(D Fp) type, inferred from the arguments.
+    x = Observation on the support; shape zero also accepts NaN.
+    mu = Finite location.
+    sigma = Positive finite scale.
+    xi = Finite shape. Shape zero gives the Gumbel distribution.
+
+Returns:
+    The density in type T. Zero at infinity and at a finite lower endpoint. At a finite upper endpoint the limit is zero, reciprocal scale, or positive infinity for shape above, equal to, or below minus one.
++/
+@safe pure nothrow @nogc
+T gevPDF(T)(const T x, const T mu, const T sigma, const T xi)
+    if (is(T == Fp!size, size_t size))
+    in (!mu.isSpecial && !xi.isSpecial && !sigma.isSpecial && !sigma.sign && !!sigma.coefficient)
+    in (gevSupported(x, mu, sigma, xi))
+{
+    import mir.stat.internal.fp_gev: gevDensity;
+    return gevDensity!false(x, mu, sigma, xi);
+}
+
+///
+version(mir_stat_test)
+@safe pure nothrow @nogc unittest
+{
+    import mir.bignum.fp: Fp;
+    alias T = Fp!64;
+    assert(gevPDF(T(2), T(0), T(2), T(-1)) == T(0.5));
+}
+
+version(mir_stat_test)
+@safe pure nothrow @nogc unittest
+{
+    import mir.bignum.fixed: UInt;
+    import mir.math.common: approxEqual;
+    // Independent 380-digit decimal references at shared binary inputs.
+    {
+        alias T = Fp!64;
+        enum expected = T(false, -67, UInt!64(0xdaef2fa7fce9f4aeUL));
+        assert(gevPDF(T(-1.5), T(-0.5), T(3), T(-0.25)) == expected);
+        assert(approxEqual(gevPDF(-1.5, -0.5, 3.0, -0.25),
+            0.10690152388962292, 8 * double.epsilon));
+    }
+    {
+        alias T = Fp!128;
+        enum expected = T(false, -130, UInt!128.fromHexString("8596166ec7ec758d1174974c8b7f7ee9"));
+        assert(gevPDF(T(-1.5), T(-0.5), T(3), T(0.375)) == expected);
+        assert(approxEqual(gevPDF(-1.5, -0.5, 3.0, 0.375),
+            0.1304553513636901, 8 * double.epsilon));
+    }
+    alias T = Fp!64;
+    assert(gevPDF(T(1), T(0), T(2), T(-2)) == T(double.infinity));
+    assert(gevPDF(T(4), T(0), T(2), T(-0.5)) == T(0));
+    assert(gevPDF(T(double.infinity), T(0), T(1), T(0)) == T(0));
+    // Division by the scale recovers a density after the Gumbel upper
+    // tail alone has rounded to zero (standardized observation 2^63).
+    const scale = T(false, long.min + 256, UInt!64(1));
+    const x = T(false, long.min + 319, UInt!64(1));
+    assert(gevPDF(x, T(0), scale, T(0)) ==
+        T(false, -4083141060989547003L, UInt!64(0x98d3377e65eee9c8UL)));
+    assert(gevPDF(T(double.nan), T(0), T(1), T(0)).isNaN);
+    assert(gevPDF(T(1000), T(0), T(1), T(1)).coefficient);
+    assert(gevPDF(T(-1000), T(0), T(1), T(0)) == T(0));
+}
+
+/++
 Computes the generalized extreme value (GEV) cumulative distribution function (CDF).
 
 Returns the lower-tail probability $(D P(X <= x)).
@@ -769,6 +836,79 @@ unittest
         assert(gevPDF(lowerTail, T(0), T(1), xi) == 0);
         assert(gevLPDF(lowerTail, T(0), T(1), xi) == -T.infinity);
     }}
+}
+
+/++
+Evaluates the generalized extreme value natural logarithm of the density with guarded precision.
+
+Params:
+    T = Represented $(D Fp) type, inferred from the arguments.
+    x = Observation on the support; shape zero also accepts NaN.
+    mu = Finite location.
+    sigma = Positive finite scale.
+    xi = Finite shape. Shape zero gives the Gumbel distribution.
+
+Returns:
+    The natural logarithm of the density in type T. The logarithm of the limiting density at either endpoint, including infinite limits.
++/
+@safe pure nothrow @nogc
+T gevLPDF(T)(const T x, const T mu, const T sigma, const T xi)
+    if (is(T == Fp!size, size_t size))
+    in (!mu.isSpecial && !xi.isSpecial && !sigma.isSpecial && !sigma.sign && !!sigma.coefficient)
+    in (gevSupported(x, mu, sigma, xi))
+{
+    import mir.stat.internal.fp_gev: gevDensity;
+    return gevDensity!true(x, mu, sigma, xi);
+}
+
+///
+version(mir_stat_test)
+@safe pure nothrow @nogc unittest
+{
+    import mir.bignum.fp: Fp;
+    alias T = Fp!64;
+    assert(gevLPDF(T(0), T(0), T(1), T(0)) == T(-1));
+}
+
+version(mir_stat_test)
+@safe pure nothrow @nogc unittest
+{
+    import mir.bignum.fixed: UInt;
+    import mir.math.common: approxEqual;
+    // Independent 380-digit decimal references at shared binary inputs.
+    {
+        alias T = Fp!64;
+        enum expected = T(true, -62, UInt!64(0x8f181ee0e8e95e3bUL));
+        assert(gevLPDF(T(-1.5), T(-0.5), T(3), T(-0.25)) == expected);
+        assert(approxEqual(gevLPDF(-1.5, -0.5, 3.0, -0.25),
+            -2.2358472057709573, 8 * double.epsilon));
+    }
+    {
+        alias T = Fp!128;
+        enum expected = T(true, -126, UInt!128.fromHexString("8259b0a6c87e2662c50d35c23d477f7b"));
+        assert(gevLPDF(T(-1.5), T(-0.5), T(3), T(0.375)) == expected);
+        assert(approxEqual(gevLPDF(-1.5, -0.5, 3.0, 0.375),
+            -2.036724245905108, 8 * double.epsilon));
+    }
+    alias T = Fp!64;
+    assert(gevLPDF(T(1), T(0), T(2), T(-2)) == T(double.infinity));
+    assert(gevLPDF(T(-1), T(0), T(1), T(1)) == T(-double.infinity));
+    assert(gevLPDF(T(1), T(0), T(1), T(-1)) == T(0));
+    const least = T(false, long.min, UInt!64(1));
+    // At xi=-1 and unit scale log f is exactly the negative residual.
+    assert(gevLPDF(T(1), least, T(1), T(-1)) == T(true, long.min, UInt!64(1)));
+    auto huge = T(1);
+    huge.exponent += 100;
+    T negative = huge;
+    negative.sign = true;
+    assert(gevLPDF(huge, T(0), T(1), T(0)) == negative);
+    assert(gevLPDF(negative, T(0), T(1), T(0)) == T(-double.infinity));
+    assert(gevLPDF(T(1), T(0), T(1), T(1)) ==
+        T(true, -63, UInt!64(0xf17217f7d1cf79acUL)));
+    assert(gevLPDF(T(-1000), T(0), T(1), T(0)) ==
+        T(true, 1379, UInt!64(0xcf391bcd76b9d6c0UL)));
+    assert(gevLPDF(T(3), T(0), T(0.5), T(-0.125)) ==
+        T(true, -60, UInt!64(0x902cc3795a7892dcUL)));
 }
 
 // Forward functions and quantiles retain the zero-shape limit.

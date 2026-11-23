@@ -122,9 +122,75 @@ private struct Evaluation(uint bits)
             return lower.finish!bits;
     }
 
+    static T density(bool logarithmic)(T x, T mu, T sigma, T xi)
+    {
+        if (x.isNaN)
+            return x;
+        const negativeInfinity = T(true, long.max, UInt!bits(0));
+        if (x.isInfinity)
+            return logarithmic ? negativeInfinity : T(0);
+        const numerator = xi.coefficient ? B.residual(x, mu, sigma, xi) : B.term(sigma);
+        const shapeOrder = position(xi, T(-1));
+        if (!numerator.present && shapeOrder)
+            return shapeOrder < 0 ? T(false, long.max, UInt!bits(0))
+                : logarithmic ? negativeInfinity : T(0);
+
+        const one = S.from(T(1));
+        const scale = S.from(sigma);
+        if (!numerator.present)
+        {
+            static if (logarithmic)
+            {
+                auto logScale = B.logarithm(scale);
+                if (logScale.coefficient) logScale.sign = !logScale.sign;
+                return cast(T)logScale;
+            }
+            else
+                return addOffset!bits(T(0), one.divide(scale), false);
+        }
+        const v = transform(x, mu, sigma, xi, numerator);
+        if (v.infiniteA)
+            return logarithmic ? negativeInfinity : T(0);
+
+        // log f = -(1+xi)*h - a - log(sigma). Combine the power and
+        // decay in log space before testing the final exponential range.
+        Term power;
+        if (shapeOrder && v.h.present)
+            power = Term(v.h.value.multiply(distance!(B.work)(xi, T(-1))),
+                (shapeOrder > 0) != v.h.negative, true);
+        const decay = Term(v.a.value, true, v.a.present);
+        static if (logarithmic)
+        {
+            const logScale = B.logarithm(scale);
+            Term normalization;
+            if (logScale.coefficient)
+                normalization = Term(S.from(logScale), !logScale.sign, true);
+            const result = B.combineThree(power, decay, normalization);
+            return result.present ? addOffset!bits(T(0), result.value, result.negative) : T(0);
+        }
+        else
+        {
+            const exponent = B.combine(power, decay);
+            S factor = one;
+            if (exponent.present)
+            {
+                if (exponent.value.exponent >= exponentBias + 66)
+                    return exponent.negative ? T(0) : T(false, long.max, UInt!bits(0));
+                const decayFactor = scaledDecay(exponent.value);
+                factor = exponent.negative ? decayFactor : one.divide(decayFactor);
+            }
+            return addOffset!bits(T(0), factor.divide(scale), false);
+        }
+    }
+
 }
 
 package(mir.stat) auto gevTail(bool upper, uint bits)(Fp!bits x, Fp!bits mu, Fp!bits sigma, Fp!bits xi)
 {
     return Evaluation!bits.tail!upper(x, mu, sigma, xi);
+}
+
+package(mir.stat) auto gevDensity(bool logarithmic, uint bits)(Fp!bits x, Fp!bits mu, Fp!bits sigma, Fp!bits xi)
+{
+    return Evaluation!bits.density!logarithmic(x, mu, sigma, xi);
 }
