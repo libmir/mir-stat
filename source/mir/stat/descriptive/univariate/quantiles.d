@@ -6,6 +6,9 @@ The `rc` and `make` variants provide allocation choices; $(REF quantileInto, mir
 writes into caller-provided output. The algorithm enums describe the available
 quantile definitions.
 
+All ordinary quantile functions require observations without NaNs. Positive
+and negative infinity are valid observations.
+
 For implementation flowcharts covering allocation, endpoint shortcuts, and
 cached selection, see the
 $(LINK2 https://github.com/libmir/mir-stat/blob/master/design/quantile-selection.md, ordinary quantile implementation notes).
@@ -7746,6 +7749,19 @@ private bool scanFloatingExtrema(V, T, Copy)(scope V values, out T low, out T hi
     return true;
 }
 
+// A scan can decline to supply extrema without running selection on unordered input.
+version(mir_stat_test) @system pure nothrow @nogc unittest
+{
+    import std.meta: AliasSeq;
+    const double[2] levels = [0, 1];
+    static foreach (T; AliasSeq!(float, double, real))
+    {{
+        const T[3] values = [1, T.nan, 2];
+        T low, high;
+        assert(!tryScanQuantileEndpoints(values[], levels[], low, high));
+    }}
+}
+
 private void writeQuantileEndpoints(P, O, T)(scope P levels, scope O output, T low, T high)
 {
     foreach (i; 0 .. levels.length)
@@ -8102,8 +8118,7 @@ several quantiles from the same observations. The three-argument overload
 requires no scratch buffer. With directly stored observations, probabilities,
 and output, either overload can answer endpoint-only batches with a single
 scan of integer, $(D float), $(D double), or $(D real) observations. The floating-point
-scan orders negative zero before positive zero and falls back to ordinary
-selection if any observation is NaN.
+scan orders negative zero before positive zero. Observations must contain no NaNs.
 
 Scratch must contain at least `quantileScratchLength(workspace.elementCount)`
 mutable `ulong` elements and must not overlap any other argument. The function
@@ -8899,6 +8914,7 @@ version(mir_stat_test) @safe pure nothrow unittest
 
 /++
 Compute ordinary sample quantiles.
+Floating-point observations may include infinities and must contain no NaNs.
 A scalar probability returns a scalar; a probability slice/array or multiple
 probabilities returns an owning GC slice. The result type is independent of the
 probability type. Use $(LREF rcquantile) for the former reference-counted behavior.
@@ -9173,6 +9189,7 @@ version(mir_stat_test) @safe unittest
 }
 
 /++ Compute quantiles by sorting the observations before looking up ranks.
+Observations must contain no NaNs.
 A random-access Phobos SortedRange with a length and the default ascending predicate is read directly.
 Params:
     F = optional result type, inferred as for $(LREF quantile) when omitted
@@ -9671,8 +9688,9 @@ version(mir_stat_test)
 Compute ordinary quantiles from observations in ascending order. Arrays and Mir
 slices are read in flattened iteration order. A random-access Phobos SortedRange
 with a length and the default ascending predicate is also accepted. The caller
-guarantees the order. Selected zeros retain their stored sign. Probability forms,
-result types, and the treatment of tied zeros follow $(LREF quantile).
+guarantees ascending order and the absence of NaNs. Selected zeros retain their
+stored sign. Probability forms, result types, and the treatment of tied zeros
+follow $(LREF quantile).
 +/
 auto quantileAssumeSorted(F, QuantileAlgo algorithm = QuantileAlgo.type7, Data, P...)(
     scope auto ref Data data, scope auto ref P probabilities)
@@ -10248,8 +10266,7 @@ version(mir_stat_test)
     assert(values == reordered && scratch == referenceScratch);
 }
 
-// Floating extrema include subnormals and infinities. Exceptional inputs use the
-// original selector before allocating output or changing the workspace.
+// Floating extrema include subnormals and infinities.
 version(mir_stat_test)
 @system pure nothrow @nogc unittest
 {
@@ -10269,16 +10286,6 @@ version(mir_stat_test)
         quantileInto(values[], levels[], output[], scratch[]);
         assert(output[0] == T.infinity && output[1] == -T.min_normal / 2 && scratch[0] == 0);
 
-        values = [T.nan, 2, 1, 3];
-        auto reference = values;
-        T[3] expected;
-        quantileIntoImpl!(QuantileAlgo.type7, false, false)(reference[], levels[], expected[], null);
-        result = makeQuantile(allocator, values[], levels[]);
-        assert(allocator.allocations == 3);
-        foreach (i; 0 .. levels.length) assert(result[i] is expected[i]);
-        allocator.dispose(result.field);
-        assert(allocator.releases == allocator.allocations);
-
         // Repeated requests, either input order, and single-sign zero inputs.
         foreach (first; [-T(0), T(0)])
         foreach (last; [-T(0), T(0)])
@@ -10292,6 +10299,7 @@ version(mir_stat_test)
             foreach (i; 0 .. levels.length) assert(result[i] is output[i]);
             allocator.dispose(result.field);
         }
+        assert(allocator.releases == allocator.allocations);
     }}
 }
 
