@@ -55,6 +55,7 @@ $(TR $(TH Category) $(TH Declarations))
         $(REF rcWeightedQuantileSortFirst, mir, stat, descriptive, univariate, quantiles)$(NBSP)
         $(REF makeWeightedQuantileSortFirst, mir, stat, descriptive, univariate, quantiles)$(NBSP)
         $(REF makeWeightedQuantile, mir, stat, descriptive, univariate, quantiles)$(NBSP)
+        $(REF weightedQuantileSortFirstInto, mir, stat, descriptive, univariate, quantiles)$(NBSP)
         $(REF weightedQuantileAssumeSortedInto, mir, stat, descriptive, univariate, quantiles)$(NBSP)
         $(REF weightedQuantileScratchLength, mir, stat, descriptive, univariate, quantiles)$(NBSP)
         $(REF WeightedQuantileTable, mir, stat, descriptive, univariate, quantiles)$(NBSP)
@@ -2995,7 +2996,32 @@ private struct WeightedQuantileState(WeightInterpretation interpretation, Weight
 // Compare values in their original type, then use raw weights to order ties.
 private bool weightedEntryLess(Entry)(const ref Entry a, const ref Entry b)
 {
-    return a.value < b.value || (a.value == b.value && a.cumulative < b.cumulative);
+    return weightedRowLess(a.value, a.cumulative, b.value, b.cumulative);
+}
+
+private bool weightedRowLess(V, W)(V a, W aw, V b, W bw)
+{
+    return a < b || (a == b && aw < bw);
+}
+
+private struct WeightedRowOrder
+{
+    bool ascending = true, descending = true;
+
+    void observe(V, W)(V a, W aw, V b, W bw)
+    {
+        if (weightedRowLess(b, bw, a, aw))
+            ascending = false;
+        else if (weightedRowLess(a, aw, b, bw))
+            descending = false;
+        else static if (isFloatingPoint!V)
+        {
+            // A comparison sort can exchange opposite zeros with equal weights.
+            import std.math : signbit;
+            if (b == 0 && signbit(a) != signbit(b))
+                ascending = descending = false;
+        }
+    }
 }
 
 private enum maxWeightedBatch = 8;
@@ -3261,36 +3287,22 @@ private WeightedQuantileState!(interpretation, algorithm) prepareWeightedQuantil
     import mir.ndslice.sorting: sort;
     import mir.primitives: DeepElementType;
     alias Entry = DeepElementType!Workspace;
-    bool ascending = true, descending = true;
-    void observe(const ref Entry previous, const ref Entry current)
-    {
-        if (weightedEntryLess(current, previous))
-            ascending = false;
-        else if (weightedEntryLess(previous, current))
-            descending = false;
-        else static if (isFloatingPoint!(typeof(current.value)))
-        {
-            // The sort may exchange equivalent entries. For opposite signed
-            // zeros with equal weights this changes an observable result.
-            import std.math : signbit;
-            if (current.value == 0 && signbit(current.value) != signbit(previous.value))
-                ascending = descending = false;
-        }
-    }
+    WeightedRowOrder order;
 
     size_t j;
     foreach (i; 0 .. masses.length)
         if (masses[i] > 0)
         {
             workspace[j] = Entry(values[i], cast(typeof(Entry.init.cumulative)) masses[i]);
-            if (j && (ascending || descending))
-                observe(workspace[j - 1], workspace[j]);
+            if (j && (order.ascending || order.descending))
+                order.observe(workspace[j - 1].value, workspace[j - 1].cumulative,
+                    workspace[j].value, workspace[j].cumulative);
             ++j;
         }
 
-    if (!ascending)
+    if (!order.ascending)
     {
-        if (descending)
+        if (order.descending)
         {
             import mir.utility : swap;
             foreach (i; 0 .. workspace.length / 2)
@@ -4507,6 +4519,251 @@ version(mir_stat_test) static if (real.mant_dig < size_t.sizeof * 8)
     assert(workspace[1].value == highRow);
 }
 
+// Compact positive rows in input order so zero-weight observations never enter the comparison.
+private void orderPositiveWeightedRows(Values, Weights)(scope Values values, scope Weights weights)
+{
+    import mir.ndslice.sorting : sort;
+    import mir.ndslice.topology : zip;
+    import mir.utility : swap;
+    void swapRows(size_t i, size_t j)
+    {
+        swap(values[i], values[j]);
+        swap(weights[i], weights[j]);
+    }
+
+    WeightedRowOrder order;
+    size_t count;
+    foreach (i; 0 .. weights.length)
+    {
+        if (weights[i] == 0)
+            continue;
+        if (i != count)
+            swapRows(i, count);
+        if (count && (order.ascending || order.descending))
+            order.observe(values[count - 1], weights[count - 1], values[count], weights[count]);
+        ++count;
+    }
+    if (order.ascending)
+        return;
+    if (order.descending)
+    {
+        foreach (i; 0 .. count / 2)
+            swapRows(i, count - 1 - i);
+    }
+    else
+    {
+        auto rows = zip(values[0 .. count], weights[0 .. count]);
+        sort!((a, b) => weightedRowLess(a.a, a.b, b.a, b.b))(rows);
+    }
+}
+
+private void weightedQuantileIntoImpl(WeightInterpretation interpretation, WeightedQuantileAlgo algorithm,
+    bool sortFirst, Data, Weights, P, Output)(scope auto ref Data data, scope auto ref Weights weights,
+    scope auto ref P probabilities, scope auto ref Output output, scope WeightedMass!interpretation[] scratch)
+{
+    alias Mass = WeightedMass!interpretation;
+    import mir.primitives : DeepElementType;
+    import mir.ndslice.slice : sliced;
+    import std.traits : Unqual, isNumeric;
+    scope auto values = quantileSlice(data);
+    scope auto masses = quantileSlice(weights);
+    scope auto levels = quantileSlice(probabilities);
+    scope auto destination = quantileSlice(output);
+    alias Element = Unqual!(DeepElementType!(typeof(values)));
+    alias F = Unqual!(DeepElementType!(typeof(destination)));
+    static assert(is(Element == Unqual!(DeepElementType!Data)),
+        "Convert the observations to a Mir slice explicitly when conversion changes the element type");
+    static assert(typeof(values).N == 1 && typeof(masses).N == 1 &&
+        typeof(levels).N == 1 && typeof(destination).N == 1, "Inputs and output must be one-dimensional");
+    static assert(isNumeric!Element && isNumeric!(DeepElementType!(typeof(masses))) && isNumeric!F,
+        "Weighted quantiles require numeric values, weights, and output");
+    static assert(isFloatingPoint!(Unqual!(DeepElementType!(typeof(levels)))),
+        "Probabilities must be floating-point values");
+    static assert(algorithm == WeightedQuantileAlgo.inverseCDF || isFloatingPoint!F,
+        "Interpolated quantiles require floating-point output");
+    assert(destination.length == levels.length, "Output length must match probabilities");
+    const input = validateWeightedQuantileInput!(interpretation, algorithm)(values.lightScope, masses.lightScope);
+    const count = input.count;
+    const needed = weightedQuantileScratchLength!(interpretation, algorithm)(sortFirst ? count : values.length, count);
+    assert(scratch.length >= needed, "Insufficient weighted quantile scratch");
+    enum withUpper = weightedQuantileUsesEffectiveSize!(interpretation, algorithm);
+    scope auto workspace = BorrowedWeightedRows!(typeof(values.lightScope), Mass, withUpper)(
+        values.lightScope, scratch[0 .. count]);
+    static if (withUpper)
+        workspace.upper = scratch[count .. 2 * count];
+    static if (sortFirst)
+    {
+        orderPositiveWeightedRows(values.lightScope, masses.lightScope);
+        foreach (i; 0 .. count)
+            workspace.cumulative[i] = cast(Mass) masses[i];
+    }
+    else
+    {
+        workspace.indices = scratch[(1 + withUpper) * count .. needed];
+        size_t k, previous;
+        foreach (i; 0 .. masses.length)
+            if (masses[i] > 0)
+            {
+                const mass = cast(Mass) masses[i];
+                assert(!k || values[previous] < values[i] ||
+                    (values[previous] == values[i] && workspace.cumulative[k - 1] <= mass),
+                    "Expected ascending observations and ascending weights within ties");
+                previous = i;
+                workspace.cumulative[k] = mass;
+                workspace.recordSourceRow(k, i);
+                ++k;
+            }
+            else if (!workspace.indices.length)
+            {
+                if (workspace.firstSkippedRank == size_t.max) workspace.firstSkippedRank = k;
+                else workspace.secondSkippedRank = k;
+            }
+    }
+    static if (withUpper)
+        const state = accumulateWeightedQuantileMasses!(interpretation, algorithm)(
+            workspace.cumulative.sliced, input.maximum, workspace.upper.sliced);
+    else
+        const state = accumulateWeightedQuantileMasses!(interpretation, algorithm)(
+            workspace.cumulative.sliced, input.maximum);
+    foreach (i; 0 .. levels.length)
+        destination[i] = preparedWeightedQuantileAt!(F, interpretation, algorithm)(workspace, levels[i], state);
+}
+
+/++ Sort aligned observations and weights in place and write a batch of weighted quantiles.
+Positive-weight rows are placed first, ordered by observation and then by raw weight within ties.
+Zero-weight rows follow in unspecified order. Each observation stays paired with its weight.
+All five storage regions must be mutually disjoint, and each writable view must have distinct elements.
+
+Params:
+    interpretation = relative (default) or frequency
+    algorithm = estimator, default inverseCDF for relative weights and type7 for frequency weights
+    data = writable one-dimensional observations. Positive-weight observations must be finite.
+    weights = aligned writable finite nonnegative weights with at least one positive weight.
+        Frequency weights must be whole counts within the supported total.
+    probabilities = one-dimensional floating-point probabilities in [0, 1]
+    output = writable one-dimensional destination with one element per probability.
+        Its element type determines result precision and must be floating-point for interpolation.
+    scratch = writable real array for relative weights or ulong array for frequency counts.
+        For k positive rows, weightedQuantileScratchLength!(interpretation, algorithm)(k, k)
+        gives the exact length. Use the total row count for both arguments for an upper bound.
+
+Returns:
+    Quantiles are written to output in caller probability order, including repeated requests.
+    Endpoints select the positive-weight extrema. Signed zeros compare equal as for $(LREF weightedQuantile).
+    Unused scratch elements are untouched.
++/
+template weightedQuantileSortFirstInto(WeightInterpretation interpretation = WeightInterpretation.relative,
+    WeightedQuantileAlgo algorithm = weightedTableDefault!interpretation)
+    if (validWeightedQuantileOptions!(interpretation, algorithm))
+{
+    /// ditto
+    void weightedQuantileSortFirstInto(Data, Weights, P, Output)(scope auto ref Data data,
+        scope auto ref Weights weights, scope auto ref P probabilities, scope auto ref Output output,
+        scope WeightedMass!interpretation[] scratch)
+    {
+        weightedQuantileIntoImpl!(interpretation, algorithm, true)(data, weights, probabilities, output, scratch);
+    }
+}
+
+/// ditto
+template weightedQuantileSortFirstInto(WeightedQuantileAlgo algorithm,
+    WeightInterpretation interpretation = WeightInterpretation.relative)
+    if (validWeightedQuantileOptions!(interpretation, algorithm))
+{
+    alias weightedQuantileSortFirstInto = .weightedQuantileSortFirstInto!(interpretation, algorithm);
+}
+
+/// Sort observations and weights together and write results in probability order.
+version(mir_stat_test) @safe pure nothrow @nogc unittest
+{
+    int[4] data = [7, 90, 2, 2], weights = [1, 0, 3, 1];
+    const double[3] levels = [1, 0.5, 1];
+    int[3] output;
+    real[3] scratch;
+    weightedQuantileSortFirstInto(data, weights, levels, output, scratch);
+    assert(data == [2, 2, 7, 90] && weights == [1, 3, 1, 0]);
+    assert(output == [7, 2, 7]);
+}
+
+version(mir_stat_test) @safe pure nothrow @nogc unittest
+{
+    import mir.ndslice : sliced, stride;
+    import std.math : signbit;
+    double[8] data = [5, 99, -0.0, 99, double.nan, 99, 3, 99];
+    int[12] weights = [1, 9, 9, 1, 9, 9, 0, 9, 9, 2, 9, 9];
+    const double[3] levels = [0, 1, 0.5];
+    double[6] output = -1;
+    ulong[4] scratch = 42;
+    weightedQuantileSortFirstInto!(WeightedQuantileAlgo.type7, WeightInterpretation.frequency)(
+        data[].sliced.stride(2), weights[].sliced.stride(3), levels, output[].sliced.stride(2), scratch);
+    assert(signbit(data[0]) && data[2] == 3 && data[4] == 5 && data[6] != data[6]);
+    assert(data[1] == 99 && data[3] == 99 && data[5] == 99 && data[7] == 99);
+    assert(weights == [1, 9, 9, 2, 9, 9, 1, 9, 9, 0, 9, 9]);
+    assert(output == [0, -1, 5, -1, 3, -1] && signbit(output[0]));
+    assert(scratch[$ - 1] == 42);
+}
+
+version(mir_stat_test) @system unittest
+{
+    import core.exception : AssertError;
+    import std.exception : assertThrown;
+    alias algo = WeightedQuantileAlgo;
+    int[7] data = [1, 2, 9, 8, 4, 7, 5], weights = [0, 0, 1, 0, 2, 0, 3];
+    const original = data, originalWeights = weights;
+    const double[3] levels = [0.8, 0.25, 0.8];
+    double[3] output;
+    real[6] scratch;
+    assertThrown!AssertError(weightedQuantileSortFirstInto!(algo.type8)(
+        data, weights, levels, output, scratch[0 .. 5]));
+    assert(data == original && weights == originalWeights);
+    assertThrown!AssertError(weightedQuantileSortFirstInto!(algo.type8)(
+        data, weights, levels, output[0 .. 2], scratch));
+    assert(data == original && weights == originalWeights);
+    auto expected = weightedQuantileSortFirst!(algo.type8)(data, weights, levels);
+    weightedQuantileSortFirstInto!(algo.type8)(data, weights, levels, output, scratch);
+    assert(output[] == expected);
+    assert(data[0 .. 3] == [4, 5, 9] && weights == [2, 3, 1, 0, 0, 0, 0]);
+    import mir.ndslice.slice : sliced;
+    import mir.ndslice.sorting : sort;
+    sort(data[3 .. $].sliced);
+    assert(data[3 .. $] == [1, 2, 7, 8]);
+}
+
+version(mir_stat_test) @safe pure nothrow @nogc unittest
+{
+    // The positive rows are already ordered, even with a zero-weight row between them.
+    int[3] data = [2, 99, 2], weights = [1, 0, 3];
+    const double[1] levels = [0.5];
+    int[1] output;
+    real[2] scratch;
+    weightedQuantileSortFirstInto(data, weights, levels, output, scratch);
+    assert(data == [2, 2, 99] && weights == [1, 3, 0]);
+    assert(output[0] == 2);
+}
+
+version(mir_stat_test) @safe pure nothrow @nogc unittest
+{
+    // These adjacent ulong weights coincide when converted to a 53-bit real.
+    enum ulong low = 1UL << 53;
+    enum ulong high = low + 1;
+    const double[1] levels = [0.5];
+    int[1] output;
+    real[4] scratch;
+
+    int[2] tied = [3, 3];
+    ulong[2] tiedWeights = [high, low];
+    weightedQuantileSortFirstInto(tied, tiedWeights, levels, output, scratch);
+    assert(tiedWeights == [low, high]);
+    assert(output[0] == 3);
+
+    int[4] mixed = [4, 3, 3, 5];
+    ulong[4] mixedWeights = [1, high, low, 2];
+    weightedQuantileSortFirstInto(mixed, mixedWeights, levels, output, scratch);
+    assert(mixed == [3, 3, 4, 5]);
+    assert(mixedWeights == [low, high, 1, 2]);
+    assert(output[0] == 3);
+}
+
 /++ Compute sorted weighted quantiles in caller storage without allocating.
 Uses the ordering and numerical conventions of $(LREF weightedQuantileAssumeSorted).
 Scratch and output must be disjoint from each other and from all inputs.
@@ -4549,62 +4806,8 @@ template weightedQuantileAssumeSortedInto(WeightInterpretation interpretation = 
         }
         else
         {
-            import mir.primitives : DeepElementType;
-            import mir.ndslice.slice : sliced;
-            import std.traits : Unqual, isNumeric;
-            scope auto values = quantileSlice(data);
-            scope auto masses = quantileSlice(weights);
-            scope auto levels = quantileSlice(probabilities);
-            scope auto destination = quantileSlice(output);
-            alias Element = Unqual!(DeepElementType!(typeof(values)));
-            alias F = Unqual!(DeepElementType!(typeof(destination)));
-            static assert(is(Element == Unqual!(DeepElementType!Data)),
-                "Convert the observations to a Mir slice explicitly when conversion changes the element type");
-            static assert(typeof(values).N == 1 && typeof(masses).N == 1 &&
-                typeof(levels).N == 1 && typeof(destination).N == 1, "Inputs and output must be one-dimensional");
-            static assert(isNumeric!Element && isNumeric!(DeepElementType!(typeof(masses))) && isNumeric!F,
-                "Weighted quantiles require numeric values, weights, and output");
-            static assert(isFloatingPoint!(Unqual!(DeepElementType!(typeof(levels)))),
-                "Probabilities must be floating-point values");
-            static assert(algorithm == WeightedQuantileAlgo.inverseCDF || isFloatingPoint!F,
-                "Interpolated quantiles require floating-point output");
-            assert(destination.length == levels.length, "Output length must match probabilities");
-            const input = validateWeightedQuantileInput!(interpretation, algorithm)(values.lightScope, masses.lightScope);
-            const count = input.count;
-            const needed = weightedQuantileScratchLength!(interpretation, algorithm)(values.length, count);
-            assert(scratch.length >= needed, "Insufficient weighted quantile scratch");
-            enum withUpper = weightedQuantileUsesEffectiveSize!(interpretation, algorithm);
-            scope auto workspace = BorrowedWeightedRows!(typeof(values.lightScope), Mass, withUpper)(
-                values.lightScope, scratch[0 .. count]);
-            static if (withUpper)
-                workspace.upper = scratch[count .. 2 * count];
-            workspace.indices = scratch[(1 + withUpper) * count .. needed];
-            size_t k, previous;
-            foreach (i; 0 .. masses.length)
-                if (masses[i] > 0)
-                {
-                    const mass = cast(Mass) masses[i];
-                    assert(!k || values[previous] < values[i] ||
-                        (values[previous] == values[i] && workspace.cumulative[k - 1] <= mass),
-                        "Expected ascending observations and ascending weights within ties");
-                    previous = i;
-                    workspace.cumulative[k] = mass;
-                    workspace.recordSourceRow(k, i);
-                    ++k;
-                }
-                else if (!workspace.indices.length)
-                {
-                    if (workspace.firstSkippedRank == size_t.max) workspace.firstSkippedRank = k;
-                    else workspace.secondSkippedRank = k;
-                }
-            static if (withUpper)
-                const state = accumulateWeightedQuantileMasses!(interpretation, algorithm)(
-                    workspace.cumulative.sliced, input.maximum, workspace.upper.sliced);
-            else
-                const state = accumulateWeightedQuantileMasses!(interpretation, algorithm)(
-                    workspace.cumulative.sliced, input.maximum);
-            foreach (i; 0 .. levels.length)
-                destination[i] = preparedWeightedQuantileAt!(F, interpretation, algorithm)(workspace, levels[i], state);
+            weightedQuantileIntoImpl!(interpretation, algorithm, false)(
+                data, weights, probabilities, output, scratch);
         }
     }
 
