@@ -38,6 +38,7 @@ $(TR $(TH Category) $(TH Declarations))
         $(REF makeQuantile, mir, stat, descriptive, univariate, quantiles)$(NBSP)
         $(REF makeQuantileInPlace, mir, stat, descriptive, univariate, quantiles)$(NBSP)
         $(REF quantileInto, mir, stat, descriptive, univariate, quantiles)$(NBSP)
+        $(REF quantileCopyInto, mir, stat, descriptive, univariate, quantiles)$(NBSP)
         $(REF quantileSortFirst, mir, stat, descriptive, univariate, quantiles)$(NBSP)
         $(REF quantileSortFirstInPlace, mir, stat, descriptive, univariate, quantiles)$(NBSP)
         $(REF rcquantileSortFirst, mir, stat, descriptive, univariate, quantiles)$(NBSP)
@@ -7961,6 +7962,128 @@ The calculation is valid for every `size_t` observation count.
 size_t quantileScratchLength(size_t observationCount) @safe pure nothrow @nogc
 {
     return observationCount / 64 + (observationCount % 64 != 0);
+}
+
+private void copyQuantilesInto(alias evaluate, QuantileAlgo algorithm, Data, P, Output, Workspace)(
+    scope auto ref Data data, scope auto ref P probabilities, scope auto ref Output output, scope auto ref Workspace storage)
+{
+    scope auto levels = quantileSlice(probabilities);
+    scope auto destination = quantileSlice(output);
+    static assert(typeof(levels).N == 1 && typeof(destination).N == 1,
+        "Probabilities and output must be one-dimensional");
+    assert(destination.length == levels.length, "Output length must match probabilities");
+    if (!levels.length)
+        return;
+    static if (isPhobosSortedRange!Data)
+        quantileAssumeSortedInto!algorithm(data, levels, destination);
+    else
+    {
+        import mir.ndslice.topology : flattened;
+        import std.traits : Unqual;
+        scope auto source = quantileSlice(data);
+        alias Element = Unqual!(typeof(source).DeepElement);
+        const n = source.elementCount;
+        assert(n >= 2, "A quantile request needs at least two observations");
+        scope auto supplied = quantileSlice(storage).flattened;
+        static assert(is(typeof(supplied).DeepElement == Element),
+            "Observation workspace must have the mutable observation element type");
+        assert(supplied.length >= n, "Observation workspace is too small");
+        scope auto workspace = supplied[0 .. n];
+        workspace[] = source.lightScope.flattened;
+        evaluate!algorithm(workspace, levels, destination);
+    }
+}
+
+/++ Select quantiles on a copy of the observations and write them to caller-provided output.
+A default ascending, sized random-access Phobos SortedRange is read directly.
+The caller supplies output and observation workspace. For an empty probability batch,
+output must be empty and the workspace may have zero length.
+
+Params:
+    algorithm = estimator, default type7; string estimator names are also accepted
++/
+template quantileCopyInto(QuantileAlgo algorithm = QuantileAlgo.type7)
+{
+    /++
+    Params:
+        data = observations as an array, Mir slice, or supported ascending SortedRange.
+            A nonempty request requires at least two observations.
+        probabilities = one-dimensional floating-point probabilities in [0, 1]
+        output = one-dimensional writable destination, disjoint from data and probabilities,
+            with one element per probability. Its element type determines result precision.
+        workspace = writable array or Mir slice with distinct elements of the observation type,
+            disjoint from the other arguments. For an input without a sorted-range wrapper and a nonempty batch,
+            its flattened length must cover every observation. Excess elements are untouched.
+            A supported ascending SortedRange leaves the workspace untouched.
+    Returns:
+        Writes quantiles to output in caller probability order, including repeated requests.
+    +/
+    void quantileCopyInto(Data, P, Output, Workspace)(scope auto ref Data data,
+        scope auto ref P probabilities, scope auto ref Output output, scope auto ref Workspace workspace)
+    {
+        copyQuantilesInto!(quantileInto, algorithm)(data, probabilities, output, workspace);
+    }
+}
+
+/// ditto
+template quantileCopyInto(string algorithm)
+{
+    alias quantileCopyInto = .quantileCopyInto!(__traits(getMember, QuantileAlgo, algorithm));
+}
+
+///
+version(mir_stat_test) @safe pure nothrow @nogc unittest
+{
+    int[5] values = [4, 0, 3, 1, 2];
+    const double[3] levels = [0.75, 0.25, 0.75];
+    double[3] output;
+    int[5] workspace;
+    quantileCopyInto(values, levels, output, workspace);
+    assert(output == [3, 1, 3]);
+    assert(values == [4, 0, 3, 1, 2]);
+}
+
+version(mir_stat_test) @safe pure nothrow @nogc unittest
+{
+    import mir.ndslice : sliced;
+    import std.range : assumeSorted;
+    const ulong[4] data = [9, 2, 7, 3];
+    const double[2] levels = [1, 0];
+    ulong[5] workspace = ulong.max;
+    ulong[2] output;
+    quantileCopyInto!"type1"(data[].sliced(2, 2), levels, output, workspace);
+    assert(output == [9UL, 2UL] && workspace[$ - 1] == ulong.max);
+
+    const ulong[3] ordered = [2, 5, 9];
+    workspace[] = ulong.max;
+    quantileCopyInto!(QuantileAlgo.type1)(assumeSorted(ordered[]), levels, output, workspace);
+    assert(output == [9UL, 2UL]);
+    foreach (value; workspace) assert(value == ulong.max);
+
+    double[0] empty;
+    quantileCopyInto(data, empty, empty, workspace[0 .. 0]);
+}
+
+version(mir_stat_test) @system unittest
+{
+    import core.exception : AssertError;
+    import std.exception : assertThrown;
+    const int[3] data = [9, 2, 1];
+    const double[1] levels = [0.5];
+    double[1] output = [-1];
+    static assert(!__traits(compiles, quantileCopyInto(data, levels, output)));
+    int[2] shortWorkspace = -1;
+    assertThrown!AssertError(quantileCopyInto(data, levels, output, shortWorkspace));
+    assert(output[0] == -1 && shortWorkspace == [-1, -1]);
+
+    double[0] empty;
+    int[3] workspace = -1;
+    assertThrown!AssertError(quantileCopyInto(data, levels, empty, workspace));
+    assert(workspace == [-1, -1, -1]);
+    const int[3] readOnlyWorkspace = [0, 0, 0];
+    static assert(!__traits(compiles, quantileCopyInto(data, levels, output, readOnlyWorkspace)));
+    float[3] converted;
+    static assert(!__traits(compiles, quantileCopyInto(data, levels, output, converted)));
 }
 
 /++
