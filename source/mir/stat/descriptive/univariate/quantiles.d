@@ -38,8 +38,11 @@ $(TR $(TH Category) $(TH Declarations))
         $(REF makeQuantileInPlace, mir, stat, descriptive, univariate, quantiles)$(NBSP)
         $(REF quantileInto, mir, stat, descriptive, univariate, quantiles)$(NBSP)
         $(REF quantileSortFirst, mir, stat, descriptive, univariate, quantiles)$(NBSP)
+        $(REF quantileSortFirstInPlace, mir, stat, descriptive, univariate, quantiles)$(NBSP)
         $(REF rcquantileSortFirst, mir, stat, descriptive, univariate, quantiles)$(NBSP)
+        $(REF rcquantileSortFirstInPlace, mir, stat, descriptive, univariate, quantiles)$(NBSP)
         $(REF makeQuantileSortFirst, mir, stat, descriptive, univariate, quantiles)$(NBSP)
+        $(REF makeQuantileSortFirstInPlace, mir, stat, descriptive, univariate, quantiles)$(NBSP)
         $(REF quantileSortFirstInto, mir, stat, descriptive, univariate, quantiles)$(NBSP)
         $(REF quantileScratchLength, mir, stat, descriptive, univariate, quantiles)$(NBSP)
         $(REF QuantileTable, mir, stat, descriptive, univariate, quantiles)$(NBSP)
@@ -8841,6 +8844,70 @@ private auto sortFirstQuantile(F, QuantileAlgo algorithm, bool modify, QuantileA
     }
 }
 
+/++ Sort writable observations in ascending order and evaluate their quantiles.
+An ascending random-access Phobos SortedRange with a length is read directly.
+
+Params:
+    F = optional result type, inferred as for $(LREF quantile) when omitted
+    algorithm = estimator, default type7; accepts a QuantileAlgo or its string name
++/
+template quantileSortFirstInPlace(F = void, QuantileAlgo algorithm = QuantileAlgo.type7)
+    if (is(F == void) || isFloatingPoint!F || algorithm == QuantileAlgo.type1 || algorithm == QuantileAlgo.type3)
+{
+    /++
+    Params:
+        data = observations as an array, Mir slice, or ascending SortedRange.
+            Writable observations must be disjoint from probabilities.
+            At least two observations are required for a nonempty request.
+        probabilities = scalar, one-dimensional array or slice, or variadic probabilities in [0, 1].
+            Omit for the minimum, quartiles, and maximum.
+    Returns:
+        A scalar for a scalar probability, otherwise a GC-owned slice in caller probability order.
+    +/
+    auto quantileSortFirstInPlace(Data, P...)(scope auto ref Data data, scope auto ref P probabilities)
+    {
+        QuantileContext context;
+        return sortFirstQuantile!(F, algorithm, true, QuantileAllocation.gc)(
+            context, data, probabilities);
+    }
+}
+
+/// ditto
+template quantileSortFirstInPlace(QuantileAlgo algorithm)
+{
+    alias quantileSortFirstInPlace = .quantileSortFirstInPlace!(void, algorithm);
+}
+
+/// ditto
+template quantileSortFirstInPlace(F, string algorithm)
+{
+    alias quantileSortFirstInPlace = .quantileSortFirstInPlace!(F, __traits(getMember, QuantileAlgo, algorithm));
+}
+
+/// ditto
+template quantileSortFirstInPlace(string algorithm)
+{
+    alias quantileSortFirstInPlace = .quantileSortFirstInPlace!(__traits(getMember, QuantileAlgo, algorithm));
+}
+
+///
+version(mir_stat_test) @safe pure nothrow unittest
+{
+    int[5] values = [4, 0, 3, 1, 2];
+    auto result = quantileSortFirstInPlace(values, 0.75, 0.25);
+    assert(result == [3.0, 1.0]);
+    assert(values[] == [0, 1, 2, 3, 4]);
+}
+
+version(mir_stat_test) @safe unittest
+{
+    import std.range : assumeSorted;
+    const int[5] ordered = [0, 1, 2, 3, 4];
+    auto values = assumeSorted(ordered[]);
+    assert(quantileInPlace!"type1"(values, 0.5) == quantile!("type1", true)(values, 0.5));
+    assert(quantileSortFirstInPlace!"type1"(values, 0.5) == 2);
+}
+
 /++ Compute quantiles by sorting the observations before looking up ranks.
 A random-access Phobos SortedRange with a length and the default ascending predicate is read directly.
 Params:
@@ -8918,6 +8985,61 @@ version(mir_stat_test) @safe unittest
     assert(signbit(quantileSortFirst!(QuantileAlgo.type1)(observations, 0.5)));
 }
 
+/++ Sort writable observations in ascending order and evaluate their quantiles.
+An ascending random-access Phobos SortedRange with a length is read directly.
+
+Params:
+    F = optional result type, inferred as for $(LREF quantile) when omitted
+    algorithm = estimator, default type7; accepts a QuantileAlgo or its string name
++/
+template rcquantileSortFirstInPlace(F = void, QuantileAlgo algorithm = QuantileAlgo.type7)
+    if (is(F == void) || isFloatingPoint!F || algorithm == QuantileAlgo.type1 || algorithm == QuantileAlgo.type3)
+{
+    /++
+    Params:
+        data = observations as an array, Mir slice, or ascending SortedRange.
+            Writable observations must be disjoint from probabilities.
+            At least two observations are required for a nonempty request.
+        probabilities = scalar, one-dimensional array or slice, or variadic probabilities in [0, 1].
+            Omit for the minimum, quartiles, and maximum.
+    Returns:
+        A scalar for a scalar probability, otherwise a reference-counted slice in caller probability order.
+    +/
+    auto rcquantileSortFirstInPlace(Data, P...)(scope auto ref Data data, scope auto ref P probabilities)
+    {
+        QuantileContext context;
+        return sortFirstQuantile!(F, algorithm, true, QuantileAllocation.rc)(
+            context, data, probabilities);
+    }
+}
+
+/// ditto
+template rcquantileSortFirstInPlace(QuantileAlgo algorithm)
+{
+    alias rcquantileSortFirstInPlace = .rcquantileSortFirstInPlace!(void, algorithm);
+}
+
+/// ditto
+template rcquantileSortFirstInPlace(F, string algorithm)
+{
+    alias rcquantileSortFirstInPlace = .rcquantileSortFirstInPlace!(F, __traits(getMember, QuantileAlgo, algorithm));
+}
+
+/// ditto
+template rcquantileSortFirstInPlace(string algorithm)
+{
+    alias rcquantileSortFirstInPlace = .rcquantileSortFirstInPlace!(__traits(getMember, QuantileAlgo, algorithm));
+}
+
+///
+version(mir_stat_test) @safe pure nothrow @nogc unittest
+{
+    int[5] values = [4, 0, 3, 1, 2];
+    auto result = rcquantileSortFirstInPlace!(float, "type7")(values, 0.75, 0.25);
+    assert(result == [3.0, 1.0]);
+    assert(values[] == [0, 1, 2, 3, 4]);
+}
+
 /++ Compute quantiles by sorting the observations before looking up ranks.
 A random-access Phobos SortedRange with a length and the default ascending predicate is read directly.
 Params:
@@ -8976,6 +9098,65 @@ version(mir_stat_test) @safe pure nothrow @nogc unittest
     int[3] values = [9, 1, 4];
     assert(rcquantileSortFirst!("type1", true)(values, 0.5) == 4);
     assert(values == [1, 4, 9]);
+}
+
+/++ Sort writable observations in ascending order and evaluate their quantiles.
+An ascending random-access Phobos SortedRange with a length is read directly.
+
+Params:
+    F = optional result type, inferred as for $(LREF quantile) when omitted
+    algorithm = estimator, default type7; accepts a QuantileAlgo or its string name
++/
+template makeQuantileSortFirstInPlace(F = void, QuantileAlgo algorithm = QuantileAlgo.type7)
+    if (is(F == void) || isFloatingPoint!F || algorithm == QuantileAlgo.type1 || algorithm == QuantileAlgo.type3)
+{
+    /++
+    Params:
+        allocator = allocator for scratch and batch results
+        data = observations as an array, Mir slice, or ascending SortedRange.
+            Writable observations must be disjoint from probabilities.
+            At least two observations are required for a nonempty request.
+        probabilities = scalar, one-dimensional array or slice, or variadic probabilities in [0, 1].
+            Omit for the minimum, quartiles, and maximum.
+    Returns:
+        A scalar for a scalar probability, otherwise a caller-allocated slice in caller probability order.
+        Dispose the result field with the same allocator.
+    +/
+    auto makeQuantileSortFirstInPlace(Allocator, Data, P...)(auto ref Allocator allocator, scope auto ref Data data, scope auto ref P probabilities)
+    {
+        return sortFirstQuantile!(F, algorithm, true, QuantileAllocation.custom)(
+            allocator, data, probabilities);
+    }
+}
+
+/// ditto
+template makeQuantileSortFirstInPlace(QuantileAlgo algorithm)
+{
+    alias makeQuantileSortFirstInPlace = .makeQuantileSortFirstInPlace!(void, algorithm);
+}
+
+/// ditto
+template makeQuantileSortFirstInPlace(F, string algorithm)
+{
+    alias makeQuantileSortFirstInPlace = .makeQuantileSortFirstInPlace!(F, __traits(getMember, QuantileAlgo, algorithm));
+}
+
+/// ditto
+template makeQuantileSortFirstInPlace(string algorithm)
+{
+    alias makeQuantileSortFirstInPlace = .makeQuantileSortFirstInPlace!(__traits(getMember, QuantileAlgo, algorithm));
+}
+
+///
+version(mir_stat_test) @system pure nothrow @nogc unittest
+{
+    import std.experimental.allocator : dispose;
+    import std.experimental.allocator.mallocator : Mallocator;
+    int[5] values = [4, 0, 3, 1, 2];
+    auto result = makeQuantileSortFirstInPlace!(QuantileAlgo.type7)(Mallocator.instance, values, 0.75, 0.25);
+    scope(exit) Mallocator.instance.dispose(result.field);
+    assert(result == [3.0, 1.0]);
+    assert(values[] == [0, 1, 2, 3, 4]);
 }
 
 /++ Compute quantiles by sorting the observations before looking up ranks.
