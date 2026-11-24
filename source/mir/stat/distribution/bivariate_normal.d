@@ -8,8 +8,10 @@ scalar functions below.
 
 $(LREF bivariateStandardNormalCDF) evaluates a lower-orthant probability.
 $(LREF bivariateStandardNormalPDF) and $(LREF bivariateStandardNormalLPDF)
-evaluate the joint density and its natural logarithm. At perfect correlation
-the distribution is supported on a line and only the CDF is defined.
+evaluate the joint density and its natural logarithm.
+$(LREF bivariateStandardNormalRectangleProbability) accepts both lower and upper
+bounds for each coordinate. At perfect correlation the distribution is supported
+on a line and interval probabilities reduce to univariate calculations.
 
 License: $(HTTP www.apache.org/licenses/LICENSE-2.0, Apache-2.0)
 Copyright: 2026 Mir Stat Authors.
@@ -398,6 +400,141 @@ version(mir_stat_test)
         assert(bivariateNormalCDF(point, mean, stdDev, -1) == 0);
         point[1] = T.nan;
         assert(isNaN(bivariateNormalCDF(point, mean, stdDev, 0)));
+    }
+}
+
+/++
+Evaluate the probability that each standardized coordinate lies between its
+lower and upper bounds. Both vectors may be D arrays or one-dimensional Mir
+slices, including strided views. The calculation is deterministic.
+
+Params:
+    lower = Two lower bounds in coordinate order.
+    upper = Two corresponding upper bounds with the same floating-point
+        element type. Each must be at least its lower bound. Either bound may be infinite.
+    rho = Correlation from -1 through 1, inclusive.
+
+Returns:
+    Rectangle probability in the element type of the bounds. A zero-width
+    coordinate gives zero and a NaN bound propagates. Perfect correlation
+    reduces to a univariate interval. Quadrature uses a fixed refinement budget
+    and returns its best estimate. Very small probabilities may underflow.
++/
+Element!L bivariateStandardNormalRectangleProbability(L, U, R)(
+    scope auto ref L lower, scope auto ref U upper, const R rho)
+    if (vector!L && vector!U && is(Element!L == Element!U) && is(R : Element!L))
+    in (lower.length == 2 && upper.length == 2)
+    in (cast(Element!L)rho >= -1 && cast(Element!L)rho <= 1)
+{
+    import mir.stat.internal.bivariate_normal_rectangle: rectangleEstimate;
+    alias T = Element!L;
+    static if (is(T == float)) alias W = double;
+    else alias W = T;
+    return cast(T)rectangleEstimate!W(lower[0], upper[0], lower[1], upper[1], cast(T)rho).probability;
+}
+
+/// Both independent readings must be within one standard deviation of their means.
+version(mir_stat_test)
+@safe pure nothrow @nogc unittest
+{
+    import mir.math.common: fabs;
+    double[2] lower = [-1, -1], upper = [1, 1];
+    const p = bivariateStandardNormalRectangleProbability(lower, upper[], 0);
+    assert(fabs(p - 0.4660649426743923) < 1e-15);
+}
+
+version(mir_stat_test)
+@safe pure nothrow @nogc unittest
+{
+    import std.meta: AliasSeq;
+    import std.math: isNaN;
+    import mir.ndslice.slice: sliced;
+    foreach (T; AliasSeq!(float, double, real))
+    {
+        alias prob = bivariateStandardNormalRectangleProbability;
+        const T[4] bounds = [-1, 0.75, -0.5, 1.25];
+        auto table = bounds[].sliced(2, 2);
+        const p = prob(table[0 .. 2, 0], table[0 .. 2, 1], T(0.4));
+        static assert(is(typeof(p) == const T));
+        assert(fabs(p - T(0.371616434006933143761L)) < 32 * T.epsilon);
+
+        T[2] lo = [-100000, -100000], hi = [100000, 100000];
+        assert(fabs(prob(lo, hi, T(0.5)) - 1) <= 8 * T.epsilon);
+        lo = [T(0), T(-2)];
+        hi = [T(1), T(-1)];
+        assert(prob(lo, hi, T(-1)) == 0);
+        lo[0] = hi[0];
+        assert(prob(lo, hi, 0) == 0);
+        lo[1] = T.nan;
+        assert(isNaN(prob(lo, hi, 0)));
+    }
+    alias prob = bivariateStandardNormalRectangleProbability;
+    // Adjacent endpoints in each coordinate can coincide after rotation.
+    double[2] lo = [-2, 9], hi = [-0x1.fffffffffffffp0, 0x1.2000000000001p3];
+    assert(fabs(prob(lo, hi, 0.5) / 1.093214828440718926555e-61 - 1) < 1e-13);
+    lo = [0, 5];
+    hi = [0x1p-51, 0x1.4000000000001p2];
+    assert(fabs(prob(lo, hi, 0.5) / 4.18811475425843043874e-39 - 1) < 1e-13);
+    lo = [0, 1];
+    hi = [1, 2];
+    assert(fabs(prob(lo, hi, 1 - 0x1p-52) / 2.034267221349542553e-9 - 1) < 1e-13);
+    lo = [-double.infinity, -double.infinity];
+    assert(prob(lo, hi, 0.5) == bivariateStandardNormalCDF(1.0, 2.0, 0.5));
+    lo = [8, 8];
+    hi = [9, 9];
+    assert(fabs(prob(lo, hi, 0) / 3.8686309932399678e-31 - 1) < 1e-14);
+    lo = [-0.5, 2];
+    hi = [1, double.infinity];
+    assert(fabs(prob(lo, hi, 0.6) / 0.006711394883858296 - 1) < 1e-14);
+    lo = [-double.infinity, 2];
+    hi = [double.infinity, 3];
+    assert(prob(lo, hi, -0.5) == normalCDF(-2.0) - normalCDF(-3.0));
+    lo = [0, -1.5];
+    hi = [1, -0.5];
+    assert(fabs(prob(lo, hi, -1) - 0.14988228479452984) < 1e-15);
+
+    // At independence the joint mass is about 0.539 subnormal units.
+    // Rounding the first marginal before multiplying can give zero instead.
+    const unit = double.min_normal * double.epsilon;
+    lo = [0, -double.infinity];
+    hi = [3 * unit, -0.125];
+    assert(prob(lo, hi, 0) == unit);
+    hi[0] = 2 * unit;
+    assert(prob(lo, hi, 0) == 0);
+
+    // Independent integration gives 0.604 of a double subnormal unit in
+    // the first rectangle. In the second the reference rounds to zero.
+    lo[] = 33.25;
+    hi[] = 33.5;
+    assert(prob(lo, hi, 0.5) == double.min_normal * double.epsilon);
+    lo[] = 33.275;
+    hi[] = 33.525;
+    assert(prob(lo, hi, 0.5) == 0);
+
+    // The intervals are close to the mean, but separated by 38.1
+    // conditional standard deviations. This exercises the scaled retry.
+    const rho = 0.9999;
+    lo = [0, 1 + 38.1 * sqrt(1 - rho * rho)];
+    hi = [1, 2];
+    assert(prob(lo, hi, rho) == 89 * (double.min_normal * double.epsilon));
+
+    static if (real.max_exp > double.max_exp)
+    {
+        // This rectangle lies beyond the double-precision quadrature cutoff.
+        real[2] lower = [40, -40.25L], upper = [40.25L, -40];
+        import std.math: ldexp;
+        const reference = ldexp(0.610170627348307500172L, -4631);
+        assert(fabs(prob(lower, upper, 0.5L) / reference - 1) < 3e-16L);
+        static if (real.mant_dig == 64 && real.min_exp == -16381)
+        {
+            // Corresponding boundary in the 80-bit extended format.
+            lower[] = 130.70L;
+            upper[] = 130.95L;
+            assert(prob(lower, upper, 0.5L) == real.min_normal * real.epsilon);
+            lower[] = 130.71L;
+            upper[] = 130.96L;
+            assert(prob(lower, upper, 0.5L) == 0);
+        }
     }
 }
 
