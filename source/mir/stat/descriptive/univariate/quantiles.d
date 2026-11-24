@@ -27,6 +27,7 @@ $(BOOKTABLE,
 $(TR $(TH Category) $(TH Declarations))
     $(TR $(TD Ordinary quantiles) $(TD
         $(REF median, mir, stat, descriptive, univariate, quantiles)$(NBSP)
+        $(REF medianInPlace, mir, stat, descriptive, univariate, quantiles)$(NBSP)
         $(REF medianAssumeSorted, mir, stat, descriptive, univariate, quantiles)$(NBSP)
         $(REF rcMedian, mir, stat, descriptive, univariate, quantiles)$(NBSP)
         $(REF makeMedian, mir, stat, descriptive, univariate, quantiles)$(NBSP)
@@ -128,7 +129,7 @@ private meanType!F allocatedMedian(F, bool allowModify, QuantileAllocation alloc
     import mir.ndslice.topology: flattened;
     scope auto source = quantileSlice(data);
     static if (allowModify)
-        return rcMedian!(F, true)(source);
+        return medianInPlace!F(source);
     else
     {
         alias Element = Unqual!(typeof(source).DeepElement);
@@ -149,7 +150,7 @@ private meanType!F allocatedMedian(F, bool allowModify, QuantileAllocation alloc
             scope(exit) releaseQuantiles(allocator, scratch);
         scope auto flat = source.lightScope.flattened;
         scratch.lightScope[] = flat;
-        return rcMedian!(F, true)(scratch.lightScope);
+        return medianInPlace!F(scratch.lightScope);
     }
 }
 
@@ -184,6 +185,70 @@ version(mir_stat_test) @safe pure nothrow @nogc unittest
     assert(medianAssumeSorted(ends) == -0.5);
     const int[6] data = [1, 0, 3, 0, 7, 0];
     assert(medianAssumeSorted!real(data[].sliced.stride(2)) == 3);
+}
+
+/++ Select the median using the observations as writable workspace.
+Selection may rearrange observations in flattened order. A default ascending,
+sized random-access Phobos SortedRange is read directly.
+
+Params:
+    F = optional type used for mean-type promotion, inferred from data by default
+    data = nonempty writable array or Mir slice, or an ascending SortedRange
+Returns:
+    The middle value for odd lengths or the midpoint of the middle pair for
+    even lengths, with the same result type as $(LREF median).
++/
+auto medianInPlace(F = void, Data)(scope auto ref Data data)
+{
+    static if (isPhobosSortedRange!Data)
+        return medianAssumeSorted!F(data);
+    else
+    {
+        import mir.ndslice.sorting : partitionAt;
+        import mir.ndslice.topology : flattened;
+
+        scope auto values = quantileSlice(data);
+        static assert(isMutable!(typeof(values).DeepElement), "medianInPlace requires writable observations");
+        static if (is(F == void))
+            alias Result = meanType!(typeof(values));
+        else
+            alias Result = meanType!F;
+
+        scope auto flat = values.flattened;
+        const n = flat.length;
+        assert(n > 0, "median: slice must have length greater than zero");
+        if (n <= 5)
+            return smallMedianImpl!Result(flat);
+
+        const half = n / 2;
+        partitionAt(flat, half);
+        if (n % 2)
+            return cast(Result) flat[half];
+
+        // Save the upper median before selecting the maximum of the lower half.
+        auto upper = flat[half];
+        partitionAt(flat[0 .. half], half - 1);
+        return medianMidpoint!Result(flat[half - 1], upper);
+    }
+}
+
+///
+version(mir_stat_test) @safe pure nothrow @nogc unittest
+{
+    int[6] values = [7, 1, 9, 3, 5, 0];
+    assert(medianInPlace(values) == 4);
+}
+
+version(mir_stat_test) @safe pure nothrow @nogc unittest
+{
+    import std.range : assumeSorted;
+    const long[2] ends = [long.min, long.max];
+    auto ordered = assumeSorted(ends[]);
+    assert(medianInPlace!real(ordered) == -0.5L);
+    long[6] values = [long.max, long.min, long.min, long.max, long.max, long.min];
+    assert(medianInPlace!real(values) == -0.5L);
+    int[3] small = [5, 1, 3];
+    assert(medianInPlace(small) == 3);
 }
 
 /++
@@ -919,23 +984,21 @@ template rcMedian(F, bool allowModify = false)
     @nogc
     meanType!F rcMedian(Iterator, size_t N, SliceKind kind)(Slice!(Iterator, N, kind) slice)
     {
-        static assert (!allowModify ||
-                       isMutable!(slice.DeepElement),
-                           "allowModify must be false or the input must be mutable");
-        alias G = typeof(return);
-        size_t len = slice.elementCount;
-        assert(len > 0, "median: slice must have length greater than zero");
-
-        import mir.ndslice.topology: as, flattened;
-
-        static if (!allowModify) {
+        static if (allowModify)
+            return medianInPlace!F(slice);
+        else
+        {
+            import mir.ndslice.topology: as, flattened;
+            alias G = typeof(return);
+            const len = slice.elementCount;
+            assert(len > 0, "median: slice must have length greater than zero");
             import mir.ndslice.allocation: rcslice;
 
             if (len > 2) {
                 auto view = slice.lightScope;
                 auto val = view.as!(Unqual!(slice.DeepElement)).rcslice;
                 auto temp = val.lightScope.flattened;
-                return .rcMedian!(G, true)(temp);
+                return medianInPlace!G(temp);
             } else {
                 import std.traits: isIntegral;
                 static if ((isIntegral!(slice.DeepElement) ||
@@ -947,28 +1010,6 @@ template rcMedian(F, bool allowModify = false)
                 } else {
                     return mean!G(slice);
                 }
-            }
-        } else {
-            import mir.ndslice.sorting: partitionAt;
-
-            auto temp = slice.flattened;
-
-            if (len > 5) {
-                size_t half_n = len / 2;
-                partitionAt(temp, half_n);
-                if (len % 2 == 1) {
-                    return cast(G) temp[half_n];
-                } else {
-                    // The lower-half partition cannot change the upper median.
-                    // Read it first to avoid combining the final two loads after
-                    // partitioning has just written individual elements.
-                    auto upper = temp[half_n];
-                    // Move the largest value in the first half to half_n - 1.
-                    partitionAt(temp[0 .. half_n], half_n - 1);
-                    return medianMidpoint!G(temp[half_n - 1], upper);
-                }
-            } else {
-                return smallMedianImpl!(G)(temp);
             }
         }
     }

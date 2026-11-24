@@ -157,6 +157,7 @@ $(TR $(TH Module) $(TH Public declarations))
         $(TD
             $(B Ordinary quantiles:)
             $(LEGACY_ANCHOR median)$(REF median, mir, stat, descriptive, univariate, quantiles)$(NBSP)
+            $(REF medianInPlace, mir, stat, descriptive, univariate, quantiles)$(NBSP)
             $(REF medianAssumeSorted, mir, stat, descriptive, univariate, quantiles)$(NBSP)
             $(REF rcMedian, mir, stat, descriptive, univariate, quantiles)$(NBSP)
             $(REF makeMedian, mir, stat, descriptive, univariate, quantiles)$(NBSP)
