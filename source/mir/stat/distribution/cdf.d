@@ -35,6 +35,7 @@ $(BOOKTABLE ,
     $(TR $(TDNW $(SUBREF uniform, uniformCDF)) $(TD Continuous Uniform CDF ))
     $(TR $(TDNW $(SUBREF weibull, weibullCDF)) $(TD Weibull CDF ))
     $(LEADINGROW Multivariate Distributions)
+    $(TR $(TDNW $(SUBREF bivariate_normal, bivariateStandardNormalCDF)) $(TD Bivariate Standard Normal CDF ))
     $(TR $(TDNW $(SUBREF categorical, categoricalCDF)) $(TD Categorical CDF ))
 )
 
@@ -57,6 +58,8 @@ public import mir.stat.distribution.bernoulli: bernoulliCDF;
 public import mir.stat.distribution.beta: betaCDF;
 ///
 public import mir.stat.distribution.beta_proportion: betaProportionCDF;
+///
+public import mir.stat.distribution.bivariate_normal: bivariateStandardNormalCDF;
 ///
 public import mir.stat.distribution.binomial: binomialCDF;
 ///
