@@ -1,5 +1,10 @@
 /++
-Bivariate normal distribution with standard normal marginals and correlation $(D rho).
+Bivariate normal distribution with correlation $(D rho).
+
+$(LREF bivariateNormalPDF), $(LREF bivariateNormalLPDF), and $(LREF bivariateNormalCDF)
+take two coordinates in the original measurement units, two marginal means, two
+standard deviations, and a correlation. For standardized coordinates use the
+scalar functions below.
 
 $(LREF bivariateStandardNormalCDF) evaluates a lower-orthant probability.
 $(LREF bivariateStandardNormalPDF) and $(LREF bivariateStandardNormalLPDF)
@@ -15,6 +20,7 @@ private import mir.internal.utility: isFloatingPoint;
 private import mir.math.common: exp, fabs, log, sqrt;
 private import mir.math.constant: PI;
 private import mir.stat.constant: LOGSQRT2PI;
+private import mir.stat.internal.linearAlgebra.types: Element, vector;
 private import mir.stat.distribution.normal: normalCDF;
 
 @safe pure nothrow @nogc:
@@ -235,6 +241,185 @@ version(mir_stat_test)
     const width = double.epsilon;
     assert(fabs(bivariateStandardNormalCDF(1 + width, -1.0, -1.0) / width -
         exp(-0.5 - double(LOGSQRT2PI))) < 2e-16);
+}
+
+/++
+Evaluate the natural log of the joint density for a bivariate normal distribution.
+The vectors may independently be D arrays or one-dimensional Mir slices,
+including strided views. Coordinate order is the same in all three vectors.
+The correlation is converted to their common floating-point element type.
+
+Params:
+    point = Two observed coordinates in the original measurement units.
+    mean = Two finite marginal means with the same floating-point element type as point.
+    stdDev = Two positive finite marginal standard deviations with the same element type as point.
+    rho = Correlation strictly between -1 and 1.
+
+Returns:
+    Natural log density in the element type of point. An infinite coordinate gives
+    negative infinity. A NaN coordinate propagates.
++/
+Element!P bivariateNormalLPDF(P, M, S, R)(scope auto ref P point, scope auto ref M mean,
+    scope auto ref S stdDev, const R rho)
+    if (bivariateVectors!(P, M, S) && is(R : Element!P))
+{
+    const z = standardizedPair(point, mean, stdDev);
+    return bivariateStandardNormalLPDF!(Element!P)(z[0], z[1], rho) - (log(stdDev[0]) + log(stdDev[1]));
+}
+
+/// At the mean, changing the measurement units adjusts the log density by the log scales.
+version(mir_stat_test)
+@safe pure nothrow @nogc unittest
+{
+    import mir.math.common: fabs, log;
+    double[2] mean = [100, 50], stdDev = [10, 5];
+    assert(fabs(bivariateNormalLPDF(mean, mean, stdDev, 0.4) -
+        (bivariateStandardNormalLPDF(0.0, 0.0, 0.4) - log(50.0))) < 1e-14);
+}
+
+/++
+Evaluate the joint density for a bivariate normal distribution.
+The vectors may independently be D arrays or one-dimensional Mir slices,
+including strided views. Coordinate order is the same in all three vectors.
+The correlation is converted to their common floating-point element type.
+
+Params:
+    point = Two observed coordinates in the original measurement units.
+    mean = Two finite marginal means with the same floating-point element type as point.
+    stdDev = Two positive finite marginal standard deviations with the same element type as point.
+    rho = Correlation strictly between -1 and 1.
+
+Returns:
+    Joint density in the element type of point. The result may exceed one.
+    An infinite coordinate gives zero. A NaN coordinate propagates.
++/
+Element!P bivariateNormalPDF(P, M, S, R)(scope auto ref P point, scope auto ref M mean,
+    scope auto ref S stdDev, const R rho)
+    if (bivariateVectors!(P, M, S) && is(R : Element!P))
+{
+    return exp(bivariateNormalLPDF(point, mean, stdDev, rho));
+}
+
+/// Independent measurements have a joint density equal to the product of their marginal densities.
+version(mir_stat_test)
+@safe pure nothrow @nogc unittest
+{
+    import mir.math.common: fabs;
+    import mir.stat.distribution.normal: normalPDF;
+    double[2] point = [110, 45], mean = [100, 50], stdDev = [10, 5];
+    const density = bivariateNormalPDF(point, mean[], stdDev, 0.0);
+    assert(fabs(density / (normalPDF(110.0, 100.0, 10.0) * normalPDF(45.0, 50.0, 5.0)) - 1) < 1e-14);
+}
+
+version(mir_stat_test)
+@safe pure nothrow @nogc unittest
+{
+    import mir.ndslice.slice: sliced;
+    import std.meta: AliasSeq;
+    foreach (T; AliasSeq!(float, double, real))
+    {
+        // Select each vector from a separate column of the same matrix.
+        const T[6] data = [5, 1, 2, 2, 5, 3];
+        auto rows = data[].sliced(2, 3);
+        auto point = rows[0 .. 2, 0], mean = rows[0 .. 2, 1], stdDev = rows[0 .. 2, 2];
+        static assert(!__traits(compiles, bivariateNormalLPDF(rows, mean, stdDev, 0)));
+        static assert(!__traits(compiles, bivariateNormalPDF(point, mean, int[2].init, 0)));
+        const rho = T(-0.5);
+        const expected = bivariateStandardNormalLPDF(T(2), T(-1), rho) - log(T(6));
+        const actual = bivariateNormalLPDF(point, mean, stdDev, rho);
+        static assert(is(typeof(actual) == const T));
+        assert(fabs(actual - expected) < 8 * T.epsilon);
+        assert(fabs(bivariateNormalPDF(point, mean, stdDev, rho) / exp(expected) - 1) < 16 * T.epsilon);
+    }
+
+    // The standardized density underflows, but the density in the original units is finite.
+    double[2] scales = [0x1p-600, 0x1p-600], origin = [0, 0], tail = [40 * scales[0], 0];
+    const expectedLog = -800 - 2 * double(LOGSQRT2PI) + 1200 * log(2.0);
+    assert(fabs(bivariateNormalPDF(tail, origin, scales, 0) / exp(expectedLog) - 1) < 3e-13);
+    tail[0] = double.infinity;
+    assert(bivariateNormalLPDF(tail, origin, scales, 0) == -double.infinity);
+    tail[1] = double.nan;
+    import std.math: isNaN;
+    assert(isNaN(bivariateNormalPDF(tail, origin, scales, 0)));
+}
+
+/++
+Evaluate the probability that both coordinates are at or below their thresholds for a bivariate normal distribution.
+The vectors may independently be D arrays or one-dimensional Mir slices,
+including strided views. Coordinate order is the same in all three vectors.
+The correlation is converted to their common floating-point element type.
+
+Params:
+    point = Two upper thresholds in the original measurement units.
+    mean = Two finite marginal means with the same floating-point element type as point.
+    stdDev = Two positive finite marginal standard deviations with the same element type as point.
+    rho = Correlation from -1 through 1, inclusive.
+
+Returns:
+    Lower-orthant probability in the element type of point. A negative infinite threshold
+    gives zero and a positive infinite threshold removes that coordinate's restriction.
+    A NaN threshold propagates. As in $(LREF bivariateStandardNormalCDF), the result
+    is a deterministic estimate and very small probabilities may underflow.
++/
+Element!P bivariateNormalCDF(P, M, S, R)(scope auto ref P point, scope auto ref M mean,
+    scope auto ref S stdDev, const R rho)
+    if (bivariateVectors!(P, M, S) && is(R : Element!P))
+{
+    const z = standardizedPair(point, mean, stdDev);
+    return bivariateStandardNormalCDF!(Element!P)(z[0], z[1], rho);
+}
+
+/// Each column holds two readings. Select one column directly to evaluate both thresholds.
+version(mir_stat_test)
+@safe pure nothrow @nogc unittest
+{
+    import mir.ndslice.slice: sliced;
+    double[4] data = [90, 110, 55, 45];
+    auto readings = data[].sliced(2, 2);
+    double[2] mean = [100, 50], stdDev = [10, 5];
+    auto probability = bivariateNormalCDF(readings[0 .. 2, 1], mean[], stdDev, 0.4);
+    assert(probability == bivariateStandardNormalCDF(1.0, -1.0, 0.4));
+}
+
+version(mir_stat_test)
+@safe pure nothrow @nogc unittest
+{
+    import std.meta: AliasSeq;
+    import std.math: isNaN;
+    foreach (T; AliasSeq!(float, double, real))
+    {
+        // The first centered difference overflows, but the standardized threshold is two.
+        T[2] point = [T.max, 1], mean = [-T.max, 4], stdDev = [T.max, 3];
+        foreach (rho; [T(-1), T(0), T(0.75), T(1)])
+            assert(bivariateNormalCDF(point[], mean, stdDev[], rho) == bivariateStandardNormalCDF(T(2), T(-1), rho));
+        point[0] = T.infinity;
+        assert(bivariateNormalCDF(point, mean, stdDev, 1) == normalCDF(T(-1)));
+        point[0] = -T.infinity;
+        assert(bivariateNormalCDF(point, mean, stdDev, -1) == 0);
+        point[1] = T.nan;
+        assert(isNaN(bivariateNormalCDF(point, mean, stdDev, 0)));
+    }
+}
+
+private enum bivariateVectors(P, M, S) = vector!P && vector!M && vector!S &&
+    is(Element!P == Element!M) && is(Element!P == Element!S);
+
+private Element!P[2] standardizedPair(P, M, S)(scope auto ref P point, scope auto ref M mean,
+    scope auto ref S stdDev)
+    in (point.length == 2, "point must contain two coordinates")
+    in (mean.length == 2, "mean must contain two coordinates")
+    in (stdDev.length == 2, "stdDev must contain two standard deviations")
+{
+    import mir.stat.internal.standardize: standardize;
+    alias T = Element!P;
+    T[2] z;
+    foreach (i; 0 .. 2)
+    {
+        assert(fabs(mean[i]) <= T.max, "means must be finite");
+        assert(stdDev[i] > 0 && stdDev[i] <= T.max, "standard deviations must be positive and finite");
+        z[i] = standardize(point[i], mean[i], stdDev[i]);
+    }
+    return z;
 }
 
 private:

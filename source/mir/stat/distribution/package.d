@@ -66,7 +66,7 @@ $(BOOKTABLE ,
     $(TR $(TDNW $(MREF mir,stat,distribution,uniform)) $(TD Continuous Uniform Distribution ))
     $(TR $(TDNW $(MREF mir,stat,distribution,weibull)) $(TD Weibull Distribution ))
     $(LEADINGROW Multivariate Distributions)
-    $(TR $(TDNW $(MREF mir,stat,distribution,bivariate_normal)) $(TD Bivariate Standard Normal Distribution ))
+    $(TR $(TDNW $(MREF mir,stat,distribution,bivariate_normal)) $(TD Bivariate Normal Distribution ))
     $(TR $(TDNW $(MREF mir,stat,distribution,multivariate_normal)) $(TD Multivariate Normal Distribution ))
     $(TR $(TDNW $(MREF mir,stat,distribution,categorical)) $(TD Categorical Distribution ))
 )
