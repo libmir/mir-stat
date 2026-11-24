@@ -35,6 +35,7 @@ $(BOOKTABLE ,
     $(TR $(TDNW $(SUBREF weibull, weibullPDF)) $(TD Weibull PDF ))
     $(LEADINGROW Multivariate Distributions)
     $(TR $(TDNW $(SUBREF categorical, categoricalPMF)) $(TD Categorical PMF ))
+    $(TR $(TDNW $(SUBREF bivariate_normal, bivariateStandardNormalPDF)) $(TD Bivariate Standard Normal PDF ))
     $(TR $(TDNW $(SUBREF multivariate_normal, multivariateNormalPDF)) $(TD Multivariate Normal PDF ))
 )
 
@@ -57,6 +58,8 @@ public import mir.stat.distribution.bernoulli: bernoulliPMF;
 public import mir.stat.distribution.beta: betaPDF;
 ///
 public import mir.stat.distribution.beta_proportion: betaProportionPDF;
+///
+public import mir.stat.distribution.bivariate_normal: bivariateStandardNormalPDF;
 ///
 public import mir.stat.distribution.binomial: binomialPMF;
 ///
