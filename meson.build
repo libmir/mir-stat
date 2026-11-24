@@ -63,6 +63,7 @@ sources_list = [
     'mir/stat/internal/fp_probability',
     'mir/stat/internal/fp_probability_log',
     'mir/stat/internal/fp_pi',
+    'mir/stat/internal/fp_erf',
     'mir/stat/internal/fp_cauchy',
     'mir/stat/internal/fp_log_factorial',
     'mir/stat/internal/fp_binomial_log',
