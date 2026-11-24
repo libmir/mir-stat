@@ -9,9 +9,10 @@ scalar functions below.
 $(LREF bivariateStandardNormalCDF) evaluates a lower-orthant probability.
 $(LREF bivariateStandardNormalPDF) and $(LREF bivariateStandardNormalLPDF)
 evaluate the joint density and its natural logarithm.
-$(LREF bivariateStandardNormalRectangleProbability) accepts both lower and upper
-bounds for each coordinate. At perfect correlation the distribution is supported
-on a line and interval probabilities reduce to univariate calculations.
+$(LREF bivariateStandardNormalRectangleProbability) accepts lower and upper
+bounds for each standardized coordinate. $(LREF bivariateNormalRectangleProbability)
+accepts bounds in the original measurement units. At perfect correlation the
+distribution is supported on a line and interval probabilities reduce to univariate calculations.
 
 License: $(HTTP www.apache.org/licenses/LICENSE-2.0, Apache-2.0)
 Copyright: 2026 Mir Stat Authors.
@@ -535,6 +536,98 @@ version(mir_stat_test)
             upper[] = 130.96L;
             assert(prob(lower, upper, 0.5L) == 0);
         }
+    }
+}
+
+/++
+Evaluate the probability that both measurements lie within their respective
+intervals, expressed in the original measurement units. The four vectors
+may independently be D arrays or one-dimensional Mir slices, including
+strided views. Use the same coordinate order and floating-point element
+type for all four vectors.
+
+Params:
+    lower = Two lower measurement limits, possibly infinite.
+    upper = Two upper measurement limits, each at least its corresponding lower limit.
+    mean = Two finite marginal means.
+    stdDev = Two positive finite marginal standard deviations.
+    rho = Correlation from -1 through 1, inclusive, converted to the element type.
+
+Returns:
+    Joint rectangle probability in the element type of the bounds. A NaN bound
+    propagates, and an interval of zero width gives zero. Perfect correlation
+    reduces to a univariate interval. As for $(LREF bivariateStandardNormalRectangleProbability),
+    quadrature is deterministic with a fixed refinement budget and very small
+    probabilities may underflow.
++/
+Element!L bivariateNormalRectangleProbability(L, U, M, S, R)(scope auto ref L lower,
+    scope auto ref U upper, scope auto ref M mean, scope auto ref S stdDev, const R rho)
+    if (bivariateVectors!(L, M, S) && vector!U && is(Element!L == Element!U) && is(R : Element!L))
+    in (lower.length == 2 && upper.length == 2 && mean.length == 2 && stdDev.length == 2)
+    in (cast(Element!L)rho >= -1 && cast(Element!L)rho <= 1)
+{
+    import mir.stat.internal.bivariate_normal_rectangle: originalRectangleProbability;
+    alias T = Element!L;
+    static if (is(T == float)) alias W = double;
+    else alias W = T;
+    return cast(T)originalRectangleProbability!W(lower, upper, mean, stdDev, cast(T)rho);
+}
+
+/// A part passes inspection when both its length and its width fall within tolerance.
+version(mir_stat_test)
+@safe pure nothrow @nogc unittest
+{
+    import mir.math.common: fabs;
+    double[2] lower = [9, 4], upper = [11, 6], mean = [10, 5], stdDev = [1, 0.5];
+    const pass = bivariateNormalRectangleProbability(lower, upper[], mean, stdDev, 0);
+    assert(fabs(pass - 0.6516269400855773) < 1e-14);
+}
+
+version(mir_stat_test)
+@safe pure nothrow @nogc unittest
+{
+    import mir.math.common: fabs;
+    import mir.ndslice.slice: sliced;
+    import std.math: isNaN;
+    import std.meta: AliasSeq;
+    alias prob = bivariateNormalRectangleProbability;
+    foreach (T; AliasSeq!(float, double, real))
+    {
+        const T[8] data = [8, 11, 10, 2, 2, 8, 5, 3];
+        auto table = data[].sliced(2, 4);
+        T[2] zl = [-1, -1], zu = [0.5, 1];
+        foreach (rho; [T(-1), T(-0.999), T(0), T(0.75), T(1)])
+            assert(prob(table[0 .. 2, 0], table[0 .. 2, 1], table[0 .. 2, 2], table[0 .. 2, 3], rho) ==
+                bivariateStandardNormalRectangleProbability(zl, zu, rho));
+
+        T[2] lo = [0, -T.infinity], hi = [T(0x1p-80), T.infinity];
+        T[2] mean = [-1, 0], sd = [1, 1];
+        // Both standardized endpoints round to one. The original width survives.
+        const expected = hi[0] * T(0.241970724519143349798L);
+        foreach (rho; [T(-1), T(0), T(0.5), T(1)])
+            assert(fabs(prob(lo, hi, mean, sd, rho) / expected - 1) < 8 * T.epsilon);
+
+        // Both coordinate intervals collapse after standardization.
+        lo[1] = 0;
+        hi[1] = 2 * hi[0];
+        mean[1] = -2;
+        sd[1] = 2;
+        static if (T.max_exp > 128)
+        {
+            const reference = hi[0] * hi[0] * T(0.09435389770895923001736674973854711436L);
+            assert(fabs(prob(lo, hi, mean, sd, 0.5) / reference - 1) < 32 * T.epsilon);
+        }
+
+        lo = [-T.max, -T.infinity];
+        hi = [T.max, T.infinity];
+        mean = [T(0), T(0)];
+        sd = [T.max, T(1)];
+        assert(fabs(prob(lo, hi, mean, sd, 0.5) - T(0.68268949213708589717L)) < 8 * T.epsilon);
+        lo[0] = T.infinity;
+        hi[0] = T.infinity;
+        assert(prob(lo, hi, mean, sd, 1) == 0);
+        hi[1] = T.nan;
+        assert(isNaN(prob(lo, hi, mean, sd, -1)));
     }
 }
 

@@ -141,6 +141,24 @@ private RectangleEstimate!T integrate(alias f, T)(scope const(T)[] cuts)
     }
 }
 
+package(mir.stat) T originalRectangleProbability(T, L, U, M, S)(scope auto ref L lower,
+    scope auto ref U upper, scope auto ref M mean, scope auto ref S stdDev, T r)
+{
+    import mir.stat.internal.standardize: standardize;
+    Interval!T[2] axes;
+    foreach (i; 0 .. 2)
+    {
+        const T a = lower[i], b = upper[i], m = mean[i], s = stdDev[i];
+        assert(fabs(m) <= T.max, "means must be finite");
+        assert(s > 0 && s <= T.max, "standard deviations must be positive and finite");
+        assert(!(b < a), "lower bounds must be at or below the corresponding upper bounds");
+        axes[i] = Interval!T(standardize(a, m, s), standardize(b, m, s),
+            a == b ? 0 : standardize(b, a, s));
+    }
+
+    return rectangleEstimate(axes[0], axes[1], r).probability;
+}
+
 package(mir.stat) RectangleEstimate!T rectangleEstimate(T)(T a, T b, T c, T d, T r)
 {
     return rectangleEstimate(Interval!T(a, b, b - a), Interval!T(c, d, d - c), r);
