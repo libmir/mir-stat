@@ -34,6 +34,7 @@ Copyright: 2022-2026 Mir Stat Authors.
 module mir.stat.distribution.normal;
 
 import mir.bignum.fp: Fp;
+import mir.stat.internal.fp_probability: fpProbabilityValid;
 import mir.stat.internal.standardize: standardize;
 
 import mir.internal.utility: isFloatingPoint;
@@ -449,6 +450,34 @@ do
 }
 
 /++
+Computes the standard normal quantile with guarded extended precision.
+
+Params:
+    T = Represented $(D Fp) type, inferred from the arguments.
+    size = Significand width, inferred from T.
+    p = Cumulative probability in the closed interval from zero to one.
+
+Returns:
+    The quantile in type T. Zero and one give negative and positive infinity,
+    respectively. One half gives the standard normal median, zero.
++/
+@safe pure nothrow @nogc
+T normalInvCDF(T : Fp!size, size_t size)(const T p)
+    in (fpProbabilityValid(p))
+{
+    return normalInvCDF(p, T(0), T(1));
+}
+
+///
+version(mir_stat_test)
+@safe pure nothrow @nogc unittest
+{
+    import mir.bignum.fp: Fp;
+    alias T = Fp!64;
+    assert(normalInvCDF(T(0.5)) == T(0));
+}
+
+/++
 Ditto, with location and scale parameters.
 
 Returns the quantile at cumulative probability $(D p).
@@ -493,6 +522,69 @@ unittest
     assert(normalInvCDF(0.975).approxEqual(1.959963984540054));
 }
 
+
+/++
+Computes the location-scale normal quantile with guarded extended precision.
+
+Params:
+    T = Represented $(D Fp) type, inferred from the arguments.
+    p = Cumulative probability in the closed interval from zero to one.
+    mean = Finite mean.
+    stdDev = Positive finite standard deviation.
+
+Returns:
+    The quantile in type T. Zero and one give negative and positive infinity,
+    respectively. One half gives the mean.
+    Cancellation with the mean beyond working precision can give zero for a nonzero quantile.
++/
+@safe pure nothrow @nogc
+T normalInvCDF(T)(const T p, const T mean, const T stdDev)
+    if (is(T == Fp!size, size_t size))
+    in (fpProbabilityValid(p))
+    in (!mean.isSpecial && !stdDev.isSpecial && !stdDev.sign && !!stdDev.coefficient)
+{
+    import mir.stat.internal.fp_normal: normalQuantile;
+    return normalQuantile(p, mean, stdDev);
+}
+
+///
+version(mir_stat_test)
+@safe pure nothrow @nogc unittest
+{
+    import mir.bignum.fp: Fp;
+    alias T = Fp!64;
+    assert(normalInvCDF(T(0.5), T(3), T(2)) == T(3));
+}
+
+version(mir_stat_test)
+@safe pure nothrow @nogc unittest
+{
+    import mir.bignum.fixed: UInt;
+    import mir.math.common: approxEqual;
+    alias T = Fp!64;
+    // MPFR erfc bisection on the exact represented probabilities.
+    assert(normalInvCDF(T(0.125)) == T(true, -63, UInt!64(0x933ea603d82b3b2aUL)));
+    assert(normalInvCDF(T(0.125), T(3), T(2)) == T(false, -64, UInt!64(0xb30567f09f531358UL)));
+    assert(approxEqual(normalInvCDF(0.125, 3.0, 2.0), 0.6993012392479836, 8 * double.epsilon));
+    // Adding the rounded magnitude back exposes 67 bits of cancellation.
+    const magnitude = T(false, -63, UInt!64(0x933ea603d82b3b2aUL));
+    assert(normalInvCDF(T(0.125), magnitude, T(1)) == T(true, -130, UInt!64(0xd2b7795f1a27d707UL)));
+    // The scaled standard quantile overflows before the mean is added.
+    const scale = T(false, long.max - 1, UInt!64.max);
+    assert(normalInvCDF(T(0.125), scale, scale) ==
+        T(true, long.max - 3, UInt!64(0x99f5301ec159d950UL)));
+    const belowMedian = T(false, -65, UInt!64.max);
+    assert(normalInvCDF(belowMedian) == T(true, -127, UInt!64(0xa06c98ffb1382cb3UL)));
+    // Bisection on log(Q(x)) with the alternating Mills expansion.
+    const least = T(false, long.min, UInt!64(1));
+    assert(normalInvCDF(least) == T(true, -32, UInt!64(0xd5224c8b0e6a3cceUL)));
+    assert(normalInvCDF(T(0)) == T(-double.infinity));
+    assert(normalInvCDF(T(1)) == T(double.infinity));
+    alias Wide = Fp!128;
+    const adjacent = Wide(false, -129, UInt!128.max);
+    enum expected = Wide(true, -255, UInt!128.fromHexString("a06c98ffb1382cb2be520fd739167718"));
+    assert(normalInvCDF!Wide(adjacent) == expected);
+}
 
 /++
 Computes the normal complementary cumulative distribution function (CCDF)
@@ -666,6 +758,11 @@ version(mir_stat_test)
     T next = last;
     next.coefficient += 1;
     assert(normalCCDF(next) == T(0));
+    assert(normalCDF(T(0.125)) == T(false, -64, UInt!64(0x8cbba4f101a56606UL)));
+    const least = T(false, long.min, UInt!64(1));
+    assert(normalCDF(least) == T(0.5));
+    assert(normalCCDF(T(1), T(0), least) == T(0));
+    assert(normalCDF(T(1), T(0), least) == T(1));
 }
 
 /++
@@ -883,6 +980,11 @@ static if (size_t.sizeof == 4)
     enum logDensity = T(true, -32, UInt!32.fromHexString("eb3f8e43"));
     assert(normalPDF(T(0)) == density);
     assert(normalLPDF(T(0)) == logDensity);
+    assert(normalCDF(T(1)) == T(false, -32, UInt!32(0xd7625e89)));
+    assert(normalCCDF(T(1)) == T(false, -34, UInt!32(0xa27685dc)));
+    auto eighth = T(1);
+    eighth.exponent -= 3;
+    assert(normalInvCDF(eighth) == T(true, -31, UInt!32(0x933ea604)));
 }
 
 // Cephes coefficients and private kernels retained from mir.math.func.normal.
