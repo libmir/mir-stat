@@ -1,0 +1,69 @@
+/++
+License: $(HTTP www.apache.org/licenses/LICENSE-2.0, Apache-2.0)
+Authors: Mir Stat Authors.
++/
+module mir.stat.internal.fp_log_normal;
+
+import mir.bignum.fixed: UInt;
+import mir.bignum.fp: Fp;
+import mir.stat.internal.fp_location_scale: addOffset;
+import mir.stat.internal.fp_pi: guardedPi;
+import mir.stat.internal.fp_scaled_probability: exponentBias, scaledDecay, scaledSqrt;
+import mir.stat.internal.fp_shape_transform: ShapeTransform;
+
+@safe pure nothrow @nogc:
+
+// Keep log(x) at working precision across subtraction, including when
+// mean is the input-width rounding of log(x) and the scale is tiny.
+private auto standardized(uint bits)(Fp!bits x, Fp!bits mean, Fp!bits stdDev)
+{
+    alias B = ShapeTransform!bits;
+    B.L.Context ctx;
+    const logX = B.L.logDyadic(x.coefficient, x.exponent, ctx);
+    auto offset = B.term(mean);
+    offset.negative = !offset.negative;
+    if (logX.coefficient)
+        offset = B.combine(B.Term(B.S.from(logX), logX.sign, true), offset);
+    if (offset.present)
+        offset.value = offset.value.divide(B.S.from(stdDev));
+    return offset;
+}
+
+package(mir.stat) Fp!bits logNormalDensity(bool logarithmic, uint bits)
+    (Fp!bits x, Fp!bits mean, Fp!bits stdDev)
+{
+    alias T = Fp!bits;
+    alias B = ShapeTransform!bits;
+    alias S = B.S;
+    if (!x.coefficient || x.isInfinity)
+        return logarithmic ? T(true, long.max, UInt!bits(0)) : T(0);
+
+    const z = standardized(x, mean, stdDev);
+    S q;
+    if (z.present)
+    {
+        q = z.value.multiply(z.value);
+        q.exponent -= 1;
+        static if (!logarithmic)
+        {
+            // Even with x and stdDev at 2^long.min, q >= 2^65
+            // puts the final density below half the least subnormal.
+            if (q.exponent >= exponentBias + 66)
+                return T(0);
+        }
+    }
+    auto twicePi = S.from(guardedPi!(B.work)());
+    twicePi.exponent += 1;
+    const denominator = S.from(x).multiply(S.from(stdDev)).multiply(scaledSqrt(twicePi, false));
+    static if (logarithmic)
+    {
+        auto peak = B.logarithm(denominator);
+        if (peak.coefficient) peak.sign = !peak.sign;
+        return z.present ? addOffset!bits(peak, q, true) : cast(T)peak;
+    }
+    else
+    {
+        const decay = z.present ? scaledDecay(q) : S.from(T(1));
+        return addOffset!bits(T(0), decay.divide(denominator), false);
+    }
+}

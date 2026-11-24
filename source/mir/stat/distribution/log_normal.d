@@ -12,6 +12,15 @@ domain. Finite expressions are subject to floating-point rounding and range
 limits. Contract violations are not prescribed return values: disabling
 contracts does not make an invalid input supported.
 
+Reference tests exercise $(D Fp) significand widths of 32, 64, 128, and
+256 bits. The 32-bit significand is tested on 32-bit targets.
+
+The $(D Fp) overloads use guarded significands and separately scaled
+intermediates. Rounding to the requested width occurs at the result.
+Universal correct rounding is unproven. If cancellation exhausts the
+working precision, a log density can evaluate to zero, or a transformed
+observation can coincide with the mean at that precision.
+
 License: $(HTTP www.apache.org/licenses/LICENSE-2.0, Apache-2.0)
 
 Authors: John Michael Hall
@@ -22,6 +31,7 @@ Copyright: 2022-3 Mir Stat Authors.
 
 module mir.stat.distribution.log_normal;
 
+import mir.bignum.fp: Fp;
 import mir.internal.utility: isFloatingPoint;
 
 /++
@@ -60,6 +70,33 @@ T logNormalPDF(T)(const T x)
     if (density < T.min_normal)
         return exp(normalLPDF(logX) - logX);
     return density / x;
+}
+
+/++
+Computes the standard log-normal density with guarded extended precision.
+
+Params:
+    T = Represented $(D Fp) type, inferred from the arguments.
+    x = Nonnegative observation, including positive infinity.
+
+Returns:
+    The density in type T. Zero at zero and positive infinity.
++/
+@safe pure nothrow @nogc
+T logNormalPDF(T)(const T x)
+    if (is(T == Fp!size, size_t size))
+    in (!x.isNaN && (!x.sign || (!x.isSpecial && !x.coefficient)))
+{
+    return logNormalPDF(x, T(0), T(1));
+}
+
+///
+version(mir_stat_test)
+@safe pure nothrow @nogc unittest
+{
+    import mir.bignum.fp: Fp;
+    alias T = Fp!64;
+    assert(logNormalPDF(T(0)) == T(0));
 }
 
 /++
@@ -142,6 +179,66 @@ unittest
 {
     assert(logNormalPDF(0.0) == 0);
     assert(logNormalPDF(double.infinity, 2.0, 3.0) == 0);
+}
+
+/++
+Computes the location-scale log-normal density with guarded extended precision.
+
+Params:
+    T = Represented $(D Fp) type, inferred from the arguments.
+    x = Nonnegative observation, including positive infinity.
+    mean = Finite mean of the underlying normal variable.
+    stdDev = Positive finite standard deviation of the underlying normal variable.
+
+Returns:
+    The density in type T. Zero at zero and positive infinity.
++/
+@safe pure nothrow @nogc
+T logNormalPDF(T)(const T x, const T mean, const T stdDev)
+    if (is(T == Fp!size, size_t size))
+    in (!x.isNaN && (!x.sign || (!x.isSpecial && !x.coefficient)))
+    in (!mean.isSpecial && !stdDev.isSpecial && !stdDev.sign && !!stdDev.coefficient)
+{
+    import mir.stat.internal.fp_log_normal: logNormalDensity;
+    return logNormalDensity!false(x, mean, stdDev);
+}
+
+///
+version(mir_stat_test)
+@safe pure nothrow @nogc unittest
+{
+    import mir.bignum.fp: Fp;
+    alias T = Fp!64;
+    assert(logNormalPDF(T(double.infinity), T(3), T(2)) == T(0));
+}
+
+version(mir_stat_test)
+@safe pure nothrow @nogc unittest
+{
+    import mir.bignum.fixed: UInt;
+    import mir.math.common: approxEqual;
+    // MPFR at 1,280 bits, rounded for each represented input.
+    {
+        alias T = Fp!128;
+        enum expected = T(false, -132, UInt!128.fromHexString("c87bd6c3dba6e14a67fc48b9a8e57d34"));
+        assert(logNormalPDF(T(4), T(1), T(2)) == expected);
+        assert(approxEqual(logNormalPDF(4.0, 1.0, 2.0), 0.04894622700315107, 8 * double.epsilon));
+    }
+    alias T = Fp!64;
+    // At this scale rounding log(2) to the mean would yield zero distance.
+    enum mean = T(false, -64, UInt!64.fromHexString("b17217f7d1cf79ac"));
+    auto scale = T(1);
+    scale.exponent -= 64;
+    enum nearMean = T(false, -2, UInt!64.fromHexString("c7bf077ea61c78f0"));
+    assert(logNormalPDF(T(2), mean, scale) == nearMean);
+    // The Gaussian decay underflows before division by this observation.
+    auto tiny = T(1);
+    tiny.exponent -= 1L << 62;
+    enum rescued = T(false, -8694827079744363032L, UInt!64.fromHexString("bc58382da6244d64"));
+    assert(logNormalPDF(tiny, T(-3196577165595631211L), T(1)) == rescued);
+    assert(logNormalPDF(T(2), T(0), T(false, long.min, UInt!64(1))) == T(0));
+    enum atOne = T(false, -65, UInt!64.fromHexString("cc42299ea1b28468"));
+    assert(logNormalPDF(T(1)) == atOne);
 }
 
 /++
@@ -437,6 +534,33 @@ T logNormalLPDF(T)(const T x)
 }
 
 /++
+Computes the standard log-normal log density with guarded extended precision.
+
+Params:
+    T = Represented $(D Fp) type, inferred from the arguments.
+    x = Nonnegative observation, including positive infinity.
+
+Returns:
+    The log density in type T. Negative infinity at zero and positive infinity.
++/
+@safe pure nothrow @nogc
+T logNormalLPDF(T)(const T x)
+    if (is(T == Fp!size, size_t size))
+    in (!x.isNaN && (!x.sign || (!x.isSpecial && !x.coefficient)))
+{
+    return logNormalLPDF(x, T(0), T(1));
+}
+
+///
+version(mir_stat_test)
+@safe pure nothrow @nogc unittest
+{
+    import mir.bignum.fp: Fp;
+    alias T = Fp!64;
+    assert(logNormalLPDF(T(0)) == T(-double.infinity));
+}
+
+/++
 Ditto, with location and scale parameters for $(D log(x)).
 These are the mean and standard deviation of the underlying normal
 variable, not the mean and standard deviation of the log-normal variable.
@@ -553,4 +677,66 @@ unittest
     enum double expected = 1.3649994674147508546714884699975213978e-204;
     assert(fabs(logNormalCDF(0x1p-44) / expected - 1) < 2e-13);
     assert(fabs(logNormalCCDF(0x1p44) / expected - 1) < 2e-13);
+}
+/++
+Computes the location-scale log-normal log density with guarded extended precision.
+
+Params:
+    T = Represented $(D Fp) type, inferred from the arguments.
+    x = Nonnegative observation, including positive infinity.
+    mean = Finite mean of the underlying normal variable.
+    stdDev = Positive finite standard deviation of the underlying normal variable.
+
+Returns:
+    The log density in type T. Negative infinity at zero and positive infinity.
++/
+@safe pure nothrow @nogc
+T logNormalLPDF(T)(const T x, const T mean, const T stdDev)
+    if (is(T == Fp!size, size_t size))
+    in (!x.isNaN && (!x.sign || (!x.isSpecial && !x.coefficient)))
+    in (!mean.isSpecial && !stdDev.isSpecial && !stdDev.sign && !!stdDev.coefficient)
+{
+    import mir.stat.internal.fp_log_normal: logNormalDensity;
+    return logNormalDensity!true(x, mean, stdDev);
+}
+
+///
+version(mir_stat_test)
+@safe pure nothrow @nogc unittest
+{
+    import mir.bignum.fp: Fp;
+    alias T = Fp!64;
+    assert(logNormalLPDF(T(double.infinity), T(3), T(2)) == T(-double.infinity));
+}
+version(mir_stat_test)
+@safe pure nothrow @nogc unittest
+{
+    import mir.bignum.fixed: UInt;
+    import mir.math.common: approxEqual;
+    // MPFR at 1,280 bits, rounded for each represented input.
+    {
+        alias T = Fp!128;
+        enum expected = T(true, -126, UInt!128.fromHexString("c117118b6e01dcacbae8cc76b837d21c"));
+        assert(logNormalLPDF(T(4), T(1), T(2)) == expected);
+        assert(approxEqual(logNormalLPDF(4.0, 1.0, 2.0), -3.017032991563637, 8 * double.epsilon));
+    }
+    alias T = Fp!64;
+    // At this scale rounding log(2) to the mean would yield zero distance.
+    enum mean = T(false, -64, UInt!64.fromHexString("b17217f7d1cf79ac"));
+    auto scale = T(1);
+    scale.exponent -= 64;
+    enum nearMean = T(false, -58, UInt!64.fromHexString("aae871782c98a01b"));
+    assert(logNormalLPDF(T(2), mean, scale) == nearMean);
+
+    // Adjacent scales put the density on opposite sides of one. Decimal
+    // references use the represented mean and round the log densities directly.
+    const lowerScale = T(false, -66, UInt!64(0xcc42299ea1b28468UL));
+    const upperScale = T(false, -66, UInt!64(0xcc42299ea1b28469UL));
+    assert(logNormalLPDF(T(2), mean, lowerScale) ==
+        T(false, -128, UInt!64(0x9e5b8dfeb3fbbd1fUL)));
+    assert(logNormalLPDF(T(2), mean, upperScale) ==
+        T(true, -128, UInt!64(0xa27da400ae749c47UL)));
+
+    enum atOne = T(true, -64, UInt!64.fromHexString("eb3f8e4325f5a535"));
+    assert(logNormalLPDF(T(1)) == atOne);
 }
