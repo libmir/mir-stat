@@ -46,6 +46,7 @@ $(TR $(TH Category) $(TH Declarations))
         $(REF makeQuantileSortFirst, mir, stat, descriptive, univariate, quantiles)$(NBSP)
         $(REF makeQuantileSortFirstInPlace, mir, stat, descriptive, univariate, quantiles)$(NBSP)
         $(REF quantileSortFirstInto, mir, stat, descriptive, univariate, quantiles)$(NBSP)
+        $(REF quantileSortFirstCopyInto, mir, stat, descriptive, univariate, quantiles)$(NBSP)
         $(REF quantileScratchLength, mir, stat, descriptive, univariate, quantiles)$(NBSP)
         $(REF QuantileTable, mir, stat, descriptive, univariate, quantiles)$(NBSP)
         $(REF quantileTable, mir, stat, descriptive, univariate, quantiles)$(NBSP)
@@ -9498,6 +9499,71 @@ version(mir_stat_test) @system unittest
     const int[3] ordered = [1, 4, 9];
     assert(makeQuantileSortFirst(allocator, assumeSorted(ordered[]), 0.5) == 4);
     assert(allocator.allocations == 2);
+}
+
+/++ Sort a copy of the observations and write quantiles to caller-provided output.
+A default ascending, sized random-access Phobos SortedRange is read directly.
+The caller supplies output and observation workspace. For an empty probability batch,
+output must be empty and the workspace may have zero length.
+
+Params:
+    algorithm = estimator, default type7; string estimator names are also accepted
++/
+template quantileSortFirstCopyInto(QuantileAlgo algorithm = QuantileAlgo.type7)
+{
+    /++
+    Params:
+        data = observations as an array, Mir slice, or supported ascending SortedRange.
+            A nonempty request requires at least two observations.
+        probabilities = one-dimensional floating-point probabilities in [0, 1]
+        output = one-dimensional writable destination, disjoint from data and probabilities,
+            with one element per probability. Its element type determines result precision.
+        workspace = writable array or Mir slice with distinct elements of the observation type,
+            disjoint from the other arguments. For an input without a sorted-range wrapper and a nonempty batch,
+            its flattened length must cover every observation. Excess elements are untouched.
+            A supported ascending SortedRange leaves the workspace untouched.
+    Returns:
+        Writes quantiles to output in caller probability order, including repeated requests.
+    +/
+    void quantileSortFirstCopyInto(Data, P, Output, Workspace)(scope auto ref Data data,
+        scope auto ref P probabilities, scope auto ref Output output, scope auto ref Workspace workspace)
+    {
+        copyQuantilesInto!(quantileSortFirstInto, algorithm)(data, probabilities, output, workspace);
+    }
+}
+
+/// ditto
+template quantileSortFirstCopyInto(string algorithm)
+{
+    alias quantileSortFirstCopyInto = .quantileSortFirstCopyInto!(__traits(getMember, QuantileAlgo, algorithm));
+}
+
+///
+version(mir_stat_test) @safe pure nothrow @nogc unittest
+{
+    import mir.ndslice : sliced, stride;
+    const int[3] values = [9, 1, 5];
+    const double[2] levels = [0.75, 0.25];
+    int[8] storage = -1;
+    double[2] output;
+    quantileSortFirstCopyInto(values, levels, output, storage[].sliced.stride(2));
+    assert(storage == [1, -1, 5, -1, 9, -1, -1, -1]);
+    assert(output == [7, 3]);
+}
+
+version(mir_stat_test) @safe pure nothrow @nogc unittest
+{
+    import std.range : assumeSorted;
+    int[4] values = [2, 1, 9, 3];
+    const double[2] levels = [1, 0];
+    int[2] output;
+    int[4] workspace;
+    static assert(!__traits(compiles, quantileSortFirstCopyInto!"type1"(values, levels, output)));
+    quantileSortFirstCopyInto!"type1"(values, levels, output, workspace);
+    assert(values == [2, 1, 9, 3] && output == [9, 1]);
+    const int[3] ordered = [3, 5, 7];
+    quantileSortFirstCopyInto!(QuantileAlgo.type1)(assumeSorted(ordered[]), levels, output, workspace[0 .. 0]);
+    assert(output == [7, 3]);
 }
 
 /++ Sort a writable observation workspace and write quantiles to caller storage.
