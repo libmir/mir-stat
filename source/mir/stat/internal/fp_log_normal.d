@@ -67,3 +67,16 @@ package(mir.stat) Fp!bits logNormalDensity(bool logarithmic, uint bits)
         return addOffset!bits(T(0), decay.divide(denominator), false);
     }
 }
+
+package(mir.stat) Fp!bits logNormalTail(bool upper, uint bits)
+    (Fp!bits x, Fp!bits mean, Fp!bits stdDev)
+{
+    import mir.stat.internal.fp_location_scale: half;
+    import mir.stat.internal.fp_normal: standardNormalTail;
+    alias T = Fp!bits;
+    if (x.isInfinity) return T(upper ? 0 : 1);
+    if (!x.coefficient) return T(upper ? 1 : 0);
+    const z = standardized(x, mean, stdDev);
+    if (!z.present) return half!bits();
+    return standardNormalTail!bits(z.value, upper != z.negative);
+}

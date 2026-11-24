@@ -273,6 +273,33 @@ T logNormalCDF(T)(const T x)
 }
 
 /++
+Computes the standard log-normal lower-tail probability with guarded extended precision.
+
+Params:
+    T = Represented $(D Fp) type, inferred from the arguments.
+    x = Nonnegative observation, including positive infinity.
+
+Returns:
+    The lower-tail probability in type T. Zero at zero and one at positive infinity.
++/
+@safe pure nothrow @nogc
+T logNormalCDF(T)(const T x)
+    if (is(T == Fp!size, size_t size))
+    in (!x.isNaN && (!x.sign || (!x.isSpecial && !x.coefficient)))
+{
+    return logNormalCDF(x, T(0), T(1));
+}
+
+///
+version(mir_stat_test)
+@safe pure nothrow @nogc unittest
+{
+    import mir.bignum.fp: Fp;
+    alias T = Fp!64;
+    assert(logNormalCDF(T(0)) == T(0));
+}
+
+/++
 Ditto, with location and scale parameters for $(D log(x)).
 These are the mean and standard deviation of the underlying normal
 variable, not the mean and standard deviation of the log-normal variable.
@@ -325,6 +352,71 @@ unittest
 }
 
 /++
+Computes the location-scale log-normal lower-tail probability with guarded extended precision.
+
+Params:
+    T = Represented $(D Fp) type, inferred from the arguments.
+    x = Nonnegative observation, including positive infinity.
+    mean = Finite mean of the underlying normal variable.
+    stdDev = Positive finite standard deviation of the underlying normal variable.
+
+Returns:
+    The lower-tail probability in type T. Zero at zero and one at positive infinity.
++/
+@safe pure nothrow @nogc
+T logNormalCDF(T)(const T x, const T mean, const T stdDev)
+    if (is(T == Fp!size, size_t size))
+    in (!x.isNaN && (!x.sign || (!x.isSpecial && !x.coefficient)))
+    in (!mean.isSpecial && !stdDev.isSpecial && !stdDev.sign && !!stdDev.coefficient)
+{
+    import mir.stat.internal.fp_log_normal: logNormalTail;
+    return logNormalTail!false(x, mean, stdDev);
+}
+
+///
+version(mir_stat_test)
+@safe pure nothrow @nogc unittest
+{
+    import mir.bignum.fp: Fp;
+    alias T = Fp!64;
+    assert(logNormalCDF(T(double.infinity), T(3), T(2)) == T(1));
+}
+
+version(mir_stat_test)
+@safe pure nothrow @nogc unittest
+{
+    import mir.bignum.fixed: UInt;
+    import mir.math.common: approxEqual;
+    // MPFR at 1,280 bits, rounded for each represented input.
+    {
+        alias T = Fp!128;
+        enum expected = T(false, -128, UInt!128.fromHexString("939aa022469a995136af5049539a3ec5"));
+        assert(logNormalCDF(T(4), T(1), T(2)) == expected);
+        assert(approxEqual(logNormalCDF(4.0, 1.0, 2.0), 0.5765781482392448, 8 * double.epsilon));
+    }
+    alias T = Fp!64;
+    // At this scale rounding log(2) to the mean would yield zero distance.
+    enum mean = T(false, -64, UInt!64.fromHexString("b17217f7d1cf79ac"));
+    auto scale = T(1);
+    scale.exponent -= 64;
+    enum nearMean = T(false, -65, UInt!64.fromHexString("d525371ddcd90795"));
+    assert(logNormalCDF(T(2), mean, scale) == nearMean);
+    auto extreme = T(1);
+    extreme.exponent -= 64;
+    enum smallTail = T(false, -1490, UInt!64.fromHexString("c708531dd01b1122"));
+    assert(logNormalCDF(extreme) == smallTail);
+    assert(logNormalCDF(T(1)) == T(0.5));
+    // log(1+h) - h is about -h*h/2 at the next observation above one.
+    enum next = T(false, -63, UInt!64.fromHexString("8000000000000001"));
+    enum h = T(false, -126, UInt!64.fromHexString("8000000000000000"));
+    enum hSquared = T(false, -189, UInt!64.fromHexString("8000000000000000"));
+    enum adjacent = T(false, -65, UInt!64.fromHexString("9df8a1dcd538921a"));
+    assert(logNormalCDF(next, h, hSquared) == adjacent);
+    const negativeZero = T(true, 0, UInt!64(0));
+    assert(logNormalCDF(negativeZero) == T(0));
+}
+
+/++
 Computes the Log-normal complementary cumulative distribution function (CCDF).
 
 Returns the upper-tail probability $(D P(X > x)). Use this function directly
@@ -354,6 +446,33 @@ T logNormalCCDF(T)(const T x)
     import mir.math.common: log;
     import mir.stat.distribution.normal: normalCCDF;
     return x.log.normalCCDF;
+}
+
+/++
+Computes the standard log-normal strict upper-tail probability with guarded extended precision.
+
+Params:
+    T = Represented $(D Fp) type, inferred from the arguments.
+    x = Nonnegative observation, including positive infinity.
+
+Returns:
+    The strict upper-tail probability in type T. One at zero and zero at positive infinity.
++/
+@safe pure nothrow @nogc
+T logNormalCCDF(T)(const T x)
+    if (is(T == Fp!size, size_t size))
+    in (!x.isNaN && (!x.sign || (!x.isSpecial && !x.coefficient)))
+{
+    return logNormalCCDF(x, T(0), T(1));
+}
+
+///
+version(mir_stat_test)
+@safe pure nothrow @nogc unittest
+{
+    import mir.bignum.fp: Fp;
+    alias T = Fp!64;
+    assert(logNormalCCDF(T(0)) == T(1));
 }
 
 /++
@@ -407,6 +526,63 @@ unittest
     logNormalCCDF(1.0, 1, 2).shouldApprox == 0.6914625;
     logNormalCCDF(2.0, 1, 2).shouldApprox == 0.560969;
     logNormalCCDF(3.0, 1, 2).shouldApprox == 0.4803377;
+}
+
+/++
+Computes the location-scale log-normal strict upper-tail probability with guarded extended precision.
+
+Params:
+    T = Represented $(D Fp) type, inferred from the arguments.
+    x = Nonnegative observation, including positive infinity.
+    mean = Finite mean of the underlying normal variable.
+    stdDev = Positive finite standard deviation of the underlying normal variable.
+
+Returns:
+    The strict upper-tail probability in type T. One at zero and zero at positive infinity.
++/
+@safe pure nothrow @nogc
+T logNormalCCDF(T)(const T x, const T mean, const T stdDev)
+    if (is(T == Fp!size, size_t size))
+    in (!x.isNaN && (!x.sign || (!x.isSpecial && !x.coefficient)))
+    in (!mean.isSpecial && !stdDev.isSpecial && !stdDev.sign && !!stdDev.coefficient)
+{
+    import mir.stat.internal.fp_log_normal: logNormalTail;
+    return logNormalTail!true(x, mean, stdDev);
+}
+
+///
+version(mir_stat_test)
+@safe pure nothrow @nogc unittest
+{
+    import mir.bignum.fp: Fp;
+    alias T = Fp!64;
+    assert(logNormalCCDF(T(double.infinity), T(3), T(2)) == T(0));
+}
+
+version(mir_stat_test)
+@safe pure nothrow @nogc unittest
+{
+    import mir.bignum.fixed: UInt;
+    import mir.math.common: approxEqual;
+    // MPFR at 1,280 bits, rounded for each represented input.
+    {
+        alias T = Fp!128;
+        enum expected = T(false, -129, UInt!128.fromHexString("d8cabfbb72cacd5d92a15f6d58cb8275"));
+        assert(logNormalCCDF(T(4), T(1), T(2)) == expected);
+        assert(approxEqual(logNormalCCDF(4.0, 1.0, 2.0), 0.4234218517607552, 8 * double.epsilon));
+    }
+    alias T = Fp!64;
+    // At this scale rounding log(2) to the mean would yield zero distance.
+    enum mean = T(false, -64, UInt!64.fromHexString("b17217f7d1cf79ac"));
+    auto scale = T(1);
+    scale.exponent -= 64;
+    enum nearMean = T(false, -64, UInt!64.fromHexString("956d647111937c35"));
+    assert(logNormalCCDF(T(2), mean, scale) == nearMean);
+    auto extreme = T(1);
+    extreme.exponent += 64;
+    enum smallTail = T(false, -1490, UInt!64.fromHexString("c708531dd01b1122"));
+    assert(logNormalCCDF(extreme) == smallTail);
+    assert(logNormalCCDF(T(1)) == T(0.5));
 }
 
 /++
