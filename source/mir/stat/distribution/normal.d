@@ -272,6 +272,33 @@ T normalCDF(T)(const T a)
 }
 
 /++
+Computes the standard normal lower-tail probability with guarded extended precision.
+
+Params:
+    T = Represented $(D Fp) type, inferred from the arguments.
+    z = Standardized observation, including either infinity or NaN.
+
+Returns:
+    The probability of a value at or below the observation, in type T.
+    At negative and positive infinity the results are zero and one, respectively. NaN propagates.
++/
+@safe pure nothrow @nogc
+T normalCDF(T)(const T z)
+    if (is(T == Fp!size, size_t size))
+{
+    return normalCDF(z, T(0), T(1));
+}
+
+///
+version(mir_stat_test)
+@safe pure nothrow @nogc unittest
+{
+    import mir.bignum.fp: Fp;
+    alias T = Fp!64;
+    assert(normalCDF(T(0)) == T(0.5));
+}
+
+/++
 Ditto, with location and scale parameters.
 
 Returns the lower-tail probability $(D P(X <= x)).
@@ -308,6 +335,37 @@ unittest
     assert(normalCDF(0.0) == 0.5);
     assert(normalCDF(2.0, 2.0, 3.0) == 0.5);
     assert(normalCDF(1.0).approxEqual(0.8413447460685429));
+}
+
+/++
+Computes the location-scale normal lower-tail probability with guarded extended precision.
+
+Params:
+    T = Represented $(D Fp) type, inferred from the arguments.
+    x = Observation, including either infinity or NaN.
+    mean = Finite mean.
+    stdDev = Positive finite standard deviation.
+
+Returns:
+    The probability of a value at or below the observation, in type T.
+    At negative and positive infinity the results are zero and one, respectively. NaN propagates.
++/
+@safe pure nothrow @nogc
+T normalCDF(T)(const T x, const T mean, const T stdDev)
+    if (is(T == Fp!size, size_t size))
+    in (!mean.isSpecial && !stdDev.isSpecial && !stdDev.sign && !!stdDev.coefficient)
+{
+    import mir.stat.internal.fp_normal: normalTail;
+    return normalTail!false(x, mean, stdDev);
+}
+
+///
+version(mir_stat_test)
+@safe pure nothrow @nogc unittest
+{
+    import mir.bignum.fp: Fp;
+    alias T = Fp!64;
+    assert(normalCDF(T(3), T(3), T(2)) == T(0.5));
 }
 
 /++
@@ -469,6 +527,37 @@ T normalCCDF(T)(const T x, const T mean, const T stdDev)
 }
 
 /++
+Computes the location-scale normal strict upper-tail probability with guarded extended precision.
+
+Params:
+    T = Represented $(D Fp) type, inferred from the arguments.
+    x = Observation, including either infinity or NaN.
+    mean = Finite mean.
+    stdDev = Positive finite standard deviation.
+
+Returns:
+    The probability of a value strictly above the observation, in type T.
+    At negative and positive infinity the results are one and zero, respectively. NaN propagates.
++/
+@safe pure nothrow @nogc
+T normalCCDF(T)(const T x, const T mean, const T stdDev)
+    if (is(T == Fp!size, size_t size))
+    in (!mean.isSpecial && !stdDev.isSpecial && !stdDev.sign && !!stdDev.coefficient)
+{
+    import mir.stat.internal.fp_normal: normalTail;
+    return normalTail!true(x, mean, stdDev);
+}
+
+///
+version(mir_stat_test)
+@safe pure nothrow @nogc unittest
+{
+    import mir.bignum.fp: Fp;
+    alias T = Fp!64;
+    assert(normalCCDF(T(3), T(3), T(2)) == T(0.5));
+}
+
+/++
 Computes the standard normal complementary cumulative distribution function (CCDF).
 
 Returns the upper-tail probability $(D P(X > x)). Use this function directly
@@ -526,6 +615,57 @@ unittest
     import mir.math.common: approxEqual;
     assert(normalCCDF(double.infinity).approxEqual(1 - normalCDF(double.infinity)));
     assert(normalCCDF(-double.infinity).approxEqual(1 - normalCDF(-double.infinity)));
+}
+
+/++
+Computes the standard normal strict upper-tail probability with guarded extended precision.
+
+Params:
+    T = Represented $(D Fp) type, inferred from the arguments.
+    z = Standardized observation, including either infinity or NaN.
+
+Returns:
+    The probability of a value strictly above the observation, in type T.
+    At negative and positive infinity the results are one and zero, respectively. NaN propagates.
++/
+@safe pure nothrow @nogc
+T normalCCDF(T)(const T z)
+    if (is(T == Fp!size, size_t size))
+{
+    return normalCCDF(z, T(0), T(1));
+}
+
+///
+version(mir_stat_test)
+@safe pure nothrow @nogc unittest
+{
+    import mir.bignum.fp: Fp;
+    alias T = Fp!64;
+    assert(normalCCDF(T(0)) == T(0.5));
+}
+
+version(mir_stat_test)
+@safe pure nothrow @nogc unittest
+{
+    import mir.bignum.fixed: UInt;
+    import mir.math.common: approxEqual;
+    alias T = Fp!64;
+    // MPFR erfc at the same represented inputs as the built-in calls.
+    assert(normalCDF(T(-2), T(1), T(2)) == T(false, -67, UInt!64(0x88d236c4b23f74f1UL)));
+    assert(normalCCDF(T(-2), T(1), T(2)) == T(false, -64, UInt!64(0xeee5b92769b81162UL)));
+    assert(approxEqual(normalCDF(-2.0, 1.0, 2.0), 0.06680720126885807, 8 * double.epsilon));
+    assert(approxEqual(normalCCDF(-2.0, 1.0, 2.0), 0.9331927987311419, 8 * double.epsilon));
+    assert(normalCCDF(T(40)) == T(false, -1224, UInt!64(0x92907c1d51c9b8caUL)));
+    assert(normalCDF(T(40)) == T(1));
+    assert(normalCCDF(T(double.infinity)) == T(0));
+    assert(normalCDF(T(double.nan)).isNaN);
+    // Adjacent observations at the subnormal boundary. Reference from
+    // log(Q(x)) using the alternating Mills expansion at 240 decimal digits.
+    const last = T(false, -32, UInt!64(0xd5224c8b0e6a3cceUL));
+    assert(normalCCDF(last) == T(false, long.min, UInt!64(1)));
+    T next = last;
+    next.coefficient += 1;
+    assert(normalCCDF(next) == T(0));
 }
 
 /++

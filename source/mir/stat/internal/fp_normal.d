@@ -8,7 +8,7 @@ import mir.bignum.fixed: UInt;
 import mir.bignum.fp: Fp;
 import mir.stat.internal.fp_location_scale: addOffset, distance, position;
 import mir.stat.internal.fp_pi: guardedPi;
-import mir.stat.internal.fp_scaled_probability: exponentBias, scaledDecay, scaledSqrt;
+import mir.stat.internal.fp_scaled_probability: ProbabilityScaled, exponentBias, scaledDecay, scaledSqrt;
 import mir.stat.internal.fp_shape_transform: ShapeTransform;
 
 package(mir.stat) @safe pure nothrow @nogc
@@ -57,4 +57,45 @@ Fp!bits normalDensity(bool logarithmic, uint bits)(Fp!bits x, Fp!bits mean, Fp!b
         const decay = centered ? S.from(T(1)) : scaledDecay(q);
         return decay.divide(denominator).finish!bits;
     }
+}
+
+package(mir.stat) @safe pure nothrow @nogc
+Fp!bits normalTail(bool upper, uint bits)(Fp!bits x, Fp!bits mean, Fp!bits stdDev)
+{
+    import mir.stat.internal.fp_erf: erfPositive, erfcxPositive;
+    import mir.stat.internal.fp_location_scale: half;
+    alias T = Fp!bits;
+    alias B = ShapeTransform!bits;
+    alias S = B.S;
+    if (x.isNaN) return x;
+    if (x.isInfinity) return T(x.sign == upper ? 1 : 0);
+    const side = position(x, mean);
+    if (!side) return half!bits();
+    const small = upper == (side > 0);
+    const z = distance!(B.work)(x, mean).divide(S.from(stdDev));
+    if (z.exponent + bits + 3 < exponentBias)
+        return half!bits();
+    auto q = z.multiply(z);
+    q.exponent -= 1;
+    if (q.exponent >= exponentBias + 65)
+        return T(small ? 0 : 1);
+    const t = workingValue(scaledSqrt(q, false));
+    if (z.exponent <= exponentBias)
+    {
+        auto displacement = S.from(erfPositive(t));
+        displacement.exponent -= 1;
+        return addOffset!bits(half!bits(), displacement, small);
+    }
+    auto tail = scaledDecay(q).multiply(S.from(erfcxPositive(t)));
+    tail.exponent -= 1;
+    return small ? tail.finish!bits : addOffset!bits(T(1), tail, true);
+}
+
+// Callers bound the unbiased exponent before materializing the working value.
+private @safe pure nothrow @nogc
+Fp!work workingValue(uint work)(ProbabilityScaled!work value)
+{
+    auto result = value.fraction;
+    result.exponent += cast(long)cast(ulong)(value.exponent - exponentBias);
+    return result;
 }
