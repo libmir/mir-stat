@@ -8119,8 +8119,8 @@ interior quantiles before endpoints to narrow the minimum and maximum searches.
 Each result still occupies the position of its corresponding probability.
 Lazy views retain their original evaluation order.
 
-Use $(LREF quantile), $(LREF rcquantile), or $(LREF makeQuantile) when a copy of
-the observations or allocated output is desired. Those functions may also
+Use $(LREF quantileCopyInto) to preserve the observations and write to caller-provided output.
+Use $(LREF quantile), $(LREF rcquantile), or $(LREF makeQuantile) for an allocated batch result. Those functions may also
 allocate selection scratch for larger batches using their allocation policy.
 
 Params:
@@ -9567,6 +9567,7 @@ version(mir_stat_test) @safe pure nothrow @nogc unittest
 }
 
 /++ Sort a writable observation workspace and write quantiles to caller storage.
+Use $(LREF quantileSortFirstCopyInto) to sort a copy and preserve the original observation order.
 Params:
     algorithm = estimator, default type7
     workspace = mutable array or Mir slice to sort in ascending flattened order,
