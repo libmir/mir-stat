@@ -31,8 +31,11 @@ $(TR $(TH Category) $(TH Declarations))
         $(REF rcMedian, mir, stat, descriptive, univariate, quantiles)$(NBSP)
         $(REF makeMedian, mir, stat, descriptive, univariate, quantiles)$(NBSP)
         $(REF quantile, mir, stat, descriptive, univariate, quantiles)$(NBSP)
+        $(REF quantileInPlace, mir, stat, descriptive, univariate, quantiles)$(NBSP)
         $(REF rcquantile, mir, stat, descriptive, univariate, quantiles)$(NBSP)
+        $(REF rcquantileInPlace, mir, stat, descriptive, univariate, quantiles)$(NBSP)
         $(REF makeQuantile, mir, stat, descriptive, univariate, quantiles)$(NBSP)
+        $(REF makeQuantileInPlace, mir, stat, descriptive, univariate, quantiles)$(NBSP)
         $(REF quantileInto, mir, stat, descriptive, univariate, quantiles)$(NBSP)
         $(REF quantileSortFirst, mir, stat, descriptive, univariate, quantiles)$(NBSP)
         $(REF rcquantileSortFirst, mir, stat, descriptive, univariate, quantiles)$(NBSP)
@@ -7749,6 +7752,29 @@ private auto allocatedQuantile(F, QuantileAlgo algorithm, bool modify,
     }
 }
 
+// Keep ordered-range dispatch and result inference common to both mutation policies.
+private auto selectQuantile(F, QuantileAlgo algorithm, bool modify, QuantileAllocation allocation,
+    Context, Data, P...)(ref Context context, scope auto ref Data data, scope auto ref P probabilities)
+{
+    static if (isPhobosSortedRange!Data)
+    {
+        scope auto values = sortedQuantileValues(data);
+        static if (is(F == void))
+            alias Result = quantileType!(typeof(values[0]), algorithm);
+        else
+            alias Result = F;
+        return dispatchQuantile!(Result, algorithm, false, allocation, true)(context, values, probabilities);
+    }
+    else
+    {
+        static if (is(F == void))
+            alias Result = quantileType!(typeof(quantileSlice(data)), algorithm);
+        else
+            alias Result = F;
+        return dispatchQuantile!(Result, algorithm, modify, allocation)(context, data, probabilities);
+    }
+}
+
 private auto dispatchQuantile(F, QuantileAlgo algorithm, bool modify,
     QuantileAllocation allocation, bool assumeSorted = false, Context, Data, P...)(
     ref Context context, scope auto ref Data data, scope auto ref P probabilities)
@@ -8239,6 +8265,60 @@ unittest
     assert(probabilities[] == [0.25f, 0.75f]);
 }
 
+/++ Select quantiles using writable observations as partition workspace.
+An ascending random-access Phobos SortedRange with a length is read directly.
+
+Params:
+    F = optional result type, inferred as for $(LREF quantile) when omitted
+    algorithm = estimator, default type7; accepts a QuantileAlgo or its string name
++/
+template rcquantileInPlace(F = void, QuantileAlgo algorithm = QuantileAlgo.type7)
+    if (is(F == void) || isFloatingPoint!F || algorithm == QuantileAlgo.type1 || algorithm == QuantileAlgo.type3)
+{
+    /++
+    Params:
+        data = observations as an array, Mir slice, or ascending SortedRange.
+            Writable observations must be disjoint from probabilities.
+            At least two observations are required for a nonempty request.
+        probabilities = scalar, one-dimensional array or slice, or variadic probabilities in [0, 1].
+            Omit for the minimum, quartiles, and maximum.
+    Returns:
+        A scalar for a scalar probability, otherwise a reference-counted slice in caller probability order.
+    +/
+    auto rcquantileInPlace(Data, P...)(scope auto ref Data data, scope auto ref P probabilities)
+    {
+        QuantileContext context;
+        return selectQuantile!(F, algorithm, true, QuantileAllocation.rc)(
+            context, data, probabilities);
+    }
+}
+
+/// ditto
+template rcquantileInPlace(QuantileAlgo algorithm)
+{
+    alias rcquantileInPlace = .rcquantileInPlace!(void, algorithm);
+}
+
+/// ditto
+template rcquantileInPlace(F, string algorithm)
+{
+    alias rcquantileInPlace = .rcquantileInPlace!(F, __traits(getMember, QuantileAlgo, algorithm));
+}
+
+/// ditto
+template rcquantileInPlace(string algorithm)
+{
+    alias rcquantileInPlace = .rcquantileInPlace!(__traits(getMember, QuantileAlgo, algorithm));
+}
+
+///
+version(mir_stat_test) @safe pure nothrow @nogc unittest
+{
+    int[5] values = [4, 0, 3, 1, 2];
+    auto result = rcquantileInPlace!(float, "type7")(values, 0.75, 0.25);
+    assert(result == [3.0, 1.0]);
+}
+
 /++
 Compute quantiles with reference-counted scratch and result storage.
 A scalar probability returns a scalar; multiple probabilities return an owning
@@ -8270,14 +8350,9 @@ template rcquantile(F, QuantileAlgo algorithm = QuantileAlgo.type7, bool allowMo
     +/
     auto rcquantile(Data, P...)(scope auto ref Data data, scope auto ref P probabilities)
     {
-        static if (isPhobosSortedRange!Data)
-            return rcquantileAssumeSorted!(F, algorithm)(data, probabilities);
-        else
-        {
-            QuantileContext context;
-            return dispatchQuantile!(F, algorithm, allowModifySlice, QuantileAllocation.rc)(
-                context, data, probabilities);
-        }
+        QuantileContext context;
+        return selectQuantile!(F, algorithm, allowModifySlice, QuantileAllocation.rc)(
+            context, data, probabilities);
     }
 }
 
@@ -8291,15 +8366,9 @@ template rcquantile(QuantileAlgo algorithm = QuantileAlgo.type7, bool allowModif
     +/
     auto rcquantile(Data, P...)(scope auto ref Data data, scope auto ref P probabilities)
     {
-        static if (isPhobosSortedRange!Data)
-            return rcquantileAssumeSorted!(algorithm)(data, probabilities);
-        else
-        {
-            alias F = quantileType!(typeof(quantileSlice(data)), algorithm);
-            QuantileContext context;
-            return dispatchQuantile!(F, algorithm, allowModifySlice, QuantileAllocation.rc)(
-                context, data, probabilities);
-        }
+        QuantileContext context;
+        return selectQuantile!(void, algorithm, allowModifySlice, QuantileAllocation.rc)(
+            context, data, probabilities);
     }
 }
 
@@ -8335,6 +8404,76 @@ unittest
     auto result = rcquantile!float(observations[], 0.25, 0.75);
     assert(result == [1.0f, 3.0f]);
     assert(observations[] == [4.0, 0.0, 3.0, 1.0, 2.0]);
+}
+
+/++ Select quantiles using writable observations as partition workspace.
+An ascending random-access Phobos SortedRange with a length is read directly.
+
+Params:
+    F = optional result type, inferred as for $(LREF quantile) when omitted
+    algorithm = estimator, default type7; accepts a QuantileAlgo or its string name
++/
+template makeQuantileInPlace(F = void, QuantileAlgo algorithm = QuantileAlgo.type7)
+    if (is(F == void) || isFloatingPoint!F || algorithm == QuantileAlgo.type1 || algorithm == QuantileAlgo.type3)
+{
+    /++
+    Params:
+        allocator = allocator for scratch and batch results
+        data = observations as an array, Mir slice, or ascending SortedRange.
+            Writable observations must be disjoint from probabilities.
+            At least two observations are required for a nonempty request.
+        probabilities = scalar, one-dimensional array or slice, or variadic probabilities in [0, 1].
+            Omit for the minimum, quartiles, and maximum.
+    Returns:
+        A scalar for a scalar probability, otherwise a caller-allocated slice in caller probability order.
+        Dispose the result field with the same allocator.
+    +/
+    auto makeQuantileInPlace(Allocator, Data, P...)(auto ref Allocator allocator, scope auto ref Data data, scope auto ref P probabilities)
+    {
+        return selectQuantile!(F, algorithm, true, QuantileAllocation.custom)(
+            allocator, data, probabilities);
+    }
+}
+
+/// ditto
+template makeQuantileInPlace(QuantileAlgo algorithm)
+{
+    alias makeQuantileInPlace = .makeQuantileInPlace!(void, algorithm);
+}
+
+/// ditto
+template makeQuantileInPlace(F, string algorithm)
+{
+    alias makeQuantileInPlace = .makeQuantileInPlace!(F, __traits(getMember, QuantileAlgo, algorithm));
+}
+
+/// ditto
+template makeQuantileInPlace(string algorithm)
+{
+    alias makeQuantileInPlace = .makeQuantileInPlace!(__traits(getMember, QuantileAlgo, algorithm));
+}
+
+///
+version(mir_stat_test) @system pure nothrow @nogc unittest
+{
+    import std.experimental.allocator : dispose;
+    import std.experimental.allocator.mallocator : Mallocator;
+    int[5] values = [4, 0, 3, 1, 2];
+    auto result = makeQuantileInPlace!(QuantileAlgo.type7)(Mallocator.instance, values, 0.75, 0.25);
+    scope(exit) Mallocator.instance.dispose(result.field);
+    assert(result == [3.0, 1.0]);
+}
+
+version(mir_stat_test) @system pure nothrow @nogc unittest
+{
+    import std.experimental.allocator : dispose;
+    QuantileTestAllocator!() allocator;
+    int[5] values = [4, 0, 3, 1, 2];
+    auto result = makeQuantileInPlace(allocator, values, 0.75, 0.25);
+    assert(result == [3.0, 1.0]);
+    assert(allocator.allocations == 1); // Only the result uses the allocator.
+    allocator.dispose(result.field);
+    assert(allocator.releases == 1);
 }
 
 /++
@@ -8375,13 +8514,8 @@ template makeQuantile(F, QuantileAlgo algorithm = QuantileAlgo.type7, bool allow
     +/
     auto makeQuantile(Allocator, Data, P...)(auto ref Allocator allocator, scope auto ref Data data, scope auto ref P probabilities)
     {
-        static if (isPhobosSortedRange!Data)
-            return makeQuantileAssumeSorted!(F, algorithm)(allocator, data, probabilities);
-        else
-        {
-            return dispatchQuantile!(F, algorithm, allowModifySlice, QuantileAllocation.custom)(
-                allocator, data, probabilities);
-        }
+        return selectQuantile!(F, algorithm, allowModifySlice, QuantileAllocation.custom)(
+            allocator, data, probabilities);
     }
 }
 
@@ -8396,14 +8530,8 @@ template makeQuantile(QuantileAlgo algorithm = QuantileAlgo.type7, bool allowMod
     +/
     auto makeQuantile(Allocator, Data, P...)(auto ref Allocator allocator, scope auto ref Data data, scope auto ref P probabilities)
     {
-        static if (isPhobosSortedRange!Data)
-            return makeQuantileAssumeSorted!(algorithm)(allocator, data, probabilities);
-        else
-        {
-            alias F = quantileType!(typeof(quantileSlice(data)), algorithm);
-            return dispatchQuantile!(F, algorithm, allowModifySlice, QuantileAllocation.custom)(
-                allocator, data, probabilities);
-        }
+        return selectQuantile!(void, algorithm, allowModifySlice, QuantileAllocation.custom)(
+            allocator, data, probabilities);
     }
 }
 
@@ -8446,6 +8574,60 @@ unittest
     assert(result == [1.0f, 3.0f]);
     // A scalar result leaves no allocation for the caller to release.
     assert(makeQuantile(Mallocator.instance, observations[], 0.5) == 2.0);
+}
+
+/++ Select quantiles using writable observations as partition workspace.
+An ascending random-access Phobos SortedRange with a length is read directly.
+
+Params:
+    F = optional result type, inferred as for $(LREF quantile) when omitted
+    algorithm = estimator, default type7; accepts a QuantileAlgo or its string name
++/
+template quantileInPlace(F = void, QuantileAlgo algorithm = QuantileAlgo.type7)
+    if (is(F == void) || isFloatingPoint!F || algorithm == QuantileAlgo.type1 || algorithm == QuantileAlgo.type3)
+{
+    /++
+    Params:
+        data = observations as an array, Mir slice, or ascending SortedRange.
+            Writable observations must be disjoint from probabilities.
+            At least two observations are required for a nonempty request.
+        probabilities = scalar, one-dimensional array or slice, or variadic probabilities in [0, 1].
+            Omit for the minimum, quartiles, and maximum.
+    Returns:
+        A scalar for a scalar probability, otherwise a GC-owned slice in caller probability order.
+    +/
+    auto quantileInPlace(Data, P...)(scope auto ref Data data, scope auto ref P probabilities)
+    {
+        QuantileContext context;
+        return selectQuantile!(F, algorithm, true, QuantileAllocation.gc)(
+            context, data, probabilities);
+    }
+}
+
+/// ditto
+template quantileInPlace(QuantileAlgo algorithm)
+{
+    alias quantileInPlace = .quantileInPlace!(void, algorithm);
+}
+
+/// ditto
+template quantileInPlace(F, string algorithm)
+{
+    alias quantileInPlace = .quantileInPlace!(F, __traits(getMember, QuantileAlgo, algorithm));
+}
+
+/// ditto
+template quantileInPlace(string algorithm)
+{
+    alias quantileInPlace = .quantileInPlace!(__traits(getMember, QuantileAlgo, algorithm));
+}
+
+///
+version(mir_stat_test) @safe pure nothrow unittest
+{
+    int[5] values = [4, 0, 3, 1, 2];
+    auto result = quantileInPlace(values, 0.75, 0.25);
+    assert(result == [3.0, 1.0]);
 }
 
 /++
@@ -8511,14 +8693,9 @@ template quantile(F, QuantileAlgo algorithm = QuantileAlgo.type7, bool allowModi
     +/
     auto quantile(Data, P...)(scope auto ref Data data, scope auto ref P probabilities)
     {
-        static if (isPhobosSortedRange!Data)
-            return quantileAssumeSorted!(F, algorithm)(data, probabilities);
-        else
-        {
-            QuantileContext context;
-            return dispatchQuantile!(F, algorithm, allowModifySlice, QuantileAllocation.gc)(
-                context, data, probabilities);
-        }
+        QuantileContext context;
+        return selectQuantile!(F, algorithm, allowModifySlice, QuantileAllocation.gc)(
+            context, data, probabilities);
     }
 }
 
@@ -8532,15 +8709,9 @@ template quantile(QuantileAlgo algorithm = QuantileAlgo.type7, bool allowModifyS
     +/
     auto quantile(Data, P...)(scope auto ref Data data, scope auto ref P probabilities)
     {
-        static if (isPhobosSortedRange!Data)
-            return quantileAssumeSorted!(algorithm)(data, probabilities);
-        else
-        {
-            alias F = quantileType!(typeof(quantileSlice(data)), algorithm);
-            QuantileContext context;
-            return dispatchQuantile!(F, algorithm, allowModifySlice, QuantileAllocation.gc)(
-                context, data, probabilities);
-        }
+        QuantileContext context;
+        return selectQuantile!(void, algorithm, allowModifySlice, QuantileAllocation.gc)(
+            context, data, probabilities);
     }
 }
 
