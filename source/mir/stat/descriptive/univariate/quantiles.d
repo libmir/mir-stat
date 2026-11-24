@@ -7965,7 +7965,7 @@ size_t quantileScratchLength(size_t observationCount) @safe pure nothrow @nogc
     return observationCount / 64 + (observationCount % 64 != 0);
 }
 
-private void copyQuantilesInto(alias evaluate, QuantileAlgo algorithm, Data, P, Output, Workspace)(
+private void copyQuantilesInto(alias writeQuantiles, QuantileAlgo algorithm, Data, P, Output, Workspace)(
     scope auto ref Data data, scope auto ref P probabilities, scope auto ref Output output, scope auto ref Workspace storage)
 {
     scope auto levels = quantileSlice(probabilities);
@@ -7976,7 +7976,7 @@ private void copyQuantilesInto(alias evaluate, QuantileAlgo algorithm, Data, P, 
     if (!levels.length)
         return;
     static if (isPhobosSortedRange!Data)
-        quantileAssumeSortedInto!algorithm(data, levels, destination);
+        writeQuantiles!algorithm(data, levels, destination);
     else
     {
         import mir.ndslice.topology : flattened;
@@ -7991,7 +7991,7 @@ private void copyQuantilesInto(alias evaluate, QuantileAlgo algorithm, Data, P, 
         assert(supplied.length >= n, "Observation workspace is too small");
         scope auto workspace = supplied[0 .. n];
         workspace[] = source.lightScope.flattened;
-        evaluate!algorithm(workspace, levels, destination);
+        writeQuantiles!algorithm(workspace, levels, destination);
     }
 }
 
