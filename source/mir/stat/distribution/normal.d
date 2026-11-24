@@ -10,7 +10,7 @@ This module contains algorithms for the $(LINK2 https://en.wikipedia.org/wiki/No
 
 The one-argument overloads use mean zero and standard deviation one.
 The other overloads take a finite mean and a positive finite standard
-deviation. These parameter requirements are not enforced by contracts;
+deviation. The built-in overloads do not enforce these parameter requirements;
 zero or negative standard deviations do not describe a supported distribution.
 
 The special-value tables assume finite distribution parameters in the stated
@@ -33,6 +33,7 @@ Copyright: 2022-2026 Mir Stat Authors.
 
 module mir.stat.distribution.normal;
 
+import mir.bignum.fp: Fp;
 import mir.stat.internal.standardize: standardize;
 
 import mir.internal.utility: isFloatingPoint;
@@ -63,6 +64,33 @@ T normalPDF(T)(const T z)
 {
     import mir.math.common: exp;
     return T(SQRT2PIINV) * exp(z * z * -0.5);
+}
+
+/++
+Computes the standard normal density with guarded extended precision.
+
+Params:
+    T = Represented $(D Fp) type, inferred from the arguments.
+    z = Standardized observation, including either infinity or NaN.
+
+Returns:
+    The density in type T. Zero at either infinity. NaN propagates.
+    The tails can underflow to zero.
++/
+@safe pure nothrow @nogc
+T normalPDF(T)(const T z)
+    if (is(T == Fp!size, size_t size))
+{
+    return normalPDF(z, T(0), T(1));
+}
+
+///
+version(mir_stat_test)
+@safe pure nothrow @nogc unittest
+{
+    import mir.bignum.fp: Fp;
+    alias T = Fp!64;
+    assert(normalPDF(T(double.infinity)) == T(0));
 }
 
 /++
@@ -117,6 +145,73 @@ unittest
 {
     assert(normalPDF(-double.infinity) == 0);
     assert(normalPDF(double.infinity, 2.0, 3.0) == 0);
+}
+
+/++
+Computes the location-scale normal density with guarded extended precision.
+
+Params:
+    T = Represented $(D Fp) type, inferred from the arguments.
+    x = Observation, including either infinity or NaN.
+    mean = Finite mean.
+    stdDev = Positive finite standard deviation.
+
+Returns:
+    The density in type T. Zero at either infinity. NaN propagates.
+    The tails can underflow to zero.
++/
+@safe pure nothrow @nogc
+T normalPDF(T)(const T x, const T mean, const T stdDev)
+    if (is(T == Fp!size, size_t size))
+    in (!mean.isSpecial && !stdDev.isSpecial && !stdDev.sign && !!stdDev.coefficient)
+{
+    import mir.stat.internal.fp_normal: normalDensity;
+    return normalDensity!false(x, mean, stdDev);
+}
+
+///
+version(mir_stat_test)
+@safe pure nothrow @nogc unittest
+{
+    import mir.bignum.fp: Fp;
+    alias T = Fp!64;
+    assert(normalPDF(T(double.infinity), T(1), T(2)) == T(0));
+}
+
+version(mir_stat_test)
+@safe pure nothrow @nogc unittest
+{
+    import mir.bignum.fixed: UInt;
+    import mir.math.common: approxEqual;
+    // Independent 240-decimal-digit references at the shared dyadic inputs.
+    {
+        alias T = Fp!64;
+        enum expected = T(false, -66, UInt!64.fromHexString("f7c72c7198b9bb86"));
+        assert(normalPDF(T(1)) == expected);
+        assert(approxEqual(normalPDF(1.0), 0.24197072451914334, 8 * double.epsilon));
+    }
+    {
+        alias T = Fp!128;
+        enum expected = T(false, -131, UInt!128.fromHexString("84a042b690f42357b89dd11a48012c9b"));
+        assert(normalPDF(T(-2), T(1), T(2)) == expected);
+        assert(approxEqual(normalPDF(-2.0, 1.0, 2.0), 0.06475879783294586, 8 * double.epsilon));
+    }
+    alias T = Fp!64;
+    // z = 2^32: the standard density rounds to zero. A scale of
+    // 2^(-2^62) brings the same decay back into the normal range.
+    auto z = T(1);
+    z.exponent += 32;
+    auto scale = T(1);
+    scale.exponent -= 1L << 62;
+    auto x = scale;
+    x.exponent += 32;
+    assert(normalPDF(z) == T(0));
+    enum rescued = T(false, -8694827079416934653L, UInt!64(0xf3df9f0b1d2f2010UL));
+    assert(normalPDF(x, T(0), scale) == rescued);
+    const huge = T(false, long.max - 1, UInt!64(1));
+    assert(normalPDF(huge) == T(0));
+    assert(normalPDF(huge, huge, huge) == T(false, long.min, UInt!64(2)));
+    assert(normalPDF(T(double.nan)).isNaN);
 }
 
 /++
@@ -466,6 +561,37 @@ T normalLPDF(T)(const T x, const T mean, const T stdDev)
 }
 
 /++
+Computes the location-scale normal log-density with guarded extended precision.
+
+Params:
+    T = Represented $(D Fp) type, inferred from the arguments.
+    x = Observation, including either infinity or NaN.
+    mean = Finite mean.
+    stdDev = Positive finite standard deviation.
+
+Returns:
+    The log-density in type T. Negative infinity at either infinity. NaN propagates.
+    Cancellation near unit density can exhaust the working precision.
++/
+@safe pure nothrow @nogc
+T normalLPDF(T)(const T x, const T mean, const T stdDev)
+    if (is(T == Fp!size, size_t size))
+    in (!mean.isSpecial && !stdDev.isSpecial && !stdDev.sign && !!stdDev.coefficient)
+{
+    import mir.stat.internal.fp_normal: normalDensity;
+    return normalDensity!true(x, mean, stdDev);
+}
+
+///
+version(mir_stat_test)
+@safe pure nothrow @nogc unittest
+{
+    import mir.bignum.fp: Fp;
+    alias T = Fp!64;
+    assert(normalLPDF(T(double.infinity), T(1), T(2)) == T(-double.infinity));
+}
+
+/++
 Computes the standard normal log probability density function (LPDF).
 
 Returns the natural logarithm of the density.
@@ -530,6 +656,94 @@ unittest
     assert(1.5.normalLPDF(1, 3).approxEqual(log(normalPDF(1.5, 1, 3))));
 }
 
+
+/++
+Computes the standard normal log-density with guarded extended precision.
+
+Params:
+    T = Represented $(D Fp) type, inferred from the arguments.
+    z = Standardized observation, including either infinity or NaN.
+
+Returns:
+    The log-density in type T. Negative infinity at either infinity. NaN propagates.
+    Finite observations can give negative infinity at the output range limit.
++/
+@safe pure nothrow @nogc
+T normalLPDF(T)(const T z)
+    if (is(T == Fp!size, size_t size))
+{
+    return normalLPDF(z, T(0), T(1));
+}
+
+///
+version(mir_stat_test)
+@safe pure nothrow @nogc unittest
+{
+    import mir.bignum.fp: Fp;
+    alias T = Fp!64;
+    assert(normalLPDF(T(double.infinity)) == T(-double.infinity));
+}
+
+version(mir_stat_test)
+@safe pure nothrow @nogc unittest
+{
+    import mir.bignum.fixed: UInt;
+    import mir.math.common: approxEqual;
+    // Independent 240-decimal-digit references at the shared dyadic inputs.
+    {
+        alias T = Fp!64;
+        enum expected = T(true, -63, UInt!64.fromHexString("b59fc72192fad29a"));
+        assert(normalLPDF(T(1)) == expected);
+        assert(approxEqual(normalLPDF(1.0), -1.4189385332046727, 8 * double.epsilon));
+    }
+    {
+        alias T = Fp!128;
+        enum expected = T(true, -126, UInt!128.fromHexString("af2c698ebdf147b817a810e6520305b5"));
+        assert(normalLPDF(T(-2), T(1), T(2)) == expected);
+        assert(approxEqual(normalLPDF(-2.0, 1.0, 2.0), -2.737085713764618, 8 * double.epsilon));
+    }
+    alias T = Fp!64;
+    // Neighboring scales straddle unit peak density.
+    {
+        const scale = T(false, -65, UInt!64(0xcc42299ea1b28468UL));
+        enum expected = T(false, -128, UInt!64.fromHexString("9e5b8dfeb3fbbd1f"));
+        assert(normalLPDF(T(3), T(3), scale) == expected);
+    }
+    {
+        const scale = T(false, -65, UInt!64(0xcc42299ea1b28469UL));
+        enum expected = T(true, -128, UInt!64.fromHexString("a27da400ae749c46"));
+        assert(normalLPDF(T(3), T(3), scale) == expected);
+    }
+    auto z = T(1);
+    z.exponent += 32;
+    // At one standard deviation the peak log-density nearly cancels 1/2.
+    const scale = T(false, -66, UInt!64(0xf7c72c7198b9bb86UL));
+    enum residual = T(false, -131, UInt!64(0xeac6e8a916377811UL));
+    assert(normalLPDF(scale, T(0), scale) == residual);
+    // -2^63 - log(sqrt(2*pi)) rounds to -(2^63 + 1).
+    assert(normalLPDF(z) == T(true, 0, UInt!64(0x8000000000000001UL)));
+    auto huge = T(1);
+    huge.exponent = long.max - 1;
+    assert(normalLPDF(huge) == T(-double.infinity));
+    // The difference between the two observations overflows, but z = 2.
+    auto opposite = huge;
+    opposite.sign = true;
+    enum wideOffset = T(true, -1, UInt!64.fromHexString("b17217f7d1cf7a06"));
+    assert(normalLPDF(huge, opposite, huge) == wideOffset);
+    assert(normalLPDF(T(double.nan)).isNaN);
+}
+
+version(mir_stat_test)
+static if (size_t.sizeof == 4)
+@safe pure nothrow @nogc unittest
+{
+    import mir.bignum.fixed: UInt;
+    alias T = Fp!32;
+    enum density = T(false, -33, UInt!32.fromHexString("cc42299f"));
+    enum logDensity = T(true, -32, UInt!32.fromHexString("eb3f8e43"));
+    assert(normalPDF(T(0)) == density);
+    assert(normalLPDF(T(0)) == logDensity);
+}
 
 // Cephes coefficients and private kernels retained from mir.math.func.normal.
 // Keeping these here lets distribution fixes ship with mir-stat independently.
