@@ -27,6 +27,7 @@ $(BOOKTABLE,
 $(TR $(TH Category) $(TH Declarations))
     $(TR $(TD Ordinary quantiles) $(TD
         $(REF median, mir, stat, descriptive, univariate, quantiles)$(NBSP)
+        $(REF medianInPlace, mir, stat, descriptive, univariate, quantiles)$(NBSP)
         $(REF medianAssumeSorted, mir, stat, descriptive, univariate, quantiles)$(NBSP)
         $(REF rcMedian, mir, stat, descriptive, univariate, quantiles)$(NBSP)
         $(REF makeMedian, mir, stat, descriptive, univariate, quantiles)$(NBSP)
@@ -75,6 +76,7 @@ $(TR $(TH Category) $(TH Declarations))
         $(REF rcWeightedInterquartileRange, mir, stat, descriptive, univariate, quantiles)$(NBSP)
         $(REF makeWeightedInterquartileRange, mir, stat, descriptive, univariate, quantiles)$(NBSP)
         $(REF interquartileRange, mir, stat, descriptive, univariate, quantiles)$(NBSP)
+        $(REF interquartileRangeInPlace, mir, stat, descriptive, univariate, quantiles)$(NBSP)
         $(REF interquartileRangeAssumeSorted, mir, stat, descriptive, univariate, quantiles)$(NBSP)
         $(REF rcInterquartileRange, mir, stat, descriptive, univariate, quantiles)$(NBSP)
         $(REF makeInterquartileRange, mir, stat, descriptive, univariate, quantiles)$(NBSP)
@@ -128,7 +130,7 @@ private meanType!F allocatedMedian(F, bool allowModify, QuantileAllocation alloc
     import mir.ndslice.topology: flattened;
     scope auto source = quantileSlice(data);
     static if (allowModify)
-        return rcMedian!(F, true)(source);
+        return medianInPlace!F(source);
     else
     {
         alias Element = Unqual!(typeof(source).DeepElement);
@@ -149,7 +151,7 @@ private meanType!F allocatedMedian(F, bool allowModify, QuantileAllocation alloc
             scope(exit) releaseQuantiles(allocator, scratch);
         scope auto flat = source.lightScope.flattened;
         scratch.lightScope[] = flat;
-        return rcMedian!(F, true)(scratch.lightScope);
+        return medianInPlace!F(scratch.lightScope);
     }
 }
 
@@ -184,6 +186,70 @@ version(mir_stat_test) @safe pure nothrow @nogc unittest
     assert(medianAssumeSorted(ends) == -0.5);
     const int[6] data = [1, 0, 3, 0, 7, 0];
     assert(medianAssumeSorted!real(data[].sliced.stride(2)) == 3);
+}
+
+/++ Select the median using the observations as writable workspace.
+Selection may rearrange observations in flattened order. A default ascending,
+sized random-access Phobos SortedRange is read directly.
+
+Params:
+    F = optional type used for mean-type promotion, inferred from data by default
+    data = nonempty writable array or Mir slice, or an ascending SortedRange
+Returns:
+    The middle value for odd lengths or the midpoint of the middle pair for
+    even lengths, with the same result type as $(LREF median).
++/
+auto medianInPlace(F = void, Data)(scope auto ref Data data)
+{
+    static if (isPhobosSortedRange!Data)
+        return medianAssumeSorted!F(data);
+    else
+    {
+        import mir.ndslice.sorting : partitionAt;
+        import mir.ndslice.topology : flattened;
+
+        scope auto values = quantileSlice(data);
+        static assert(isMutable!(typeof(values).DeepElement), "medianInPlace requires writable observations");
+        static if (is(F == void))
+            alias Result = meanType!(typeof(values));
+        else
+            alias Result = meanType!F;
+
+        scope auto flat = values.flattened;
+        const n = flat.length;
+        assert(n > 0, "median: slice must have length greater than zero");
+        if (n <= 5)
+            return smallMedianImpl!Result(flat);
+
+        const half = n / 2;
+        partitionAt(flat, half);
+        if (n % 2)
+            return cast(Result) flat[half];
+
+        // Save the upper median before selecting the maximum of the lower half.
+        auto upper = flat[half];
+        partitionAt(flat[0 .. half], half - 1);
+        return medianMidpoint!Result(flat[half - 1], upper);
+    }
+}
+
+///
+version(mir_stat_test) @safe pure nothrow @nogc unittest
+{
+    int[6] values = [7, 1, 9, 3, 5, 0];
+    assert(medianInPlace(values) == 4);
+}
+
+version(mir_stat_test) @safe pure nothrow @nogc unittest
+{
+    import std.range : assumeSorted;
+    const long[2] ends = [long.min, long.max];
+    auto ordered = assumeSorted(ends[]);
+    assert(medianInPlace!real(ordered) == -0.5L);
+    long[6] values = [long.max, long.min, long.min, long.max, long.max, long.min];
+    assert(medianInPlace!real(values) == -0.5L);
+    int[3] small = [5, 1, 3];
+    assert(medianInPlace(small) == 3);
 }
 
 /++
@@ -566,6 +632,104 @@ version(mir_stat_test) @safe unittest
     assert(weightedInterquartileRange(rows) == 3);
 }
 
+/++ Compute a quantile spread using the observations as writable workspace.
+Selection may rearrange observations in flattened order. A default ascending,
+sized random-access Phobos SortedRange is read directly.
+
+Params:
+    F = optional type for deriving the result type, inferred from the observations by default
+    algorithm = quantile estimator, default type7; string names are also accepted
++/
+template interquartileRangeInPlace(F = void, QuantileAlgo algorithm = QuantileAlgo.type7)
+{
+    /++
+    Params:
+        data = writable array or Mir slice, or an ascending SortedRange, with at least two observations
+        probabilities = optional lower bound, or lower and upper bounds in [0, 1].
+            Defaults to 0.25 and 0.75. A single bound selects its complement as the upper bound.
+    Returns:
+        The upper quantile minus the lower quantile, with the same result type as $(LREF interquartileRange).
+    +/
+    @fmamath auto interquartileRangeInPlace(Data, P...)(scope auto ref Data data, scope auto ref P probabilities)
+        if (P.length <= 2)
+    {
+        static if (isPhobosSortedRange!Data)
+        {
+            static if (is(F == void))
+                return interquartileRangeAssumeSorted!algorithm(data, probabilities);
+            else
+                return interquartileRangeAssumeSorted!(F, algorithm)(data, probabilities);
+        }
+        else static if (P.length == 0)
+            return .interquartileRangeInPlace!(F, algorithm)(data, 0.25, 0.75);
+        else static if (P.length == 1)
+            return .interquartileRangeInPlace!(F, algorithm)(data, probabilities[0], 1 - probabilities[0]);
+        else
+        {
+            import mir.ndslice.slice : IteratorOf;
+            import mir.ndslice.topology : flattened;
+            import std.traits : isPointer, Unqual;
+            scope auto source = quantileSlice(data);
+            scope auto workspace = source.flattened;
+            alias Element = Unqual!(typeof(source).DeepElement);
+            static if (is(F == void))
+                alias Result = quantileType!(typeof(source), algorithm);
+            else
+                alias Result = quantileType!(F, algorithm);
+
+            static if ((isIntegral!Element || isFloatingPoint!Element) &&
+                       isPointer!(IteratorOf!(typeof(workspace))) &&
+                       (isIntegral!(P[0]) || isFloatingPoint!(P[0])) &&
+                       (isIntegral!(P[1]) || isFloatingPoint!(P[1])))
+            {
+                if (workspace.length >= 1024 && centralSymmetricQuantilePair(probabilities))
+                {
+                    ulong[4] ranks;
+                    return preparedQuantileSpread!(Result, algorithm, false, true)(
+                        workspace, probabilities, ranks[]);
+                }
+            }
+            return preparedQuantileSpread!(Result, algorithm, false)(workspace, probabilities, null);
+        }
+    }
+}
+
+/// ditto
+template interquartileRangeInPlace(QuantileAlgo algorithm)
+{
+    alias interquartileRangeInPlace = .interquartileRangeInPlace!(void, algorithm);
+}
+
+/// ditto
+template interquartileRangeInPlace(F, string algorithm)
+{
+    alias interquartileRangeInPlace = .interquartileRangeInPlace!(F, __traits(getMember, QuantileAlgo, algorithm));
+}
+
+/// ditto
+template interquartileRangeInPlace(string algorithm)
+{
+    alias interquartileRangeInPlace = .interquartileRangeInPlace!(__traits(getMember, QuantileAlgo, algorithm));
+}
+
+///
+version(mir_stat_test) @safe pure nothrow @nogc unittest
+{
+    int[5] values = [4, 0, 3, 1, 2];
+    assert(interquartileRangeInPlace(values) == 2);
+    assert(interquartileRangeInPlace!(float, "type7")(values, 0.125) == 3.0f);
+}
+
+version(mir_stat_test) @safe pure nothrow @nogc unittest
+{
+    import std.range : assumeSorted;
+    const long[3] values = [long.max - 5, long.max - 2, long.max];
+    auto ordered = assumeSorted(values[]);
+    assert(interquartileRangeInPlace!(QuantileAlgo.type7)(ordered, 0.0, 1.0) == 5);
+    long[3] workspace = [values[1], values[2], values[0]];
+    assert(interquartileRangeInPlace!"type1"(workspace, 1.0, 0.0) == -5);
+}
+
 /++
 Compute the same statistic as $(LREF rcInterquartileRange) using GC-managed scratch.
 
@@ -919,23 +1083,21 @@ template rcMedian(F, bool allowModify = false)
     @nogc
     meanType!F rcMedian(Iterator, size_t N, SliceKind kind)(Slice!(Iterator, N, kind) slice)
     {
-        static assert (!allowModify ||
-                       isMutable!(slice.DeepElement),
-                           "allowModify must be false or the input must be mutable");
-        alias G = typeof(return);
-        size_t len = slice.elementCount;
-        assert(len > 0, "median: slice must have length greater than zero");
-
-        import mir.ndslice.topology: as, flattened;
-
-        static if (!allowModify) {
+        static if (allowModify)
+            return medianInPlace!F(slice);
+        else
+        {
+            import mir.ndslice.topology: as, flattened;
+            alias G = typeof(return);
+            const len = slice.elementCount;
+            assert(len > 0, "median: slice must have length greater than zero");
             import mir.ndslice.allocation: rcslice;
 
             if (len > 2) {
                 auto view = slice.lightScope;
                 auto val = view.as!(Unqual!(slice.DeepElement)).rcslice;
                 auto temp = val.lightScope.flattened;
-                return .rcMedian!(G, true)(temp);
+                return medianInPlace!G(temp);
             } else {
                 import std.traits: isIntegral;
                 static if ((isIntegral!(slice.DeepElement) ||
@@ -947,28 +1109,6 @@ template rcMedian(F, bool allowModify = false)
                 } else {
                     return mean!G(slice);
                 }
-            }
-        } else {
-            import mir.ndslice.sorting: partitionAt;
-
-            auto temp = slice.flattened;
-
-            if (len > 5) {
-                size_t half_n = len / 2;
-                partitionAt(temp, half_n);
-                if (len % 2 == 1) {
-                    return cast(G) temp[half_n];
-                } else {
-                    // The lower-half partition cannot change the upper median.
-                    // Read it first to avoid combining the final two loads after
-                    // partitioning has just written individual elements.
-                    auto upper = temp[half_n];
-                    // Move the largest value in the first half to half_n - 1.
-                    partitionAt(temp[0 .. half_n], half_n - 1);
-                    return medianMidpoint!G(temp[half_n - 1], upper);
-                }
-            } else {
-                return smallMedianImpl!(G)(temp);
             }
         }
     }
@@ -10928,44 +11068,28 @@ package(mir.stat) auto quantileSpread(F, QuantileAlgo algorithm, bool modify,
     QuantileAllocation allocation = QuantileAllocation.rc, S, P, Q)(
     S source, P lo, Q hi)
 {
-    QuantileContext context;
-    return allocatedQuantileSpread!(F, algorithm, modify, allocation)(
-        context, source, lo, hi);
-}
-
-private auto allocatedQuantileSpread(F, QuantileAlgo algorithm, bool modify,
-    QuantileAllocation allocation, Context, S, P, Q)(ref Context context,
-    S source, P lo, Q hi)
-{
-    import std.traits: Unqual;
-    import mir.primitives: DeepElementType;
-    import mir.ndslice.topology: flattened;
-    alias T = Unqual!(DeepElementType!S);
-    static if (modify) scope auto workspace = source.flattened;
+    static if (modify)
+        return interquartileRangeInPlace!(F, algorithm)(source, lo, hi);
     else
     {
-        auto owner = allocateQuantiles!(T, allocation)(context, source.elementCount);
-        static if (allocation == QuantileAllocation.custom)
-            scope(exit) releaseQuantiles(context, owner);
-        scope auto flat = source.lightScope.flattened;
-        owner.lightScope[] = flat;
-        scope auto workspace = owner.lightScope;
+        QuantileContext context;
+        return allocatedQuantileSpread!(F, algorithm, allocation)(context, source, lo, hi);
     }
-    import mir.ndslice.slice: IteratorOf;
-    import std.traits: isPointer;
-    static if ((isIntegral!T || isFloatingPoint!T) &&
-               isPointer!(IteratorOf!(typeof(workspace))) &&
-               (isIntegral!P || isFloatingPoint!P) &&
-               (isIntegral!Q || isFloatingPoint!Q))
-    {
-        if (workspace.length >= 1024 && centralSymmetricQuantilePair(lo, hi))
-        {
-            ulong[4] ranks;
-            return preparedQuantileSpread!(F, algorithm, false, true)(
-                workspace, lo, hi, ranks[]);
-        }
-    }
-    return preparedQuantileSpread!(F, algorithm, false)(workspace, lo, hi, null);
+}
+
+private auto allocatedQuantileSpread(F, QuantileAlgo algorithm, QuantileAllocation allocation,
+    Context, S, P...)(ref Context context, S source, scope auto ref P bounds)
+{
+    import mir.primitives: DeepElementType;
+    import mir.ndslice.topology: flattened;
+    import std.traits: Unqual;
+    alias T = Unqual!(DeepElementType!S);
+    auto owner = allocateQuantiles!(T, allocation)(context, source.elementCount);
+    static if (allocation == QuantileAllocation.custom)
+        scope(exit) releaseQuantiles(context, owner);
+    scope auto flat = source.lightScope.flattened;
+    owner.lightScope[] = flat;
+    return interquartileRangeInPlace!(F, algorithm)(owner.lightScope, bounds);
 }
 
 // Test symmetry in the common argument precision without changing either query.
@@ -12141,21 +12265,13 @@ template makeInterquartileRange(F, QuantileAlgo quantileAlgo = QuantileAlgo.type
         auto ref Allocator allocator, scope auto ref Data data, scope auto ref P probabilities)
         if (P.length <= 2)
     {
-        static if (isPhobosSortedRange!Data)
-            return interquartileRangeAssumeSorted!(F, quantileAlgo)(data, probabilities);
+        static if (allowModifySlice || isPhobosSortedRange!Data)
+            return interquartileRangeInPlace!(F, quantileAlgo)(data, probabilities);
         else
         {
-            alias Result = typeof(return);
             scope auto source = quantileSlice(data);
-            static if (P.length == 0)
-                return allocatedQuantileSpread!(Result, quantileAlgo, allowModifySlice,
-                    QuantileAllocation.custom)(allocator, source, 0.25, 0.75);
-            else static if (P.length == 1)
-                return allocatedQuantileSpread!(Result, quantileAlgo, allowModifySlice,
-                    QuantileAllocation.custom)(allocator, source, probabilities[0], 1 - probabilities[0]);
-            else
-                return allocatedQuantileSpread!(Result, quantileAlgo, allowModifySlice,
-                    QuantileAllocation.custom)(allocator, source, probabilities[0], probabilities[1]);
+            return allocatedQuantileSpread!(F, quantileAlgo, QuantileAllocation.custom)(
+                allocator, source, probabilities);
         }
     }
 }
