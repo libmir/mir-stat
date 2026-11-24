@@ -11,6 +11,9 @@ domain. Finite expressions are subject to floating-point rounding and range
 limits. Contract violations are not prescribed return values: disabling
 contracts does not make an invalid input supported.
 
+The extended-precision overloads use guarded significand arithmetic and carry
+intermediate exponents separately. Universal correct rounding is unproven.
+
 License: $(HTTP www.apache.org/licenses/LICENSE-2.0, Apache-2.0)
 
 Authors: John Michael Hall
@@ -21,6 +24,8 @@ Copyright: 2023 Mir Stat Authors.
 
 module mir.stat.distribution.cauchy;
 
+import mir.bignum.fp: Fp;
+import mir.stat.internal.fp_probability: fpProbabilityValid;
 import mir.stat.internal.standardize: standardize, logDistance;
 
 import mir.internal.utility: isFloatingPoint;
@@ -58,6 +63,33 @@ T cauchyPDF(T)(const T x)
         // 1/x^2 is negligible here, but the density can still be subnormal.
         return (T(M_1_PI) / x) / x;
     return T(M_1_PI) / (1 + square);
+}
+
+/++
+Computes the standard Cauchy density with guarded extended precision.
+
+Params:
+    T = Represented $(D Fp) type, inferred from the arguments.
+    x = Observation, including either infinity or NaN.
+
+Returns:
+    The density in type T. Infinite observations return zero.
+    NaN propagates. The density peaks at 1/pi and can underflow in the tails.
++/
+@safe pure nothrow @nogc
+T cauchyPDF(T)(const T x)
+    if (is(T == Fp!size, size_t size))
+{
+    return cauchyPDF(x, T(0), T(1));
+}
+
+///
+version(mir_stat_test)
+@safe pure nothrow @nogc unittest
+{
+    import mir.bignum.fp: Fp;
+    alias T = Fp!64;
+    assert(cauchyPDF(T(double.infinity)) == T(0));
 }
 
 /++
@@ -136,6 +168,75 @@ unittest
 }
 
 /++
+Computes the location-scale Cauchy density with guarded extended precision.
+
+Params:
+    T = Represented $(D Fp) type, inferred from the arguments.
+    x = Observation, including either infinity or NaN.
+    location = Finite location.
+    scale = Positive finite scale.
+
+Returns:
+    The density in type T. Infinite observations return zero.
+    NaN propagates. The peak density 1/(pi * scale) is finite for every supported scale.
+    The density can underflow in the tails.
++/
+@safe pure nothrow @nogc
+T cauchyPDF(T)(const T x, const T location, const T scale)
+    if (is(T == Fp!size, size_t size))
+    in (!location.isSpecial && !scale.isSpecial && !scale.sign && !!scale.coefficient)
+{
+    import mir.stat.internal.fp_cauchy: cauchyDensity;
+    return cauchyDensity!false(x, location, scale);
+}
+
+///
+version(mir_stat_test)
+@safe pure nothrow @nogc unittest
+{
+    import mir.bignum.fp: Fp;
+    alias T = Fp!64;
+    assert(cauchyPDF(T(double.infinity), T(1), T(2)) == T(0));
+}
+
+version(mir_stat_test)
+@safe pure nothrow @nogc unittest
+{
+    import mir.bignum.fixed: UInt;
+    import mir.math.common: approxEqual;
+    // Independent Gauss-Legendre pi at 220 decimal digits.
+    {
+        alias T = Fp!64;
+        enum expected = T(false, -66, UInt!64.fromHexString("a2f9836e4e44152a"));
+        assert(cauchyPDF(T(1)) == expected);
+        assert(approxEqual(cauchyPDF(1.0), 0.15915494309189535, 8 * double.epsilon));
+    }
+    {
+        alias T = Fp!128;
+        enum expected = T(false, -132, UInt!128.fromHexString("c8958e119b677c82716b7fc7552d5fb2"));
+        assert(cauchyPDF(T(-2), T(1), T(2)) == expected);
+        assert(approxEqual(cauchyPDF(-2.0, 1.0, 2.0), 0.04897075172058318, 8 * double.epsilon));
+    }
+    alias T = Fp!64;
+    const least = T(false, long.min, UInt!64(1));
+    // At distance 1/2, f rounds to (4/pi) least quanta; at 1 it rounds to zero.
+    assert(cauchyPDF(T(0.5), T(0), least) == least);
+    assert(cauchyPDF(T(1), T(0), least) == T(0));
+    // Both squaring and the opposite-signed distance can exceed the Fp range.
+    auto large = T(1);
+    large.exponent = long.max - 1;
+    T opposite = large;
+    opposite.sign = true;
+    // f = 1/(5*pi*large), below half a least quantum at this scale.
+    assert(cauchyPDF(large, opposite, large) == T(0));
+    large.exponent = long.max - 70;
+    opposite.exponent = large.exponent;
+    // Here f/u = 256/(5*pi), where u is the least positive quantum.
+    assert(cauchyPDF(large, opposite, large) == T(false, long.min, UInt!64(16)));
+    assert(cauchyPDF(T(double.nan)).isNaN);
+}
+
+/++
 Computes the Cauchy cumulative distribution function (CDF).
 
 Returns the lower-tail probability $(D P(X <= x)).
@@ -169,6 +270,33 @@ T cauchyCDF(T)(const T x)
     if (x < -1)
         return T(M_1_PI) * atan(-1 / x);
     return 0.5 + T(M_1_PI) * atan(x);
+}
+
+/++
+Computes the standard Cauchy lower-tail probability with guarded extended precision.
+
+Params:
+    T = Represented $(D Fp) type, inferred from the arguments.
+    x = Observation, including either infinity or NaN.
+
+Returns:
+    The lower-tail probability in type T. Negative and positive infinity give zero and one, respectively.
+    NaN propagates.
++/
+@safe pure nothrow @nogc
+T cauchyCDF(T)(const T x)
+    if (is(T == Fp!size, size_t size))
+{
+    return cauchyCDF(x, T(0), T(1));
+}
+
+///
+version(mir_stat_test)
+@safe pure nothrow @nogc unittest
+{
+    import mir.bignum.fp: Fp;
+    alias T = Fp!64;
+    assert(cauchyCDF(T(0)) == T(0.5));
 }
 
 /++
@@ -240,6 +368,64 @@ unittest
 }
 
 /++
+Computes the location-scale Cauchy lower-tail probability with guarded extended precision.
+
+Params:
+    T = Represented $(D Fp) type, inferred from the arguments.
+    x = Observation, including either infinity or NaN.
+    location = Finite location.
+    scale = Positive finite scale.
+
+Returns:
+    The lower-tail probability in type T. Negative and positive infinity give zero and one, respectively.
+    NaN propagates.
++/
+@safe pure nothrow @nogc
+T cauchyCDF(T)(const T x, const T location, const T scale)
+    if (is(T == Fp!size, size_t size))
+    in (!location.isSpecial && !scale.isSpecial && !scale.sign && !!scale.coefficient)
+{
+    import mir.stat.internal.fp_cauchy: cauchyTail;
+    return cauchyTail!false(x, location, scale);
+}
+
+///
+version(mir_stat_test)
+@safe pure nothrow @nogc unittest
+{
+    import mir.bignum.fp: Fp;
+    alias T = Fp!64;
+    assert(cauchyCDF(T(0), T(0), T(2)) == T(0.5));
+}
+
+version(mir_stat_test)
+@safe pure nothrow @nogc unittest
+{
+    import mir.bignum.fixed: UInt;
+    import mir.math.common: approxEqual;
+    {
+        alias T = Fp!64;
+        enum expected = T(false, -64, UInt!64.fromHexString("da37f5c4c419ef33"));
+        assert(cauchyCDF(T(2.0)) == expected);
+        assert(approxEqual(cauchyCDF(2.0), 0.8524163823495667, 8 * double.epsilon));
+    }
+    {
+        alias T = Fp!128;
+        enum expected = T(false, -129, UInt!128.fromHexString("a02ba43910bd75f8a792cd67f6410397"));
+        assert(cauchyCDF(T(-1.0), T(1), T(3)) == expected);
+        assert(approxEqual(cauchyCDF(-1.0, 1.0, 3.0), 0.3128329581890012, 8 * double.epsilon));
+    }
+    alias T = Fp!64;
+    const least = T(false, long.min, UInt!64(1));
+    const twice = T(false, long.min, UInt!64(2));
+    assert(cauchyCDF(T(-1), T(0), least) == T(0));
+    assert(cauchyCDF(T(-1), T(0), twice) == least);
+    assert(cauchyCDF(T(-1)) == T(0.25));
+    assert(cauchyCDF(T(-double.infinity)) == T(0));
+    assert(cauchyCDF(T(double.nan)).isNaN);
+}
+
+/++
 Computes the Cauchy complementary cumulative distribution function (CCDF).
 
 Returns the upper-tail probability $(D P(X > x)). Use this function directly
@@ -267,6 +453,33 @@ T cauchyCCDF(T)(const T x)
     if (isFloatingPoint!T)
 {
     return cauchyCDF(-x);
+}
+
+/++
+Computes the standard Cauchy strict upper-tail probability with guarded extended precision.
+
+Params:
+    T = Represented $(D Fp) type, inferred from the arguments.
+    x = Observation, including either infinity or NaN.
+
+Returns:
+    The strict upper-tail probability in type T. Negative and positive infinity give one and zero, respectively.
+    NaN propagates.
++/
+@safe pure nothrow @nogc
+T cauchyCCDF(T)(const T x)
+    if (is(T == Fp!size, size_t size))
+{
+    return cauchyCCDF(x, T(0), T(1));
+}
+
+///
+version(mir_stat_test)
+@safe pure nothrow @nogc unittest
+{
+    import mir.bignum.fp: Fp;
+    alias T = Fp!64;
+    assert(cauchyCCDF(T(0)) == T(0.5));
 }
 
 /++
@@ -325,6 +538,76 @@ unittest
 }
 
 /++
+Computes the location-scale Cauchy strict upper-tail probability with guarded extended precision.
+
+Params:
+    T = Represented $(D Fp) type, inferred from the arguments.
+    x = Observation, including either infinity or NaN.
+    location = Finite location.
+    scale = Positive finite scale.
+
+Returns:
+    The strict upper-tail probability in type T. Negative and positive infinity give one and zero, respectively.
+    NaN propagates.
++/
+@safe pure nothrow @nogc
+T cauchyCCDF(T)(const T x, const T location, const T scale)
+    if (is(T == Fp!size, size_t size))
+    in (!location.isSpecial && !scale.isSpecial && !scale.sign && !!scale.coefficient)
+{
+    import mir.stat.internal.fp_cauchy: cauchyTail;
+    return cauchyTail!true(x, location, scale);
+}
+
+///
+version(mir_stat_test)
+@safe pure nothrow @nogc unittest
+{
+    import mir.bignum.fp: Fp;
+    alias T = Fp!64;
+    assert(cauchyCCDF(T(0), T(0), T(2)) == T(0.5));
+}
+
+version(mir_stat_test)
+@safe pure nothrow @nogc unittest
+{
+    import mir.bignum.fixed: UInt;
+    import mir.math.common: approxEqual;
+    {
+        alias T = Fp!64;
+        enum expected = T(false, -66, UInt!64.fromHexString("972028ecef984333"));
+        assert(cauchyCCDF(T(2.0)) == expected);
+        assert(approxEqual(cauchyCCDF(2.0), 0.14758361765043326, 8 * double.epsilon));
+    }
+    {
+        alias T = Fp!128;
+        enum expected = T(false, -128, UInt!128.fromHexString("afea2de377a14503ac36994c04df7e34"));
+        assert(cauchyCCDF(T(-1.0), T(1), T(3)) == expected);
+        assert(approxEqual(cauchyCCDF(-1.0, 1.0, 3.0), 0.6871670418109989, 8 * double.epsilon));
+    }
+    alias T = Fp!64;
+    const least = T(false, long.min, UInt!64(1));
+    const twice = T(false, long.min, UInt!64(2));
+    assert(cauchyCCDF(T(1), T(0), least) == T(0));
+    assert(cauchyCCDF(T(1), T(0), twice) == least);
+    assert(cauchyCCDF(T(1)) == T(0.25));
+    assert(cauchyCCDF(T(double.infinity)) == T(0));
+    assert(cauchyCCDF(T(double.nan)).isNaN);
+}
+
+version(mir_stat_test)
+static if (size_t.sizeof == 4)
+@safe pure nothrow @nogc unittest
+{
+    import mir.bignum.fixed: UInt;
+    alias T = Fp!32;
+    // atan(1/256)/pi, rounded from a 220-decimal-digit reference.
+    enum expected = T(false, -41, UInt!32(0xa2f94d1b));
+    assert(cauchyCCDF(T(256)) == expected);
+    assert(cauchyCDF(T(-256)) == expected);
+}
+
+/++
 Computes the Cauchy inverse cumulative distribution function (InvCDF).
 
 Uses reciprocal tangents in the tails so small probabilities are not lost
@@ -367,6 +650,34 @@ T cauchyInvCDF(T)(const T p)
     if (fabs(centered) <= T(0.25))
         return tan(T(PI) * centered);
     return cauchyInvCDF(p, T(0), T(1));
+}
+
+/++
+Computes the standard Cauchy quantile with guarded extended precision.
+
+Params:
+    T = Represented $(D Fp) type, inferred from the arguments.
+    p = Finite probability in [0, 1].
+
+Returns:
+    The quantile in type T. Probabilities zero and one give negative and positive infinity.
+    The median is zero.
++/
+@safe pure nothrow @nogc
+T cauchyInvCDF(T)(const T p)
+    if (is(T == Fp!size, size_t size))
+    in (fpProbabilityValid(p))
+{
+    return cauchyInvCDF(p, T(0), T(1));
+}
+
+///
+version(mir_stat_test)
+@safe pure nothrow @nogc unittest
+{
+    import mir.bignum.fp: Fp;
+    alias T = Fp!64;
+    assert(cauchyInvCDF(T(0.5)) == T(0));
 }
 
 /++
@@ -470,6 +781,105 @@ unittest
 }
 
 /++
+Computes the location-scale Cauchy quantile with guarded extended precision.
+
+Params:
+    T = Represented $(D Fp) type, inferred from the arguments.
+    p = Finite probability in [0, 1].
+    location = Finite location.
+    scale = Positive finite scale.
+
+Returns:
+    The quantile in type T. Probabilities zero and one give negative and positive infinity.
+    The median equals the location. Cancellation beyond working precision can produce zero.
++/
+@safe pure nothrow @nogc
+T cauchyInvCDF(T)(const T p, const T location, const T scale)
+    if (is(T == Fp!size, size_t size))
+    in (fpProbabilityValid(p))
+    in (!location.isSpecial && !scale.isSpecial && !scale.sign && !!scale.coefficient)
+{
+    import mir.stat.internal.fp_cauchy: cauchyQuantile;
+    return cauchyQuantile(p, location, scale);
+}
+
+///
+version(mir_stat_test)
+@safe pure nothrow @nogc unittest
+{
+    import mir.bignum.fp: Fp;
+    alias T = Fp!64;
+    assert(cauchyInvCDF(T(0.5), T(0), T(2)) == T(0));
+}
+
+version(mir_stat_test)
+@safe pure nothrow @nogc unittest
+{
+    import mir.bignum.fixed: UInt;
+    import mir.math.common: approxEqual;
+    {
+        alias T = Fp!64;
+        enum expected = T(true, -62, UInt!64.fromHexString("9a827999fcef3242"));
+        assert(cauchyInvCDF(T(0.125)) == expected);
+        assert(approxEqual(cauchyInvCDF(0.125), -2.414213562373095, 8 * double.epsilon));
+    }
+    {
+        alias T = Fp!128;
+        enum expected = T(false, -127, UInt!128.fromHexString("b2ebebc0aa62b00f7ae9b3a20ca321fb"));
+        assert(cauchyInvCDF(T(0.5625), T(1), T(2)) == expected);
+        assert(approxEqual(cauchyInvCDF(0.5625, 1.0, 2.0), 1.397824734759316, 8 * double.epsilon));
+    }
+    alias T = Fp!64;
+    const least = T(false, long.min, UInt!64(1));
+    // At the exponent floor, p*cot(pi*p) rounds to 1/pi.
+    enum scaledTail = T(true, -65, UInt!64.fromHexString("a2f9836e4e44152a"));
+    assert(cauchyInvCDF(least, T(0), least) == scaledTail);
+    assert(cauchyInvCDF(T(0.25), T(3), T(3)) == T(0));
+    assert(cauchyInvCDF(T(0.75), T(-3), T(3)) == T(0));
+    assert(cauchyInvCDF(T(0)) == T(-double.infinity));
+    assert(cauchyInvCDF(T(1)) == T(double.infinity));
+    // At p=1/8 the unshifted offset is -(1+sqrt(2))*large.
+    const large = T(false, long.max - 1, UInt!64(1) << 63);
+    const shifted = T(true, long.max - 1, UInt!64(0xb504f333f9de6484UL));
+    assert(cauchyInvCDF(T(0.125), T(0), large) == T(-double.infinity));
+    assert(cauchyInvCDF(T(0.125), large, large) == shifted);
+    // Adjacent inputs on both sides of the lower quartile and the median.
+    {
+        const p = T(false, -66, UInt!64(0xffffffffffffffffUL));
+        enum expected = T(true, -127, UInt!64.fromHexString("c90fdaa22168c235"));
+        assert(cauchyInvCDF(p, T(1), T(1)) == expected);
+    }
+    {
+        const p = T(false, -65, UInt!64(0x8000000000000001UL));
+        enum expected = T(false, -126, UInt!64.fromHexString("c90fdaa22168c234"));
+        assert(cauchyInvCDF(p, T(1), T(1)) == expected);
+    }
+    {
+        const p = T(false, -65, UInt!64(0xffffffffffffffffUL));
+        enum expected = T(true, -127, UInt!64.fromHexString("c90fdaa22168c235"));
+        assert(cauchyInvCDF(p, T(0), T(1)) == expected);
+    }
+    {
+        const p = T(false, -64, UInt!64(0x8000000000000001UL));
+        enum expected = T(false, -126, UInt!64.fromHexString("c90fdaa22168c235"));
+        assert(cauchyInvCDF(p, T(0), T(1)) == expected);
+    }
+}
+
+version(mir_stat_test)
+static if (size_t.sizeof == 4)
+@safe pure nothrow @nogc unittest
+{
+    import mir.bignum.fixed: UInt;
+    alias T = Fp!32;
+    // The quantile at 1/8 is -(1+sqrt(2)), rounded to 32 bits.
+    auto p = T(1);
+    p.exponent -= 3;
+    enum expected = T(true, -30, UInt!32(0x9a82799a));
+    assert(cauchyInvCDF(p) == expected);
+}
+
+/++
 Computes the Cauchy log probability density function (LPDF).
 
 Returns the natural logarithm of the density.
@@ -502,6 +912,33 @@ T cauchyLPDF(T)(const T x)
     if (square == T.infinity)
         return -T(LOGPI) - 2 * log(fabs(x));
     return -T(LOGPI) - log(1 + square);
+}
+
+/++
+Computes the standard Cauchy log-density with guarded extended precision.
+
+Params:
+    T = Represented $(D Fp) type, inferred from the arguments.
+    x = Observation, including either infinity or NaN.
+
+Returns:
+    The log-density in type T. Infinite observations return negative infinity.
+    NaN propagates. The maximum log-density is -log(pi), attained at zero.
++/
+@safe pure nothrow @nogc
+T cauchyLPDF(T)(const T x)
+    if (is(T == Fp!size, size_t size))
+{
+    return cauchyLPDF(x, T(0), T(1));
+}
+
+///
+version(mir_stat_test)
+@safe pure nothrow @nogc unittest
+{
+    import mir.bignum.fp: Fp;
+    alias T = Fp!64;
+    assert(cauchyLPDF(T(double.infinity)) == T(-double.infinity));
 }
 
 /++
@@ -564,6 +1001,90 @@ unittest
     cauchyLPDF(1.0, 1, 2).shouldApprox == log(0.1591549);
     cauchyLPDF(2.0, 1, 2).shouldApprox == log(0.127324);
     cauchyLPDF(3.0, 1, 2).shouldApprox == log(0.07957747);
+}
+
+/++
+Computes the location-scale Cauchy log-density with guarded extended precision.
+
+Params:
+    T = Represented $(D Fp) type, inferred from the arguments.
+    x = Observation, including either infinity or NaN.
+    location = Finite location.
+    scale = Positive finite scale.
+
+Returns:
+    The log-density in type T. Infinite observations return negative infinity.
+    NaN propagates. Cancellation near unit density can exhaust the working precision.
++/
+@safe pure nothrow @nogc
+T cauchyLPDF(T)(const T x, const T location, const T scale)
+    if (is(T == Fp!size, size_t size))
+    in (!location.isSpecial && !scale.isSpecial && !scale.sign && !!scale.coefficient)
+{
+    import mir.stat.internal.fp_cauchy: cauchyDensity;
+    return cauchyDensity!true(x, location, scale);
+}
+
+///
+version(mir_stat_test)
+@safe pure nothrow @nogc unittest
+{
+    import mir.bignum.fp: Fp;
+    alias T = Fp!64;
+    assert(cauchyLPDF(T(double.infinity), T(1), T(2)) == T(-double.infinity));
+}
+
+version(mir_stat_test)
+@safe pure nothrow @nogc unittest
+{
+    import mir.bignum.fixed: UInt;
+    import mir.math.common: approxEqual;
+    // Independent Gauss-Legendre pi at 220 decimal digits.
+    {
+        alias T = Fp!64;
+        enum expected = T(true, -63, UInt!64.fromHexString("eb3f8e4325f5a535"));
+        assert(cauchyLPDF(T(1)) == expected);
+        assert(approxEqual(cauchyLPDF(1.0), -1.8378770664093456, 8 * double.epsilon));
+    }
+    {
+        alias T = Fp!128;
+        enum expected = T(true, -126, UInt!128.fromHexString("c10edc7f36759db8995ae5f9bfff24fb"));
+        assert(cauchyLPDF(T(-2), T(1), T(2)) == expected);
+        assert(approxEqual(cauchyLPDF(-2.0, 1.0, 2.0), -3.0165320627509917, 8 * double.epsilon));
+    }
+    alias T = Fp!64;
+    {
+        const scale = T(false, -65, UInt!64(0xa2f9836e4e441529UL));
+        enum expected = T(false, -127, UInt!64.fromHexString("c60a819b316a7f7a"));
+        assert(cauchyLPDF(T(3), T(3), scale) == expected);
+    }
+    {
+        const scale = T(false, -65, UInt!64(0xa2f9836e4e44152aUL));
+        enum expected = T(true, -133, UInt!64.fromHexString("c15641bbff90aee8"));
+        assert(cauchyLPDF(T(3), T(3), scale) == expected);
+    }
+    {
+        const scale = T(false, -65, UInt!64(0xa2f9836e4e44152bUL));
+        enum expected = T(true, -127, UInt!64.fromHexString("cc1533a9116704f0"));
+        assert(cauchyLPDF(T(3), T(3), scale) == expected);
+    }
+    auto far = T(1);
+    far.exponent += 1L << 62;
+    enum tail = T(true, -1, UInt!64.fromHexString("b17217f7d1cf79ae"));
+    assert(cauchyLPDF(far) == tail);
+}
+
+// Check both density functions at the native minimum coefficient width.
+version(mir_stat_test)
+static if (size_t.sizeof == 4)
+@safe pure nothrow @nogc unittest
+{
+    import mir.bignum.fixed: UInt;
+    alias T = Fp!32;
+    enum pdf = T(false, -33, UInt!32.fromHexString("a2f9836e"));
+    enum lpdf = T(true, -31, UInt!32.fromHexString("92868247"));
+    assert(cauchyPDF(T(0)) == pdf);
+    assert(cauchyLPDF(T(0)) == lpdf);
 }
 
 // Extreme tails retain densities and logarithms when squaring overflows.
