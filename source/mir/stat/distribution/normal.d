@@ -1015,7 +1015,7 @@ T normalTailExponential(T)(const T a)
 }
 
 // Exponentially scaled erfc for x >= 1; the CDF applies the exponential.
-T erfce(T)(const T x)
+package(mir.stat) T erfce(T)(const T x)
 {
     T y = 1 / x;
 
