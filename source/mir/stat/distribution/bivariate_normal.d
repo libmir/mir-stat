@@ -1,7 +1,7 @@
 /++
 Bivariate normal distribution with correlation $(D rho).
 
-$(LREF bivariateNormalPDF) and $(LREF bivariateNormalLPDF)
+$(LREF bivariateNormalPDF), $(LREF bivariateNormalLPDF), and $(LREF bivariateNormalCDF)
 take two coordinates in the original measurement units, two marginal means, two
 standard deviations, and a correlation. For standardized coordinates use the
 scalar functions below.
@@ -341,6 +341,64 @@ version(mir_stat_test)
     tail[1] = double.nan;
     import std.math: isNaN;
     assert(isNaN(bivariateNormalPDF(tail, origin, scales, 0)));
+}
+
+/++
+Evaluate the probability that both coordinates are at or below their thresholds for a bivariate normal distribution.
+The vectors may independently be D arrays or one-dimensional Mir slices,
+including strided views. Coordinate order is the same in all three vectors.
+The correlation is converted to their common floating-point element type.
+
+Params:
+    point = Two upper thresholds in the original measurement units.
+    mean = Two finite marginal means with the same floating-point element type as point.
+    stdDev = Two positive finite marginal standard deviations with the same element type as point.
+    rho = Correlation from -1 through 1, inclusive.
+
+Returns:
+    Lower-orthant probability in the element type of point. A negative infinite threshold
+    gives zero and a positive infinite threshold removes that coordinate's restriction.
+    A NaN threshold propagates. As in $(LREF bivariateStandardNormalCDF), the result
+    is a deterministic estimate and very small probabilities may underflow.
++/
+Element!P bivariateNormalCDF(P, M, S, R)(scope auto ref P point, scope auto ref M mean,
+    scope auto ref S stdDev, const R rho)
+    if (bivariateVectors!(P, M, S) && is(R : Element!P))
+{
+    const z = standardizedPair(point, mean, stdDev);
+    return bivariateStandardNormalCDF!(Element!P)(z[0], z[1], rho);
+}
+
+/// Each column holds two readings. Select one column directly to evaluate both thresholds.
+version(mir_stat_test)
+@safe pure nothrow @nogc unittest
+{
+    import mir.ndslice.slice: sliced;
+    double[4] data = [90, 110, 55, 45];
+    auto readings = data[].sliced(2, 2);
+    double[2] mean = [100, 50], stdDev = [10, 5];
+    auto probability = bivariateNormalCDF(readings[0 .. 2, 1], mean[], stdDev, 0.4);
+    assert(probability == bivariateStandardNormalCDF(1.0, -1.0, 0.4));
+}
+
+version(mir_stat_test)
+@safe pure nothrow @nogc unittest
+{
+    import std.meta: AliasSeq;
+    import std.math: isNaN;
+    foreach (T; AliasSeq!(float, double, real))
+    {
+        // The first centered difference overflows, but the standardized threshold is two.
+        T[2] point = [T.max, 1], mean = [-T.max, 4], stdDev = [T.max, 3];
+        foreach (rho; [T(-1), T(0), T(0.75), T(1)])
+            assert(bivariateNormalCDF(point[], mean, stdDev[], rho) == bivariateStandardNormalCDF(T(2), T(-1), rho));
+        point[0] = T.infinity;
+        assert(bivariateNormalCDF(point, mean, stdDev, 1) == normalCDF(T(-1)));
+        point[0] = -T.infinity;
+        assert(bivariateNormalCDF(point, mean, stdDev, -1) == 0);
+        point[1] = T.nan;
+        assert(isNaN(bivariateNormalCDF(point, mean, stdDev, 0)));
+    }
 }
 
 private enum bivariateVectors(P, M, S) = vector!P && vector!M && vector!S &&
