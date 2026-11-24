@@ -62,7 +62,6 @@ Fp!bits normalDensity(bool logarithmic, uint bits)(Fp!bits x, Fp!bits mean, Fp!b
 package(mir.stat) @safe pure nothrow @nogc
 Fp!bits normalTail(bool upper, uint bits)(Fp!bits x, Fp!bits mean, Fp!bits stdDev)
 {
-    import mir.stat.internal.fp_erf: erfPositive, erfcxPositive;
     import mir.stat.internal.fp_location_scale: half;
     alias T = Fp!bits;
     alias B = ShapeTransform!bits;
@@ -71,8 +70,19 @@ Fp!bits normalTail(bool upper, uint bits)(Fp!bits x, Fp!bits mean, Fp!bits stdDe
     if (x.isInfinity) return T(x.sign == upper ? 1 : 0);
     const side = position(x, mean);
     if (!side) return half!bits();
-    const small = upper == (side > 0);
     const z = distance!(B.work)(x, mean).divide(S.from(stdDev));
+    return standardNormalTail!bits(z, upper == (side > 0));
+}
+
+// Probability on the selected side of a nonzero standardized magnitude.
+package(mir.stat) @safe pure nothrow @nogc
+Fp!bits standardNormalTail(uint bits)(ShapeTransform!bits.S z, bool small)
+{
+    import mir.stat.internal.fp_erf: erfPositive, erfcxPositive;
+    import mir.stat.internal.fp_location_scale: half;
+    alias T = Fp!bits;
+    alias B = ShapeTransform!bits;
+    alias S = B.S;
     if (z.exponent + bits + 3 < exponentBias)
         return half!bits();
     auto q = z.multiply(z);
@@ -104,7 +114,6 @@ package(mir.stat) @safe pure nothrow @nogc
 Fp!bits normalQuantile(uint bits)(Fp!bits p, Fp!bits mean, Fp!bits stdDev)
 {
     import mir.stat.internal.fp_location_scale: half;
-    import mir.stat.internal.fp_probability: fpProbabilityComplement;
     alias T = Fp!bits;
     alias B = ShapeTransform!bits;
     alias S = B.S;
@@ -114,7 +123,21 @@ Fp!bits normalQuantile(uint bits)(Fp!bits p, Fp!bits mean, Fp!bits stdDev)
     const side = position(p, median);
     if (!side) return mean;
 
-    const tail = side < 0 ? p : fpProbabilityComplement(p);
+    const z = standardNormalQuantileMagnitude!bits(p, side < 0);
+    return addOffset!bits(mean, z.multiply(S.from(stdDev)), side < 0);
+}
+
+// Magnitude before the location-scale transform for an interior nonmedian p.
+package(mir.stat) @safe pure nothrow @nogc
+auto standardNormalQuantileMagnitude(uint bits)(Fp!bits p, bool lower)
+{
+    import mir.stat.internal.fp_location_scale: half;
+    import mir.stat.internal.fp_probability: fpProbabilityComplement;
+    alias T = Fp!bits;
+    alias B = ShapeTransform!bits;
+    alias S = B.S;
+    const median = half!bits();
+    const tail = lower ? p : fpProbabilityComplement(p);
     T quarter = median;
     quarter.exponent -= 1;
     const central = position(tail, quarter) >= 0;
@@ -131,8 +154,7 @@ Fp!bits normalQuantile(uint bits)(Fp!bits p, Fp!bits mean, Fp!bits stdDev)
         target = S.from(B.logarithm(twiceTail)); // magnitude of log(2*tail)
     }
     const t = inverseMagnitude!bits(target, central);
-    const z = t.multiply(scaledSqrt(S.from(T(2)), false));
-    return addOffset!bits(mean, z.multiply(S.from(stdDev)), side < 0);
+    return t.multiply(scaledSqrt(S.from(T(2)), false));
 }
 
 // Solve for t = abs(z)/sqrt(2). In the outer tail use
