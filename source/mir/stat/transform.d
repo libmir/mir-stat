@@ -1282,7 +1282,7 @@ template robustScale(F,
         assert(low_quartile < 0.5, "robustScale: low_quartile must be less than 0.5");
 
         import mir.ndslice.topology: flattened;
-        import mir.stat.descriptive.univariate: rcMedian, meanType, rcquantile, quantileType;
+        import mir.stat.descriptive.univariate: rcMedian, meanType, rcquantileInPlace, quantileType;
 
         static if (!allowModifySlice) {
             import mir.ndslice.allocation: rcslice;
@@ -1329,9 +1329,9 @@ template robustScale(F,
         {
             // temp is either our private copy or caller storage that may be
             // rearranged. Reuse it for all three selections.
-            quantileType!(F, quantileAlgo) low_quartile_value = temp.rcquantile!(F, quantileAlgo, true)(low_quartile);
+            quantileType!(F, quantileAlgo) low_quartile_value = temp.rcquantileInPlace!(F, quantileAlgo)(low_quartile);
             meanType!F median_value = temp.rcMedian!(F, true);
-            quantileType!(F, quantileAlgo) high_quartile_value = temp.rcquantile!(F, quantileAlgo, true)(cast(F) 1 - low_quartile);
+            quantileType!(F, quantileAlgo) high_quartile_value = temp.rcquantileInPlace!(F, quantileAlgo)(cast(F) 1 - low_quartile);
 
             static if (isFloatingPoint!(slice.DeepElement) &&
                        isFloatingPoint!(typeof(low_quartile_value)) &&
