@@ -80,3 +80,31 @@ package(mir.stat) Fp!bits logNormalTail(bool upper, uint bits)
     if (!z.present) return half!bits();
     return standardNormalTail!bits(z.value, upper != z.negative);
 }
+
+package(mir.stat) Fp!bits logNormalQuantile(uint bits)(Fp!bits p, Fp!bits mean, Fp!bits stdDev)
+{
+    import mir.stat.internal.fp_location_scale: half, position;
+    import mir.stat.internal.fp_normal: standardNormalQuantileMagnitude;
+    alias T = Fp!bits;
+    alias B = ShapeTransform!bits;
+    alias S = B.S;
+    if (!p.coefficient) return T(0);
+    const infinity = T(false, long.max, UInt!bits(0));
+    if (position(p, T(1)) == 0) return infinity;
+
+    auto logX = B.term(mean);
+    const side = position(p, half!bits());
+    if (side)
+    {
+        const z = standardNormalQuantileMagnitude!bits(p, side < 0);
+        logX = B.combine(logX, B.Term(z.multiply(S.from(stdDev)), side < 0, true));
+    }
+    if (!logX.present) return T(1);
+    // Beyond this magnitude the exponential is outside either end of
+    // the Fp range, including subnormal values and the coefficient width.
+    if (logX.value.exponent >= exponentBias + 65)
+        return logX.negative ? T(0) : infinity;
+    const decay = scaledDecay(logX.value);
+    const value = logX.negative ? decay : S.from(T(1)).divide(decay);
+    return addOffset!bits(T(0), value, false);
+}
