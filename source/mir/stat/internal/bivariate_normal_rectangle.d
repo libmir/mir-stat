@@ -141,6 +141,36 @@ private RectangleEstimate!T integrate(alias f, T)(scope const(T)[] cuts)
     }
 }
 
+// Each cross-coordinate gap is a difference of standardized bounds. At
+// perfect correlation it can determine the entire probability, even when
+// those two bounds round to the same floating-point value.
+private T crossGap(T)(T x, T mx, T sx, T y, T my, T sy, T zx, T zy)
+{
+    import mir.stat.internal.standardize: standardize;
+    if (mx == my && sx == sy)
+        return standardize(x, y, sx);
+    const gap = zx - zy;
+    if (fabs(gap) >= T.infinity || fabs(gap) > max(fabs(zx), fabs(zy)) / 8)
+        return gap;
+
+    // Form (x*sy - mx*sy - y*sx + my*sx)/(sx*sy). The products have
+    // at most twice the input precision. Cancel the largest terms first
+    // so a tiny gap survives even when the means dominate both bounds.
+    import mir.bignum.fp: Fp;
+    import mir.stat.internal.fp_location_scale: addOffset;
+    import mir.stat.internal.fp_scaled_probability: ProbabilityScaled;
+    alias Wide = Fp!256;
+    Wide[4] terms = [Wide(x) * Wide(sy), Wide(-mx) * Wide(sy),
+        Wide(-y) * Wide(sx), Wide(my) * Wide(sx)];
+    sort!((a, b) => a.exponent > b.exponent)(terms[]);
+    auto total = Wide(0);
+    foreach (term; terms)
+        if (term.coefficient)
+            total = addOffset!256(total, ProbabilityScaled!256.from(term), term.sign);
+    if (!total.coefficient) return 0;
+    return cast(T)(total / (Wide(sx) * Wide(sy)));
+}
+
 package(mir.stat) T originalRectangleProbability(T, L, U, M, S)(scope auto ref L lower,
     scope auto ref U upper, scope auto ref M mean, scope auto ref S stdDev, T r)
 {
@@ -156,6 +186,25 @@ package(mir.stat) T originalRectangleProbability(T, L, U, M, S)(scope auto ref L
             a == b ? 0 : standardize(b, a, s));
     }
 
+    if (fabs(r) == 1)
+    {
+        const negative = r < 0;
+        const x = axes[0];
+        const y = negative ? axes[1].reflected : axes[1];
+        if (x.lower != x.lower || x.upper != x.upper || y.lower != y.lower || y.upper != y.upper)
+            return T.nan;
+        const left = max(x.lower, y.lower);
+        const right = min(x.upper, y.upper);
+        if (left == T.infinity || right == -T.infinity || x.width == 0 || y.width == 0)
+            return 0;
+        const T yLo = negative ? -upper[1] : lower[1], yHi = negative ? -lower[1] : upper[1];
+        const T yMean = negative ? -mean[1] : mean[1];
+        const acrossX = crossGap!T(upper[0], mean[0], stdDev[0], yLo, yMean, stdDev[1],
+            x.upper, y.lower);
+        const acrossY = crossGap!T(yHi, yMean, stdDev[1], lower[0], mean[0], stdDev[0],
+            y.upper, x.lower);
+        return interval(left, right, min(x.width, y.width, acrossX, acrossY));
+    }
     return rectangleEstimate(axes[0], axes[1], r).probability;
 }
 

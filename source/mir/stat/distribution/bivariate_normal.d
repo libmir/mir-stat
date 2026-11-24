@@ -631,6 +631,37 @@ version(mir_stat_test)
     }
 }
 
+version(mir_stat_test)
+@safe pure nothrow @nogc unittest
+{
+    import mir.math.common: fabs;
+    import std.meta: AliasSeq;
+    foreach (T; AliasSeq!(float, double, real))
+    {
+        // In standardized units both intervals have endpoints that round to one.
+        // Their intersection is half the first interval, or a single point.
+        const h = T(0x1p-80);
+        T[2] lower = [T(0), h], upper = [h, 3 * h];
+        T[2] mean = [-1, -2], sd = [1, 2];
+        const halfMass = h * T(0.241970724519143349798L) / 2;
+        alias prob = bivariateNormalRectangleProbability;
+        assert(fabs(prob(lower, upper, mean, sd, 1) / halfMass - 1) < 8 * T.epsilon);
+        lower[1] = 2 * h;
+        assert(prob(lower, upper, mean, sd, 1) == 0);
+
+        // With a common mean and scale the original bounds give the overlap directly.
+        T[2] commonLower = [T(0), h / 2], commonUpper = [h, 2 * h];
+        T[2] commonMean = [-1, -1], commonSd = [1, 1];
+        assert(fabs(prob(commonLower, commonUpper, commonMean, commonSd, 1) / halfMass - 1) < 8 * T.epsilon);
+
+        // Reflect the second coordinate to obtain the same half overlap.
+        lower[1] = -3 * h;
+        upper[1] = -h;
+        mean[1] = 2;
+        assert(fabs(prob(lower, upper, mean, sd, -1) / halfMass - 1) < 8 * T.epsilon);
+    }
+}
+
 private enum bivariateVectors(P, M, S) = vector!P && vector!M && vector!S &&
     is(Element!P == Element!M) && is(Element!P == Element!S);
 
