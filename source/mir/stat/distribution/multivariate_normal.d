@@ -86,6 +86,31 @@ across the smaller calls. With a compatible layout, BLAS can transform the
 full batch in one triangular solve or multiply. The faster batch size
 depends on the dimensions, storage layout, and backend.
 
+$(H4 Probability ellipsoids)
+
+For a normal observation in k dimensions with a specified mean and
+positive-definite covariance, its squared Mahalanobis distance from the mean
+has a chi-squared distribution with k degrees of freedom. The ellipsoid
+containing 95% of observations consists of the points whose squared distance
+is at most $(D chi2InvCDF(0.95, k)). The same cutoff applies to every
+observation from that distribution.
+
+Given a squared distance $(D d2), $(D chi2CDF(d2, k)) is the probability
+inside the contour through that point. Use $(D chi2CCDF(d2, k)) for the
+probability of a new observation lying farther from the mean.
+
+For example, suppose two correlated measurements have mean $(D [0, 0]) and
+a covariance with lower Cholesky factor $(D [[2, 0], [1, 1]]). For the point
+$(D [4, 2]), the squared distance is 4.
+---
+double[2] point = [4, 2], mean = [0, 0];
+double[4] lower = [2, 0, 1, 1];
+auto metric = covarianceCholeskyView!(TrianglePolicy.lower)(lower[].sliced(2, 2));
+const d2 = mahalanobisSquared(point[], mean[], metric);
+assert(d2 <= chi2InvCDF(0.95, 2)); // Inside the 95% ellipse (cutoff about 5.99).
+const outside = chi2CCDF(d2, 2);    // About 13.5% of draws lie farther out.
+---
+
 License: $(HTTP www.apache.org/licenses/LICENSE-2.0, Apache-2.0)
 Copyright: 2026 Mir Stat Authors.
 +/
