@@ -61,16 +61,69 @@ package(mir.stat) struct PositiveLogGamma(uint bits)
     static T logarithm(T x)
         in (!x.sign && !!x.coefficient && x.exponent != long.max)
     {
-        import mir.stat.internal.fp_pi: guardedPi;
+        return evaluate!bits(x);
+    }
+
+    // Extra significand for distribution formulas that combine log Gamma with
+    // other terms before final rounding. Keep the original target's crossover.
+    static W guardedLogarithm(T x)
+        in (!x.sign && !!x.coefficient && x.exponent != long.max)
+    {
+        return evaluate!work(x);
+    }
+
+    // log Gamma(1+a), with a supplied separately. Up to 512 target bits.
+    // The linear approximation has absolute error <= zeta(2)*a*a/2 for
+    // 0 <= a <= 1. At the exponent floor the returned W can be subnormal.
+    static W logGamma1p(T a)
+        in ((!a.sign || !a.coefficient) && a.exponent != long.max)
+    {
+        if (!a.coefficient || position(a, T(1)) == 0)
+            return W(0);
+        const input = S.from(a);
+        if (input.exponent <= exponentBias - 1)
+            return addOffset!work(W(0), smallIncrementMagnitude(a), true);
+        // For a >= 2^^work, adding log(a) to log Gamma(a) changes the
+        // result by at most O(2^^-work) relative.
+        if (input.exponent > exponentBias + work)
+            return guardedLogarithm(a);
+        return recurrence!work(addOffset!work(W(1), input, false));
+    }
+
+    // Keep |log Gamma(1+a)| off the subnormal grid until the caller
+    // has combined the complete expression, including at the input floor.
+    static S smallIncrementMagnitude(T a)
+        in (!a.sign && !!a.coefficient && S.from(a).exponent <= exponentBias - 1)
+    {
+        const input = S.from(a);
+        if (input.exponent + bits + 64 <= exponentBias)
+        {
+            // round(EulerGamma * 2^^1152), generated with MPFR at 4096 bits.
+            enum euler = UInt!1152.fromHexString(
+                "93c467e37db0c7a4d1be3f810152cb56a1cecc3af65cc0190c03df34709affbd" ~
+                "8e4b59fa03a9f0eed0649ccb621057d11056ae9132135a08e43b4673d74bafea" ~
+                "58deb878cc86d733dbe7bf38154b36cf8a96d1567899aaae0c09d4c8b6b7b86f" ~
+                "d2a1ea1de62ff8643ec7c271827977225e6ac2f0bd61c746961542a3ce3bea5d" ~
+                "b54fe70e63e6d09f8fc28658e80567a4");
+            auto factor = S.from(Fp!1152(euler));
+            factor.exponent -= 1152;
+            return input.multiply(factor);
+        }
+        return S.from(recurrence!work(addOffset!work(W(1), input, false)));
+    }
+
+    private static Fp!outBits evaluate(uint outBits)(T x)
+    {
+        alias R = Fp!outBits;
         if (position(x, T(1)) == 0 || position(x, T(2)) == 0)
-            return T(0);
+            return R(0);
 
         const input = S.from(x);
         L.Context context;
         if (input.exponent + work < exponentBias)
         {
             // -x <= log Gamma(1+x) <= 0 by convexity on [1,2].
-            auto result = cast(T)L.logDyadic(x.coefficient, x.exponent, context);
+            auto result = cast(R)L.logDyadic(x.coefficient, x.exponent, context);
             result.sign = false;
             return result;
         }
@@ -81,11 +134,19 @@ package(mir.stat) struct PositiveLogGamma(uint bits)
             // precision relative to x*(log x-1). Avoid intermediate overflow.
             const logX = cast(W)L.logDyadic(x.coefficient, x.exponent, context);
             const factor = addOffset!work(logX, one, true);
-            return addOffset!bits(T(0), input.multiply(S.from(factor)), false);
+            return addOffset!outBits(R(0), input.multiply(S.from(factor)), false);
         }
 
         W z = input.fraction;
         z.exponent += cast(long)cast(ulong)(input.exponent - exponentBias);
+        return recurrence!outBits(z);
+    }
+
+    private static Fp!outBits recurrence(uint outBits)(W z)
+    {
+        import mir.stat.internal.fp_pi: guardedPi;
+        L.Context context;
+        const one = S.from(W(1));
         auto product = W(1);
         while (position(z, W(crossover)) < 0)
         {
@@ -105,8 +166,9 @@ package(mir.stat) struct PositiveLogGamma(uint bits)
         result = addOffset!work(result, correction(S.from(z)), false);
         const logProduct = cast(W)L.logDyadic(product.coefficient, product.exponent, context);
         if (logProduct.coefficient)
-            return addOffset!bits(result, S.from(logProduct), !logProduct.sign);
-        return cast(T)result;
+            return addOffset!outBits(result, S.from(logProduct), !logProduct.sign);
+        static if (outBits == work) return result;
+        else return cast(Fp!outBits)result;
     }
 }
 
@@ -262,4 +324,48 @@ version(mir_stat_test)
     large.exponent = UInt!128.max - 2;
     assert(G.correction(large).exponent == 0);
     assert(G.correction(large).multiply(large).finish!64 == twelfth);
+}
+
+version(mir_stat_test)
+@safe pure nothrow @nogc unittest
+{
+    alias G = PositiveLogGamma!64;
+    alias T = G.T;
+    alias U = UInt!64;
+    assert(!G.logGamma1p(T(0)).coefficient);
+    assert(!G.logGamma1p(T(1)).coefficient);
+    // MPFR lngamma at the exact sum, including increments that disappear
+    // when added to one in the input type.
+    enum euler = U.fromHexString("93c467e37db0c7a5");
+    assert(cast(T)G.logGamma1p(T(false, -900, U(1))) == T(true, -964, euler));
+    assert(cast(T)G.logGamma1p(T(false, -64, U(1))) == T(true, -128, euler - 1));
+    assert(cast(T)G.logGamma1p(T(false, -64, U.max)) ==
+        T(true, -129, U(0xd8773039049e70b6UL)));
+    assert(cast(T)G.logGamma1p(T(0.375)) == T(true, -67, U(0xf129ace61dd11e97UL)));
+    // Adjacent Fp!64 increments at 2^256. MPFR lngamma(1+a) at 2048
+    // bits covers the unshifted Stirling evaluation and the large-a shortcut.
+    assert(cast(T)G.logGamma1p(T(false, 192, U.max)) ==
+        T(false, 200, U(0xb07217f7d1cf79abUL)));
+    assert(cast(T)G.logGamma1p(T(false, 256, U(1))) ==
+        T(false, 200, U(0xb07217f7d1cf79acUL)));
+    const floor = G.logGamma1p(T(false, long.min, U(1)));
+    assert(floor.sign && floor.exponent == long.min && floor.coefficient == 1);
+    const three = T(false, long.min, U(3));
+    const scaled = G.smallIncrementMagnitude(three).divide(G.S.from(three));
+    assert(scaled.finish!64 == T(false, -64, euler));
+    assert(cast(T)G.guardedLogarithm(T(3)) == G.logarithm(T(3)));
+}
+
+version(mir_stat_test_slow_numerics)
+@safe pure nothrow @nogc unittest
+{
+    alias G = PositiveLogGamma!512;
+    alias T = G.T;
+    alias U = UInt!512;
+    enum expected = U.fromHexString(
+        "93c467e37db0c7a4d1be3f810152cb56a1cecc3af65cc0190c03df34709affbd" ~
+        "8e4b59fa03a9f0eed0649ccb621057d11056ae9132135a08e43b4673d74bafea");
+    // Opposite sides of the tiny-increment shortcut, rounded by MPFR.
+    assert(cast(T)G.logGamma1p(T(false, -900, U(1))) == T(true, -1412, expected));
+    assert(cast(T)G.logGamma1p(T(false, -512, U(1))) == T(true, -1024, expected));
 }
