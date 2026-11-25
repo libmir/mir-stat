@@ -7703,7 +7703,8 @@ private bool tryScanQuantileEndpoints(V, P, T)(scope V values, scope P levels,
 }
 
 // When a copy is requested, fill it completely even if selection must fall back.
-private bool scanFloatingExtrema(V, T, Copy)(scope V values, out T low, out T high, scope Copy copy)
+private bool scanFloatingExtrema(bool hasInteriorRank = false, V, T, Copy)(
+    scope V values, out T low, out T high, scope Copy copy)
 {
     static assert(is(T == float) || is(T == double));
     static if (is(T == float)) alias Word = uint;
@@ -7714,17 +7715,16 @@ private bool scanFloatingExtrema(V, T, Copy)(scope V values, out T low, out T hi
 
     // Flipping the sign bit of positives and all bits of negatives maps
     // IEEE values to unsigned keys in ascending order, with -0 before +0.
-    static if (!is(Copy == typeof(null))) bool negativeZero;
+    static if (hasInteriorRank) bool negativeZero;
     Word lowest = Word.max, highest = 0;
     foreach (i; 0 .. values.length)
     {
         Representation repr;
         repr.value = values[i];
         static if (!is(Copy == typeof(null)))
-        {
             copy[i] = repr.value;
+        static if (hasInteriorRank)
             negativeZero |= repr.bits == sign;
-        }
         const key = repr.bits ^ (sign | (0 - (repr.bits >> signShift)));
         if (key < lowest) lowest = key;
         if (key > highest) highest = key;
@@ -7732,7 +7732,7 @@ private bool scanFloatingExtrema(V, T, Copy)(scope V values, out T low, out T hi
 
     // Skipping an endpoint partition can change which zero an interior rank
     // selects, even when both extrema are nonzero.
-    static if (!is(Copy == typeof(null)))
+    static if (hasInteriorRank)
         if (negativeZero) return false;
 
     Representation infinity;
@@ -7783,7 +7783,7 @@ private size_t mixedQuantileInterior(P)(size_t observationCount, scope P levels)
 
 // Complete the observation copy even when floating data require ordinary
 // selection. False means the copied workspace is ready, but extrema are unusable.
-private bool copyQuantileExtrema(V, W, T)(scope V values, scope W workspace,
+private bool copyQuantileExtrema(bool hasInteriorRank, V, W, T)(scope V values, scope W workspace,
     out T low, out T high)
 {
     static if (isIntegral!T)
@@ -7801,7 +7801,7 @@ private bool copyQuantileExtrema(V, W, T)(scope V values, scope W workspace,
         return true;
     }
     else
-        return scanFloatingExtrema(values, low, high, workspace);
+        return scanFloatingExtrema!hasInteriorRank(values, low, high, workspace);
 }
 
 // Keep scratch ownership alive until all partitioning and output writes finish.
@@ -7851,11 +7851,11 @@ private auto allocatedQuantile(F, QuantileAlgo algorithm, bool modify,
                 Element low, high;
                 static if (isIntegral!Element)
                 {
-                    copyQuantileExtrema(flat, workspace, low, high);
+                    copyQuantileExtrema!true(flat, workspace, low, high);
                     enum usable = true;
                 }
                 else
-                    const usable = copyQuantileExtrema(flat, workspace, low, high);
+                    const usable = copyQuantileExtrema!true(flat, workspace, low, high);
                 auto result = allocateQuantiles!(Result, allocation)(context, 3);
                 // Numeric selection and direct writes cannot throw after allocation.
                 if (usable)
@@ -8006,7 +8006,24 @@ private void copyQuantilesInto(alias writeQuantiles, QuantileAlgo algorithm, Dat
             "Observation workspace must have the mutable observation element type");
         assert(supplied.length >= n, "Observation workspace is too small");
         scope auto workspace = supplied[0 .. n];
-        workspace[] = source.lightScope.flattened;
+        scope auto flat = source.lightScope.flattened;
+        import mir.ndslice.slice : IteratorOf;
+        import std.traits : isPointer;
+        static if (__traits(isSame, writeQuantiles, quantileInto) &&
+            (isIntegral!Element || is(Element == float) || is(Element == double)) &&
+            canScanEndpoints!(typeof(flat), typeof(levels), Unqual!(typeof(destination).DeepElement)) &&
+            isPointer!(IteratorOf!(typeof(workspace))) && isPointer!(IteratorOf!(typeof(destination))))
+        {
+            if (!__ctfe && quantileEndpoints(levels) != QuantileEndpoints.none)
+            {
+                Element low, high;
+                const usable = copyQuantileExtrema!false(flat, workspace, low, high);
+                assert(usable, "quantileCopyInto: observations must not contain NaNs");
+                writeQuantileEndpoints(levels, destination, low, high);
+                return;
+            }
+        }
+        workspace[] = flat;
         writeQuantiles!algorithm(workspace, levels, destination);
     }
 }
@@ -8058,6 +8075,19 @@ version(mir_stat_test) @safe pure nothrow @nogc unittest
     quantileCopyInto(values, levels, output, workspace);
     assert(output == [3, 1, 3]);
     assert(values == [4, 0, 3, 1, 2]);
+}
+
+version(mir_stat_test) @safe pure nothrow @nogc unittest
+{
+    const double[3] levels = [1, 0, 1];
+    double[5] workspace;
+    double[3] output;
+    const double[4] values = [0.0, -0.0, 0.0, -0.0];
+    workspace[] = -1;
+    quantileCopyInto(values, levels, output, workspace);
+    assert(output[0] is 0.0 && output[1] is -0.0 && output[2] is 0.0);
+    foreach (i, value; values) assert(workspace[i] is value);
+    assert(workspace[4] == -1);
 }
 
 version(mir_stat_test) @safe pure nothrow @nogc unittest
