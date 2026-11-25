@@ -975,6 +975,10 @@ auto mahalanobisBatchWithWorkspace(Summation summation = Summation.kbn, X, C, M,
 /++
 Evaluate one squared distance using GC-managed storage.
 
+For a normal observation, see the probability ellipsoid example in
+$(MREF mir,stat,distribution,multivariate_normal) for converting a squared
+distance from the population mean into a tail probability.
+
 Params:
     summation = Precision quadratic-form reduction, compensated KBN by default.
     x = Vector of k finite coordinates.
@@ -1006,6 +1010,25 @@ version(mir_stat_test_distance)
     double[1] x = [4], center = [0], entries = [2];
     auto metric = covarianceCholeskyView(entries[].sliced(1, 1));
     assert(mahalanobisSquared(x[], center[], metric) == 4);
+}
+
+/// Test whether a point lies in the 95% probability ellipse for two correlated measurements.
+version(mir_stat_test_distance)
+@safe pure unittest
+{
+    import mir.math.common: fabs;
+    import mir.ndslice.slice: sliced;
+    import mir.stat.distribution.chi2: chi2CDF, chi2CCDF, chi2InvCDF;
+
+    double[2] point = [4, 2], mean = [0, 0];
+    double[4] lower = [2, 0, 1, 1]; // Lower Cholesky factor of the covariance.
+    auto metric = covarianceCholeskyView!(TrianglePolicy.lower)(lower[].sliced(2, 2));
+    const d2 = mahalanobisSquared(point[], mean[], metric);
+    const cutoff = chi2InvCDF(0.95, 2);
+    assert(d2 == 4 && d2 <= cutoff); // The squared-radius cutoff is about 5.99.
+
+    assert(fabs(chi2CDF(d2, 2) - 0.864665) < 1e-6);
+    assert(fabs(chi2CCDF(d2, 2) - 0.135335) < 1e-6);
 }
 
 /++
