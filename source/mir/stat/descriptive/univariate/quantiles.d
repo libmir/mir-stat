@@ -8156,6 +8156,7 @@ template quantileInto(QuantileAlgo algorithm = QuantileAlgo.type7)
     }
 
     /++ Reuse partition boundaries within the batch using caller-provided scratch.
+    Use $(LREF QuantileTable) to retain partitions across calls on the same observations.
 
     Params:
         workspace = mutable observations, as a slice or array
@@ -8168,6 +8169,24 @@ template quantileInto(QuantileAlgo algorithm = QuantileAlgo.type7)
         scope auto ref Output output, scope ulong[] scratch)
     {
         quantileIntoImpl!(algorithm, true)(workspace, probabilities, output, scratch);
+    }
+}
+
+/// Preserve each dataset by copying it into the same workspace before computing its batch.
+version(mir_stat_test) @safe pure nothrow @nogc unittest
+{
+    const int[5][2] datasets = [[8, 2, 6, 0, 4], [15, 11, 19, 13, 17]];
+    const double[3] levels = [0.75, 0.25, 0.75];
+    const double[3][2] expected = [[6, 2, 6], [17, 13, 17]];
+
+    int[5] workspace;
+    ulong[quantileScratchLength(workspace.length)] scratch;
+    double[levels.length] output;
+    foreach (i, ref observations; datasets)
+    {
+        workspace[] = observations[];
+        quantileInto(workspace, levels, output, scratch);
+        assert(output == expected[i]);
     }
 }
 
