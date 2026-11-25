@@ -156,12 +156,75 @@ struct MultivariateNormal(T)
     private bool precision;
     private LogDensityTerms!T terms;
 
-    private auto distances(alias evaluateDistance, X)(scope auto ref X x) const
+    private auto distances(alias evaluateDistance, X, W...)(scope auto ref X x, scope auto ref W buffers) const
     {
         auto storage = factor.lightConst;
         if (precision)
-            return evaluateDistance(x, center, precisionCholeskyView!(TrianglePolicy.lower)(storage));
-        return evaluateDistance(x, center, covarianceCholeskyView!(TrianglePolicy.lower)(storage));
+            return evaluateDistance(x, center, precisionCholeskyView!(TrianglePolicy.lower)(storage), buffers);
+        return evaluateDistance(x, center, covarianceCholeskyView!(TrianglePolicy.lower)(storage), buffers);
+    }
+
+    /++
+    Evaluate the log density with caller-owned scratch.
+    Params:
+        x = One finite observation with the same length and element type as the mean.
+        work = Writable vector of the same shape and type as x, disjoint from the inputs.
+    Returns:
+        Natural log density at x, or zero in zero dimensions.
+    +/
+    T lpdfWithWorkspace(X, W)(scope auto ref X x, scope auto ref W work) const
+        if (vector!X && vector!W && is(Element!X == T) && is(Element!W == T))
+    {
+        return terms.fromDistance(distances!mahalanobisWithWorkspace(x, work));
+    }
+
+    /++
+    Evaluate the density with caller-owned scratch.
+    Params:
+        x = One finite observation with the same length and element type as the mean.
+        work = Writable vector of the same shape and type as x, disjoint from the inputs.
+    Returns:
+        Density at x, or one in zero dimensions. Exponentiation can underflow or overflow.
+    +/
+    T pdfWithWorkspace(X, W)(scope auto ref X x, scope auto ref W work) const
+        if (vector!X && vector!W && is(Element!X == T) && is(Element!W == T))
+    {
+        import mir.math.common: exp;
+        return exp(lpdfWithWorkspace(x, work));
+    }
+
+    /++
+    Write one log density per observation column using caller-owned storage.
+    Params:
+        columns = Matrix of finite observations with k rows and the model's element type.
+        result = Writable vector of one log density per column, in column order.
+        work = Writable matrix of the same shape as columns. All buffers must have
+            the model's element type and be disjoint from each other and the inputs.
+    +/
+    void lpdfBatchWithWorkspace(X, R, W)(scope auto ref X columns, scope auto ref R result,
+        scope auto ref W work) const
+        if (matrix!X && vector!R && matrix!W && is(Element!X == T) && is(Element!R == T) && is(Element!W == T))
+    {
+        import mir.stat.distance: mahalanobisBatchWithWorkspace;
+        distances!mahalanobisBatchWithWorkspace(columns, result, work);
+        foreach (j; 0 .. result.length)
+            result[j] = terms.fromDistance(result[j]);
+    }
+
+    /++
+    Write one density per observation column using caller-owned storage.
+    Params:
+        columns = Matrix of finite observations with k rows and the model's element type.
+        result = Writable vector of one density per column, in column order.
+        work = Writable matrix of the same shape as columns. All buffers must have
+            the model's element type and be disjoint from each other and the inputs.
+    +/
+    void pdfBatchWithWorkspace(X, R, W)(scope auto ref X columns, scope auto ref R result,
+        scope auto ref W work) const
+        if (matrix!X && vector!R && matrix!W && is(Element!X == T) && is(Element!R == T) && is(Element!W == T))
+    {
+        lpdfBatchWithWorkspace(columns, result, work);
+        exponentiateLogDensities(result);
     }
 
     /++
@@ -396,6 +459,19 @@ version(mir_stat_test_multivariate_normal)
             assert(fabs(probs[j] - densities[j]) <= 128 * T.epsilon * densities[j]);
         }
     }
+
+    double[1] mu = [1], factor = [2], tmp;
+    double[2] points = [1, 3], output, scratch;
+    const d = multivariateNormal(mu[], covarianceCholeskyView(factor[].sliced(1, 1)));
+    void check() @safe pure nothrow @nogc
+    {
+        auto columns = points[].sliced(1, 2);
+        d.pdfBatchWithWorkspace(columns, output[], scratch[].sliced(1, 2));
+        assert(output[1] == d.pdfWithWorkspace(points[1 .. 2], tmp[]));
+        d.lpdfBatchWithWorkspace(columns, output[], scratch[].sliced(1, 2));
+        assert(output[0] == d.lpdfWithWorkspace(points[0 .. 1], tmp[]));
+    }
+    check();
 
     double[] empty;
     MultivariateNormal!double zero;
