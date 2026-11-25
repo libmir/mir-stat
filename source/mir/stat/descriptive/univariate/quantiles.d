@@ -8014,8 +8014,14 @@ private void copyQuantilesInto(alias writeQuantiles, QuantileAlgo algorithm, Dat
             canScanEndpoints!(typeof(flat), typeof(levels), Unqual!(typeof(destination).DeepElement)) &&
             isPointer!(IteratorOf!(typeof(workspace))) && isPointer!(IteratorOf!(typeof(destination))))
         {
-            if (!__ctfe && quantileEndpoints(levels) != QuantileEndpoints.none)
+            if (!__ctfe)
             {
+                if (quantileEndpoints(levels) == QuantileEndpoints.none)
+                {
+                    workspace[] = flat;
+                    quantileIntoImpl!(algorithm, false, false)(workspace, levels, destination, null);
+                    return;
+                }
                 Element low, high;
                 const usable = copyQuantileExtrema!false(flat, workspace, low, high);
                 assert(usable, "quantileCopyInto: observations must not contain NaNs");
