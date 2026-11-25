@@ -48,6 +48,7 @@ package(mir.stat) auto measureDensity(size_t iterations, size_t n, size_t column
         if (i + 1 < n) factor[i, i + 1] = 0.25;
     }
     auto metric = covarianceCholeskyView(factor);
+    const model = multivariateNormal(center, metric);
     auto rng = Mt19937_64(seed);
     auto normal = NormalVariable!double(0, 1);
     void prepare()
@@ -69,14 +70,22 @@ package(mir.stat) auto measureDensity(size_t iterations, size_t n, size_t column
             pdfReference[j] = cast(double) referenceExp(expected);
         }
     }
-    double scalar(bool logarithmic)()
+    double scalar(bool logarithmic, bool prepared = false)()
     {
         foreach (j; 0 .. columns)
         {
-            static if (logarithmic)
-                result[j] = multivariateNormalLPDFWithWorkspace(x.transposed[j], center, metric, work.transposed[j]);
+            auto observation = x.transposed[j];
+            auto scratch = work.transposed[j];
+            static if (prepared)
+            {
+                static if (logarithmic) result[j] = model.lpdfWithWorkspace(observation, scratch);
+                else result[j] = model.pdfWithWorkspace(observation, scratch);
+            }
             else
-                result[j] = multivariateNormalPDFWithWorkspace(x.transposed[j], center, metric, work.transposed[j]);
+            {
+                static if (logarithmic) result[j] = multivariateNormalLPDFWithWorkspace(observation, center, metric, scratch);
+                else result[j] = multivariateNormalPDFWithWorkspace(observation, center, metric, scratch);
+            }
         }
         return result[0];
     }
@@ -88,14 +97,15 @@ package(mir.stat) auto measureDensity(size_t iterations, size_t n, size_t column
             multivariateNormalPDFBatchWithWorkspace(x, center, metric, result, work);
         return result[0];
     }
-    alias functions = AliasSeq!(scalar!true, batch!true, scalar!false, batch!false);
+    alias logFunctions = AliasSeq!(scalar!true, batch!true, scalar!(true, true));
+    alias functions = AliasSeq!(logFunctions, scalar!false, batch!false, scalar!(false, true));
     auto labels = algebraAlgorithms("multivariateNormal");
     bool[functions.length] enabled;
     foreach (i, label; labels) enabled[i] = !selected.length || selected.canFind(label);
     const active = enabled[].count(true);
     void check(size_t index, double firstValue)
     {
-        const logarithmic = index < 2;
+        const logarithmic = index < logFunctions.length;
         foreach (j; 0 .. columns)
         {
             const expected = logarithmic ? logReference[j] : pdfReference[j];

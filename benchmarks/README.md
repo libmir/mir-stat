@@ -294,6 +294,7 @@ Divide elapsed nanoseconds by iterations and columns for time per observation.
 | Algorithm | Timed work |
 | --- | --- |
 | `scalarLPDF`, `scalarPDF` | Evaluate every column with a scalar workspace call, reusing the factor and recomputing its log determinant for each observation. |
+| `preparedScalarLPDF`, `preparedScalarPDF` | Evaluate every column with the same scalar workspace using a distribution constructed once before timing. Its normalization is reused across observations and rounds. |
 | `batchLPDF`, `batchPDF` | Evaluate the same columns with one public batch workspace call and one log determinant. |
 
 The upper bidiagonal factor has diagonal entries 1, 1.125, and 1.25 in a repeating
