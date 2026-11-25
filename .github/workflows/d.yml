@@ -276,6 +276,11 @@ jobs:
         & $env:DC -m32 -O2 -i -main -unittest --d-version=mir_stat_test @imports "-of=$exe" source/mir/stat/internal/fp_scaled_probability.d source/mir/stat/internal/fp_erf.d source/mir/stat/internal/fp_log_gamma.d source/mir/stat/internal/fp_gamma.d
         if ($LASTEXITCODE) { exit $LASTEXITCODE }
         & $exe
+        if ($LASTEXITCODE) { exit $LASTEXITCODE }
+        $shapeExe = Join-Path $env:RUNNER_TEMP 'gamma-integer-shape-x86.exe'
+        & $env:DC -m32 -i -main -unittest --d-version=mir_stat_test_gamma_integer_shape @imports "-of=$shapeExe" source/mir/stat/distribution/gamma.d
+        if ($LASTEXITCODE) { exit $LASTEXITCODE }
+        & $shapeExe
         exit $LASTEXITCODE
 
     - name: Report Linux release kernel memory diagnostics

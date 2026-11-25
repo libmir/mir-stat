@@ -23,6 +23,8 @@ Copyright: 2022-3 Mir Stat Authors.
 
 module mir.stat.distribution.gamma;
 
+version(mir_stat_test) version = mir_stat_test_gamma_integer_shape;
+
 import mir.internal.utility: isFloatingPoint;
 import mir.bignum.fp: Fp;
 private import mir.stat.internal.fp_probability: fpProbabilityValid;
@@ -269,7 +271,7 @@ version(mir_stat_test)
     assert(gammaPDF(T(1), T(2)) == gammaPDF(T(1), 2));
 }
 
-version(mir_stat_test)
+version(mir_stat_test_gamma_integer_shape)
 @system unittest
 {
     checkGammaIntegerShape!gammaPDF();
@@ -448,7 +450,7 @@ version(mir_stat_test)
     assert(gammaCDF(T(0), 2) == T(0));
 }
 
-version(mir_stat_test)
+version(mir_stat_test_gamma_integer_shape)
 @system unittest
 {
     checkGammaIntegerShape!gammaCDF();
@@ -601,7 +603,7 @@ version(mir_stat_test)
     assert(gammaCCDF(T(0), 2) == T(1));
 }
 
-version(mir_stat_test)
+version(mir_stat_test_gamma_integer_shape)
 @system unittest
 {
     checkGammaIntegerShape!gammaCCDF();
@@ -995,7 +997,7 @@ version(mir_stat_test)
     assert(gammaInvCDF(T(0), 2) == T(0));
 }
 
-version(mir_stat_test)
+version(mir_stat_test_gamma_integer_shape)
 @system unittest
 {
     checkGammaIntegerShape!gammaInvCDF();
@@ -1218,7 +1220,7 @@ version(mir_stat_test)
     assert(gammaLPDF(T(1), T(2)) == gammaLPDF(T(1), 2));
 }
 
-version(mir_stat_test)
+version(mir_stat_test_gamma_integer_shape)
 @system unittest
 {
     checkGammaIntegerShape!gammaLPDF();
@@ -1542,17 +1544,34 @@ version(mir_stat_test)
         0.999992561399103881801974677428050466, 4e-15, 0.0));
 }
 
-version(mir_stat_test)
+version(mir_stat_test_gamma_integer_shape)
 private void checkGammaIntegerShape(alias evaluate)()
 {
     import core.exception: AssertError;
     import mir.bignum.fixed: UInt;
     import std.exception: assertThrown;
-    alias T = Fp!64;
+    alias T = Fp!(size_t.sizeof * 8);
+    alias U = UInt!(size_t.sizeof * 8);
+    const half = T(false, -1, U(1));
     int shape = 2;
-    assert(evaluate(T(0.5), shape) == evaluate(T(0.5), T(2)));
-    size_t largest = size_t.max;
-    assert(evaluate(T(0), largest) == evaluate(T(0), T(UInt!(size_t.sizeof * 8)(largest))));
+    assert(evaluate(half, shape) == evaluate(half, T(2)));
+    const size_t largest = size_t.max;
+    assert(evaluate(T(0), largest) == evaluate(T(0), T(U(largest))));
+    static if (size_t.sizeof == 8)
+    {
+        // Narrowing this shape to 32 bits selects the shape-one formula.
+        const size_t wideShape = (1UL << 63) + 1;
+        static if (__traits(isSame, evaluate, gammaInvCDF))
+        {
+            // The full-shape median overflows at this scale; the exponential median is finite.
+            const scale = T(false, long.max - 1, U.max);
+            assert(evaluate(half, wideShape, scale).isInfinity);
+        }
+        else
+        {
+            assert(evaluate(half, wideShape) == evaluate(half, T(U(wideShape))));
+        }
+    }
 
     // Release unittests may retain assertions while disabling contracts.
     bool contractsEnabled;
@@ -1564,7 +1583,8 @@ private void checkGammaIntegerShape(alias evaluate)()
         assertThrown!AssertError(evaluate(T(0), shape));
         static if (size_t.sizeof < ulong.sizeof)
         {
-            ulong tooLarge = cast(ulong)size_t.max + 1;
+            // The low word is positive, so the range check must reject the input.
+            ulong tooLarge = cast(ulong)size_t.max + 2;
             assertThrown!AssertError(evaluate(T(0), tooLarge));
         }
     }
