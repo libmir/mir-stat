@@ -217,6 +217,310 @@ package(mir.stat) Fp!bits gammaDensity(bool logarithmic, uint bits)(Fp!bits x, F
     }
 }
 
+private enum gammaTermLimit = 32768;
+
+// Regularized incomplete gamma for a positive shape. Work on normalized
+// ratios so x/scale can cross either end of the public exponent range.
+private struct GammaIntegral(uint bits)
+{
+    alias D = GammaDensity!bits;
+    alias B = D.B;
+    alias S = B.S;
+    alias T = Fp!bits;
+    alias W = D.W;
+    alias Term = B.Term;
+    enum work = D.work;
+    uint termLimit;
+
+    S a, one;
+    Term negLogGamma1p;
+    Term stirlingTerm;
+    bool small;
+    uint integerShape;
+
+    @safe pure nothrow @nogc:
+
+    this(T shape, uint limit = gammaTermLimit)
+    {
+        termLimit = limit;
+        a = S.from(shape);
+        one = S.from(W(1));
+        small = a.exponent <= exponentBias - 1;
+        if (a.exponent > exponentBias && a.exponent <= exponentBias + 6)
+        {
+            const shift = work - cast(uint)(a.exponent - exponentBias);
+            if (a.fraction.coefficient.cttz >= shift)
+                integerShape = cast(uint)(a.fraction.coefficient >> shift);
+        }
+        if (small)
+            negLogGamma1p = Term(D.widen(D.G.smallIncrementMagnitude(shape)), false, true);
+        else if (a.exponent <= exponentBias + 16)
+            negLogGamma1p = D.term(D.G.logGamma1p(shape), true);
+        else
+            stirlingTerm = Term(D.widen(D.G.correction(D.G.S.from(shape))), true, true);
+    }
+
+    // Inputs larger than 2^65 in magnitude are outside the exp range
+    // needed by both tails. Callers establish the sign before this point.
+    static S exponential(Term t)
+    {
+        import mir.stat.internal.fp_scaled_probability: scaledDecay;
+        const unit = S.from(W(1));
+        if (!t.present) return unit;
+        const decay = scaledDecay(t.value);
+        return t.negative ? decay : unit.divide(decay);
+    }
+
+    static int compare(S x, S y)
+    {
+        if (x.exponent != y.exponent)
+            return x.exponent < y.exponent ? -1 : 1;
+        return x.fraction.coefficient.opCmp(y.fraction.coefficient);
+    }
+
+    // Evaluate the upper fraction by successive numerator/denominator
+    // convergents. Separate exponents avoid rescaling the recurrence.
+    bool upperFactor(S z, out S factor)
+    {
+        const diff = B.combine(Term(z, false, true), Term(a, true, true));
+        auto b = diff.present ? diff.value.add(one) : one;
+        auto numerator = one;
+        auto denominator = b;
+        S previousNumerator;
+        auto previousDenominator = one;
+        auto last = one.divide(b);
+        foreach (uint i; 1 .. termLimit + 1)
+        {
+            const n = S.from(W(i));
+            auto c = B.combine(Term(a, false, true), Term(n, true, true));
+            if (!c.present) { factor = last; return true; }
+            c.value = c.value.multiply(n);
+            b = b.add(S.from(W(2)));
+            const top = i == 1 ? b : B.combine(Term(b.multiply(numerator), false, true),
+                Term(c.value.multiply(previousNumerator), c.negative, true)).value;
+            const bottom = B.combine(Term(b.multiply(denominator), false, true),
+                Term(c.value.multiply(previousDenominator), c.negative, true)).value;
+            const next = top.divide(bottom);
+            const change = B.combine(Term(last, true, true), Term(next, false, true));
+            if (!change.present || change.value.exponent + bits + 96 < next.exponent)
+            {
+                factor = next;
+                return true;
+            }
+            previousNumerator = numerator;
+            previousDenominator = denominator;
+            numerator = top;
+            denominator = bottom;
+            last = next;
+        }
+        return false;
+    }
+
+    static Term product(Term x, Term y, bool negate = false)
+    {
+        if (!x.present || !y.present) return Term.init;
+        return Term(x.value.multiply(y.value), (x.negative != y.negative) != negate, true);
+    }
+
+    // Taylor coefficients on one unit interval satisfy
+    // (n+1)c[n+1] = (slope - n*grid)c[n] - curvature*c[n-1].
+    bool segmentIntegral(Term slope, Term curvature, Term grid, out Term nextValue, out Term segment)
+    {
+        Term previous;
+        auto coefficient = Term(one, false, true);
+        nextValue = coefficient;
+        segment = coefficient;
+        uint negligible;
+        const terms = termLimit < work ? termLimit : work;
+        foreach (uint n; 1 .. terms + 1)
+        {
+            auto next = B.combine(product(slope, coefficient), product(curvature, previous, true));
+            if (next.present) next.value = next.value.divide(S.from(W(n)));
+            nextValue = B.combine(nextValue, next);
+            previous = coefficient;
+            coefficient = next;
+            if (next.present) next.value = next.value.divide(S.from(W(n+1)));
+            segment = B.combine(segment, next);
+            // A single Taylor coefficient may vanish inside the series.
+            if (!coefficient.present || coefficient.value.exponent + bits + 96 < exponentBias)
+            {
+                if (++negligible == 2)
+                    return nextValue.present && !nextValue.negative && segment.present && !segment.negative;
+            }
+            else negligible = 0;
+            slope = B.combine(slope, Term(grid.value, !grid.negative, true));
+        }
+        return false;
+    }
+
+    // Integrate outwards from z, in units of h=z/(sqrt(a)+|z-a|).
+    // The gamma density relative to its value at z satisfies
+    // (1+k*t) f'=(c-d*t) f, k=+/-h/z, c=k*(a-1-z), d=h*h/z.
+    // This grid resolves the peak even when adding h to z would round
+    // straight back to z. It also follows the short decay length far out.
+    bool transition(S z, bool upper, out Term tail)
+    {
+        import mir.stat.internal.fp_pi: guardedPi;
+        import mir.stat.internal.fp_scaled_probability: scaledSqrt;
+        const root = scaledSqrt(a, false);
+        auto delta = B.combine(Term(z, false, true), Term(a, true, true));
+        S widthDivisor = root;
+        Term loss;
+        if (delta.present)
+        {
+            widthDivisor = root.add(delta.value);
+            auto relative = delta;
+            relative.value = relative.value.divide(a);
+            loss = Term(a.multiply(D.deviance(z.divide(a), relative)), true, true);
+            if (loss.value.exponent >= exponentBias + 66) return true;
+        }
+        auto k = Term(one.divide(widthDivisor), !upper, true);
+        const d = z.multiply(k.value).multiply(k.value);
+        const c = product(k, B.combine(delta, Term(one, false, true)), true);
+        auto endpoint = one;
+        Term area;
+        foreach (uint j; 0 .. 4 * (bits + 128))
+        {
+            const index = Term(S.from(W(j ? j : 1)), false, j != 0);
+            const divisor = B.combine(Term(one, false, true), product(k, index));
+            if (!divisor.present || divisor.negative) return false;
+            auto slope = B.combine(c, product(Term(d, false, true), index, true));
+            if (slope.present) slope.value = slope.value.divide(divisor.value);
+            const curvature = Term(d.divide(divisor.value), false, true);
+            const grid = Term(k.value.divide(divisor.value), k.negative, true);
+            Term nextValue, segment;
+            if (!segmentIntegral(slope, curvature, grid, nextValue, segment)) return false;
+            area = B.combine(area, Term(endpoint.multiply(segment.value), false, true));
+            endpoint = endpoint.multiply(nextValue.value);
+            // For a > 1 the density is log concave. Once the outward
+            // logarithmic slope exceeds 1/4, the remaining area is at
+            // most four times the endpoint density in these units.
+            if (endpoint.exponent + bits + 100 < area.value.exponent)
+            {
+                const endIndex = Term(S.from(W(j + 1)), false, true);
+                const endSlope = B.combine(c, product(Term(d, false, true), endIndex, true));
+                const endDivisor = B.combine(Term(one, false, true), product(k, endIndex));
+                if (endDivisor.present && !endDivisor.negative && endSlope.present &&
+                    endSlope.negative && endSlope.value.exponent + 1 >= endDivisor.value.exponent)
+                    break;
+            }
+            if (j + 1 == 4 * (bits + 128)) return false;
+        }
+        auto pi2 = S.from(guardedPi!work());
+        pi2.exponent += 1;
+        tail = Term(exponential(B.combine(loss, stirlingTerm)).multiply(root)
+            .divide(widthDivisor).divide(scaledSqrt(pi2, false)).multiply(area.value), false, true);
+        return true;
+    }
+
+    // Return the directly evaluated tail and its orientation. A zero is
+    // encoded by an absent term. False denotes an exhausted iteration budget.
+    bool evaluate(S z, out bool upper, out Term tail)
+    {
+        upper = compare(z, a) >= 0 && compare(z, one) >= 0;
+        // P(n,z) = z^n/n! * (1 - nz/(n+1) + O(z^2)). For a short
+        // dyadic ratio and a tiny z the only ambiguous rounding case is
+        // a coincident midpoint. Retain the strict downward correction.
+        if (integerShape && integerShape <= 32 && z.exponent + work < exponentBias &&
+            integerShape * (work - z.fraction.coefficient.cttz) <= work - bits - 128)
+        {
+            UInt!128 factorial = UInt!128(1);
+            foreach (uint n; 2 .. integerShape + 1) factorial *= n;
+            const lead = z.power(integerShape).divide(S.from(Fp!128(factorial)));
+            tail = Term(B.withCorrection(lead, false), false, true);
+            return true;
+        }
+        if (stirlingTerm.present) return transition(z, upper, tail);
+        auto weighted = D.term(B.logarithm(z));
+        if (weighted.present) weighted.value = weighted.value.multiply(a);
+        const power = B.combine(weighted, negLogGamma1p);
+        if (small && compare(z, one) < 0 && (!power.present ||
+            power.value.exponent < exponentBias))
+        {
+            // DLMF 8.7.1, alternating form. Isolate the constant so Q
+            // remains relative-accurate even as shape approaches zero.
+            upper = true;
+            auto sum = one.divide(a.add(one));
+            auto factorialTerm = one;
+            foreach (uint n; 2 .. work + 2)
+            {
+                factorialTerm = factorialTerm.multiply(z).divide(S.from(W(n)));
+                const next = factorialTerm.divide(a.add(S.from(W(n))));
+                if (next.exponent + bits + 96 < sum.exponent) break;
+                sum = B.combine(Term(sum, false, true), Term(next, !(n & 1), true)).value;
+            }
+            const e = exponential(power);
+            auto base = B.combine(Term(one, false, true), Term(e, true, true));
+            if (power.present && power.value.exponent + bits + 96 < exponentBias)
+                base = Term(power.value, !power.negative, true);
+            tail = B.combine(base, Term(e.multiply(a).multiply(z).multiply(sum), false, true));
+            return true;
+        }
+
+        auto logFactor = B.combine(power, Term(z, true, true));
+        if (logFactor.present && logFactor.negative &&
+            logFactor.value.exponent >= exponentBias + 66) return true;
+        auto factor = exponential(logFactor);
+        if (upper)
+        {
+            S fraction;
+            if (!upperFactor(z, fraction)) return false;
+            factor = factor.multiply(a).multiply(fraction);
+        }
+        else
+        {
+            // DLMF 8.7.1, positive series. Ratios decrease with n.
+            auto sum = one;
+            auto term = one;
+            foreach (uint n; 1 .. termLimit + 1)
+            {
+                const ratio = z.divide(a.add(S.from(W(n))));
+                term = term.multiply(ratio);
+                sum = sum.add(term);
+                if (term.exponent + bits + 96 < sum.exponent)
+                {
+                    factor = factor.multiply(sum);
+                    tail = Term(factor, false, true);
+                    return true;
+                }
+            }
+            return false;
+        }
+        tail = Term(factor, false, true);
+        return true;
+    }
+}
+
+package(mir.stat) Fp!bits gammaTail(bool upper, uint bits)(Fp!bits x, Fp!bits shape,
+    Fp!bits scale, uint termLimit = gammaTermLimit)
+{
+    import mir.stat.internal.fp_weibull: weibullTail;
+    alias T = Fp!bits;
+    alias I = GammaIntegral!bits;
+    if (x.isInfinity) return T(upper ? 0 : 1);
+    if (!x.coefficient) return T(upper ? 1 : 0);
+    if (position(shape, T(1)) == 0) return weibullTail!upper(x, shape, scale);
+    auto integral = I(shape, termLimit);
+    I.Term tail;
+    bool directUpper;
+    if (!integral.evaluate(I.S.from(x).divide(I.S.from(scale)), directUpper, tail))
+        return T(false, long.max, UInt!bits(1));
+    const complement = upper != directUpper;
+    if (!tail.present) return T(complement ? 1 : 0);
+    return addOffset!bits(T(complement ? 1 : 0), tail.value, complement);
+}
+
+version(mir_stat_test)
+@safe pure nothrow @nogc unittest
+{
+    // Exhaust the lower series, upper fraction and local density expansion.
+    // No partially converged value may escape from any of the three paths.
+    alias T = Fp!64;
+    assert(gammaTail!false(T(1), T(2), T(1), 1).isNaN);
+    assert(gammaTail!true(T(2), T(1.5), T(1), 1).isNaN);
+    assert(gammaTail!true(T(65536), T(65536), T(1), 1).isNaN);
+}
+
 version(mir_stat_test)
 static if (size_t.sizeof == 4)
 @safe pure nothrow @nogc unittest
@@ -228,6 +532,11 @@ static if (size_t.sizeof == 4)
     const scale = T(false, -31, U(0x7fffffff));
     assert(gammaDensity!true(x, shape, scale) == T(true, -26, U(0xb1938571)));
     assert(gammaDensity!false(x, shape, scale) == T(false, -96, U(0xf7c72c72)));
+    const half = T(false, -1, U(1));
+    const threeQuarters = T(false, -2, U(3));
+    assert(gammaTail!false(half, threeQuarters, T(1)) == T(false, -32, U(0x8726e2ed)));
+    assert(gammaTail!true(half, threeQuarters, T(1)) == T(false, -33, U(0xf1b23a26)));
+
 }
 
 version(mir_stat_test_slow_numerics)
@@ -240,4 +549,12 @@ version(mir_stat_test_slow_numerics)
         "cc42299ea1b284687e59e2805d5c717fa7053e60a24e0db1808e369004c73a5d" ~
         "3bf158aa88f96b16106d7a69610928a3fd7d27ccf4d1f61f514704ab2449c3ec");
     assert(gammaDensity!false(x, x, T(1)) == T(false, -663, expected));
+    enum lower = U.fromHexString(
+        "cb849b65036bd619c0482a825720333b5e8ffa52c85906d7dc359fa011cb154f" ~
+        "2e4c2f6ab72228b706bb5321ee7f629ee5edf6984d8fc2f3d9f44b7e165540c4");
+    assert(gammaTail!false(T(0.5), T(1.5), T(1)) == T(false, -514, lower));
+    enum center = U.fromHexString(
+        "ffbbe9f1bfa03393c02bfe82011f2ad721888a35ebfba984461779f5b0b0ed1d" ~
+        "32b7be83af51276c9e729f38f5033f458383dfb27790104902b085201b2ad10e");
+    assert(gammaTail!true(T(65536), T(65536), T(1)) == T(false, -513, center));
 }

@@ -399,6 +399,93 @@ unittest
 }
 
 /++
+Evaluates the lower gamma tail using guarded incomplete-gamma arithmetic.
+
+Params:
+    T = extended-precision type with at most 512 significand bits
+    x = nonnegative observation, including positive infinity
+    I = integer shape type for the integer overload
+    shape = finite positive shape, or an integer from 1 through $(D size_t.max)
+    scale = finite positive scale (default: one)
+
+Returns:
+    The lower probability P(X <= x) as $(D T), including 0 at zero and
+    1 at positive infinity. The series and continued fraction allow up
+    to 32768 terms. For shapes of 65536 or more, integrate outward on a
+    grid scaled to the local decay length. The transition allows up to
+    $(D 4 * (bits + 128)) unit intervals for a $(D bits)-bit result. An
+    exhausted evaluation returns NaN. Correct rounding is unproven.
++/
+@safe pure nothrow @nogc
+T gammaCDF(T)(const T x, const T shape, const T scale = T(1))
+    if (is(T == Fp!size, size_t size))
+    in (!x.isNaN && (!x.sign || (!x.coefficient && !x.isInfinity)), "x must be nonnegative")
+    in (!shape.sign && !!shape.coefficient && shape.exponent != long.max, "shape must be finite and positive")
+    in (!scale.sign && !!scale.coefficient && scale.exponent != long.max, "scale must be finite and positive")
+{
+    import mir.stat.internal.fp_gamma: gammaTail;
+    return gammaTail!false(x, shape, scale);
+}
+
+/// ditto
+@safe pure nothrow @nogc
+T gammaCDF(T, I = size_t)(const T x, const I shape, const T scale = T(1))
+    if (is(T == Fp!size, size_t size) && __traits(isIntegral, I))
+    in (shape > 0, "shape must be positive")
+    in (I.sizeof <= size_t.sizeof || shape <= size_t.max, "integer shape must fit size_t")
+{
+    import mir.bignum.fixed: UInt;
+    return gammaCDF(x, T(UInt!(size_t.sizeof * 8)(cast(size_t)shape)), scale);
+}
+
+///
+version(mir_stat_test)
+@safe pure nothrow @nogc unittest
+{
+    import mir.bignum.fp: Fp;
+    alias T = Fp!64;
+    assert(gammaCDF(T(0), 2) == T(0));
+}
+
+version(mir_stat_test)
+@system unittest
+{
+    checkGammaIntegerShape!gammaCDF();
+}
+
+version(mir_stat_test)
+@safe pure nothrow @nogc unittest
+{
+    import mir.bignum.fixed: UInt;
+    import mir.math.common: approxEqual;
+    alias T = Fp!64;
+    alias U = UInt!64;
+    const x = 0.375;
+    const a = 0.125;
+    const ref64 = T(false, -64, U(0xe75dd33e5cae1771UL));
+    assert(gammaCDF(T(x), T(a)) == ref64);
+    assert(approxEqual(gammaCDF(x, a), cast(double)ref64));
+    assert(gammaCDF(T(128), T(2)) == T(1));
+    const floor = T(false, long.min, U(1));
+    assert(gammaCDF(floor, T(1)) == floor);
+    // z^2/2 is exactly 4.5 subnormal quanta. P(2,z) lies below it.
+    const z = T(false, long.min / 2, U(3));
+    assert(gammaCDF(z, T(2)) == T(false, long.min, U(4)));
+    const wide = T(false, 300, U(1));
+    assert(gammaCDF(wide, wide) == T(0.5));
+    assert(gammaCDF(T(65535), T(65536)) == T(false, -65, U(18408414761497265564UL)));
+    enum k = long.max - 200;
+    assert(gammaCDF(T(false, -k, U(1)), T(0.5), T(false, k, U(1))) ==
+        T(false, -k - 63, U(10407460856758233229UL)));
+    assert(gammaCDF(T(1), wide) == T(0));
+    assert(gammaCDF(T(false, long.max, U(0)), T(2)) == T(1));
+    alias V = Fp!128;
+    alias H = UInt!128;
+    enum ref128 = H.fromHexString("85265be7694d845734eb3524b9d34d79");
+    assert(gammaCDF(V(2.25), V(2.5)) == V(false, -128, ref128));
+}
+
+/++
 Computes the gamma complementary cumulative distribution function (CCDF).
 
 Returns the upper-tail probability $(D P(X > x)). Use this function directly
@@ -462,6 +549,84 @@ unittest
     5.gammaCCDF(0.5, 1.5).shouldApprox == 0.009823275;
     6.666666.gammaCCDF(2).shouldApprox == 0.009756865;
     3.333333.gammaCCDF(0.5).shouldApprox == 0.009823278;
+}
+
+/++
+Evaluates the strict upper gamma tail using guarded incomplete-gamma arithmetic.
+
+Params:
+    T = extended-precision type with at most 512 significand bits
+    x = nonnegative observation, including positive infinity
+    I = integer shape type for the integer overload
+    shape = finite positive shape, or an integer from 1 through $(D size_t.max)
+    scale = finite positive scale (default: one)
+
+Returns:
+    The strict upper probability P(X > x) as $(D T), including 1 at zero and
+    0 at positive infinity. The series and continued fraction allow up
+    to 32768 terms. For shapes of 65536 or more, integrate outward on a
+    grid scaled to the local decay length. The transition allows up to
+    $(D 4 * (bits + 128)) unit intervals for a $(D bits)-bit result. An
+    exhausted evaluation returns NaN. Correct rounding is unproven.
++/
+@safe pure nothrow @nogc
+T gammaCCDF(T)(const T x, const T shape, const T scale = T(1))
+    if (is(T == Fp!size, size_t size))
+    in (!x.isNaN && (!x.sign || (!x.coefficient && !x.isInfinity)), "x must be nonnegative")
+    in (!shape.sign && !!shape.coefficient && shape.exponent != long.max, "shape must be finite and positive")
+    in (!scale.sign && !!scale.coefficient && scale.exponent != long.max, "scale must be finite and positive")
+{
+    import mir.stat.internal.fp_gamma: gammaTail;
+    return gammaTail!true(x, shape, scale);
+}
+
+/// ditto
+@safe pure nothrow @nogc
+T gammaCCDF(T, I = size_t)(const T x, const I shape, const T scale = T(1))
+    if (is(T == Fp!size, size_t size) && __traits(isIntegral, I))
+    in (shape > 0, "shape must be positive")
+    in (I.sizeof <= size_t.sizeof || shape <= size_t.max, "integer shape must fit size_t")
+{
+    import mir.bignum.fixed: UInt;
+    return gammaCCDF(x, T(UInt!(size_t.sizeof * 8)(cast(size_t)shape)), scale);
+}
+
+///
+version(mir_stat_test)
+@safe pure nothrow @nogc unittest
+{
+    import mir.bignum.fp: Fp;
+    alias T = Fp!64;
+    assert(gammaCCDF(T(0), 2) == T(1));
+}
+
+version(mir_stat_test)
+@system unittest
+{
+    checkGammaIntegerShape!gammaCCDF();
+}
+
+version(mir_stat_test)
+@safe pure nothrow @nogc unittest
+{
+    import mir.bignum.fixed: UInt;
+    import mir.math.common: approxEqual;
+    alias T = Fp!64;
+    alias U = UInt!64;
+    const x = 0.375;
+    const a = 0.125;
+    const ref64 = T(false, -67, U(0xc511660d1a8f4476UL));
+    assert(gammaCCDF(T(x), T(a)) == ref64);
+    assert(approxEqual(gammaCCDF(x, a), cast(double)ref64));
+    assert(gammaCCDF(T(128), T(2)) == T(false, -241, U(0xa2b8bb3c118808f5UL)));
+    const tiny = T(false, -800, U(1));
+    assert(gammaCCDF(T(0.25), tiny) == T(false, -863, U(0x85ab0da95bb8d9cbUL)));
+    const floor = T(false, long.min, U(1));
+    assert(gammaCCDF(T(0.25), floor) == floor);
+    assert(gammaCCDF(T(1), floor) == T(0));
+    const inf = T(false, long.max, U(0));
+    assert(gammaCCDF(inf, T(3)) == T(0));
+    assert(gammaCCDF(T(1), T(1)) == T(false, -65, U(0xbc5ab1b16779be35UL)));
 }
 
 /++
