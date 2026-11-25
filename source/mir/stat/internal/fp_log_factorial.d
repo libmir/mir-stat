@@ -165,7 +165,7 @@ package(mir.stat) struct CountLog(uint bits)
 
 // BEGIN Stirling coefficients
 private struct StirlingCoefficient { UInt!512 numerator; UInt!512 denominator; }
-private immutable StirlingCoefficient[65] coefficients = [
+package(mir.stat) immutable StirlingCoefficient[65] coefficients = [
     StirlingCoefficient(UInt!512.fromHexString("1"),UInt!512.fromHexString("c")),
     StirlingCoefficient(UInt!512.fromHexString("1"),UInt!512.fromHexString("168")),
     StirlingCoefficient(UInt!512.fromHexString("1"),UInt!512.fromHexString("4ec")),

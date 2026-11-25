@@ -68,6 +68,7 @@ sources_list = [
     'mir/stat/internal/fp_log_normal',
     'mir/stat/internal/fp_cauchy',
     'mir/stat/internal/fp_log_factorial',
+    'mir/stat/internal/fp_log_gamma',
     'mir/stat/internal/fp_binomial_log',
     'mir/stat/internal/fp_binomial_tails',
     'mir/stat/internal/fp_count_deviance',
