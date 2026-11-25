@@ -26,7 +26,7 @@ string[] algebraAlgorithms(string name)
     case "crossprod", "tcrossprod": return ["general", "specialized", "triangleOnly"];
     case "symmetricVector": return ["general", "symmetric", "packed"];
     case "symmetricLeft", "symmetricRight", "symmetricColumn", "symmetricRow": return ["general", "symmetric", "packed", "generalMixed", "symmetricMixed", "packedMixed", "workspaceInput", "workspaceOutput"];
-    case "multivariateNormal": return ["scalarLPDF", "batchLPDF", "scalarPDF", "batchPDF"];
+    case "multivariateNormal": return ["scalarLPDF", "batchLPDF", "preparedScalarLPDF", "scalarPDF", "batchPDF", "preparedScalarPDF"];
     case "quadraticBatch": return ["repeated", "batch", "repeatedFast", "batchFast"];
     case "mahalanobisBatch": return ["repeatedFactor", "batchFactor", "repeatedPrecision", "batchPrecision",
         "repeatedPrecisionFast", "batchPrecisionFast", "repeatedPrecisionFactor", "batchPrecisionFactor"];
