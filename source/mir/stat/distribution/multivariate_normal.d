@@ -681,19 +681,16 @@ private auto evaluate(Allocation policy, bool reportFailure = false, A, X, C, M)
 }
 
 /// Factor-dependent terms shared by all observations in a batch.
-private struct LogDensityTerms(CovarianceRepresentation form, T)
+private struct LogDensityTerms(T)
 {
-    T dimensionTerm;
-    T halfLogDet;
+    T dimensionTerm = 0;
+    T halfCovarianceLogDet = 0;
 
     T fromDistance(T distance) const @safe pure nothrow @nogc
     {
         // Halve before squaring so the negative half-square can remain finite.
         const base = (-T(0.5) * distance) * distance - dimensionTerm;
-        static if (form == CovarianceRepresentation.covarianceCholesky)
-            return base - halfLogDet;
-        else
-            return base + halfLogDet;
+        return base - halfCovarianceLogDet;
     }
 }
 
@@ -703,8 +700,9 @@ private auto logDensityTerms(M)(scope auto ref M factor)
     import mir.stat.constant: LOGSQRT2PI;
     auto storage = factor.storage.asView;
     alias T = Element!(typeof(storage));
-    return LogDensityTerms!(M.form, T)(T(storage.length!0) * T(LOGSQRT2PI),
-        T(0.5) * logDeterminantFromCholesky(storage));
+    const halfLogDet = T(0.5) * logDeterminantFromCholesky(storage);
+    enum precision = M.form == CovarianceRepresentation.inverseCovarianceCholesky;
+    return LogDensityTerms!T(T(storage.length!0) * T(LOGSQRT2PI), precision ? -halfLogDet : halfLogDet);
 }
 
 /++
