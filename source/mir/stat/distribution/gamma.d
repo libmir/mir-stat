@@ -24,6 +24,7 @@ Copyright: 2022-3 Mir Stat Authors.
 module mir.stat.distribution.gamma;
 
 import mir.internal.utility: isFloatingPoint;
+import mir.bignum.fp: Fp;
 
 /++
 Computes the gamma probability density function (PDF).
@@ -808,6 +809,132 @@ unittest
     }
 }
 
+/++
+Computes the natural logarithm of the density of a gamma distribution using guarded extended precision.
+Severe cancellation can reduce the number of accurate significand bits.
+
+Params:
+    T = supported $(D Fp) type with at most 512 significand bits
+    x = nonnegative observation, including positive infinity
+    I = integer shape type for the integer overload
+    shape = finite positive shape, or an integer from 1 through $(D size_t.max)
+    scale = finite positive scale (default: one)
+
+Returns:
+    The log-density as $(D T). At zero the result is positive infinity for
+    shapes below one, minus the logarithm of the scale for shape one, and
+    negative infinity for shapes above one. At positive infinity the result is
+    negative infinity.
++/
+@safe pure nothrow @nogc
+T gammaLPDF(T)(const T x, const T shape, const T scale = T(1))
+    if (is(T == Fp!size, size_t size))
+    in (!x.isNaN && (!x.sign || (!x.coefficient && !x.isInfinity)), "x must be nonnegative")
+    in (!shape.sign && !!shape.coefficient && shape.exponent != long.max, "shape must be finite and positive")
+    in (!scale.sign && !!scale.coefficient && scale.exponent != long.max, "scale must be finite and positive")
+{
+    import mir.stat.internal.fp_gamma: gammaLogDensity;
+    return gammaLogDensity(x, shape, scale);
+}
+
+/// ditto
+@safe pure nothrow @nogc
+T gammaLPDF(T, I = size_t)(const T x, const I shape, const T scale = T(1))
+    if (is(T == Fp!size, size_t size) && __traits(isIntegral, I))
+    in (shape > 0, "shape must be positive")
+    in (I.sizeof <= size_t.sizeof || shape <= size_t.max, "integer shape must fit size_t")
+{
+    import mir.bignum.fixed: UInt;
+    return gammaLPDF(x, T(UInt!(size_t.sizeof * 8)(cast(size_t)shape)), scale);
+}
+
+///
+version(mir_stat_test)
+@safe pure nothrow @nogc unittest
+{
+    import mir.bignum.fp: Fp;
+    alias T = Fp!64;
+    assert(gammaLPDF(T(0), 1, T(1)) == T(0));
+    assert(gammaLPDF(T(1), T(2)) == gammaLPDF(T(1), 2));
+}
+
+version(mir_stat_test)
+@system unittest
+{
+    checkGammaIntegerShape!gammaLPDF();
+}
+
+version(mir_stat_test)
+@safe pure nothrow @nogc unittest
+{
+    import mir.bignum.fixed: UInt;
+    import mir.math.common: approxEqual;
+    alias T = Fp!64;
+    alias U = UInt!64;
+    const tiny = T(false, -900, U(1));
+    assert(gammaLPDF(tiny, tiny) == T(true, -954, U(0x9c1055f6d687edbeUL)));
+
+    // x = 2^252, a = x*(1+2^-63), s = 1-2^-63. Rounding a*s to
+    // the input precision loses the residual and half a log-density unit.
+    const x = T(false, 252, U(1));
+    const shape = T(false, 189, U(0x8000000000000001UL));
+    const scale = T(false, -63, U(0x7fffffffffffffffUL));
+    assert(gammaLPDF(x, shape, scale) == T(true, -57, U(0xb182ceb478d42710UL)));
+    const logf = gammaLPDF(T(1.5), T(0.75), T(2));
+    assert(logf == T(true, -63, U(0xc989772a7483e172UL)));
+    assert(approxEqual(cast(double)logf, gammaLPDF(1.5, 0.75, 2.0)));
+    assert(gammaLPDF(T(5), 64, T(0.25)) == T(true, -59, U(0xf7229698efba9cceUL)));
+    assert(gammaLPDF(T(0), T(0.5)).isInfinity);
+    const outside = gammaLPDF(T(false, long.max, U(0)), 1);
+    assert(outside.sign && outside.isInfinity);
+}
+
+
+version(mir_stat_test)
+@safe pure nothrow @nogc unittest
+{
+    import mir.bignum.fixed: UInt;
+    alias T = Fp!128;
+    alias U = UInt!128;
+    enum center = U.fromHexString("d1c83332f02b0ddfb9c04f962728eb56");
+    const shape = T(false, 300, U(1));
+    assert(gammaLPDF(shape, shape) == T(true, -121, center));
+    // Finite scale and observation with a ratio above the Fp ceiling.
+    const smallest = T(false, long.min, U(1));
+    const largest = T(false, long.max - 1, U.max);
+    const far = gammaLPDF(largest, shape, smallest);
+    assert(far.isInfinity && far.sign);
+    const peak = gammaLPDF(largest, largest);
+    assert(!peak.isInfinity && peak.coefficient && peak.sign);
+    // At x = a, log(f)/a = log(a)-1+EulerGamma+O(a). Round once
+    // at the final subnormal grid, after adding the gamma increment.
+    const subnormal = T(false, long.min, U(3));
+    enum coefficient = U.fromHexString("10a2b23f3bab73680");
+    assert(gammaLPDF(subnormal, subnormal) == T(true, long.min, coefficient));
+    // With scale=z^2/2 and x=z^3/2 the shape-three density is exp(-z).
+    foreach (int n; [100, 300, 1000, 2000])
+    {
+        const observation = T(false, -3*n-1, U(1));
+        const scale = T(false, -2*n-1, U(1));
+        assert(gammaLPDF(observation, 3, scale) == T(true, -n-127, U(1) << 127));
+        const below = T(false, -3*n-129, U.max);
+        const above = T(false, -3*n-128, (U(1) << 127) + 1);
+        if (n > 128)
+        {
+            assert(gammaLPDF(below, T(3), scale).sign);
+            assert(!gammaLPDF(above, T(3), scale).sign);
+        }
+    }
+    assert(gammaLPDF(T(false, -3001, U(27)), 3, T(false, -2001, U(9))) ==
+        T(true, -1126, U(3) << 126));
+    // For n=4, z=6*2^-1000 and scale=z^3/6, the prefactor is one.
+    assert(gammaLPDF(T(false, -4000, U(216)), 4, T(false, -3000, U(36))) ==
+        T(true, -1125, U(6) << 125));
+    // For n=5 use z=6*2^-1000 and scale=z^4/24.
+    assert(gammaLPDF(T(false, -5000, U(324)), T(5), T(false, -4000, U(54))) ==
+        T(true, -1125, U(6) << 125));
+}
+
 // Finite densities survive overflow and underflow in the direct formula.
 version(mir_stat_test)
 @safe pure nothrow @nogc
@@ -1053,4 +1180,32 @@ version(mir_stat_test)
         7.438600896118198025322571949534157411e-6, 4e-15, 0.0));
     assert(approxEqual(gammaCDF(nextUp(0.0), 1e-8),
         0.999992561399103881801974677428050466, 4e-15, 0.0));
+}
+
+version(mir_stat_test)
+private void checkGammaIntegerShape(alias evaluate)()
+{
+    import core.exception: AssertError;
+    import mir.bignum.fixed: UInt;
+    import std.exception: assertThrown;
+    alias T = Fp!64;
+    int shape = 2;
+    assert(evaluate(T(0.5), shape) == evaluate(T(0.5), T(2)));
+    size_t largest = size_t.max;
+    assert(evaluate(T(0), largest) == evaluate(T(0), T(UInt!(size_t.sizeof * 8)(largest))));
+
+    // Release unittests may retain assertions while disabling contracts.
+    bool contractsEnabled;
+    void probe() in { contractsEnabled = true; } do {}
+    probe();
+    if (contractsEnabled)
+    {
+        shape = -1;
+        assertThrown!AssertError(evaluate(T(0), shape));
+        static if (size_t.sizeof < ulong.sizeof)
+        {
+            ulong tooLarge = cast(ulong)size_t.max + 1;
+            assertThrown!AssertError(evaluate(T(0), tooLarge));
+        }
+    }
 }
