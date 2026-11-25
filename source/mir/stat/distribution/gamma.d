@@ -220,6 +220,121 @@ unittest
 }
 
 /++
+Computes the density of a gamma distribution using guarded extended precision.
+Severe cancellation can reduce the number of accurate significand bits.
+
+Params:
+    T = supported $(D Fp) type with at most 512 significand bits
+    x = nonnegative observation, including positive infinity
+    I = integer shape type for the integer overload
+    shape = finite positive shape, or an integer from 1 through $(D size_t.max)
+    scale = finite positive scale (default: one)
+
+Returns:
+    The density as $(D T). At zero the result is positive infinity for
+    shapes below one, the reciprocal scale for shape one, and
+    zero for shapes above one. At positive infinity the result is
+    zero.
++/
+@safe pure nothrow @nogc
+T gammaPDF(T)(const T x, const T shape, const T scale = T(1))
+    if (is(T == Fp!size, size_t size))
+    in (!x.isNaN && (!x.sign || (!x.coefficient && !x.isInfinity)), "x must be nonnegative")
+    in (!shape.sign && !!shape.coefficient && shape.exponent != long.max, "shape must be finite and positive")
+    in (!scale.sign && !!scale.coefficient && scale.exponent != long.max, "scale must be finite and positive")
+{
+    import mir.stat.internal.fp_gamma: gammaDensity;
+    return gammaDensity!false(x, shape, scale);
+}
+
+/// ditto
+@safe pure nothrow @nogc
+T gammaPDF(T, I = size_t)(const T x, const I shape, const T scale = T(1))
+    if (is(T == Fp!size, size_t size) && __traits(isIntegral, I))
+    in (shape > 0, "shape must be positive")
+    in (I.sizeof <= size_t.sizeof || shape <= size_t.max, "integer shape must fit size_t")
+{
+    import mir.bignum.fixed: UInt;
+    return gammaPDF(x, T(UInt!(size_t.sizeof * 8)(cast(size_t)shape)), scale);
+}
+
+///
+version(mir_stat_test)
+@safe pure nothrow @nogc unittest
+{
+    import mir.bignum.fp: Fp;
+    alias T = Fp!64;
+    assert(gammaPDF(T(0), 1, T(2)) == T(0.5));
+    assert(gammaPDF(T(1), T(2)) == gammaPDF(T(1), 2));
+}
+
+version(mir_stat_test)
+@system unittest
+{
+    checkGammaIntegerShape!gammaPDF();
+}
+
+version(mir_stat_test)
+@safe pure nothrow @nogc unittest
+{
+    import mir.bignum.fixed: UInt;
+    import mir.math.common: approxEqual;
+    alias T = Fp!64;
+    alias U = UInt!64;
+    const density = gammaPDF(T(1.5), T(0.75), T(2));
+    assert(density == T(false, -66, U(0xd41483a1f7af20bfUL)));
+    assert(approxEqual(cast(double)density, gammaPDF(1.5, 0.75, 2.0)));
+    const x = T(false, 252, U(1));
+    const shape = T(false, 189, U(0x8000000000000001UL));
+    const scale = T(false, -63, U(0x7fffffffffffffffUL));
+    assert(gammaPDF(x, shape, scale) == T(false, -192, U(0xf7c72c7198b9bb86UL)));
+    assert(gammaPDF(T(1), 1, T(3)) == T(false, -66, U(0xf49376174c9c3362UL)));
+    assert(gammaPDF(T(5), 64, T(0.25)) == T(false, -108, U(0xacbc6c6448baf92bUL)));
+    assert(gammaPDF(T(0), T(0.5)).isInfinity);
+    assert(!gammaPDF(T(0), 2).coefficient);
+    const tiny = T(false, long.min, U(1));
+    const huge = T(false, long.max - 1, U(4));
+    // x*s = 1 and x/s is below the Fp floor: f rounds to 1/sqrt(pi).
+    assert(gammaPDF(tiny, T(0.5), huge) == T(false, -64, U(0x906eba8214db688dUL)));
+    assert(gammaPDF(T(false, long.min, U(3)), 2, T(2)) == tiny);
+    assert(!gammaPDF(huge, 1, tiny).coefficient);
+    assert(gammaPDF(huge, T(0.75), tiny) == T(0));
+    assert(gammaPDF(tiny, tiny) == T(1));
+    // MPFR references across the exact-product budget and shape limit.
+    const high = U(1) << 63;
+    assert(gammaPDF(T(1), 8, T(false, -63, high + 1)) ==
+        T(false, -77, U(0x991341943d56bfefUL)));
+    assert(gammaPDF(T(1), 8, T(false, -63, high + 4)) ==
+        T(false, -77, U(0x991341943d56bfd6UL)));
+    assert(gammaPDF(T(1), 32) == T(false, -178, U(0xeddf37ab0cf9bcabUL)));
+    assert(gammaPDF(T(1), 33) == T(false, -183, U(0xeddf37ab0cf9bcabUL)));
+    // At unit scale and x=k*sqrt(min), the shape-three prefactor
+    // is k^2/2 subnormal units. The decay places odd k below the tie.
+    foreach (uint k; 1 .. 32)
+    {
+        const rootScaled = T(false, long.min / 2, U(k));
+        const expected = k*k / 2;
+        const value = gammaPDF(rootScaled, 3);
+        assert(value.coefficient == expected);
+        if (expected) assert(value.exponent == long.min);
+    }
+    // The prefactor (4*k+2)/4 is exactly halfway on the subnormal
+    // grid. Every positive observation has a strictly negative decay
+    // exponent, so both midpoint parities round to k.
+    foreach (uint k; 0 .. 16)
+    {
+        foreach (uint offset; 1 .. 4)
+        {
+            const xNear = T(false, long.min, U(4*k + offset));
+            const expected = k + (offset == 3);
+            const value = gammaPDF(xNear, T(2), T(2));
+            assert(value.coefficient == expected);
+            if (expected) assert(value.exponent == long.min);
+        }
+    }
+}
+
+/++
 Computes the gamma cumulative distribution function (CDF).
 
 Returns the lower-tail probability $(D P(X <= x)).
@@ -833,8 +948,8 @@ T gammaLPDF(T)(const T x, const T shape, const T scale = T(1))
     in (!shape.sign && !!shape.coefficient && shape.exponent != long.max, "shape must be finite and positive")
     in (!scale.sign && !!scale.coefficient && scale.exponent != long.max, "scale must be finite and positive")
 {
-    import mir.stat.internal.fp_gamma: gammaLogDensity;
-    return gammaLogDensity(x, shape, scale);
+    import mir.stat.internal.fp_gamma: gammaDensity;
+    return gammaDensity!true(x, shape, scale);
 }
 
 /// ditto

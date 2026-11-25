@@ -100,12 +100,6 @@ private struct GammaDensity(uint bits)
         }
         const observation = S.from(x);
         const z = observation.divide(s);
-        P.S prefactor;
-        if (integerPrefactor(x, shape, scale, prefactor))
-        {
-            const base = term(P.logarithm(prefactor));
-            return B.combine(base, Term(z, true, true));
-        }
         if (a.exponent > exponentBias + G.shift)
         {
             import mir.stat.internal.fp_pi: guardedPi;
@@ -151,19 +145,99 @@ private struct GammaDensity(uint bits)
     }
 }
 
-package(mir.stat) Fp!bits gammaLogDensity(uint bits)(Fp!bits x, Fp!bits shape, Fp!bits scale)
+package(mir.stat) Fp!bits gammaDensity(bool logarithmic, uint bits)(Fp!bits x, Fp!bits shape, Fp!bits scale)
 {
+    import mir.stat.internal.fp_scaled_probability: scaledDecay;
     alias T = Fp!bits;
     alias D = GammaDensity!bits;
+    alias S = D.S;
     const infinity = T(false, long.max, UInt!bits(0));
     const minusInfinity = T(true, long.max, UInt!bits(0));
     if (x.isInfinity)
-        return minusInfinity;
+        return logarithmic ? minusInfinity : T(0);
     const side = position(shape, T(1));
     if (!x.coefficient && side != 0)
-        return side < 0 ? infinity : minusInfinity;
+        return side < 0 ? infinity : logarithmic ? minusInfinity : T(0);
+
+    alias P = D.P;
+    P.S prefactor;
+    if (side != 0 && D.integerPrefactor(x, shape, scale, prefactor))
+    {
+        const z = P.S.from(x).divide(P.S.from(scale));
+        static if (logarithmic)
+        {
+            const base = P.logarithm(prefactor);
+            return addOffset!bits(base, z, true);
+        }
+        else
+        {
+            // For n <= 32 and z >= 2^^65 even z^(n-1)*exp(-z/2) < 1.
+            if (z.exponent >= exponentBias + 66) return T(0);
+            // Cross-multiplying by a target midpoint uses at most
+            // budget + bits + 1 significant bits in the denominator
+            // times its midpoint coefficient. At this smaller decay,
+            // only an exact midpoint can change the rounded result.
+            if (z.exponent + P.work - 16 <= exponentBias)
+                prefactor = P.withCorrection(prefactor, false);
+            else
+                prefactor = prefactor.multiply(scaledDecay(z));
+            return addOffset!bits(T(0), prefactor, false);
+        }
+    }
+    static if (!logarithmic)
+    {
+        if (side == 0)
+        {
+            // Divide the scaled decay directly, including the exact
+            // reciprocal-scale limit at zero.
+            const s = S.from(scale);
+            auto decay = S.from(T(1));
+            if (x.coefficient)
+            {
+                const z = S.from(x).divide(s);
+                if (z.exponent >= exponentBias + 66) return T(0);
+                decay = scaledDecay(z);
+            }
+            return addOffset!bits(T(0), decay.divide(s), false);
+        }
+    }
 
     const result = D.logDensity(x, shape, scale);
-    if (!result.present) return T(0);
-    return addOffset!bits(T(0), result.value, result.negative);
+    if (!result.present) return T(logarithmic ? 0 : 1);
+    static if (logarithmic)
+        return addOffset!bits(T(0), result.value, result.negative);
+    else
+    {
+        // At |log(f)| >= 2^65 the final value is outside the Fp range.
+        if (result.value.exponent >= exponentBias + 66)
+            return result.negative ? T(0) : infinity;
+        auto density = scaledDecay(result.value);
+        if (!result.negative) density = S.from(T(1)).divide(density);
+        return addOffset!bits(T(0), density, false);
+    }
+}
+
+version(mir_stat_test)
+static if (size_t.sizeof == 4)
+@safe pure nothrow @nogc unittest
+{
+    alias T = Fp!32;
+    alias U = UInt!32;
+    const x = T(false, 124, U(1));
+    const shape = T(false, 93, U(0x80000001));
+    const scale = T(false, -31, U(0x7fffffff));
+    assert(gammaDensity!true(x, shape, scale) == T(true, -26, U(0xb1938571)));
+    assert(gammaDensity!false(x, shape, scale) == T(false, -96, U(0xf7c72c72)));
+}
+
+version(mir_stat_test_slow_numerics)
+@safe pure nothrow @nogc unittest
+{
+    alias T = Fp!512;
+    alias U = UInt!512;
+    const x = T(false, 300, U(1));
+    enum expected = U.fromHexString(
+        "cc42299ea1b284687e59e2805d5c717fa7053e60a24e0db1808e369004c73a5d" ~
+        "3bf158aa88f96b16106d7a69610928a3fd7d27ccf4d1f61f514704ab2449c3ec");
+    assert(gammaDensity!false(x, x, T(1)) == T(false, -663, expected));
 }
