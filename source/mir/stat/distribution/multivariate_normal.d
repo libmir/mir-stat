@@ -12,6 +12,11 @@ For caller-owned buffers, use $(LREF multivariateNormalPDFBatchWithWorkspace) wi
 a prepared factor or $(LREF tryMultivariateNormalPDFBatchWithWorkspace) with an
 unfactored matrix and factor scratch. A failed pivot leaves the result buffer untouched.
 
+For repeated evaluations with the same parameters, $(LREF multivariateNormal)
+captures the mean and factor and computes the normalization once. Use the
+distribution's $(D lpdf) and $(D pdf) methods for individual observations or
+$(D lpdfBatch) and $(D pdfBatch) for a matrix of observations in columns.
+
 $(H4 Matrix inputs)
 
 Supply a dense square matrix, including a strided view. A view records the
@@ -132,6 +137,275 @@ private import mir.stat.internal.linearAlgebra.allocation: Allocation, Allocated
 private enum prepared(CovarianceRepresentation form) =
     form == CovarianceRepresentation.covarianceCholesky ||
     form == CovarianceRepresentation.inverseCovarianceCholesky;
+
+/++
+A multivariate normal distribution with its own GC-managed mean and Cholesky
+factor. Construct it with $(LREF multivariateNormal) or $(LREF tryMultivariateNormal).
+Copies share the captured parameters. Evaluation uses GC-managed scratch, and
+batch methods allocate their result. The default value is the zero-dimensional
+distribution.
+
+Params:
+    T = Floating-point coordinate type.
++/
+struct MultivariateNormal(T)
+    if (is(T == float) || is(T == double) || is(T == real))
+{
+    private T[] center;
+    private AllocatedSlice!(Allocation.gc, T, 2) factor;
+    private bool precision;
+    private LogDensityTerms!T terms;
+
+    private auto distances(alias evaluateDistance, X)(scope auto ref X x) const
+    {
+        auto storage = factor.lightConst;
+        if (precision)
+            return evaluateDistance(x, center, precisionCholeskyView!(TrianglePolicy.lower)(storage));
+        return evaluateDistance(x, center, covarianceCholeskyView!(TrianglePolicy.lower)(storage));
+    }
+
+    /++
+    Evaluate the natural log density using the stored normalization.
+    Params:
+        x = One vector of finite coordinates matching the mean's length and element type.
+    Returns:
+        Log density at x, or zero in zero dimensions.
+    +/
+    T lpdf(X)(scope auto ref X x) const
+        if (vector!X && is(Element!X == T))
+    {
+        import mir.stat.distance: mahalanobis;
+        return terms.fromDistance(distances!mahalanobis(x));
+    }
+
+    /++
+    Evaluate the density using the stored normalization.
+    Params:
+        x = One vector of finite coordinates matching the mean's length and element type.
+    Returns:
+        Density at x, or one in zero dimensions. Exponentiation can underflow or overflow.
+    +/
+    T pdf(X)(scope auto ref X x) const
+        if (vector!X && is(Element!X == T))
+    {
+        import mir.math.common: exp;
+        return exp(lpdf(x));
+    }
+
+    /++
+    Evaluate log densities for a batch using the stored normalization.
+    Params:
+        columns = Matrix with one observation per column and one row per coordinate,
+            with the same floating-point element type as the mean.
+    Returns:
+        A GC-managed vector of log densities in column order.
+    +/
+    auto lpdfBatch(X)(scope auto ref X columns) const
+        if (matrix!X && is(Element!X == T))
+    {
+        import mir.stat.distance: mahalanobisBatch;
+        auto values = distances!mahalanobisBatch(columns);
+        foreach (j; 0 .. values.length)
+            values[j] = terms.fromDistance(values[j]);
+        return values;
+    }
+
+    /++
+    Evaluate densities for a batch using the stored normalization.
+    Params:
+        columns = Matrix of finite observations in columns, with one row per coordinate
+            and the same floating-point element type as the mean.
+    Returns:
+        A GC-managed vector of densities in column order. Exponentiation can underflow or overflow.
+    +/
+    auto pdfBatch(X)(scope auto ref X columns) const
+        if (matrix!X && is(Element!X == T))
+    {
+        auto values = lpdfBatch(columns);
+        exponentiateLogDensities(values);
+        return values;
+    }
+
+    /// Each result corresponds to one observation column.
+    version(mir_stat_test_multivariate_normal)
+    @safe pure nothrow unittest
+    {
+        import mir.ndslice.slice: sliced;
+        double[1] mean = [1], factor = [2];
+        double[2] data = [1, 3];
+        auto model = multivariateNormal(mean[], covarianceCholeskyView(factor[].sliced(1, 1)));
+        auto batch = model.pdfBatch(data[].sliced(1, 2));
+        assert(batch[0] == model.pdf(data[0 .. 1]));
+        assert(batch[1] == model.pdf(data[1 .. 2]));
+    }
+}
+
+/// Result of constructing a multivariate normal distribution.
+struct MultivariateNormalResult(T)
+{
+    import std.typecons: Nullable;
+    /// Zero on success, or the one-based index of the first failed Cholesky pivot.
+    size_t failedPivot;
+    /// The distribution on success, including in zero dimensions. Null on factorization failure.
+    Nullable!(MultivariateNormal!T) distribution;
+}
+
+private enum modelInputs(C, M) = vector!C && isCovarianceMetric!M &&
+    is(Element!C == Element!(typeof(M.storage)));
+
+/++
+Capture the parameters of a multivariate normal distribution in GC-managed storage.
+Construction copies the selected matrix triangle. An unfactored input is
+decomposed on the copy, and a supplied Cholesky factor is copied directly.
+
+Params:
+    mean = Vector of k finite means.
+    metric = Labeled k-by-k covariance, precision, or Cholesky factor of either,
+        with the same element type as mean. The matrix must be positive definite.
+        A supplied factor must have finite selected entries and a positive diagonal.
+Returns:
+    An owning $(LREF MultivariateNormal) that reuses its factor and log determinant across evaluations.
+Throws:
+    Exception if Cholesky factorization fails for an unfactored input.
++/
+auto multivariateNormal(C, M)(scope auto ref C mean, scope auto ref M metric)
+    if (modelInputs!(C, M))
+{
+    auto outcome = tryMultivariateNormal(mean, metric);
+    static if (!prepared!(M.form))
+    {
+        import mir.exception: enforce;
+        enforce!"Cholesky factorization failed"(outcome.failedPivot == 0);
+    }
+    return outcome.distribution.get;
+}
+
+/// Evaluate two observations against the same captured parameters.
+version(mir_stat_test_multivariate_normal)
+@safe pure unittest
+{
+    import mir.ndslice.slice: sliced;
+    double[2] mean = [1, 2], x = [2, 3];
+    double[4] covariance = [4, 1, 1, 2];
+    auto metric = covarianceView(covariance[].sliced(2, 2));
+    auto model = multivariateNormal(mean[], metric);
+    assert(model.lpdf(x[]) == multivariateNormalLPDF(x[], mean[], metric));
+    x = [3, 5];
+    auto expected = multivariateNormalPDF(x[], mean[], metric);
+    mean[] = 0;
+    covariance[] = 0;
+    assert(model.pdf(x[]) == expected);
+}
+
+/++
+Construct a distribution and report a failed Cholesky pivot. Ordinary numeric
+arrays and slices support nothrow construction. A supplied factor is trusted.
+
+Params:
+    mean = Vector of k finite means.
+    metric = Labeled k-by-k covariance, precision, or a prepared factor of either,
+        with the same element type as mean. A prepared factor must have finite
+        selected entries and a positive diagonal.
+Returns:
+    A $(LREF MultivariateNormalResult) with an owning distribution on success,
+    or the one-based pivot index and a null distribution on factorization failure.
++/
+auto tryMultivariateNormal(C, M)(scope auto ref C mean, scope auto ref M metric)
+    if (modelInputs!(C, M))
+{
+    import mir.stat.internal.linearAlgebra.cholesky: tryCholeskyDecomposeInPlace;
+    import std.typecons: nullable;
+    alias T = Element!C;
+    alias Result = MultivariateNormalResult!T;
+    auto input = metric.storage.asView;
+    const n = mean.length;
+    assert(input.length!0 == n && input.length!1 == n);
+    int allocator;
+    auto storage = allocate!(Allocation.gc, T)(allocator, [n, n]);
+    foreach (i; 0 .. n)
+        foreach (j; 0 .. i + 1)
+            static if (M.triangle == TrianglePolicy.lower)
+                storage[i, j] = input[i, j];
+            else
+                storage[i, j] = input[j, i];
+    static if (!prepared!(M.form))
+    {
+        auto pivot = tryCholeskyDecomposeInPlace!(TrianglePolicy.lower)(storage);
+        if (pivot) return Result(pivot);
+    }
+
+    MultivariateNormal!T model;
+    model.center = new T[n];
+    foreach (i; 0 .. n)
+        model.center[i] = mean[i];
+    model.factor = storage;
+    static if (M.form == CovarianceRepresentation.inverseCovariance ||
+               M.form == CovarianceRepresentation.inverseCovarianceCholesky)
+    {
+        model.precision = true;
+        model.terms = logDensityTerms(precisionCholeskyView!(TrianglePolicy.lower)(storage));
+    }
+    else
+        model.terms = logDensityTerms(covarianceCholeskyView!(TrianglePolicy.lower)(storage));
+    return Result(0, nullable(model));
+}
+
+/// A singular covariance fails at its second pivot.
+version(mir_stat_test_multivariate_normal)
+@safe pure nothrow unittest
+{
+    import mir.ndslice.slice: sliced;
+    double[2] mean = [0, 0];
+    double[4] entries = [1, 1, 1, 1];
+    auto outcome = tryMultivariateNormal(mean[], covarianceView(entries[].sliced(2, 2)));
+    assert(outcome.failedPivot == 2 && outcome.distribution.isNull);
+}
+
+
+version(mir_stat_test_multivariate_normal)
+@safe pure unittest
+{
+    import mir.math.common: fabs;
+    import mir.ndslice.slice: sliced;
+    import std.exception: assertThrown;
+    import std.meta: AliasSeq;
+
+    foreach (T; AliasSeq!(float, double, real))
+    foreach (triangle; AliasSeq!(TrianglePolicy.lower, TrianglePolicy.upper))
+    foreach (label; AliasSeq!(covarianceView, precisionView,
+        covarianceCholeskyView, precisionCholeskyView))
+    {
+        T[2] mean = [1, -2];
+        T[4] entries = triangle == TrianglePolicy.upper
+            ? [T(4), T(1), T.nan, T(2)] : [T(4), T.nan, T(1), T(2)];
+        auto metric = label!triangle(entries[].sliced(2, 2));
+        T[4] data = [3, 4, -1, 2];
+        auto columns = data[].sliced(2, 2);
+        auto expected = multivariateNormalLPDFBatch(columns, mean[], metric);
+        auto densities = multivariateNormalPDFBatch(columns, mean[], metric);
+        const model = tryMultivariateNormal(mean[], metric).distribution.get;
+        entries[] = T.nan;
+        mean[] = T.nan;
+        auto logs = model.lpdfBatch(columns);
+        auto probs = model.pdfBatch(columns);
+        foreach (j; 0 .. columns.length!1)
+        {
+            auto point = columns[0 .. 2, j];
+            assert(fabs(logs[j] - expected[j]) <= 64 * T.epsilon * fabs(expected[j]));
+            assert(fabs(model.lpdf(point) - logs[j]) <= 64 * T.epsilon * fabs(logs[j]));
+            assert(fabs(probs[j] - densities[j]) <= 128 * T.epsilon * densities[j]);
+        }
+    }
+
+    double[] empty;
+    MultivariateNormal!double zero;
+    assert(zero.lpdf(empty) == 0 && zero.pdf(empty) == 1);
+    auto emptyModel = multivariateNormal(empty, covarianceView(empty.sliced(0, 0)));
+    assert(emptyModel.pdfBatch(empty.sliced(0, 2)) == [1.0, 1.0]);
+    double[2] origin = [0, 0];
+    double[4] singular = [1, 1, 1, 1];
+    assertThrown!Exception(multivariateNormal(origin[], covarianceView(singular[].sliced(2, 2))));
+}
 
 /++
 Evaluate the multivariate normal log density using GC-managed scratch.
