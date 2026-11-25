@@ -17,7 +17,7 @@ def coefficients():
 def render_coefficients():
     lines=['// BEGIN Stirling coefficients',
            'private struct StirlingCoefficient { UInt!512 numerator; UInt!512 denominator; }',
-           'private immutable StirlingCoefficient[65] coefficients = [']
+           'package(mir.stat) immutable StirlingCoefficient[65] coefficients = [']
     for c in coefficients():
         assert max(c.numerator.bit_length(),c.denominator.bit_length())<=512
         lines.append(f'    StirlingCoefficient(UInt!512.fromHexString("{c.numerator:x}"),UInt!512.fromHexString("{c.denominator:x}")),')
