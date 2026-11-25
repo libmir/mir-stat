@@ -16,6 +16,10 @@ For repeated evaluations with the same parameters, $(LREF multivariateNormal)
 captures the mean and factor and computes the normalization once. Use the
 distribution's $(D lpdf) and $(D pdf) methods for individual observations or
 $(D lpdfBatch) and $(D pdfBatch) for a matrix of observations in columns.
+$(LREF rcMultivariateNormal) and $(LREF makeMultivariateNormal) select RC and
+custom storage. For example, a custom model can evaluate each new observation
+with $(D model.lpdfWithWorkspace(x, work)), reusing the same length-k buffer.
+The four $(D WithWorkspace) methods are available for every storage policy.
 
 $(H4 Matrix inputs)
 
@@ -141,9 +145,11 @@ private enum prepared(CovarianceRepresentation form) =
 /++
 A multivariate normal distribution with its own mean and Cholesky factor.
 Use $(LREF multivariateNormal) for GC storage or $(LREF rcMultivariateNormal)
-for reference-counted storage.
-Copies share the captured parameters. Allocating methods use the model's
-allocation policy for scratch and batch results. The default value is the zero-dimensional
+for reference-counted storage, or $(LREF makeMultivariateNormal) for a custom allocator.
+Copies share the captured parameters. GC and RC models retain their storage.
+For a custom model, release the storage exactly once after the last use of
+every copy. Workspace methods accept disjoint caller-owned buffers. Allocating
+methods on a custom model take an explicit allocator for the evaluation. The default value is the zero-dimensional
 distribution.
 
 Params:
@@ -242,11 +248,10 @@ struct MultivariateNormal(T, Allocation policy = Allocation.gc)
         Log density at x, or zero in zero dimensions.
     +/
     T lpdf(X)(scope auto ref X x) const
-        if (vector!X && is(Element!X == T))
+        if (policy != Allocation.custom && vector!X && is(Element!X == T))
     {
         int allocator;
-        auto work = allocate!(policy, T)(allocator, [k]);
-        return lpdfWithWorkspace(x, work);
+        return allocatedLogDensity!false(allocator, x);
     }
 
     /++
@@ -257,7 +262,7 @@ struct MultivariateNormal(T, Allocation policy = Allocation.gc)
         Density at x, or one in zero dimensions. Exponentiation can underflow or overflow.
     +/
     T pdf(X)(scope auto ref X x) const
-        if (vector!X && is(Element!X == T))
+        if (policy != Allocation.custom && vector!X && is(Element!X == T))
     {
         import mir.math.common: exp;
         return exp(lpdf(x));
@@ -272,13 +277,10 @@ struct MultivariateNormal(T, Allocation policy = Allocation.gc)
         A vector of log densities in column order using the model's allocation policy.
     +/
     auto lpdfBatch(X)(scope auto ref X columns) const
-        if (matrix!X && is(Element!X == T))
+        if (policy != Allocation.custom && matrix!X && is(Element!X == T))
     {
         int allocator;
-        auto values = allocate!(policy, T)(allocator, [columns.length!1]);
-        auto work = allocate!(policy, T)(allocator, columns.asView.shape);
-        lpdfBatchWithWorkspace(columns, values, work);
-        return values;
+        return allocatedLogDensity!true(allocator, columns);
     }
 
     /++
@@ -290,7 +292,7 @@ struct MultivariateNormal(T, Allocation policy = Allocation.gc)
         A vector of densities in column order using the model's allocation policy. Exponentiation can underflow or overflow.
     +/
     auto pdfBatch(X)(scope auto ref X columns) const
-        if (matrix!X && is(Element!X == T))
+        if (policy != Allocation.custom && matrix!X && is(Element!X == T))
     {
         auto values = lpdfBatch(columns);
         exponentiateLogDensities(values);
@@ -309,6 +311,103 @@ struct MultivariateNormal(T, Allocation policy = Allocation.gc)
         assert(batch[0] == model.pdf(data[0 .. 1]));
         assert(batch[1] == model.pdf(data[1 .. 2]));
     }
+
+    private auto allocatedLogDensity(bool batch, A, X)(ref A allocator, scope auto ref X x) const
+    {
+        import std.experimental.allocator: dispose;
+        static if (batch)
+        {
+            // Keep the result below scratch so a region can release scratch on return.
+            auto result = allocate!(policy, T)(allocator, [x.asView.length!1]);
+            scope(failure) static if (policy == Allocation.custom) allocator.dispose(result.field);
+            auto work = allocate!(policy, T)(allocator, x.asView.shape);
+            scope(exit) static if (policy == Allocation.custom) allocator.dispose(work.field);
+            lpdfBatchWithWorkspace(x, result, work);
+            return result;
+        }
+        else
+        {
+            auto work = allocate!(policy, T)(allocator, [k]);
+            scope(exit) static if (policy == Allocation.custom) allocator.dispose(work.field);
+            return lpdfWithWorkspace(x, work);
+        }
+    }
+
+    static if (policy == Allocation.custom)
+    {
+        /++
+        Release the model's parameter storage and reset this handle. All other
+        copies become invalid. Call once after the last use of every copy.
+        Params:
+            allocator = The allocator that supplied the parameter storage.
+        +/
+        void dispose(A)(auto ref A allocator) @system
+        {
+            import std.experimental.allocator : release = dispose;
+            if (parameters.length) release(allocator, parameters.field);
+            this = typeof(this).init;
+        }
+
+        /++
+        Evaluate log density using the supplied allocator.
+        Params:
+            allocator = Allocator for scratch.
+            x = Vector of k finite coordinates. Its element type must match the model's.
+        Returns:
+            The log density at x.
+        +/
+        T lpdf(A, X)(auto ref A allocator, scope auto ref X x) const
+            if (vector!X && is(Element!X == T))
+        {
+            return allocatedLogDensity!false(allocator, x);
+        }
+
+        /++
+        Evaluate density using the supplied allocator.
+        Params:
+            allocator = Allocator for scratch.
+            x = Vector of k finite coordinates. Its element type must match the model's.
+        Returns:
+            The density at x.
+        +/
+        T pdf(A, X)(auto ref A allocator, scope auto ref X x) const
+            if (vector!X && is(Element!X == T))
+        {
+            import mir.math.common: exp;
+            return exp(lpdf(allocator, x));
+        }
+
+        /++
+        Evaluate log densities using the supplied allocator.
+        Params:
+            allocator = Allocator for scratch and result storage.
+            columns = Matrix of finite observation columns with k rows. Its element type must match the model's.
+        Returns:
+            A vector of log densities in column order. Release its field with the evaluation allocator.
+        +/
+        auto lpdfBatch(A, X)(auto ref A allocator, scope auto ref X columns) const
+            if (matrix!X && is(Element!X == T))
+        {
+            return allocatedLogDensity!true(allocator, columns);
+        }
+
+        /++
+        Evaluate densities using the supplied allocator.
+        Params:
+            allocator = Allocator for scratch and result storage.
+            columns = Matrix of finite observation columns with k rows. Its element type must match the model's.
+        Returns:
+            A vector of densities in column order. Release its field with the evaluation allocator.
+        +/
+        auto pdfBatch(A, X)(auto ref A allocator, scope auto ref X columns) const
+            if (matrix!X && is(Element!X == T))
+        {
+            auto result = lpdfBatch(allocator, columns);
+            exponentiateLogDensities(result);
+            return result;
+        }
+    }
+
 }
 
 /// Result of constructing a multivariate normal distribution.
@@ -475,6 +574,144 @@ version(mir_stat_test_multivariate_normal)
     assert(retained.failedPivot == 0 && retained.distribution.get.pdf(x[]) > 0);
 }
 
+/++
+Capture a distribution in storage supplied by an allocator.
+Params:
+    allocator = Allocator for the captured parameters. Use it to dispose of the model.
+    mean = Vector of k finite means.
+    metric = Labeled k-by-k covariance, precision, or Cholesky factor of either,
+        matching the element type of mean. Prepared factors require finite selected
+        entries and a positive diagonal.
+Returns:
+    A custom-allocated distribution. Release it with $(D model.dispose(allocator))
+    once after the last use of all copies.
+Throws:
+    Exception if Cholesky factorization fails for an unfactored input.
++/
+auto makeMultivariateNormal(A, C, M)(auto ref A allocator, scope auto ref C mean, scope auto ref M metric)
+    if (modelInputs!(C, M))
+{
+    return checkedModel!M(tryMakeMultivariateNormal(allocator, mean, metric));
+}
+
+/// Reuse a custom model with stack scratch to score a single observation.
+version(mir_stat_test_multivariate_normal)
+@system nothrow @nogc unittest
+{
+    import mir.ndslice.slice: sliced;
+    import std.experimental.allocator.mallocator: Mallocator;
+    double[1] mean = [1], factor = [2], x = [3], work;
+    auto model = makeMultivariateNormal(Mallocator.instance, mean[], covarianceCholeskyView(factor[].sliced(1, 1)));
+    scope(exit) model.dispose(Mallocator.instance);
+    assert(model.lpdfWithWorkspace(x[], work[]) == model.lpdf(Mallocator.instance, x[]));
+}
+
+/++
+Capture a distribution using an allocator and report factorization failure.
+Params:
+    allocator = Allocator for the captured parameters.
+    mean = Vector of k finite means.
+    metric = Labeled k-by-k covariance, precision, or Cholesky factor of either,
+        matching the element type of mean. Prepared factors require finite selected
+        entries and a positive diagonal.
+Returns:
+    On success, the custom model and pivot zero. Dispose of its storage once after
+    the last use of all copies. On failure, the one-based pivot and a null model;
+    the parameter storage has been released.
++/
+auto tryMakeMultivariateNormal(A, C, M)(auto ref A allocator, scope auto ref C mean, scope auto ref M metric)
+    if (modelInputs!(C, M))
+{
+    return buildModel!(Allocation.custom)(allocator, mean, metric);
+}
+
+version(mir_stat_test_multivariate_normal)
+@system unittest
+{
+    import mir.ndslice.slice: sliced;
+    import mir.ndslice.topology: map;
+    import std.experimental.allocator: dispose;
+    import std.experimental.allocator.mallocator: Mallocator;
+    import std.exception: assertThrown;
+    struct Counter
+    {
+        size_t live;
+        void[] allocate(size_t n)
+        {
+            auto block = Mallocator.instance.allocate(n);
+            if (block.length)
+                ++live;
+            return block;
+        }
+        bool deallocate(void[] block)
+        {
+            if (block.length)
+                --live;
+            return Mallocator.instance.deallocate(block);
+        }
+    }
+    Counter owner, evaluation;
+    double[2] mean = [1, 2], point = [2, 1], scratch;
+    double[4] entries = [4, 1, 0, 2];
+    auto matrix = entries[].sliced(2, 2);
+    auto model = makeMultivariateNormal(owner, mean[], precisionView(matrix));
+    assert(owner.live == 1);
+    auto batch = model.pdfBatch(evaluation, point[].sliced(2, 1));
+    scope(exit) evaluation.dispose(batch.field);
+    assert(batch[0] == model.pdf(evaluation, point[]));
+    assert(evaluation.live == 1);
+    auto error = new Exception("input iterator failed");
+    double fail(double x) { throw error; }
+    assertThrown!Exception(model.lpdfBatch(evaluation, point[].sliced(2, 1).map!fail));
+    assert(evaluation.live == 1);
+    model.dispose(owner);
+    assert(owner.live == 0 && batch[0] > 0);
+    entries[] = [1, 1, 0, 1];
+    auto failed = tryMakeMultivariateNormal(owner, mean[], covarianceView(matrix));
+    assert(failed.failedPivot == 2 && failed.distribution.isNull && owner.live == 0);
+    assertThrown!Exception(makeMultivariateNormal(owner, mean[], covarianceView(matrix)));
+    assert(owner.live == 0);
+    assertThrown!Exception(makeMultivariateNormal(owner, mean[].sliced.map!fail, covarianceCholeskyView(matrix)));
+    assert(owner.live == 0);
+    auto empty = tryMakeMultivariateNormal(owner, mean[0 .. 0], covarianceView(entries[0 .. 0].sliced(0, 0)));
+    assert(empty.failedPivot == 0 && !empty.distribution.isNull);
+    empty.distribution.get.dispose(owner);
+    assert(owner.live == 0);
+}
+
+// Scratch must be released while the caller still owns the batch result.
+version(mir_stat_test_multivariate_normal)
+@system nothrow @nogc unittest
+{
+    import mir.ndslice.slice: sliced;
+    import std.experimental.allocator: dispose;
+    import std.experimental.allocator.building_blocks.region: BorrowedRegion;
+
+    double[1] mean = [0], factor = [1], scalarWork;
+    double[2] observations = [0, 1], parameters;
+    double[4] batchStorage;
+    alias Region = BorrowedRegion!(double.alignof);
+    auto owner = Region(cast(ubyte[]) parameters[]);
+    auto region = Region(cast(ubyte[]) batchStorage[]);
+    auto model = makeMultivariateNormal(owner, mean[], covarianceCholeskyView(factor[].sliced(1, 1)));
+    scope(exit) model.dispose(owner);
+    auto columns = observations[].sliced(1, 2);
+    foreach (attempt; 0 .. 2)
+    {
+        auto logs = model.lpdfBatch(region, columns);
+        assert(region.available == batchStorage.sizeof - observations.sizeof);
+        assert(logs[1] == model.lpdfWithWorkspace(observations[1 .. 2], scalarWork[]));
+        region.dispose(logs.field);
+        assert(region.available == batchStorage.sizeof);
+
+        auto densities = model.pdfBatch(region, columns);
+        assert(region.available == batchStorage.sizeof - observations.sizeof);
+        assert(densities[1] == model.pdfWithWorkspace(observations[1 .. 2], scalarWork[]));
+        region.dispose(densities.field);
+        assert(region.available == batchStorage.sizeof);
+    }
+}
+
 version(mir_stat_test_multivariate_normal)
 @system unittest
 {
@@ -513,8 +750,10 @@ private auto buildModel(Allocation policy, A, C, M)(ref A allocator, scope auto 
     if (n && n > (size_t.max - n) / n)
         onOutOfMemoryError();
     MultivariateNormal!(T, policy) model;
+    if (!n) return Result(0, nullable(model));
     model.k = n;
     model.parameters = allocate!(policy, T)(allocator, [n + n * n]);
+    scope(failure) static if (policy == Allocation.custom) model.dispose(allocator);
     auto data = model.parameters.lightScope.field;
     auto storage = data[n .. $].sliced(n, n);
     foreach (i; 0 .. n)
@@ -526,7 +765,11 @@ private auto buildModel(Allocation policy, A, C, M)(ref A allocator, scope auto 
     static if (!prepared!(M.form))
     {
         auto pivot = tryCholeskyDecomposeInPlace!(TrianglePolicy.lower)(storage);
-        if (pivot) return Result(pivot);
+        if (pivot)
+        {
+            static if (policy == Allocation.custom) model.dispose(allocator);
+            return Result(pivot);
+        }
     }
 
     foreach (i; 0 .. n)
