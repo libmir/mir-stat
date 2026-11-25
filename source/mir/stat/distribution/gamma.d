@@ -25,6 +25,7 @@ module mir.stat.distribution.gamma;
 
 import mir.internal.utility: isFloatingPoint;
 import mir.bignum.fp: Fp;
+private import mir.stat.internal.fp_probability: fpProbabilityValid;
 
 /++
 Computes the gamma probability density function (PDF).
@@ -945,6 +946,85 @@ unittest
     5.gammaCDF(0.5, 1.5).gammaInvCDF(0.5, 1.5).shouldApprox == 5;
     6.666666.gammaCDF(2).gammaInvCDF(2).shouldApprox == 6.666666;
     3.333333.gammaCDF(0.5).gammaInvCDF(0.5).shouldApprox == 3.333333;
+}
+
+/++
+Evaluates the gamma quantile by comparing guarded incomplete-gamma tails
+at midpoints of the result grid, including the subnormal and overflow boundaries.
+
+Params:
+    T = extended-precision type with at most 512 significand bits
+    p = represented cumulative probability in [0, 1]
+    I = integer shape type for the integer overload
+    shape = finite positive shape, or an integer from 1 through $(D size_t.max)
+    scale = finite positive scale (default: one)
+
+Returns:
+    The quantile as $(D T), with zero at $(D p = 0) and positive infinity
+    at $(D p = 1). An unresolved tail comparison returns NaN under the
+    same work limits as $(D gammaCDF). Rounding is guarded.
++/
+@safe pure nothrow @nogc
+T gammaInvCDF(T)(const T p, const T shape, const T scale = T(1))
+    if (is(T == Fp!size, size_t size))
+    in (fpProbabilityValid(p), "p must be in [0, 1]")
+    in (!shape.sign && !!shape.coefficient && shape.exponent != long.max, "shape must be finite and positive")
+    in (!scale.sign && !!scale.coefficient && scale.exponent != long.max, "scale must be finite and positive")
+{
+    import mir.stat.internal.fp_gamma: gammaQuantile;
+    return gammaQuantile(p, shape, scale);
+}
+
+/// ditto
+@safe pure nothrow @nogc
+T gammaInvCDF(T, I = size_t)(const T p, const I shape, const T scale = T(1))
+    if (is(T == Fp!size, size_t size) && __traits(isIntegral, I))
+    in (shape > 0, "shape must be positive")
+    in (I.sizeof <= size_t.sizeof || shape <= size_t.max, "integer shape must fit size_t")
+{
+    import mir.bignum.fixed: UInt;
+    return gammaInvCDF(p, T(UInt!(size_t.sizeof * 8)(cast(size_t)shape)), scale);
+}
+
+///
+version(mir_stat_test)
+@safe pure nothrow @nogc unittest
+{
+    import mir.bignum.fp: Fp;
+    alias T = Fp!64;
+    assert(gammaInvCDF(T(0), 2) == T(0));
+}
+
+version(mir_stat_test)
+@system unittest
+{
+    checkGammaIntegerShape!gammaInvCDF();
+}
+
+version(mir_stat_test)
+@safe pure nothrow @nogc unittest
+{
+    import mir.bignum.fixed: UInt;
+    import mir.math.common: approxEqual;
+    alias T = Fp!64;
+    alias U = UInt!64;
+    const p = 0.9375;
+    const a = 0.0625;
+    const reference = T(false, -65, U(9816628745057361628UL));
+    assert(gammaInvCDF(T(p), T(a)) == reference);
+    assert(approxEqual(gammaInvCDF(p, a), cast(double)reference));
+    assert(gammaInvCDF(T(0.5), T(2)) == T(false, -63, U(15480018695859049449UL)));
+    assert(gammaInvCDF(T(0.5), 1) == T(false, -64, U(0xb17217f7d1cf79acUL)));
+    assert(gammaInvCDF(T(1), T(2)).isInfinity);
+    assert(gammaInvCDF(T(0.5), T(false, -1000, U(1))) == T(0));
+    enum k = long.max - 200;
+    assert(gammaInvCDF(T(false, -k, U(1)), T(0.5), T(false, k, U(1))) ==
+        T(false, -k - 64, U(14488038916154245685UL)));
+    // The mean is a midpoint whose upper grid neighbor has the even
+    // significand. The gamma median is strictly on its lower side.
+    const large = T(false, 300, U(0x8000000000000001UL));
+    assert(gammaInvCDF(T(0.5), large, T(1.5)) == T(false, 300, U(0xc000000000000001UL)));
+    assert(gammaInvCDF(T(0.75), T(2), T(false, long.max - 1, U.max)).isInfinity);
 }
 
 /++

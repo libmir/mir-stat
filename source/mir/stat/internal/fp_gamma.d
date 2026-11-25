@@ -521,6 +521,86 @@ version(mir_stat_test)
     assert(gammaTail!true(T(65536), T(65536), T(1), 1).isNaN);
 }
 
+// Consecutive ranks enumerate positive dyadics on the output grid, with
+// the first binade sharing the subnormal grid. Include one virtual point
+// past the largest finite value to locate the overflow rounding midpoint.
+private struct GammaGrid(uint bits)
+{
+    alias S = GammaIntegral!bits.S;
+    alias Rank = UInt!(bits + 128);
+    enum block = Rank(1) << (bits - 1);
+
+    static S value(Rank rank) @safe pure nothrow @nogc
+    {
+        const binade = rank >> (bits - 1);
+        auto coefficient = (rank & (block - 1)).toSize!bits;
+        if (binade) coefficient |= UInt!bits(1) << (bits - 1);
+        auto result = S.from(Fp!bits(coefficient));
+        result.exponent -= 1UL << 63;
+        if (binade) result.exponent += binade.toSize!128 - 1;
+        return result;
+    }
+}
+
+package(mir.stat) Fp!bits gammaQuantile(uint bits)(Fp!bits p, Fp!bits shape,
+    Fp!bits scale, uint termLimit = gammaTermLimit)
+{
+    import mir.stat.internal.fp_weibull: weibullQuantile;
+    alias T = Fp!bits;
+    alias I = GammaIntegral!bits;
+    alias Grid = GammaGrid!bits;
+    alias Rank = Grid.Rank;
+    const infinity = T(false, long.max, UInt!bits(0));
+    if (!p.coefficient) return T(0);
+    if (position(p, T(1)) == 0) return infinity;
+    if (position(shape, T(1)) == 0) return weibullQuantile(p, shape, scale);
+
+    auto integral = I(shape, termLimit);
+    const divisor = I.S.from(scale);
+    const lowerTarget = I.S.from(p);
+    const upperTarget = I.B.combine(I.Term(integral.one, false, true),
+        I.Term(lowerTarget, true, true)).value;
+    const median = position(p, T(false, -1, UInt!bits(1))) == 0;
+    const mean = integral.a.multiply(divisor);
+    Rank low;
+    const end = (Rank(ulong.max) + 1) << (bits - 1);
+    Rank high = end;
+    while (low < high)
+    {
+        const rank = (low + high) >> 1;
+        auto midpoint = Grid.value(rank + 1);
+        if (rank) midpoint = midpoint.add(Grid.value(rank));
+        midpoint.exponent -= 1;
+        // The gamma median is strictly below the mean. At an exact
+        // mean midpoint this decides the side even when the skewness
+        // correction to one half is smaller than the integration error.
+        if (median && I.compare(midpoint, mean) == 0)
+        {
+            high = rank;
+            continue;
+        }
+        I.Term tail;
+        bool upper;
+        if (!integral.evaluate(midpoint.divide(divisor), upper, tail))
+            return T(false, long.max, UInt!bits(1));
+        const cmp = tail.present ? I.compare(tail.value, upper ? upperTarget : lowerTarget) : -1;
+        if ((upper ? -cmp : cmp) < 0 || (!cmp && rank.bt(0)))
+            low = rank + 1;
+        else
+            high = rank;
+    }
+    if (!low) return T(0);
+    if (low == end) return infinity;
+    return addOffset!bits(T(0), Grid.value(low), false);
+}
+
+version(mir_stat_test)
+@safe pure nothrow @nogc unittest
+{
+    alias T = Fp!64;
+    assert(gammaQuantile(T(0.5), T(2), T(1), 1).isNaN);
+}
+
 version(mir_stat_test)
 static if (size_t.sizeof == 4)
 @safe pure nothrow @nogc unittest
@@ -536,7 +616,8 @@ static if (size_t.sizeof == 4)
     const threeQuarters = T(false, -2, U(3));
     assert(gammaTail!false(half, threeQuarters, T(1)) == T(false, -32, U(0x8726e2ed)));
     assert(gammaTail!true(half, threeQuarters, T(1)) == T(false, -33, U(0xf1b23a26)));
-
+    assert(gammaQuantile(T(false, -4, U(15)), T(false, -4, U(1)), T(1)) ==
+        T(false, -33, U(0x883babd5)));
 }
 
 version(mir_stat_test_slow_numerics)
@@ -557,4 +638,22 @@ version(mir_stat_test_slow_numerics)
         "ffbbe9f1bfa03393c02bfe82011f2ad721888a35ebfba984461779f5b0b0ed1d" ~
         "32b7be83af51276c9e729f38f5033f458383dfb27790104902b085201b2ad10e");
     assert(gammaTail!true(T(65536), T(65536), T(1)) == T(false, -513, center));
+}
+
+version(mir_stat_test_slow_numerics)
+@safe pure nothrow @nogc unittest
+{
+    alias T = Fp!64;
+    alias U = UInt!64;
+    // MPFR's upper incomplete gamma at each pair of bounding midpoints
+    // brackets the exact target for three adjacent probability inputs.
+    const T[3] probabilities = [T(false, -65, U.max), T(0.5), T(false, -64, U(0x8000000000000001UL))];
+    foreach (i, probability; probabilities)
+        assert(gammaQuantile(probability, T(2.5), T(1)) == T(false, -62, U(10033784061509306440UL + i)));
+    assert(gammaQuantile(T(0.9375), T(65536), T(1)) ==
+        T(false, -47, U(9278707942925074154UL)));
+    // Invert (1+x)*exp(-x) = 1/2 independently by MPFR bisection.
+    alias V = Fp!128;
+    enum expected = UInt!128.fromHexString("d6d412fcbb1593e94926a69af3a8f66c");
+    assert(gammaQuantile(V(0.5), V(2), V(1)) == V(false, -127, expected));
 }
