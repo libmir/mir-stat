@@ -214,7 +214,8 @@ and repeated histogram queries continue to use their persistent bitmaps.
 | Cached interior-first, endpoints-last schedule | Supported | Caller order | Caller order |
 
 - Endpoint-only scanning requires N >= 2, K >= 2, and every probability equal to 0 or 1. It requires directly stored observations and probabilities and a numeric result type. Direct quantileInto calls additionally require directly stored output.
-- Floating endpoint scans fall back for NaNs. The endpoint scan chooses negative zero for the minimum and positive zero for the maximum when both signs occur. Ordinary quantiles preserve the sign of a selected observation and permit either sign among tied zeros. The sorted path reads the stored rank directly; mixed batches need no extra scan to resolve ties.
+- Ordinary quantiles require observations without NaNs and accept infinities. Floating endpoint scans decline to supply extrema when they encounter a NaN. Callers are responsible for the input precondition across all selection and sorting paths.
+- The endpoint scan chooses negative zero for the minimum and positive zero for the maximum when both signs occur. Ordinary quantiles preserve the sign of a selected observation and permit either sign among tied zeros. The sorted path reads the stored rank directly; mixed batches need no extra scan to resolve ties.
 - Mixed float/double scans finish the copy but require ordinary selection if any NaN or negative zero occurs. Integer scans cannot require this fallback.
 - Floating endpoint scans and mixed-batch copy shortcuts are bypassed during compile-time evaluation.
 - Scheduling changes require directly stored workspace, probabilities, and output. Generic views retain the applicable general path, preserving observable iterator behavior. Copying a view can produce a directly stored workspace for subsequent selection.
