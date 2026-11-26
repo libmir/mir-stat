@@ -94,6 +94,7 @@ sources_list = [
     'mir/stat/internal/one_minus_exp',
     'mir/stat/internal/shape_transform',
     'mir/stat/internal/bivariate_normal_rectangle',
+    'mir/stat/internal/normal_rectangle_order',
     'mir/stat/internal/standardize',
     'mir/stat/internal/summation',
     'mir/stat/descriptive/histogram/package',

@@ -81,12 +81,12 @@ private struct Interval(T)
 
     T mass(bool scaled = false)() const @safe pure nothrow @nogc
     {
-        return interval!scaled(lower, upper, width);
+        return normalIntervalMass!scaled(lower, upper, width);
     }
 }
 
 // The width may be known more accurately than the difference of the transformed endpoints.
-private T interval(bool scaled = false, T)(const T lo, const T hi, const T width)
+package(mir.stat) T normalIntervalMass(bool scaled = false, T)(const T lo, const T hi, const T width)
 {
     if (width <= 0) return 0;
     if (width * (1 + fabs(lo)) < T(0.125))
@@ -203,7 +203,7 @@ package(mir.stat) T originalRectangleProbability(T, L, U, M, S)(scope auto ref L
             x.upper, y.lower);
         const acrossY = crossGap!T(yHi, yMean, stdDev[1], lower[0], mean[0], stdDev[0],
             y.upper, x.lower);
-        return interval(left, right, min(x.width, y.width, acrossX, acrossY));
+        return normalIntervalMass(left, right, min(x.width, y.width, acrossX, acrossY));
     }
     return rectangleEstimate(axes[0], axes[1], r).probability;
 }
@@ -235,7 +235,7 @@ private RectangleEstimate!T rectangleEstimate(T)(Interval!T x, Interval!T y, T r
     if (r == 1)
     {
         const lo = max(a, c), hi = min(b, d);
-        return Result(interval(lo, hi, hi - lo));
+        return Result(normalIntervalMass(lo, hi, hi - lo));
     }
     if ((a == -inf || b == inf) && (c == -inf || d == inf))
         return Result(bivariateStandardNormalCDF(a == -inf ? b : -a, c == -inf ? d : -c,
@@ -271,7 +271,7 @@ private RectangleEstimate!T quadrature(bool scaled, T)(Interval!T x, Interval!T 
             const delta = x.width * u;
             const lo = fma(-r, delta, fma(-r, a, c)) / sigma;
             const hi = fma(-r, delta, fma(-r, a, d)) / sigma;
-            return density!scaled(a + delta) * interval!scaled(lo, hi, y.width / sigma);
+            return density!scaled(a + delta) * normalIntervalMass!scaled(lo, hi, y.width / sigma);
         }
         static immutable T[2] unit = [0, 1];
         auto result = integrate!conditional(unit[]);
@@ -287,7 +287,7 @@ private RectangleEstimate!T quadrature(bool scaled, T)(Interval!T x, Interval!T 
         const lo = max(a - B * v, c + B * v) / A;
         const hi = min(b - B * v, d + B * v) / A;
         const width = min(x.width, y.width, fma(-2 * B, v, b - c), fma(2 * B, v, d - a)) / A;
-        return density!scaled(v) * interval!scaled(lo, hi, width);
+        return density!scaled(v) * normalIntervalMass!scaled(lo, hi, width);
     }
     // Normal mass beyond these endpoints is below the smallest subnormal.
     enum limit = T.max_exp <= 1024 ? 40 : 160;
