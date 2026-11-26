@@ -518,6 +518,45 @@ version(mir_stat_test_multivariate_normal)
 @safe pure nothrow @nogc unittest
 {
     import mir.ndslice.slice : sliced;
+    import std.algorithm : nextPermutation;
+    import std.math : ldexp, nextUp, nextDown;
+
+    alias S = MultivariateNormalRectangleStatus;
+    // X[2] = 2*X[0] + 3*X[1]. Raising or lowering its variance by
+    // one ulp changes the determinant from zero to positive or negative.
+    double[9] input = [3, 1, 9, 1, 2, 8, 9, 8, 42], entries;
+    double[3] lower = -double.infinity, upper, mean = 0;
+    auto metric = covarianceView(entries[].sliced(3, 3));
+    foreach (variance; [42.0, nextUp(42.0), nextDown(42.0)])
+    {
+        input[8] = variance;
+        size_t[3] axes = [0, 1, 2];
+        do
+        {
+            foreach (i, row; axes)
+                foreach (j, col; axes)
+                    entries[3 * i + j] = input[3 * row + col];
+            upper[] = double.infinity;
+            auto q = multivariateNormalRectangleProbability(lower[], upper[], mean[], metric);
+            assert(q.status == (variance > 42 ? S.exact : S.invalidCovariance));
+            upper[] = 0;
+            q = multivariateNormalRectangleProbability(lower[], upper[], mean[], metric);
+            assert((q.status == S.invalidCovariance) == (variance <= 42));
+        } while (nextPermutation(axes[]));
+        // Independent changes of measurement units preserve definiteness.
+        foreach (i; 0 .. 3)
+            foreach (j; 0 .. 3)
+                entries[3 * i + j] = ldexp(input[3 * i + j], 400 * (cast(int)(i + j) - 2));
+        upper[] = double.infinity;
+        auto scaled = multivariateNormalRectangleProbability(lower[], upper[], mean[], metric);
+        assert(scaled.status == (variance > 42 ? S.exact : S.invalidCovariance));
+    }
+}
+
+version(mir_stat_test_multivariate_normal)
+@safe pure nothrow @nogc unittest
+{
+    import mir.ndslice.slice : sliced;
     import std.math : isNaN;
 
     double[4] entries = [0.01, 0.05, 0, 1];

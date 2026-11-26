@@ -21,6 +21,82 @@ package(mir.stat) enum RectangleOrderStatus
     unresolvedInterval, /// The conditional interval or its ordering score could not be resolved.
 }
 
+// A Schur pivot is the ratio of two successive principal minors. Evaluate
+// an ambiguous minor exactly on an integer grid using fraction-free Bareiss
+// elimination. Keep its binary exponent separate when converting to double.
+private double principalMinor(M)(scope auto ref M covariance, scope const(size_t)[] indices,
+    out int exponent)
+{
+    import mir.bignum.integer: BigInt;
+    import std.math: frexp, ldexp;
+
+    enum nmax = rectangleOrderMaxDimension;
+    struct Entry { long coefficient; int power; }
+    Entry[nmax][nmax] entries = void;
+    int grid = int.max, highest = int.min;
+    foreach (r, i; indices)
+        foreach (c; r .. indices.length)
+        {
+            const j = indices[c];
+            static if (M.triangle == TrianglePolicy.upper)
+                const x = i <= j ? covariance.storage[i, j] : covariance.storage[j, i];
+            else
+                const x = i >= j ? covariance.storage[i, j] : covariance.storage[j, i];
+            int e;
+            const coefficient = cast(long)ldexp(frexp(x, e), double.mant_dig);
+            const power = e - double.mant_dig;
+            entries[r][c] = Entry(coefficient, power);
+            if (coefficient && power < grid) grid = power;
+            if (coefficient && e > highest) highest = e;
+        }
+
+    double evaluate(uint words)()
+    {
+        alias Integer = BigInt!words;
+        alias Product = BigInt!(2 * words + 1);
+        Integer[nmax][nmax] a;
+        const n = indices.length;
+        foreach (r; 0 .. n)
+            foreach (c; r .. n)
+            {
+                const entry = entries[r][c];
+                a[r][c] = entry.coefficient;
+                if (entry.coefficient) a[r][c] <<= entry.power - grid;
+            }
+        Integer previous = 1;
+        foreach (k; 0 .. n - 1)
+        {
+            const ref pivot = a[k][k];
+            // Every leading principal minor must be positive.
+            if (!pivot.length || pivot.sign) return 0;
+            foreach (i; k + 1 .. n)
+                foreach (j; i .. n)
+                {
+                    Product value, cross;
+                    if (a[i][j].length) value.multiply(pivot, a[i][j]);
+                    if (a[k][i].length && a[k][j].length)
+                    {
+                        cross.multiply(a[k][i], a[k][j]);
+                        value -= cross;
+                    }
+                    if (k && value.length) value /= previous;
+                    a[i][j] = value;
+                }
+            previous = pivot;
+        }
+        auto det = a[n - 1][n - 1];
+        if (!det.length || det.sign) return 0;
+        const shift = det.bitLength > double.mant_dig ? det.bitLength - double.mant_dig : 0;
+        det >>= shift;
+        exponent = cast(int)n * grid + cast(int)shift;
+        return cast(double)cast(long)det;
+    }
+    // Each minor sums at most 8! products (16 extra bits). For double
+    // inputs the full exponent grid runs from -1126 through 1024.
+    if (indices.length * (highest - grid) + 16 <= 640) return evaluate!10();
+    return evaluate!((nmax * 2150 + 16 + 63) / 64)();
+}
+
 // For a standard normal restricted to [a, b], E[Z] = (phi(a) - phi(b)) / mass.
 // Factor out the larger density to avoid cancellation for nearby endpoints.
 private double truncatedMean(double a, double b, double width, double mass)
@@ -103,14 +179,33 @@ package(mir.stat) RectangleOrderStatus orderNormalRectangle(M, F)(scope auto ref
         foreach (j; i + 1 .. n) factor[i, j] = 0;
     }
 
+    bool smallPivotUsed;
+    const pivotThreshold = 64 * n * double.epsilon;
     foreach (k; 0 .. n)
     {
         size_t best = k;
         double bestMass = 0, diagonal = 0;
+        double previousMinor = 0;
+        int previousExponent;
         foreach (j; k .. n)
         {
             const index = order[j];
-            const variance = residual[index][index];
+            auto variance = residual[index][index];
+            // A second Schur update can amplify rounding from the first.
+            // Check small pivots against the original covariance entries.
+            if (k >= 2 && (smallPivotUsed || variance <= pivotThreshold))
+            {
+                if (!previousMinor)
+                    previousMinor = principalMinor(covariance, order[0 .. k], previousExponent);
+                size_t[rectangleOrderMaxDimension] minorIndices;
+                minorIndices[0 .. k] = order[0 .. k];
+                minorIndices[k] = index;
+                int e;
+                const minor = principalMinor(covariance, minorIndices[0 .. k + 1], e);
+                if (!(minor > 0 && previousMinor > 0)) return Status.invalidFactor;
+                variance = ldexp(minor / previousMinor, e - previousExponent - 2 * exponent[index]);
+                residual[index][index] = variance;
+            }
             double center = 0;
             foreach (h; 0 .. k)
                 center += factor[j, h] * typical[h];
@@ -141,6 +236,7 @@ package(mir.stat) RectangleOrderStatus orderNormalRectangle(M, F)(scope auto ref
         factor[k, k] = diagonal;
         const pivot = order[k];
         const p = residual[pivot][pivot];
+        smallPivotUsed |= p <= pivotThreshold;
         const root = sqrt(p);
         int shift;
         if (p < 0x1p-500)
