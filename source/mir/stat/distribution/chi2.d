@@ -21,6 +21,18 @@ Copyright: 2022-3 Mir Stat Authors.
 module mir.stat.distribution.chi2;
 
 import mir.internal.utility: isFloatingPoint;
+import mir.bignum.fp: Fp;
+
+// Preserve an odd degree count exactly when forming the gamma shape.
+private @safe pure nothrow @nogc
+T chi2Shape(T, I)(const I k)
+    if (is(T == Fp!bits, size_t bits) && __traits(isIntegral, I))
+    in (k > 0 && k <= uint.max, "degrees of freedom must be in [1, uint.max]")
+{
+    auto shape = T(cast(uint)k);
+    --shape.exponent;
+    return shape;
+}
 
 /++
 Computes the Chi-squared probability density function (PDF).
@@ -74,6 +86,56 @@ unittest
     assert(chi2PDF(0.0, 1u) == double.infinity);
     assert(chi2PDF(0.0, 2u) == 0.5);
     assert(chi2PDF(0.0, 3u) == 0.0);
+}
+
+/++
+Computes the chi-squared density using guarded gamma arithmetic.
+
+Params:
+    T = supported $(D Fp) type with at most 512 significand bits
+    I = integer type of the degrees of freedom
+    x = nonnegative observation, including positive infinity
+    k = degrees of freedom from one through $(D uint.max)
+
+Returns:
+    The density as $(D T).
+    At zero it is positive infinity for one degree of freedom, one half for two, and zero otherwise. At positive infinity it is zero.
++/
+@safe pure nothrow @nogc
+T chi2PDF(T, I)(const T x, const I k)
+    if (is(T == Fp!bits, size_t bits) && __traits(isIntegral, I))
+{
+    import mir.stat.distribution.gamma: gammaPDF;
+    return gammaPDF(x, chi2Shape!T(k), T(2));
+}
+
+///
+version(mir_stat_test)
+@safe pure nothrow @nogc unittest
+{
+    import mir.bignum.fp: Fp;
+    alias T = Fp!64;
+    assert(chi2PDF(T(0), 2) == T(0.5));
+}
+
+version(mir_stat_test)
+@safe pure nothrow @nogc unittest
+{
+    import mir.bignum.fixed: UInt;
+    import mir.math.common: approxEqual;
+    alias T = Fp!64;
+    alias U = UInt!64;
+    const x = 0.5;
+    // For k = 1 at x = 1/2 the density is exp(-1/4)/sqrt(pi).
+    const expected = T(false, -65, U(0xe0f7e524d2808a98UL));
+    assert(chi2PDF(T(x), 1) == expected);
+    assert(approxEqual(chi2PDF(x, 1), cast(double)expected, 32 * double.epsilon, 0.0));
+    const center = T(U(uint.max));
+    assert(chi2PDF(center, uint.max) == T(false, -81, U(0x906eba8245005164UL)));
+    const inf = T(false, long.max, U(0));
+    assert(chi2PDF(T(0), 1) == inf);
+    assert(chi2PDF(T(0), 3) == T(0));
+    assert(chi2PDF(inf, 3) == T(0));
 }
 
 /++
@@ -260,6 +322,57 @@ unittest
     0.0.chi2LPDF(2).shouldApprox == -0.6931472;
     0.0.chi2LPDF(1).shouldApprox == double.infinity;
     0.0.chi2LPDF(3).shouldApprox == -double.infinity;
+}
+
+/++
+Computes the chi-squared log density using guarded gamma arithmetic.
+
+Params:
+    T = supported $(D Fp) type with at most 512 significand bits
+    I = integer type of the degrees of freedom
+    x = nonnegative observation, including positive infinity
+    k = degrees of freedom from one through $(D uint.max)
+
+Returns:
+    The natural logarithm of the density as $(D T).
+    At zero it is positive infinity for one degree of freedom, $(D -log(2)) for two, and negative infinity otherwise. At positive infinity it is negative infinity.
++/
+@safe pure nothrow @nogc
+T chi2LPDF(T, I)(const T x, const I k)
+    if (is(T == Fp!bits, size_t bits) && __traits(isIntegral, I))
+{
+    import mir.stat.distribution.gamma: gammaLPDF;
+    return gammaLPDF(x, chi2Shape!T(k), T(2));
+}
+
+///
+version(mir_stat_test)
+@safe pure nothrow @nogc unittest
+{
+    import mir.bignum.fp: Fp;
+    alias T = Fp!64;
+    const limit = chi2LPDF(T(0), 1);
+    assert(limit.isInfinity && !limit.sign);
+}
+
+version(mir_stat_test)
+@safe pure nothrow @nogc unittest
+{
+    import mir.bignum.fixed: UInt;
+    import mir.math.common: approxEqual;
+    alias T = Fp!64;
+    alias U = UInt!64;
+    const x = 0.5;
+    const expected = T(true, -64, U(0xd28682473d0de85fUL));
+    assert(chi2LPDF(T(x), 1) == expected);
+    assert(approxEqual(chi2LPDF(x, 1), cast(double)expected, 32 * double.epsilon, 0.0));
+    const negativeInfinity = T(true, long.max, U(0));
+    assert(chi2LPDF(T(0), 2) == T(true, -64, U(0xb17217f7d1cf79acUL)));
+    assert(chi2LPDF(T(0), 3) == negativeInfinity);
+    assert(chi2LPDF(T(false, long.max, U(0)), 1) == negativeInfinity);
+    alias V = Fp!128;
+    enum centerLogDensity = UInt!128.fromHexString("c5b1a19bbd67fa771ad3ef8a2d4e700c");
+    assert(chi2LPDF(V(U(uint.max)), uint.max) == V(true, -124, centerLogDensity));
 }
 
 // The gamma representation must preserve the same endpoint and tiny-tail limits.
