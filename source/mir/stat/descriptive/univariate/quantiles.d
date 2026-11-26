@@ -4836,6 +4836,32 @@ version(mir_stat_test) @safe pure nothrow @nogc unittest
     assert(output == [7, 2, 7]);
 }
 
+/// Preserve the original pairs by sorting copies. Size scratch from the row
+/// count so the same buffers can be reused without counting positive weights.
+version(mir_stat_test) @safe pure nothrow @nogc unittest
+{
+    const int[4] data = [8, 99, 2, 4], weights = [1, 0, 1, 2];
+    const double[2] levels = [0.75, 0.25];
+    enum n = data.length;
+    int[n] dataWork, weightWork;
+    double[levels.length] output;
+
+    // Relative weights default to inverse CDF.
+    real[weightedQuantileScratchLength(n, n)] relativeScratch;
+    dataWork[] = data[];
+    weightWork[] = weights[];
+    weightedQuantileSortFirstInto(dataWork, weightWork, levels, output, relativeScratch);
+    assert(output == [4.0, 2.0]);
+
+    // Frequency counts represent the sample [2, 4, 4, 8]. Type 7 interpolates.
+    enum frequency = WeightInterpretation.frequency;
+    ulong[weightedQuantileScratchLength!frequency(n, n)] frequencyScratch;
+    dataWork[] = data[];
+    weightWork[] = weights[];
+    weightedQuantileSortFirstInto!frequency(dataWork, weightWork, levels, output, frequencyScratch);
+    assert(output == [5.0, 3.5]);
+}
+
 version(mir_stat_test) @safe pure nothrow @nogc unittest
 {
     import mir.ndslice : sliced, stride;
