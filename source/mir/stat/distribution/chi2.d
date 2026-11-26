@@ -6,6 +6,12 @@ $(D k) and nonnegative observations. A chi-squared distribution is a gamma
 distribution with shape $(D k / 2.0) and scale two. The inverse CDF accepts
 both probability endpoints.
 
+The $(D Fp) overloads form the half-integer or integer shape exactly and use
+the guarded algorithms in $(MREF mir, stat, distribution, gamma). Severe
+cancellation can reduce density or log-density accuracy. The tails and
+inverse CDF inherit the gamma evaluation limits and can return NaN when
+those limits are reached. Correct rounding is unproven.
+
 The special-value tables assume finite distribution parameters in the stated
 domain. Finite expressions are subject to floating-point rounding and range
 limits. Contract violations are not prescribed return values: disabling
@@ -21,6 +27,20 @@ Copyright: 2022-3 Mir Stat Authors.
 module mir.stat.distribution.chi2;
 
 import mir.internal.utility: isFloatingPoint;
+import mir.bignum.fp: Fp;
+
+version(mir_stat_test) version = mir_stat_test_chi2_degrees;
+
+// Preserve an odd degree count exactly when forming the gamma shape.
+private @safe pure nothrow @nogc
+T chi2Shape(T, I)(const I k)
+    if (is(T == Fp!bits, size_t bits) && __traits(isIntegral, I))
+    in (k > 0 && k <= uint.max, "degrees of freedom must be in [1, uint.max]")
+{
+    auto shape = T(cast(uint)k);
+    --shape.exponent;
+    return shape;
+}
 
 /++
 Computes the Chi-squared probability density function (PDF).
@@ -77,6 +97,56 @@ unittest
 }
 
 /++
+Computes the chi-squared density using guarded gamma arithmetic.
+
+Params:
+    T = supported $(D Fp) type with at most 512 significand bits
+    I = integer type of the degrees of freedom
+    x = nonnegative observation, including positive infinity
+    k = degrees of freedom from one through $(D uint.max)
+
+Returns:
+    The density as $(D T).
+    At zero it is positive infinity for one degree of freedom, one half for two, and zero otherwise. At positive infinity it is zero.
++/
+@safe pure nothrow @nogc
+T chi2PDF(T, I)(const T x, const I k)
+    if (is(T == Fp!bits, size_t bits) && __traits(isIntegral, I))
+{
+    import mir.stat.distribution.gamma: gammaPDF;
+    return gammaPDF(x, chi2Shape!T(k), T(2));
+}
+
+///
+version(mir_stat_test)
+@safe pure nothrow @nogc unittest
+{
+    import mir.bignum.fp: Fp;
+    alias T = Fp!64;
+    assert(chi2PDF(T(0), 2) == T(0.5));
+}
+
+version(mir_stat_test)
+@safe pure nothrow @nogc unittest
+{
+    import mir.bignum.fixed: UInt;
+    import mir.math.common: approxEqual;
+    alias T = Fp!64;
+    alias U = UInt!64;
+    const x = 0.5;
+    // For k = 1 at x = 1/2 the density is exp(-1/4)/sqrt(pi).
+    const expected = T(false, -65, U(0xe0f7e524d2808a98UL));
+    assert(chi2PDF(T(x), 1) == expected);
+    assert(approxEqual(chi2PDF(x, 1), cast(double)expected, 32 * double.epsilon, 0.0));
+    const center = T(U(uint.max));
+    assert(chi2PDF(center, uint.max) == T(false, -81, U(0x906eba8245005164UL)));
+    const inf = T(false, long.max, U(0));
+    assert(chi2PDF(T(0), 1) == inf);
+    assert(chi2PDF(T(0), 3) == T(0));
+    assert(chi2PDF(inf, 3) == T(0));
+}
+
+/++
 Computes the Chi-squared cumulative distribution function (CDF).
 
 Returns the lower-tail probability $(D P(X <= x)).
@@ -114,6 +184,54 @@ unittest
 {
     import mir.test: shouldApprox;
     0.2.chi2CDF(2).shouldApprox == 0.09516258;
+}
+
+/++
+Computes the chi-squared lower-tail probability $(D P(X <= x)) using guarded gamma arithmetic.
+
+Params:
+    T = supported $(D Fp) type with at most 512 significand bits
+    I = integer type of the degrees of freedom
+    x = nonnegative observation, including positive infinity
+    k = degrees of freedom from one through $(D uint.max)
+
+Returns:
+    The lower-tail probability $(D P(X <= x)) as $(D T).
+    It is zero at zero and one at positive infinity. An unresolved gamma tail returns NaN.
++/
+@safe pure nothrow @nogc
+T chi2CDF(T, I)(const T x, const I k)
+    if (is(T == Fp!bits, size_t bits) && __traits(isIntegral, I))
+{
+    import mir.stat.distribution.gamma: gammaCDF;
+    return gammaCDF(x, chi2Shape!T(k), T(2));
+}
+
+///
+version(mir_stat_test)
+@safe pure nothrow @nogc unittest
+{
+    import mir.bignum.fp: Fp;
+    alias T = Fp!64;
+    assert(chi2CDF(T(0), 3) == T(0));
+}
+
+version(mir_stat_test)
+@safe pure nothrow @nogc unittest
+{
+    import mir.bignum.fixed: UInt;
+    import mir.math.common: approxEqual;
+    alias T = Fp!64;
+    alias U = UInt!64;
+    const x = 0.5;
+    const expected = T(false, -64, U(0x853f7ae0c76e915fUL)); // erf(1/2)
+    assert(chi2CDF(T(x), 1) == expected);
+    assert(approxEqual(chi2CDF(x, 1), cast(double)expected, 32 * double.epsilon, 0.0));
+    // At the exponent floor the rounded leading term is sqrt(2*x/pi).
+    assert(chi2CDF(T(false, long.min, U(1)), 1) ==
+        T(false, long.min / 2 - 64, U(0xcc42299ea1b28468UL)));
+    assert(chi2CDF(T(2048), 2) == T(1));
+    assert(chi2CDF(T(false, long.max, U(0)), 3) == T(1));
 }
 
 /++
@@ -158,6 +276,51 @@ unittest
 }
 
 /++
+Computes the chi-squared strict upper-tail probability $(D P(X > x)) using guarded gamma arithmetic.
+
+Params:
+    T = supported $(D Fp) type with at most 512 significand bits
+    I = integer type of the degrees of freedom
+    x = nonnegative observation, including positive infinity
+    k = degrees of freedom from one through $(D uint.max)
+
+Returns:
+    The strict upper-tail probability $(D P(X > x)) as $(D T).
+    It is one at zero and zero at positive infinity. An unresolved gamma tail returns NaN.
++/
+@safe pure nothrow @nogc
+T chi2CCDF(T, I)(const T x, const I k)
+    if (is(T == Fp!bits, size_t bits) && __traits(isIntegral, I))
+{
+    import mir.stat.distribution.gamma: gammaCCDF;
+    return gammaCCDF(x, chi2Shape!T(k), T(2));
+}
+
+///
+version(mir_stat_test)
+@safe pure nothrow @nogc unittest
+{
+    import mir.bignum.fp: Fp;
+    alias T = Fp!64;
+    assert(chi2CCDF(T(0), 3) == T(1));
+}
+
+version(mir_stat_test)
+@safe pure nothrow @nogc unittest
+{
+    import mir.bignum.fixed: UInt;
+    import mir.math.common: approxEqual;
+    alias T = Fp!64;
+    alias U = UInt!64;
+    const x = 0.5;
+    const expected = T(false, -65, U(0xf5810a3e7122dd43UL)); // erfc(1/2)
+    assert(chi2CCDF(T(x), 1) == expected);
+    assert(approxEqual(chi2CCDF(x, 1), cast(double)expected, 32 * double.epsilon, 0.0));
+    assert(chi2CCDF(T(2048), 2) == T(false, -1541, U(0xcd1d09977435cc77UL)));
+    assert(chi2CCDF(T(false, long.max, U(0)), 3) == T(0));
+}
+
+/++
 Computes the Chi-squared inverse cumulative distribution function (InvCDF).
 
 Returns the quantile at cumulative probability $(D p).
@@ -196,6 +359,64 @@ unittest
 {
     import mir.test: shouldApprox;
     0.09516258.chi2InvCDF(2).shouldApprox == 0.2;
+}
+
+/++
+Computes the chi-squared quantile at cumulative probability $(D p) using guarded gamma arithmetic.
+
+Params:
+    T = supported $(D Fp) type with at most 512 significand bits
+    I = integer type of the degrees of freedom
+    p = represented cumulative probability in [0, 1]
+    k = degrees of freedom from one through $(D uint.max)
+
+Returns:
+    The quantile at cumulative probability $(D p) as $(D T).
+    It is zero at zero and positive infinity at one. An unresolved gamma tail comparison returns NaN.
++/
+@safe pure nothrow @nogc
+T chi2InvCDF(T, I)(const T p, const I k)
+    if (is(T == Fp!bits, size_t bits) && __traits(isIntegral, I))
+{
+    import mir.stat.distribution.gamma: gammaInvCDF;
+    return gammaInvCDF(p, chi2Shape!T(k), T(2));
+}
+
+///
+version(mir_stat_test)
+@safe pure nothrow @nogc unittest
+{
+    import mir.bignum.fp: Fp;
+    alias T = Fp!64;
+    assert(chi2InvCDF(T(0), 3) == T(0));
+}
+
+version(mir_stat_test)
+@safe pure nothrow @nogc unittest
+{
+    import mir.bignum.fixed: UInt;
+    import mir.math.common: approxEqual;
+    alias T = Fp!64;
+    alias U = UInt!64;
+    // Bracketed by MPFR inversion of erf(sqrt(x/2)) at the median.
+    const p = 0.5;
+    const expected = T(false, -65, U(0xe8ed6d461d95c4b5UL));
+    assert(chi2InvCDF(T(p), 1) == expected);
+    assert(approxEqual(chi2InvCDF(p, 1), cast(double)expected, 32 * double.epsilon, 0.0));
+    assert(chi2InvCDF(T(false, long.min, U(1)), 2) == T(false, long.min, U(2)));
+    assert(chi2InvCDF(T(1), 3) == T(false, long.max, U(0)));
+}
+
+version(mir_stat_test_slow_numerics)
+@safe pure nothrow @nogc unittest
+{
+    import mir.bignum.fixed: UInt;
+    alias T = Fp!64;
+    alias U = UInt!64;
+    // MPFR inversion at the two represented neighbors of the median probability.
+    assert(chi2InvCDF(T(false, -65, U.max), 1) == T(false, -65, U(0xe8ed6d461d95c4b3UL)));
+    assert(chi2InvCDF(T(false, -64, U(0x8000000000000001UL)), 1) ==
+        T(false, -65, U(0xe8ed6d461d95c4b9UL)));
 }
 
 /++
@@ -260,6 +481,93 @@ unittest
     0.0.chi2LPDF(2).shouldApprox == -0.6931472;
     0.0.chi2LPDF(1).shouldApprox == double.infinity;
     0.0.chi2LPDF(3).shouldApprox == -double.infinity;
+}
+
+/++
+Computes the chi-squared log density using guarded gamma arithmetic.
+
+Params:
+    T = supported $(D Fp) type with at most 512 significand bits
+    I = integer type of the degrees of freedom
+    x = nonnegative observation, including positive infinity
+    k = degrees of freedom from one through $(D uint.max)
+
+Returns:
+    The natural logarithm of the density as $(D T).
+    At zero it is positive infinity for one degree of freedom, $(D -log(2)) for two, and negative infinity otherwise. At positive infinity it is negative infinity.
++/
+@safe pure nothrow @nogc
+T chi2LPDF(T, I)(const T x, const I k)
+    if (is(T == Fp!bits, size_t bits) && __traits(isIntegral, I))
+{
+    import mir.stat.distribution.gamma: gammaLPDF;
+    return gammaLPDF(x, chi2Shape!T(k), T(2));
+}
+
+///
+version(mir_stat_test)
+@safe pure nothrow @nogc unittest
+{
+    import mir.bignum.fp: Fp;
+    alias T = Fp!64;
+    const limit = chi2LPDF(T(0), 1);
+    assert(limit.isInfinity && !limit.sign);
+}
+
+version(mir_stat_test)
+@safe pure nothrow @nogc unittest
+{
+    import mir.bignum.fixed: UInt;
+    import mir.math.common: approxEqual;
+    alias T = Fp!64;
+    alias U = UInt!64;
+    const x = 0.5;
+    const expected = T(true, -64, U(0xd28682473d0de85fUL));
+    assert(chi2LPDF(T(x), 1) == expected);
+    assert(approxEqual(chi2LPDF(x, 1), cast(double)expected, 32 * double.epsilon, 0.0));
+    const negativeInfinity = T(true, long.max, U(0));
+    assert(chi2LPDF(T(0), 2) == T(true, -64, U(0xb17217f7d1cf79acUL)));
+    assert(chi2LPDF(T(0), 3) == negativeInfinity);
+    assert(chi2LPDF(T(false, long.max, U(0)), 1) == negativeInfinity);
+    alias V = Fp!128;
+    enum centerLogDensity = UInt!128.fromHexString("c5b1a19bbd67fa771ad3ef8a2d4e700c");
+    assert(chi2LPDF(V(U(uint.max)), uint.max) == V(true, -124, centerLogDensity));
+}
+
+version(mir_stat_test_chi2_degrees)
+unittest
+{
+    import core.exception: AssertError;
+    import mir.bignum.fixed: UInt;
+    import std.exception: assertThrown;
+    import std.meta: AliasSeq;
+    alias T = Fp!(size_t.sizeof * 8);
+    alias U = UInt!(size_t.sizeof * 8);
+    // Odd counts retain their half unit even at the narrowest supported width.
+    enum int shift = size_t.sizeof * 8 - 32;
+    const expectedShape = T(false, -1 - shift, U(cast(size_t)uint.max << shift));
+    assert(chi2Shape!T(uint.max) == expectedShape);
+    static if (size_t.sizeof == 4)
+    {
+        const center = T(uint.max);
+        assert(chi2PDF(center, uint.max) == T(false, -49, U(0x906eba82)));
+        assert(chi2LPDF(center, uint.max) == T(true, -28, U(0xc5b1a19c)));
+    }
+
+    bool contractsEnabled;
+    void probe() in { contractsEnabled = true; } do {}
+    probe();
+    if (contractsEnabled)
+    {
+        int negative = -1;
+        ulong tooLarge = cast(ulong)uint.max + 2;
+        static foreach (evaluate; AliasSeq!(chi2PDF, chi2LPDF, chi2CDF, chi2CCDF, chi2InvCDF))
+        {
+            assertThrown!AssertError(evaluate(T(0), negative));
+            assertThrown!AssertError(evaluate(T(0), 0));
+            assertThrown!AssertError(evaluate(T(0), tooLarge));
+        }
+    }
 }
 
 // The gamma representation must preserve the same endpoint and tiny-tail limits.
