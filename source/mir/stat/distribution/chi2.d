@@ -179,6 +179,54 @@ unittest
 }
 
 /++
+Computes the chi-squared lower-tail probability $(D P(X <= x)) using guarded gamma arithmetic.
+
+Params:
+    T = supported $(D Fp) type with at most 512 significand bits
+    I = integer type of the degrees of freedom
+    x = nonnegative observation, including positive infinity
+    k = degrees of freedom from one through $(D uint.max)
+
+Returns:
+    The lower-tail probability $(D P(X <= x)) as $(D T).
+    It is zero at zero and one at positive infinity. An unresolved gamma tail returns NaN.
++/
+@safe pure nothrow @nogc
+T chi2CDF(T, I)(const T x, const I k)
+    if (is(T == Fp!bits, size_t bits) && __traits(isIntegral, I))
+{
+    import mir.stat.distribution.gamma: gammaCDF;
+    return gammaCDF(x, chi2Shape!T(k), T(2));
+}
+
+///
+version(mir_stat_test)
+@safe pure nothrow @nogc unittest
+{
+    import mir.bignum.fp: Fp;
+    alias T = Fp!64;
+    assert(chi2CDF(T(0), 3) == T(0));
+}
+
+version(mir_stat_test)
+@safe pure nothrow @nogc unittest
+{
+    import mir.bignum.fixed: UInt;
+    import mir.math.common: approxEqual;
+    alias T = Fp!64;
+    alias U = UInt!64;
+    const x = 0.5;
+    const expected = T(false, -64, U(0x853f7ae0c76e915fUL)); // erf(1/2)
+    assert(chi2CDF(T(x), 1) == expected);
+    assert(approxEqual(chi2CDF(x, 1), cast(double)expected, 32 * double.epsilon, 0.0));
+    // At the exponent floor the rounded leading term is sqrt(2*x/pi).
+    assert(chi2CDF(T(false, long.min, U(1)), 1) ==
+        T(false, long.min / 2 - 64, U(0xcc42299ea1b28468UL)));
+    assert(chi2CDF(T(2048), 2) == T(1));
+    assert(chi2CDF(T(false, long.max, U(0)), 3) == T(1));
+}
+
+/++
 Computes the Chi-squared complementary cumulative distribution function (CCDF).
 
 Returns the upper-tail probability $(D P(X > x)). Use this function directly
@@ -217,6 +265,51 @@ unittest
 {
     import mir.test: shouldApprox;
     0.2.chi2CCDF(2).shouldApprox == 0.9048374;
+}
+
+/++
+Computes the chi-squared strict upper-tail probability $(D P(X > x)) using guarded gamma arithmetic.
+
+Params:
+    T = supported $(D Fp) type with at most 512 significand bits
+    I = integer type of the degrees of freedom
+    x = nonnegative observation, including positive infinity
+    k = degrees of freedom from one through $(D uint.max)
+
+Returns:
+    The strict upper-tail probability $(D P(X > x)) as $(D T).
+    It is one at zero and zero at positive infinity. An unresolved gamma tail returns NaN.
++/
+@safe pure nothrow @nogc
+T chi2CCDF(T, I)(const T x, const I k)
+    if (is(T == Fp!bits, size_t bits) && __traits(isIntegral, I))
+{
+    import mir.stat.distribution.gamma: gammaCCDF;
+    return gammaCCDF(x, chi2Shape!T(k), T(2));
+}
+
+///
+version(mir_stat_test)
+@safe pure nothrow @nogc unittest
+{
+    import mir.bignum.fp: Fp;
+    alias T = Fp!64;
+    assert(chi2CCDF(T(0), 3) == T(1));
+}
+
+version(mir_stat_test)
+@safe pure nothrow @nogc unittest
+{
+    import mir.bignum.fixed: UInt;
+    import mir.math.common: approxEqual;
+    alias T = Fp!64;
+    alias U = UInt!64;
+    const x = 0.5;
+    const expected = T(false, -65, U(0xf5810a3e7122dd43UL)); // erfc(1/2)
+    assert(chi2CCDF(T(x), 1) == expected);
+    assert(approxEqual(chi2CCDF(x, 1), cast(double)expected, 32 * double.epsilon, 0.0));
+    assert(chi2CCDF(T(2048), 2) == T(false, -1541, U(0xcd1d09977435cc77UL)));
+    assert(chi2CCDF(T(false, long.max, U(0)), 3) == T(0));
 }
 
 /++
