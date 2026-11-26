@@ -216,7 +216,10 @@ Returns:
     unbounded rectangle give probability one. Any zero-width coordinate gives
     zero. Covariance validation applies to these cases as well.
 
-    One-dimensional intervals are evaluated directly. Two dimensions use direct
+    A single bounded coordinate is evaluated directly in any dimension, using
+    its original interval width. For multiple bounded coordinates in dimensions
+    three through eight, an interval whose width loses precision during
+    centering can yield an unresolved result. Two dimensions use direct
     marginal reductions when available and deterministic quadrature otherwise.
     Quadrature can also stop at its internal limit of 128 panels. Dimensions three
     through eight use seeded integration in groups of 16 evaluations. A fixed seed
@@ -254,13 +257,18 @@ MultivariateNormalRectangleResult multivariateNormalRectangleProbability(L, U, C
     assert(isFinite(options.relativeTolerance) && options.relativeTolerance >= 0);
     assert(options.maxEvaluations >= rectangleMinEvaluations);
 
-    bool empty, missing, allUnbounded = true;
+    bool empty, missing;
+    size_t bounded, marginal;
     foreach (i; 0 .. n)
     {
         assert(isFinite(m[i]) && !(u[i] < l[i]));
         empty |= l[i] == u[i];
         missing |= isNaN(l[i]) || isNaN(u[i]);
-        allUnbounded &= l[i] == -double.infinity && u[i] == double.infinity;
+        if (l[i] != -double.infinity || u[i] != double.infinity)
+        {
+            ++bounded;
+            marginal = i;
+        }
         foreach (j; 0 .. i + 1)
         {
             static if (M.triangle == TrianglePolicy.upper) const entry = covariance.storage[j, i];
@@ -290,15 +298,21 @@ MultivariateNormalRectangleResult multivariateNormalRectangleProbability(L, U, C
         return orderNormalRectangle(covariance, a[0 .. n], b[0 .. n], order[0 .. n],
             factor, typical[0 .. n]) == RectangleOrderStatus.success;
     }
-    if (missing || empty || allUnbounded)
+    if (missing || empty || bounded <= 1)
     {
         if (n > 2 && !validCovariance())
             return Result(S.invalidCovariance);
         if (missing) return Result(S.unresolved);
-        return Result(S.exact, empty ? 0 : 1, 0);
+        if (empty || bounded == 0) return Result(S.exact, empty ? 0 : 1, 0);
+        const sd = sqrt(covariance.storage[marginal, marginal]);
+        const left = standardize(l[marginal], m[marginal], sd);
+        const right = standardize(u[marginal], m[marginal], sd);
+        const width = standardize(u[marginal], l[marginal], sd);
+        const p = normalIntervalMass(left, right, width);
+        return Result(p > 0 ? S.direct : S.unresolved, p);
     }
 
-    if (n <= 2)
+    if (n == 2)
     {
         double[2] left, right, width;
         foreach (i; 0 .. n)
@@ -307,11 +321,6 @@ MultivariateNormalRectangleResult multivariateNormalRectangleProbability(L, U, C
             left[i] = standardize(l[i], m[i], sd);
             right[i] = standardize(u[i], m[i], sd);
             width[i] = standardize(u[i], l[i], sd);
-        }
-        if (n == 1)
-        {
-            const p = normalIntervalMass(left[0], right[0], width[0]);
-            return Result(p > 0 ? S.direct : S.unresolved, p);
         }
         auto q = covarianceRectangleEstimate(left, right, width, correlation,
             options.absoluteTolerance, options.relativeTolerance, options.maxEvaluations);
@@ -328,6 +337,14 @@ MultivariateNormalRectangleResult multivariateNormalRectangleProbability(L, U, C
         a[i] = l[i] - m[i];
         b[i] = u[i] - m[i];
         lost |= !(a[i] < b[i]) || (isFinite(l[i]) && !isFinite(a[i])) || (isFinite(u[i]) && !isFinite(b[i]));
+        if (m[i] != 0 && isFinite(l[i]) && isFinite(u[i]))
+        {
+            import mir.math.common : fabs;
+            const width = u[i] - l[i];
+            const centeredWidth = b[i] - a[i];
+            if (isFinite(width))
+                lost |= fabs(centeredWidth - width) > 8 * double.epsilon * width;
+        }
     }
     if (!lost)
     {
@@ -468,6 +485,13 @@ version(mir_stat_test_multivariate_normal)
     lower[0] = 0;
     upper[0] = 1e-20;
     mean[0] = -1;
+    assert(run().status == S.direct);
+    upper[0] = 1.2e-16;
+    q = run();
+    const marginal = multivariateNormalRectangleProbability(lower[0 .. 1], upper[0 .. 1],
+        mean[0 .. 1], covarianceView(cov[0 .. 1].sliced(1, 1)));
+    assert(q.status == S.direct && q.probability == marginal.probability && q.evaluations == 0);
+    upper[1] = 0;
     assert(run().status == S.unresolved);
     cov[8] = -1;
     assert(run().status == S.invalidCovariance);
