@@ -220,7 +220,10 @@ Returns:
     marginal reductions when available and deterministic quadrature otherwise.
     Quadrature can also stop at its internal limit of 128 panels. Dimensions three
     through eight use seeded integration in groups of 16 evaluations. A fixed seed
-    and inputs reproduce the result within the same build. A toleranceMet status
+    and inputs reproduce the result within the same build. The stopping test
+    also uses bounds from the marginal probabilities if the group estimates
+    agree to roundoff or the sampling is too coarse to resolve a narrow
+    conditional spread. These bounds can be conservative. A toleranceMet status
     describes the method's error estimate and does not guarantee actual accuracy.
 +/
 MultivariateNormalRectangleResult multivariateNormalRectangleProbability(L, U, C, M)(
@@ -502,6 +505,29 @@ version(mir_stat_test_multivariate_normal)
         const r = multivariateNormalRectangleProbability(lower[], upper[], mean[], covariance);
         assert(r.status == MultivariateNormalRectangleStatus.unresolved);
         assert(r.probability == 0 && isNaN(r.estimatedError) && r.evaluations == 0);
+    }
+}
+
+version(mir_stat_test_multivariate_normal)
+@safe pure nothrow @nogc unittest
+{
+    import mir.ndslice.slice : sliced;
+    import std.math : abs, acos, asin, PI;
+
+    const rho = 1 - 1e-12, s = 1e-9;
+    double[9] entries = [1, rho, s, 0, 1, s, 0, 0, 1];
+    auto covariance = covarianceView(entries[].sliced(3, 3));
+    double[3] lower = -double.infinity, upper = 0, mean = 0;
+    const reference = 0.25 - acos(rho) / (4 * PI) + asin(s) / (2 * PI);
+    MultivariateNormalRectangleOptions options;
+    options.relativeTolerance = 1e-9;
+    options.maxEvaluations = 1024;
+    foreach (seed; [5489, 1, 2, 3])
+    {
+        options.seed = seed;
+        const r = multivariateNormalRectangleProbability(lower[], upper[], mean[], covariance, options);
+        assert(r.status == MultivariateNormalRectangleStatus.budgetExhausted);
+        assert(r.evaluations == options.maxEvaluations && abs(r.probability - reference) <= r.estimatedError);
     }
 }
 

@@ -144,6 +144,34 @@ version (mir_stat_test_rectangle_integral)
     assert(abs(error / (3e-200 / sqrt(7.0)) - 1) < 1e-14);
 }
 
+// Constant conditional masses factor out of every sample. For the remaining
+// coordinates, the union bound limits the mass lost outside their intervals.
+private double marginalErrorBound(F)(scope const(double)[] lower, scope const(double)[] upper,
+    scope auto ref F factor, double estimate)
+{
+    import std.math : hypot;
+
+    double upperBound = 1, outside = 0;
+    foreach (i; 0 .. lower.length)
+    {
+        double sd = factor[i, i];
+        bool dependent;
+        foreach (j; 0 .. i)
+        {
+            if (factor[i, j] == 0) continue;
+            dependent = true;
+            sd = hypot(sd, factor[i, j]);
+        }
+        const a = lower[i] / sd, b = upper[i] / sd;
+        if (dependent)
+            outside += normalCDF(a) + normalCDF(-b);
+        else
+            upperBound *= normalIntervalMass(a, b, standardize(upper[i], lower[i], sd));
+    }
+    const lowerBound = max(0.0, upperBound - outside);
+    return max(abs(estimate - lowerBound), abs(upperBound - estimate));
+}
+
 /++
 Integrate a positive-width rectangle after successful conditional ordering.
 Each point contributes a product of conditional normal interval masses.
@@ -165,8 +193,12 @@ Returns:
     Estimate, estimated absolute error, actual evaluation count and status.
     Tolerance is met when both group errors and the difference between the
     group means fit within the larger requested tolerance. This statistical
-    error estimate is not a guaranteed bound. Budget exhaustion retains the
-    last estimate. An unresolved computation has no usable error estimate.
+    error estimate is not a guaranteed bound. The stopping test also uses
+    marginal probability bounds when the groups agree to roundoff or a
+    constrained coordinate's conditional-to-marginal standard deviation
+    ratio is smaller than the nominal spacing within a shift.
+    Budget exhaustion retains the last estimate. An unresolved computation
+    has no usable error estimate.
 +/
 package(mir.stat) RectangleIntegralResult integrateNormalRectangle(F)(
     scope const(double)[] lower, scope const(double)[] upper, scope auto ref F factor,
@@ -182,6 +214,19 @@ package(mir.stat) RectangleIntegralResult integrateNormalRectangle(F)(
     assert(isFinite(relativeTolerance) && relativeTolerance >= 0);
     assert(maxEvaluations >= rectangleMinEvaluations);
     foreach (i; 0 .. n) assert(lower[i] < upper[i] && factor[i, i] > 0 && isFinite(factor[i, i]));
+
+    // A small conditional spread makes the interval mass change across a
+    // narrow band of conditioning values. Another coordinate can vary across
+    // every shift even when all shifts miss this band.
+    import std.math : hypot;
+    double narrowestRatio = 1;
+    foreach (i; 1 .. n)
+    {
+        if (lower[i] == -double.infinity && upper[i] == double.infinity) continue;
+        double sd = factor[i, i];
+        foreach (j; 0 .. i) sd = hypot(sd, factor[i, j]);
+        narrowestRatio = min(narrowestRatio, factor[i, i] / sd);
+    }
 
     auto rng = Mt19937_64(seed);
     Coordinates[shiftCount] shifts;
@@ -215,7 +260,9 @@ package(mir.stat) RectangleIntegralResult integrateNormalRectangle(F)(
         const p1 = groupEstimate(sums[0 .. groupSize], count, e1);
         const p2 = groupEstimate(sums[groupSize .. $], count, e2);
         const estimate = (p1 + p2) / 2;
-        const error = max(e1, e2, abs(p1 - p2));
+        auto error = max(e1, e2, abs(p1 - p2));
+        if (estimate > 0 && (error <= 64 * double.epsilon * estimate || narrowestRatio * count < 1))
+            error = max(error, marginalErrorBound(lower, upper, factor, estimate));
         if (estimate >= double.min_normal && error <= max(absoluteTolerance, relativeTolerance * estimate))
             return RectangleIntegralResult(Status.toleranceMet, count * shiftCount, estimate, error);
         if (count == limit)
@@ -339,4 +386,25 @@ version (mir_stat_test_rectangle_integral)
     const r = integrateNormalRectangle(lower[], upper[], factor, 89071, 0, 0.01, 16384);
     assert(r.status == RectangleIntegralStatus.toleranceMet && r.evaluations <= 16384);
     assert(abs(r.probability / 0.11786570377215408 - 1) < 0.01);
+}
+
+version (mir_stat_test_rectangle_integral)
+@safe pure nothrow @nogc unittest
+{
+    import mir.ndslice.slice : sliced;
+    import mir.stat.covariance_views : covarianceView;
+    import mir.stat.internal.normal_rectangle_order : orderNormalRectangle, RectangleOrderStatus;
+    import std.math : acos, PI;
+
+    const rho = 1 - 1e-12;
+    double[9] cov = [1, rho, rho, 0, 1, rho, 0, 0, 1], storage;
+    double[3] lower = -double.infinity, upper = 0, typical;
+    size_t[3] order;
+    auto factor = storage[].sliced(3, 3);
+    assert(orderNormalRectangle(covarianceView(cov[].sliced(3, 3)), lower[], upper[],
+        order[], factor, typical[]) == RectangleOrderStatus.success);
+    const r = integrateNormalRectangle(lower[], upper[], factor, 5489, 0, 1e-12, 1024);
+    const reference = 0.5 - 3 * acos(rho) / (4 * PI);
+    assert(r.status == RectangleIntegralStatus.budgetExhausted && r.evaluations == 1024);
+    assert(r.estimatedError >= abs(r.probability - reference));
 }
