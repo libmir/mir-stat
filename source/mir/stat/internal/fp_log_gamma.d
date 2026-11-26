@@ -142,6 +142,17 @@ package(mir.stat) struct PositiveLogGamma(uint bits)
         return recurrence!outBits(z);
     }
 
+    // Keep a sum of positive shapes at working precision through the recurrence.
+    // The caller handles tiny arguments and selects the Stirling form for large ones.
+    static W guardedRecurrence(W z)
+        in (!z.sign && !!z.coefficient && z.exponent != long.max)
+        in (S.from(z).exponent + work >= exponentBias && position(z, W(2 * crossover)) <= 0)
+    {
+        if (position(z, W(1)) == 0 || position(z, W(2)) == 0)
+            return W(0);
+        return recurrence!work(z);
+    }
+
     private static Fp!outBits recurrence(uint outBits)(W z)
     {
         import mir.stat.internal.fp_pi: guardedPi;
