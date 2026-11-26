@@ -18,7 +18,9 @@ version (mir_stat_test) version = mir_stat_test_rectangle_integral;
 version (mir_stat_test_blas) version = mir_stat_test_rectangle_integral;
 
 private immutable uint[7] bases = [2u, 3, 5, 7, 11, 13, 17];
-package(mir.stat) enum rectangleMaxDimension = bases.length + 1;
+private import mir.stat.internal.normal_rectangle_order : rectangleOrderMaxDimension;
+package(mir.stat) enum rectangleMaxDimension = rectangleOrderMaxDimension;
+static assert(bases.length + 1 == rectangleMaxDimension);
 private enum shiftCount = 16;
 private enum groupSize = shiftCount / 2;
 package(mir.stat) enum rectangleMinEvaluations = 64 * shiftCount;

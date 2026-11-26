@@ -277,9 +277,19 @@ MultivariateNormalRectangleResult multivariateNormalRectangleProbability(L, U, C
     }
     double[rectangleMaxDimension * rectangleMaxDimension] buffer = void;
     auto factor = buffer[0 .. n * n].sliced(n, n);
+    double[rectangleMaxDimension] a, b, typical;
+    size_t[rectangleMaxDimension] order;
+    // Validate with the same residual arithmetic used for integration.
+    bool validCovariance()
+    {
+        a[] = -double.infinity;
+        b[] = double.infinity;
+        return orderNormalRectangle(covariance, a[0 .. n], b[0 .. n], order[0 .. n],
+            factor, typical[0 .. n]) == RectangleOrderStatus.success;
+    }
     if (missing || empty || allUnbounded)
     {
-        if (n > 2 && tryCholeskyDecomposeInto!(M.triangle)(covariance.storage, factor))
+        if (n > 2 && !validCovariance())
             return Result(S.invalidCovariance);
         if (missing) return Result(S.unresolved);
         return Result(S.exact, empty ? 0 : 1, 0);
@@ -287,20 +297,20 @@ MultivariateNormalRectangleResult multivariateNormalRectangleProbability(L, U, C
 
     if (n <= 2)
     {
-        double[2] a, b, width;
+        double[2] left, right, width;
         foreach (i; 0 .. n)
         {
             const sd = sqrt(covariance.storage[i, i]);
-            a[i] = standardize(l[i], m[i], sd);
-            b[i] = standardize(u[i], m[i], sd);
+            left[i] = standardize(l[i], m[i], sd);
+            right[i] = standardize(u[i], m[i], sd);
             width[i] = standardize(u[i], l[i], sd);
         }
         if (n == 1)
         {
-            const p = normalIntervalMass(a[0], b[0], width[0]);
+            const p = normalIntervalMass(left[0], right[0], width[0]);
             return Result(p > 0 ? S.direct : S.unresolved, p);
         }
-        auto q = covarianceRectangleEstimate(a, b, width, correlation,
+        auto q = covarianceRectangleEstimate(left, right, width, correlation,
             options.absoluteTolerance, options.relativeTolerance, options.maxEvaluations);
         if (!(q.probability > 0) || (q.evaluations && q.probability < double.min_normal))
             return Result(S.unresolved, q.probability, double.nan, q.evaluations);
@@ -309,8 +319,6 @@ MultivariateNormalRectangleResult multivariateNormalRectangleProbability(L, U, C
         return Result(status, q.probability, q.estimatedError, q.evaluations);
     }
 
-    double[rectangleMaxDimension] a, b, typical;
-    size_t[rectangleMaxDimension] order;
     bool lost;
     foreach (i; 0 .. n)
     {
@@ -339,7 +347,7 @@ MultivariateNormalRectangleResult multivariateNormalRectangleProbability(L, U, C
         }
     }
     // A lost interval may be encountered before every covariance pivot was visited.
-    if (tryCholeskyDecomposeInto!(M.triangle)(covariance.storage, factor))
+    if (!validCovariance())
         return Result(S.invalidCovariance);
     return Result(S.unresolved);
 }
@@ -462,6 +470,20 @@ version(mir_stat_test_multivariate_normal)
     assert(run().status == S.invalidCovariance);
     cov[8] = double.nan;
     assert(run().status == S.invalidCovariance);
+
+    // A duplicate coordinate stays singular when an independent one is appended.
+    cov = [2, 2, 0, 0, 2, 0, 0, 0, 1];
+    mean[] = 0;
+    lower[] = -double.infinity;
+    upper[] = 0;
+    assert(run().status == S.invalidCovariance);
+    upper[] = double.infinity;
+    assert(run().status == S.invalidCovariance);
+    // Increasing one diagonal by one ulp restores positive definiteness.
+    cov[4] += 2 * double.epsilon;
+    assert(run().status == S.exact);
+    upper[] = 0;
+    assert(run().status != S.invalidCovariance);
 }
 
 

@@ -12,6 +12,8 @@ private import std.math: isFinite;
 
 @safe pure nothrow @nogc:
 
+package(mir.stat) enum rectangleOrderMaxDimension = 8;
+
 package(mir.stat) enum RectangleOrderStatus
 {
     success,
@@ -43,7 +45,7 @@ Scores within eight relative machine epsilons retain the first candidate in
 the current order. Only the labeled covariance triangle is read.
 
 Params:
-    covariance = Dense positive-definite double covariance view.
+    covariance = Dense positive-definite double covariance view of dimension at most eight.
     lower = Lower bounds relative to the mean, permuted in place.
     upper = Upper bounds relative to the mean, each strictly greater than its lower bound, permuted in place.
         Either endpoint may be infinite.
@@ -70,14 +72,32 @@ package(mir.stat) RectangleOrderStatus orderNormalRectangle(M, F)(scope auto ref
     import mir.math.common: sqrt;
     import mir.stat.internal.bivariate_normal_rectangle: normalIntervalMass;
     import std.algorithm: swap;
+    import std.math: frexp, ldexp, fma;
 
     alias Status = RectangleOrderStatus;
     const n = order.length;
     assert(lower.length == n && upper.length == n && typical.length == n);
     assert(covariance.storage.length!0 == n && covariance.storage.length!1 == n);
     assert(factor.length!0 == n && factor.length!1 == n);
+    assert(n <= rectangleOrderMaxDimension);
+    // Scale each coordinate by a power of two. Products in the Schur
+    // complement then stay in range even for widely different variances.
+    double[rectangleOrderMaxDimension][rectangleOrderMaxDimension] residual = void;
+    int[rectangleOrderMaxDimension] exponent;
     foreach (i; 0 .. n)
     {
+        const variance = covariance.storage[i, i];
+        if (!(variance > 0) || !isFinite(variance)) return Status.invalidFactor;
+        frexp(variance, exponent[i]);
+        exponent[i] /= 2;
+        foreach (j; 0 .. i + 1)
+        {
+            static if (M.triangle == TrianglePolicy.upper) const entry = covariance.storage[j, i];
+            else const entry = covariance.storage[i, j];
+            const value = ldexp(entry, -exponent[i] - exponent[j]);
+            if (!isFinite(value)) return Status.invalidFactor;
+            residual[i][j] = residual[j][i] = value;
+        }
         assert(lower[i] < upper[i]);
         order[i] = i;
         foreach (j; i + 1 .. n) factor[i, j] = 0;
@@ -90,16 +110,13 @@ package(mir.stat) RectangleOrderStatus orderNormalRectangle(M, F)(scope auto ref
         foreach (j; k .. n)
         {
             const index = order[j];
-            double variance = covariance.storage[index, index];
+            const variance = residual[index][index];
             double center = 0;
             foreach (h; 0 .. k)
-            {
-                variance -= factor[j, h] * factor[j, h];
                 center += factor[j, h] * typical[h];
-            }
             if (!(variance > 0) || !isFinite(variance)) return Status.invalidFactor;
             if (!isFinite(center)) return Status.unresolvedInterval;
-            const sd = sqrt(variance);
+            const sd = ldexp(sqrt(variance), exponent[index]);
             const a = standardize(lower[j], center, sd);
             const b = standardize(upper[j], center, sd);
             const width = standardize(upper[j], lower[j], sd);
@@ -122,19 +139,35 @@ package(mir.stat) RectangleOrderStatus orderNormalRectangle(M, F)(scope auto ref
             foreach (h; 0 .. k) swap(factor[k, h], factor[best, h]);
         }
         factor[k, k] = diagonal;
+        const pivot = order[k];
+        const p = residual[pivot][pivot];
+        const root = sqrt(p);
+        int shift;
+        if (p < 0x1p-500)
+        {
+            frexp(p, shift);
+            shift /= 2;
+        }
+        const scaledPivot = shift ? ldexp(p, -2 * shift) : p;
         foreach (j; k + 1 .. n)
         {
-            size_t i = order[j], pivot = order[k];
-            static if (M.triangle == TrianglePolicy.upper)
+            const i = order[j];
+            const x = residual[i][pivot];
+            const scaledX = shift ? ldexp(x, -shift) : x;
+            factor[j, k] = ldexp(x / root, exponent[i]);
+            if (!isFinite(factor[j, k])) return Status.invalidFactor;
+            foreach (h; k + 1 .. j + 1)
             {
-                if (i > pivot) swap(i, pivot);
+                const t = order[h];
+                const y = residual[t][pivot];
+                // Compute (p*a - x*y)/p before rounding either Cholesky
+                // entry. Identical rows have an exactly zero residual.
+                const scaledY = shift ? ldexp(y, -shift) : y;
+                const xy = scaledX * scaledY;
+                const value = (fma(scaledPivot, residual[i][t], -xy) +
+                    fma(-scaledX, scaledY, xy)) / scaledPivot;
+                residual[i][t] = residual[t][i] = value;
             }
-            else if (i < pivot) swap(i, pivot);
-            double value = covariance.storage[i, pivot];
-            foreach (h; 0 .. k) value -= factor[j, h] * factor[k, h];
-            value /= diagonal;
-            if (!isFinite(value)) return Status.invalidFactor;
-            factor[j, k] = value;
         }
     }
     return Status.success;
@@ -230,4 +263,31 @@ version (mir_stat_test_rectangle_order)
     auto empty = raw[0 .. 0].sliced(0, 0);
     assert(orderNormalRectangle(covarianceView(empty), lower[0 .. 0], upper[0 .. 0],
         order[0 .. 0], empty, typical[0 .. 0]) == RectangleOrderStatus.success);
+}
+
+version (mir_stat_test_rectangle_order)
+@safe pure nothrow @nogc unittest
+{
+    import mir.ndslice.slice: sliced;
+    import mir.stat.covariance_views: covarianceView;
+
+    // The first two axes have very different scales and perfect anticorrelation.
+    static foreach (triangle; [TrianglePolicy.upper, TrianglePolicy.lower])
+    {{
+        double[9] cov = [0x1p901, -2, 0, -2, 0x1p-899, 0, 0, 0, 1], work;
+        double[3] lower = -double.infinity, upper = double.infinity, typical;
+        size_t[3] order;
+        auto metric = covarianceView!triangle(cov[].sliced(3, 3));
+        auto factor = work[].sliced(3, 3);
+        auto run()
+        {
+            return orderNormalRectangle(metric, lower[], upper[], order[], factor, typical[]);
+        }
+        assert(run() == RectangleOrderStatus.invalidFactor);
+        cov[4] += 0x1p-951;
+        assert(run() == RectangleOrderStatus.success);
+        // The exact residual variance is the one-ulp perturbation.
+        import std.math: abs;
+        assert(factor[1, 1] > 0 && abs(factor[1, 1] * factor[1, 1] / 0x1p-951 - 1) <= double.epsilon);
+    }}
 }
