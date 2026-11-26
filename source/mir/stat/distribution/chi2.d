@@ -354,6 +354,56 @@ unittest
 }
 
 /++
+Computes the chi-squared quantile at cumulative probability $(D p) using guarded gamma arithmetic.
+
+Params:
+    T = supported $(D Fp) type with at most 512 significand bits
+    I = integer type of the degrees of freedom
+    p = represented cumulative probability in [0, 1]
+    k = degrees of freedom from one through $(D uint.max)
+
+Returns:
+    The quantile at cumulative probability $(D p) as $(D T).
+    It is zero at zero and positive infinity at one. An unresolved gamma tail comparison returns NaN.
++/
+@safe pure nothrow @nogc
+T chi2InvCDF(T, I)(const T p, const I k)
+    if (is(T == Fp!bits, size_t bits) && __traits(isIntegral, I))
+{
+    import mir.stat.distribution.gamma: gammaInvCDF;
+    return gammaInvCDF(p, chi2Shape!T(k), T(2));
+}
+
+///
+version(mir_stat_test)
+@safe pure nothrow @nogc unittest
+{
+    import mir.bignum.fp: Fp;
+    alias T = Fp!64;
+    assert(chi2InvCDF(T(0), 3) == T(0));
+}
+
+version(mir_stat_test)
+@safe pure nothrow @nogc unittest
+{
+    import mir.bignum.fixed: UInt;
+    import mir.math.common: approxEqual;
+    alias T = Fp!64;
+    alias U = UInt!64;
+    // Bracketed by MPFR inversion of erf(sqrt(x/2)) at the exact
+    // median probability and its two represented neighbors.
+    const p = 0.5;
+    const expected = T(false, -65, U(0xe8ed6d461d95c4b5UL));
+    assert(chi2InvCDF(T(p), 1) == expected);
+    assert(approxEqual(chi2InvCDF(p, 1), cast(double)expected, 32 * double.epsilon, 0.0));
+    assert(chi2InvCDF(T(false, -65, U.max), 1) == T(false, -65, U(0xe8ed6d461d95c4b3UL)));
+    assert(chi2InvCDF(T(false, -64, U(0x8000000000000001UL)), 1) ==
+        T(false, -65, U(0xe8ed6d461d95c4b9UL)));
+    assert(chi2InvCDF(T(false, long.min, U(1)), 2) == T(false, long.min, U(2)));
+    assert(chi2InvCDF(T(1), 3) == T(false, long.max, U(0)));
+}
+
+/++
 Computes the Chi-squared log probability density function (LPDF).
 
 Returns the natural logarithm of the density.
