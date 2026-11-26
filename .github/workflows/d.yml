@@ -278,7 +278,7 @@ jobs:
         & $exe
         if ($LASTEXITCODE) { exit $LASTEXITCODE }
         $shapeExe = Join-Path $env:RUNNER_TEMP 'gamma-integer-shape-x86.exe'
-        & $env:DC -m32 -i -main -unittest --d-version=mir_stat_test_gamma_integer_shape @imports "-of=$shapeExe" source/mir/stat/distribution/gamma.d
+        & $env:DC -m32 -i -main -unittest --d-version=mir_stat_test_gamma_integer_shape --d-version=mir_stat_test_chi2_degrees @imports "-of=$shapeExe" source/mir/stat/distribution/gamma.d source/mir/stat/distribution/chi2.d
         if ($LASTEXITCODE) { exit $LASTEXITCODE }
         & $shapeExe
         exit $LASTEXITCODE

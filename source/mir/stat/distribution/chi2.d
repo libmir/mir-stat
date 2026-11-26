@@ -6,6 +6,12 @@ $(D k) and nonnegative observations. A chi-squared distribution is a gamma
 distribution with shape $(D k / 2.0) and scale two. The inverse CDF accepts
 both probability endpoints.
 
+The $(D Fp) overloads form the half-integer or integer shape exactly and use
+the guarded algorithms in $(MREF mir, stat, distribution, gamma). Severe
+cancellation can reduce density or log-density accuracy. The tails and
+inverse CDF inherit the gamma evaluation limits and can return NaN when
+those limits are reached. Correct rounding is unproven.
+
 The special-value tables assume finite distribution parameters in the stated
 domain. Finite expressions are subject to floating-point rounding and range
 limits. Contract violations are not prescribed return values: disabling
@@ -22,6 +28,8 @@ module mir.stat.distribution.chi2;
 
 import mir.internal.utility: isFloatingPoint;
 import mir.bignum.fp: Fp;
+
+version(mir_stat_test) version = mir_stat_test_chi2_degrees;
 
 // Preserve an odd degree count exactly when forming the gamma shape.
 private @safe pure nothrow @nogc
@@ -390,17 +398,25 @@ version(mir_stat_test)
     import mir.math.common: approxEqual;
     alias T = Fp!64;
     alias U = UInt!64;
-    // Bracketed by MPFR inversion of erf(sqrt(x/2)) at the exact
-    // median probability and its two represented neighbors.
+    // Bracketed by MPFR inversion of erf(sqrt(x/2)) at the median.
     const p = 0.5;
     const expected = T(false, -65, U(0xe8ed6d461d95c4b5UL));
     assert(chi2InvCDF(T(p), 1) == expected);
     assert(approxEqual(chi2InvCDF(p, 1), cast(double)expected, 32 * double.epsilon, 0.0));
+    assert(chi2InvCDF(T(false, long.min, U(1)), 2) == T(false, long.min, U(2)));
+    assert(chi2InvCDF(T(1), 3) == T(false, long.max, U(0)));
+}
+
+version(mir_stat_test_slow_numerics)
+@safe pure nothrow @nogc unittest
+{
+    import mir.bignum.fixed: UInt;
+    alias T = Fp!64;
+    alias U = UInt!64;
+    // MPFR inversion at the two represented neighbors of the median probability.
     assert(chi2InvCDF(T(false, -65, U.max), 1) == T(false, -65, U(0xe8ed6d461d95c4b3UL)));
     assert(chi2InvCDF(T(false, -64, U(0x8000000000000001UL)), 1) ==
         T(false, -65, U(0xe8ed6d461d95c4b9UL)));
-    assert(chi2InvCDF(T(false, long.min, U(1)), 2) == T(false, long.min, U(2)));
-    assert(chi2InvCDF(T(1), 3) == T(false, long.max, U(0)));
 }
 
 /++
@@ -516,6 +532,42 @@ version(mir_stat_test)
     alias V = Fp!128;
     enum centerLogDensity = UInt!128.fromHexString("c5b1a19bbd67fa771ad3ef8a2d4e700c");
     assert(chi2LPDF(V(U(uint.max)), uint.max) == V(true, -124, centerLogDensity));
+}
+
+version(mir_stat_test_chi2_degrees)
+unittest
+{
+    import core.exception: AssertError;
+    import mir.bignum.fixed: UInt;
+    import std.exception: assertThrown;
+    import std.meta: AliasSeq;
+    alias T = Fp!(size_t.sizeof * 8);
+    alias U = UInt!(size_t.sizeof * 8);
+    // Odd counts retain their half unit even at the narrowest supported width.
+    enum int shift = size_t.sizeof * 8 - 32;
+    const expectedShape = T(false, -1 - shift, U(cast(size_t)uint.max << shift));
+    assert(chi2Shape!T(uint.max) == expectedShape);
+    static if (size_t.sizeof == 4)
+    {
+        const center = T(uint.max);
+        assert(chi2PDF(center, uint.max) == T(false, -49, U(0x906eba82)));
+        assert(chi2LPDF(center, uint.max) == T(true, -28, U(0xc5b1a19c)));
+    }
+
+    bool contractsEnabled;
+    void probe() in { contractsEnabled = true; } do {}
+    probe();
+    if (contractsEnabled)
+    {
+        int negative = -1;
+        ulong tooLarge = cast(ulong)uint.max + 2;
+        static foreach (evaluate; AliasSeq!(chi2PDF, chi2LPDF, chi2CDF, chi2CCDF, chi2InvCDF))
+        {
+            assertThrown!AssertError(evaluate(T(0), negative));
+            assertThrown!AssertError(evaluate(T(0), 0));
+            assertThrown!AssertError(evaluate(T(0), tooLarge));
+        }
+    }
 }
 
 // The gamma representation must preserve the same endpoint and tiny-tail limits.
