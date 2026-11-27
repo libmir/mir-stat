@@ -382,6 +382,72 @@ version(mir_stat_test)
     assert(I.compare(z.value, one) == 0 && !z.negative);
 }
 
+// Use the same centered normalization as the tails. The density divides
+// the beta prefactor by x*(1-x) before the final logarithm or exponential
+// is rounded to the caller's precision.
+package(mir.stat) Fp!bits betaDensity(bool logarithmic, uint bits)(Fp!bits x, Fp!bits a, Fp!bits b)
+{
+    alias T = Fp!bits;
+    alias I = BetaIntegral!bits;
+    alias S = I.S;
+    alias B = I.B;
+    const unit = T(1);
+    if (!x.coefficient || position(x, unit) == 0)
+    {
+        const side = position(!x.coefficient ? a : b, unit);
+        if (side < 0 || (logarithmic && side > 0))
+            return T(side > 0, long.max, UInt!bits(0));
+        if (side > 0) return T(0);
+        const height = !x.coefficient ? b : a;
+        static if (logarithmic) return cast(T)B.logarithm(S.from(height));
+        else return height;
+    }
+
+    auto integral = I(S.from(unit), 4096);
+    const p = integral.point(x);
+    I.Term result;
+    if (position(a, unit) == 0 || position(b, unit) == 0)
+    {
+        const reflected = position(a, unit) == 0;
+        const k = S.from(reflected ? b : a);
+        const q = reflected ? p.reflect() : p;
+        const slope = B.combine(I.pos(k), I.neg(integral.one));
+        if (!slope.present) return T(logarithmic ? 0 : 1);
+        // With shape two the density is exactly twice the base. Near its
+        // zero crossing log(2*base) keeps the displacement from one.
+        if (I.compare(k, S.from(T(2))) == 0)
+        {
+            S height = q.x;
+            ++height.exponent;
+            static if (logarithmic) return cast(T)B.logarithm(height);
+            else return height.finish!bits;
+        }
+        result = B.combine(I.signedValue(B.logarithm(k)),
+            I.Term(slope.value.multiply(q.negLogX),
+                !slope.negative, true));
+    }
+    else
+    {
+        result = B.combineThree(integral.front(S.from(a), S.from(b), p),
+            I.pos(p.negLogX), I.pos(p.negLogY));
+        // The Stirling and recurrence terms have bounded working precision.
+        // A residual too close to zero cannot resolve the log density.
+        if (!result.present || result.value.exponent + bits + 48 < exponentBias)
+            return logarithmic ? T(false, long.max, UInt!bits(1)) : unit;
+    }
+    if (!result.present) return T(logarithmic ? 0 : 1);
+    static if (logarithmic)
+        return addOffset!bits(T(0), result.value, result.negative);
+    else
+    {
+        if (result.value.exponent >= exponentBias + 66)
+            return result.negative ? T(0) : T(false, long.max, UInt!bits(0));
+        auto height = scaledDecay(result.value);
+        if (!result.negative) height = integral.one.divide(height);
+        return addOffset!bits(T(0), height, false);
+    }
+}
+
 // Guarded regularized lower or strict upper beta tail for positive finite
 // shapes and x in [0,1]. Each continued fraction allows at most limit pairs
 // of updates; the small-input interval series allows limit terms. Exhaustion

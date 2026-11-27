@@ -167,6 +167,59 @@ unittest
 }
 
 /++
+Computes the beta density in guarded extended precision.
+
+Params:
+    T = supported $(D Fp) type with at most 512 significand bits
+    x = observation in the closed unit interval
+    alpha = finite positive lower-endpoint shape
+    beta = finite positive upper-endpoint shape
+
+Returns:
+    The density as $(D T). At zero the density limit is infinity, beta, or zero
+    for alpha below, equal to, or above one. At one the shapes exchange roles.
++/
+@safe pure nothrow @nogc
+T betaPDF(T)(const T x, const T alpha, const T beta)
+    if (is(T == Fp!size, size_t size) && size <= 512)
+    in (x.exponent != long.max && (!x.sign || !x.coefficient) && position(x, T(1)) <= 0)
+    in (alpha.exponent != long.max && !alpha.sign && !!alpha.coefficient)
+    in (beta.exponent != long.max && !beta.sign && !!beta.coefficient)
+{
+    import mir.stat.internal.fp_beta: betaDensity;
+    return betaDensity!false(x, alpha, beta);
+}
+
+///
+version(mir_stat_test)
+@safe pure nothrow @nogc unittest
+{
+    import mir.bignum.fp: Fp;
+    alias T = Fp!64;
+    assert(betaPDF(T(0.5), T(2), T(1)) == T(1));
+}
+
+version(mir_stat_test)
+@safe pure nothrow @nogc unittest
+{
+    import mir.bignum.fixed: UInt;
+    alias T = Fp!64;
+    const half = T(0.5);
+    assert(betaPDF(T(0), half, T(2)).isInfinity);
+    assert(betaPDF(T(1), half, T(2)) == T(0));
+    assert(betaPDF(T(0), T(1), T(3)) == T(3));
+    assert(betaPDF(T(1), T(4), T(1)) == T(4));
+    assert(betaPDF(half, T(1), T(1)) == T(1));
+    // (a+b-1) * binom(a+b-2,a-1) * x^(a-1) * (1-x)^(b-1).
+    assert(betaPDF(T(0.25), T(4096), T(12288)) == T(false, -57, UInt!64(0xebda25e9febb8b92UL)));
+    assert(betaPDF(T(0.25), T(3), T(5)) == T(2.076416015625));
+    assert(betaPDF(0.25, 3.0, 5.0) == 2.076416015625);
+    const floor = T(false, long.min, UInt!64(1));
+    assert(betaPDF(floor, T(2), T(1)) == T(false, long.min, UInt!64(2)));
+    assert(betaPDF(floor, T(3), T(1)) == T(0));
+}
+
+/++
 Computes the beta cumulative distribution function (CDF).
 
 Returns the lower-tail probability $(D P(X <= x)).
@@ -792,6 +845,58 @@ unittest
                 64 * T.epsilon, T(0)));
         }
     }}
+}
+
+/++
+Computes the natural logarithm of the beta density in guarded extended precision.
+
+Params:
+    T = supported $(D Fp) type with at most 512 significand bits
+    x = observation in the closed unit interval
+    alpha = finite positive lower-endpoint shape
+    beta = finite positive upper-endpoint shape
+
+Returns:
+    The log density as $(D T). At zero the density limit is infinity, beta, or zero
+    for alpha below, equal to, or above one. At one the shapes exchange roles.
+    A general log density unresolved near zero returns NaN.
++/
+@safe pure nothrow @nogc
+T betaLPDF(T)(const T x, const T alpha, const T beta)
+    if (is(T == Fp!size, size_t size) && size <= 512)
+    in (x.exponent != long.max && (!x.sign || !x.coefficient) && position(x, T(1)) <= 0)
+    in (alpha.exponent != long.max && !alpha.sign && !!alpha.coefficient)
+    in (beta.exponent != long.max && !beta.sign && !!beta.coefficient)
+{
+    import mir.stat.internal.fp_beta: betaDensity;
+    return betaDensity!true(x, alpha, beta);
+}
+
+///
+version(mir_stat_test)
+@safe pure nothrow @nogc unittest
+{
+    import mir.bignum.fp: Fp;
+    alias T = Fp!64;
+    assert(betaLPDF(T(0.5), T(2), T(1)) == T(0));
+}
+
+version(mir_stat_test)
+@safe pure nothrow @nogc unittest
+{
+    import mir.bignum.fixed: UInt;
+    alias T = Fp!64;
+    auto endpoint = betaLPDF(T(1), T(2), T(3));
+    assert(endpoint.isInfinity && endpoint.sign);
+    endpoint = betaLPDF(T(0), T(0.5), T(3));
+    assert(endpoint.isInfinity && !endpoint.sign);
+    assert(betaLPDF(T(0), T(1), T(1)) == T(0));
+    // The predecessor of 1/2 gives log(1-2^-64) for Beta(2,1).
+    assert(betaLPDF(T(false, -65, UInt!64.max), T(2), T(1)) ==
+        T(true, -127, UInt!64(0x8000000000000000UL)));
+    alias V = Fp!128;
+    enum expected = UInt!128.fromHexString("98a4507ad6bae4a2382c9a96ef96ec29");
+    assert(betaLPDF(V(0.25), V(4096), V(12288)) == V(false, -125, expected));
 }
 
 // Stirling's log-gamma correction, with r=1/z and z>=16. The first omitted
