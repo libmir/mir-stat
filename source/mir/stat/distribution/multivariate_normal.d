@@ -100,7 +100,10 @@ $(H4 Rectangle probabilities)
 $(LREF multivariateNormalRectangleProbability) evaluates the probability that
 all coordinates lie between corresponding lower and upper bounds. Pass the
 mean and a labeled covariance matrix. Negative-infinite lower bounds give a
-lower-orthant probability. The result includes the probability, the numerical
+lower-orthant probability (the multivariate CDF). For example, lower bounds
+$(D [-double.infinity, -double.infinity]) and upper bounds $(D [10, 20])
+give the probability that the first measurement is at most 10 and the second
+is at most 20 on the same draw. The result includes the probability, the numerical
 status, an estimated absolute integration error when available, and the
 evaluation count. $(LREF MultivariateNormalRectangleOptions) controls the
 tolerances, budget, and seed.
@@ -388,6 +391,24 @@ MultivariateNormalRectangleResult multivariateNormalRectangleProbability(L, U, C
     if (!validCovariance())
         return Result(S.invalidCovariance);
     return Result(S.unresolved);
+}
+
+/// Probability that two measurements are both at or below their respective limits.
+version(mir_stat_test_multivariate_normal)
+@safe pure nothrow @nogc unittest
+{
+    import mir.math.common : fabs;
+    import mir.ndslice.slice : sliced;
+
+    double[2] lower = -double.infinity;
+    double[2] upper = [10, 20], mean = [10, 20];
+    double[4] entries = [4, 3, 3, 9]; // Standard deviations 2 and 3, correlation 0.5.
+    auto covariance = covarianceView(entries[].sliced(2, 2));
+    const result = multivariateNormalRectangleProbability(lower[], upper[], mean[], covariance);
+
+    // With these limits at the means, one third of draws meet both limits.
+    assert(result.status == MultivariateNormalRectangleStatus.toleranceMet);
+    assert(fabs(result.probability - 1.0 / 3) < 0.001);
 }
 
 /// Probability that three correlated measurements each fall within one standard deviation of the mean.
