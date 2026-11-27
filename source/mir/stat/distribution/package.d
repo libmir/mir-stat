@@ -98,6 +98,7 @@ public import mir.stat.distribution.categorical;
 public import mir.stat.distribution.cauchy;
 ///
 public import mir.stat.distribution.chi2;
+///
 public import mir.stat.distribution.noncentral_chi2;
 ///
 public import mir.stat.distribution.cornish_fisher;

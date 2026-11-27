@@ -8,8 +8,16 @@ the mean and the target.
 
 The functions accept built-in floating-point types and positive integer
 degrees of freedom. Zero noncentrality gives the central chi-squared law.
-Mixture calculations use $(D real) intermediates and return NaN if their
-index or iteration limit is reached.
+$(D noncentralChi2CDF) gives the probability inside a covariance-shaped
+ellipsoid when $(D x) is its squared radius. $(D noncentralChi2CCDF) gives
+the probability outside. $(D noncentralChi2InvCDF) returns the squared
+radius for a specified enclosed probability.
+
+The Poisson mixture uses $(D real) intermediates. Its starting index must
+be smaller than $(D uint.max), and each direction of summation allows
+16,384 updates. An unresolved evaluation returns NaN, including during
+quantile inversion. Accuracy also depends on the underlying gamma and
+Poisson routines. The work per call can grow with noncentrality.
 
 License: $(HTTP www.apache.org/licenses/LICENSE-2.0, Apache-2.0)
 +/
@@ -166,8 +174,10 @@ version(mir_stat_test_noncentral_chi2)
         // x = lambda = 1600: the first Poisson weight underflows in double.
         assert(approxEqual(noncentralChi2PDF(T(1600), 1, T(1600)),
             T(0.00498677850501790847L), T(8) * T.epsilon, T(0)));
-        assert(noncentralChi2LPDF(T(1), 4, T(4000)) < -1900);
-        assert(noncentralChi2LPDF(T(1), 4, T(4000)) > -2000);
+        assert(approxEqual(noncentralChi2LPDF(T(1), 4, T(4000)),
+            T(-1945.093046548164L), T(2e-14) + T.epsilon, T(0)));
+        assert(approxEqual(noncentralChi2PDF(T(1600), 2, T(1600)),
+            T(0.004987168234143833L), T(2e-14) + T.epsilon, T(0)));
     }}
 }
 
@@ -238,24 +248,52 @@ version(mir_stat_test_noncentral_chi2)
         1.91065957455985e-28, 2e-14, 0.0));
 }
 
+// Keep tiny gamma components on the inverse comparison scale. Applying
+// the scale after gammaCDF has rounded to zero loses the component.
 private @safe pure nothrow @nogc
-real probability(real x, uint k, real lambda, bool upper)
+real scaledGammaLowerTail(real x, real shape, real scale)
 {
-    import mir.stat.distribution.gamma: gammaCDF, gammaCCDF;
+    import mir.stat.distribution.gamma: gammaCDF, gammaLPDF;
+    import mir.math.common: exp, log;
+    const value = gammaCDF(x, shape, 2);
+    if (scale == 1 || !(value < real.min_normal))
+        return scale * value;
+
+    // The lower incomplete-gamma series starts at
+    // exp(-x/2) * (x/2)^^shape / Gamma(shape + 1).
+    const first = exp(gammaLPDF(x, shape + 1, 2) + log(2 * scale));
+    real sum = 1;
+    real term = 1;
+    foreach (j; 1 .. maxMixtureSteps + 1)
+    {
+        const ratio = (x / 2) / (shape + j);
+        term *= ratio;
+        if (term <= (1 - ratio) * real.epsilon * sum)
+            return first * sum;
+        sum += term;
+    }
+    return real.nan;
+}
+
+private @safe pure nothrow @nogc
+real probability(real x, uint k, real lambda, bool upper, real resultScale = 1)
+{
+    import mir.stat.distribution.gamma: gammaCCDF;
     import mir.stat.distribution.poisson: poissonLPMF;
     import mir.math.common: exp;
 
     if (x == 0 || x == real.infinity)
-        return (x == 0) == upper;
+        return (x == 0) == upper ? resultScale : 0;
     // Markov's inequality applied to exp(X/4) bounds the upper tail by
     // exp(k*log(2)/2 + lambda/2 - x/4). Use log(2) < 1 in both
     // the moment and the underflow threshold to keep the test conservative.
     if (x / 4 > lambda / 2 + real(k) / 2
             + (2 - real.min_exp + real.mant_dig))
-        return upper ? 0 : 1;
+        return upper ? 0 : resultScale;
     const mean = lambda / 2;
     if (mean == 0)
-        return upper ? chi2CCDF(x, k) : chi2CDF(x, k);
+        return upper ? resultScale * chi2CCDF(x, k)
+                     : scaledGammaLowerTail(x, real(k) / 2, resultScale);
     if (mean >= uint.max)
         return real.nan;
 
@@ -264,11 +302,14 @@ real probability(real x, uint k, real lambda, bool upper)
     const useUpper = x > k + lambda;
     const shape = real(k) / 2;
     real tail(uint j) {
-        return useUpper ? gammaCCDF(x, shape + j, 2)
-                        : gammaCDF(x, shape + j, 2);
+        return useUpper ? resultScale * gammaCCDF(x, shape + j, 2)
+                        : scaledGammaLowerTail(x, shape + j, resultScale);
     }
     const mode = cast(uint) mean;
-    const peak = exp(poissonLPMF(mode, mean));
+    // A representable subnormal tail can consist entirely of terms below
+    // the smallest positive value. Scale before multiplying by each tail.
+    enum weightScale = 1 / real.epsilon;
+    const peak = weightScale * exp(poissonLPMF(mode, mean));
     const centerTail = tail(mode);
     real sum = peak * centerTail;
     static foreach (upward; [false, true])
@@ -289,7 +330,7 @@ real probability(real x, uint k, real lambda, bool upper)
             // Poisson mass geometrically. On the side where the gamma
             // probability also decreases, its current value tightens the bound.
             weight *= ratio;
-            const boundFactor = (upward != useUpper) ? component : 1;
+            const boundFactor = (upward != useUpper) ? component : resultScale;
             if (weight == 0 || (ratio < 1 &&
                 weight * boundFactor <= (1 - ratio) * real.epsilon * sum))
                 break;
@@ -301,8 +342,9 @@ real probability(real x, uint k, real lambda, bool upper)
             sum += weight * component;
         }
     }}
-    if (sum > 1) sum = 1;
-    return upper == useUpper ? sum : 1 - sum;
+    sum /= weightScale;
+    if (sum > resultScale) sum = resultScale;
+    return upper == useUpper ? sum : resultScale - sum;
 }
 
 version(mir_stat_test_noncentral_chi2)
@@ -350,14 +392,30 @@ T noncentralChi2InvCDF(T)(const T p, const uint k, const T lambda)
     if (lambda == 0) return chi2InvCDF(p, k);
 
     const upper = p > T(0.5);
-    const real target = upper ? 1 - p : p;
+    // At a subnormal lower-tail probability, compare before rounding
+    // the mixture back to the public probability scale.
+    const scale = p < real.min_normal ? 1 / real.epsilon : 1;
+    const real target = (upper ? 1 - p : p) * scale;
+    if (p < real.min_normal)
+    {
+        import mir.math.common: exp, log;
+        import mir.math.constant: LN2;
+        import std.mathspecial: logGamma;
+        // Near zero, F(x) is exp(-lambda/2)*(x/2)^^shape/Gamma(shape+1)
+        // times a factor between exp(-x/2) and exp(lambda*x/(4*(shape+1))).
+        // Invert in log space when both corrections are below roundoff.
+        const shape = real(k) / 2;
+        const logX = LN2 + (log(real(p)) + real(lambda) / 2 + logGamma(shape + 1)) / shape;
+        if (logX < log(real.epsilon) - log(1 + real(lambda)))
+            return cast(T) exp(logX);
+    }
     const center = real(k) + lambda;
     real step = sqrt(2 * (real(k) + 2 * real(lambda)));
     real low = center;
     real high = center;
     // Expand by standard deviations around the mean. A multiple of the
     // mean can be thousands of standard deviations from a central quantile.
-    const centerValue = probability(center, k, lambda, upper);
+    const centerValue = probability(center, k, lambda, upper, scale);
     if (centerValue != centerValue) return T.nan;
     const moveRight = upper ? centerValue > target : centerValue < target;
     for (;;)
@@ -366,7 +424,7 @@ T noncentralChi2InvCDF(T)(const T p, const uint k, const T lambda)
             high = center + step;
         else
             low = step < center ? center - step : 0;
-        const value = probability(moveRight ? high : low, k, lambda, upper);
+        const value = probability(moveRight ? high : low, k, lambda, upper, scale);
         if (value != value) return T.nan;
         if ((upper ? value > target : value < target) != moveRight)
             break;
@@ -386,7 +444,7 @@ T noncentralChi2InvCDF(T)(const T p, const uint k, const T lambda)
             : low + (high - low) / 2;
         if (mid <= low || mid >= high || cast(T) low == cast(T) high)
             return cast(T) mid;
-        const value = probability(mid, k, lambda, upper);
+        const value = probability(mid, k, lambda, upper, scale);
         if (value != value) return T.nan;
         if (upper ? value > target : value < target)
             low = mid;
@@ -435,4 +493,46 @@ version(mir_stat_test_noncentral_chi2)
     // For k = 1 the upper tail is the sum of two normal tails.
     assert(approxEqual(noncentralChi2InvCDF(1 - double.epsilon, 1, 80.0),
         291.3904503267249, 2e-15, 0.0));
+}
+
+version(mir_stat_test_noncentral_chi2)
+@safe pure nothrow @nogc unittest
+{
+    import mir.math.common: approxEqual;
+    import std.math: isNaN;
+    // For one degree of freedom the two normal tails give 13 minimum
+    // double subnormals after rounding (the farther tail rounds to zero).
+    enum minDouble = double.min_normal * double.epsilon;
+    assert(noncentralChi2CCDF(48.4 * 48.4, 1, 100.0) == 13 * minDouble);
+    // At k=2 and lambda=2 the density at zero is 1/(2e).
+    assert(noncentralChi2InvCDF(minDouble, 2, 2.0) == 5 * minDouble);
+    // Inverting the two normal tails of (Z + 40)^^2 gives an ordinary
+    // positive quantile even at the smallest double probability.
+    assert(approxEqual(noncentralChi2InvCDF(minDouble, 1, 1600.0),
+        2.34884554236070, 1e-13, 0.0));
+    // Independent reference for a lower tail far below the distribution mean.
+    assert(approxEqual(noncentralChi2CDF(700.0, 5, 1600.0),
+        1.9075094934193678e-42, 5e-13, 0.0));
+}
+
+version(mir_stat_test_noncentral_chi2)
+@safe pure nothrow @nogc unittest
+{
+    import mir.math.common: log, sqrt;
+    import std.math: isNaN;
+
+    // The density series is too broad to resolve within the work limit.
+    assert(isNaN(noncentralChi2LPDF(1e8, 2, 1e8)));
+    // The lower-tail mixture reaches its work limit before it can bound
+    // the omitted Poisson mass on the side toward zero.
+    assert(isNaN(noncentralChi2CDF(1.0, 2, 1e7)));
+    // Near a large gamma shape, the lower-tail series can converge slowly
+    // even at the normal/subnormal boundary. Choose the distance in units
+    // of sqrt(shape) for the platform's real exponent range.
+    const shape = real(uint.max);
+    const distance = sqrt(-2 * shape * log(real.min_normal));
+    assert(isNaN(scaledGammaLowerTail(2 * (shape - distance), shape, 1 / real.epsilon)));
+    assert(isNaN(noncentralChi2LPDF(1e20, 2, 1e20)));
+    assert(isNaN(noncentralChi2CDF(1e20, 2, 1e20)));
+    assert(isNaN(noncentralChi2InvCDF(0.5, 2, 1e20)));
 }
