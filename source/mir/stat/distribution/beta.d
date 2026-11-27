@@ -23,6 +23,8 @@ Copyright: 2022-3 Mir Stat Authors.
 
 module mir.stat.distribution.beta;
 
+import mir.bignum.fp: Fp;
+import mir.stat.internal.fp_location_scale: position;
 import mir.internal.utility: isFloatingPoint;
 
 /++
@@ -165,6 +167,68 @@ unittest
 }
 
 /++
+Computes the beta density in guarded extended precision.
+
+Params:
+    T = supported $(D Fp) type with at most 512 significand bits
+    x = observation in the closed unit interval
+    alpha = finite positive lower-endpoint shape
+    beta = finite positive upper-endpoint shape
+
+Returns:
+    The density as $(D T). At zero the density limit is infinity, beta, or zero
+    for alpha below, equal to, or above one. At one the shapes exchange roles.
++/
+@safe pure nothrow @nogc
+T betaPDF(T)(const T x, const T alpha, const T beta)
+    if (is(T == Fp!size, size_t size) && size <= 512)
+    in (x.exponent != long.max && (!x.sign || !x.coefficient) && position(x, T(1)) <= 0)
+    in (alpha.exponent != long.max && !alpha.sign && !!alpha.coefficient)
+    in (beta.exponent != long.max && !beta.sign && !!beta.coefficient)
+{
+    import mir.stat.internal.fp_beta: betaDensity;
+    return betaDensity!false(x, alpha, beta);
+}
+
+///
+version(mir_stat_test)
+@safe pure nothrow @nogc unittest
+{
+    import mir.bignum.fp: Fp;
+    alias T = Fp!64;
+    assert(betaPDF(T(0.5), T(2), T(1)) == T(1));
+}
+
+version(mir_stat_test)
+@safe pure nothrow @nogc unittest
+{
+    import mir.bignum.fixed: UInt;
+    alias T = Fp!64;
+    const half = T(0.5);
+    assert(betaPDF(T(0), half, T(2)).isInfinity);
+    assert(betaPDF(T(1), half, T(2)) == T(0));
+    assert(betaPDF(T(0), T(1), T(3)) == T(3));
+    assert(betaPDF(T(1), T(4), T(1)) == T(4));
+    assert(betaPDF(half, T(1), T(1)) == T(1));
+    // For Beta(3/2, 1), f(x) = (3/2)*sqrt(x).
+    assert(betaPDF(T(0.25), T(1.5), T(1)) == T(0.75));
+    // 3*x^2 lies halfway between adjacent outputs; the upper one is even.
+    const x = T(false, -32, UInt!64(3000000009UL));
+    const reflected = T(false, -32, UInt!64((1UL << 32) - 3000000009UL));
+    const density = T(false, -63, UInt!64(13500000081000000122UL));
+    assert(betaPDF(x, T(3), T(1)) == density);
+    assert(betaPDF(reflected, T(1), T(3)) == density);
+    // (a+b-1) * binom(a+b-2,a-1) * x^(a-1) * (1-x)^(b-1).
+    assert(betaPDF(T(0.25), T(4096), T(12288)) == T(false, -57, UInt!64(0xebda25e9febb8b92UL)));
+    assert(betaPDF(T(0.25), T(3), T(5)) == T(2.076416015625));
+    assert(betaPDF(0.25, 3.0, 5.0) == 2.076416015625);
+    const floor = T(false, long.min, UInt!64(1));
+    assert(betaPDF(floor, T(2), T(1)) == T(false, long.min, UInt!64(2)));
+    assert(betaPDF(floor, T(3), T(1)) == T(0));
+    assert(betaPDF(half, T(2), T(false, 1000, UInt!64(1))) == T(0));
+}
+
+/++
 Computes the beta cumulative distribution function (CDF).
 
 Returns the lower-tail probability $(D P(X <= x)).
@@ -208,6 +272,53 @@ unittest
     assert(0.5.betaCDF(1, 1).approxEqual(0.5));
     assert(0.75.betaCDF(1, 2).approxEqual(0.9375));
     assert(0.25.betaCDF(0.5, 4).approxEqual(0.8588867));
+}
+
+/++
+Computes the guarded lower beta tail in extended precision.
+
+Params:
+    T = supported $(D Fp) type with at most 512 significand bits
+    x = observation in the closed unit interval
+    alpha = finite positive lower-endpoint shape
+    beta = finite positive upper-endpoint shape
+
+Returns:
+    $(D P(X <= x)) as $(D T), including zero at zero and one at one.
+    An unresolved continued fraction or interval series returns NaN after at most 4096 iterations per expansion.
++/
+@safe pure nothrow @nogc
+T betaCDF(T)(const T x, const T alpha, const T beta)
+    if (is(T == Fp!size, size_t size) && size <= 512)
+    in (x.exponent != long.max && (!x.sign || !x.coefficient) && position(x, T(1)) <= 0)
+    in (alpha.exponent != long.max && !alpha.sign && !!alpha.coefficient)
+    in (beta.exponent != long.max && !beta.sign && !!beta.coefficient)
+{
+    import mir.stat.internal.fp_beta: betaTail;
+    return betaTail!false(x, alpha, beta);
+}
+
+///
+version(mir_stat_test)
+@safe pure nothrow @nogc unittest
+{
+    import mir.bignum.fp: Fp;
+    alias T = Fp!64;
+    assert(betaCDF(T(0.5), T(2), T(3)) == T(0.6875));
+}
+
+version(mir_stat_test)
+@safe pure nothrow @nogc unittest
+{
+    import mir.bignum.fixed: UInt;
+    import mir.math.common: approxEqual;
+    alias T = Fp!64;
+    // The binomial sum for shapes (2,3) at 1/2 is dyadic.
+    assert(approxEqual(betaCDF(0.5, 2.0, 3.0), 0.6875));
+    assert(betaCDF(T(0), T(3), T(7)) == T(0));
+    assert(betaCDF(T(1), T(3), T(7)) == T(1));
+    const x = T(false, -1000, UInt!64(1));
+    assert(position(betaCDF(x, T(2), T(1)), T(false, -2000, UInt!64(1))) == 0);
 }
 
 /++
@@ -271,6 +382,53 @@ unittest
     assert(0.5.betaCCDF(1, 1).approxEqual(0.5));
     assert(0.75.betaCCDF(1, 2).approxEqual(0.0625));
     assert(0.25.betaCCDF(0.5, 4).approxEqual(0.1411133));
+}
+
+/++
+Computes the guarded strict upper beta tail in extended precision.
+
+Params:
+    T = supported $(D Fp) type with at most 512 significand bits
+    x = observation in the closed unit interval
+    alpha = finite positive lower-endpoint shape
+    beta = finite positive upper-endpoint shape
+
+Returns:
+    $(D P(X > x)) as $(D T), including one at zero and zero at one.
+    An unresolved continued fraction or interval series returns NaN after at most 4096 iterations per expansion.
++/
+@safe pure nothrow @nogc
+T betaCCDF(T)(const T x, const T alpha, const T beta)
+    if (is(T == Fp!size, size_t size) && size <= 512)
+    in (x.exponent != long.max && (!x.sign || !x.coefficient) && position(x, T(1)) <= 0)
+    in (alpha.exponent != long.max && !alpha.sign && !!alpha.coefficient)
+    in (beta.exponent != long.max && !beta.sign && !!beta.coefficient)
+{
+    import mir.stat.internal.fp_beta: betaTail;
+    return betaTail!true(x, alpha, beta);
+}
+
+///
+version(mir_stat_test)
+@safe pure nothrow @nogc unittest
+{
+    import mir.bignum.fp: Fp;
+    alias T = Fp!64;
+    assert(betaCCDF(T(0.5), T(2), T(3)) == T(0.3125));
+}
+
+version(mir_stat_test)
+@safe pure nothrow @nogc unittest
+{
+    import mir.bignum.fixed: UInt;
+    import mir.math.common: approxEqual;
+    alias T = Fp!64;
+    // The binomial sum for shapes (2,3) at 1/2 is dyadic.
+    assert(approxEqual(betaCCDF(0.5, 2.0, 3.0), 0.3125));
+    assert(betaCCDF(T(0), T(3), T(7)) == T(1));
+    assert(betaCCDF(T(1), T(3), T(7)) == T(0));
+    const x = T(false, -1000, UInt!64(1));
+    assert(betaCCDF(x, T(2), T(1)) == T(1));
 }
 
 // Compute the area to the right of x as two pieces:
@@ -615,6 +773,85 @@ unittest
 }
 
 /++
+Computes the beta quantile using guarded extended precision.
+
+Params:
+    T = supported $(D Fp) type with at most 512 significand bits
+    p = cumulative probability in the closed unit interval
+    alpha = finite positive lower-endpoint shape
+    beta = finite positive upper-endpoint shape
+
+Returns:
+    The quantile as $(D T), with zero and one at the probability endpoints.
+    For general shapes, unresolved tail evaluations or midpoint comparisons return NaN.
+    Rounding of the guarded calculation is not certified.
++/
+@safe pure nothrow @nogc
+T betaInvCDF(T)(const T p, const T alpha, const T beta)
+    if (is(T == Fp!size, size_t size) && size <= 512)
+    in (p.exponent != long.max && (!p.sign || !p.coefficient) && position(p, T(1)) <= 0)
+    in (alpha.exponent != long.max && !alpha.sign && !!alpha.coefficient)
+    in (beta.exponent != long.max && !beta.sign && !!beta.coefficient)
+{
+    import mir.stat.internal.fp_beta: betaQuantile;
+    return betaQuantile(p, alpha, beta);
+}
+
+///
+version(mir_stat_test)
+@safe pure nothrow @nogc unittest
+{
+    import mir.bignum.fp: Fp;
+    alias T = Fp!64;
+    assert(betaInvCDF(T(0.25), T(2), T(1)) == T(0.5));
+}
+
+version(mir_stat_test)
+@safe pure nothrow @nogc unittest
+{
+    import mir.bignum.fixed: UInt;
+    alias T = Fp!64;
+    alias U = UInt!64;
+    assert(betaInvCDF(T(0), T(2), T(3)) == T(0));
+    assert(betaInvCDF(T(1), T(2), T(3)) == T(1));
+    assert(betaInvCDF(T(0.25), T(1), T(1)) == T(0.25));
+    assert(betaInvCDF(T(0.5), T(20), T(20)) == T(0.5));
+    assert(betaInvCDF(T(0.75), T(1), T(2)) == T(0.5));
+    assert(betaInvCDF(T(0.25), T(0.5), T(1)) == T(0.0625));
+    // F(1/4) = (1/4)^(3/2) = 1/8.
+    assert(betaInvCDF(T(0.125), T(1.5), T(1)) == T(0.25));
+    // The exact square is a midpoint with an even lower neighbor.
+    const p = T(false, -33, U(4294967301UL));
+    assert(betaInvCDF(p, T(0.5), T(1)) == T(false, -65, U(9223372058329612300UL)));
+    // At the exponent floor, 1-sqrt(1-p) lies just above p/2.
+    const floor = T(false, long.min, U(1));
+    assert(betaInvCDF(floor, T(1), T(2)) == floor);
+    assert(betaInvCDF(T(0.5), floor, T(1)) == T(0));
+    // Bound the median with the exact polynomial 6*x^2-8*x^3+3*x^4
+    // evaluated at adjacent rounding midpoints.
+    assert(betaInvCDF(T(0.5), T(2), T(3)) == T(false, -65, U(0xc57e157496a4a5adUL)));
+}
+
+version(mir_stat_test_slow_numerics)
+@safe pure nothrow @nogc unittest
+{
+    import mir.bignum.fixed: UInt;
+    alias T = Fp!64;
+    alias U = UInt!64;
+    const T[3] p = [T(false, -65, U.max), T(false, -64, U(0x8000000000000001UL)), T(false, -64, U.max)];
+    const T[3] q = [T(false, -65, U(0xc57e157496a4a5acUL)), T(false, -65, U(0xc57e157496a4a5aeUL)),
+        T(false, -64, U(0xfffffbfffffc0000UL))];
+    foreach (i, probability; p) assert(betaInvCDF(probability, T(2), T(3)) == q[i]);
+    assert(betaInvCDF(T(false, -1000, U(1)), T(2), T(3)) ==
+        T(false, -565, U(0xd105eb806161efe0UL)));
+    alias V = Fp!128;
+    enum expected = UInt!128.fromHexString("c57e157496a4a5ac90922039230dfde2");
+    assert(betaInvCDF(V(0.5), V(2), V(3)) == V(false, -129, expected));
+    // For shapes (3/2,2), the median solves (5-3*x)^2*x^3 = 1.
+    assert(betaInvCDF(T(0.5), T(1.5), T(2)) == T(false, -65, U(0xd3c6fb9760305d96UL)));
+}
+
+/++
 Computes the beta log probability density function (LPDF).
 
 When both shapes are at least 16, a centered calculation avoids subtracting
@@ -696,6 +933,63 @@ unittest
                 64 * T.epsilon, T(0)));
         }
     }}
+}
+
+/++
+Computes the natural logarithm of the beta density in guarded extended precision.
+
+Params:
+    T = supported $(D Fp) type with at most 512 significand bits
+    x = observation in the closed unit interval
+    alpha = finite positive lower-endpoint shape
+    beta = finite positive upper-endpoint shape
+
+Returns:
+    The log density as $(D T). At zero the density limit is infinity, beta, or zero
+    for alpha below, equal to, or above one. At one the shapes exchange roles.
+    A general log density unresolved near zero returns NaN.
++/
+@safe pure nothrow @nogc
+T betaLPDF(T)(const T x, const T alpha, const T beta)
+    if (is(T == Fp!size, size_t size) && size <= 512)
+    in (x.exponent != long.max && (!x.sign || !x.coefficient) && position(x, T(1)) <= 0)
+    in (alpha.exponent != long.max && !alpha.sign && !!alpha.coefficient)
+    in (beta.exponent != long.max && !beta.sign && !!beta.coefficient)
+{
+    import mir.stat.internal.fp_beta: betaDensity;
+    return betaDensity!true(x, alpha, beta);
+}
+
+///
+version(mir_stat_test)
+@safe pure nothrow @nogc unittest
+{
+    import mir.bignum.fp: Fp;
+    alias T = Fp!64;
+    assert(betaLPDF(T(0.5), T(2), T(1)) == T(0));
+}
+
+version(mir_stat_test)
+@safe pure nothrow @nogc unittest
+{
+    import mir.bignum.fixed: UInt;
+    alias T = Fp!64;
+    auto endpoint = betaLPDF(T(1), T(2), T(3));
+    assert(endpoint.isInfinity && endpoint.sign);
+    endpoint = betaLPDF(T(0), T(0.5), T(3));
+    assert(endpoint.isInfinity && !endpoint.sign);
+    assert(betaLPDF(T(0), T(1), T(1)) == T(0));
+    const tiny = T(false, -1200, UInt!64(1));
+    assert(betaLPDF(tiny, tiny, T(1)) == T(true, -1254, UInt!64(0xcff1b41669df2295UL)));
+    // For b=2 the extra log(1+a)+log(1-x) nearly cancels as well.
+    assert(betaLPDF(tiny, tiny, T(2)).isNaN);
+    assert(betaPDF(tiny, tiny, T(2)) == T(1));
+    // The predecessor of 1/2 gives log(1-2^-64) for Beta(2,1).
+    assert(betaLPDF(T(false, -65, UInt!64.max), T(2), T(1)) ==
+        T(true, -127, UInt!64(0x8000000000000000UL)));
+    alias V = Fp!128;
+    enum expected = UInt!128.fromHexString("98a4507ad6bae4a2382c9a96ef96ec29");
+    assert(betaLPDF(V(0.25), V(4096), V(12288)) == V(false, -125, expected));
 }
 
 // Stirling's log-gamma correction, with r=1/z and z>=16. The first omitted

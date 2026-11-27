@@ -6,6 +6,7 @@ Copyright: 2026 Mir Stat Authors.
 module mir.stat.tests.slow_numerics;
 
 // Import the modules with slow tests; the compiler follows implementation imports.
+import mir.stat.distribution.beta;
 import mir.stat.distribution.binomial;
 import mir.stat.distribution.chi2;
 import mir.stat.distribution.exponential;
