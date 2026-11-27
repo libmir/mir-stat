@@ -447,9 +447,16 @@ package(mir.stat) Fp!bits betaDensity(bool logarithmic, uint bits)(Fp!bits x, Fp
             static if (logarithmic) return cast(T)B.logarithm(height);
             else return height.finish!bits;
         }
-        result = B.combine(I.signedValue(B.logarithm(k)),
-            I.Term(slope.value.multiply(q.negLogX),
-                !slope.negative, true));
+        if (k.exponent < exponentBias && q.x.exponent < exponentBias)
+        {
+            // At base=k the density is k^k. Retain the k*log(base)
+            // correction even when k-1 rounds to -1 on the working grid.
+            result = B.combine(I.signedValue(B.logarithm(k.divide(q.x))),
+                I.neg(k.multiply(q.negLogX)));
+        }
+        else
+            result = B.combine(I.signedValue(B.logarithm(k)),
+                I.Term(slope.value.multiply(q.negLogX), !slope.negative, true));
     }
     else
     {

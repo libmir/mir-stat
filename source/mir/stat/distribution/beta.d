@@ -217,6 +217,7 @@ version(mir_stat_test)
     const floor = T(false, long.min, UInt!64(1));
     assert(betaPDF(floor, T(2), T(1)) == T(false, long.min, UInt!64(2)));
     assert(betaPDF(floor, T(3), T(1)) == T(0));
+    assert(betaPDF(half, T(2), T(false, 1000, UInt!64(1))) == T(0));
 }
 
 /++
@@ -808,9 +809,11 @@ version(mir_stat_test)
     assert(betaInvCDF(T(0.25), T(1), T(1)) == T(0.25));
     assert(betaInvCDF(T(0.5), T(20), T(20)) == T(0.5));
     assert(betaInvCDF(T(0.75), T(1), T(2)) == T(0.5));
+    assert(betaInvCDF(T(0.25), T(0.5), T(1)) == T(0.0625));
     // At the exponent floor, 1-sqrt(1-p) lies just above p/2.
     const floor = T(false, long.min, U(1));
     assert(betaInvCDF(floor, T(1), T(2)) == floor);
+    assert(betaInvCDF(T(0.5), floor, T(1)) == T(0));
     // Bound the median with the exact polynomial 6*x^2-8*x^3+3*x^4
     // evaluated at adjacent rounding midpoints.
     assert(betaInvCDF(T(0.5), T(2), T(3)) == T(false, -65, U(0xc57e157496a4a5adUL)));
@@ -963,6 +966,11 @@ version(mir_stat_test)
     endpoint = betaLPDF(T(0), T(0.5), T(3));
     assert(endpoint.isInfinity && !endpoint.sign);
     assert(betaLPDF(T(0), T(1), T(1)) == T(0));
+    const tiny = T(false, -1200, UInt!64(1));
+    assert(betaLPDF(tiny, tiny, T(1)) == T(true, -1254, UInt!64(0xcff1b41669df2295UL)));
+    // For b=2 the extra log(1+a)+log(1-x) nearly cancels as well.
+    assert(betaLPDF(tiny, tiny, T(2)).isNaN);
+    assert(betaPDF(tiny, tiny, T(2)) == T(1));
     // The predecessor of 1/2 gives log(1-2^-64) for Beta(2,1).
     assert(betaLPDF(T(false, -65, UInt!64.max), T(2), T(1)) ==
         T(true, -127, UInt!64(0x8000000000000000UL)));
