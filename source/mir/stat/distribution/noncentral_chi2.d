@@ -173,7 +173,7 @@ version(mir_stat_test_noncentral_chi2)
         assert(approxEqual(noncentralChi2PDF(T(3), 5, T(0)), chi2PDF(T(3), 5)));
         // x = lambda = 1600: the first Poisson weight underflows in double.
         assert(approxEqual(noncentralChi2PDF(T(1600), 1, T(1600)),
-            T(0.00498677850501790847L), T(8) * T.epsilon, T(0)));
+            T(0.00498677850501790847424932574917977L), T(8) * T.epsilon, T(0)));
         assert(approxEqual(noncentralChi2LPDF(T(1), 4, T(4000)),
             T(-1945.093046548164L), T(2e-14) + T.epsilon, T(0)));
         assert(approxEqual(noncentralChi2PDF(T(1600), 2, T(1600)),
