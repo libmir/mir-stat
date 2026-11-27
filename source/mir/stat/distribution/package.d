@@ -50,6 +50,7 @@ $(BOOKTABLE ,
     $(TR $(TDNW $(MREF mir,stat,distribution,beta_proportion)) $(TD Beta Proportion Distribution ))
     $(TR $(TDNW $(MREF mir,stat,distribution,cauchy)) $(TD Cauchy Distribution ))
     $(TR $(TDNW $(MREF mir,stat,distribution,chi2)) $(TD Chi-squared Distribution ))
+    $(TR $(TDNW $(MREF mir,stat,distribution,noncentral_chi2)) $(TD Noncentral Chi-squared Distribution ))
     $(TR $(TDNW $(MREF mir,stat,distribution,cornish_fisher)) $(TD Cornish-Fisher Expansion ))
     $(TR $(TDNW $(MREF mir,stat,distribution,exponential)) $(TD Exponential Distribution ))
     $(TR $(TDNW $(MREF mir,stat,distribution,f)) $(TD F Distribution ))
@@ -97,6 +98,8 @@ public import mir.stat.distribution.categorical;
 public import mir.stat.distribution.cauchy;
 ///
 public import mir.stat.distribution.chi2;
+///
+public import mir.stat.distribution.noncentral_chi2;
 ///
 public import mir.stat.distribution.cornish_fisher;
 ///

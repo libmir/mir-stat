@@ -123,6 +123,7 @@ sources_list = [
     'mir/stat/distribution/categorical',
     'mir/stat/distribution/cauchy',
     'mir/stat/distribution/chi2',
+    'mir/stat/distribution/noncentral_chi2',
     'mir/stat/distribution/cornish_fisher',
     'mir/stat/distribution/exponential',
     'mir/stat/distribution/f',
