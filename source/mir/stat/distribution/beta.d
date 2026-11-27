@@ -23,6 +23,8 @@ Copyright: 2022-3 Mir Stat Authors.
 
 module mir.stat.distribution.beta;
 
+import mir.bignum.fp: Fp;
+import mir.stat.internal.fp_location_scale: position;
 import mir.internal.utility: isFloatingPoint;
 
 /++
@@ -211,6 +213,53 @@ unittest
 }
 
 /++
+Computes the guarded lower beta tail in extended precision.
+
+Params:
+    T = supported $(D Fp) type with at most 512 significand bits
+    x = observation in the closed unit interval
+    alpha = finite positive lower-endpoint shape
+    beta = finite positive upper-endpoint shape
+
+Returns:
+    $(D P(X <= x)) as $(D T), including zero at zero and one at one.
+    An unresolved continued fraction or interval series returns NaN after at most 4096 iterations per expansion.
++/
+@safe pure nothrow @nogc
+T betaCDF(T)(const T x, const T alpha, const T beta)
+    if (is(T == Fp!size, size_t size) && size <= 512)
+    in (x.exponent != long.max && (!x.sign || !x.coefficient) && position(x, T(1)) <= 0)
+    in (alpha.exponent != long.max && !alpha.sign && !!alpha.coefficient)
+    in (beta.exponent != long.max && !beta.sign && !!beta.coefficient)
+{
+    import mir.stat.internal.fp_beta: betaTail;
+    return betaTail!false(x, alpha, beta);
+}
+
+///
+version(mir_stat_test)
+@safe pure nothrow @nogc unittest
+{
+    import mir.bignum.fp: Fp;
+    alias T = Fp!64;
+    assert(betaCDF(T(0.5), T(2), T(3)) == T(0.6875));
+}
+
+version(mir_stat_test)
+@safe pure nothrow @nogc unittest
+{
+    import mir.bignum.fixed: UInt;
+    import mir.math.common: approxEqual;
+    alias T = Fp!64;
+    // The binomial sum for shapes (2,3) at 1/2 is dyadic.
+    assert(approxEqual(betaCDF(0.5, 2.0, 3.0), 0.6875));
+    assert(betaCDF(T(0), T(3), T(7)) == T(0));
+    assert(betaCDF(T(1), T(3), T(7)) == T(1));
+    const x = T(false, -1000, UInt!64(1));
+    assert(position(betaCDF(x, T(2), T(1)), T(false, -2000, UInt!64(1))) == 0);
+}
+
+/++
 Computes the beta complementary cumulative distribution function (CCDF).
 
 For small $(D x), forming $(D 1 - x) can discard significant digits. Simply
@@ -271,6 +320,53 @@ unittest
     assert(0.5.betaCCDF(1, 1).approxEqual(0.5));
     assert(0.75.betaCCDF(1, 2).approxEqual(0.0625));
     assert(0.25.betaCCDF(0.5, 4).approxEqual(0.1411133));
+}
+
+/++
+Computes the guarded strict upper beta tail in extended precision.
+
+Params:
+    T = supported $(D Fp) type with at most 512 significand bits
+    x = observation in the closed unit interval
+    alpha = finite positive lower-endpoint shape
+    beta = finite positive upper-endpoint shape
+
+Returns:
+    $(D P(X > x)) as $(D T), including one at zero and zero at one.
+    An unresolved continued fraction or interval series returns NaN after at most 4096 iterations per expansion.
++/
+@safe pure nothrow @nogc
+T betaCCDF(T)(const T x, const T alpha, const T beta)
+    if (is(T == Fp!size, size_t size) && size <= 512)
+    in (x.exponent != long.max && (!x.sign || !x.coefficient) && position(x, T(1)) <= 0)
+    in (alpha.exponent != long.max && !alpha.sign && !!alpha.coefficient)
+    in (beta.exponent != long.max && !beta.sign && !!beta.coefficient)
+{
+    import mir.stat.internal.fp_beta: betaTail;
+    return betaTail!true(x, alpha, beta);
+}
+
+///
+version(mir_stat_test)
+@safe pure nothrow @nogc unittest
+{
+    import mir.bignum.fp: Fp;
+    alias T = Fp!64;
+    assert(betaCCDF(T(0.5), T(2), T(3)) == T(0.3125));
+}
+
+version(mir_stat_test)
+@safe pure nothrow @nogc unittest
+{
+    import mir.bignum.fixed: UInt;
+    import mir.math.common: approxEqual;
+    alias T = Fp!64;
+    // The binomial sum for shapes (2,3) at 1/2 is dyadic.
+    assert(approxEqual(betaCCDF(0.5, 2.0, 3.0), 0.3125));
+    assert(betaCCDF(T(0), T(3), T(7)) == T(1));
+    assert(betaCCDF(T(1), T(3), T(7)) == T(0));
+    const x = T(false, -1000, UInt!64(1));
+    assert(betaCCDF(x, T(2), T(1)) == T(1));
 }
 
 // Compute the area to the right of x as two pieces:
