@@ -1,7 +1,7 @@
 /++
-Probability density and natural log density of one observation or a batch from a
-multivariate normal distribution. The observations share a mean vector and a positive-definite
-covariance matrix. In zero dimensions the density is one and the log density is zero.
+Density, log density, and rectangle probabilities for a multivariate normal
+distribution with a mean vector and a positive-definite covariance matrix.
+The density functions accept one observation or a batch. In zero dimensions the density is one and the log density is zero.
 
 $(LREF multivariateNormalPDF) exponentiates each log density, including
 the determinant contribution. The result can underflow to zero or overflow
@@ -95,6 +95,16 @@ across the smaller calls. With a compatible layout, BLAS can transform the
 full batch in one triangular solve or multiply. The faster batch size
 depends on the dimensions, storage layout, and backend.
 
+$(H4 Rectangle probabilities)
+
+$(LREF multivariateNormalRectangleProbability) evaluates the probability that
+all coordinates lie between corresponding lower and upper bounds. Pass the
+mean and a labeled covariance matrix. Negative-infinite lower bounds give a
+lower-orthant probability. The result includes the probability, the numerical
+status, an estimated absolute integration error when available, and the
+evaluation count. $(LREF MultivariateNormalRectangleOptions) controls the
+tolerances, budget, and seed.
+
 $(H4 Probability ellipsoids)
 
 For a normal observation in k dimensions with a specified mean and
@@ -136,6 +146,495 @@ private import mir.stat.internal.linearAlgebra.types: isObservationSelection, Ob
 private import mir.stat.distance: mahalanobisWithWorkspace;
 private import mir.stat.internal.linearAlgebra.cholesky: tryCholeskyDecomposeInto, logDeterminantFromCholesky;
 private import mir.stat.internal.linearAlgebra.allocation: Allocation, AllocatedSlice, allocate;
+
+/// Outcome of a multivariate normal rectangle probability calculation.
+enum MultivariateNormalRectangleStatus
+{
+    /// The integration or standardization could not resolve the probability.
+    unresolved,
+    /// The rectangle has an exact boundary probability of zero or one.
+    exact,
+    /// A marginal interval or product of independent marginals was evaluated directly.
+    direct,
+    /// The estimated integration error meets the requested tolerance.
+    toleranceMet,
+    /// The integration reached its work limit. The estimate and estimated error are available.
+    budgetExhausted,
+    /// The selected covariance triangle was nonfinite or failed positive-definite factorization.
+    invalidCovariance
+}
+
+/// Accuracy controls for $(LREF multivariateNormalRectangleProbability).
+struct MultivariateNormalRectangleOptions
+{
+    /// Absolute probability tolerance. Zero selects relative tolerance alone by default.
+    double absoluteTolerance = 0;
+    /// Relative tolerance as a fraction of the estimated probability.
+    double relativeTolerance = 0.01;
+    /// Maximum integrand evaluations. Must be at least 1024.
+    size_t maxEvaluations = 16384;
+    /// Local random-shift seed for integration in dimensions three through eight.
+    ulong seed = 5489;
+}
+
+/// Probability and numerical diagnostics for a multivariate normal rectangle.
+struct MultivariateNormalRectangleResult
+{
+    /// How the calculation finished.
+    MultivariateNormalRectangleStatus status;
+    /// Probability estimate, including the last estimate on budget exhaustion.
+    /// NaN when no estimate is available. An unresolved zero may indicate underflow.
+    double probability;
+    /// Estimated absolute integration error, zero for an exact boundary, or NaN
+    /// when the method has no error estimate. Integration error excludes roundoff.
+    double estimatedError;
+    /// Number of integrand evaluations, including work spent before an unresolved
+    /// sample. Direct evaluations and parameter preparation do not contribute.
+    size_t evaluations;
+}
+
+/++
+Evaluate the probability that every coordinate of a multivariate normal observation
+lies between its corresponding lower and upper bounds.
+
+Params:
+    lower = Vector of lower bounds in the original measurement units.
+    upper = Vector of upper bounds, each at least its corresponding lower bound.
+        Either endpoint may be infinite. A NaN endpoint yields an unresolved result
+        for a valid covariance.
+    mean = Vector of finite means in the same units as the bounds.
+    covariance = Typed dense positive-definite covariance view. The selected triangle
+        must be finite. All inputs have double elements and the same dimension
+        from zero through eight.
+    options = Integration controls. Tolerances must be finite and nonnegative.
+        The stopping threshold is the larger of the absolute tolerance and the
+        relative tolerance times the estimated probability. Defaults request 1%
+        relative accuracy with a budget of 16384 integrand evaluations.
+
+Returns:
+    A $(LREF MultivariateNormalRectangleResult). Zero dimensions or a fully
+    unbounded rectangle give probability one. Any zero-width coordinate gives
+    zero. Covariance validation applies to these cases as well.
+
+    A single bounded coordinate is evaluated directly in any dimension, using
+    its original interval width. For multiple bounded coordinates in dimensions
+    three through eight, an interval whose width loses precision during
+    centering can yield an unresolved result. Two dimensions use direct
+    marginal reductions when available and deterministic quadrature otherwise.
+    Quadrature can also stop at its internal limit of 128 panels. Dimensions three
+    through eight use seeded integration in groups of 16 evaluations. A fixed seed
+    and inputs reproduce the result within the same build. The stopping test
+    also uses bounds from the marginal probabilities if the group estimates
+    agree to roundoff or the sampling is too coarse to resolve a narrow
+    conditional spread. These bounds can be conservative. A toleranceMet status
+    describes the method's error estimate and does not guarantee actual accuracy.
++/
+MultivariateNormalRectangleResult multivariateNormalRectangleProbability(L, U, C, M)(
+    scope auto ref L lower, scope auto ref U upper, scope auto ref C mean, scope auto ref M covariance,
+    MultivariateNormalRectangleOptions options = MultivariateNormalRectangleOptions.init)
+    if (vector!L && vector!U && vector!C && is(Element!L == double) &&
+        is(Element!U == double) && is(Element!C == double) &&
+        isCovarianceMetric!M && M.form == CovarianceRepresentation.covariance &&
+        is(Element!(typeof(M.init.storage)) == double))
+{
+    import mir.math.common : sqrt;
+    import mir.ndslice.slice : sliced;
+    import mir.stat.internal.bivariate_normal_rectangle : normalIntervalMass, rectangleCorrelation,
+        RectangleCorrelation, covarianceRectangleEstimate;
+    import mir.stat.internal.normal_rectangle_integral : integrateNormalRectangle, rectangleMaxDimension,
+        rectangleMinEvaluations, RectangleIntegralStatus;
+    import mir.stat.internal.normal_rectangle_order : orderNormalRectangle, RectangleOrderStatus;
+    import mir.stat.internal.standardize : standardize;
+    import std.math : isFinite, isNaN;
+
+    alias S = MultivariateNormalRectangleStatus;
+    alias Result = MultivariateNormalRectangleResult;
+    auto l = lower.asView, u = upper.asView, m = mean.asView;
+    const n = m.length;
+    assert(n <= rectangleMaxDimension && l.length == n && u.length == n);
+    assert(covariance.storage.length!0 == n && covariance.storage.length!1 == n);
+    assert(isFinite(options.absoluteTolerance) && options.absoluteTolerance >= 0);
+    assert(isFinite(options.relativeTolerance) && options.relativeTolerance >= 0);
+    assert(options.maxEvaluations >= rectangleMinEvaluations);
+
+    bool empty, missing;
+    size_t bounded, marginal;
+    foreach (i; 0 .. n)
+    {
+        assert(isFinite(m[i]) && !(u[i] < l[i]));
+        empty |= l[i] == u[i];
+        missing |= isNaN(l[i]) || isNaN(u[i]);
+        if (l[i] != -double.infinity || u[i] != double.infinity)
+        {
+            ++bounded;
+            marginal = i;
+        }
+        foreach (j; 0 .. i + 1)
+        {
+            static if (M.triangle == TrianglePolicy.upper) const entry = covariance.storage[j, i];
+            else const entry = covariance.storage[i, j];
+            if (!isFinite(entry)) return Result(S.invalidCovariance);
+        }
+    }
+
+    RectangleCorrelation correlation;
+    if (n == 1 && !(covariance.storage[0, 0] > 0)) return Result(S.invalidCovariance);
+    if (n == 2)
+    {
+        static if (M.triangle == TrianglePolicy.upper) const xy = covariance.storage[0, 1];
+        else const xy = covariance.storage[1, 0];
+        correlation = rectangleCorrelation(covariance.storage[0, 0], xy, covariance.storage[1, 1]);
+        if (!isFinite(correlation.residual)) return Result(S.invalidCovariance);
+    }
+    double[rectangleMaxDimension * rectangleMaxDimension] buffer = void;
+    auto factor = buffer[0 .. n * n].sliced(n, n);
+    double[rectangleMaxDimension] a, b, typical;
+    size_t[rectangleMaxDimension] order;
+    // Validate with the same residual arithmetic used for integration.
+    bool validCovariance()
+    {
+        a[] = -double.infinity;
+        b[] = double.infinity;
+        return orderNormalRectangle(covariance, a[0 .. n], b[0 .. n], order[0 .. n],
+            factor, typical[0 .. n]) == RectangleOrderStatus.success;
+    }
+    if (missing || empty || bounded <= 1)
+    {
+        if (n > 2 && !validCovariance())
+            return Result(S.invalidCovariance);
+        if (missing) return Result(S.unresolved);
+        if (empty || bounded == 0) return Result(S.exact, empty ? 0 : 1, 0);
+        const sd = sqrt(covariance.storage[marginal, marginal]);
+        const left = standardize(l[marginal], m[marginal], sd);
+        const right = standardize(u[marginal], m[marginal], sd);
+        const width = standardize(u[marginal], l[marginal], sd);
+        const p = normalIntervalMass(left, right, width);
+        return Result(p > 0 ? S.direct : S.unresolved, p);
+    }
+
+    if (n == 2)
+    {
+        double[2] left, right, width;
+        foreach (i; 0 .. n)
+        {
+            const sd = sqrt(covariance.storage[i, i]);
+            left[i] = standardize(l[i], m[i], sd);
+            right[i] = standardize(u[i], m[i], sd);
+            width[i] = standardize(u[i], l[i], sd);
+        }
+        auto q = covarianceRectangleEstimate(left, right, width, correlation,
+            options.absoluteTolerance, options.relativeTolerance, options.maxEvaluations);
+        if (!(q.probability > 0) || (q.evaluations && q.probability < double.min_normal))
+            return Result(S.unresolved, q.probability, double.nan, q.evaluations);
+        if (q.evaluations == 0) return Result(S.direct, q.probability);
+        const status = q.budgetExhausted ? S.budgetExhausted : S.toleranceMet;
+        return Result(status, q.probability, q.estimatedError, q.evaluations);
+    }
+
+    bool lost;
+    foreach (i; 0 .. n)
+    {
+        a[i] = l[i] - m[i];
+        b[i] = u[i] - m[i];
+        lost |= !(a[i] < b[i]) || (isFinite(l[i]) && !isFinite(a[i])) || (isFinite(u[i]) && !isFinite(b[i]));
+        if (m[i] != 0 && isFinite(l[i]) && isFinite(u[i]))
+        {
+            import mir.math.common : fabs;
+            const width = u[i] - l[i];
+            const centeredWidth = b[i] - a[i];
+            if (isFinite(width))
+                lost |= fabs(centeredWidth - width) > 8 * double.epsilon * width;
+        }
+    }
+    if (!lost)
+    {
+        const ordered = orderNormalRectangle(covariance, a[0 .. n], b[0 .. n], order[0 .. n],
+            factor, typical[0 .. n]);
+        if (ordered == RectangleOrderStatus.invalidFactor) return Result(S.invalidCovariance);
+        if (ordered == RectangleOrderStatus.success)
+        {
+            const r = integrateNormalRectangle(a[0 .. n], b[0 .. n], factor, options.seed,
+                options.absoluteTolerance, options.relativeTolerance, options.maxEvaluations);
+            final switch (r.status)
+            {
+                case RectangleIntegralStatus.toleranceMet:
+                    return Result(S.toleranceMet, r.probability, r.estimatedError, r.evaluations);
+                case RectangleIntegralStatus.budgetExhausted:
+                    return Result(S.budgetExhausted, r.probability, r.estimatedError, r.evaluations);
+                case RectangleIntegralStatus.unresolved:
+                    return Result(S.unresolved, r.probability, r.estimatedError, r.evaluations);
+            }
+        }
+    }
+    // A lost interval may be encountered before every covariance pivot was visited.
+    if (!validCovariance())
+        return Result(S.invalidCovariance);
+    return Result(S.unresolved);
+}
+
+/// Probability that three correlated measurements each fall within one standard deviation of the mean.
+version(mir_stat_test_multivariate_normal)
+@safe pure nothrow @nogc unittest
+{
+    import mir.ndslice.slice : sliced;
+    double[3] lower = -1, upper = 1, mean = 0;
+    double[9] entries = [1, 0.5, 0.5, 0, 1, 0.5, 0, 0, 1];
+    auto covariance = covarianceView(entries[].sliced(3, 3));
+    const r = multivariateNormalRectangleProbability(lower[], upper[], mean[], covariance);
+    assert(r.status == MultivariateNormalRectangleStatus.toleranceMet);
+    assert(r.probability > 0.372 && r.probability < 0.380);
+    assert(r.estimatedError <= 0.01 * r.probability);
+}
+
+/// A caller can inspect the estimate when the evaluation budget runs out.
+version(mir_stat_test_multivariate_normal)
+@safe pure nothrow @nogc unittest
+{
+    import mir.ndslice.slice : sliced;
+    double[3] lower = -double.infinity, upper = 0, mean = 0;
+    double[9] entries = [1, 0.3, -0.5, 0, 1, 0.4, 0, 0, 1];
+    auto covariance = covarianceView(entries[].sliced(3, 3));
+    MultivariateNormalRectangleOptions options;
+    options.relativeTolerance = 1e-12;
+    options.maxEvaluations = 1024;
+    const r = multivariateNormalRectangleProbability(lower[], upper[], mean[], covariance, options);
+    assert(r.status == MultivariateNormalRectangleStatus.budgetExhausted && r.evaluations == 1024);
+    assert(r.probability > 0 && r.estimatedError > options.relativeTolerance * r.probability);
+}
+
+
+version(mir_stat_test_multivariate_normal)
+@safe pure nothrow @nogc unittest
+{
+    import mir.ndslice.slice : sliced;
+    import std.math : abs, isNaN;
+
+    alias prob = multivariateNormalRectangleProbability;
+    alias S = MultivariateNormalRectangleStatus;
+    double[4] entries = [1, double.nan, 1, 1 + double.epsilon];
+    double[2] lower = [-double.infinity, 0], upper = [0, double.infinity], mean = 0;
+    auto covariance = covarianceView!(TrianglePolicy.lower)(entries[].sliced(2, 2));
+    MultivariateNormalRectangleOptions options;
+    options.relativeTolerance = 1e-10;
+    auto q = prob(lower[].sliced, upper[], mean[], covariance, options);
+    assert(q.status == S.toleranceMet && q.evaluations > 0);
+    assert(abs(q.probability / 2.3715934618099826e-9 - 1) < 1e-12);
+
+    // Deterministic quadrature reports its own evaluations and error.
+    entries[2] = 0.7;
+    entries[3] = 1;
+    double[2] finiteLower = [-1, -0.2], finiteUpper = [0.5, 1.4];
+    options.relativeTolerance = 0;
+    options.maxEvaluations = 1024;
+    q = prob(finiteLower[], finiteUpper[], mean[], covariance, options);
+    assert(q.status == S.budgetExhausted && q.evaluations > 0 && q.evaluations <= 1024);
+    assert(q.estimatedError > 0 && abs(q.probability - 0.2699780669850152) < 1e-13);
+
+    entries[2] = 0;
+    q = prob(lower[], upper[], mean[], covariance);
+    assert(q.status == S.direct && q.evaluations == 0 && isNaN(q.estimatedError));
+    assert(abs(q.probability - 0.25) < 1e-15);
+    upper[0] = double.infinity;
+    q = prob(lower[], upper[], mean[], covariance);
+    assert(q.status == S.direct && abs(q.probability - 0.5) < 1e-15);
+
+    upper[1] = lower[1];
+    q = prob(lower[], upper[], mean[], covariance);
+    assert(q.status == S.exact && q.probability == 0 && q.estimatedError == 0);
+    entries[2] = 2;
+    assert(prob(lower[], upper[], mean[], covariance).status == S.invalidCovariance);
+    static assert(!__traits(compiles, prob(lower[], upper[], mean[], precisionView(entries[].sliced(2, 2)))));
+
+    auto one = covarianceView(entries[0 .. 1].sliced(1, 1));
+    mean[0] = -1;
+    lower[0] = 0;
+    upper[0] = 1e-20;
+    q = prob(lower[0 .. 1], upper[0 .. 1], mean[0 .. 1], one);
+    assert(q.status == S.direct && abs(q.probability / 2.4197072451914334e-21 - 1) < 1e-14);
+    lower[0] = 40;
+    upper[0] = 41;
+    q = prob(lower[0 .. 1], upper[0 .. 1], mean[0 .. 1], one);
+    assert(q.status == S.unresolved && q.probability == 0 && isNaN(q.estimatedError));
+    entries[0] = 0;
+    assert(prob(lower[0 .. 1], upper[0 .. 1], mean[0 .. 1], one).status == S.invalidCovariance);
+
+    auto empty = lower[0 .. 0];
+    q = prob(empty, empty, empty, covarianceView(empty.sliced(0, 0)));
+    assert(q.status == S.exact && q.probability == 1 && q.estimatedError == 0 && q.evaluations == 0);
+}
+
+version(mir_stat_test_multivariate_normal)
+@safe pure nothrow @nogc unittest
+{
+    import mir.ndslice.slice : sliced;
+    import std.math : isNaN;
+
+    alias S = MultivariateNormalRectangleStatus;
+    double[3] lower = -double.infinity, upper = double.infinity, mean = 0;
+    double[9] cov = [1, 0, 0, 0, 1, 0, 0, 0, 1];
+    auto metric = covarianceView(cov[].sliced(3, 3));
+    auto run() { return multivariateNormalRectangleProbability(lower[], upper[], mean[], metric); }
+    auto q = run();
+    assert(q.status == S.exact && q.probability == 1);
+    cov[8] = 0;
+    assert(run().status == S.invalidCovariance);
+    cov[8] = 1;
+    lower[0] = double.nan;
+    q = run();
+    assert(q.status == S.unresolved && isNaN(q.probability));
+    lower[0] = 0;
+    upper[0] = 1e-20;
+    mean[0] = -1;
+    assert(run().status == S.direct);
+    upper[0] = 1.2e-16;
+    q = run();
+    const marginal = multivariateNormalRectangleProbability(lower[0 .. 1], upper[0 .. 1],
+        mean[0 .. 1], covarianceView(cov[0 .. 1].sliced(1, 1)));
+    assert(q.status == S.direct && q.probability == marginal.probability && q.evaluations == 0);
+    upper[1] = 0;
+    assert(run().status == S.unresolved);
+    cov[8] = -1;
+    assert(run().status == S.invalidCovariance);
+    cov[8] = double.nan;
+    assert(run().status == S.invalidCovariance);
+
+    // A duplicate coordinate stays singular when an independent one is appended.
+    cov = [2, 2, 0, 0, 2, 0, 0, 0, 1];
+    mean[] = 0;
+    lower[] = -double.infinity;
+    upper[] = 0;
+    assert(run().status == S.invalidCovariance);
+    upper[] = double.infinity;
+    assert(run().status == S.invalidCovariance);
+    // Increasing one diagonal by one ulp restores positive definiteness.
+    cov[4] += 2 * double.epsilon;
+    assert(run().status == S.exact);
+    upper[] = 0;
+    assert(run().status != S.invalidCovariance);
+}
+
+
+version(mir_stat_test_multivariate_normal)
+@safe pure nothrow @nogc unittest
+{
+    import mir.ndslice.slice : sliced;
+    import std.algorithm : nextPermutation;
+    import std.math : ldexp, nextUp, nextDown;
+
+    alias S = MultivariateNormalRectangleStatus;
+    // X[2] = 2*X[0] + 3*X[1]. Raising or lowering its variance by
+    // one ulp changes the determinant from zero to positive or negative.
+    double[9] input = [3, 1, 9, 1, 2, 8, 9, 8, 42], entries;
+    double[3] lower = -double.infinity, upper, mean = 0;
+    auto metric = covarianceView(entries[].sliced(3, 3));
+    foreach (variance; [42.0, nextUp(42.0), nextDown(42.0)])
+    {
+        input[8] = variance;
+        size_t[3] axes = [0, 1, 2];
+        do
+        {
+            foreach (i, row; axes)
+                foreach (j, col; axes)
+                    entries[3 * i + j] = input[3 * row + col];
+            upper[] = double.infinity;
+            auto q = multivariateNormalRectangleProbability(lower[], upper[], mean[], metric);
+            assert(q.status == (variance > 42 ? S.exact : S.invalidCovariance));
+            upper[] = 0;
+            q = multivariateNormalRectangleProbability(lower[], upper[], mean[], metric);
+            assert((q.status == S.invalidCovariance) == (variance <= 42));
+        } while (nextPermutation(axes[]));
+        // Independent changes of measurement units preserve definiteness.
+        foreach (i; 0 .. 3)
+            foreach (j; 0 .. 3)
+                entries[3 * i + j] = ldexp(input[3 * i + j], 400 * (cast(int)(i + j) - 2));
+        upper[] = double.infinity;
+        auto scaled = multivariateNormalRectangleProbability(lower[], upper[], mean[], metric);
+        assert(scaled.status == (variance > 42 ? S.exact : S.invalidCovariance));
+    }
+}
+
+version(mir_stat_test_multivariate_normal)
+@safe pure nothrow @nogc unittest
+{
+    import mir.ndslice.slice : sliced;
+    import std.math : isNaN;
+
+    double[4] entries = [0.01, 0.05, 0, 1];
+    auto covariance = covarianceView(entries[].sliced(2, 2));
+    double[2] lower = [0, 0], upper = [0.001, double.infinity], mean;
+    foreach (location; [-1e308, 1e308])
+    {
+        mean = [location, 0];
+        const r = multivariateNormalRectangleProbability(lower[], upper[], mean[], covariance);
+        assert(r.status == MultivariateNormalRectangleStatus.unresolved);
+        assert(r.probability == 0 && isNaN(r.estimatedError) && r.evaluations == 0);
+    }
+}
+
+version(mir_stat_test_multivariate_normal)
+@safe pure nothrow @nogc unittest
+{
+    import mir.ndslice.slice : sliced;
+    import std.math : abs, acos, asin, PI;
+
+    const rho = 1 - 1e-12, s = 1e-9;
+    double[9] entries = [1, rho, s, 0, 1, s, 0, 0, 1];
+    auto covariance = covarianceView(entries[].sliced(3, 3));
+    double[3] lower = -double.infinity, upper = 0, mean = 0;
+    const reference = 0.25 - acos(rho) / (4 * PI) + asin(s) / (2 * PI);
+    MultivariateNormalRectangleOptions options;
+    options.relativeTolerance = 1e-9;
+    options.maxEvaluations = 1024;
+    foreach (seed; [5489, 1, 2, 3])
+    {
+        options.seed = seed;
+        const r = multivariateNormalRectangleProbability(lower[], upper[], mean[], covariance, options);
+        assert(r.status == MultivariateNormalRectangleStatus.budgetExhausted);
+        assert(r.evaluations == options.maxEvaluations && abs(r.probability - reference) <= r.estimatedError);
+    }
+}
+
+version(mir_stat_test_multivariate_normal)
+@safe pure nothrow @nogc unittest
+{
+    import mir.ndslice.slice : sliced;
+    import std.math : isNaN;
+
+    // A finite interval can cover the entire representable standardized axis.
+    foreach (i; 0 .. 2)
+    {
+        double[4] cov = [1, 0.05, 0, 1];
+        cov[i * 3] = 0.01;
+        double[2] lower = 0, upper = double.infinity, mean = 0;
+        lower[i] = -double.max;
+        upper[i] = double.max;
+        const r = multivariateNormalRectangleProbability(lower[], upper[], mean[],
+            covarianceView(cov[].sliced(2, 2)));
+        assert(r.status == MultivariateNormalRectangleStatus.direct && r.probability == 0.5);
+        assert(r.evaluations == 0 && isNaN(r.estimatedError));
+    }
+
+    // Reflection in the origin divides this symmetric strip into equal halves.
+    double[4] correlated = [1, 0.5, 0, 1];
+    double[2] stripLower = [-1e-6, 0], stripUpper = [1e-6, double.infinity], center = 0;
+    const strip = multivariateNormalRectangleProbability(stripLower[], stripUpper[], center[],
+        covarianceView(correlated[].sliced(2, 2)));
+    const marginal = multivariateNormalRectangleProbability(stripLower[0 .. 1], stripUpper[0 .. 1],
+        center[0 .. 1], covarianceView(correlated[0 .. 1].sliced(1, 1)));
+    import std.math : abs;
+    assert(strip.status == MultivariateNormalRectangleStatus.toleranceMet && strip.evaluations > 0);
+    assert(abs(2 * strip.probability / marginal.probability - 1) < 1e-14);
+
+    // The marginal masses are representable but their joint product underflows.
+    double[9] cov = [1, 0, 0, 0, 1, 0, 0, 0, 1];
+    double[3] lower = 24, upper = 25, mean = 0;
+    MultivariateNormalRectangleOptions options;
+    options.maxEvaluations = 1024;
+    const r = multivariateNormalRectangleProbability(lower[], upper[], mean[],
+        covarianceView(cov[].sliced(3, 3)), options);
+    assert(r.status == MultivariateNormalRectangleStatus.unresolved && r.probability == 0);
+    assert(r.evaluations == options.maxEvaluations && isNaN(r.estimatedError));
+}
 
 /// Whether the caller supplied a Cholesky factor.
 private enum prepared(CovarianceRepresentation form) =

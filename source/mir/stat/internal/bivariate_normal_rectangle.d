@@ -13,11 +13,12 @@ private import std.math: fma;
 
 @safe pure nothrow @nogc:
 
-// Keep the budget status available while evaluating a public reporting contract.
 package(mir.stat) struct RectangleEstimate(T)
 {
     T probability;
     bool budgetExhausted;
+    T estimatedError;
+    size_t evaluations;
 }
 
 // Scale each factor by 2^256 so even the smallest representable joint mass
@@ -81,12 +82,12 @@ private struct Interval(T)
 
     T mass(bool scaled = false)() const @safe pure nothrow @nogc
     {
-        return interval!scaled(lower, upper, width);
+        return normalIntervalMass!scaled(lower, upper, width);
     }
 }
 
 // The width may be known more accurately than the difference of the transformed endpoints.
-private T interval(bool scaled = false, T)(const T lo, const T hi, const T width)
+package(mir.stat) T normalIntervalMass(bool scaled = false, T)(const T lo, const T hi, const T width)
 {
     if (width <= 0) return 0;
     if (width * (1 + fabs(lo)) < T(0.125))
@@ -98,7 +99,8 @@ private T interval(bool scaled = false, T)(const T lo, const T hi, const T width
         marginalCDF!scaled(hi) - marginalCDF!scaled(lo);
 }
 
-private RectangleEstimate!T integrate(alias f, T)(scope const(T)[] cuts)
+private RectangleEstimate!T integrate(alias f, T)(scope const(T)[] cuts, T absoluteTolerance,
+    T relativeTolerance, size_t maxEvaluations)
 {
     struct Panel { T lo, hi, mass, error; }
     T rule(T lo, T hi)
@@ -119,6 +121,9 @@ private RectangleEstimate!T integrate(alias f, T)(scope const(T)[] cuts)
         if (cuts[i - 1] < cuts[i])
             panels[count++] = panel(cuts[i - 1], cuts[i]);
 
+    // A panel evaluates three eight-point rules, including two half-panels.
+    size_t evaluations = 24 * count;
+    assert(evaluations <= maxEvaluations);
     for (;;)
     {
         T sum = 0, error = 0;
@@ -131,9 +136,10 @@ private RectangleEstimate!T integrate(alias f, T)(scope const(T)[] cuts)
         }
         // Compare the sum of the panel errors with the mass of the whole
         // rectangle, so negligible tails cannot dominate the refinement.
-        const done = error <= 224 * T.epsilon * sum;
-        if (done || count == panels.length)
-            return RectangleEstimate!T(sum, !done);
+        const done = error <= max(absoluteTolerance, relativeTolerance * sum);
+        if (done || count == panels.length || maxEvaluations - evaluations < 48)
+            return RectangleEstimate!T(sum, !done, error, evaluations);
+        evaluations += 48;
         const p = panels[worst];
         const mid = p.lo + (p.hi - p.lo) / 2;
         panels[worst] = panel(p.lo, mid);
@@ -203,7 +209,7 @@ package(mir.stat) T originalRectangleProbability(T, L, U, M, S)(scope auto ref L
             x.upper, y.lower);
         const acrossY = crossGap!T(yHi, yMean, stdDev[1], lower[0], mean[0], stdDev[0],
             y.upper, x.lower);
-        return interval(left, right, min(x.width, y.width, acrossX, acrossY));
+        return normalIntervalMass(left, right, min(x.width, y.width, acrossX, acrossY));
     }
     return rectangleEstimate(axes[0], axes[1], r).probability;
 }
@@ -235,7 +241,7 @@ private RectangleEstimate!T rectangleEstimate(T)(Interval!T x, Interval!T y, T r
     if (r == 1)
     {
         const lo = max(a, c), hi = min(b, d);
-        return Result(interval(lo, hi, hi - lo));
+        return Result(normalIntervalMass(lo, hi, hi - lo));
     }
     if ((a == -inf || b == inf) && (c == -inf || d == inf))
         return Result(bivariateStandardNormalCDF(a == -inf ? b : -a, c == -inf ? d : -c,
@@ -244,7 +250,7 @@ private RectangleEstimate!T rectangleEstimate(T)(Interval!T x, Interval!T y, T r
     if (x.width > y.width) return rectangleEstimate(y, x, r);
     if (max(a, -b, c, -d) <= tailThreshold!T)
     {
-        auto result = quadrature!false(x, y, r);
+        auto result = quadrature!false(x, y, r, sqrt((1 - r) * (1 + r)), sqrt((1 - r) / 2));
         if (result.probability >= T.min_normal)
         {
             result.probability = min(T(1), result.probability);
@@ -253,17 +259,28 @@ private RectangleEstimate!T rectangleEstimate(T)(Interval!T x, Interval!T y, T r
     }
     // A tail interval can select scaling immediately. Near-singular
     // correlations can also produce tiny masses with ordinary bounds.
-    auto result = quadrature!true(x, y, r);
+    auto result = quadrature!true(x, y, r, sqrt((1 - r) * (1 + r)), sqrt((1 - r) / 2));
+    return unscaleRectangleEstimate(result);
+}
+
+private RectangleEstimate!T unscaleRectangleEstimate(T)(RectangleEstimate!T result)
+{
+    import std.math : isFinite;
+    if (!isFinite(result.probability) || (result.evaluations && !isFinite(result.estimatedError)))
+        return RectangleEstimate!T(T.nan, false, T.nan, result.evaluations);
     result.probability = min(T(1), result.probability * T(1 / (factorScale * factorScale)));
+    result.estimatedError *= T(1 / (factorScale * factorScale));
     return result;
 }
 
-private RectangleEstimate!T quadrature(bool scaled, T)(Interval!T x, Interval!T y, T r)
+private RectangleEstimate!T quadrature(bool scaled, T)(Interval!T x, Interval!T y, T r,
+    T sigma, T B, T absoluteTolerance = 0, T relativeTolerance = 224 * T.epsilon,
+    size_t maxEvaluations = size_t.max)
 {
     const a = x.lower, b = x.upper, c = y.lower, d = y.upper;
     // Integrate across the shorter side in original coordinates when rotating
     // could erase the width. Use [0, 1] even if the endpoints are adjacent.
-    const sigma = sqrt((1 - r) * (1 + r));
+    // Tolerances passed here are in the units of the (possibly scaled) integrand.
     if (x.width <= sigma / 8)
     {
         T conditional(T u)
@@ -271,23 +288,24 @@ private RectangleEstimate!T quadrature(bool scaled, T)(Interval!T x, Interval!T 
             const delta = x.width * u;
             const lo = fma(-r, delta, fma(-r, a, c)) / sigma;
             const hi = fma(-r, delta, fma(-r, a, d)) / sigma;
-            return density!scaled(a + delta) * interval!scaled(lo, hi, y.width / sigma);
+            return density!scaled(a + delta) * normalIntervalMass!scaled(lo, hi, y.width / sigma);
         }
         static immutable T[2] unit = [0, 1];
-        auto result = integrate!conditional(unit[]);
+        auto result = integrate!conditional(unit[], absoluteTolerance / x.width, relativeTolerance, maxEvaluations);
         result.probability *= x.width;
+        result.estimatedError *= x.width;
         return result;
     }
 
     // X = A*U + B*V, Y = A*U - B*V with independent standard U and V.
     // Each rectangle corner can change which bound limits U.
-    const A = sqrt((1 + r) / 2), B = sqrt((1 - r) / 2);
+    const A = sqrt((1 + r) / 2);
     T rotated(T v)
     {
         const lo = max(a - B * v, c + B * v) / A;
         const hi = min(b - B * v, d + B * v) / A;
         const width = min(x.width, y.width, fma(-2 * B, v, b - c), fma(2 * B, v, d - a)) / A;
-        return density!scaled(v) * interval!scaled(lo, hi, width);
+        return density!scaled(v) * normalIntervalMass!scaled(lo, hi, width);
     }
     // Normal mass beyond these endpoints is below the smallest subnormal.
     enum limit = T.max_exp <= 1024 ? 40 : 160;
@@ -310,5 +328,103 @@ private RectangleEstimate!T quadrature(bool scaled, T)(Interval!T x, Interval!T 
         foreach (yBound; [c, d])
             split((xBound - yBound) / (2 * B));
     sort(cuts[0 .. n]);
-    return integrate!rotated(cuts[0 .. n]);
+    return integrate!rotated(cuts[0 .. n], absoluteTolerance, relativeTolerance, maxEvaluations);
+}
+
+// Decompose in power-of-two units so variances and their product stay in
+// range. The compensated 2x2 determinant retains the residual variance
+// even when the correlation alone rounds to one.
+package(mir.stat) struct RectangleCorrelation
+{
+    double rho, residual;
+}
+
+package(mir.stat) RectangleCorrelation rectangleCorrelation(double xx, double xy, double yy)
+{
+    import std.math : frexp, ldexp, isFinite;
+    if (!(xx > 0 && yy > 0) || !isFinite(xx) || !isFinite(yy) || !isFinite(xy))
+        return RectangleCorrelation.init;
+    int ex, ey;
+    frexp(xx, ex);
+    frexp(yy, ey);
+    ex /= 2;
+    ey /= 2;
+    const a = ldexp(xx, -2 * ex), b = ldexp(yy, -2 * ey);
+    const c = ldexp(xy, -ex - ey);
+    if (!isFinite(c) || fabs(c) > 4) return RectangleCorrelation.init;
+    const cc = c * c;
+    const det = fma(a, b, -cc) + fma(-c, c, cc);
+    if (!(det > 0)) return RectangleCorrelation.init;
+    const scale = sqrt(a) * sqrt(b);
+    return RectangleCorrelation(max(-1.0, min(1.0, c / scale)), sqrt(det) / scale);
+}
+
+// Bounds and widths are independently standardized in the original units.
+// Reuse the rotated quadrature with B = sqrt(1-rho^2)/(2*A), avoiding
+// subtraction of nearly equal numbers when forming the rotation.
+package(mir.stat) RectangleEstimate!double covarianceRectangleEstimate(
+    double[2] lo, double[2] hi, double[2] width, RectangleCorrelation correlation,
+    double absoluteTolerance, double relativeTolerance, size_t maxEvaluations)
+{
+    alias I = Interval!double;
+    I x = I(lo[0], hi[0], width[0]), y = I(lo[1], hi[1], width[1]);
+    // Both bounds on the same infinite tail after standardization place
+    // the entire marginal below the representable probability range.
+    foreach (i; 0 .. 2)
+        if (lo[i] == double.infinity || hi[i] == -double.infinity)
+            return RectangleEstimate!double(0);
+    import std.algorithm : swap;
+    if (x.width > y.width) swap(x, y);
+    if (correlation.rho < 0) y = y.reflected;
+    if (x.lower == -double.infinity && x.upper == double.infinity)
+        return RectangleEstimate!double(y.mass);
+    if (y.lower == -double.infinity && y.upper == double.infinity)
+        return RectangleEstimate!double(x.mass);
+    if (correlation.rho == 0)
+        return RectangleEstimate!double((x.mass!true * y.mass!true) / (factorScale * factorScale));
+
+    const r = fabs(correlation.rho);
+    const B = correlation.residual / sqrt(2 * (1 + r));
+    enum scale = factorScale * factorScale;
+    auto result = quadrature!true(x, y, r, correlation.residual, B, absoluteTolerance * scale,
+        relativeTolerance, maxEvaluations);
+    return unscaleRectangleEstimate(result);
+}
+
+version (mir_stat_test) version = mir_stat_test_rectangle_dispatch;
+version (mir_stat_test_rectangle_dispatch)
+@safe pure nothrow @nogc unittest
+{
+    import std.math : atan, PI;
+    foreach (xy; [-1.0, 1.0])
+    {
+        const corr = rectangleCorrelation(1, xy, 1 + double.epsilon);
+        assert(corr.residual > 0 && fabs(corr.rho) == 1);
+        double[2] lo = [-double.infinity, xy > 0 ? 0 : -double.infinity];
+        double[2] hi = [0., xy > 0 ? double.infinity : 0];
+        double[2] width = double.infinity;
+        const q = covarianceRectangleEstimate(lo, hi, width, corr, 0, 1e-10, 16384);
+        const expected = atan(sqrt(double.epsilon)) / (2 * PI);
+        assert(fabs(q.probability / expected - 1) < 1e-12);
+        assert(!q.budgetExhausted && q.evaluations && q.estimatedError <= q.probability * 1e-10);
+    }
+    import std.math : isNaN;
+    assert(isNaN(rectangleCorrelation(0, 0, 1).residual));
+    // Nonfinite panel diagnostics must survive conversion to probability units.
+    alias Estimate = RectangleEstimate!double;
+    foreach (raw; [Estimate(double.nan, true, 0, 24), Estimate(1, true, double.infinity, 24)])
+    {
+        const failed = unscaleRectangleEstimate(raw);
+        assert(isNaN(failed.probability) && isNaN(failed.estimatedError) && failed.evaluations == 24);
+    }
+    assert(isNaN(rectangleCorrelation(1, 1, 1).residual));
+    assert(isNaN(rectangleCorrelation(1 + double.epsilon, 1, 1 - double.epsilon).residual));
+    const unscaled = rectangleCorrelation(1, 0.5, 1);
+    const stretched = rectangleCorrelation(0x1p1000, 0.5, 0x1p-1000);
+    assert(stretched == unscaled);
+    double[2] lo = [-1.0, -0.2], hi = [0.5, 1.4], width = [1.5, 1.6];
+    const limited = covarianceRectangleEstimate(lo, hi, width, rectangleCorrelation(1, 0.7, 1),
+        0, 0, 1024);
+    assert(limited.budgetExhausted && limited.evaluations <= 1024 && limited.estimatedError > 0);
+    assert(fabs(limited.probability - 0.2699780669850152) < 1e-13);
 }
