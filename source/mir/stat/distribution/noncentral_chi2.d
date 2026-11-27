@@ -323,3 +323,116 @@ version(mir_stat_test_noncentral_chi2)
         assert(approxEqual(noncentralChi2CDF(T(1600), 1, T(1600)), T(0.5)));
     }}
 }
+
+/++
+Computes the noncentral chi-squared quantile at cumulative probability $(D p).
+
+Params:
+    T = built-in floating-point result and argument type
+    p = lower-tail probability in the closed interval [0, 1]
+    k = positive integer degrees of freedom
+    lambda = finite, nonnegative noncentrality
+
+Returns:
+    The nonnegative quantile as $(D T), with zero at $(D p == 0) and
+    positive infinity at $(D p == 1). An unresolved tail returns NaN.
++/
+@safe pure nothrow @nogc
+T noncentralChi2InvCDF(T)(const T p, const uint k, const T lambda)
+    if (isFloatingPoint!T)
+    in (p >= 0 && p <= 1, "probability must be in [0, 1]")
+    in (k > 0, "degrees of freedom must be positive")
+    in (lambda >= 0 && lambda < T.infinity, "noncentrality must be finite and nonnegative")
+{
+    import mir.math.common: sqrt;
+    if (p == 0) return 0;
+    if (p == 1) return T.infinity;
+    if (lambda == 0) return chi2InvCDF(p, k);
+
+    const upper = p > T(0.5);
+    const real target = upper ? 1 - p : p;
+    const center = real(k) + lambda;
+    real step = sqrt(2 * (real(k) + 2 * real(lambda)));
+    real low = center;
+    real high = center;
+    // Expand by standard deviations around the mean. A multiple of the
+    // mean can be thousands of standard deviations from a central quantile.
+    const centerValue = probability(center, k, lambda, upper);
+    if (centerValue != centerValue) return T.nan;
+    const moveRight = upper ? centerValue > target : centerValue < target;
+    for (;;)
+    {
+        if (moveRight)
+            high = center + step;
+        else
+            low = step < center ? center - step : 0;
+        const value = probability(moveRight ? high : low, k, lambda, upper);
+        if (value != value) return T.nan;
+        if ((upper ? value > target : value < target) != moveRight)
+            break;
+        if (moveRight) low = high;
+        else high = low;
+        step *= 2;
+    }
+
+    // Bisect the exponent range while the endpoints span several powers
+    // of two. Ordinary bisection then resolves the significand.
+    enum smallest = real.min_normal * real.epsilon;
+    for (;;)
+    {
+        const positiveLow = low > 0 ? low : smallest;
+        const mid = positiveLow < high / 4
+            ? sqrt(positiveLow) * sqrt(high)
+            : low + (high - low) / 2;
+        if (mid <= low || mid >= high || cast(T) low == cast(T) high)
+            return cast(T) mid;
+        const value = probability(mid, k, lambda, upper);
+        if (value != value) return T.nan;
+        if (upper ? value > target : value < target)
+            low = mid;
+        else
+            high = mid;
+    }
+}
+
+///
+version(mir_stat_test_noncentral_chi2)
+@safe pure nothrow @nogc unittest
+{
+    import mir.math.common: approxEqual;
+    const radiusSquared = noncentralChi2InvCDF(0.95, 2, 1.0);
+    assert(approxEqual(radiusSquared, 8.642203870045899));
+}
+
+version(mir_stat_test_noncentral_chi2)
+@safe pure nothrow @nogc unittest
+{
+    import std.meta: AliasSeq;
+    import mir.math.common: approxEqual;
+    static foreach (T; AliasSeq!(float, double, real))
+    {{
+        assert(noncentralChi2InvCDF(T(0), 5, T(3)) == 0);
+        assert(noncentralChi2InvCDF(T(1), 5, T(3)) == T.infinity);
+        assert(noncentralChi2InvCDF(T(0.4), 3, T(0)) == chi2InvCDF(T(0.4), 3));
+        foreach (p; [T(1e-10), T(0.5), T(1) - T.epsilon])
+        {
+            const x = noncentralChi2InvCDF(p, 3, T(4));
+            const actual = p > T(0.5) ? noncentralChi2CCDF(x, 3, T(4))
+                                       : noncentralChi2CDF(x, 3, T(4));
+            const target = p > T(0.5) ? 1 - p : p;
+            assert(approxEqual(actual, target, T(1024) * T.epsilon, T(0)));
+        }
+    }}
+}
+
+version(mir_stat_test_noncentral_chi2)
+@safe pure nothrow @nogc unittest
+{
+    import mir.math.common: approxEqual;
+    // For X = (Z + sqrt(lambda))^^2 the median rounds to lambda here.
+    assert(approxEqual(noncentralChi2InvCDF(0.5, 1, 100_000.0),
+        100_000.0, 1e-11, 0.0));
+    // For k = 1 the upper tail is the sum of two normal tails.
+    assert(approxEqual(noncentralChi2InvCDF(1 - double.epsilon, 1, 80.0),
+        291.3904503267249, 2e-15, 0.0));
+}
