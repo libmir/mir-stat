@@ -1012,13 +1012,14 @@ version(mir_stat_test_distance)
     assert(mahalanobisSquared(x[], center[], metric) == 4);
 }
 
-/// Test whether a point lies in the 95% probability ellipse for two correlated measurements.
+/// Test membership in a centered 95% ellipse and find the probability enclosed after shifting its center.
 version(mir_stat_test_distance)
 @safe pure unittest
 {
     import mir.math.common: fabs;
     import mir.ndslice.slice: sliced;
     import mir.stat.distribution.chi2: chi2CDF, chi2CCDF, chi2InvCDF;
+    import mir.stat.distribution.noncentral_chi2: noncentralChi2CDF, noncentralChi2CCDF, noncentralChi2InvCDF;
 
     double[2] point = [4, 2], mean = [0, 0];
     double[4] lower = [2, 0, 1, 1]; // Lower Cholesky factor of the covariance.
@@ -1029,6 +1030,17 @@ version(mir_stat_test_distance)
 
     assert(fabs(chi2CDF(d2, 2) - 0.864665) < 1e-6);
     assert(fabs(chi2CCDF(d2, 2) - 0.135335) < 1e-6);
+
+    // Keep the squared radius fixed while moving the center to [2, 1].
+    double[2] center = [2, 1];
+    const lambda = mahalanobisSquared(mean[], center[], metric);
+    assert(lambda == 1);
+    assert(fabs(noncentralChi2CDF(cutoff, 2, lambda) - 0.867290) < 1e-6);
+    assert(fabs(noncentralChi2CCDF(cutoff, 2, lambda) - 0.132710) < 1e-6);
+
+    // Recover 95% probability around the shifted center.
+    const shiftedCutoff = noncentralChi2InvCDF(0.95, 2, lambda);
+    assert(fabs(shiftedCutoff - 8.642204) < 1e-6);
 }
 
 /++

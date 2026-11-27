@@ -126,9 +126,27 @@ double[2] point = [4, 2], mean = [0, 0];
 double[4] lower = [2, 0, 1, 1];
 auto metric = covarianceCholeskyView!(TrianglePolicy.lower)(lower[].sliced(2, 2));
 const d2 = mahalanobisSquared(point[], mean[], metric);
-assert(d2 <= chi2InvCDF(0.95, 2)); // Inside the 95% ellipse (cutoff about 5.99).
-const outside = chi2CCDF(d2, 2);    // About 13.5% of draws lie farther out.
+const cutoff = chi2InvCDF(0.95, 2);
+assert(d2 <= cutoff); // Inside the 95% ellipse (squared radius about 5.99).
+const outside = chi2CCDF(d2, 2); // About 13.5% of draws lie farther out.
 ---
+
+Now move the center of the same ellipse to $(D [2, 1]), keeping the covariance
+and squared radius fixed. Squared distances of draws from the new center
+follow a noncentral chi-squared distribution. Its noncentrality is the
+squared Mahalanobis distance between the mean and the new center, computed
+with the same factor. Here the centers are one Mahalanobis unit apart.
+---
+double[2] center = [2, 1];
+const lambda = mahalanobisSquared(mean[], center[], metric);
+const enclosed = noncentralChi2CDF(cutoff, 2, lambda);  // About 86.73% inside.
+const excluded = noncentralChi2CCDF(cutoff, 2, lambda); // About 13.27% outside.
+---
+To enclose 95% again around the new center, use the inverse CDF to find the larger squared radius.
+---
+const shiftedCutoff = noncentralChi2InvCDF(0.95, 2, lambda); // About 8.64.
+---
+These functions are in $(MREF mir,stat,distribution,noncentral_chi2).
 
 License: $(HTTP www.apache.org/licenses/LICENSE-2.0, Apache-2.0)
 Copyright: 2026 Mir Stat Authors.
