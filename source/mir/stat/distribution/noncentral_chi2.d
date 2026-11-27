@@ -170,3 +170,156 @@ version(mir_stat_test_noncentral_chi2)
         assert(noncentralChi2LPDF(T(1), 4, T(4000)) > -2000);
     }}
 }
+
+/++
+Computes the lower tail of the noncentral chi-squared distribution.
+
+Params:
+    T = built-in floating-point result and argument type
+    x = nonnegative observation, including positive infinity
+    k = positive integer degrees of freedom
+    lambda = finite, nonnegative noncentrality
+
+Returns:
+    The probability $(D P(X <= x)) as $(D T). It is zero at zero and
+    one at positive infinity.
++/
+@safe pure nothrow @nogc
+T noncentralChi2CDF(T)(const T x, const uint k, const T lambda)
+    if (isFloatingPoint!T)
+    in (x >= 0, "x must be nonnegative")
+    in (k > 0, "degrees of freedom must be positive")
+    in (lambda >= 0 && lambda < T.infinity, "noncentrality must be finite and nonnegative")
+{
+    return cast(T) probability(x, k, lambda, false);
+}
+
+///
+version(mir_stat_test_noncentral_chi2)
+@safe pure nothrow @nogc unittest
+{
+    import mir.math.common: approxEqual;
+    // A two-dimensional normal ellipse with a center one Mahalanobis unit
+    // from the mean, using the 95% centered squared radius.
+    assert(approxEqual(noncentralChi2CDF(5.991464547107982, 2, 1.0),
+        0.8672899857674835));
+}
+
+/++
+Computes the upper tail of the noncentral chi-squared distribution.
+
+Params:
+    T = built-in floating-point result and argument type
+    x = nonnegative observation, including positive infinity
+    k = positive integer degrees of freedom
+    lambda = finite, nonnegative noncentrality
+
+Returns:
+    The probability $(D P(X > x)) as $(D T). It is one at zero and
+    zero at positive infinity.
++/
+@safe pure nothrow @nogc
+T noncentralChi2CCDF(T)(const T x, const uint k, const T lambda)
+    if (isFloatingPoint!T)
+    in (x >= 0, "x must be nonnegative")
+    in (k > 0, "degrees of freedom must be positive")
+    in (lambda >= 0 && lambda < T.infinity, "noncentrality must be finite and nonnegative")
+{
+    return cast(T) probability(x, k, lambda, true);
+}
+
+///
+version(mir_stat_test_noncentral_chi2)
+@safe pure nothrow @nogc unittest
+{
+    import mir.math.common: approxEqual;
+    // A direct upper tail retains the probability outside the interval.
+    assert(approxEqual(noncentralChi2CCDF(144.0, 1, 1.0),
+        1.91065957455985e-28, 2e-14, 0.0));
+}
+
+private @safe pure nothrow @nogc
+real probability(real x, uint k, real lambda, bool upper)
+{
+    import mir.stat.distribution.gamma: gammaCDF, gammaCCDF;
+    import mir.stat.distribution.poisson: poissonLPMF;
+    import mir.math.common: exp;
+
+    if (x == 0 || x == real.infinity)
+        return (x == 0) == upper;
+    // Markov's inequality applied to exp(X/4) bounds the upper tail by
+    // exp(k*log(2)/2 + lambda/2 - x/4). Use log(2) < 1 in both
+    // the moment and the underflow threshold to keep the test conservative.
+    if (x / 4 > lambda / 2 + real(k) / 2
+            + (2 - real.min_exp + real.mant_dig))
+        return upper ? 0 : 1;
+    const mean = lambda / 2;
+    if (mean == 0)
+        return upper ? chi2CCDF(x, k) : chi2CDF(x, k);
+    if (mean >= uint.max)
+        return real.nan;
+
+    // Use the upper gamma integral above the mean and the lower one below.
+    // Only subtract from one on the side with substantial probability.
+    const useUpper = x > k + lambda;
+    const shape = real(k) / 2;
+    real tail(uint j) {
+        return useUpper ? gammaCCDF(x, shape + j, 2)
+                        : gammaCDF(x, shape + j, 2);
+    }
+    const mode = cast(uint) mean;
+    const peak = exp(poissonLPMF(mode, mean));
+    const centerTail = tail(mode);
+    real sum = peak * centerTail;
+    static foreach (upward; [false, true])
+    {{
+        uint j = mode;
+        real weight = peak;
+        real component = centerTail;
+        for (uint steps = 0; ; ++steps)
+        {
+            static if (upward)
+                const ratio = mean / (real(j) + 1);
+            else
+            {
+                if (j == 0) break;
+                const ratio = j / mean;
+            }
+            // Ratios decrease away from the mode. Bound all remaining
+            // Poisson mass geometrically. On the side where the gamma
+            // probability also decreases, its current value tightens the bound.
+            weight *= ratio;
+            const boundFactor = (upward != useUpper) ? component : 1;
+            if (weight == 0 || (ratio < 1 &&
+                weight * boundFactor <= (1 - ratio) * real.epsilon * sum))
+                break;
+            if (steps == maxMixtureSteps || (upward && j == uint.max))
+                return real.nan;
+            static if (upward) ++j;
+            else --j;
+            component = tail(j);
+            sum += weight * component;
+        }
+    }}
+    if (sum > 1) sum = 1;
+    return upper == useUpper ? sum : 1 - sum;
+}
+
+version(mir_stat_test_noncentral_chi2)
+@safe pure nothrow @nogc unittest
+{
+    import std.meta: AliasSeq;
+    import mir.math.common: approxEqual;
+    static foreach (T; AliasSeq!(float, double, real))
+    {{
+        assert(noncentralChi2CDF(T.max, 1, T(2)) == 1);
+        assert(noncentralChi2CCDF(T.max, 1, T(2)) == 0);
+        assert(noncentralChi2CDF(T(0), 1, T(1)) == 0);
+        assert(noncentralChi2CCDF(T.infinity, 3, T(2)) == 0);
+        assert(noncentralChi2CDF(T.infinity, 1, T(1)) == 1);
+        assert(noncentralChi2CCDF(T(0), 3, T(2)) == 1);
+        assert(approxEqual(noncentralChi2CDF(T(3), 5, T(0)), chi2CDF(T(3), 5)));
+        assert(approxEqual(noncentralChi2CCDF(T(3), 5, T(0)), chi2CCDF(T(3), 5)));
+        assert(approxEqual(noncentralChi2CDF(T(1600), 1, T(1600)), T(0.5)));
+    }}
+}
