@@ -764,6 +764,78 @@ unittest
 }
 
 /++
+Computes the beta quantile using guarded extended precision.
+
+Params:
+    T = supported $(D Fp) type with at most 512 significand bits
+    p = cumulative probability in the closed unit interval
+    alpha = finite positive lower-endpoint shape
+    beta = finite positive upper-endpoint shape
+
+Returns:
+    The quantile as $(D T), with zero and one at the probability endpoints.
+    For general shapes, unresolved tail evaluations or midpoint comparisons return NaN.
+    Rounding of the guarded calculation is not certified.
++/
+@safe pure nothrow @nogc
+T betaInvCDF(T)(const T p, const T alpha, const T beta)
+    if (is(T == Fp!size, size_t size) && size <= 512)
+    in (p.exponent != long.max && (!p.sign || !p.coefficient) && position(p, T(1)) <= 0)
+    in (alpha.exponent != long.max && !alpha.sign && !!alpha.coefficient)
+    in (beta.exponent != long.max && !beta.sign && !!beta.coefficient)
+{
+    import mir.stat.internal.fp_beta: betaQuantile;
+    return betaQuantile(p, alpha, beta);
+}
+
+///
+version(mir_stat_test)
+@safe pure nothrow @nogc unittest
+{
+    import mir.bignum.fp: Fp;
+    alias T = Fp!64;
+    assert(betaInvCDF(T(0.25), T(2), T(1)) == T(0.5));
+}
+
+version(mir_stat_test)
+@safe pure nothrow @nogc unittest
+{
+    import mir.bignum.fixed: UInt;
+    alias T = Fp!64;
+    alias U = UInt!64;
+    assert(betaInvCDF(T(0), T(2), T(3)) == T(0));
+    assert(betaInvCDF(T(1), T(2), T(3)) == T(1));
+    assert(betaInvCDF(T(0.25), T(1), T(1)) == T(0.25));
+    assert(betaInvCDF(T(0.5), T(20), T(20)) == T(0.5));
+    assert(betaInvCDF(T(0.75), T(1), T(2)) == T(0.5));
+    // At the exponent floor, 1-sqrt(1-p) lies just above p/2.
+    const floor = T(false, long.min, U(1));
+    assert(betaInvCDF(floor, T(1), T(2)) == floor);
+    // Bound the median with the exact polynomial 6*x^2-8*x^3+3*x^4
+    // evaluated at adjacent rounding midpoints.
+    assert(betaInvCDF(T(0.5), T(2), T(3)) == T(false, -65, U(0xc57e157496a4a5adUL)));
+}
+
+version(mir_stat_test_slow_numerics)
+@safe pure nothrow @nogc unittest
+{
+    import mir.bignum.fixed: UInt;
+    alias T = Fp!64;
+    alias U = UInt!64;
+    const T[3] p = [T(false, -65, U.max), T(false, -64, U(0x8000000000000001UL)), T(false, -64, U.max)];
+    const T[3] q = [T(false, -65, U(0xc57e157496a4a5acUL)), T(false, -65, U(0xc57e157496a4a5aeUL)),
+        T(false, -64, U(0xfffffbfffffc0000UL))];
+    foreach (i, probability; p) assert(betaInvCDF(probability, T(2), T(3)) == q[i]);
+    assert(betaInvCDF(T(false, -1000, U(1)), T(2), T(3)) ==
+        T(false, -565, U(0xd105eb806161efe0UL)));
+    alias V = Fp!128;
+    enum expected = UInt!128.fromHexString("c57e157496a4a5ac90922039230dfde2");
+    assert(betaInvCDF(V(0.5), V(2), V(3)) == V(false, -129, expected));
+    // For shapes (3/2,2), the median solves (5-3*x)^2*x^3 = 1.
+    assert(betaInvCDF(T(0.5), T(1.5), T(2)) == T(false, -65, U(0xd3c6fb9760305d96UL)));
+}
+
+/++
 Computes the beta log probability density function (LPDF).
 
 When both shapes are at least 16, a centered calculation avoids subtracting
