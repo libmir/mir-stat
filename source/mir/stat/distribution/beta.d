@@ -210,6 +210,14 @@ version(mir_stat_test)
     assert(betaPDF(T(0), T(1), T(3)) == T(3));
     assert(betaPDF(T(1), T(4), T(1)) == T(4));
     assert(betaPDF(half, T(1), T(1)) == T(1));
+    // For Beta(3/2, 1), f(x) = (3/2)*sqrt(x).
+    assert(betaPDF(T(0.25), T(1.5), T(1)) == T(0.75));
+    // 3*x^2 lies halfway between adjacent outputs; the upper one is even.
+    const x = T(false, -32, UInt!64(3000000009UL));
+    const reflected = T(false, -32, UInt!64((1UL << 32) - 3000000009UL));
+    const density = T(false, -63, UInt!64(13500000081000000122UL));
+    assert(betaPDF(x, T(3), T(1)) == density);
+    assert(betaPDF(reflected, T(1), T(3)) == density);
     // (a+b-1) * binom(a+b-2,a-1) * x^(a-1) * (1-x)^(b-1).
     assert(betaPDF(T(0.25), T(4096), T(12288)) == T(false, -57, UInt!64(0xebda25e9febb8b92UL)));
     assert(betaPDF(T(0.25), T(3), T(5)) == T(2.076416015625));
@@ -810,6 +818,11 @@ version(mir_stat_test)
     assert(betaInvCDF(T(0.5), T(20), T(20)) == T(0.5));
     assert(betaInvCDF(T(0.75), T(1), T(2)) == T(0.5));
     assert(betaInvCDF(T(0.25), T(0.5), T(1)) == T(0.0625));
+    // F(1/4) = (1/4)^(3/2) = 1/8.
+    assert(betaInvCDF(T(0.125), T(1.5), T(1)) == T(0.25));
+    // The exact square is a midpoint with an even lower neighbor.
+    const p = T(false, -33, U(4294967301UL));
+    assert(betaInvCDF(p, T(0.5), T(1)) == T(false, -65, U(9223372058329612300UL)));
     // At the exponent floor, 1-sqrt(1-p) lies just above p/2.
     const floor = T(false, long.min, U(1));
     assert(betaInvCDF(floor, T(1), T(2)) == floor);

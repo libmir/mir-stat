@@ -84,6 +84,15 @@ private struct BetaIntegral(uint bits)
         return B.combine(pos(one), neg(scaledDecay(t))).value;
     }
 
+    // Return zero for shapes outside the bounded integer-power path.
+    static uint smallInteger(S k)
+    {
+        if (k.exponent <= exponentBias || k.exponent > exponentBias + 12) return 0;
+        const shift = B.work - cast(uint)(k.exponent - exponentBias);
+        if (k.fraction.coefficient.cttz < shift) return 0;
+        return cast(uint)(k.fraction.coefficient >> shift);
+    }
+
     T powerTail(T shape, Point p, bool complement, bool exactBase)
     {
         const k = S.from(shape);
@@ -96,16 +105,9 @@ private struct BetaIntegral(uint bits)
             if (!complement) return T(1);
             return B.withCorrection(linear, compare(k, one) < 0).finish!bits;
         }
-        if (exactBase && k.exponent > exponentBias && k.exponent <= exponentBias + 12)
-        {
-            const shift = B.work - cast(uint)(k.exponent - exponentBias);
-            if (k.fraction.coefficient.cttz >= shift)
-            {
-                const n = cast(uint)(k.fraction.coefficient >> shift);
-                if (n * (B.work - p.x.fraction.coefficient.cttz) <= B.work)
-                    return addOffset!bits(T(complement ? 1 : 0), p.x.power(n), complement);
-            }
-        }
+        const n = smallInteger(k);
+        if (exactBase && n && n * (B.work - p.x.fraction.coefficient.cttz) <= B.work)
+            return addOffset!bits(T(complement ? 1 : 0), p.x.power(n), complement);
         const rate = k.multiply(p.negLogX);
         if (complement) return oneMinusDecay(rate).finish!bits;
         if (rate.exponent >= exponentBias + 66) return T(0);
@@ -436,6 +438,16 @@ package(mir.stat) Fp!bits betaDensity(bool logarithmic, uint bits)(Fp!bits x, Fp
         const reflected = position(a, unit) == 0;
         const k = S.from(reflected ? b : a);
         const q = reflected ? p.reflect() : p;
+        static if (!logarithmic)
+        {
+            // k * base^(k-1) is exact when both the base and the full
+            // product significand fit. Round only on the output grid.
+            const n = I.smallInteger(k);
+            const exactBase = !reflected || x.exponent >= -cast(long)B.work - cast(long)x.coefficient.cttz;
+            if (exactBase && n > 2 &&
+                (n - 1) * (B.work - q.x.fraction.coefficient.cttz) + (B.work - k.fraction.coefficient.cttz) <= B.work)
+                return q.x.power(n - 1).multiply(k).finish!bits;
+        }
         const slope = B.combine(I.pos(k), I.neg(integral.one));
         if (!slope.present) return T(logarithmic ? 0 : 1);
         // With shape two the density is exactly twice the base. Near its
@@ -507,6 +519,8 @@ package(mir.stat) Fp!bits betaQuantile(uint bits)(Fp!bits p, Fp!bits a, Fp!bits 
             import mir.stat.internal.fp_scaled_probability: scaledSqrt;
             return scaledSqrt(target.x, false).finish!bits;
         }
+        if (position(a, half!bits()) == 0)
+            return target.x.multiply(target.x).finish!bits;
         const rate = target.negLogX.divide(S.from(a));
         if (rate.exponent >= exponentBias + 66) return T(0);
         return scaledDecay(rate).finish!bits;
