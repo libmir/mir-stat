@@ -387,3 +387,23 @@ version (mir_stat_test_rectangle_order)
         assert(factor[1, 1] > 0 && abs(factor[1, 1] * factor[1, 1] / 0x1p-951 - 1) <= double.epsilon);
     }}
 }
+
+version (mir_stat_test_rectangle_order)
+@safe pure nothrow @nogc unittest
+{
+    import mir.ndslice.slice: sliced;
+    import mir.stat.covariance_views: covarianceView;
+    import std.math: abs;
+
+    // The third conditional variance is 2*t/(1+t). Its pivot needs
+    // rescaling before updating the fourth coordinate.
+    enum t = 0x1p-601;
+    double[16] cov = [1, t, 1, 0, 0, 1, 1, 0, 0, 0, 2, 0x1p-301, 0, 0, 0, 1], work;
+    double[4] lower = -double.infinity, upper = double.infinity, typical;
+    size_t[4] order;
+    auto factor = work[].sliced(4, 4);
+    assert(orderNormalRectangle(covarianceView(cov[].sliced(4, 4)), lower[], upper[],
+        order[], factor, typical[]) == RectangleOrderStatus.success);
+    assert(order == [0, 1, 2, 3] && factor[2, 2] == 0x1p-300);
+    assert(factor[3, 2] == 0.5 && abs(factor[3, 3] * factor[3, 3] - 0.75) <= double.epsilon);
+}

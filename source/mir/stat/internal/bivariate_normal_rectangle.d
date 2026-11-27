@@ -260,6 +260,14 @@ private RectangleEstimate!T rectangleEstimate(T)(Interval!T x, Interval!T y, T r
     // A tail interval can select scaling immediately. Near-singular
     // correlations can also produce tiny masses with ordinary bounds.
     auto result = quadrature!true(x, y, r, sqrt((1 - r) * (1 + r)), sqrt((1 - r) / 2));
+    return unscaleRectangleEstimate(result);
+}
+
+private RectangleEstimate!T unscaleRectangleEstimate(T)(RectangleEstimate!T result)
+{
+    import std.math : isFinite;
+    if (!isFinite(result.probability) || (result.evaluations && !isFinite(result.estimatedError)))
+        return RectangleEstimate!T(T.nan, false, T.nan, result.evaluations);
     result.probability = min(T(1), result.probability * T(1 / (factorScale * factorScale)));
     result.estimatedError *= T(1 / (factorScale * factorScale));
     return result;
@@ -359,7 +367,6 @@ package(mir.stat) RectangleEstimate!double covarianceRectangleEstimate(
     double absoluteTolerance, double relativeTolerance, size_t maxEvaluations)
 {
     alias I = Interval!double;
-    import std.math : isFinite;
     I x = I(lo[0], hi[0], width[0]), y = I(lo[1], hi[1], width[1]);
     // Both bounds on the same infinite tail after standardization place
     // the entire marginal below the representable probability range.
@@ -381,11 +388,7 @@ package(mir.stat) RectangleEstimate!double covarianceRectangleEstimate(
     enum scale = factorScale * factorScale;
     auto result = quadrature!true(x, y, r, correlation.residual, B, absoluteTolerance * scale,
         relativeTolerance, maxEvaluations);
-    if (!isFinite(result.probability) || (result.evaluations && !isFinite(result.estimatedError)))
-        return RectangleEstimate!double(double.nan, false, double.nan, result.evaluations);
-    result.probability = min(1.0, result.probability / scale);
-    result.estimatedError /= scale;
-    return result;
+    return unscaleRectangleEstimate(result);
 }
 
 version (mir_stat_test) version = mir_stat_test_rectangle_dispatch;
@@ -406,6 +409,14 @@ version (mir_stat_test_rectangle_dispatch)
         assert(!q.budgetExhausted && q.evaluations && q.estimatedError <= q.probability * 1e-10);
     }
     import std.math : isNaN;
+    assert(isNaN(rectangleCorrelation(0, 0, 1).residual));
+    // Nonfinite panel diagnostics must survive conversion to probability units.
+    alias Estimate = RectangleEstimate!double;
+    foreach (raw; [Estimate(double.nan, true, 0, 24), Estimate(1, true, double.infinity, 24)])
+    {
+        const failed = unscaleRectangleEstimate(raw);
+        assert(isNaN(failed.probability) && isNaN(failed.estimatedError) && failed.evaluations == 24);
+    }
     assert(isNaN(rectangleCorrelation(1, 1, 1).residual));
     assert(isNaN(rectangleCorrelation(1 + double.epsilon, 1, 1 - double.epsilon).residual));
     const unscaled = rectangleCorrelation(1, 0.5, 1);

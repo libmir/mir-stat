@@ -594,6 +594,48 @@ version(mir_stat_test_multivariate_normal)
     }
 }
 
+version(mir_stat_test_multivariate_normal)
+@safe pure nothrow @nogc unittest
+{
+    import mir.ndslice.slice : sliced;
+    import std.math : isNaN;
+
+    // A finite interval can cover the entire representable standardized axis.
+    foreach (i; 0 .. 2)
+    {
+        double[4] cov = [1, 0.05, 0, 1];
+        cov[i * 3] = 0.01;
+        double[2] lower = 0, upper = double.infinity, mean = 0;
+        lower[i] = -double.max;
+        upper[i] = double.max;
+        const r = multivariateNormalRectangleProbability(lower[], upper[], mean[],
+            covarianceView(cov[].sliced(2, 2)));
+        assert(r.status == MultivariateNormalRectangleStatus.direct && r.probability == 0.5);
+        assert(r.evaluations == 0 && isNaN(r.estimatedError));
+    }
+
+    // Reflection in the origin divides this symmetric strip into equal halves.
+    double[4] correlated = [1, 0.5, 0, 1];
+    double[2] stripLower = [-1e-6, 0], stripUpper = [1e-6, double.infinity], center = 0;
+    const strip = multivariateNormalRectangleProbability(stripLower[], stripUpper[], center[],
+        covarianceView(correlated[].sliced(2, 2)));
+    const marginal = multivariateNormalRectangleProbability(stripLower[0 .. 1], stripUpper[0 .. 1],
+        center[0 .. 1], covarianceView(correlated[0 .. 1].sliced(1, 1)));
+    import std.math : abs;
+    assert(strip.status == MultivariateNormalRectangleStatus.toleranceMet && strip.evaluations > 0);
+    assert(abs(2 * strip.probability / marginal.probability - 1) < 1e-14);
+
+    // The marginal masses are representable but their joint product underflows.
+    double[9] cov = [1, 0, 0, 0, 1, 0, 0, 0, 1];
+    double[3] lower = 24, upper = 25, mean = 0;
+    MultivariateNormalRectangleOptions options;
+    options.maxEvaluations = 1024;
+    const r = multivariateNormalRectangleProbability(lower[], upper[], mean[],
+        covarianceView(cov[].sliced(3, 3)), options);
+    assert(r.status == MultivariateNormalRectangleStatus.unresolved && r.probability == 0);
+    assert(r.evaluations == options.maxEvaluations && isNaN(r.estimatedError));
+}
+
 /// Whether the caller supplied a Cholesky factor.
 private enum prepared(CovarianceRepresentation form) =
     form == CovarianceRepresentation.covarianceCholesky ||
