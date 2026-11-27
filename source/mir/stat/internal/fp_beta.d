@@ -93,12 +93,11 @@ private struct BetaIntegral(uint bits)
         return cast(uint)(k.fraction.coefficient >> shift);
     }
 
-    T powerTail(T shape, Point p, bool complement, bool exactBase)
+    T powerTail(S k, Point p, bool complement, bool exactBase)
     {
-        const k = S.from(shape);
         const linear = k.multiply(p.y);
-        if (p.y.exponent + 2 * bits + 8 < exponentBias &&
-            linear.exponent + 2 * bits + 8 < exponentBias)
+        const separation = bits + B.work - k.fraction.coefficient.cttz + 8;
+        if (p.y.exponent + separation < exponentBias && linear.exponent + separation < exponentBias)
         {
             // 1-(1-y)^k = k*y - k*(k-1)*y^2/2 + ... . The product
             // is exact; the correction can only decide a target midpoint.
@@ -270,36 +269,33 @@ private struct BetaIntegral(uint bits)
     // Recover -log B once from the prefactor at exactly 1/2. Bound both
     // shapes so removing their log(1/2) terms costs at most 17 bits here.
     // Large shapes retain the centered evaluation at every search point.
-    void prepareQuantile(T a, T b)
+    void prepareQuantile(S a, S b)
     {
         import mir.stat.internal.fp_location_scale: half;
-        const A = S.from(a), Bshape = S.from(b);
-        if (A.exponent > exponentBias + 16 || Bshape.exponent > exponentBias + 16) return;
+        if (a.exponent > exponentBias + 16 || b.exponent > exponentBias + 16) return;
         const center = point(half!bits());
-        inverseBetaLog = B.combine(front(A, Bshape, center), pos(A.add(Bshape).multiply(center.negLogX)));
+        inverseBetaLog = B.combine(front(a, b, center), pos(a.add(b).multiply(center.negLogX)));
         reuseNormalizer = true;
     }
 
-    bool raw(T a, T b, Point p, out Term logTail)
+    bool raw(S a, S b, Point p, out Term logTail)
     {
-        const A = S.from(a), Bshape = S.from(b);
         S factor;
-        if (!fraction(A, Bshape, p, factor)) return false;
-        logTail = B.combine(front(A, Bshape, p), signedValue(B.logarithm(factor.divide(A))));
+        if (!fraction(a, b, p, factor)) return false;
+        logTail = B.combine(front(a, b, p), signedValue(B.logarithm(factor.divide(a))));
         return true;
     }
 
     // Integrate from x to a dyadic c with b*c <= 1 and add the direct
     // upper tail at c. This keeps a tiny upper tail when 1-x rounds to one.
-    bool anchored(T a, T b, Point p, out Term tail)
+    bool anchored(S a, S b, Point p, out Term tail)
     {
-        const A = S.from(a), bs = S.from(b);
-        if (compare(A, one) > 0) return false;
+        if (compare(a, one) > 0) return false;
         auto c = T(1);
         --c.exponent;
-        if (bs.exponent > exponentBias + 1)
+        if (b.exponent > exponentBias + 1)
         {
-            const inv = one.divide(bs);
+            const inv = one.divide(b);
             if (inv.exponent < exponentBias - (cast(ulong)long.max - bits)) return false;
             c.exponent += cast(long)cast(ulong)(inv.exponent - exponentBias);
         }
@@ -309,13 +305,13 @@ private struct BetaIntegral(uint bits)
         Term atC;
         if (!raw(b, a, anchor.reflect(), atC) || !atC.present || !atC.negative) return false;
         const ratioLog = S.from(B.logarithm(C.divide(p.x)));
-        auto area = pos(oneMinusDecay(A.multiply(ratioLog)).divide(A));
+        auto area = pos(oneMinusDecay(a.multiply(ratioLog)).divide(a));
         auto coefficient = pos(one);
         bool converged;
         for (uint k = 0; k < limit; ++k)
         {
             const n = S.from(W(k + 1));
-            const diff = B.combine(pos(n), neg(bs));
+            const diff = B.combine(pos(n), neg(b));
             if (!diff.present)
             {
                 converged = true;
@@ -323,7 +319,7 @@ private struct BetaIntegral(uint bits)
             }
             coefficient = Term(coefficient.value.multiply(diff.value).multiply(C).divide(n),
                 coefficient.negative != diff.negative, true);
-            const an = A.add(n);
+            const an = a.add(n);
             const term = times(coefficient, oneMinusDecay(an.multiply(ratioLog)).divide(an));
             area = B.combine(area, term);
             if (area.present && term.value.exponent + bits + 96 < area.value.exponent)
@@ -334,10 +330,25 @@ private struct BetaIntegral(uint bits)
         }
         if (!converged || !area.present || area.negative) return false;
         const interval = B.combineThree(signedValue(B.logarithm(area.value)),
-            pos(bs.multiply(anchor.negLogY)), front(A, bs, anchor));
+            pos(b.multiply(anchor.negLogY)), front(a, b, anchor));
         if (interval.present && !interval.negative) return false;
         tail = B.combine(fromLog(atC), fromLog(interval));
         return true;
+    }
+
+    T finishDensity(bool logarithmic)(Term logHeight)
+    {
+        if (!logHeight.present) return T(logarithmic ? 0 : 1);
+        static if (logarithmic)
+            return addOffset!bits(T(0), logHeight.value, logHeight.negative);
+        else
+        {
+            if (logHeight.value.exponent >= exponentBias + 66)
+                return logHeight.negative ? T(0) : T(false, long.max, UInt!bits(0));
+            auto height = scaledDecay(logHeight.value);
+            if (!logHeight.negative) height = one.divide(height);
+            return addOffset!bits(T(0), height, false);
+        }
     }
 
     Term fromLog(Term v)
@@ -347,11 +358,11 @@ private struct BetaIntegral(uint bits)
         return pos(scaledDecay(v.value));
     }
 
-    T evaluate(bool upper)(T x, T a, T b)
+    T evaluate(bool upper)(T x, S a, S b)
     {
         const p = point(x);
-        if (position(b, T(1)) == 0) return powerTail(a, p, upper, true);
-        if (position(a, T(1)) == 0)
+        if (compare(b, one) == 0) return powerTail(a, p, upper, true);
+        if (compare(a, one) == 0)
         {
             const exactBase = x.exponent >= -cast(long)B.work - cast(long)x.coefficient.cttz;
             return powerTail(b, p.reflect(), !upper, exactBase);
@@ -366,12 +377,12 @@ private struct BetaIntegral(uint bits)
 
     // Keep the directly computed tail on its own exponent for comparisons
     // with a target probability before output rounding.
-    bool directTail(T a, T b, Point p, out bool reflected, out Term tail)
+    bool directTail(S a, S b, Point p, out bool reflected, out Term tail)
     {
         // Compare x*(a+b+2) with a+1 without overflowing the shape sum.
-        const side = B.combine(residual(S.from(a), S.from(b), p), B.combine(pos(p.x), neg(p.y)));
+        const side = B.combine(residual(a, b, p), B.combine(pos(p.x), neg(p.y)));
         reflected = side.present && !side.negative;
-        T first = reflected ? b : a, second = reflected ? a : b;
+        S first = reflected ? b : a, second = reflected ? a : b;
         Point q = reflected ? p.reflect() : p;
         Term l;
         if (!raw(first, second, q, l)) return false;
@@ -414,6 +425,14 @@ version(mir_stat_test)
 // is rounded to the caller's precision.
 package(mir.stat) Fp!bits betaDensity(bool logarithmic, uint bits)(Fp!bits x, Fp!bits a, Fp!bits b)
 {
+    alias S = ShapeTransform!bits.S;
+    return scaledBetaDensity!(logarithmic, bits)(x, S.from(a), S.from(b));
+}
+
+package(mir.stat) Fp!bits scaledBetaDensity(bool logarithmic, uint bits)(Fp!bits x,
+    ShapeTransform!bits.S a, ShapeTransform!bits.S b,
+    ShapeTransform!bits.Term uncertainty = ShapeTransform!bits.Term.init)
+{
     alias T = Fp!bits;
     alias I = BetaIntegral!bits;
     alias S = I.S;
@@ -421,22 +440,22 @@ package(mir.stat) Fp!bits betaDensity(bool logarithmic, uint bits)(Fp!bits x, Fp
     const unit = T(1);
     if (!x.coefficient || position(x, unit) == 0)
     {
-        const side = position(!x.coefficient ? a : b, unit);
+        const side = I.compare(!x.coefficient ? a : b, S.from(unit));
         if (side < 0 || (logarithmic && side > 0))
             return T(side > 0, long.max, UInt!bits(0));
         if (side > 0) return T(0);
         const height = !x.coefficient ? b : a;
-        static if (logarithmic) return cast(T)B.logarithm(S.from(height));
-        else return height;
+        static if (logarithmic) return cast(T)B.logarithm(height);
+        else return addOffset!bits(T(0), height, false);
     }
 
     auto integral = I(S.from(unit), 4096);
     const p = integral.point(x);
     I.Term result;
-    if (position(a, unit) == 0 || position(b, unit) == 0)
+    if (I.compare(a, integral.one) == 0 || I.compare(b, integral.one) == 0)
     {
-        const reflected = position(a, unit) == 0;
-        const k = S.from(reflected ? b : a);
+        const reflected = I.compare(a, integral.one) == 0;
+        const k = reflected ? b : a;
         const q = reflected ? p.reflect() : p;
         static if (!logarithmic)
         {
@@ -444,22 +463,23 @@ package(mir.stat) Fp!bits betaDensity(bool logarithmic, uint bits)(Fp!bits x, Fp
             // product significand fit. Round only on the output grid.
             const n = I.smallInteger(k);
             const exactBase = !reflected || x.exponent >= -cast(long)B.work - cast(long)x.coefficient.cttz;
-            if (exactBase && n > 2 &&
+            if (!uncertainty.present && exactBase && n > 2 &&
                 (n - 1) * (B.work - q.x.fraction.coefficient.cttz) + (B.work - k.fraction.coefficient.cttz) <= B.work)
                 return q.x.power(n - 1).multiply(k).finish!bits;
         }
         const slope = B.combine(I.pos(k), I.neg(integral.one));
-        if (!slope.present) return T(logarithmic ? 0 : 1);
         // With shape two the density is exactly twice the base. Near its
         // zero crossing log(2*base) keeps the displacement from one.
-        if (I.compare(k, S.from(T(2))) == 0)
+        if (!slope.present) result = I.Term.init;
+        else if (I.compare(k, S.from(T(2))) == 0)
         {
             S height = q.x;
             ++height.exponent;
-            static if (logarithmic) return cast(T)B.logarithm(height);
-            else return height.finish!bits;
+            static if (!logarithmic)
+                if (!uncertainty.present) return height.finish!bits;
+            result = I.signedValue(B.logarithm(height));
         }
-        if (k.exponent < exponentBias && q.x.exponent < exponentBias)
+        else if (k.exponent < exponentBias && q.x.exponent < exponentBias)
         {
             // At base=k the density is k^k. Retain the k*log(base)
             // correction even when k-1 rounds to -1 on the working grid.
@@ -472,30 +492,63 @@ package(mir.stat) Fp!bits betaDensity(bool logarithmic, uint bits)(Fp!bits x, Fp
     }
     else
     {
-        result = B.combineThree(integral.front(S.from(a), S.from(b), p),
+        result = B.combineThree(integral.front(a, b, p),
             I.pos(p.negLogX), I.pos(p.negLogY));
         // The Stirling and recurrence terms have bounded working precision.
         // A residual too close to zero cannot resolve the log density.
         if (!result.present || result.value.exponent + bits + 48 < exponentBias)
-            return logarithmic ? T(false, long.max, UInt!bits(1)) : unit;
+            return logarithmic || uncertainty.present ? T(false, long.max, UInt!bits(1)) : unit;
     }
-    if (!result.present) return T(logarithmic ? 0 : 1);
-    static if (logarithmic)
-        return addOffset!bits(T(0), result.value, result.negative);
-    else
+    if (!uncertainty.present) return integral.finishDensity!logarithmic(result);
+    const low = integral.finishDensity!logarithmic(B.combine(result, I.neg(uncertainty.value)));
+    const high = integral.finishDensity!logarithmic(B.combine(result, uncertainty));
+    return low == high ? low : T(false, long.max, UInt!bits(1));
+}
+
+// At the exact mean x=a/k, k=a+b, there are no deviance terms. Keep k
+// fixed and enclose the two occurrences of b separately. For positive b
+// the Stirling remainder R(b) is positive and decreasing.
+package(mir.stat) Fp!bits betaMeanDensity(bool logarithmic, uint bits)(Fp!bits kappa,
+    ShapeTransform!bits.S a, ShapeTransform!bits.S lower, ShapeTransform!bits.S upper)
+{
+    import mir.stat.internal.fp_pi: guardedPi;
+    alias I = BetaIntegral!bits;
+    alias S = I.S;
+    alias G = I.G;
+    alias B = I.B;
+    const k = S.from(kappa);
+    auto integral = I(S.from(Fp!bits(1)), 4096);
+    auto pi2 = S.from(guardedPi!(B.work)());
+    ++pi2.exponent;
+    const numerator = k.power(3).divide(pi2.multiply(a));
+    S correction(S z)
     {
-        if (result.value.exponent >= exponentBias + 66)
-            return result.negative ? T(0) : T(false, long.max, UInt!bits(0));
-        auto height = scaledDecay(result.value);
-        if (!result.negative) height = integral.one.divide(height);
-        return addOffset!bits(T(0), height, false);
+        auto reduced = G.S.from(z.fraction);
+        reduced.exponent += z.exponent - exponentBias;
+        return I.widen(G.correction(reduced));
     }
+    const common = B.combine(I.pos(correction(k)), I.neg(correction(a)));
+    Fp!bits height(S denominator, S correctionShape)
+    {
+        auto peak = I.signedValue(B.logarithm(numerator.divide(denominator)));
+        if (peak.present) --peak.value.exponent;
+        return integral.finishDensity!logarithmic(B.combineThree(peak, common, I.neg(correction(correctionShape))));
+    }
+    const lo = height(upper, lower);
+    const hi = height(lower, upper);
+    return lo == hi ? lo : Fp!bits(false, long.max, UInt!bits(1));
 }
 
 // Search rounding boundaries on the output grid, including the half-step
 // below its smallest subnormal. Ranks advance by one between adjacent Fp
 // values. The first binade uses the same spacing as the subnormal grid.
 package(mir.stat) Fp!bits betaQuantile(uint bits)(Fp!bits p, Fp!bits a, Fp!bits b, uint limit = 4096)
+{
+    alias S = ShapeTransform!bits.S;
+    return scaledBetaQuantile!(bits)(p, S.from(a), S.from(b), limit);
+}
+
+package(mir.stat) Fp!bits scaledBetaQuantile(uint bits)(Fp!bits p, ShapeTransform!bits.S a, ShapeTransform!bits.S b, uint limit = 4096)
 {
     import mir.stat.internal.fp_location_scale: half;
     alias T = Fp!bits;
@@ -504,33 +557,33 @@ package(mir.stat) Fp!bits betaQuantile(uint bits)(Fp!bits p, Fp!bits a, Fp!bits 
     alias S = I.S;
     alias Rank = UInt!(bits+128);
     const unit = T(1);
+    const one = S.from(unit);
     const nan = T(false, long.max, UInt!bits(1));
     if (!p.coefficient || position(p, unit) == 0) return p;
-    if (position(a, unit) == 0 && position(b, unit) == 0) return p;
-    if (position(a, b) == 0 && position(p, half!bits()) == 0) return half!bits();
+    if (I.compare(a, one) == 0 && I.compare(b, one) == 0) return p;
+    if (I.compare(a, b) == 0 && position(p, half!bits()) == 0) return half!bits();
 
-    const one = S.from(unit);
     auto integral = I(one, limit);
     const target = integral.point(p);
-    if (position(b, unit) == 0)
+    if (I.compare(b, one) == 0)
     {
-        if (position(a, T(2)) == 0)
+        if (I.compare(a, S.from(T(2))) == 0)
         {
             import mir.stat.internal.fp_scaled_probability: scaledSqrt;
             return scaledSqrt(target.x, false).finish!bits;
         }
-        if (position(a, half!bits()) == 0)
+        if (I.compare(a, S.from(half!bits())) == 0)
             return target.x.multiply(target.x).finish!bits;
-        const rate = target.negLogX.divide(S.from(a));
+        const rate = target.negLogX.divide(a);
         if (rate.exponent >= exponentBias + 66) return T(0);
         return scaledDecay(rate).finish!bits;
     }
-    if (position(a, unit) == 0)
+    if (I.compare(a, one) == 0)
     {
-        const k = S.from(b);
+        const k = b;
         const linear = target.x.divide(k);
-        if (target.x.exponent + 2 * bits + 8 < exponentBias &&
-            linear.exponent + 2 * bits + 8 < exponentBias)
+        const separation = bits + B.work - k.fraction.coefficient.cttz + 8;
+        if (target.x.exponent + separation < exponentBias && linear.exponent + separation < exponentBias)
         {
             // 1-(1-p)^(1/b) = p/b + (b-1)*(p/b)^2/2 + ...
             return B.withCorrection(linear, I.compare(k, one) > 0).finish!bits;
@@ -573,6 +626,13 @@ package(mir.stat) Fp!bits betaQuantile(uint bits)(Fp!bits p, Fp!bits a, Fp!bits 
 
     auto high = (Rank(1UL << 63) + 2 - bits) << (bits - 1);
     Rank low;
+    // A very small derived shape can put the quantile below even the
+    // first subnormal. Try that rounding boundary before scanning binades.
+    if (a.exponent + 64 < exponentBias)
+    {
+        bool lower;
+        if (below(Rank(0), lower) && !lower) return T(0);
+    }
     Rank stride = block;
     // Find the relevant exponent interval before bisecting significands.
     while (high > stride)
@@ -628,18 +688,26 @@ package(mir.stat) Fp!bits betaTail(bool upper, uint bits)(Fp!bits x, Fp!bits a, 
     in (!a.sign && !!a.coefficient && a.exponent != long.max)
     in (!b.sign && !!b.coefficient && b.exponent != long.max)
 {
+    alias S = ShapeTransform!bits.S;
+    return scaledBetaTail!(upper, bits)(x, S.from(a), S.from(b), limit);
+}
+
+package(mir.stat) Fp!bits scaledBetaTail(bool upper, uint bits)(Fp!bits x, ShapeTransform!bits.S a, ShapeTransform!bits.S b,
+    uint limit = 4096)
+{
     alias T = Fp!bits;
+    alias I = BetaIntegral!bits;
+    const one = I.S.from(T(1));
     if (!x.coefficient) return T(upper ? 1 : 0);
     if (position(x, T(1)) == 0) return T(upper ? 0 : 1);
-    if (position(a, T(1)) == 0 && position(b, T(1)) == 0)
+    if (I.compare(a, one) == 0 && I.compare(b, one) == 0)
     {
         import mir.stat.internal.fp_probability: fpProbabilityComplement;
         return upper ? fpProbabilityComplement(x) : x;
     }
     import mir.stat.internal.fp_location_scale: half;
-    if (position(a, b) == 0 && position(x, half!bits()) == 0) return half!bits();
-    alias I = BetaIntegral!bits;
-    auto integral = I(I.S.from(I.W(1)), limit);
+    if (I.compare(a, b) == 0 && position(x, half!bits()) == 0) return half!bits();
+    auto integral = I(one, limit);
     return integral.evaluate!upper(x, a, b);
 }
 
