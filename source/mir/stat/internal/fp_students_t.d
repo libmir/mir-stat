@@ -57,6 +57,7 @@ private struct StudentTwo(uint bits)
     alias Term = B.Term;
     alias Rank = UInt!(bits + 128);
     enum block = Rank(1) << (bits - 1);
+    enum end = (Rank(ulong.max) + 1) << (bits - 1);
 
     static Term term(T x)
     {
@@ -158,18 +159,26 @@ private struct StudentTwo(uint bits)
         return v;
     }
 
-    T rounded(Term fixed, Rank high) const
+    T rounded(bool inverse)(Term fixed, Rank high, bool negative) const
     {
         Rank low;
         while (low < high)
         {
             const rank = (low + high) >> 1;
-            const mid = Term(grid(rank, true), false, true);
-            const side = compare(fixed, mid);
+            const mid = Term(grid(rank, true), negative, true);
+            static if (inverse)
+            {
+                const cmp = compare(mid, fixed);
+                const side = negative ? cmp : -cmp;
+            }
+            else const side = compare(fixed, mid);
             if (side > 0 || (!side && rank.bt(0))) low = rank + 1;
             else high = rank;
         }
-        return low ? grid(low, false).finish!bits : T(0);
+        if (low == end) return T(negative, long.max, UInt!bits(0));
+        auto result = low ? grid(low, false).finish!bits : T(0);
+        result.sign = negative;
+        return result;
     }
 
     static T tail(bool upper)(T x, T location, T scale)
@@ -183,7 +192,17 @@ private struct StudentTwo(uint bits)
         const t = StudentTwo(location, scale);
         const observation = term(x);
         const oneRank = (Rank(1UL << 63) + 2 - bits) << (bits - 1);
-        return t.rounded(observation, oneRank);
+        return t.rounded!false(observation, oneRank, false);
+    }
+
+    static T quantile(T p, T location, T scale)
+    {
+        const t = StudentTwo(location, scale);
+        const probability = term(p);
+        const atZero = t.compare(Term.init, probability);
+        if (!atZero) return T(0);
+        const negative = atZero > 0;
+        return t.rounded!true(probability, end, negative);
     }
 }
 
@@ -235,4 +254,87 @@ package(mir.stat) Fp!bits studentDensity(bool logarithmic, uint bits)(Fp!bits x,
     if (!height.present || height.value.exponent + bits + 48 < exponentBias)
         return logarithmic ? T(false, long.max, UInt!bits(1)) : T(1);
     return t.integral.finishDensity!logarithmic(height);
+}
+
+package(mir.stat) Fp!bits studentQuantile(uint bits)(Fp!bits p, Fp!bits nu,
+    Fp!bits location, Fp!bits scale)
+{
+    alias T = Fp!bits;
+    alias C = StudentIntegral!bits;
+    alias I = C.I;
+    alias S = C.S;
+    const one = T(1);
+    if (!p.coefficient || !position(p, one)) return T(!p.coefficient, long.max, UInt!bits(0));
+    const midpoint = half!bits();
+    const side = position(p, midpoint);
+    if (!side) return location;
+    if (!position(nu, T(2))) return StudentTwo!bits.quantile(p, location, scale);
+    auto t = C(nu);
+    auto tail = side < 0 ? S.from(p) : distance!(C.B.work)(one, p);
+    auto center = distance!(C.B.work)(midpoint, p);
+    ++tail.exponent;
+    ++center.exponent;
+    const multiplier = S.from(scale);
+    T finish(S z) { return addOffset!bits(location, z.multiply(multiplier), side < 0); }
+
+    t.integral.prepareQuantile(t.a, t.b);
+
+    // Compare like quantities: a direct two-sided tail or a direct
+    // central mass. Both targets retain the input probability's bits.
+    bool below(S z, out bool lower)
+    {
+        I.Term mass;
+        bool central;
+        if (!t.betaMass(z, central, mass)) return false;
+        const goal = central ? center : tail;
+        const diff = C.B.combine(mass, I.neg(goal));
+        if (!diff.present || diff.value.exponent + bits + 80 < goal.exponent) return false;
+        lower = diff.negative == central;
+        return true;
+    }
+
+    const nan = T(false, long.max, UInt!bits(1));
+    const unit = t.integral.one;
+    S lo = unit, hi = unit;
+    bool upward;
+    if (!below(unit, upward)) return nan;
+    // Two finite Fp magnitudes and their ratio span fewer than 2^65
+    // binades. Past that bound the affine result saturates or is location.
+    for (uint k = 0; k <= 65; ++k)
+    {
+        const step = UInt!128(1) << k;
+        S trial = unit;
+        if (upward) trial.exponent += step;
+        else trial.exponent -= step;
+
+        bool lower;
+        if (!below(trial, lower)) return nan;
+        if (lower) lo = trial;
+        else hi = trial;
+        if (lower != upward) break;
+        if (k == 65) return finish(trial);
+    }
+    // Bisect binades before significands. Stop once both ends round to
+    // the same location-scale output, including cancellation at zero.
+    for (;;)
+    {
+        const left = finish(lo), right = finish(hi);
+        if (left == right) return left;
+        S trial;
+        if (hi.exponent - lo.exponent > UInt!128(1))
+        {
+            trial = unit;
+            trial.exponent = lo.exponent + ((hi.exponent - lo.exponent) >> 1);
+        }
+        else
+        {
+            trial = lo.add(hi);
+            --trial.exponent;
+            if (trial == lo || trial == hi) return nan;
+        }
+        bool lower;
+        if (!below(trial, lower)) return nan;
+        if (lower) lo = trial;
+        else hi = trial;
+    }
 }
