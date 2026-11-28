@@ -11,6 +11,7 @@ import mir.stat.distribution.beta_proportion;
 import mir.stat.distribution.binomial;
 import mir.stat.distribution.chi2;
 import mir.stat.distribution.exponential;
+import mir.stat.distribution.f;
 import mir.stat.distribution.hypergeometric;
 import mir.stat.distribution.laplace;
 import mir.stat.distribution.logistic;

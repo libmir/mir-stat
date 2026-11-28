@@ -7,6 +7,13 @@ ratio of two independent chi-squared variables, each divided by its degrees
 of freedom. Observations must be nonnegative. The inverse CDF accepts both
 probability endpoints.
 
+The $(D Fp) overloads support significands up to 512 bits. The two beta
+coordinates and their logarithms retain separate exponents. General tail
+evaluations allow up to 4096 iterations per expansion. The inverse compares
+direct tails at F rounding midpoints. Unresolved evaluations, including a
+general log density too close to zero to distinguish its significant bits,
+return NaN. Universal correct rounding is unproven.
+
 The special-value tables assume finite distribution parameters in the stated
 domain. Finite expressions are subject to floating-point rounding and range
 limits. Contract violations are not prescribed return values: disabling
@@ -313,6 +320,13 @@ version(mir_stat_test)
     const tiny = T(false, -2063, U(1UL << 63));
     assert(fCDF(T(1), huge, T(false, 2001, U(1))).isNaN);
     assert(fCCDF(huge, T(2), T(2)) == tiny);
+    // F(1,1) has survival (2/pi)*atan(1/sqrt(x)).
+    assert(fCCDF(huge, T(1), T(1)) == T(false, -1064, U(0xa2f9836e4e44152aUL)));
+    // For F(4,6), the upper tail is w^3*(4-3*w), w=3/(3+2*x).
+    assert(fCCDF(huge, T(4), T(6)) == T(false, -6060, U(0xd800000000000000UL)));
+    // Halving the denominator degrees puts the beta shape below the floor.
+    const floor = T(false, long.min, U(1));
+    assert(fCDF(floor, T(2), floor) == floor);
     assert(fCDF(tiny, T(2), T(2)) == tiny);
     assert(fCCDF(T(4), T(2), T(4)) == T(false, -67, U(0xe38e38e38e38e38eUL)));
     assert(fCDF(T(0.25), T(4), T(2)) == fCCDF(T(4), T(2), T(4)));
@@ -448,6 +462,8 @@ version(mir_stat_test)
     assert(fInvCDF(T(0.94921875), T(4), T(6)) == T(4.5));
     const adjacent = T(false, -64, UInt!64.max);
     assert(fInvCDF(adjacent, T(2), T(2)) == T(false, 0, UInt!64.max));
+    // ((1-p)^-32 - 1)/32 rounds to 2^2043.
+    assert(fInvCDF(adjacent, T(2), T(0.0625)) == T(false, 1980, UInt!64(1UL << 63)));
 }
 
 /++
@@ -602,6 +618,7 @@ version(mir_stat_test)
     assert(fPDF(1.5, 4.0, 6.0) == 0.25);
     assert(fPDF(T(0.5), T(4), T(2)) == T(0.5));
     const floor = T(false, long.min, U(1));
+    assert(fPDF(floor, T(2), floor) == T(false, -65, U(0xaaaaaaaaaaaaaaabUL)));
     // 3*x/2 is exactly halfway even on the normal grid; 3*log(1+x/2)
     // has the smaller magnitude. Exercise both sides of the tiny-r cutoff.
     foreach (int e; [-263, -293, -363])
@@ -622,6 +639,28 @@ version(mir_stat_test)
     // The height at one is 2^1000/sqrt(6*pi) to the displayed precision.
     assert(fPDF(T(1), T(false, 2000, U(1)), T(false, 2001, U(1))) ==
         T(false, 934, U(0xebdb7a97d62ad194UL)));
+}
+
+version(mir_stat_test_slow_numerics)
+@safe pure nothrow @nogc unittest
+{
+    import mir.bignum.fixed: UInt;
+    alias T = Fp!64;
+    alias U = UInt!64;
+    // MPFR log-gamma normalization and independent integration of the
+    // binomial series at the represented noninteger degrees. The target
+    // lies between the CDFs at the two bounding F quantile midpoints.
+    const x = T(false, -64, U(0xc000000000000001UL));
+    const p = T(false, -65, U.max);
+    const df1 = T(false, -61, U(0x9000000000000001UL));
+    const df2 = T(false, -61, U(0x97ffffffffffffffUL));
+    assert(fPDF(x, df1, df2) == T(false, -64, U(0x84478dc8908decb1UL)));
+    assert(fLPDF(x, df1, df2) == T(true, -64, U(0xa906d15d65201996UL)));
+    assert(fCDF(x, df1, df2) == T(false, -65, U(0xc6d404bfede9accbUL)));
+    assert(fCCDF(x, df1, df2) == T(false, -64, U(0x9c95fda0090b299bUL)));
+    assert(fInvCDF(p, df1, df2) == T(false, -64, U(0xfddab212c5d2cd86UL)));
+    // tan(pi*p/2)^2 differs from (pi*p/2)^2 by O(p^4).
+    assert(fInvCDF(T(false, -700, U(1)), T(1), T(1)) == T(false, -1462, U(0x9de9e64df22ef2d2UL)));
 }
 
 // For large degrees, remove cancellation between the beta normalization and

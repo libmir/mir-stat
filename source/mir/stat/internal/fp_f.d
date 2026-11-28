@@ -368,3 +368,15 @@ package(mir.stat) Fp!bits fQuantile(uint bits)(Fp!bits p, Fp!bits df1, Fp!bits d
     if (!low) return T(0);
     return low == end ? infinity : grid(low, false).finish!bits;
 }
+
+version(mir_stat_test)
+static if (size_t.sizeof == 4)
+@safe pure nothrow @nogc unittest
+{
+    alias T = Fp!32;
+    alias U = UInt!32;
+    const x = T(false, -32, U(0xc0000001));
+    const df1 = T(false, -29, U(0x90000001));
+    const df2 = T(false, -29, U(0x97ffffff));
+    assert(fTail!true(x, df1, df2) == T(false, -32, U(0x9c95fda0)));
+}
