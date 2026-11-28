@@ -29,6 +29,7 @@ $(BOOKTABLE ,
     $(TR $(TDNW $(SUBREF laplace, laplaceInvCDF)) $(TD Laplace Inverse CDF ))
     $(TR $(TDNW $(SUBREF log_normal, logNormalInvCDF)) $(TD Log-normal Inverse CDF ))
     $(TR $(TDNW $(SUBREF logistic, logisticInvCDF)) $(TD Logistic Inverse CDF ))
+    $(TR $(TDNW $(SUBREF noncentral_chi2, noncentralChi2InvCDF)) $(TD Noncentral Chi-squared Inverse CDF ))
     $(TR $(TDNW $(SUBREF normal, normalInvCDF)) $(TD Normal Inverse CDF ))
     $(TR $(TDNW $(SUBREF pareto, paretoInvCDF)) $(TD Pareto Inverse CDF ))
     $(TR $(TDNW $(SUBREF rayleigh, rayleighInvCDF)) $(TD Rayleigh Inverse CDF ))
@@ -92,6 +93,8 @@ public import mir.stat.distribution.log_normal: logNormalInvCDF;
 public import mir.stat.distribution.logistic: logisticInvCDF;
 ///
 public import mir.stat.distribution.negative_binomial: negativeBinomialInvCDF;
+///
+public import mir.stat.distribution.noncentral_chi2: noncentralChi2InvCDF;
 ///
 public import mir.stat.distribution.normal: normalInvCDF;
 ///
