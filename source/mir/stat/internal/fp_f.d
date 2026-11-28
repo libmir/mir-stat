@@ -6,6 +6,7 @@ module mir.stat.internal.fp_f;
 
 import mir.bignum.fixed: UInt;
 import mir.bignum.fp: Fp;
+import mir.stat.internal.fp_beta: BetaIntegral;
 import mir.stat.internal.fp_location_scale: addOffset, position;
 import mir.stat.internal.fp_scaled_probability: exponentBias;
 import mir.stat.internal.fp_shape_transform: ShapeTransform;
@@ -60,14 +61,12 @@ private struct FTransform(uint bits)
         const product = shape.multiply(growth);
         return addOffset!bits(T(0), numeratorUnit ? product : one.divide(product), false);
     }
-    struct Coordinates
-    {
-        S lower, upper, negLogLower, negLogUpper;
-    }
+
+    alias Point = BetaIntegral!bits.Point;
 
     // Divide the smaller weight by the larger before adding one. Both
     // coordinates and both negative logarithms retain their own exponents.
-    Coordinates coordinates(S x) const
+    Point coordinates(S x) const
     {
         const ax = a.multiply(x);
         const reflected = ax.exponent > b.exponent ||
@@ -81,8 +80,8 @@ private struct FTransform(uint bits)
         // threshold where forming 1+r would lose half the working bits.
         const logLarge = ratio.exponent + B.work / 2 < exponentBias
             ? ratio : S.from(B.logarithm(sum));
-        return reflected ? Coordinates(large, small, logLarge, logSmall)
-                         : Coordinates(small, large, logSmall, logLarge);
+        return reflected ? Point(large, small, logLarge, logSmall)
+                         : Point(small, large, logSmall, logLarge);
     }
 }
 
@@ -106,8 +105,72 @@ version(mir_stat_test)
     assert(F(floor, T(2)).unitQuantile(half, false) == T(0));
     const right = transform.coordinates(S.from(huge));
     const left = transform.coordinates(S.from(tiny));
-    assert(right.lower == left.upper && right.upper == left.lower);
-    assert(right.negLogLower == left.negLogUpper && right.negLogUpper == left.negLogLower);
-    assert(right.upper.finish!64 == S.from(tiny).finish!64);
-    assert(right.negLogLower.finish!64 == right.upper.finish!64);
+    assert(right.x == left.y && right.y == left.x);
+    assert(right.negLogX == left.negLogY && right.negLogY == left.negLogX);
+    assert(right.y.finish!64 == S.from(tiny).finish!64);
+    assert(right.negLogX.finish!64 == right.y.finish!64);
+}
+
+package(mir.stat) Fp!bits fTail(bool upper, uint bits)(Fp!bits x, Fp!bits df1, Fp!bits df2)
+{
+    alias T = Fp!bits;
+    alias I = BetaIntegral!bits;
+    if (x.isInfinity) return T(upper ? 0 : 1);
+    if (!x.coefficient) return T(upper ? 1 : 0);
+    const f = FTransform!bits(df1, df2);
+    const obs = I.S.from(x);
+    if (f.a == f.b && obs == f.one)
+    {
+        import mir.stat.internal.fp_location_scale: half;
+        return half!bits();
+    }
+    // At x=1 the transformed point is exactly the beta mean. With
+    // extremely concentrated unequal shapes, rounding that point can
+    // move it many standard deviations before integration begins.
+    if (obs == f.one && f.a.exponent > exponentBias + I.B.work &&
+        f.b.exponent > exponentBias + I.B.work)
+        return T(false, long.max, UInt!bits(1));
+    const p = f.coordinates(obs);
+    auto integral = I(f.one, 4096);
+    if (f.a == f.one && f.b == f.one)
+    {
+        I.S tail = upper ? p.y : p.x;
+        // The denominator 1+r is strictly greater than one even when
+        // r is below the working grid. Keep that side of a midpoint.
+        if (tail.exponent + I.B.work < exponentBias)
+            tail = I.B.withCorrection(tail, false);
+        return tail.finish!bits;
+    }
+    if (f.a == f.one || f.b == f.one)
+    {
+        const reflected = f.a == f.one;
+        const shape = reflected ? f.b : f.a;
+        if (shape == I.S.from(T(2)))
+        {
+            const base = reflected ? p.y : p.x;
+            const other = reflected ? p.x : p.y;
+            if (upper != reflected)
+                return other.multiply(f.one.add(base)).finish!bits;
+            // When the odds are tiny, base^2 = odds^2/(1+odds)^2
+            // lies strictly below odds^2. Keep that side of a midpoint.
+            const ax = f.a.multiply(obs);
+            const weight = reflected ? f.b : ax;
+            const opposite = reflected ? ax : f.b;
+            const odds = weight.divide(opposite);
+            if (odds.exponent + 3 * bits + 8 < exponentBias)
+                return I.B.withCorrection(odds.multiply(odds), false).finish!bits;
+            const z = weight.divide(weight.add(opposite));
+            return z.multiply(z).finish!bits;
+        }
+        const rate = reflected ? f.b.multiply(p.negLogY) : f.a.multiply(p.negLogX);
+        if (upper != reflected) return integral.oneMinusDecay(rate).finish!bits;
+        const tail = integral.fromLog(I.neg(rate));
+        return tail.present ? tail.value.finish!bits : T(0);
+    }
+    I.Term tail;
+    bool reflected;
+    if (!integral.directTail(f.a, f.b, p, reflected, tail))
+        return T(false, long.max, UInt!bits(1));
+    const complement = upper != reflected;
+    return tail.present ? addOffset!bits(T(complement ? 1 : 0), tail.value, complement) : T(complement ? 1 : 0);
 }

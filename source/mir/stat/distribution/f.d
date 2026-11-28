@@ -22,6 +22,8 @@ Copyright: 2022-3 Mir Stat Authors.
 
 module mir.stat.distribution.f;
 
+import mir.bignum.fp: Fp;
+import mir.stat.internal.fp_location_scale: position;
 import mir.internal.utility: isFloatingPoint;
 
 /++
@@ -148,6 +150,39 @@ unittest
 }
 
 /++
+Computes the F lower-tail probability in guarded extended precision.
+
+Params:
+    T = supported $(D Fp) type with at most 512 significand bits
+    x = nonnegative observation, including positive infinity
+    df1 = finite positive numerator degrees of freedom
+    df2 = finite positive denominator degrees of freedom
+
+Returns:
+    The lower-tail probability as $(D T). The result is zero at zero and one at positive infinity.
+    An unresolved guarded evaluation returns NaN.
++/
+@safe pure nothrow @nogc
+T fCDF(T)(const T x, const T df1, const T df2)
+    if (is(T == Fp!size, size_t size) && size <= 512)
+    in (!x.isNaN && (!x.sign || (!x.coefficient && !x.isInfinity)))
+    in (df1.exponent != long.max && !df1.sign && !!df1.coefficient)
+    in (df2.exponent != long.max && !df2.sign && !!df2.coefficient)
+{
+    import mir.stat.internal.fp_f: fTail;
+    return fTail!false(x, df1, df2);
+}
+
+///
+version(mir_stat_test)
+@safe pure nothrow @nogc unittest
+{
+    import mir.bignum.fp: Fp;
+    alias T = Fp!64;
+    assert(fCDF(T(1), T(4), T(4)) == T(0.5));
+}
+
+/++
 Computes the F complementary cumulative distribution function (CCDF).
 
 Returns the upper-tail probability $(D P(X > x)). Use this function directly
@@ -190,6 +225,68 @@ unittest
     0.75.fCCDF(1, 2).shouldApprox == 0.477767;
     0.25.fCCDF(0.5, 4).shouldApprox == 0.4816281;
     0.10.fCCDF(2, 1).shouldApprox == 0.9128709;
+}
+
+/++
+Computes the F strict upper-tail probability in guarded extended precision.
+
+Params:
+    T = supported $(D Fp) type with at most 512 significand bits
+    x = nonnegative observation, including positive infinity
+    df1 = finite positive numerator degrees of freedom
+    df2 = finite positive denominator degrees of freedom
+
+Returns:
+    The strict upper-tail probability as $(D T). The result is one at zero and zero at positive infinity.
+    An unresolved guarded evaluation returns NaN.
++/
+@safe pure nothrow @nogc
+T fCCDF(T)(const T x, const T df1, const T df2)
+    if (is(T == Fp!size, size_t size) && size <= 512)
+    in (!x.isNaN && (!x.sign || (!x.coefficient && !x.isInfinity)))
+    in (df1.exponent != long.max && !df1.sign && !!df1.coefficient)
+    in (df2.exponent != long.max && !df2.sign && !!df2.coefficient)
+{
+    import mir.stat.internal.fp_f: fTail;
+    return fTail!true(x, df1, df2);
+}
+
+///
+version(mir_stat_test)
+@safe pure nothrow @nogc unittest
+{
+    import mir.bignum.fp: Fp;
+    alias T = Fp!64;
+    assert(fCCDF(T(3), T(2), T(2)) == T(0.25));
+}
+
+version(mir_stat_test)
+@safe pure nothrow @nogc unittest
+{
+    import mir.bignum.fixed: UInt;
+    alias T = Fp!64;
+    alias U = UInt!64;
+    const infinity = T(false, long.max, U(0));
+    assert(fCDF(T(0), T(3), T(4)) == T(0));
+    assert(fCCDF(T(0), T(3), T(4)) == T(1));
+    assert(fCDF(infinity, T(3), T(4)) == T(1));
+    assert(fCCDF(infinity, T(3), T(4)) == T(0));
+    // The exact square (2*x)^2 is a midpoint; (1+2*x)^2 lowers the CDF.
+    const nearTie = T(false, -1033, U(0x100000001UL));
+    assert(fCDF(nearTie, T(4), T(2)) == T(false, -2063, U(0x8000000100000000UL)));
+    assert(fCCDF(T(0.5), T(4), T(2)) == T(0.75));
+    assert(fCCDF(T(3), T(2), T(6)) == T(0.125));
+    const huge = T(false, 2000, U(1));
+    const tiny = T(false, -2063, U(1UL << 63));
+    assert(fCDF(T(1), huge, T(false, 2001, U(1))).isNaN);
+    assert(fCCDF(huge, T(2), T(2)) == tiny);
+    assert(fCDF(tiny, T(2), T(2)) == tiny);
+    assert(fCCDF(T(4), T(2), T(4)) == T(false, -67, U(0xe38e38e38e38e38eUL)));
+    assert(fCDF(T(0.25), T(4), T(2)) == fCCDF(T(4), T(2), T(4)));
+    // At x=3/2 the transformed Beta(2,3) argument is exactly one half.
+    assert(fCDF(T(1.5), T(4), T(6)) == T(0.6875));
+    assert(fCCDF(T(1.5), T(4), T(6)) == T(0.3125));
+    assert(fCDF(1.5, 4.0, 6.0) == 0.6875);
 }
 
 /++
