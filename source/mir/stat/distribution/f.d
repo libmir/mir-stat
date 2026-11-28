@@ -7,6 +7,13 @@ ratio of two independent chi-squared variables, each divided by its degrees
 of freedom. Observations must be nonnegative. The inverse CDF accepts both
 probability endpoints.
 
+The $(D Fp) overloads support significands up to 512 bits. The two beta
+coordinates and their logarithms retain separate exponents. General tail
+evaluations allow up to 4096 iterations per expansion. The inverse compares
+direct tails at F rounding midpoints. Unresolved evaluations, including a
+general log density too close to zero to distinguish its significant bits,
+return NaN. Universal correct rounding is unproven.
+
 The special-value tables assume finite distribution parameters in the stated
 domain. Finite expressions are subject to floating-point rounding and range
 limits. Contract violations are not prescribed return values: disabling
@@ -22,6 +29,8 @@ Copyright: 2022-3 Mir Stat Authors.
 
 module mir.stat.distribution.f;
 
+import mir.bignum.fp: Fp;
+import mir.stat.internal.fp_location_scale: position;
 import mir.internal.utility: isFloatingPoint;
 
 /++
@@ -104,6 +113,39 @@ unittest
 }
 
 /++
+Computes the F density in guarded extended precision.
+
+Params:
+    T = supported $(D Fp) type with at most 512 significand bits
+    x = nonnegative observation, including positive infinity
+    df1 = finite positive numerator degrees of freedom
+    df2 = finite positive denominator degrees of freedom
+
+Returns:
+    The density as $(D T). At zero the density is infinity, one, or zero as df1 is below, equal to, or above two. At infinity it is zero.
+    An unresolved guarded evaluation returns NaN.
++/
+@safe pure nothrow @nogc
+T fPDF(T)(const T x, const T df1, const T df2)
+    if (is(T == Fp!size, size_t size) && size <= 512)
+    in (!x.isNaN && (!x.sign || (!x.coefficient && !x.isInfinity)))
+    in (df1.exponent != long.max && !df1.sign && !!df1.coefficient)
+    in (df2.exponent != long.max && !df2.sign && !!df2.coefficient)
+{
+    import mir.stat.internal.fp_f: fDensity;
+    return fDensity!false(x, df1, df2);
+}
+
+///
+version(mir_stat_test)
+@safe pure nothrow @nogc unittest
+{
+    import mir.bignum.fp: Fp;
+    alias T = Fp!64;
+    assert(fPDF(T(1), T(2), T(2)) == T(0.25));
+}
+
+/++
 Computes the F cumulative distribution function (CDF).
 
 Returns the lower-tail probability $(D P(X <= x)).
@@ -145,6 +187,39 @@ unittest
     0.75.fCDF(1, 2).shouldApprox == 0.522233;
     0.25.fCDF(0.5, 4).shouldApprox == 0.5183719;
     0.10.fCDF(2, 1).shouldApprox == 0.08712907;
+}
+
+/++
+Computes the F lower-tail probability in guarded extended precision.
+
+Params:
+    T = supported $(D Fp) type with at most 512 significand bits
+    x = nonnegative observation, including positive infinity
+    df1 = finite positive numerator degrees of freedom
+    df2 = finite positive denominator degrees of freedom
+
+Returns:
+    The lower-tail probability as $(D T). The result is zero at zero and one at positive infinity.
+    An unresolved guarded evaluation returns NaN.
++/
+@safe pure nothrow @nogc
+T fCDF(T)(const T x, const T df1, const T df2)
+    if (is(T == Fp!size, size_t size) && size <= 512)
+    in (!x.isNaN && (!x.sign || (!x.coefficient && !x.isInfinity)))
+    in (df1.exponent != long.max && !df1.sign && !!df1.coefficient)
+    in (df2.exponent != long.max && !df2.sign && !!df2.coefficient)
+{
+    import mir.stat.internal.fp_f: fTail;
+    return fTail!false(x, df1, df2);
+}
+
+///
+version(mir_stat_test)
+@safe pure nothrow @nogc unittest
+{
+    import mir.bignum.fp: Fp;
+    alias T = Fp!64;
+    assert(fCDF(T(1), T(4), T(4)) == T(0.5));
 }
 
 /++
@@ -190,6 +265,75 @@ unittest
     0.75.fCCDF(1, 2).shouldApprox == 0.477767;
     0.25.fCCDF(0.5, 4).shouldApprox == 0.4816281;
     0.10.fCCDF(2, 1).shouldApprox == 0.9128709;
+}
+
+/++
+Computes the F strict upper-tail probability in guarded extended precision.
+
+Params:
+    T = supported $(D Fp) type with at most 512 significand bits
+    x = nonnegative observation, including positive infinity
+    df1 = finite positive numerator degrees of freedom
+    df2 = finite positive denominator degrees of freedom
+
+Returns:
+    The strict upper-tail probability as $(D T). The result is one at zero and zero at positive infinity.
+    An unresolved guarded evaluation returns NaN.
++/
+@safe pure nothrow @nogc
+T fCCDF(T)(const T x, const T df1, const T df2)
+    if (is(T == Fp!size, size_t size) && size <= 512)
+    in (!x.isNaN && (!x.sign || (!x.coefficient && !x.isInfinity)))
+    in (df1.exponent != long.max && !df1.sign && !!df1.coefficient)
+    in (df2.exponent != long.max && !df2.sign && !!df2.coefficient)
+{
+    import mir.stat.internal.fp_f: fTail;
+    return fTail!true(x, df1, df2);
+}
+
+///
+version(mir_stat_test)
+@safe pure nothrow @nogc unittest
+{
+    import mir.bignum.fp: Fp;
+    alias T = Fp!64;
+    assert(fCCDF(T(3), T(2), T(2)) == T(0.25));
+}
+
+version(mir_stat_test)
+@safe pure nothrow @nogc unittest
+{
+    import mir.bignum.fixed: UInt;
+    alias T = Fp!64;
+    alias U = UInt!64;
+    const infinity = T(false, long.max, U(0));
+    assert(fCDF(T(0), T(3), T(4)) == T(0));
+    assert(fCCDF(T(0), T(3), T(4)) == T(1));
+    assert(fCDF(infinity, T(3), T(4)) == T(1));
+    assert(fCCDF(infinity, T(3), T(4)) == T(0));
+    // The exact square (2*x)^2 is a midpoint; (1+2*x)^2 lowers the CDF.
+    const nearTie = T(false, -1033, U(0x100000001UL));
+    assert(fCDF(nearTie, T(4), T(2)) == T(false, -2063, U(0x8000000100000000UL)));
+    assert(fCCDF(T(0.5), T(4), T(2)) == T(0.75));
+    assert(fCCDF(T(3), T(2), T(6)) == T(0.125));
+    const huge = T(false, 2000, U(1));
+    const tiny = T(false, -2063, U(1UL << 63));
+    assert(fCDF(T(1), huge, T(false, 2001, U(1))).isNaN);
+    assert(fCCDF(huge, T(2), T(2)) == tiny);
+    // F(1,1) has survival (2/pi)*atan(1/sqrt(x)).
+    assert(fCCDF(huge, T(1), T(1)) == T(false, -1064, U(0xa2f9836e4e44152aUL)));
+    // For F(4,6), the upper tail is w^3*(4-3*w), w=3/(3+2*x).
+    assert(fCCDF(huge, T(4), T(6)) == T(false, -6060, U(0xd800000000000000UL)));
+    // Halving the denominator degrees puts the beta shape below the floor.
+    const floor = T(false, long.min, U(1));
+    assert(fCDF(floor, T(2), floor) == floor);
+    assert(fCDF(tiny, T(2), T(2)) == tiny);
+    assert(fCCDF(T(4), T(2), T(4)) == T(false, -67, U(0xe38e38e38e38e38eUL)));
+    assert(fCDF(T(0.25), T(4), T(2)) == fCCDF(T(4), T(2), T(4)));
+    // At x=3/2 the transformed Beta(2,3) argument is exactly one half.
+    assert(fCDF(T(1.5), T(4), T(6)) == T(0.6875));
+    assert(fCCDF(T(1.5), T(4), T(6)) == T(0.3125));
+    assert(fCDF(1.5, 4.0, 6.0) == 0.6875);
 }
 
 /++
@@ -265,6 +409,61 @@ unittest
     0.08712907.fInvCDF(2, 1).shouldApprox == 0.10;
     0.0.fInvCDF(1, 1).shouldApprox == 0;
     1.0.fInvCDF(1, 1).shouldApprox == double.infinity;
+}
+
+/++
+Computes the F quantile in guarded extended precision.
+
+Params:
+    T = supported $(D Fp) type with at most 512 significand bits
+    p = cumulative probability in the closed unit interval
+    df1 = finite positive numerator degrees of freedom
+    df2 = finite positive denominator degrees of freedom
+
+Returns:
+    The quantile as $(D T). Zero probability gives zero and unit probability gives positive infinity.
+    An unresolved guarded evaluation returns NaN.
++/
+@safe pure nothrow @nogc
+T fInvCDF(T)(const T p, const T df1, const T df2)
+    if (is(T == Fp!size, size_t size) && size <= 512)
+    in (p.exponent != long.max && (!p.sign || !p.coefficient) && position(p, T(1)) <= 0)
+    in (df1.exponent != long.max && !df1.sign && !!df1.coefficient)
+    in (df2.exponent != long.max && !df2.sign && !!df2.coefficient)
+{
+    import mir.stat.internal.fp_f: fQuantile;
+    return fQuantile(p, df1, df2);
+}
+
+///
+version(mir_stat_test)
+@safe pure nothrow @nogc unittest
+{
+    import mir.bignum.fp: Fp;
+    alias T = Fp!64;
+    assert(fInvCDF(T(0.75), T(2), T(2)) == T(3));
+}
+
+version(mir_stat_test)
+@safe pure nothrow @nogc unittest
+{
+    import mir.bignum.fixed: UInt;
+    alias T = Fp!64;
+    assert(fInvCDF(T(0), T(3), T(4)) == T(0));
+    assert(fInvCDF(T(1), T(3), T(4)).isInfinity);
+    assert(fInvCDF(T(0.5), T(3), T(3)) == T(1));
+    // 2*p^2 is a midpoint; division by (1-p^2) rounds the quantile up.
+    const nearTie = T(false, -1033, UInt!64(0x100000001UL));
+    assert(fInvCDF(nearTie, T(1), T(2)) == T(false, -2064, UInt!64(0x8000000100000001UL)));
+    assert(fInvCDF(T(0.5), T(1), T(2)) == T(false, -64, UInt!64(0xaaaaaaaaaaaaaaabUL)));
+    // Beta(2,3) at one half is 11/16; exchanging degrees inverts F.
+    assert(fInvCDF(T(0.6875), T(4), T(6)) == T(1.5));
+    assert(fInvCDF(T(0.3125), T(6), T(4)) == T(false, -64, UInt!64(0xaaaaaaaaaaaaaaabUL)));
+    assert(fInvCDF(T(0.94921875), T(4), T(6)) == T(4.5));
+    const adjacent = T(false, -64, UInt!64.max);
+    assert(fInvCDF(adjacent, T(2), T(2)) == T(false, 0, UInt!64.max));
+    // ((1-p)^-32 - 1)/32 rounds to 2^2043.
+    assert(fInvCDF(adjacent, T(2), T(0.0625)) == T(false, 1980, UInt!64(1UL << 63)));
 }
 
 /++
@@ -368,6 +567,101 @@ unittest
     0.00.fLPDF(1, 3).shouldApprox == double.infinity;
 }
 
+
+/++
+Computes the F natural logarithm of the density in guarded extended precision.
+
+Params:
+    T = supported $(D Fp) type with at most 512 significand bits
+    x = nonnegative observation, including positive infinity
+    df1 = finite positive numerator degrees of freedom
+    df2 = finite positive denominator degrees of freedom
+
+Returns:
+    The natural logarithm of the density as $(D T). At zero the limit is positive infinity, zero, or negative infinity as df1 is below, equal to, or above two. At infinity it is negative infinity.
+    An unresolved guarded evaluation returns NaN.
++/
+@safe pure nothrow @nogc
+T fLPDF(T)(const T x, const T df1, const T df2)
+    if (is(T == Fp!size, size_t size) && size <= 512)
+    in (!x.isNaN && (!x.sign || (!x.coefficient && !x.isInfinity)))
+    in (df1.exponent != long.max && !df1.sign && !!df1.coefficient)
+    in (df2.exponent != long.max && !df2.sign && !!df2.coefficient)
+{
+    import mir.stat.internal.fp_f: fDensity;
+    return fDensity!true(x, df1, df2);
+}
+
+///
+version(mir_stat_test)
+@safe pure nothrow @nogc unittest
+{
+    import mir.bignum.fp: Fp;
+    alias T = Fp!64;
+    assert(fLPDF(T(0), T(2), T(4)) == T(0));
+}
+
+version(mir_stat_test)
+@safe pure nothrow @nogc unittest
+{
+    import mir.bignum.fixed: UInt;
+    alias T = Fp!64;
+    alias U = UInt!64;
+    const infinity = T(false, long.max, U(0));
+    assert(fPDF(T(0), T(1), T(5)).isInfinity);
+    assert(fPDF(T(0), T(2), T(5)) == T(1));
+    assert(fPDF(T(0), T(3), T(5)) == T(0));
+    assert(fLPDF(T(0), T(3), T(5)) == T(true, long.max, U(0)));
+    assert(fPDF(infinity, T(4), T(5)) == T(0));
+    assert(fLPDF(infinity, T(4), T(5)).sign);
+    assert(fPDF(T(1.5), T(4), T(6)) == T(0.25));
+    assert(fPDF(1.5, 4.0, 6.0) == 0.25);
+    assert(fPDF(T(0.5), T(4), T(2)) == T(0.5));
+    const floor = T(false, long.min, U(1));
+    assert(fPDF(floor, T(2), floor) == T(false, -65, U(0xaaaaaaaaaaaaaaabUL)));
+    // 3*x/2 is exactly halfway even on the normal grid; 3*log(1+x/2)
+    // has the smaller magnitude. Exercise both sides of the tiny-r cutoff.
+    foreach (int e; [-263, -293, -363])
+    {
+        const x = T(false, e, U(0x8000000000000001UL));
+        assert(fLPDF(x, T(2), T(4)) == T(true, e, U(0xc000000000000001UL)));
+    }
+    // (b+1)*x/b = 1.5 units at the floor; log1p puts the result below the tie.
+    assert(fLPDF(floor, T(2), T(4)) == T(true, long.min, U(1)));
+    assert(fLPDF(floor, T(2), T(2)) == T(true, long.min, U(2)));
+    // At x=a=2^-1000, log(a/x)=0 and the leading term is 2*a*log(a).
+    const tiny = T(false, -1000, U(1));
+    const degrees = T(false, -999, U(1));
+    assert(fLPDF(tiny, degrees, T(2)) == T(true, -1053, U(0xad496b6802e49cd2UL)));
+    const nearerZero = T(false, -1001, U(1));
+    assert(fLPDF(nearerZero, degrees, degrees).isNaN);
+    assert(fPDF(nearerZero, degrees, degrees) == T(1));
+    // The height at one is 2^1000/sqrt(6*pi) to the displayed precision.
+    assert(fPDF(T(1), T(false, 2000, U(1)), T(false, 2001, U(1))) ==
+        T(false, 934, U(0xebdb7a97d62ad194UL)));
+}
+
+version(mir_stat_test_slow_numerics)
+@safe pure nothrow @nogc unittest
+{
+    import mir.bignum.fixed: UInt;
+    alias T = Fp!64;
+    alias U = UInt!64;
+    // MPFR log-gamma normalization and independent integration of the
+    // binomial series at the represented noninteger degrees. The target
+    // lies between the CDFs at the two bounding F quantile midpoints.
+    const x = T(false, -64, U(0xc000000000000001UL));
+    const p = T(false, -65, U.max);
+    const df1 = T(false, -61, U(0x9000000000000001UL));
+    const df2 = T(false, -61, U(0x97ffffffffffffffUL));
+    assert(fPDF(x, df1, df2) == T(false, -64, U(0x84478dc8908decb1UL)));
+    assert(fLPDF(x, df1, df2) == T(true, -64, U(0xa906d15d65201996UL)));
+    assert(fCDF(x, df1, df2) == T(false, -65, U(0xc6d404bfede9accbUL)));
+    assert(fCCDF(x, df1, df2) == T(false, -64, U(0x9c95fda0090b299bUL)));
+    assert(fInvCDF(p, df1, df2) == T(false, -64, U(0xfddab212c5d2cd86UL)));
+    // tan(pi*p/2)^2 differs from (pi*p/2)^2 by O(p^4).
+    assert(fInvCDF(T(false, -700, U(1)), T(1), T(1)) == T(false, -1462, U(0x9de9e64df22ef2d2UL)));
+}
 
 // For large degrees, remove cancellation between the beta normalization and
 // density terms by centering at x=1. Keep all arithmetic in the input type.

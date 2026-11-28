@@ -14,7 +14,7 @@ import mir.stat.internal.fp_shape_transform: ShapeTransform;
 
 @safe pure nothrow @nogc:
 
-private struct BetaIntegral(uint bits)
+package(mir.stat) struct BetaIntegral(uint bits)
 {
     alias T = Fp!bits;
     alias B = ShapeTransform!bits;
