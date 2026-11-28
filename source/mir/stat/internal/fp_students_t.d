@@ -210,3 +210,29 @@ package(mir.stat) Fp!bits studentTail(bool upper, uint bits)(Fp!bits x, Fp!bits 
     --mass.value.exponent;
     return addOffset!bits(base, mass.value, central == small);
 }
+
+package(mir.stat) Fp!bits studentDensity(bool logarithmic, uint bits)(Fp!bits x, Fp!bits nu,
+    Fp!bits location, Fp!bits scale)
+{
+    alias T = Fp!bits;
+    alias C = StudentIntegral!bits;
+    alias I = C.I;
+    if (x.isNaN) return x;
+    if (x.isInfinity) return logarithmic ? T(true, long.max, UInt!bits(0)) : T(0);
+    auto t = C(nu);
+    const one = t.integral.one;
+    const anchor = t.point(one);
+    // At |z|=1 the beta prefactor equals the standard t density.
+    // Recover the modal height there, then apply the scale and decay.
+    const power = t.a.add(t.b);
+    auto height = C.B.combineThree(t.integral.front(t.a, t.b, anchor),
+        I.pos(power.multiply(anchor.negLogX)), I.signedValue(C.B.logarithm(C.S.from(scale)), true));
+    if (position(x, location))
+    {
+        const z = distance!(C.B.work)(x, location).divide(C.S.from(scale));
+        height = C.B.combine(height, I.neg(power.multiply(t.point(z).negLogX)));
+    }
+    if (!height.present || height.value.exponent + bits + 48 < exponentBias)
+        return logarithmic ? T(false, long.max, UInt!bits(1)) : T(1);
+    return t.integral.finishDensity!logarithmic(height);
+}
