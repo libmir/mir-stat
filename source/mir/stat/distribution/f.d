@@ -398,6 +398,58 @@ unittest
 }
 
 /++
+Computes the F quantile in guarded extended precision.
+
+Params:
+    T = supported $(D Fp) type with at most 512 significand bits
+    p = cumulative probability in the closed unit interval
+    df1 = finite positive numerator degrees of freedom
+    df2 = finite positive denominator degrees of freedom
+
+Returns:
+    The quantile as $(D T). Zero probability gives zero and unit probability gives positive infinity.
+    An unresolved guarded evaluation returns NaN.
++/
+@safe pure nothrow @nogc
+T fInvCDF(T)(const T p, const T df1, const T df2)
+    if (is(T == Fp!size, size_t size) && size <= 512)
+    in (p.exponent != long.max && (!p.sign || !p.coefficient) && position(p, T(1)) <= 0)
+    in (df1.exponent != long.max && !df1.sign && !!df1.coefficient)
+    in (df2.exponent != long.max && !df2.sign && !!df2.coefficient)
+{
+    import mir.stat.internal.fp_f: fQuantile;
+    return fQuantile(p, df1, df2);
+}
+
+///
+version(mir_stat_test)
+@safe pure nothrow @nogc unittest
+{
+    import mir.bignum.fp: Fp;
+    alias T = Fp!64;
+    assert(fInvCDF(T(0.75), T(2), T(2)) == T(3));
+}
+
+version(mir_stat_test)
+@safe pure nothrow @nogc unittest
+{
+    import mir.bignum.fixed: UInt;
+    alias T = Fp!64;
+    assert(fInvCDF(T(0), T(3), T(4)) == T(0));
+    assert(fInvCDF(T(1), T(3), T(4)).isInfinity);
+    assert(fInvCDF(T(0.5), T(3), T(3)) == T(1));
+    // 2*p^2 is a midpoint; division by (1-p^2) rounds the quantile up.
+    const nearTie = T(false, -1033, UInt!64(0x100000001UL));
+    assert(fInvCDF(nearTie, T(1), T(2)) == T(false, -2064, UInt!64(0x8000000100000001UL)));
+    assert(fInvCDF(T(0.5), T(1), T(2)) == T(false, -64, UInt!64(0xaaaaaaaaaaaaaaabUL)));
+    // Beta(2,3) at one half is 11/16; exchanging degrees inverts F.
+    assert(fInvCDF(T(0.6875), T(4), T(6)) == T(1.5));
+    assert(fInvCDF(T(0.3125), T(6), T(4)) == T(false, -64, UInt!64(0xaaaaaaaaaaaaaaabUL)));
+    const adjacent = T(false, -64, UInt!64.max);
+    assert(fInvCDF(adjacent, T(2), T(2)) == T(false, 0, UInt!64.max));
+}
+
+/++
 Computes the F log probability density function (LPDF).
 
 Returns the natural logarithm of the density.

@@ -35,12 +35,26 @@ private struct FTransform(uint bits)
     {
         import mir.stat.internal.fp_probability_log: ProbabilityLog;
         import mir.stat.internal.fp_scaled_probability: scaledDecay;
-        import mir.stat.internal.fp_location_scale: distance;
+        import mir.stat.internal.fp_location_scale: distance, half;
         const probability = S.from(p);
         if (a == one && b == one)
         {
             const complement = distance!(B.work)(T(1), p);
             return addOffset!bits(T(0), probability.divide(complement), false);
+        }
+        if (!numeratorUnit && a == S.from(half!bits()))
+        {
+            // Q(p) = 2*p^2/(1-p^2). The square is exact. Below the
+            // separation of its output midpoints only the positive side
+            // of the denominator correction can affect rounding.
+            const square = probability.multiply(probability);
+            S odds;
+            if (square.exponent + 2 * bits + 8 < exponentBias)
+                odds = B.withCorrection(square, true);
+            else
+                odds = square.divide(B.combine(B.Term(one, false, true), B.Term(square, true, true)).value);
+            ++odds.exponent;
+            return addOffset!bits(T(0), odds, false);
         }
         const logTarget = numeratorUnit ? ProbabilityLog!bits.complement(p) : ProbabilityLog!bits.probability(p);
         auto magnitude = S.from(logTarget.fraction);
@@ -228,4 +242,95 @@ package(mir.stat) Fp!bits fDensity(bool logarithmic, uint bits)(Fp!bits x, Fp!bi
     if (!height.present || height.value.exponent + bits + 48 < exponentBias)
         return logarithmic ? T(false, long.max, UInt!bits(1)) : T(1);
     return integral.finishDensity!logarithmic(height);
+}
+
+package(mir.stat) Fp!bits fQuantile(uint bits)(Fp!bits p, Fp!bits df1, Fp!bits df2)
+{
+    import mir.stat.internal.fp_location_scale: distance, half;
+    alias T = Fp!bits;
+    alias I = BetaIntegral!bits;
+    alias S = I.S;
+    alias Rank = UInt!(bits + 128);
+    const infinity = T(false, long.max, UInt!bits(0));
+    if (!p.coefficient) return T(0);
+    if (position(p, T(1)) == 0) return infinity;
+    const f = FTransform!bits(df1, df2);
+    if (f.a == f.one || f.b == f.one) return f.unitQuantile(p, f.a == f.one);
+    if (f.a == f.b && position(p, half!bits()) == 0) return T(1);
+
+    auto integral = I(f.one, 4096);
+    integral.prepareQuantile(f.a, f.b);
+    const lowerTarget = S.from(p);
+    const upperTarget = distance!(I.B.work)(T(1), p);
+    const nan = T(false, long.max, UInt!bits(1));
+    enum block = Rank(1) << (bits - 1);
+    const end = (Rank(ulong.max) + 1) << (bits - 1);
+    // Rank zero is zero; end represents overflow. A midpoint carries
+    // one additional significand bit, even below the first subnormal.
+    S grid(Rank rank, bool midpoint)
+    {
+        const binade = rank >> (bits - 1);
+        auto c = (rank & (block - 1)).toSize!(bits + 64);
+        if (binade) c |= block.toSize!(bits + 64);
+        if (midpoint) c = (c << 1) + 1;
+        auto value = S.from(Fp!(bits + 64)(c));
+        value.exponent -= 1UL << 63;
+        if (binade) value.exponent += binade.toSize!128 - 1;
+        if (midpoint) --value.exponent;
+        return value;
+    }
+    bool below(Rank rank, out bool smaller)
+    {
+        const point = f.coordinates(grid(rank, true));
+        I.Term tail;
+        bool upper;
+        if (!integral.directTail(f.a, f.b, point, upper, tail)) return false;
+        const goal = upper ? upperTarget : lowerTarget;
+        const diff = I.B.combine(tail, I.neg(goal));
+        if (!diff.present || diff.value.exponent + bits + 64 < goal.exponent) return false;
+        smaller = diff.negative != upper;
+        return true;
+    }
+
+    // Start at one and expand by binades in the required direction.
+    // This avoids dozens of extreme tail evaluations for ordinary inputs.
+    const center = (Rank(1UL << 63) + 2 - bits) << (bits - 1);
+    Rank low, high = end, stride = block;
+    Rank rank = center;
+    bool upward;
+    if (!below(rank, upward)) return nan;
+    while (true)
+    {
+        if (upward)
+        {
+            low = rank + 1;
+            if (stride >= end - center) break;
+            rank = center + stride;
+        }
+        else
+        {
+            high = rank;
+            if (stride >= center) break;
+            rank = center - stride;
+        }
+        bool smaller;
+        if (!below(rank, smaller)) return nan;
+        if (smaller != upward)
+        {
+            if (smaller) low = rank + 1;
+            else high = rank;
+            break;
+        }
+        stride <<= 1;
+    }
+    while (low < high)
+    {
+        rank = (low + high) >> 1;
+        bool smaller;
+        if (!below(rank, smaller)) return nan;
+        if (smaller) low = rank + 1;
+        else high = rank;
+    }
+    if (!low) return T(0);
+    return low == end ? infinity : grid(low, false).finish!bits;
 }
