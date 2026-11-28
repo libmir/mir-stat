@@ -445,6 +445,7 @@ version(mir_stat_test)
     // Beta(2,3) at one half is 11/16; exchanging degrees inverts F.
     assert(fInvCDF(T(0.6875), T(4), T(6)) == T(1.5));
     assert(fInvCDF(T(0.3125), T(6), T(4)) == T(false, -64, UInt!64(0xaaaaaaaaaaaaaaabUL)));
+    assert(fInvCDF(T(0.94921875), T(4), T(6)) == T(4.5));
     const adjacent = T(false, -64, UInt!64.max);
     assert(fInvCDF(adjacent, T(2), T(2)) == T(false, 0, UInt!64.max));
 }
@@ -601,7 +602,23 @@ version(mir_stat_test)
     assert(fPDF(1.5, 4.0, 6.0) == 0.25);
     assert(fPDF(T(0.5), T(4), T(2)) == T(0.5));
     const floor = T(false, long.min, U(1));
+    // 3*x/2 is exactly halfway even on the normal grid; 3*log(1+x/2)
+    // has the smaller magnitude. Exercise both sides of the tiny-r cutoff.
+    foreach (int e; [-263, -293, -363])
+    {
+        const x = T(false, e, U(0x8000000000000001UL));
+        assert(fLPDF(x, T(2), T(4)) == T(true, e, U(0xc000000000000001UL)));
+    }
+    // (b+1)*x/b = 1.5 units at the floor; log1p puts the result below the tie.
+    assert(fLPDF(floor, T(2), T(4)) == T(true, long.min, U(1)));
     assert(fLPDF(floor, T(2), T(2)) == T(true, long.min, U(2)));
+    // At x=a=2^-1000, log(a/x)=0 and the leading term is 2*a*log(a).
+    const tiny = T(false, -1000, U(1));
+    const degrees = T(false, -999, U(1));
+    assert(fLPDF(tiny, degrees, T(2)) == T(true, -1053, U(0xad496b6802e49cd2UL)));
+    const nearerZero = T(false, -1001, U(1));
+    assert(fLPDF(nearerZero, degrees, degrees).isNaN);
+    assert(fPDF(nearerZero, degrees, degrees) == T(1));
     // The height at one is 2^1000/sqrt(6*pi) to the displayed precision.
     assert(fPDF(T(1), T(false, 2000, U(1)), T(false, 2001, U(1))) ==
         T(false, 934, U(0xebdb7a97d62ad194UL)));

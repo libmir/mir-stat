@@ -90,10 +90,16 @@ private struct FTransform(uint bits)
         const small = ratio.divide(sum);
         const large = one.divide(sum);
         const logSmall = S.from(B.logarithm(small));
-        // log(1+r) = r*(1+O(r)). Use the linear term below the
-        // threshold where forming 1+r would lose half the working bits.
-        const logLarge = ratio.exponent + B.work / 2 < exponentBias
-            ? ratio : S.from(B.logarithm(sum));
+        // Below this threshold, the quadratic term retains the relative
+        // working precision of log(1+r) even when 1+r rounds to one.
+        S logLarge;
+        if (ratio.exponent + B.work / 2 < exponentBias)
+        {
+            auto halfSquare = ratio.multiply(ratio);
+            --halfSquare.exponent;
+            logLarge = B.combine(B.Term(ratio, false, true), B.Term(halfSquare, true, true)).value;
+        }
+        else logLarge = S.from(B.logarithm(sum));
         return reflected ? Point(large, small, logLarge, logSmall)
                          : Point(small, large, logSmall, logLarge);
     }
@@ -125,7 +131,7 @@ version(mir_stat_test)
     assert(right.negLogX.finish!64 == right.y.finish!64);
 }
 
-package(mir.stat) Fp!bits fTail(bool upper, uint bits)(Fp!bits x, Fp!bits df1, Fp!bits df2)
+package(mir.stat) Fp!bits fTail(bool upper, uint bits)(Fp!bits x, Fp!bits df1, Fp!bits df2, uint limit = 4096)
 {
     alias T = Fp!bits;
     alias I = BetaIntegral!bits;
@@ -145,7 +151,7 @@ package(mir.stat) Fp!bits fTail(bool upper, uint bits)(Fp!bits x, Fp!bits df1, F
         f.b.exponent > exponentBias + I.B.work)
         return T(false, long.max, UInt!bits(1));
     const p = f.coordinates(obs);
-    auto integral = I(f.one, 4096);
+    auto integral = I(f.one, limit);
     if (f.a == f.one && f.b == f.one)
     {
         I.S tail = upper ? p.y : p.x;
@@ -189,6 +195,13 @@ package(mir.stat) Fp!bits fTail(bool upper, uint bits)(Fp!bits x, Fp!bits df1, F
     return tail.present ? addOffset!bits(T(complement ? 1 : 0), tail.value, complement) : T(complement ? 1 : 0);
 }
 
+version(mir_stat_test)
+@safe pure nothrow @nogc unittest
+{
+    alias T = Fp!64;
+    assert(fTail!false(T(1), T(3), T(5), 0).isNaN);
+}
+
 package(mir.stat) Fp!bits fDensity(bool logarithmic, uint bits)(Fp!bits x, Fp!bits df1, Fp!bits df2)
 {
     alias T = Fp!bits;
@@ -211,10 +224,31 @@ package(mir.stat) Fp!bits fDensity(bool logarithmic, uint bits)(Fp!bits x, Fp!bi
         // For df1=2 the log density is -(b+1)*log(1+x/b).
         static if (!logarithmic)
             if (f.b == f.one) return p.y.multiply(p.y).finish!bits;
+        static if (logarithmic)
+        {
+            // Below this cutoff, only an exact midpoint of x*(b+1)/b
+            // can change the rounded result. Its denominator has at most
+            // bits significant bits, and the first omitted term is negative.
+            if (p.negLogY.exponent + 3 * bits + 32 < exponentBias &&
+                f.b.exponent + bits + 16 > exponentBias && f.b.exponent < exponentBias + bits + 16)
+            {
+                const linear = obs.multiply(f.b.add(f.one)).divide(f.b);
+                return addOffset!bits(T(0), B.withCorrection(linear, false), true);
+            }
+        }
         return integral.finishDensity!logarithmic(I.neg(f.b.add(f.one).multiply(p.negLogY)));
     }
 
     I.Term height;
+    if (f.b == f.one && f.a.exponent < exponentBias && obs.exponent < exponentBias)
+    {
+        // At x=a the leading log(a/x) vanishes. Keep the much smaller
+        // terms a*log(a*x) and -(a+1)*log(1+a*x) on their own scales.
+        const ratio = I.signedValue(B.logarithm(f.a.divide(obs)));
+        height = B.combineThree(ratio, I.neg(f.a.multiply(I.S.from(B.logarithm(f.a.multiply(obs))))),
+            I.neg(f.a.add(f.one).multiply(p.negLogY)));
+        return integral.finishDensity!logarithmic(height);
+    }
     if (f.b == f.one)
     {
         // Reciprocal F density, including the 1/x^2 Jacobian.
