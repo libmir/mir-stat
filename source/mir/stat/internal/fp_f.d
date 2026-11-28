@@ -78,30 +78,9 @@ private struct FTransform(uint bits)
 
     alias Point = BetaIntegral!bits.Point;
 
-    // Divide the smaller weight by the larger before adding one. Both
-    // coordinates and both negative logarithms retain their own exponents.
     Point coordinates(S x) const
     {
-        const ax = a.multiply(x);
-        const reflected = ax.exponent > b.exponent ||
-            (ax.exponent == b.exponent && ax.fraction.coefficient > b.fraction.coefficient);
-        const ratio = reflected ? b.divide(ax) : ax.divide(b);
-        const sum = one.add(ratio);
-        const small = ratio.divide(sum);
-        const large = one.divide(sum);
-        const logSmall = S.from(B.logarithm(small));
-        // Below this threshold, the quadratic term retains the relative
-        // working precision of log(1+r) even when 1+r rounds to one.
-        S logLarge;
-        if (ratio.exponent + B.work / 2 < exponentBias)
-        {
-            auto halfSquare = ratio.multiply(ratio);
-            --halfSquare.exponent;
-            logLarge = B.combine(B.Term(ratio, false, true), B.Term(halfSquare, true, true)).value;
-        }
-        else logLarge = S.from(B.logarithm(sum));
-        return reflected ? Point(large, small, logLarge, logSmall)
-                         : Point(small, large, logSmall, logLarge);
+        return BetaIntegral!bits.weightedPoint(a.multiply(x), b, one);
     }
 }
 

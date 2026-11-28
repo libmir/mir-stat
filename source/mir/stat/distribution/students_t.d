@@ -11,6 +11,15 @@ for $(D nu > 1). For finite $(D nu > 2), the standard deviation is
 $(D stdDev * sqrt(nu / (nu - 2))). Thus the scale parameter is not generally
 the standard deviation.
 
+The $(D Fp) overloads support significands up to 512 bits. They retain the
+squared standardized displacement and both incomplete-beta coordinates on
+separate exponents. One degree uses Cauchy and infinite degrees use normal.
+At two degrees the tails and quantiles use exact algebraic comparisons at
+output rounding midpoints. General incomplete-beta expansions allow 4096
+updates. General inversion compares direct central or tail probabilities and
+rounds the location-scale bracket on the output grid. An unresolved evaluation returns NaN. These
+guarded calculations do not establish universal correct rounding.
+
 The special-value tables assume parameters in the stated domain. Finite
 expressions are subject to floating-point rounding and range limits.
 Contract violations are not prescribed return values: disabling contracts
@@ -29,6 +38,9 @@ module mir.stat.distribution.students_t;
 import mir.stat.internal.standardize: standardize, logDistance;
 
 import mir.internal.utility: isFloatingPoint;
+import mir.bignum.fp: Fp;
+import mir.stat.internal.fp_location_scale: position;
+import mir.stat.internal.fp_probability: fpProbabilityValid;
 
 /++
 Computes the Student's t probability density function (PDF).
@@ -181,6 +193,61 @@ unittest
     assert(studentsTInvCDF(0.5, 1.0, 3.0, 2.0) == 3.0);
     assert(studentsTInvCDF(0.0, 1.0) == -double.infinity);
     assert(studentsTInvCDF(1.0, 1.0) == double.infinity);
+}
+
+/++
+Computes the Student's t density in guarded extended precision.
+
+Params:
+    T = supported $(D Fp) type with at most 512 significand bits
+    x = observation, which may be infinite or NaN
+    nu = positive degrees of freedom, including positive infinity for the normal limit
+
+Returns:
+    The density as $(D T); signed infinity gives zero. An unresolved evaluation returns NaN.
++/
+@safe pure nothrow @nogc
+T studentsTPDF(T)(const T x, const T nu)
+    if (is(T == Fp!size, size_t size) && size <= 512)
+{
+    return studentsTPDF(x, nu, T(0), T(1));
+}
+
+/++
+Computes the Student's t density in guarded extended precision.
+
+Params:
+    T = supported $(D Fp) type with at most 512 significand bits
+    x = observation, which may be infinite or NaN
+    nu = positive degrees of freedom, including positive infinity for the normal limit
+    mean = finite location
+    stdDev = positive finite scale
+
+Returns:
+    The density as $(D T); signed infinity gives zero. An unresolved evaluation returns NaN.
++/
+@safe pure nothrow @nogc
+T studentsTPDF(T)(const T x, const T nu, const T mean, const T stdDev)
+    if (is(T == Fp!size, size_t size) && size <= 512)
+    in (!nu.sign && !nu.isNaN && (nu.isInfinity || !!nu.coefficient))
+    in (!mean.isSpecial && !stdDev.isSpecial && !stdDev.sign && !!stdDev.coefficient)
+{
+    import mir.stat.distribution.normal: normalPDF;
+    import mir.stat.distribution.cauchy: cauchyPDF;
+    import mir.stat.internal.fp_students_t: studentDensity;
+    if (nu.isInfinity) return normalPDF(x, mean, stdDev);
+    if (!position(nu, T(1))) return cauchyPDF(x, mean, stdDev);
+    return studentDensity!false(x, nu, mean, stdDev);
+}
+
+/// At two degrees of freedom the density has an algebraic reference.
+version(mir_stat_test)
+@safe pure nothrow @nogc unittest
+{
+    import mir.bignum.fp: Fp;
+    import mir.bignum.fixed: UInt;
+    alias T = Fp!64;
+    assert(studentsTPDF(T(0.5), T(2)) == T(false, -65, UInt!64(0x97b425ed097b425fUL)));
 }
 
 /++
@@ -351,6 +418,61 @@ unittest
 }
 
 /++
+Computes the Student's t lower-tail probability in guarded extended precision.
+
+Params:
+    T = supported $(D Fp) type with at most 512 significand bits
+    x = observation, which may be infinite or NaN
+    nu = positive degrees of freedom, including positive infinity for the normal limit
+
+Returns:
+    The lower-tail probability as $(D T); the limits at negative and positive infinity are zero and one. An unresolved evaluation returns NaN.
++/
+@safe pure nothrow @nogc
+T studentsTCDF(T)(const T x, const T nu)
+    if (is(T == Fp!size, size_t size) && size <= 512)
+{
+    return studentsTCDF(x, nu, T(0), T(1));
+}
+
+/++
+Computes the Student's t lower-tail probability in guarded extended precision.
+
+Params:
+    T = supported $(D Fp) type with at most 512 significand bits
+    x = observation, which may be infinite or NaN
+    nu = positive degrees of freedom, including positive infinity for the normal limit
+    mean = finite location
+    stdDev = positive finite scale
+
+Returns:
+    The lower-tail probability as $(D T); the limits at negative and positive infinity are zero and one. An unresolved evaluation returns NaN.
++/
+@safe pure nothrow @nogc
+T studentsTCDF(T)(const T x, const T nu, const T mean, const T stdDev)
+    if (is(T == Fp!size, size_t size) && size <= 512)
+    in (!nu.sign && !nu.isNaN && (nu.isInfinity || !!nu.coefficient))
+    in (!mean.isSpecial && !stdDev.isSpecial && !stdDev.sign && !!stdDev.coefficient)
+{
+    import mir.stat.distribution.normal: normalCDF;
+    import mir.stat.distribution.cauchy: cauchyCDF;
+    import mir.stat.internal.fp_students_t: studentTail;
+    if (nu.isInfinity) return normalCDF(x, mean, stdDev);
+    if (!position(nu, T(1))) return cauchyCDF(x, mean, stdDev);
+    return studentTail!false(x, nu, mean, stdDev);
+}
+
+/// At two degrees of freedom the lower-tail probability has an algebraic reference.
+version(mir_stat_test)
+@safe pure nothrow @nogc unittest
+{
+    import mir.bignum.fp: Fp;
+    import mir.bignum.fixed: UInt;
+    alias T = Fp!64;
+    assert(studentsTCDF(T(0.5), T(2)) == T(false, -64, UInt!64(0xaaaaaaaaaaaaaaabUL)));
+}
+
+/++
 Computes the Student's t complementary cumulative distribution function (CCDF).
 
 Returns the upper-tail probability $(D P(X > x)). Use this function directly
@@ -480,6 +602,78 @@ unittest
     studentsTCCDF(1.0, 5, -1, 2).shouldApprox == 0.1816087;
     studentsTCCDF(2.0, 5, -1, 2).shouldApprox == 0.09695184;
     studentsTCCDF(3.0, 5, -1, 2).shouldApprox == 0.05096974;
+}
+
+/++
+Computes the Student's t strict upper-tail probability in guarded extended precision.
+
+Params:
+    T = supported $(D Fp) type with at most 512 significand bits
+    x = observation, which may be infinite or NaN
+    nu = positive degrees of freedom, including positive infinity for the normal limit
+
+Returns:
+    The strict upper-tail probability as $(D T); the limits at negative and positive infinity are one and zero. An unresolved evaluation returns NaN.
++/
+@safe pure nothrow @nogc
+T studentsTCCDF(T)(const T x, const T nu)
+    if (is(T == Fp!size, size_t size) && size <= 512)
+{
+    return studentsTCCDF(x, nu, T(0), T(1));
+}
+
+/++
+Computes the Student's t strict upper-tail probability in guarded extended precision.
+
+Params:
+    T = supported $(D Fp) type with at most 512 significand bits
+    x = observation, which may be infinite or NaN
+    nu = positive degrees of freedom, including positive infinity for the normal limit
+    mean = finite location
+    stdDev = positive finite scale
+
+Returns:
+    The strict upper-tail probability as $(D T); the limits at negative and positive infinity are one and zero. An unresolved evaluation returns NaN.
++/
+@safe pure nothrow @nogc
+T studentsTCCDF(T)(const T x, const T nu, const T mean, const T stdDev)
+    if (is(T == Fp!size, size_t size) && size <= 512)
+    in (!nu.sign && !nu.isNaN && (nu.isInfinity || !!nu.coefficient))
+    in (!mean.isSpecial && !stdDev.isSpecial && !stdDev.sign && !!stdDev.coefficient)
+{
+    import mir.stat.distribution.normal: normalCCDF;
+    import mir.stat.distribution.cauchy: cauchyCCDF;
+    import mir.stat.internal.fp_students_t: studentTail;
+    if (nu.isInfinity) return normalCCDF(x, mean, stdDev);
+    if (!position(nu, T(1))) return cauchyCCDF(x, mean, stdDev);
+    return studentTail!true(x, nu, mean, stdDev);
+}
+
+/// At two degrees of freedom the strict upper-tail probability has an algebraic reference.
+version(mir_stat_test)
+@safe pure nothrow @nogc unittest
+{
+    import mir.bignum.fp: Fp;
+    import mir.bignum.fixed: UInt;
+    alias T = Fp!64;
+    assert(studentsTCCDF(T(0.5), T(2)) == T(false, -65, UInt!64(0xaaaaaaaaaaaaaaabUL)));
+}
+
+version(mir_stat_test)
+@safe pure nothrow @nogc unittest
+{
+    import mir.bignum.fixed: UInt;
+    alias T = Fp!64;
+    alias U = UInt!64;
+    const degrees = T(2);
+    const x = T(false, 1L << 62, U(1));
+    const floor = T(false, long.min, U(1));
+    // 1/(2*x^2) is half the first subnormal. At location zero the
+    // strict upper tail lies below this midpoint. At location one,
+    // r*(r+z) < 2*z^2+3 < 2*x^2, with z=x-1 and r=sqrt(z^2+2).
+    assert(studentsTCCDF(x, degrees) == T(0));
+    assert(studentsTCCDF(x, degrees, T(1), T(1)) == floor);
+    assert(studentsTCDF(T(true, x.exponent, x.coefficient), degrees, T(-1), T(1)) == floor);
 }
 
 /++
@@ -676,6 +870,85 @@ unittest
 
 
 /++
+Computes the Student's t quantile in guarded extended precision.
+
+Params:
+    T = supported $(D Fp) type with at most 512 significand bits
+    p = probability from zero through one
+    nu = positive degrees of freedom, including positive infinity for the normal limit
+
+Returns:
+    The quantile as $(D T); the probability endpoints give signed infinities and the median is the location. An unresolved evaluation returns NaN.
++/
+@safe pure nothrow @nogc
+T studentsTInvCDF(T)(const T p, const T nu)
+    if (is(T == Fp!size, size_t size) && size <= 512)
+{
+    return studentsTInvCDF(p, nu, T(0), T(1));
+}
+
+/++
+Computes the Student's t quantile in guarded extended precision.
+
+Params:
+    T = supported $(D Fp) type with at most 512 significand bits
+    p = probability from zero through one
+    nu = positive degrees of freedom, including positive infinity for the normal limit
+    mean = finite location
+    stdDev = positive finite scale
+
+Returns:
+    The quantile as $(D T); the probability endpoints give signed infinities and the median is the location. An unresolved evaluation returns NaN.
++/
+@safe pure nothrow @nogc
+T studentsTInvCDF(T)(const T p, const T nu, const T mean, const T stdDev)
+    if (is(T == Fp!size, size_t size) && size <= 512)
+    in (!nu.sign && !nu.isNaN && (nu.isInfinity || !!nu.coefficient))
+    in (!mean.isSpecial && !stdDev.isSpecial && !stdDev.sign && !!stdDev.coefficient)
+    in (fpProbabilityValid(p))
+{
+    import mir.stat.distribution.normal: normalInvCDF;
+    import mir.stat.distribution.cauchy: cauchyInvCDF;
+    import mir.stat.internal.fp_students_t: studentQuantile;
+    if (nu.isInfinity) return normalInvCDF(p, mean, stdDev);
+    if (!position(nu, T(1))) return cauchyInvCDF(p, mean, stdDev);
+    return studentQuantile(p, nu, mean, stdDev);
+}
+
+/// At two degrees of freedom the quantile has an algebraic reference.
+version(mir_stat_test)
+@safe pure nothrow @nogc unittest
+{
+    import mir.bignum.fp: Fp;
+    import mir.bignum.fixed: UInt;
+    alias T = Fp!64;
+    assert(studentsTInvCDF(T(0.75), T(2)) == T(false, -64, UInt!64(0xd105eb806161efe0UL)));
+}
+
+version(mir_stat_test)
+@safe pure nothrow @nogc unittest
+{
+    import mir.bignum.fixed: UInt;
+    alias T = Fp!64;
+    alias U = UInt!64;
+    const p = T(false, -2001, U(1));
+    const degrees = T(2);
+    // The standard quantile is -2^1000 + 3*2^-1002 + O(2^-3000).
+    // A shift of 2^935 lands the leading term on a rounding midpoint.
+    // A shift of 2^1000 cancels it and exposes the positive correction.
+    assert(studentsTInvCDF(p, degrees) == T(true, 937, U(1UL << 63)));
+    assert(studentsTInvCDF(p, degrees, T(false, 935, U(1)), T(1)) ==
+        T(true, 936, U.max));
+    assert(studentsTInvCDF(p, degrees, T(false, 1000, U(1)), T(1)) ==
+        T(false, -1064, U(3UL << 62)));
+    const largestScale = T(false, long.max - 1, U.max);
+    assert(studentsTInvCDF(T(0.875), degrees, T(0), largestScale).isInfinity);
+    const firstQuantum = T(false, long.min, U(1));
+    const underflow = studentsTInvCDF(T(0.375), degrees, T(0), firstQuantum);
+    assert(!underflow.coefficient && underflow.sign && !underflow.isSpecial);
+}
+
+/++
 Computes the Student's t log probability density function (LPDF).
 
 Returns the natural logarithm of the density.
@@ -842,6 +1115,148 @@ version(mir_stat_test)
             T(0.189803344911247215593803380374347484L)));
     }
 }
+/++
+Computes the Student's t log density in guarded extended precision.
+
+Params:
+    T = supported $(D Fp) type with at most 512 significand bits
+    x = observation, which may be infinite or NaN
+    nu = positive degrees of freedom, including positive infinity for the normal limit
+
+Returns:
+    The log density as $(D T); signed infinity gives negative infinity. An unresolved evaluation returns NaN.
++/
+@safe pure nothrow @nogc
+T studentsTLPDF(T)(const T x, const T nu)
+    if (is(T == Fp!size, size_t size) && size <= 512)
+{
+    return studentsTLPDF(x, nu, T(0), T(1));
+}
+
+/++
+Computes the Student's t log density in guarded extended precision.
+
+Params:
+    T = supported $(D Fp) type with at most 512 significand bits
+    x = observation, which may be infinite or NaN
+    nu = positive degrees of freedom, including positive infinity for the normal limit
+    mean = finite location
+    stdDev = positive finite scale
+
+Returns:
+    The log density as $(D T); signed infinity gives negative infinity. An unresolved evaluation returns NaN.
++/
+@safe pure nothrow @nogc
+T studentsTLPDF(T)(const T x, const T nu, const T mean, const T stdDev)
+    if (is(T == Fp!size, size_t size) && size <= 512)
+    in (!nu.sign && !nu.isNaN && (nu.isInfinity || !!nu.coefficient))
+    in (!mean.isSpecial && !stdDev.isSpecial && !stdDev.sign && !!stdDev.coefficient)
+{
+    import mir.stat.distribution.normal: normalLPDF;
+    import mir.stat.distribution.cauchy: cauchyLPDF;
+    import mir.stat.internal.fp_students_t: studentDensity;
+    if (nu.isInfinity) return normalLPDF(x, mean, stdDev);
+    if (!position(nu, T(1))) return cauchyLPDF(x, mean, stdDev);
+    return studentDensity!true(x, nu, mean, stdDev);
+}
+
+/// At two degrees of freedom the log density has an algebraic reference, evaluated on the log scale.
+version(mir_stat_test)
+@safe pure nothrow @nogc unittest
+{
+    import mir.bignum.fp: Fp;
+    import mir.bignum.fixed: UInt;
+    alias T = Fp!64;
+    assert(studentsTLPDF(T(0.5), T(2)) == T(true, -63, UInt!64(0x9bb2d78c7d91c7b0UL)));
+}
+
+
+version(mir_stat_test_slow_numerics)
+@safe pure nothrow @nogc unittest
+{
+    import mir.bignum.fixed: UInt;
+    alias T = Fp!64;
+    alias U = UInt!64;
+    // Integrate the binomial series for both incomplete beta integrals
+    // at 1/2 to normalize. Bisect the resulting CDF for the inverse.
+    const x = T(false, -64, U(0xc000000000000001UL));
+    const p = T(false, -64, U(0xbfffffffffffffffUL));
+    const nu = T(2.5);
+    assert(studentsTPDF(x, nu) == T(false, -65, U(0x81dedf8268ceb1feUL)));
+    assert(studentsTLPDF(x, nu) == T(true, -63, U(0xaf96af9adb0597ceUL)));
+    assert(studentsTCDF(x, nu) == T(false, -64, U(0xbdc2aeb4ea4b33feUL)));
+    assert(studentsTCCDF(x, nu) == T(false, -65, U(0x847aa2962b699805UL)));
+    assert(studentsTInvCDF(p, nu) == T(false, -64, U(0xc8f6a81f5d4c3edbUL)));
+    // For half a degree the leading upper tail is c/sqrt(z), with
+    // c=(1/2)^(1/4)/((1/2)*B(1/4,1/2)). The next relative term is
+    // O(1/z^2), far below one output ulp at this probability.
+    assert(studentsTInvCDF(T(false, -2000, U(1)), T(0.5), T(0), T(false, -4000, U(1))) ==
+        T(true, -67, U(0xd2a28ea07badf8b7UL)));
+    // At p=1/2+2^-64, write h=(p-1/2)*3*pi*sqrt(5)/8.
+    // The inverse for five degrees is h+h^3/5+O(h^5). Subtract its
+    // rounded leading result as the location before rounding the residual.
+    const nearMedian = T(false, -64, U(0x8000000000000001UL));
+    const location = T(true, -126, U(0xa898763276b1e7b2UL));
+    assert(studentsTInvCDF(nearMedian, T(5), location, T(1)) ==
+        T(false, -191, U(0xd3f6acdf3cbd0c69UL)));
+}
+
+version(mir_stat_test)
+@safe pure nothrow @nogc unittest
+{
+    import mir.bignum.fixed: UInt;
+    import mir.stat.distribution.normal: normalCDF;
+    alias T = Fp!64;
+    alias U = UInt!64;
+    const infinity = T(false, long.max, U(0));
+    const nan = T(false, long.max, U(1));
+    const nu = T(2);
+    assert(studentsTPDF(infinity, nu) == T(0));
+    assert(studentsTLPDF(infinity, nu).sign && studentsTLPDF(infinity, nu).isInfinity);
+    assert(studentsTCDF(infinity, nu) == T(1));
+    assert(studentsTCCDF(infinity, nu) == T(0));
+    assert(studentsTCDF(nan, nu).isNaN);
+    assert(studentsTInvCDF(T(0), nu).sign && studentsTInvCDF(T(0), nu).isInfinity);
+    assert(studentsTInvCDF(T(1), nu).isInfinity && !studentsTInvCDF(T(1), nu).sign);
+    assert(studentsTInvCDF(T(0.5), T(3), T(-2), T(5)) == T(-2));
+    assert(studentsTCDF(T(0.75), infinity) == normalCDF(T(0.75)));
+    assert(studentsTCDF(T(1), T(1)) == T(0.75));
+    // At four degrees, Q(z)=(1-u)^2*(2+u)/4 for u=z/sqrt(4+z^2).
+    // Taking u=15/16 gives Q=47/16384 and z=30/sqrt(31).
+    const p = T(false, -14, U(47));
+    assert(studentsTInvCDF(p, T(4), T(3), T(4)) ==
+        T(true, -59, U(0x946bcc8cf97901f9UL)));
+    const adjacent = T(false, -63, U(0x8000000000000001UL));
+    const scale = T(false, -62, U(1));
+    assert(studentsTCCDF(adjacent, nu, T(1), scale) == T(false, -65, U(0xaaaaaaaaaaaaaaabUL)));
+    // Both public numeric types see exactly the same x, location and scale.
+    import mir.math.common: fabs;
+    // Windows LDC returns five ulps above the nearest double to 2/3.
+    enum ulp = double.epsilon / 2;
+    assert(fabs(studentsTCDF(2.0, 2.0, 1.0, 2.0) - 2.0 / 3) <= 5 * ulp);
+    assert(studentsTCDF(T(2), nu, T(1), T(2)) == T(false, -64, U(0xaaaaaaaaaaaaaaabUL)));
+    const nearMedian = T(false, -64, U(0x8000000000000001UL));
+    const location = T(true, -126, U(0xb504f333f9de6484UL));
+    assert(studentsTInvCDF(nearMedian, nu, location, T(1)) ==
+        T(false, -191, U(0xb2fb1366ea957d41UL)));
+    const tiny = T(false, -2000, U(1));
+    assert(studentsTInvCDF(T(0.625), T(4), T(1), tiny) == T(1));
+    // At the mode, scale=sqrt(nu)/2 cancels the leading normalization
+    // for tiny nu. The density rounds to one; the log residual is unresolved.
+    const modalScale = T(false, -1001, U(1));
+    assert(studentsTPDF(T(0), tiny, T(0), modalScale) == T(1));
+    assert(studentsTLPDF(T(0), tiny, T(0), modalScale).isNaN);
+    const far = T(false, 2000, U(1));
+    assert(studentsTCCDF(far, nu) == T(false, -4064, U(0x8000000000000000UL)));
+    assert(studentsTCDF(far, nu) == T(1));
+    // Here z^2 exceeds the Fp exponent range. Evaluate c/sqrt(z) with
+    // the same half-degree normalization as the inverse reference above.
+    const extreme = T(false, long.max / 2 + 500, U(1));
+    const q = T(false, -2305843009213694267L, U(0xe83659fab40560f8UL));
+    assert(studentsTCCDF(extreme, T(0.5)) == q);
+    assert(studentsTCDF(T(true, extreme.exponent, extreme.coefficient), T(0.5)) == q);
+}
+
 // log(Gamma((nu+1)/2) / (sqrt(nu*pi) * Gamma(nu/2))).
 // Use a gamma recurrence near zero, and the log gamma-ratio expansion at
 // large nu rather than subtracting nearly equal log-gamma values. At nu=64,

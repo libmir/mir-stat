@@ -73,6 +73,7 @@ sources_list = [
     'mir/stat/internal/fp_gamma',
     'mir/stat/internal/fp_beta',
     'mir/stat/internal/fp_f',
+    'mir/stat/internal/fp_students_t',
     'mir/stat/internal/fp_beta_proportion',
     'mir/stat/internal/fp_binomial_log',
     'mir/stat/internal/fp_binomial_tails',

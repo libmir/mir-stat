@@ -18,6 +18,7 @@ import mir.stat.distribution.logistic;
 import mir.stat.distribution.negative_binomial;
 import mir.stat.distribution.poisson;
 import mir.stat.distribution.rayleigh;
+import mir.stat.distribution.students_t;
 import mir.stat.distribution.uniform;
 import mir.stat.internal.fp_binomial_log;
 import mir.stat.internal.fp_beta;

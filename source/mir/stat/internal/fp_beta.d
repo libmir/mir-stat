@@ -35,6 +35,30 @@ package(mir.stat) struct BetaIntegral(uint bits)
         Point reflect() const { return Point(y, x, negLogY, negLogX); }
     }
 
+    // Divide the smaller weight by the larger before adding one. Both
+    // coordinates and both negative logarithms retain their own exponents.
+    static Point weightedPoint(S left, S right, S one)
+    {
+        const reflected = compare(left, right) > 0;
+        const ratio = reflected ? right.divide(left) : left.divide(right);
+        const sum = one.add(ratio);
+        const small = ratio.divide(sum);
+        const large = one.divide(sum);
+        const logSmall = S.from(B.logarithm(small));
+        // Below this threshold, the quadratic term retains the relative
+        // working precision of log(1+r) even when 1+r rounds to one.
+        S logLarge;
+        if (ratio.exponent + B.work / 2 < exponentBias)
+        {
+            auto halfSquare = ratio.multiply(ratio);
+            --halfSquare.exponent;
+            logLarge = B.combine(B.Term(ratio, false, true), B.Term(halfSquare, true, true)).value;
+        }
+        else logLarge = S.from(B.logarithm(sum));
+        return reflected ? Point(large, small, logLarge, logSmall)
+                         : Point(small, large, logSmall, logLarge);
+    }
+
     static Term signedValue(uint n)(Fp!n v, bool subtract = false)
     {
         return v.coefficient ? Term(S.from(v), v.sign != subtract, true) : Term.init;
