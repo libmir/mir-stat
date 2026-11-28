@@ -174,3 +174,58 @@ package(mir.stat) Fp!bits fTail(bool upper, uint bits)(Fp!bits x, Fp!bits df1, F
     const complement = upper != reflected;
     return tail.present ? addOffset!bits(T(complement ? 1 : 0), tail.value, complement) : T(complement ? 1 : 0);
 }
+
+package(mir.stat) Fp!bits fDensity(bool logarithmic, uint bits)(Fp!bits x, Fp!bits df1, Fp!bits df2)
+{
+    alias T = Fp!bits;
+    alias I = BetaIntegral!bits;
+    alias B = I.B;
+    if (x.isInfinity) return logarithmic ? T(true, long.max, UInt!bits(0)) : T(0);
+    if (!x.coefficient)
+    {
+        const side = position(df1, T(2));
+        if (!side) return T(logarithmic ? 0 : 1);
+        if (side < 0 || logarithmic) return T(side > 0, long.max, UInt!bits(0));
+        return T(0);
+    }
+    const f = FTransform!bits(df1, df2);
+    const obs = I.S.from(x);
+    const p = f.coordinates(obs);
+    auto integral = I(f.one, 4096);
+    if (f.a == f.one)
+    {
+        // For df1=2 the log density is -(b+1)*log(1+x/b).
+        static if (!logarithmic)
+            if (f.b == f.one) return p.y.multiply(p.y).finish!bits;
+        return integral.finishDensity!logarithmic(I.neg(f.b.add(f.one).multiply(p.negLogY)));
+    }
+
+    I.Term height;
+    if (f.b == f.one)
+    {
+        // Reciprocal F density, including the 1/x^2 Jacobian.
+        auto logX = I.signedValue(B.logarithm(obs), true);
+        if (logX.present) ++logX.value.exponent;
+        height = B.combine(logX, I.neg(f.a.add(f.one).multiply(p.negLogX)));
+    }
+    else if (obs == f.one && f.a.exponent > exponentBias + B.work &&
+        f.b.exponent > exponentBias + B.work)
+    {
+        // At the mean of the transformed beta variable the deviance is
+        // zero. Here the Stirling corrections are below working precision.
+        import mir.stat.internal.fp_pi: guardedPi;
+        auto twicePi = I.S.from(guardedPi!(B.work)());
+        ++twicePi.exponent;
+        height = I.signedValue(B.logarithm(f.a.multiply(f.b).divide(f.a.add(f.b).multiply(twicePi))));
+        --height.value.exponent;
+    }
+    else
+    {
+        // f(x) = z^a * (1-z)^b / (B(a,b)*x). Use the centered beta
+        // prefactor before applying the Jacobian on the log scale.
+        height = B.combine(integral.front(f.a, f.b, p), I.signedValue(B.logarithm(obs), true));
+    }
+    if (!height.present || height.value.exponent + bits + 48 < exponentBias)
+        return logarithmic ? T(false, long.max, UInt!bits(1)) : T(1);
+    return integral.finishDensity!logarithmic(height);
+}

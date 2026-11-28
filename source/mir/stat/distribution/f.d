@@ -106,6 +106,39 @@ unittest
 }
 
 /++
+Computes the F density in guarded extended precision.
+
+Params:
+    T = supported $(D Fp) type with at most 512 significand bits
+    x = nonnegative observation, including positive infinity
+    df1 = finite positive numerator degrees of freedom
+    df2 = finite positive denominator degrees of freedom
+
+Returns:
+    The density as $(D T). At zero the density is infinity, one, or zero as df1 is below, equal to, or above two. At infinity it is zero.
+    An unresolved guarded evaluation returns NaN.
++/
+@safe pure nothrow @nogc
+T fPDF(T)(const T x, const T df1, const T df2)
+    if (is(T == Fp!size, size_t size) && size <= 512)
+    in (!x.isNaN && (!x.sign || (!x.coefficient && !x.isInfinity)))
+    in (df1.exponent != long.max && !df1.sign && !!df1.coefficient)
+    in (df2.exponent != long.max && !df2.sign && !!df2.coefficient)
+{
+    import mir.stat.internal.fp_f: fDensity;
+    return fDensity!false(x, df1, df2);
+}
+
+///
+version(mir_stat_test)
+@safe pure nothrow @nogc unittest
+{
+    import mir.bignum.fp: Fp;
+    alias T = Fp!64;
+    assert(fPDF(T(1), T(2), T(2)) == T(0.25));
+}
+
+/++
 Computes the F cumulative distribution function (CDF).
 
 Returns the lower-tail probability $(D P(X <= x)).
@@ -465,6 +498,62 @@ unittest
     0.00.fLPDF(1, 3).shouldApprox == double.infinity;
 }
 
+
+/++
+Computes the F natural logarithm of the density in guarded extended precision.
+
+Params:
+    T = supported $(D Fp) type with at most 512 significand bits
+    x = nonnegative observation, including positive infinity
+    df1 = finite positive numerator degrees of freedom
+    df2 = finite positive denominator degrees of freedom
+
+Returns:
+    The natural logarithm of the density as $(D T). At zero the limit is positive infinity, zero, or negative infinity as df1 is below, equal to, or above two. At infinity it is negative infinity.
+    An unresolved guarded evaluation returns NaN.
++/
+@safe pure nothrow @nogc
+T fLPDF(T)(const T x, const T df1, const T df2)
+    if (is(T == Fp!size, size_t size) && size <= 512)
+    in (!x.isNaN && (!x.sign || (!x.coefficient && !x.isInfinity)))
+    in (df1.exponent != long.max && !df1.sign && !!df1.coefficient)
+    in (df2.exponent != long.max && !df2.sign && !!df2.coefficient)
+{
+    import mir.stat.internal.fp_f: fDensity;
+    return fDensity!true(x, df1, df2);
+}
+
+///
+version(mir_stat_test)
+@safe pure nothrow @nogc unittest
+{
+    import mir.bignum.fp: Fp;
+    alias T = Fp!64;
+    assert(fLPDF(T(0), T(2), T(4)) == T(0));
+}
+
+version(mir_stat_test)
+@safe pure nothrow @nogc unittest
+{
+    import mir.bignum.fixed: UInt;
+    alias T = Fp!64;
+    alias U = UInt!64;
+    const infinity = T(false, long.max, U(0));
+    assert(fPDF(T(0), T(1), T(5)).isInfinity);
+    assert(fPDF(T(0), T(2), T(5)) == T(1));
+    assert(fPDF(T(0), T(3), T(5)) == T(0));
+    assert(fLPDF(T(0), T(3), T(5)) == T(true, long.max, U(0)));
+    assert(fPDF(infinity, T(4), T(5)) == T(0));
+    assert(fLPDF(infinity, T(4), T(5)).sign);
+    assert(fPDF(T(1.5), T(4), T(6)) == T(0.25));
+    assert(fPDF(1.5, 4.0, 6.0) == 0.25);
+    assert(fPDF(T(0.5), T(4), T(2)) == T(0.5));
+    const floor = T(false, long.min, U(1));
+    assert(fLPDF(floor, T(2), T(2)) == T(true, long.min, U(2)));
+    // The height at one is 2^1000/sqrt(6*pi) to the displayed precision.
+    assert(fPDF(T(1), T(false, 2000, U(1)), T(false, 2001, U(1))) ==
+        T(false, 934, U(0xebdb7a97d62ad194UL)));
+}
 
 // For large degrees, remove cancellation between the beta normalization and
 // density terms by centering at x=1. Keep all arithmetic in the input type.
