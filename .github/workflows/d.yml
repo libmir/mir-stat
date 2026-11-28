@@ -273,7 +273,7 @@ jobs:
         if ($LASTEXITCODE) { exit $LASTEXITCODE }
         $imports = $paths | ForEach-Object { "-I$_" }
         $exe = Join-Path $env:RUNNER_TEMP 'decay-erf-log-gamma-x86.exe'
-        & $env:DC -m32 -O2 -i -main -unittest --d-version=mir_stat_test @imports "-of=$exe" source/mir/stat/internal/fp_scaled_probability.d source/mir/stat/internal/fp_erf.d source/mir/stat/internal/fp_log_gamma.d source/mir/stat/internal/fp_gamma.d source/mir/stat/internal/fp_log_beta.d source/mir/stat/internal/fp_beta.d source/mir/stat/internal/fp_beta_proportion.d source/mir/stat/internal/fp_f.d
+        & $env:DC -m32 -O2 -i -main -unittest --d-version=mir_stat_test @imports "-of=$exe" source/mir/stat/internal/fp_scaled_probability.d source/mir/stat/internal/fp_erf.d source/mir/stat/internal/fp_log_gamma.d source/mir/stat/internal/fp_gamma.d source/mir/stat/internal/fp_log_beta.d source/mir/stat/internal/fp_beta.d source/mir/stat/internal/fp_beta_proportion.d source/mir/stat/internal/fp_f.d source/mir/stat/internal/fp_students_t.d
         if ($LASTEXITCODE) { exit $LASTEXITCODE }
         & $exe
         if ($LASTEXITCODE) { exit $LASTEXITCODE }

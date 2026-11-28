@@ -338,3 +338,15 @@ package(mir.stat) Fp!bits studentQuantile(uint bits)(Fp!bits p, Fp!bits nu,
         else hi = trial;
     }
 }
+
+version(mir_stat_test)
+static if (size_t.sizeof == 4)
+@safe pure nothrow @nogc unittest
+{
+    alias T = Fp!32;
+    alias U = UInt!32;
+    const adjacent = T(false, -31, U(0x80000001u));
+    const scale = T(false, -30, U(1));
+    assert(studentTail!true(adjacent, T(2), T(1), scale) ==
+        T(false, -33, U(0xaaaaaaabu)));
+}

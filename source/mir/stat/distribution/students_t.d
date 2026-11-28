@@ -11,6 +11,15 @@ for $(D nu > 1). For finite $(D nu > 2), the standard deviation is
 $(D stdDev * sqrt(nu / (nu - 2))). Thus the scale parameter is not generally
 the standard deviation.
 
+The $(D Fp) overloads support significands up to 512 bits. They retain the
+squared standardized displacement and both incomplete-beta coordinates on
+separate exponents. One degree uses Cauchy and infinite degrees use normal.
+At two degrees the tails and quantiles use exact algebraic comparisons at
+output rounding midpoints. General incomplete-beta expansions allow 4096
+updates. General inversion compares direct central or tail probabilities and
+rounds the location-scale bracket on the output grid. An unresolved evaluation returns NaN. These
+guarded calculations do not establish universal correct rounding.
+
 The special-value tables assume parameters in the stated domain. Finite
 expressions are subject to floating-point rounding and range limits.
 Contract violations are not prescribed return values: disabling contracts
@@ -1159,6 +1168,37 @@ version(mir_stat_test)
     import mir.bignum.fixed: UInt;
     alias T = Fp!64;
     assert(studentsTLPDF(T(0.5), T(2)) == T(true, -63, UInt!64(0x9bb2d78c7d91c7b0UL)));
+}
+
+
+version(mir_stat_test_slow_numerics)
+@safe pure nothrow @nogc unittest
+{
+    import mir.bignum.fixed: UInt;
+    alias T = Fp!64;
+    alias U = UInt!64;
+    // Integrate the binomial series for both incomplete beta integrals
+    // at 1/2 to normalize. Bisect the resulting CDF for the inverse.
+    const x = T(false, -64, U(0xc000000000000001UL));
+    const p = T(false, -64, U(0xbfffffffffffffffUL));
+    const nu = T(2.5);
+    assert(studentsTPDF(x, nu) == T(false, -65, U(0x81dedf8268ceb1feUL)));
+    assert(studentsTLPDF(x, nu) == T(true, -63, U(0xaf96af9adb0597ceUL)));
+    assert(studentsTCDF(x, nu) == T(false, -64, U(0xbdc2aeb4ea4b33feUL)));
+    assert(studentsTCCDF(x, nu) == T(false, -65, U(0x847aa2962b699805UL)));
+    assert(studentsTInvCDF(p, nu) == T(false, -64, U(0xc8f6a81f5d4c3edbUL)));
+    // For half a degree the leading upper tail is c/sqrt(z), with
+    // c=(1/2)^(1/4)/((1/2)*B(1/4,1/2)). The next relative term is
+    // O(1/z^2), far below one output ulp at this probability.
+    assert(studentsTInvCDF(T(false, -2000, U(1)), T(0.5), T(0), T(false, -4000, U(1))) ==
+        T(true, -67, U(0xd2a28ea07badf8b7UL)));
+    // At p=1/2+2^-64, write h=(p-1/2)*3*pi*sqrt(5)/8.
+    // The inverse for five degrees is h+h^3/5+O(h^5). Subtract its
+    // rounded leading result as the location before rounding the residual.
+    const nearMedian = T(false, -64, U(0x8000000000000001UL));
+    const location = T(true, -126, U(0xa898763276b1e7b2UL));
+    assert(studentsTInvCDF(nearMedian, T(5), location, T(1)) ==
+        T(false, -191, U(0xd3f6acdf3cbd0c69UL)));
 }
 
 version(mir_stat_test)
